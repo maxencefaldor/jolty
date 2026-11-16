@@ -380,6 +380,7 @@ def _card_names(
     match model:
         case "diode":
             kind, names = "D", _spice(models.DIODE)
+            values, instance = _diode_sidewall(_diode_capacitances(values))
         case "jfet":
             channel = _defaulted(model, values)["channel"]
             kind, names = f"{channel}jf".upper(), _spice(models.JFET)
@@ -404,6 +405,77 @@ def _card_names(
             message = f"a {model} has no model card"
             raise _unwritable(message)
     return kind, names, instance, values
+
+
+_LINEAR_CAPACITANCES: Final = (
+    (
+        "junction_potential",
+        "junction_potential_temperature_coefficient",
+        "junction_capacitance",
+        "junction_capacitance_temperature_coefficient",
+    ),
+    (
+        "sidewall_junction_potential",
+        "sidewall_junction_potential_temperature_coefficient",
+        "sidewall_junction_capacitance",
+        "sidewall_junction_capacitance_temperature_coefficient",
+    ),
+)
+"""A diode's junctions' potentials and capacitances that its capacitance temperature
+model 1 moves linearly, each with its coefficient."""
+
+
+def _diode_capacitances(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """A diode's parameters, its linear capacitances' moved to start from 27 °C.
+
+    At capacitance temperature model 1, ngspice moves a junction's potential and
+    capacitance from 27 °C (``diotemp.c``, lines 93 to 95 and 109 to 111), and jolty
+    from the nominal temperature `Tn`, as the guide's departures state. ngspice computes
+    jolty's `φ - TPB · (T - Tn)` from `φ + TPB · (Tn - 27 °C)` and `TPB`, and its
+    `C · (1 + CTA · (T - Tn))` from `C · k` and `CTA / k`, with
+    `k = 1 + CTA · (27 °C - Tn)`.
+    """
+    defaulted = _defaulted("diode", values)
+    nominal = _number("diode", defaulted, "nominal_temperature")
+    shift = nominal - _core.REFERENCE_TEMPERATURE
+    if defaulted["capacitance_temperature_model"] != 1 or shift == 0:
+        return values
+    moved = dict(values)
+    for potential, falling, capacitance, coefficient in _LINEAR_CAPACITANCES:
+        fall = _number("diode", defaulted, falling)
+        slope = _number("diode", defaulted, coefficient)
+        if fall != 0:
+            moved[potential] = _number("diode", defaulted, potential) + fall * shift
+        if slope != 0:
+            factor = 1 - slope * shift
+            moved[capacitance] = _number("diode", defaulted, capacitance) * factor
+            moved[coefficient] = slope / factor
+    return moved
+
+
+_SIDEWALL: Final = frozenset(
+    jolty for jolty, _ in models.DIODE.values() if jolty.startswith("sidewall")
+)
+"""A diode's parameters of its sidewall junction."""
+
+
+def _diode_sidewall(
+    values: dict[str, JsonValue],
+) -> tuple[dict[str, JsonValue], dict[str, tuple[str, float]]]:
+    """A diode's parameters as its card writes them, and its element's names.
+
+    A diode with a sidewall junction is written with a perimeter of 1, ``PJ=1``, as its
+    sidewall's parameters are already its perimeter's, and with the sidewall's emission
+    coefficient, ``NS``, given: ngspice's sidewall of none shares the junction's in its
+    current but scales its saturation current with temperature by 1 instead
+    (``diotemp.c``, lines 123 to 129), and breaks down at a voltage of its own the
+    element never sets (``dioload.c``, line 452), as the guide's departures state.
+    """
+    if not _SIDEWALL & values.keys():
+        return values, {}
+    emission = _defaulted("diode", values)["emission_coefficient"]
+    written = {"sidewall_emission_coefficient": emission, **values, "perimeter": 1.0}
+    return written, {"perimeter": ("pj", 1.0)}
 
 
 def _model_card(

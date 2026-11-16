@@ -286,37 +286,70 @@ ngspice heats no device on a thermal network, and its VDMOS only on a network of
 
 ## Diode
 
-`diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model.
+`diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model as ngspice 47 implements it.
 Every parameter is optional:
 
-| Parameter | Unit | Default |
-| --- | --- | --- |
-| `saturation_current` | A | 10 fA |
-| `emission_coefficient` | none | 1 |
-| `series_resistance` | Ω | 0 |
-| `junction_capacitance` | F | 0 |
-| `junction_potential` | V | 1 V |
-| `grading_coefficient` | none | 0.5 |
-| `depletion_coefficient` | none | 0.5 |
-| `transit_time` | s | 0 |
-| `breakdown_voltage` | V | none: no breakdown |
-| `breakdown_current` | A | 1 mA |
-| `breakdown_emission_coefficient` | none | the emission coefficient |
-| `breakdown_temperature_coefficient` | V/K | 0 |
-| `energy_gap` | V | 1.11 V, silicon's |
-| `saturation_current_temperature_exponent` | none | 3 |
-| `nominal_temperature` | K | 27 °C |
-| `flicker_coefficient`, `flicker_exponent` | none | 0: no flicker noise, 1 |
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `saturation_current` | `IS`, `JS` | A | 10 fA |
+| `emission_coefficient` | `N` | none | 1 |
+| `series_resistance` | `RS` | Ω | 0 |
+| `junction_capacitance` | `CJO`, `CJ0`, `CJ` | F | 0 |
+| `junction_potential` | `VJ`, `PB` | V | 1 V |
+| `grading_coefficient` | `M`, `MJ` | none | 0.5 |
+| `depletion_coefficient` | `FC` | none | 0.5 |
+| `transit_time` | `TT` | s | 0 |
+| `forward_knee_current`, `reverse_knee_current` | `IKF`, `IK`; `IKR` | A | none: no high injection |
+| `recombination_saturation_current` | `ISR` | A | none: no recombination current |
+| `recombination_emission_coefficient` | `NR` | none | 2 |
+| `sidewall_saturation_current` | `JSW`, `ISW` | A | 0 |
+| `sidewall_emission_coefficient` | `NS` | none | the emission coefficient |
+| `sidewall_series_resistance` | `RSW` | Ω | none: the sidewall beside the junction |
+| `sidewall_junction_capacitance` | `CJP`, `CJSW` | F | 0 |
+| `sidewall_junction_potential` | `PHP`, `VJSW` | V | 1 V |
+| `sidewall_grading_coefficient` | `MJSW` | none | 0.33 |
+| `sidewall_depletion_coefficient` | `FCS` | none | 0.5 |
+| `sidewall_forward_knee_current` | `IKP` | A | none |
+| `tunneling_saturation_current`, `sidewall_tunneling_saturation_current` | `JTUN`, `JTUNSW` | A | 0: no tunneling |
+| `tunneling_emission_coefficient` | `NTUN` | none | 30 |
+| `tunneling_saturation_current_temperature_exponent` | `XTITUN` | none | 3 |
+| `tunneling_energy_gap_factor` | `KEG` | none | 1 |
+| `breakdown_voltage` | `BV`, `VB`, `VRB`, `VAR` | V | none: no breakdown |
+| `breakdown_current` | `IBV`, `IB` | A | 1 mA |
+| `breakdown_emission_coefficient` | `NBV`, `NZ` | none | the emission coefficient |
+| `breakdown_temperature_coefficient` | `TCV`, `TBV1` | V/K at temperature model 0, /K at 1 and 2 | 0 |
+| `temperature_model` | `TLEV` | 0, 1 or 2 | 0 |
+| `capacitance_temperature_model` | `TLEVC` | 0 or 1 | 0 |
+| `energy_gap` | `EG` | V | 1.11 V, silicon's, and 1.16 V at temperature model 2 |
+| `energy_gap_alpha`, `energy_gap_beta` | `GAP1`, `GAP2` | V/K, K | 702 µV/K, 1108 K: silicon's |
+| `saturation_current_temperature_exponent` | `XTI` | none | 3 |
+| `junction_capacitance_temperature_coefficient`, `sidewall_junction_capacitance_temperature_coefficient` | `CTA`, `CTC`; `CTP` | /K | 0 |
+| `junction_potential_temperature_coefficient`, `sidewall_junction_potential_temperature_coefficient` | `TPB`, `TVJ`; `TPHP` | V/K | 0 |
+| `series_resistance_temperature_coefficient`, `series_resistance_quadratic_temperature_coefficient` | `TRS`, `TRS1`; `TRS2` | /K, /K² | 0 |
+| `transit_time_temperature_coefficient`, `transit_time_quadratic_temperature_coefficient` | `TTT1`, `TTT2` | /K, /K² | 0 |
+| `grading_coefficient_temperature_coefficient`, `grading_coefficient_quadratic_temperature_coefficient` | `TM1`, `TM2` | /K, /K² | 0 |
+| `nominal_temperature` | `TNOM`, `TREF` | K | 27 °C |
+| `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`; below 1 Ω, the resistance adds its current too, as `D1:junction_current`, as a small resistor does.
+A sidewall series resistance does the same for the sidewall junction, as `D1:sidewall` and `D1:sidewall_current`.
 
-The junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
-Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current there is the breakdown current, and jolty does the same.
+The bottom junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
+Given a recombination saturation current `Isr`, it adds `Isr · (e^(v/(NR·Vt)) − 1) · ((1 − v/VJ)² + 0.005)^(M/2)`, held below three of its slopes of reverse bias at its value there; given a tunneling saturation current `Itun`, its current loses `Itun · (e^(−v/(NTUN·Vt)) − 1)`.
+A knee current `Ik` softens the current `I` beyond it to `I / (1 + √(|I|/Ik))`: forward by the forward knee current, reverse by the reverse one, as ngspice does for a current beyond 1e-18 A.
+The sidewall junction carries a junction's current of its own saturation current and emission coefficient, its own tunneling current, and its own forward knee, and holds its own depletion charge; it sits beside the bottom junction, behind the series resistance, or, given a sidewall series resistance, behind that alone from the anode, where it does not break down.
+Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current of the two junctions there is the breakdown current, and jolty does the same.
 
-Away from the nominal temperature `Tn`, the saturation current scales by `(T/Tn)^(XTI/n) · exp((T/Tn − 1) · Eg / (n · Vt))`, with `Eg` the energy gap, `XTI` its temperature exponent and `Vt` the thermal voltage at `T`.
-The junction potential and capacitance follow silicon's band gap, and the breakdown voltage falls by its temperature coefficient, as in ngspice.
+The SPICE reader multiplies the bottom junction's currents and capacitance, and divides its resistance, by the element's area times its copies `M`, and the sidewall's by its perimeter, `PJ`, times them, as ngspice does; the breakdown current by the copies, and at level 3 by the area too.
+A card of level 3 whose element gives its width and length, `W` and `L`, takes its area and perimeter from them, `(W + XW) · (L + XW)` and `2 · (W + XW) + 2 · (L + XW)`, scaled by the library's `scale`.
+jolty reads no metal or polysilicon over a level 3 diode's bulk, `LM`, `LP`, `WM` and `WP`, which no open kit sizes; nor ngspice's soft reverse recovery, `VP`, or its own self-heating, `RTH0` and `CTH0`, as a diode heats here on a thermal net ([Self-heating](#self-heating)).
 
-In a [noise analysis](simulation.md#noise), the series resistance makes thermal noise, `4kT/R` A²/Hz, and the junction's current `I` shot noise, `2q·|I|`, and flicker noise, `KF·|I|^AF/f`, `KF` the flicker coefficient and `AF` its exponent, `KF` and `AF` in SPICE.
+Away from the nominal temperature `Tn`, at temperature models 0 and 1 the saturation currents scale by `(T/Tn)^(XTI/n) · exp((T/Tn − 1) · Eg / (n · Vt))`, with `Eg` the energy gap, `XTI` its temperature exponent, `n` each one's emission coefficient and `Vt` the thermal voltage at `T`, the tunneling ones by `XTITUN`, `NTUN` and `KEG · Eg`; at temperature model 2 the energy gap follows Varshni's law, `Eg(T) = EG − GAP1 · T² / (T + GAP2)`, and `(T/Tn − 1) · Eg / Vt` becomes `Eg(Tn) / Vt(Tn) − Eg(T) / Vt`.
+At capacitance temperature model 0, the junction potentials and capacitances follow silicon's band gap, or at temperature model 2 the energy gap's; at 1, they move linearly from the nominal temperature by their own coefficients.
+The breakdown voltage falls by its temperature coefficient, in volts per kelvin at temperature model 0 and relative to itself at 1 and 2; the series resistances, the transit time and the grading coefficient follow their linear and quadratic coefficients, as in ngspice.
+Where ngspice departs from its own model, the sidewall's emission coefficient left out, a sidewall with a resistance of its own, a level 3 diode's copies, the recombination's conductance and `TLEVC` 1, jolty follows the model, as the [departures](departures.md) state.
+
+In a [noise analysis](simulation.md#noise), each series resistance makes thermal noise, `4kT/R` A²/Hz, and each junction's current `I`, the bottom's with the sidewall's beside it, shot noise, `2q·|I|`, and flicker noise, `KF·|I|^AF/f`, `KF` the flicker coefficient and `AF` its exponent, as in ngspice.
 
 ## JFET
 

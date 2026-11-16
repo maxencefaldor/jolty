@@ -1334,26 +1334,57 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `breakdown_current` | `0.001` | The current at the breakdown voltage, in amperes; default 1e-3. |
+| `breakdown_current` | `0.001` | The current at the breakdown voltage, in amperes, at least 0; default 1e-3. |
 | `breakdown_emission_coefficient` |  | The breakdown emission coefficient; the emission coefficient by default. |
-| `breakdown_temperature_coefficient` | `0` | How fast the breakdown voltage falls with temperature, in volts per kelvin; default 0. |
-| `breakdown_voltage` |  | The reverse breakdown voltage, in volts, positive; without it, the junction never breaks down. |
+| `breakdown_temperature_coefficient` | `0` | How fast the breakdown voltage falls with temperature: in volts per kelvin at temperature model 0, and per kelvin, relative to the breakdown voltage, at 1 and 2; default 0. |
+| `breakdown_voltage` |  | The reverse breakdown voltage, in volts, at least 0; without it, the junction never breaks down. |
+| `capacitance_temperature_model` | `0` | How the junction capacitances and potentials follow the temperature, SPICE's `TLEVC`; default 0. |
 | `depletion_coefficient` | `0.5` | The fraction of the junction potential above which the depletion capacitance is extended linearly, below 1; default 0.5. |
 | `emission_coefficient` | `1` | The emission coefficient; default 1. |
-| `energy_gap` | `1.11` | The energy gap that scales the saturation current with temperature, in volts; default 1.11, silicon's. |
+| `energy_gap` |  | The energy gap that scales the saturation currents with temperature, in volts; by default 1.11, silicon's, and at temperature model 2, where it is the gap at 0 K, 1.16. |
+| `energy_gap_alpha` | `0.000702` | Varshni's `α` of the energy gap at temperature model 2, in volts per kelvin; default 7.02e-4, silicon's. |
+| `energy_gap_beta` | `1108` | Varshni's `β` of the energy gap at temperature model 2, in kelvins; default 1108, silicon's. |
 | `flicker_coefficient` | `0` | The flicker noise coefficient, `KF`; default 0, no flicker noise. |
 | `flicker_exponent` | `1` | The power of the current in the flicker noise, `AF`; default 1. |
+| `forward_knee_current` |  | The forward knee current, in amperes, above which high injection halves the junction current's slope; without it, none. |
 | `grading_coefficient` | `0.5` | The grading coefficient of the junction, below 1; default 0.5. |
+| `grading_coefficient_quadratic_temperature_coefficient` | `0` | The grading coefficient's quadratic temperature coefficient, per kelvin squared; default 0. |
+| `grading_coefficient_temperature_coefficient` | `0` | The grading coefficient's linear temperature coefficient, per kelvin; default 0. |
 | `junction_capacitance` | `0` | The zero-bias junction capacitance, in farads; default 0. |
+| `junction_capacitance_temperature_coefficient` | `0` | The junction capacitance's linear temperature coefficient at capacitance temperature model 1, per kelvin; default 0. |
 | `junction_potential` | `1` | The junction potential, in volts; default 1. |
+| `junction_potential_temperature_coefficient` | `0` | How fast the junction potential falls with temperature at capacitance temperature model 1, in volts per kelvin; default 0. |
 | `nominal_temperature` | `300.15` | The temperature the parameters were measured at, in kelvins; default 27 °C. |
+| `recombination_emission_coefficient` | `2` | The recombination current's emission coefficient; default 2. |
+| `recombination_saturation_current` |  | The saturation current of the recombination in the depletion region, in amperes; without it, no recombination current. |
+| `reverse_knee_current` |  | The reverse knee current, in amperes, beyond which the reverse current's growth slows alike; without it, none. |
 | `saturation_current` | `1e-14` | The saturation current, in amperes; default 1e-14. |
-| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the saturation current's scaling; default 3. |
+| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the saturation currents' scaling; default 3. |
 | `series_resistance` | `0` | The series resistance, in ohms; default 0. |
+| `series_resistance_quadratic_temperature_coefficient` | `0` | The series resistances' quadratic temperature coefficient, per kelvin squared; default 0. |
+| `series_resistance_temperature_coefficient` | `0` | The series resistances' linear temperature coefficient, per kelvin; default 0. |
+| `sidewall_depletion_coefficient` | `0.5` | The fraction of the sidewall junction's potential above which its depletion capacitance is extended linearly, below 1; default 0.5. |
+| `sidewall_emission_coefficient` |  | The sidewall junction's emission coefficient; the emission coefficient by default. |
+| `sidewall_forward_knee_current` |  | The sidewall junction's forward knee current, in amperes; without it, none. |
+| `sidewall_grading_coefficient` | `0.33` | The sidewall junction's grading coefficient, below 1; default 0.33. |
+| `sidewall_junction_capacitance` | `0` | The sidewall junction's zero-bias capacitance, in farads; default 0. |
+| `sidewall_junction_capacitance_temperature_coefficient` | `0` | The sidewall junction capacitance's linear temperature coefficient at capacitance temperature model 1, per kelvin; default 0. |
+| `sidewall_junction_potential` | `1` | The sidewall junction's potential, in volts; default 1. |
+| `sidewall_junction_potential_temperature_coefficient` | `0` | How fast the sidewall junction potential falls with temperature at capacitance temperature model 1, in volts per kelvin; default 0. |
+| `sidewall_saturation_current` | `0` | The sidewall junction's saturation current, in amperes; default 0, no sidewall current. |
+| `sidewall_series_resistance` |  | The sidewall junction's own series resistance, in ohms, from the anode; without it, the sidewall sits beside the junction, behind the series resistance. |
+| `sidewall_tunneling_saturation_current` | `0` | The sidewall's tunneling saturation current, in amperes; default 0. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature_model` | `0` | How the saturation currents and the band gap follow the temperature, SPICE's `TLEV`; default 0. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 | `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
 | `transit_time` | `0` | The transit time, in seconds; default 0. |
+| `transit_time_quadratic_temperature_coefficient` | `0` | The transit time's quadratic temperature coefficient, per kelvin squared; default 0. |
+| `transit_time_temperature_coefficient` | `0` | The transit time's linear temperature coefficient, per kelvin; default 0. |
+| `tunneling_emission_coefficient` | `30` | The tunneling current's emission coefficient; default 30. |
+| `tunneling_energy_gap_factor` | `1` | The factor of the energy gap in the tunneling saturation currents' scaling; default 1. |
+| `tunneling_saturation_current` | `0` | The tunneling current's saturation current, in amperes; default 0, no tunneling. |
+| `tunneling_saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the tunneling saturation currents' scaling; default 3. |
 
 ## `foundry_mosfet`
 

@@ -2278,6 +2278,10 @@ def _semiconductor(
                 key: value * scale ** _SCALED.get(key, 0)
                 for key, value in instance.items()
             }
+        elif "d" in kinds:
+            # A level 3 diode scales its sizes by `scale` as it reads them, its masks'
+            # offsets in their own units (`diosetup.c`, lines 336 to 360).
+            instance["scale"] = library.options.get("scale", 1.0)
         card = library.model(rest[0], cards)
         if card is None and "nmos" in kinds:
             card = library.binned(rest[0], cards, instance, translation.scope)

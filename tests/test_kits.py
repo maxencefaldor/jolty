@@ -15,9 +15,20 @@ from typing import Final
 
 import numpy as np
 import pytest
+from pydantic import JsonValue
 
 from differential import SKIP, closest, compare
-from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
+from jolty import (
+    Builder,
+    Component,
+    Role,
+    Simulation,
+    _core,
+    component,
+    devices,
+    ir,
+    results,
+)
 from jolty.plan import (
     TIGHT,
     Ac,
@@ -696,6 +707,69 @@ FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE
 engine's Newton iteration stops once its step on a current lies within its absolute
 tolerance, so the two lie within twice it."""
 
+JUNCTION: Final = (1 - ngspice.same_kelvins(1.0)) * (
+    DRIVE / (_core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE)
+    + 1
+)
+"""How far apart a junction's current at `DRIVE` lies in the two engines at the same
+kelvins, relative to it, beyond `AGREEMENT`, 6.9e-6. The kits' tests run ngspice at the
+same kelvins, where BSIM4, which computes its thermal voltage with constants of its own,
+agrees; there the two engines' thermal voltages differ by 3.4e-7 of themselves, as their
+Boltzmann constants and elementary charges do (the guide's departures), and so does a
+junction's exponent, `v / (n·Vt)` less its saturation current's activation,
+`(T/Tn - 1) · Eg / (n·Vt)`: the first at most `DRIVE / Vt` at 27 °C, 19.3, and the
+second under 1, 0.5 at most at the kits' nominal temperatures of 25 °C to 30 °C."""
+
+
+def operating_point_departed(parameters: Mapping[str, JsonValue]) -> bool:
+    """Whether a diode of `parameters` departs from ngspice's at its operating point.
+
+    A sidewall without its own emission coefficient shares the junction's, and so does
+    its saturation current's temperature scaling in jolty, where ngspice scales it by an
+    emission coefficient of 1, as the guide's departures state: the two part away from
+    the nominal temperature where the junction's is not 1, as GF180MCU's `nwp_3p3`,
+    measured at 25 °C, by 3.3e-4 of its current at 27 °C.
+    """
+    nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
+    return (
+        parameters.get("sidewall_saturation_current", 0.0) != 0.0
+        and "sidewall_emission_coefficient" not in parameters
+        and parameters.get("emission_coefficient", 1.0) != 1.0
+        and nominal != _core.REFERENCE_TEMPERATURE
+    )
+
+
+def response_departed(parameters: Mapping[str, JsonValue]) -> bool:
+    """Whether a diode of `parameters` departs from ngspice's in its frequency response.
+
+    It departs where its operating point does, `operating_point_departed`; where it
+    recombines, as ngspice computes the recombination's conductance inexactly, and from
+    it the diffusion capacitance, as SG13G2's `dperim`, whose susceptance it moves by
+    1.4%; and where its capacitance temperature model is 1 and its nominal temperature
+    not 27 °C, as SKY130's 30 °C and GF180MCU's 25 °C, as ngspice moves its junctions'
+    potentials and capacitances from 27 °C rather than from it, by 0.3% to 1.4% of
+    SKY130's diodes' admittances at 27 °C. The guide's departures state each.
+    """
+    nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
+    return (
+        operating_point_departed(parameters)
+        or "recombination_saturation_current" in parameters
+        or (
+            parameters.get("capacitance_temperature_model") == 1
+            and nominal != _core.REFERENCE_TEMPERATURE
+        )
+    )
+
+
+def diodes(part: Component) -> list[Mapping[str, JsonValue]]:
+    """The parameters of every diode `part` holds, in any of its components."""
+    found = [
+        instance.parameters
+        for instance in part.definition.instances
+        if instance.of == ir.DeviceOf(model="diode")
+    ]
+    return found + [each for child in part.children for each in diodes(child)]
+
 
 @SKIP
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
@@ -707,7 +781,9 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     volts of each device's own, which senses its current, its other pins grounded; each
     device's current is compared at the operating point and from 1 kHz to 100 GHz with
     ngspice's, which reads the same libraries and places the same subcircuits, at the
-    same kelvins, but for the frequency response of a device of `AC_DEPARTED`.
+    same kelvins, but for the frequency response of a device of `AC_DEPARTED`, and what
+    of a diode's departs from ngspice's, `operating_point_departed` and
+    `response_departed`.
     """
     library = kits.read(kit, settings=kept)
     native = {
@@ -767,16 +843,21 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
+        held = diodes(driven[name])
+        tolerance = AGREEMENT + (JUNCTION if held else 0.0)
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
-        if any(model.startswith(AC_DEPARTED) for model in native[name].models):
+        if not any(operating_point_departed(each) for each in held):
+            assert abs(found - spice) <= tolerance * abs(spice) + FLOOR
+        if any(model.startswith(AC_DEPARTED) for model in native[name].models) or any(
+            response_departed(each) for each in held
+        ):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(
             response.values[:, column],
             spice_ac,
             rtol=0,
-            atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+            atol=tolerance * float(np.abs(spice_ac).max()) + FLOOR,
         )
 
 
@@ -786,21 +867,23 @@ QUOTED: Final = re.compile(r"=\s*\"")
 guide's departures state: SKY130's `res_generic_po`'s narrowing, 0.56% of its
 resistance."""
 
-CARDS: Final = {"r": "R", "c": "C"}
+CARDS: Final = {"r": "R", "c": "C", "d": "D"}
 """The types of model cards a bare element places in
-`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's: the
-letter of each one's element."""
+`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's and
+the diode's: the letter of each one's element."""
 
 
 @SKIP
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
 def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
-    """Each resistor's and capacitor's card the inventory finds native, as ngspice's.
+    """Each resistor's, capacitor's and diode's native card, as ngspice's.
 
     A bare element of each, which takes its value from its card's geometry and
     defaults, is driven as `test_every_native_device_agrees_with_ngspice` drives a
     device, at the operating point and from 1 kHz to 100 GHz; but for a card of a
-    value in double quotes outside braces, `QUOTED`, which ngspice drops.
+    value in double quotes outside braces, `QUOTED`, which ngspice drops, and what of a
+    diode's departs from ngspice's, `operating_point_departed` and
+    `response_departed`.
     """
     library = kits.read(kit, settings=kept)
     cards = [
@@ -856,12 +939,124 @@ def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) ->
         compatibility=kit.compatibility,
         temperature=ngspice.same_kelvins(celsius(27).value),
     )
-    for number in range(len(cards)):
+    held = {
+        instance.name: instance.parameters
+        for instance in bare.definition.instances
+        if instance.of == ir.DeviceOf(model="diode")
+    }
+    for number, (_, letter) in enumerate(cards):
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
+        diode = held.get(f"{letter}{number}")
+        tolerance = AGREEMENT + (JUNCTION if diode is not None else 0.0)
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        if diode is None or not operating_point_departed(diode):
+            assert abs(found - spice) <= tolerance * abs(spice) + FLOOR
+        if diode is not None and response_departed(diode):
+            continue
+        spice_ac = raw_response.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            response.values[:, column],
+            spice_ac,
+            rtol=0,
+            atol=tolerance * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
+EVERY_PART: Final = (
+    (
+        ".model sized d level=3 js=1e-2 n=1.3 rs=2e-10 cj=1e-3 vj=0.8 m=0.4 fc=0.6"
+        " tt=1e-9 ikf=1e9 ikr=1e3 jsw=1e-9 ns=1.1 cjsw=1e-10 php=0.6 mjsw=0.3 fcs=0.4"
+        " ikp=1e2 jtun=5e-2 jtunsw=1e-9 ntun=20 xtitun=2 keg=0.8 bv=5 ibv=1e-3"
+        " tcv=1e-3 tlev=2 eg=1.17 gap1=5e-4 gap2=1000 xti=2.5 trs=2e-3 trs2=1e-5"
+        " ttt1=1e-3 ttt2=1e-6 tm1=1e-3 tm2=1e-6 tlevc=1 cta=1e-3 ctp=2e-3 tpb=2e-3"
+        " tphp=1e-3"
+    ),
+    (
+        ".model behind d is=1e-14 n=1.1 rs=5 cjo=1e-12 jsw=2e-15 ns=1.4 rsw=40"
+        " cjsw=2e-13 ikf=1e-2 jtunsw=1e-15 bv=7 ibv=1e-4 nbv=1.5 tcv=2e-4 tlev=1"
+        " trs=1e-3 xti=2"
+    ),
+    (
+        ".model recombining d is=1e-14 rs=10 isr=1e-12 nr=2.2 m=0.35 vj=0.7 jsw=1e-15"
+        " ikr=1e-9 bv=8 ibv=1e-6"
+    ),
+)
+"""Cards of every part of ngspice's diode: one of level 3 sized by its width and length,
+its sidewall beside its junction, with knees, tunneling, `TLEV` 2 and `TLEVC` 1 at the
+default nominal temperature, 27 °C, where ngspice's capacitances are the model's; one
+whose sidewall lies behind a resistance of its own, at `TLEV` 1; and one that
+recombines, whose conductance ngspice computes inexactly, and whose sidewall, without
+`NS`, ngspice breaks down at a voltage it never sets, as the guide's departures state,
+which breaks down beyond the sweep."""
+
+EVERY_ELEMENT: Final = (
+    "D0 n0 0 sized w=1u l=2u",
+    "D1 n1 0 behind pj=1",
+    "D2 n2 0 recombining pj=1",
+)
+"""An element of each card of `EVERY_PART`, on nodes `n0` to `n2`."""
+
+
+@SKIP
+@pytest.mark.parametrize("hot", [False, True], ids=["27C", "85C"])
+def test_a_diode_of_every_part_agrees_with_ngspice(hot: bool) -> None:  # noqa: FBT001 - a parameter of the test
+    """Each diode of `EVERY_PART`, read as ngspice reads it, as ngspice's.
+
+    Each is driven as `test_every_native_device_agrees_with_ngspice` drives a device,
+    through a source of no volts of its own: its current swept from 6 V of reverse bias,
+    through its breakdown, to 0.75 V forward, each point within twice the relative
+    tolerance and the relative tolerance more, and its admittance from 1 kHz to 100 GHz
+    at 0.5 V, but for the recombining one's, whose conductance ngspice computes
+    inexactly; at 27 °C and at 85 °C, where ngspice's thermal voltage is jolty's, and so
+    its nominal temperature.
+    """
+    temperature = celsius(85 if hot else 27)
+    library = Library(temperature.value)
+    library.read(
+        "\n".join([*EVERY_PART, ".subckt every n0 n1 n2", *EVERY_ELEMENT, ".ends", ""]),
+        "every.lib",
+    )
+    part = library.component("every")
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(DRIVE * V), name="V0")
+        placed = c.place(part, name="X0")
+        c.connect(source.negative, placed["ground"], ground)
+        senses = []
+        for number in range(len(EVERY_ELEMENT)):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            c.connect(sense.negative, placed[f"n{number}"], name=f"n{number}")
+            senses.append(sense.positive)
+        c.connect(source.positive, *senses, name="drive")
+
+    simulation = Simulation(bench(), temperature=temperature)
+    sweep = simulation.run(DcSweep("V0", linear(-6 * V, 0.75 * V, 28)), TIGHT)
+    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    deck = ["* every part of a diode", *EVERY_PART, f"V0 drive 0 {DRIVE!r} ac 1"]
+    for number, element in enumerate(EVERY_ELEMENT):
+        deck += [f"VA{number} drive n{number} 0", element]
+    raw_sweep, raw_response = ngspice.runs(
+        deck,
+        ("dc V0 -6 0.75 0.25", "ac dec 1 1k 100g"),
+        temperature=temperature.value,
+    )
+    for number in range(len(EVERY_ELEMENT)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found, spice = sweep.values[:, column], raw_sweep.real(f"i(va{number})")
+        # In breakdown, ngspice's current carries its breakdown voltage's match too,
+        # within its relative tolerance of the breakdown current (`diotemp.c`, lines 230
+        # to 238), where jolty matches it to rounding.
+        np.testing.assert_allclose(
+            found, spice, rtol=AGREEMENT + ngspice.RELATIVE_TOLERANCE, atol=FLOOR
+        )
+        if number == len(EVERY_ELEMENT) - 1:
+            continue  # The recombining diode's conductance departs.
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(
             response.values[:, column],

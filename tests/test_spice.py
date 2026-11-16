@@ -359,6 +359,67 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
     assert read["J1"]["transconductance_parameter"] == pytest.approx(4e-4)
 
 
+def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it() -> (
+    None
+):
+    parts = library(
+        ".option scale=1u\n"
+        ".model d3 d level=3 js=1e-3 rs=2e-10 cj=1e-3 jsw=1e-9 cjsw=1e-10 rsw=1e-4"
+        " ik=1e5 ikr=0 ibv=1e3 bv=5 xw=0.5 tref=30 tlev=2 tlevc=1 scalm=1e-6\n"
+        ".model d1 d is=1e-14 jsw=1e-15 ibv=1e-3 bv=5 area=3 pj=2\n"
+        ".subckt parts a c\nD1 a c d3 w=1.5 l=3.5 m=2\nD2 a c d1 m=2\nD3 a c d1 w=1\n"
+        ".ends"
+    )
+    read = {
+        instance.name: instance.parameters
+        for instance in parts.component("parts").definition.instances
+    }
+    # Level 3: an area of (1.5 + 0.5)(3.5 + 0.5) µm², a perimeter of 2·2 + 2·4 µm,
+    # each times the copies once (`diosetup.c`, lines 336 and 337, where ngspice
+    # multiplies them again, as the guide's departures state); `IKR` of 0 is off, and
+    # the breakdown current scales with the area.
+    area, perimeter = 8e-12 * 2, 12e-6 * 2
+    assert read["D1"] == pytest.approx(
+        {
+            "saturation_current": 1e-3 * area,
+            "series_resistance": 2e-10 / area,
+            "junction_capacitance": 1e-3 * area,
+            "sidewall_saturation_current": 1e-9 * perimeter,
+            "sidewall_junction_capacitance": 1e-10 * perimeter,
+            "sidewall_series_resistance": 1e-4 / perimeter,
+            "forward_knee_current": 1e5 * area,
+            "breakdown_current": 1e3 * area,
+            "breakdown_voltage": 5.0,
+            "nominal_temperature": celsius(30).value,
+            "temperature_model": 2,
+            "capacitance_temperature_model": 1,
+        }
+    )
+    # Level 1: the card's area and perimeter where the element gives no size, and 1 and
+    # 0 where it gives a width; the breakdown current scales with the copies alone.
+    assert read["D2"] == pytest.approx(
+        {
+            "saturation_current": 1e-14 * 6,
+            "sidewall_saturation_current": 1e-15 * 4,
+            "breakdown_current": 2e-3,
+            "breakdown_voltage": 5.0,
+        }
+    )
+    assert read["D3"] == pytest.approx(
+        {
+            "saturation_current": 1e-14,
+            "breakdown_current": 1e-3,
+            "breakdown_voltage": 5.0,
+        }
+    )
+
+
+def test_a_level_3_diodes_metal_and_polysilicon_are_refused() -> None:
+    read = library(".model d d level=3 wm=1 lm=1\n.subckt one a c\nD1 a c d\n.ends")
+    with pytest.raises(SpiceError, match="no metal or polysilicon"):
+        read.component("one")
+
+
 @pytest.mark.parametrize("name", ["vaf", "var", "ikf", "ikr", "irb", "vtf"])
 def test_a_bipolar_parameter_infinite_at_zero_reads_as_infinite(name: str) -> None:
     # ngspice takes each as infinite where it is 0 (bjttemp.c:51-54 and 83-99,
@@ -417,7 +478,7 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
         (".subckt a x\nZ1 x 0 1\n.ends", "no element of letter `Z`"),
         (".subckt a x\nD1 x 0 DX\n.ends", "no model is named `DX`"),
         (".subckt a 0\nR1 0 0 1\n.ends", "a pin named `0`"),
-        (".model D1 D(IKF=5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `IKF`"),
+        (".model D1 D(VP=0.5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `VP`"),
         (".model M1 NMOS(LEVEL=2)\n.subckt a x\nM1 x x 0 0 M1\n.ends", "level 2"),
         (
             ".model RX RES(T_REL_LOCAL=5)\n.subckt a x\nR1 x 0 RX 1k\n.ends",
@@ -1717,13 +1778,14 @@ def test_a_capacitor_whose_value_reads_a_voltage_is_refused() -> None:
 
 def test_a_diodes_level_is_its_cards_and_its_area_positive() -> None:
     read = library(
-        ".model plain d level=1 is=1e-14\n.model geometric d level=3 is=1e-14\n"
-        ".subckt one a b\nD1 a b plain\n.ends\n.subckt three a b\nD1 a b geometric\n"
+        ".model plain d level=1 is=1e-14\n.model geometric d level=2 is=1e-14\n"
+        ".subckt one a b\nD1 a b plain\n.ends\n.subckt two a b\nD1 a b geometric\n"
         ".ends\n.subckt none a b\nD1 a b plain area=0\n.ends"
     )
     assert _devices(read.component("one"))["D1"][0] == "diode"
-    with pytest.raises(SpiceError, match="a diode of level 3; jolty models level 1"):
-        read.component("three")
+    # ngspice refuses level 2 too (`diosetup.c`, lines 38 to 42).
+    with pytest.raises(SpiceError, match="a diode of level 2; jolty models 1 and 3"):
+        read.component("two")
     with pytest.raises(SpiceError, match="area times its copies is positive, not 0"):
         read.component("none")
 

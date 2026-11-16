@@ -468,6 +468,14 @@ impl Rig<'_> {
         }
         Some(found)
     }
+
+    /// The row and column of each conductance [`Rig::exact`] finds for the instance made
+    /// with `parameters`, in its order.
+    #[must_use]
+    pub fn positions(&self, parameters: &jolty_ir::Parameters) -> Vec<(usize, usize)> {
+        let (_, _, pattern, _) = grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
+        pattern.positions().collect()
+    }
 }
 
 /// The excitation of an independent source of `model` with `parameters`, each terminal on

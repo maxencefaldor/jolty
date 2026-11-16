@@ -60,7 +60,9 @@ pub use kernel::controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use kernel::diode::{Diode, DiodeParameters};
+pub use kernel::diode::{
+    Diode, DiodeCapacitanceTemperatureModel, DiodeParameters, DiodeTemperatureModel,
+};
 pub use kernel::dual::Dual;
 pub use kernel::foundry::{FoundryMosfet, FoundryMosfetParameters};
 pub use kernel::heat::{Heating, Thermal};

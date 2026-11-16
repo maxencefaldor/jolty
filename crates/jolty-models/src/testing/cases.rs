@@ -19,6 +19,23 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[-6.0, 0.0],
     ),
     (
+        "diode",
+        r#"{"junction_capacitance": 1e-12, "transit_time": 1e-9, "forward_knee_current": 1e-3,
+                "recombination_saturation_current": 1e-13, "tunneling_saturation_current": 1e-13,
+                "sidewall_saturation_current": 2e-15, "sidewall_junction_capacitance": 2e-13,
+                "sidewall_forward_knee_current": 1e-4, "temperature_model": 2,
+                "capacitance_temperature_model": 1, "nominal_temperature": 290}"#,
+        &[0.65, 0.0],
+    ),
+    (
+        "diode",
+        r#"{"series_resistance": 20, "sidewall_series_resistance": 0.5,
+                "sidewall_saturation_current": 2e-15, "sidewall_junction_capacitance": 2e-13,
+                "sidewall_tunneling_saturation_current": 1e-14, "reverse_knee_current": 1e-12,
+                "breakdown_voltage": 4}"#,
+        &[-4.5, 0.0, -4.4, -4.45, 0.1],
+    ),
+    (
         "mosfet",
         r#"{"oxide_thickness": 2e-8}"#,
         &[3.0, 2.0, 0.0, 0.0],
