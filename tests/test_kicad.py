@@ -24,7 +24,7 @@ PARTS = Catalog(
     currency="USD",
     parts=(
         Part(
-            device="resistor",
+            kind="resistor",
             value=4.7e3,
             tolerance=0.01,
             price=0.01,
@@ -32,7 +32,7 @@ PARTS = Catalog(
             footprint="Resistor_SMD:R_0603_1608Metric",
         ),
         Part(
-            device="resistor",
+            kind="resistor",
             value=10e3,
             tolerance=0.01,
             price=0.01,
@@ -40,7 +40,7 @@ PARTS = Catalog(
             footprint="Resistor_SMD:R_0603_1608Metric",
         ),
         Part(
-            device="capacitor",
+            kind="capacitor",
             value=1e-9,
             tolerance=0.1,
             price=0.02,

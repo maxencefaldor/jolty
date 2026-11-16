@@ -14,11 +14,11 @@ from jolty.units import V, kohm, nF
 CATALOG = Catalog(
     currency="USD",
     parts=(
-        Part(device="resistor", value=1e3, tolerance=0.01, price=0.01),
-        Part(device="resistor", value=1e3, tolerance=0.001, price=0.08),
-        Part(device="resistor", value=1e3, tolerance=0.05, price=0.005),
-        Part(device="resistor", value=4.7e3, tolerance=0.01, price=0.01),
-        Part(device="capacitor", value=1e-9, tolerance=0.1, price=0.02, number="C1N"),
+        Part(kind="resistor", value=1e3, tolerance=0.01, price=0.01),
+        Part(kind="resistor", value=1e3, tolerance=0.001, price=0.08),
+        Part(kind="resistor", value=1e3, tolerance=0.05, price=0.005),
+        Part(kind="resistor", value=4.7e3, tolerance=0.01, price=0.01),
+        Part(kind="capacitor", value=1e-9, tolerance=0.1, price=0.02, number="C1N"),
     ),
 )
 
@@ -137,7 +137,7 @@ NUMBERED = Catalog(
         Part(number="IRF511", price=1.1, package="TO-220AB"),
         Part(number="1N4148", price=0.01, lifecycle="obsolete"),
         Part(
-            device="resistor",
+            kind="resistor",
             value=1e3,
             tolerance=0.01,
             price=0.003,
@@ -145,9 +145,9 @@ NUMBERED = Catalog(
             package="0603",
             lifecycle="not-recommended",
         ),
-        Part(device="resistor", value=4.7e3, tolerance=0.01, price=0.001),
+        Part(kind="resistor", value=4.7e3, tolerance=0.01, price=0.001),
         Part(
-            device="resistor",
+            kind="resistor",
             value=4.7e3,
             tolerance=0.01,
             price=0.0005,
@@ -236,8 +236,8 @@ def test_an_obsolete_part_of_a_value_is_no_part_of_it() -> None:
 
 
 def test_a_part_states_a_value_or_a_number() -> None:
-    with pytest.raises(ValueError, match="device, value and tolerance together"):
-        Part(device="resistor", value=1e3, price=0.01)
+    with pytest.raises(ValueError, match="kind, value and tolerance together"):
+        Part(kind="resistor", value=1e3, price=0.01)
     with pytest.raises(ValueError, match="or a number"):
         Part(price=0.01)
     with pytest.raises(ValueError, match="neither empty nor spaced"):

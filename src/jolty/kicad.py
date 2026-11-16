@@ -89,8 +89,8 @@ class Footprint(_Model):
     def value(self) -> str:
         """Its part's value and unit, such as 4.7 kΩ, or else its maker's number."""
         part = self.part
-        if part.device is not None and part.value is not None:
-            return format_si(part.value, catalog.SYMBOLS[part.device])
+        if part.kind is not None and part.value is not None:
+            return format_si(part.value, catalog.SYMBOLS[part.kind])
         return part.number or ""
 
 

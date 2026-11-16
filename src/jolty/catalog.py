@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from jolty import _core, ir
 from jolty.units import format_si
 
-type Device = Literal["resistor", "capacitor", "inductor"]
+type PartKind = Literal["resistor", "capacitor", "inductor"]
 """A device a catalog prices."""
 
 type Series = Literal["E3", "E6", "E12", "E24", "E48", "E96", "E192"]
@@ -44,14 +44,14 @@ type Lifecycle = Literal["active", "not-recommended", "obsolete"]
 """Where a part stands in its maker's lifecycle: made, made but not recommended for new
 designs, or no longer made."""
 
-VALUED: Final[dict[Device, str]] = {
+VALUED: Final[dict[PartKind, str]] = {
     "resistor": "resistance",
     "capacitor": "capacitance",
     "inductor": "inductance",
 }
 """The parameter that holds the value of each device a catalog prices."""
 
-SYMBOLS: Final[dict[Device, str]] = {
+SYMBOLS: Final[dict[PartKind, str]] = {
     "resistor": "Ω",
     "capacitor": "F",
     "inductor": "H",
@@ -139,9 +139,7 @@ class Part(_Model):
     footprint and pins place it on a board, as a [KiCad netlist][jolty.kicad] writes it.
     """
 
-    device: Device | None = Field(
-        default=None, exclude_if=lambda device: device is None
-    )
+    kind: PartKind | None = Field(default=None, exclude_if=lambda kind: kind is None)
     value: float | None = Field(
         default=None,
         gt=0,
@@ -186,14 +184,14 @@ class Part(_Model):
     @model_validator(mode="after")
     def _identified(self) -> Self:
         """Holds a part to a device, a value and a tolerance together, or a number."""
-        valued = (self.device, self.value, self.tolerance)
+        valued = (self.kind, self.value, self.tolerance)
         if any(each is None for each in valued) and any(
             each is not None for each in valued
         ):
-            message = "a part states its device, value and tolerance together"
+            message = "a part states its kind, value and tolerance together"
             raise ValueError(message)
-        if self.device is None and self.number is None:
-            message = "a part states a device, value and tolerance, or a number"
+        if self.kind is None and self.number is None:
+            message = "a part states a kind, value and tolerance, or a number"
             raise ValueError(message)
         for terminal, pads in (self.pins or {}).items():
             if len(set(pads)) < len(pads):
@@ -209,9 +207,9 @@ class Part(_Model):
     def describe(self) -> str:
         """The part as text, its price aside."""
         said = []
-        if self.device is not None and self.value is not None:
+        if self.kind is not None and self.value is not None:
             said.append(
-                f"{self.device} of {format_si(self.value, SYMBOLS[self.device])} "
+                f"{self.kind} of {format_si(self.value, SYMBOLS[self.kind])} "
                 f"within {self.tolerance:.6g}"
             )
         if self.number is not None:
@@ -227,7 +225,7 @@ class Catalog(_Model):
     """The parts a circuit can be built from, priced in one currency."""
 
     format: Literal["jolty-catalog"] = "jolty-catalog"
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     currency: str = Field(description="The currency of every price, such as USD.")
     parts: tuple[Part, ...]
 
@@ -240,27 +238,27 @@ class Catalog(_Model):
         """Writes the catalog to `path` as JSON."""
         path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    def cheapest(self, device: Device, value: float, tolerance: float) -> Part | None:
-        """The cheapest orderable part of `device` of `value`, within `tolerance`.
+    def cheapest(self, kind: PartKind, value: float, tolerance: float) -> Part | None:
+        """The cheapest orderable part of `kind` of `value`, within `tolerance`.
 
         Of parts at one price, the first listed. None when no part matches.
         """
         return _cheapest(
-            part for part in self.matching(device, value, tolerance) if part.orderable
+            part for part in self.matching(kind, value, tolerance) if part.orderable
         )
 
     def matching(
-        self, device: Device, value: float, tolerance: float
+        self, kind: PartKind, value: float, tolerance: float
     ) -> tuple[Part, ...]:
-        """Every part of `device` of `value` within `tolerance`, orderable or not."""
+        """Every part of `kind` of `value` within `tolerance`, orderable or not."""
         return tuple(
-            part for part, held in self._valued(device, tolerance) if _same(held, value)
+            part for part, held in self._valued(kind, tolerance) if _same(held, value)
         )
 
-    def values(self, device: Device, tolerance: float) -> tuple[float, ...]:
-        """Each value of `device` an orderable part within `tolerance` has, in order."""
+    def values(self, kind: PartKind, tolerance: float) -> tuple[float, ...]:
+        """Each value of `kind` an orderable part within `tolerance` has, in order."""
         found = sorted(
-            held for part, held in self._valued(device, tolerance) if part.orderable
+            held for part, held in self._valued(kind, tolerance) if part.orderable
         )
         distinct: list[float] = []
         for value in found:
@@ -285,7 +283,7 @@ class Catalog(_Model):
         )
         match model:
             case "resistor" | "capacitor" | "inductor":
-                kind: Device = model
+                kind: PartKind = model
             case _:
                 return (
                     f"a {model} is priced by its part number alone, and it states none"
@@ -305,11 +303,11 @@ class Catalog(_Model):
             return f"every {described} in the catalog is obsolete"
         return f"no {described} is in the catalog"
 
-    def _valued(self, device: Device, tolerance: float) -> Iterator[tuple[Part, float]]:
-        """Each part of `device` within `tolerance`, orderable or not, and its value."""
+    def _valued(self, kind: PartKind, tolerance: float) -> Iterator[tuple[Part, float]]:
+        """Each part of `kind` within `tolerance`, orderable or not, and its value."""
         for part in self.parts:
             if (
-                part.device == device
+                part.kind == kind
                 and part.value is not None
                 and part.tolerance is not None
                 and part.tolerance <= tolerance * (1 + 1e-9)
@@ -416,7 +414,7 @@ def built(
                 yield path, instance
 
 
-def _valued(instance: ir.Instance, kind: Device) -> tuple[float, float] | str:
+def _valued(instance: ir.Instance, kind: PartKind) -> tuple[float, float] | str:
     """The value and the tolerance a part of `instance` must have, or why none has."""
     parameter = VALUED[kind]
     value = instance.parameters.get(parameter)
@@ -456,15 +454,15 @@ def _numbered(catalog: Catalog, instance: ir.Instance, number: str) -> Part | st
 
 def _fits(part: Part, instance: ir.Instance) -> bool:
     """Whether `part`, numbered as `instance` is, builds it as a device would."""
-    if part.device is None or part.value is None or part.tolerance is None:
+    if part.kind is None or part.value is None or part.tolerance is None:
         return True
-    if instance.of != ir.DeviceOf(model=part.device):
+    if instance.of != ir.DeviceOf(model=part.kind):
         return False
-    found = _valued(instance, part.device)
+    found = _valued(instance, part.kind)
     if isinstance(found, tuple):
         value, tolerance = found
         return _same(part.value, value) and part.tolerance <= tolerance * (1 + 1e-9)
-    value = instance.parameters.get(VALUED[part.device])
+    value = instance.parameters.get(VALUED[part.kind])
     return isinstance(value, float | int) and _same(part.value, float(value))
 
 

@@ -48,11 +48,11 @@ A catalog file holds JSON: a currency, then parts, each at a unit price, and eac
 ```json
 {
   "format": "jolty-catalog",
-  "version": 1,
+  "version": 2,
   "currency": "USD",
   "parts": [
-    {"device": "resistor", "value": 4700.0, "tolerance": 0.01, "price": 0.004, "number": "RC0603FR-074K7L", "package": "0603", "footprint": "Resistor_SMD:R_0603_1608Metric"},
-    {"device": "capacitor", "value": 1e-9, "tolerance": 0.1, "price": 0.003},
+    {"kind": "resistor", "value": 4700.0, "tolerance": 0.01, "price": 0.004, "number": "RC0603FR-074K7L", "package": "0603", "footprint": "Resistor_SMD:R_0603_1608Metric"},
+    {"kind": "capacitor", "value": 1e-9, "tolerance": 0.1, "price": 0.003},
     {"number": "2N3904", "price": 0.12, "package": "TO-92", "footprint": "Package_TO_SOT_THT:TO-92_Inline", "pins": {"emitter": ["1"], "base": ["2"], "collector": ["3"]}},
     {"number": "IRF511", "price": 1.1, "package": "TO-220AB", "lifecycle": "obsolete"}
   ]
