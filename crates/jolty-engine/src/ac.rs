@@ -32,7 +32,7 @@ pub struct AcResult {
     /// The phasor of every unknown at each frequency, per volt or ampere of excitation.
     pub values: Vec<Vec<Complex64>>,
     /// The phasor of the current into each terminal its options record at each frequency,
-    /// per volt or ampere of excitation, in the order of an [`Observation`](crate::Observation)'s
+    /// per volt or ampere of excitation, in the order of a [`RecordedValues`](crate::RecordedValues)'s
     /// currents.
     pub currents: Vec<Vec<Complex64>>,
 }

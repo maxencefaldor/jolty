@@ -175,7 +175,7 @@ def _ground(circuit: ir.Circuit) -> str:
     )
 
 
-type _Observed = (
+type _RecordedResult = (
     results.OperatingPointResult | results.DcSweepResult | results.TransientResult
 )
 
@@ -204,7 +204,7 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
     return None
 
 
-def _rows(result: _Observed, field: str) -> np.ndarray:
+def _rows(result: _RecordedResult, field: str) -> np.ndarray:
     """One of what every device did, a row per point even at an operating point."""
     values = np.asarray(getattr(result, field))
     return (
@@ -248,7 +248,7 @@ def _currents(
     return terminals
 
 
-def _state(result: _Observed, frames: np.ndarray) -> dict[str, JsonValue]:
+def _state(result: _RecordedResult, frames: np.ndarray) -> dict[str, JsonValue]:
     """Each recorded device's charges, variables and conductances, at `frames`.
 
     A device's charges are its terminals', and its conductances those between two of

@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Conditions, Observation, Observations, Options, Parallelism, Record,
-    Simulator, TransientResult,
+    Analysis, AnalysisResult, Conditions, Options, Parallelism, Record, RecordedSeries,
+    RecordedValues, Simulator, TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::{
@@ -160,13 +160,13 @@ fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
             {
                 AnalysisResult::OperatingPoint(mut point) => {
                     spied(&point.observation.variables);
-                    point.observation = Observation::default();
+                    point.observation = RecordedValues::default();
                     format!("{point:?}")
                 }
                 AnalysisResult::Transient(waveforms) => {
                     spied(&waveforms.observations.variables);
                     let waveforms = TransientResult {
-                        observations: Observations::default(),
+                        observations: RecordedSeries::default(),
                         ..waveforms
                     };
                     format!("{waveforms:?}")

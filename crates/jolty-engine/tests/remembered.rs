@@ -7,9 +7,10 @@ use std::path::Path;
 
 use jolty_engine::{
     Ac, AcResult, Analysis, AnalysisResult, Conditions, DcSweep, DcSweepResult, Differentiated,
-    Method, Noise, NoiseResult, Observation, Observations, OperatingPointResult, OperatingPoints,
-    Options, PoleZero, PoleZeroResult, Record, Sensitivity, SensitivityResult, Simulator,
-    StabilityResult, TransferFunction, TransferFunctionResult, Transient, TransientResult, Work,
+    Method, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options, PoleZero,
+    PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult,
+    Simulator, StabilityResult, TransferFunction, TransferFunctionResult, Transient,
+    TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -85,7 +86,7 @@ fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
 /// `outcome` without what it records of the devices.
 fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
     let point = |point: OperatingPointResult| OperatingPointResult {
-        observation: Observation::default(),
+        observation: RecordedValues::default(),
         ..point
     };
     match outcome {
@@ -94,7 +95,7 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             AnalysisResult::OperatingPoints(found.into_iter().map(point).collect())
         }
         AnalysisResult::DcSweep(sweep) => AnalysisResult::DcSweep(DcSweepResult {
-            observations: Observations::default(),
+            observations: RecordedSeries::default(),
             ..sweep
         }),
         AnalysisResult::Ac(response) => AnalysisResult::Ac(AcResult {
@@ -103,7 +104,7 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             ..response
         }),
         AnalysisResult::Transient(waveforms) => AnalysisResult::Transient(TransientResult {
-            observations: Observations::default(),
+            observations: RecordedSeries::default(),
             ..waveforms
         }),
         AnalysisResult::Sensitivity(found) => AnalysisResult::Sensitivity(SensitivityResult {

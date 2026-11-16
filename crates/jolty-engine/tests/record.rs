@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 
 use jolty_engine::{
-    Ac, Composite, Conditions, DcSweep, Method, Observation, Observed, Options, Record, Recorded,
-    Simulator, Transient,
+    Ac, Composite, Conditions, DcSweep, Method, Options, Record, RecordedValues, RecordedView,
+    Recording, Simulator, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -75,7 +75,7 @@ fn tight() -> Options {
     }
 }
 
-/// The names of the values every observation holds under `record`, as [`Recorded`] lays
+/// The names of the values every observation holds under `record`, as [`Recording`] lays
 /// them out: each terminal of each recorded device, such as `R1.a`, then each recorded
 /// composite terminal; each pair of each recorded device's unknowns, its terminals then its
 /// internal unknowns, row by row; and each recorded device's variables.
@@ -230,7 +230,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
          "terminals": {"a": "out", "b": "0"}}
     ]));
     let point = simulator.operating_point(&everything()).unwrap();
-    let Observation {
+    let RecordedValues {
         currents, charges, ..
     } = &point.observation;
     let current = |name: &str| currents[terminal(&simulator, name)];
@@ -390,7 +390,7 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
          "terminals": {"drain": "d", "gate": "g", "source": "0", "bulk": "0"}}
     ]));
     let point = simulator.operating_point(&tight()).unwrap();
-    let Observation {
+    let RecordedValues {
         conductances,
         capacitances,
         variables,
@@ -542,7 +542,7 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
         ..tight()
     };
     let alone = simulator.operating_point(&options).unwrap();
-    let Observation {
+    let RecordedValues {
         currents,
         charges,
         conductances,
@@ -592,7 +592,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         .into_iter()
         .map(|name| columns.terminal(name))
         .collect();
-    let pin = |index: usize, found: Observed<'_>| -> f64 { found.currents[pins[index]] };
+    let pin = |index: usize, found: RecordedView<'_>| -> f64 { found.currents[pins[index]] };
     let fraction = columns.derivative("U1:y:current", "U1:y.supply");
     let resistor = columns.terminal("R1.a");
     let (mut high, mut low) = (false, false);
@@ -629,9 +629,9 @@ fn pulse() -> Transient {
 #[test]
 fn nothing_beyond_the_unknowns_is_recorded_by_default() {
     let mut simulator = simulator(&bench());
-    assert_eq!(simulator.recorded(&Record::default()), Recorded::default());
+    assert_eq!(simulator.recorded(&Record::default()), Recording::default());
     let point = simulator.operating_point(&Options::default()).unwrap();
-    assert_eq!(point.observation, Observation::default());
+    assert_eq!(point.observation, RecordedValues::default());
     let waveforms = simulator.transient(&pulse(), &Options::default()).unwrap();
     let observations = &waveforms.observations;
     assert_eq!(observations.points, waveforms.times.len());

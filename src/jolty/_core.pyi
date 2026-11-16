@@ -30,14 +30,14 @@ type Transfer = tuple[Signal, Signal | None] | None
 type Window = tuple[float | None, float | None]
 type Nature = Literal["voltage", "current", "temperature", "state"]
 
-class Observed(TypedDict):
+class RecordedValues(TypedDict):
     currents: npt.NDArray[np.float64]
     charges: npt.NDArray[np.float64]
     conductances: npt.NDArray[np.float64]
     capacitances: npt.NDArray[np.float64]
     variables: npt.NDArray[np.float64]
 
-class SolvedPoint(Observed):
+class SolvedPoint(RecordedValues):
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
@@ -49,7 +49,7 @@ class OperatingPointsResult(TypedDict):
     kind: Literal["operating_points"]
     points: list[SolvedPoint]
 
-class DcSweepResult(Observed):
+class DcSweepResult(RecordedValues):
     kind: Literal["dc_sweep"]
     source: str
     parameter: str | None
@@ -93,7 +93,7 @@ class Statistics(TypedDict):
     work: Work
     profile: Profile | None
 
-class TransientResult(Observed):
+class TransientResult(RecordedValues):
     kind: Literal["transient"]
     times: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]

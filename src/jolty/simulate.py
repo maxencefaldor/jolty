@@ -1886,8 +1886,8 @@ def _interpolated(times: results.Real, values: results.Real, time: float) -> flo
 
 
 def _observed(
-    outcome: _core.Observed, recording: results.Recording
-) -> results.Observed:
+    outcome: _core.RecordedValues, recording: results.Recording
+) -> results.RecordedValues:
     """What the devices `recording` names did in `outcome`, as a result's fields."""
     return {
         "recording": recording,

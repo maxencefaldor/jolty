@@ -18,8 +18,8 @@ use crate::elaborate::ElaborationError;
 use crate::elaborated::{Devices, Elaborated, Origin, Origins};
 use crate::logic::Events;
 use crate::newton::Workspace;
-use crate::observe::Observer;
 use crate::operating_point::Remembered;
+use crate::record::Observer;
 use crate::solver::Solver;
 use crate::{ParameterId, Values};
 

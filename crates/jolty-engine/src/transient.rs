@@ -12,14 +12,14 @@ use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{
     Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, all, each_chunk, pieces, step_matrix,
 };
-use crate::observe::{Observer, Read};
 use crate::options::{Inside, NUMBERS_PER_GIB};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
+use crate::record::{Observer, Read};
 use crate::sensitivity::Forward;
 use crate::{
-    Observation, Observations, Options, Profile, Rejection, SimulationError, Simulator, Strategy,
-    Work,
+    Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError, Simulator,
+    Strategy, Work,
 };
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
@@ -75,7 +75,7 @@ pub struct TransientResult {
     /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
     /// variables. A current includes its charge's derivative, by the step's integration
     /// formula.
-    pub observations: Observations,
+    pub observations: RecordedSeries,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
     pub logic: Vec<Vec<(f64, LogicLevel)>>,
@@ -345,7 +345,7 @@ struct Point {
     /// Whether the integration restarts after it.
     restarted: bool,
     /// What every recorded device did there.
-    found: Observation,
+    found: RecordedValues,
 }
 
 /// The first step after a corner, solved and through the logic but not yet accepted.
@@ -674,7 +674,7 @@ impl Simulator {
             x: initial,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
-        let mut observed = Observations::default();
+        let mut observed = RecordedSeries::default();
         observed.push(&self.record(|observer| observer.start(&start)));
         while stepper.time < transient.stop {
             if let Some(change) = self.state.events.next_analog_change(&self.elaborated.logic) {
@@ -722,7 +722,7 @@ impl Simulator {
     }
 
     /// What `read` reads of the recorded devices, its time counted as recording.
-    fn record(&mut self, read: impl FnOnce(&mut Observer) -> Observation) -> Observation {
+    fn record(&mut self, read: impl FnOnce(&mut Observer) -> RecordedValues) -> RecordedValues {
         let previous = self.state.workspace.meter.enter(Activity::Recording);
         let found = read(&mut self.state.observer);
         self.state.workspace.meter.leave(previous);

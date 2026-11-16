@@ -23,7 +23,9 @@ use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::solver::Solver;
 use crate::state::{Held, Warm};
-use crate::{Observation, Options, Parallelism, ParameterId, SimulationError, Simulator, Values};
+use crate::{
+    Options, Parallelism, ParameterId, RecordedValues, SimulationError, Simulator, Values,
+};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_STEPPED: f64 = 1e-2;
@@ -63,7 +65,7 @@ pub struct OperatingPointResult {
     pub values: Vec<f64>,
     /// What the devices its options record did: the current into each recorded terminal
     /// and the charge it holds, and the recorded devices' derivatives and variables.
-    pub observation: Observation,
+    pub observation: RecordedValues,
     /// The level of every logic net, in the simulator's order.
     pub logic: Vec<LogicLevel>,
     /// The strategy that found the solution.

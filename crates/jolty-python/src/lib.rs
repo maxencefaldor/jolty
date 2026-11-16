@@ -15,8 +15,8 @@ mod measure;
 use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Derivatives, Location, NoiseResult, Observation, Observations,
-    OperatingPointResult, Options, PoleZeroResult, Record, Statistics,
+    Analysis, AnalysisResult, Derivatives, Location, NoiseResult, OperatingPointResult, Options,
+    PoleZeroResult, Record, RecordedSeries, RecordedValues, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -740,7 +740,7 @@ fn add_operating_point(
         "logic",
         PyArray1::from_vec(result.py(), numbers(&operating_point.logic)),
     )?;
-    let Observation {
+    let RecordedValues {
         currents,
         charges,
         conductances,
@@ -759,7 +759,7 @@ fn add_operating_point(
 /// Adds what the recorded devices did at each point to `result`: the terminals' `currents`
 /// and `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`,
 /// one row per point.
-fn add_observations(result: &Bound<'_, PyDict>, observations: Observations) -> PyResult<()> {
+fn add_observations(result: &Bound<'_, PyDict>, observations: RecordedSeries) -> PyResult<()> {
     let py = result.py();
     let points = observations.points;
     // Each quantity's rows already lie end to end, so the arrays take them without a copy.

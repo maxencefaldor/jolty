@@ -1032,7 +1032,7 @@ def _point_arrays(
 
 def _observed(
     data: Mapping[str, np.ndarray], name: str, recording: results.Recording
-) -> results.Observed:
+) -> results.RecordedValues:
     """What the devices `recording` names did in the analysis stored under `name`."""
     return {
         "recording": recording,

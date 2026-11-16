@@ -356,7 +356,7 @@ def _unrecorded(
     raise KeyError(message)
 
 
-class Observed(TypedDict):
+class RecordedValues(TypedDict):
     """What the recorded devices did, as fields of a point, a sweep or a transient."""
 
     recording: Recording

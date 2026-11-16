@@ -332,7 +332,7 @@ fn the_groups_assemble_what_their_instances_do_as_devices() {
 /// `tests/kernel_corpus.py` writes them, and `tests/test_kernel_corpus.py` checks they
 /// still are.
 #[derive(Deserialize)]
-struct Recorded {
+struct Recording {
     circuit: serde_json::Value,
     temperature: f64,
     overrides: BTreeMap<String, Parameters>,
@@ -351,7 +351,7 @@ struct Recorded {
 fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/kernels.json");
     let text = std::fs::read_to_string(path).expect("the corpus");
-    let recorded: Vec<Recorded> = serde_json::from_str(&text).expect("the corpus reads");
+    let recorded: Vec<Recording> = serde_json::from_str(&text).expect("the corpus reads");
     let mut all = Check::default();
     for record in &recorded {
         let circuit = Circuit::from_json(&record.circuit.to_string()).expect("a circuit");

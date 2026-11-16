@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::newton::Mode;
 use crate::operating_point::Solved;
 use crate::state::Held;
-use crate::{Observations, OperatingPointResult, Options, SimulationError, Simulator, Strategy};
+use crate::{OperatingPointResult, Options, RecordedSeries, SimulationError, Simulator, Strategy};
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
@@ -52,7 +52,7 @@ pub struct DcSweepResult {
     /// What the devices its options record did at each level: the current into each
     /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
     /// variables.
-    pub observations: Observations,
+    pub observations: RecordedSeries,
     /// The level of every logic net at each level.
     pub logic: Vec<Vec<LogicLevel>>,
 }
@@ -100,7 +100,7 @@ impl Simulator {
             self.hold(swept, None)?;
             let points = result?;
             let mut values = Vec::with_capacity(points.len());
-            let mut observations = Observations::default();
+            let mut observations = RecordedSeries::default();
             let mut logic = Vec::with_capacity(points.len());
             for point in points {
                 values.push(point.values);

@@ -29,9 +29,9 @@ use crate::elaborated::Elaborated;
 use crate::profile::Activity;
 use crate::{Options, Record, SimulationError, Simulator};
 
-/// What the recorded devices did at one solution, laid out as [`Recorded`] says.
+/// What the recorded devices did at one solution, laid out as [`Recording`] says.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Observation {
+pub struct RecordedValues {
     /// The current into each recorded terminal, in amperes: each terminal of each recorded
     /// device, then each recorded terminal of a component instance or a logic device.
     pub currents: Vec<f64>,
@@ -51,41 +51,41 @@ pub struct Observation {
 /// What the recorded devices did at each point of a sweep or a transient.
 ///
 /// Each quantity's rows lie end to end, one row per point, so a long analysis holds each
-/// quantity in one allocation; [`Observations::point`] views one point's rows.
+/// quantity in one allocation; [`RecordedSeries::point`] views one point's rows.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Observations {
+pub struct RecordedSeries {
     /// The number of points.
     pub points: usize,
-    /// Each point's [`Observation::currents`], one after another.
+    /// Each point's [`RecordedValues::currents`], one after another.
     pub currents: Vec<f64>,
-    /// Each point's [`Observation::charges`], one after another.
+    /// Each point's [`RecordedValues::charges`], one after another.
     pub charges: Vec<f64>,
-    /// Each point's [`Observation::conductances`], one after another.
+    /// Each point's [`RecordedValues::conductances`], one after another.
     pub conductances: Vec<f64>,
-    /// Each point's [`Observation::capacitances`], one after another.
+    /// Each point's [`RecordedValues::capacitances`], one after another.
     pub capacitances: Vec<f64>,
-    /// Each point's [`Observation::variables`], one after another.
+    /// Each point's [`RecordedValues::variables`], one after another.
     pub variables: Vec<f64>,
 }
 
-/// What the recorded devices did at one point of [`Observations`], as views of its rows.
+/// What the recorded devices did at one point of [`RecordedSeries`], as views of its rows.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Observed<'a> {
-    /// The current into each recorded terminal, as [`Observation::currents`].
+pub struct RecordedView<'a> {
+    /// The current into each recorded terminal, as [`RecordedValues::currents`].
     pub currents: &'a [f64],
-    /// The charge each recorded terminal holds, as [`Observation::charges`].
+    /// The charge each recorded terminal holds, as [`RecordedValues::charges`].
     pub charges: &'a [f64],
-    /// The derivatives of the residuals, as [`Observation::conductances`].
+    /// The derivatives of the residuals, as [`RecordedValues::conductances`].
     pub conductances: &'a [f64],
-    /// The derivatives of the charges, as [`Observation::capacitances`].
+    /// The derivatives of the charges, as [`RecordedValues::capacitances`].
     pub capacitances: &'a [f64],
-    /// The value of each variable, as [`Observation::variables`].
+    /// The value of each variable, as [`RecordedValues::variables`].
     pub variables: &'a [f64],
 }
 
-impl Observations {
+impl RecordedSeries {
     /// Appends what the recorded devices did at one more point.
-    pub fn push(&mut self, point: &Observation) {
+    pub fn push(&mut self, point: &RecordedValues) {
         self.points += 1;
         self.currents.extend_from_slice(&point.currents);
         self.charges.extend_from_slice(&point.charges);
@@ -98,16 +98,16 @@ impl Observations {
     ///
     /// # Panics
     ///
-    /// When `index` is not below [`Observations::points`].
+    /// When `index` is not below [`RecordedSeries::points`].
     #[must_use]
-    pub fn point(&self, index: usize) -> Observed<'_> {
+    pub fn point(&self, index: usize) -> RecordedView<'_> {
         assert!(index < self.points, "no point {index} of {}", self.points);
         let points = self.points;
         let row = |values: &[f64]| -> Range<usize> {
             let width = values.len() / points;
             index * width..(index + 1) * width
         };
-        Observed {
+        RecordedView {
             currents: &self.currents[row(&self.currents)],
             charges: &self.charges[row(&self.charges)],
             conductances: &self.conductances[row(&self.conductances)],
@@ -117,12 +117,12 @@ impl Observations {
     }
 
     /// What the recorded devices did at each point, in order.
-    pub fn iter(&self) -> impl Iterator<Item = Observed<'_>> {
+    pub fn iter(&self) -> impl Iterator<Item = RecordedView<'_>> {
         (0..self.points).map(|index| self.point(index))
     }
 }
 
-/// What a [`Record`] keeps of a circuit's devices, and where every [`Observation`] of an
+/// What a [`Record`] keeps of a circuit's devices, and where every [`RecordedValues`] of an
 /// analysis run with it holds each value.
 ///
 /// An observation's currents and charges hold each terminal of each recorded device, in
@@ -132,7 +132,7 @@ impl Observations {
 /// on a node of its own, then its [internal unknowns](crate::Placed::internals). Its variables
 /// hold each recorded device's [variables](crate::Placed::variable_names).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Recorded {
+pub struct Recording {
     /// The devices whose terminals, derivatives and variables are recorded, by index among
     /// [`Simulator::devices`], in order.
     pub devices: Vec<usize>,
@@ -141,7 +141,7 @@ pub struct Recorded {
     pub composites: Vec<usize>,
 }
 
-impl Recorded {
+impl Recording {
     /// What `record` keeps of `system`'s devices.
     fn of(system: &Elaborated, record: &Record) -> Self {
         Self {
@@ -156,11 +156,11 @@ impl Recorded {
 }
 
 impl Simulator {
-    /// What `record` keeps of the circuit's devices, and where every [`Observation`] of an
+    /// What `record` keeps of the circuit's devices, and where every [`RecordedValues`] of an
     /// analysis run with it holds each value.
     #[must_use]
-    pub fn recorded(&self, record: &Record) -> Recorded {
-        Recorded::of(&self.elaborated, record)
+    pub fn recorded(&self, record: &Record) -> Recording {
+        Recording::of(&self.elaborated, record)
     }
 
     /// Checks `options`, gives the solver the ordering and the threads their parallelism
@@ -189,7 +189,7 @@ impl Simulator {
 
     /// What the recorded devices do at the DC solution `x`, every device evaluated there
     /// first, its steps not limited, when the observer records any.
-    pub(crate) fn observe_dc(&mut self, x: &[f64], options: &Options) -> Observation {
+    pub(crate) fn observe_dc(&mut self, x: &[f64], options: &Options) -> RecordedValues {
         if self.state.observer.records() {
             self.evaluate(x, None, (1.0, options.gmin), false);
         }
@@ -271,7 +271,7 @@ impl Selection {
 /// What the recorded devices did at the last evaluation, as their blocks of the slab hold
 /// it: the current into each read terminal, without a charge's derivative, and the charge
 /// each holds, and the recorded devices' derivatives and variables, laid out as an
-/// [`Observation`]'s.
+/// [`RecordedValues`]'s.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Read {
     currents: Vec<f64>,
@@ -322,7 +322,7 @@ impl Observer {
         if self.selection.record == *record {
             return;
         }
-        let recorded = Recorded::of(system, record);
+        let recorded = Recording::of(system, record);
         let mut kept = vec![false; system.devices.len()];
         for &device in &recorded.devices {
             kept[device] = true;
@@ -433,13 +433,13 @@ impl Observer {
 
     /// What the recorded devices do at a DC solution, as `read` reads them there: each
     /// current without a charge's derivative.
-    pub(crate) fn dc(&self, read: &Read) -> Observation {
+    pub(crate) fn dc(&self, read: &Read) -> RecordedValues {
         self.observation(read, &read.currents)
     }
 
     /// What the recorded devices do at the DC solution that begins a transient, as `read`
     /// reads them there, whose charges stand still.
-    pub(crate) fn start(&mut self, read: &Read) -> Observation {
+    pub(crate) fn start(&mut self, read: &Read) -> RecordedValues {
         let found = self.observation(read, &read.currents);
         self.history = History {
             last: read.charges.clone(),
@@ -457,7 +457,7 @@ impl Observer {
         &mut self,
         read: &Read,
         (formula, restart): (&Formula, bool),
-    ) -> Observation {
+    ) -> RecordedValues {
         let history = &mut self.history;
         let derivative: Vec<f64> = read
             .charges
@@ -489,9 +489,9 @@ impl Observer {
 
     /// What the recorded devices did, as `read` reads them, with the current into each
     /// read terminal `currents`.
-    fn observation(&self, read: &Read, currents: &[f64]) -> Observation {
+    fn observation(&self, read: &Read, currents: &[f64]) -> RecordedValues {
         let selection = &self.selection;
-        Observation {
+        RecordedValues {
             currents: selection.gather(currents),
             charges: selection.gather(&read.charges),
             conductances: read.conductances.clone(),
