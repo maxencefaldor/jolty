@@ -10,8 +10,10 @@
 #   scripts/bench                     the speed suite, a few minutes, before and after a change
 #   scripts/bench --scale             the large fixtures, each run once, and spread
 #   scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
-#   scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
-#   scripts/bench --xyce              Xyce on them, and how far it lies from jolty
+#   scripts/bench --view matched      every simulator on the fixtures, at matched options
+#   scripts/bench --view defaults     every simulator on them, each at its own defaults
+#   scripts/bench --view equal-error  every simulator's least time to equal error, on the
+#                                     precision suite's fixtures
 #   scripts/bench --baseline COMMIT   against COMMIT's results rather than an ancestor's
 #   scripts/bench --break-even NAME   from which size the threshold NAME pays
 #   scripts/bench --robustness        the hard circuits' corpus, in every simulator

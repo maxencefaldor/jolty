@@ -60,6 +60,24 @@ pub trait Real:
         self.chain(value.ln(), value.recip(), -(value * value).recip())
     }
 
+    /// `ln(1 + x)` of the number `x`, to its last digit where `x` is near zero, where
+    /// `ln` of the rounded `1 + x` would lose them.
+    #[must_use]
+    fn ln_1p(self) -> Self {
+        let value = self.value();
+        let base = 1.0 + value;
+        self.chain(value.ln_1p(), base.recip(), -(base * base).recip())
+    }
+
+    /// `eˣ − 1` of the number `x`, to its last digit where `x` is near zero, where the
+    /// difference of `eˣ` and 1 would lose them.
+    #[must_use]
+    fn exp_m1(self) -> Self {
+        let value = self.value();
+        let exponential = value.exp();
+        self.chain(value.exp_m1(), exponential, exponential)
+    }
+
     /// The square root.
     #[must_use]
     fn sqrt(self) -> Self {

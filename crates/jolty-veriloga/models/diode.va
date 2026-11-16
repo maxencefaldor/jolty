@@ -62,7 +62,7 @@ module diode(anode, cathode);
     real threshold, charge_at_threshold, divisor, offset;
     real breakdown_slope, unmatched, matched;
     integer breakdown, iteration, settled;
-    real vd, id, e, ratio, remaining, qd;
+    real vd, id, e, ratio, qd;
 
     // SPICE's limiting of a junction voltage's step from old to new, about the breakdown
     // voltage when the junction nears it: the new voltage itself when it needs none.
@@ -165,8 +165,9 @@ module diode(anode, cathode);
         end
         if (capacitance > 0) begin
             if (vd < threshold) begin
-                remaining = 1 - vd / potential;
-                qd = capacitance * potential * (1 - remaining * pow(remaining, -grading_coefficient)) / (1 - grading_coefficient);
+                // 1 − (1 − v/φ)^(1−m) through jolty's `expm1` and `ln1p`, which keep its
+                // digits near zero volts, where the difference from 1 loses them.
+                qd = capacitance * potential * -expm1((1 - grading_coefficient) * ln1p(-(vd / potential))) / (1 - grading_coefficient);
             end else
                 qd = capacitance * (charge_at_threshold + (offset * (vd - threshold) + grading_coefficient / (potential * 2) * (vd * vd - threshold * threshold)) / divisor);
         end

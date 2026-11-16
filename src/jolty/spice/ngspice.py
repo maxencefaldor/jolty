@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal, TypedDict, Unpack
 
@@ -45,6 +45,9 @@ OPTIONS: Final = (
 )
 """ngspice's options, as tight as jolty's tightest, the charge tolerance both engines'
 default."""
+
+NO_OPTIONS: Final = "*"
+"""The options line that leaves every option at ngspice's default: a comment."""
 
 _SPICE_THERMAL_VOLTAGE_PER_KELVIN: Final = 1.38064852e-23 / 1.6021766208e-19
 """ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""
@@ -89,6 +92,10 @@ class Result:
     plot: str
     vectors: dict[str, npt.NDArray[np.complex128]]
     printed: str
+    seconds: float | None = None
+    """The time from starting the ngspice that ran the analysis to its exit, in
+    seconds, as jolty measures it, the same for every analysis that ngspice ran; None
+    for a raw file read without running it."""
 
     def real(self, name: str) -> Real:
         """The real part of the vector `name`."""
@@ -134,6 +141,9 @@ class Running(TypedDict, total=False):
     """jolty's temperature, in kelvins, 27 °C unless given."""
     seed: int | None
     """The seed of ngspice's random numbers, such as a kit's mismatch draws, if any."""
+    timeout: float | None
+    """The seconds it may run, `TIMEOUT` unless given, or as long as it takes if
+    None."""
 
 
 class NgspiceTimeoutError(JoltyError):
@@ -198,7 +208,8 @@ def execute(
 
     Raises:
         JoltyError: When ngspice is not installed.
-        NgspiceTimeoutError: When it runs for more than `timeout` seconds.
+        NgspiceTimeoutError: When it runs for more than `timeout` seconds, with what it
+            had printed.
     """
     if EXECUTABLE is None:
         message = "ngspice is not installed"
@@ -220,8 +231,13 @@ def execute(
                 timeout=timeout,
                 cwd=directory,
             )
-        except subprocess.TimeoutExpired:
-            message = f"ngspice ran for more than {timeout:g} s"
+        except subprocess.TimeoutExpired as expired:
+            # The output so far: bytes on POSIX, text where communicate gathered it.
+            printed = "".join(
+                part.decode(errors="replace") if isinstance(part, bytes) else part or ""
+                for part in (expired.stdout, expired.stderr)
+            )
+            message = f"ngspice ran for more than {timeout:g} s:\n{printed}"
             raise NgspiceTimeoutError(message) from None
         seconds = time.perf_counter() - started
         values = directory / VALUES
@@ -255,8 +271,9 @@ def runs(
     ngspice includes the `libraries`, reads the `sections` of others, and reads them
     and the deck in its `compatibility` mode, its random numbers drawn from `seed`.
     `options` replaces the tight options. It runs at jolty's `temperature`, in kelvins,
-    its models' nominal temperature at jolty's 27 °C. Each command may run several
-    analyses, and a result is read from the plot of each.
+    its models' nominal temperature at jolty's 27 °C, for at most `timeout` seconds.
+    Each command may run several analyses, and a result is read from the plot of each,
+    with the time the run took.
 
     Raises:
         JoltyError: When ngspice is not installed, runs out of time, writes no results,
@@ -288,7 +305,11 @@ def runs(
         ".endc",
         ".end",
     ]
-    executed = execute(whole, compatibility=running.get("compatibility"))
+    executed = execute(
+        whole,
+        compatibility=running.get("compatibility"),
+        timeout=running.get("timeout", TIMEOUT),
+    )
     printed = executed.printed
     # What ngspice printed is read first: a transient it aborted still writes every
     # step it took, which can be hundreds of megabytes of results it has disowned.
@@ -310,7 +331,7 @@ def runs(
     ):
         message = f"ngspice ran no analysis:\n{printed}"
         raise JoltyError(message)
-    return found
+    return tuple(replace(result, seconds=executed.seconds) for result in found)
 
 
 def read(text: str, printed: str = "") -> tuple[Result, ...]:

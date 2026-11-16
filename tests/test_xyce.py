@@ -382,3 +382,17 @@ def test_a_varying_source_states_its_level_at_time_zero() -> None:
     (line,) = [line for line in _lines(simulation) if line.startswith("VV1 ")]
     column = simulation.unknowns.index(Unknown("in", "voltage"))
     assert line.split()[3:5] == ["DC", repr(float(point.values[column]))]
+
+
+@SKIP_XYCE
+def test_a_timeout_keeps_what_xyce_printed() -> None:
+    """A run stopped by its timeout says how far Xyce's transient came.
+
+    A transient whose longest step is a picosecond takes ten million steps over
+    10 µs, far longer than two seconds, and Xyce reports each percent it completes.
+    """
+    lines = ["rc", "R1 in out 1k", "C1 out 0 1n", "V1 in 0 PULSE(0 1 0 1n 1n 1u 2u)"]
+    with pytest.raises(
+        xyce.XyceTimeoutError, match=r"(?s)more than 2 s.*Percent complete"
+    ):
+        xyce.run(lines, ".tran 1p 10u 0 1p", timeout=2)

@@ -449,8 +449,8 @@ pub struct Options {
     pub gmin: f64,
     /// The Newton iterations allowed for one DC solution; default 100.
     pub max_dc_iterations: usize,
-    /// The Newton iterations one time step takes before it goes on only while each step is
-    /// shorter than the one before, and is shortened once one is not; default 10.
+    /// The most Newton iterations one time step takes, SPICE's `ITL4`, the iterate after
+    /// the last judged as any other; default 10.
     pub max_transient_iterations: usize,
     /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
     /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate

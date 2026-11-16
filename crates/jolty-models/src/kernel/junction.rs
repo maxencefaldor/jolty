@@ -346,8 +346,12 @@ impl<R: Real> Depletion<R> {
     pub(crate) fn evaluate<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let threshold = self.threshold;
         if voltage.value.value() < threshold.value() {
-            let remaining = -(voltage.scale(self.inverse_potential) - 1.0);
-            (-(remaining * remaining.pow(self.exponent) - 1.0)).scale(self.scale)
+            // `1 − (1 − v/φ)^{1 − m}` as `−expm1((1 − m) ln1p(−v/φ))`, which keeps its
+            // digits near zero volts, where the difference from 1 loses them: an absolute
+            // error of `ε·C·φ/(1 − m)`, 3.5e-25 C at 1 nF, is 5e-12 A through a time step's
+            // weight of 1.5e13 /s, above a node's 1e-12 A of tolerance.
+            let logarithm = (-voltage.scale(self.inverse_potential)).ln_1p();
+            (-logarithm.scale(self.exponent + 1.0).exp_m1()).scale(self.scale)
         } else {
             let above = voltage.plus(-threshold);
             let square = (voltage * voltage).plus(-(threshold * threshold));

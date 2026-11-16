@@ -119,24 +119,23 @@ pub struct PreparedDiode<R: Real> {
     h15: R,
     h16: bool,
     threshold: R,
-    potential2: R,
+    h18: R,
     h19: R,
-    h20: R,
+    potential2: R,
     h21: R,
     h22: R,
-    h23: R,
     capacitance: R,
     charge_at_threshold: R,
     offset: R,
+    h26: R,
     h27: R,
-    h28: R,
     divisor: R,
-    h30: R,
+    h29: R,
     transit_time: R,
+    h31: R,
     h32: R,
-    h33: R,
-    h34: f64,
-    h35: bool,
+    h33: f64,
+    h34: bool,
     flicker_coefficient: R,
     flicker_exponent: R,
     /// The conditions that shape the kernel.
@@ -308,7 +307,7 @@ impl Kernel for Diode {
                 v.iteration = v.iteration.wrapping_add(1);
             }
         }
-        Ok(PreparedDiode { series_resistance: parameters.series_resistance, h1: R::constant(1.0) / parameters.series_resistance, slope: v.slope, critical: v.critical, breakdown: v.breakdown, matched: v.matched, breakdown_slope: v.breakdown_slope, h7: v.breakdown != 0, h8: v.slope * -3.0, h9: -v.matched, h10: R::constant(1.0) / v.breakdown_slope, h11: -v.saturation, h12: -(v.slope * 3.0), saturation: v.saturation, h14: R::constant(1.0) / v.slope, h15: v.slope * 3.0, h16: v.capacitance.value() > 0.0, threshold: v.threshold, potential2: v.potential2, h19: R::constant(1.0) / v.potential2, h20: v.capacitance * v.potential2, h21: -parameters.grading_coefficient, h22: R::constant(1.0) - parameters.grading_coefficient, h23: R::constant(1.0) / (R::constant(1.0) - parameters.grading_coefficient), capacitance: v.capacitance, charge_at_threshold: v.charge_at_threshold, offset: v.offset, h27: parameters.grading_coefficient / (v.potential2 * 2.0), h28: v.threshold * v.threshold, divisor: v.divisor, h30: R::constant(1.0) / v.divisor, transit_time: parameters.transit_time, h32: temperature * 5.522_596e-23 * parameters.series_resistance.abs(), h33: temperature * 5.522_596e-23 * (R::constant(1.0) / parameters.series_resistance).abs(), h34: 3.204_353_268e-19, h35: parameters.flicker_coefficient.value() > 0.0, flicker_coefficient: parameters.flicker_coefficient, flicker_exponent: parameters.flicker_exponent, conditions: [parameters.series_resistance.value() == 0.0, parameters.series_resistance.value() < SMALL_RESISTANCE] })
+        Ok(PreparedDiode { series_resistance: parameters.series_resistance, h1: R::constant(1.0) / parameters.series_resistance, slope: v.slope, critical: v.critical, breakdown: v.breakdown, matched: v.matched, breakdown_slope: v.breakdown_slope, h7: v.breakdown != 0, h8: v.slope * -3.0, h9: -v.matched, h10: R::constant(1.0) / v.breakdown_slope, h11: -v.saturation, h12: -(v.slope * 3.0), saturation: v.saturation, h14: R::constant(1.0) / v.slope, h15: v.slope * 3.0, h16: v.capacitance.value() > 0.0, threshold: v.threshold, h18: v.capacitance * v.potential2, h19: R::constant(1.0) - parameters.grading_coefficient, potential2: v.potential2, h21: R::constant(1.0) / v.potential2, h22: R::constant(1.0) / (R::constant(1.0) - parameters.grading_coefficient), capacitance: v.capacitance, charge_at_threshold: v.charge_at_threshold, offset: v.offset, h26: parameters.grading_coefficient / (v.potential2 * 2.0), h27: v.threshold * v.threshold, divisor: v.divisor, h29: R::constant(1.0) / v.divisor, transit_time: parameters.transit_time, h31: temperature * 5.522_596e-23 * parameters.series_resistance.abs(), h32: temperature * 5.522_596e-23 * (R::constant(1.0) / parameters.series_resistance).abs(), h33: 3.204_353_268e-19, h34: parameters.flicker_coefficient.value() > 0.0, flicker_coefficient: parameters.flicker_coefficient, flicker_exponent: parameters.flicker_exponent, conditions: [parameters.series_resistance.value() == 0.0, parameters.series_resistance.value() < SMALL_RESISTANCE] })
     }
 
     fn layout<R: Real>(
@@ -354,7 +353,6 @@ impl Kernel for Diode {
             id: Dual<R, 1>,
             e: Dual<R, 1>,
             ratio: Dual<R, 1>,
-            remaining: Dual<R, 1>,
             qd: Dual<R, 1>,
             voltage_anode_junction: Dual<R, 1>,
             current_junction_current: Dual<R, 1>,
@@ -365,7 +363,7 @@ impl Kernel for Diode {
             applied0: f64,
             limited0: f64,
         }
-        let mut v = Locals { vd: Dual::number(0.0), id: Dual::number(0.0), e: Dual::number(0.0), ratio: Dual::number(0.0), remaining: Dual::number(0.0), qd: Dual::number(0.0), voltage_anode_junction: Dual::number(0.0), current_junction_current: Dual::number(0.0), junction_current_potential: Dual::number(0.0), anode_junction_flow: Dual::number(0.0), junction_cathode_flow: Dual::number(0.0), junction_cathode_charge: Dual::number(0.0), applied0: 0.0, limited0: 0.0 };
+        let mut v = Locals { vd: Dual::number(0.0), id: Dual::number(0.0), e: Dual::number(0.0), ratio: Dual::number(0.0), qd: Dual::number(0.0), voltage_anode_junction: Dual::number(0.0), current_junction_current: Dual::number(0.0), junction_current_potential: Dual::number(0.0), anode_junction_flow: Dual::number(0.0), junction_cathode_flow: Dual::number(0.0), junction_cathode_charge: Dual::number(0.0), applied0: 0.0, limited0: 0.0 };
         v.voltage_anode_junction = Dual { value: R::constant(at.value(0) - at.value(shape.junction)), gradient: [R::constant(1.0)] };
         v.current_junction_current = Dual { value: R::constant(at.value(shape.junction_current)), gradient: [R::constant(1.0)] };
         if shape.conditions[0] {
@@ -396,14 +394,17 @@ impl Kernel for Diode {
         }
         if prepared.h16 {
             if v.vd.value.value() < prepared.threshold.value() {
-                v.remaining = 1.0 - v.vd.chain((v.vd.value / prepared.potential2, prepared.h19));
-                let t0002 = v.remaining.value.pow(prepared.h21);
-                let t0003 = if v.remaining.value.value() == 0.0 { prepared.h21 * v.remaining.value.pow(prepared.h21 - 1.0) } else { prepared.h21 * t0002 / v.remaining.value };
-                let t0004 = (1.0 - v.remaining * v.remaining.chain((t0002, t0003))).scale(prepared.h20);
-                v.qd = t0004.chain((t0004.value / prepared.h22, prepared.h23));
+                let t0002 = -v.vd.chain((v.vd.value / prepared.potential2, prepared.h21));
+                let t0003 = t0002.value.value();
+                let t0004 = t0002.value.chain(t0003.ln_1p(), (t0003 + 1.0).recip(), -((t0003 + 1.0) * (t0003 + 1.0)).recip());
+                let t0005 = t0002.chain((t0004, (t0002.value + 1.0).recip())).scale(prepared.h19);
+                let t0006 = t0005.value.value();
+                let t0007 = t0005.value.chain(t0006.exp_m1(), t0006.exp(), t0006.exp());
+                let t0008 = (-t0005.chain((t0007, t0005.value.exp()))).scale(prepared.h18);
+                v.qd = t0008.chain((t0008.value / prepared.h19, prepared.h22));
             } else {
-                let t0005 = v.vd.plus(-prepared.threshold).scale(prepared.offset) + (v.vd * v.vd).plus(-prepared.h28).scale(prepared.h27);
-                v.qd = t0005.chain((t0005.value / prepared.divisor, prepared.h30)).plus(prepared.charge_at_threshold).scale(prepared.capacitance);
+                let t0009 = v.vd.plus(-prepared.threshold).scale(prepared.offset) + (v.vd * v.vd).plus(-prepared.h27).scale(prepared.h26);
+                v.qd = t0009.chain((t0009.value / prepared.divisor, prepared.h29)).plus(prepared.charge_at_threshold).scale(prepared.capacitance);
             }
         }
         v.junction_cathode_flow = v.junction_cathode_flow + (v.id + at.gmin * v.vd);
@@ -417,35 +418,35 @@ impl Kernel for Diode {
             stamp.add_residual(shape.junction_current, R::constant(at.value(0) - at.value(shape.junction)) - v.junction_current_potential.value);
             stamp.add_conductance(shape.junction_current_by_anode, R::constant(1.0));
             stamp.add_conductance(shape.junction_current_by_junction, R::constant(-1.0));
-            let [t0006] = v.junction_current_potential.gradient;
-            stamp.add_conductance(shape.junction_current_by_junction_current, -t0006);
+            let [t0010] = v.junction_current_potential.gradient;
+            stamp.add_conductance(shape.junction_current_by_junction_current, -t0010);
         }
         if shape.active[1] {
-            let t0007 = v.anode_junction_flow.value;
-            stamp.add_residual(0, t0007);
-            stamp.add_residual(shape.junction, -t0007);
-            let [t0008] = v.anode_junction_flow.gradient;
-            stamp.add_conductance(shape.anode_by_anode, t0008);
-            stamp.add_conductance(shape.anode_by_junction, -t0008);
-            stamp.add_conductance(shape.junction_by_anode, -t0008);
-            stamp.add_conductance(shape.junction_by_junction, t0008);
+            let t0011 = v.anode_junction_flow.value;
+            stamp.add_residual(0, t0011);
+            stamp.add_residual(shape.junction, -t0011);
+            let [t0012] = v.anode_junction_flow.gradient;
+            stamp.add_conductance(shape.anode_by_anode, t0012);
+            stamp.add_conductance(shape.anode_by_junction, -t0012);
+            stamp.add_conductance(shape.junction_by_anode, -t0012);
+            stamp.add_conductance(shape.junction_by_junction, t0012);
         }
-        let t0009 = v.junction_cathode_flow.extend([v.applied0 - v.limited0]);
-        stamp.add_residual(shape.junction, t0009);
-        stamp.add_residual(1, -t0009);
-        let [t0010] = v.junction_cathode_flow.gradient;
-        stamp.add_conductance(shape.junction_by_junction, t0010);
-        stamp.add_conductance(shape.junction_by_cathode, -t0010);
-        stamp.add_conductance(shape.cathode_by_junction, -t0010);
-        stamp.add_conductance(shape.cathode_by_cathode, t0010);
-        let t0011 = v.junction_cathode_charge.extend([v.applied0 - v.limited0]);
-        stamp.add_charge(shape.junction, t0011);
-        stamp.add_charge(1, -t0011);
-        let [t0012] = v.junction_cathode_charge.gradient;
-        stamp.add_capacitance(shape.junction_by_junction, t0012);
-        stamp.add_capacitance(shape.junction_by_cathode, -t0012);
-        stamp.add_capacitance(shape.cathode_by_junction, -t0012);
-        stamp.add_capacitance(shape.cathode_by_cathode, t0012);
+        let t0013 = v.junction_cathode_flow.extend([v.applied0 - v.limited0]);
+        stamp.add_residual(shape.junction, t0013);
+        stamp.add_residual(1, -t0013);
+        let [t0014] = v.junction_cathode_flow.gradient;
+        stamp.add_conductance(shape.junction_by_junction, t0014);
+        stamp.add_conductance(shape.junction_by_cathode, -t0014);
+        stamp.add_conductance(shape.cathode_by_junction, -t0014);
+        stamp.add_conductance(shape.cathode_by_cathode, t0014);
+        let t0015 = v.junction_cathode_charge.extend([v.applied0 - v.limited0]);
+        stamp.add_charge(shape.junction, t0015);
+        stamp.add_charge(1, -t0015);
+        let [t0016] = v.junction_cathode_charge.gradient;
+        stamp.add_capacitance(shape.junction_by_junction, t0016);
+        stamp.add_capacitance(shape.junction_by_cathode, -t0016);
+        stamp.add_capacitance(shape.cathode_by_junction, -t0016);
+        stamp.add_capacitance(shape.cathode_by_cathode, t0016);
     }
 
     fn noise<R: Real>(
@@ -463,9 +464,9 @@ impl Kernel for Diode {
         let mut v = Locals { vd: R::constant(0.0), id: R::constant(0.0), e: R::constant(0.0), ratio: R::constant(0.0) };
         if shape.conditions[0] {
         } else if shape.conditions[1] {
-            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h32.value()));
+            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h31.value()));
         } else {
-            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h33.value()));
+            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h32.value()));
         }
         let t0000 = R::constant(at.value(shape.junction) - at.value(1));
         v.vd = t0000;
@@ -478,8 +479,8 @@ impl Kernel for Diode {
             v.ratio = prepared.h15 / (v.vd * std::f64::consts::E);
             v.id = prepared.h11 * (v.ratio * v.ratio * v.ratio + 1.0);
         }
-        sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id.abs() * prepared.h34).value()));
-        if prepared.h35 {
+        sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id.abs() * prepared.h33).value()));
+        if prepared.h34 {
             sources.push(NoiseSource {
                 name: "flicker",
                 equations: [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))],

@@ -6,17 +6,20 @@ its default direct solver, Sparse 1.3, or with KLU; and Xyce, serially or its pa
 build on MPI ranks. Each has one runner, `Jolty`, `Ngspice` or `Xyce`, built on
 `jolty.simulate`, `jolty.spice.ngspice` and `jolty.spice.xyce`, which names its
 simulator, states its version (`Runner`), and runs a deck in it the one way every
-suite does; each suite reads of the run what it measures: the speed suite its time,
+suite does; each suite reads of the run what it measures: the speed suite its times,
 the corpus its outcome, the matrix its cell, the precision suite its points.
 
 Beside them, what the suites write of a plan's analyses for another simulator, the
-netlist they need (`netlist`) and each analysis as ngspice's command (`command`), and
-what they read of what ngspice printed: its ``rusage`` statistics (`RUSAGE`) and the
-lines that say what went wrong (`trouble`).
+netlist they need (`netlist`) and each analysis as ngspice's command (`command`); what
+they read of what ngspice printed, its ``rusage`` statistics (`RUSAGE`) and the lines
+that say what went wrong (`trouble`), and of what Xyce printed, its transient's steps
+(`XYCE_STEPS`) and how far it came (`XYCE_PROGRESS`); and what stopped a run that
+failed (`stopped`).
 """
 
 import math
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -82,13 +85,30 @@ class Jolty:
 
     def run(
         self, circuit: ir.Circuit, analyses: Mapping[str, Analysis], options: Options
-    ) -> dict[str, results.AnalysisResult]:
-        """Elaborates `circuit`, and runs the `analyses` on it in turn, by name."""
+    ) -> Analysed:
+        """Elaborates `circuit`, and runs the `analyses` on it in turn, by name.
+
+        Raises:
+            JoltyError: When the circuit does not elaborate, or an analysis fails.
+        """
         simulation = Simulation(circuit)
-        return {
-            name: simulation.run(analysis, options)
-            for name, analysis in analyses.items()
-        }
+        found: dict[str, results.AnalysisResult] = {}
+        analysis_seconds = 0.0
+        for name, analysis in analyses.items():
+            started = time.perf_counter()
+            found[name] = simulation.run(analysis, options)
+            analysis_seconds += time.perf_counter() - started
+        return Analysed(found, analysis_seconds)
+
+
+@dataclass(frozen=True, slots=True)
+class Analysed:
+    """What jolty found of a circuit's analyses, by name, and how long they took."""
+
+    found: dict[str, results.AnalysisResult]
+    analysis_seconds: float
+    """The wall time of the analyses alone, each ``Simulation.run``: the engine's work
+    and its results made in Python, the circuit's elaboration left out."""
 
 
 KLU: Final = ".options klu"
@@ -333,10 +353,47 @@ its transients, and the time points it accepted and rejected."""
 TROUBLE: Final = re.compile(
     r"error|warning|abort|too small|singular|converge|fail|trouble", re.IGNORECASE
 )
-"""What marks the lines of ngspice's output that say what went wrong."""
+"""What marks the lines of a simulator's output that say what went wrong."""
+
+
+NUMBER: Final = re.compile(r"\b\d[\d.]*(?:e[-+]?\d+)?\b", re.IGNORECASE)
+"""A number in a line of what a simulator printed, such as a line of its netlist or a
+time, but not a digit within a name."""
 
 
 def trouble(printed: str) -> str:
-    """The lines of what ngspice `printed` that say what went wrong, once each."""
-    lines = [line.strip() for line in printed.splitlines() if TROUBLE.search(line)]
-    return " | ".join(dict.fromkeys(lines))[:2000]
+    """The lines of what a simulator `printed` that say what went wrong, once each.
+
+    Lines that differ only in their numbers, such as a warning at each of many lines of
+    the netlist, are one, and the first stands for them.
+    """
+    once: dict[str, str] = {}
+    for line in printed.splitlines():
+        if TROUBLE.search(line):
+            once.setdefault(NUMBER.sub("#", line.strip()), line.strip())
+    return " | ".join(once.values())[:2000]
+
+
+XYCE_STEPS: Final = {
+    "accepted": re.compile(r"^\s*Successful Step\s+(\d+)", re.MULTILINE),
+    "rejected": re.compile(r"^\s*Failed Steps\s+(\d+)", re.MULTILINE),
+}
+"""What the table of Xyce's timings states of a transient's steps, accepted and
+rejected."""
+
+XYCE_PROGRESS: Final = re.compile(r"Percent complete: (\S+) %")
+"""What Xyce prints of how far its transient has come."""
+
+
+def stopped(message: str) -> str:
+    """What stopped a run, from the `message` of its error: what went wrong, how far.
+
+    The first line of the message, then each line after it that says what went wrong,
+    and the last of Xyce's reports of how far its transient came.
+    """
+    first, *rest = message.splitlines() or [""]
+    said = [first.removesuffix(":"), *filter(None, [trouble("\n".join(rest))])]
+    reached = XYCE_PROGRESS.findall(message)
+    if reached:
+        said.append(f"{float(reached[-1]):.3g}% of its transient done")
+    return "; ".join(said)

@@ -156,7 +156,9 @@ impl<R: Real> Semiempirical<R> {
         drift: Option<(Dual<R, 3>, Dual<R, 3>)>,
     ) -> Option<Dual<R, 3>> {
         let (kappa, alpha, length) = (self.saturation_field_factor, self.alpha, self.length);
-        if alpha.value() == 0.0 {
+        // Either factor zero makes the shortening zero at every bias, its derivatives
+        // too, as ngspice computes it.
+        if alpha.value() == 0.0 || kappa.value() == 0.0 {
             return None;
         }
         let shortening = if vds.value.value() <= vdsat.value.value() {

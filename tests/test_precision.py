@@ -9,8 +9,9 @@ import numpy as np
 import pytest
 from mpmath import mp, mpf
 
-from differential import SKIP
+from differential import SKIP, SKIP_XYCE
 from jolty import _core
+from jolty.plan import DcSweep
 
 PRECISION = Path(__file__).parent.parent / "benchmarks" / "precision"
 
@@ -210,3 +211,162 @@ def test_both_simulators_run_a_fixture_and_score_it() -> None:
         # time constant, whose error is at most about (h/τ)²/12 = 8e-4 of the 1 V
         # swing, and far above the exact answer's rounding.
         assert 3 < mixed.digits < mixed.limit
+
+
+def test_equal_error_takes_each_simulator_s_fastest_run_to_the_target() -> None:
+    from fixtures import ScoredOutput  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        FixtureResults,
+        FixtureRun,
+        Scored,
+        Simulator,
+        SuiteResults,
+        equal_error_table,
+    )
+
+    output = ScoredOutput("v(out)", "mixed", 1.0, "V")
+
+    def scored(
+        simulator: Simulator, tolerance: float, digits: float, seconds: float
+    ) -> FixtureRun:
+        return FixtureRun(
+            simulator=simulator,
+            sweep="reltol",
+            relative_tolerance=tolerance,
+            load=1.0,
+            status="scored",
+            seconds=seconds,
+            scores={"v(out)": {"mixed": Scored(digits=digits, limit=15.0, at=0.0)}},
+        )
+
+    runs = [
+        scored(Simulator.JOLTY, 1e-3, 3.0, 1e-4),
+        scored(Simulator.JOLTY, 1e-5, 5.5, 3e-4),
+        scored(Simulator.JOLTY, 1e-7, 6.0, 9e-4),
+        scored(Simulator.NGSPICE_SPARSE, 1e-3, 4.2, 2e-4),
+        scored(Simulator.NGSPICE_SPARSE, 1e-5, 4.0, 1e-4),
+        FixtureRun(
+            simulator=Simulator.NGSPICE_SPARSE,
+            sweep="reltol",
+            relative_tolerance=1e-7,
+            load=1.0,
+            status="failed",
+            message="timestep too small",
+        ),
+        FixtureRun(
+            simulator=Simulator.NGSPICE_KLU,
+            sweep="defaults",
+            relative_tolerance=1e-3,
+            load=1.0,
+            status="unsupported",
+        ),
+    ]
+    document = SuiteResults(
+        commit="0",
+        machine={},
+        versions={},
+        repeats=1,
+        fixtures={
+            "rc": FixtureResults(
+                describes="", reference="", outputs=[output], seconds=0.0, runs=runs
+            )
+        },
+    )
+    # The target is the most digits every simulator that ran reached: ngspice's 4.2.
+    *_, row = equal_error_table(document, None).splitlines()
+    assert row == (
+        "| `rc` | v(out), mixed | 4.2 | 300 µs, reltol 1e-05, 5.5 digits "
+        "| 200 µs, reltol 0.001, 4.2 digits; 1 failed | unsupported |"
+    )
+    # A target beyond a simulator's reach marks it with the most it reached.
+    *_, row = equal_error_table(document, 5.0).splitlines()
+    assert "| never: 4.2 digits at most; 1 failed |" in row
+
+
+def test_xyce_s_tolerances_follow_each_sweep() -> None:
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        XYCE_DEFAULTS,
+        Setting,
+        Sweep,
+    )
+
+    assert Setting("defaults", 1e-3).xyce_options() == ()
+    # Along the relative tolerance's sweep, each group's relative tolerance is the
+    # setting's and its absolute ones Xyce's own; scaled, those are scaled with it.
+    alone = Setting(Sweep.RELTOL, 1e-5).xyce_options()
+    scaled = Setting(Sweep.SCALED, 1e-5).xyce_options()
+    for group, (one, other) in zip(
+        XYCE_DEFAULTS, zip(alone, scaled, strict=True), strict=True
+    ):
+        defaults = XYCE_DEFAULTS[group]
+        assert one == f".options {group} " + " ".join(
+            f"{name}={1e-5 if name == 'reltol' else value!r}"
+            for name, value in defaults.items()
+        )
+        assert other == f".options {group} " + " ".join(
+            f"{name}={1e-5 if name == 'reltol' else value * 1e-2!r}"
+            for name, value in defaults.items()
+        )
+
+
+@SKIP_XYCE
+def test_xyce_runs_a_fixture_and_scores_it() -> None:
+    from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        Xyce,
+        run_xyce,
+        score,
+    )
+
+    prepared = Prepared.of(fixtures()["rc_step"])
+    setting = Setting("scaled", DEFAULTS["relative_tolerance"] / 100)
+    output = prepared.fixture.outputs[0]
+    ran = run_xyce(prepared, setting, 2, Xyce())
+    assert len(ran.seconds) == 2
+    assert ran.counts["accepted"] > 0
+    mixed = score(prepared.fixture.compare(ran.found)[output.name], output)["mixed"]
+    # Xyce's trapezoidal steps, its default, are at most a fiftieth of the run, as
+    # jolty's and ngspice's are: an error of at most about 8e-4 of the 1 V swing.
+    assert 3 < mixed.digits < mixed.limit
+
+
+def test_jolty_s_sweep_is_scored_at_its_levels() -> None:
+    from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        run_jolty,
+    )
+
+    prepared = Prepared.of(fixtures()["diode"])
+    sweep = prepared.fixture.analysis
+    assert isinstance(sweep, DcSweep)
+    ran = run_jolty(prepared, Setting("defaults", DEFAULTS["relative_tolerance"]), 1)
+    np.testing.assert_array_equal(
+        ran.found.points, [each.value for each in sweep.values]
+    )
+
+
+def test_a_stopped_run_says_each_kind_of_trouble_once_and_how_far_it_came() -> None:
+    from simulators import stopped  # noqa: PLC0415 - importable only once the path holds it
+
+    said = "\n".join(
+        [
+            "Xyce ran for more than 300 s:",
+            *(
+                f"Netlist warning in file circuit.cir at or near line {n}"
+                for n in (4, 6)
+            ),
+            " Device MOSFET level 1: Duplicated model and device name instance MX1_M1",
+            "***** Percent complete: 5.00002 %",
+            "***** Percent complete: 6.00002 %",
+        ]
+    )
+    assert stopped(said) == (
+        "Xyce ran for more than 300 s; Netlist warning in file circuit.cir at or "
+        "near line 4; 6% of its transient done"
+    )

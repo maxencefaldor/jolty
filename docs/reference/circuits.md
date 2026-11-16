@@ -28,7 +28,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice.ngspice
     options:
-      members: [run, runs, execute, version, read, Executed, NgspiceTimeoutError, Running, Compatibility, Result, option_temperature, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS, VALUES]
+      members: [run, runs, execute, version, read, Executed, NgspiceTimeoutError, Running, Compatibility, Result, option_temperature, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS, NO_OPTIONS, VALUES]
 
 ::: jolty.spice.xyce
     options:

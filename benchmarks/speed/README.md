@@ -11,9 +11,10 @@ scripts/bench                      # the suite: a few minutes, before and after 
 scripts/bench bjt_amp buck         # only these fixtures
 scripts/bench --scale              # the large fixtures, each run once, and spread over threads
 scripts/bench --scale --largest    # and the 50,000 inverters' chain on each number of threads too
-scripts/bench --ngspice            # ngspice on the fixtures' netlists, for context
-scripts/bench --xyce               # Xyce on them, and how far it lies from jolty
-scripts/bench --xyce --scale --xyce-mpi PATH  # and Xyce's parallel build on 1 to 16 ranks
+scripts/bench --view matched       # every simulator on the fixtures, at matched options
+scripts/bench --view defaults      # every simulator on them, each at its own defaults
+scripts/bench --view equal-error   # every simulator's least time to equal error, on the precision suite's fixtures
+scripts/bench --view defaults --scale --xyce-mpi PATH  # the large fixtures, Xyce's parallel build on 1 to 16 ranks too
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
 scripts/bench --break-even min_unknowns_per_task  # from which size a threshold pays
 ```
@@ -21,7 +22,7 @@ scripts/bench --break-even min_unknowns_per_task  # from which size a threshold 
 `scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, and prints them against a baseline's, flagging every change over 5%.
 The baseline is the newest ancestor of the checked-out commit whose times `results/` holds, unless `--baseline` names a commit or a results file.
 A working tree with changes to tracked files writes `results/<commit>-dirty.json`, which is never taken as a baseline.
-A later run on the same commit adds its times to the file, so the suite, `--scale` and `--ngspice` can each run once.
+A later run on the same commit adds its times to the file, so the suite, `--scale` and each view can each run once.
 To compare two commits, check out the older one, run the suite, then do the same on the newer one.
 
 ## Fixtures
@@ -53,14 +54,32 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 | `rust/monte_carlo/<n> samples, <t> threads` | Criterion's median of the fixture's first `n` samples run as one batch, per sample: drawn from their indices and run on the circuit elaborated once, on a pool of `t` threads, for 1, 2, 4 and 8 threads and every core, as far as there are cores. |
 | `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. |
 | `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, run as the runner runs them, as one batch of `Simulation.batch` on the circuit elaborated once, each sample drawn by the engine from its index, the one elaboration counted: on a pool of one thread, and of a thread per core. The suite runs the first 1,000, and `--scale` all of them, on every core. |
-| `ngspice-sparse/<fixture>` | ngspice 47 in batch mode on the fixture's netlist as jolty writes it, its analyses run from a control section: from its start to its exit, so its start-up and the parsing of its netlist count, for context. |
-| `xyce-serial/<fixture>`, `xyce-mpi/<n> ranks/<fixture>` | Xyce at its defaults on the fixture's netlist in Xyce's dialect, each analysis in an Xyce of its own, printing two nets at each end of the circuit's top: from its start to its exit, summed over the analyses, as ngspice's are; serially, or by its parallel build on `n` MPI ranks. |
-| `.../analysis` | The same runs' time in Xyce's analyses alone, its own "Total Simulation Solvers Run Time", summed over the analyses. |
+| `<view>/jolty/<fixture>` | In the view `matched` or `defaults`, the median of at least ten runs over at least five seconds, after one to warm up, of the fixture's circuit elaborated by `Simulation` and every analysis run by `Simulation.run`, at the view's options. |
+| `<view>/ngspice-sparse/<fixture>`, `<view>/ngspice-klu/<fixture>` | The same of ngspice 47 in batch mode on the fixture's netlist as jolty writes it, with Sparse 1.3 or with KLU, its analyses run in turn in one ngspice, saving two nets at each end of the circuit's top: from its start to its exit, so its start-up and the parsing of its netlist count. |
+| `<view>/xyce-serial/<fixture>`, `<view>/xyce-mpi/<n> ranks/<fixture>` | The same of Xyce on the fixture's netlist in Xyce's dialect, each analysis in an Xyce of its own, printing the same nets: from its start to its exit, summed over the analyses; serially, or by its parallel build on `n` MPI ranks. |
+| `<view>/.../analysis` | The same runs' time in their analyses alone: jolty's `Simulation.run`, the engine's work and its results made in Python, its elaboration left out; ngspice's "Total analysis time" of `rusage`; Xyce's "Total Simulation Solvers Run Time", summed over the analyses. |
 
 Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up.
-The Python timings follow the same protocol, and so do ngspice's and Xyce's, each timed from its process's start to its exit.
-Beside Xyce's times, the results file's `agreements` hold how far each run's printed voltages lay from jolty's at the plan's options, each analysis's largest difference over the nets printed, as a fraction of jolty's largest magnitude or, in a transient, of its swing, jolty's waveform interpolated at Xyce's times: both simulators' errors at their defaults, so a fixture is timed as the same work only where it is small.
+The Python timings follow the same protocol, and so do the views'.
 Beside the times, the suite runs each fixture with a transient once more with the option `profile` on, and writes the transient's statistics' `work` and `profile`: its Newton iterations and factorizations, and where its time went.
+
+## Every simulator, in three views
+
+`scripts/bench --view` times every simulator instead, jolty, ngspice 47 with Sparse 1.3 and with KLU, and Xyce 7.10 serially, each that is installed or those `--simulator` names, in the three views the owner set, and prints each view's table, a row per fixture and a column per simulator, which goes to `results/<commit>/<view>.md` beside the results file too:
+
+| View | What each simulator runs at | Where its table comes from |
+| --- | --- | --- |
+| `matched` | Options as tight as jolty's tightest: jolty at `jolty.plan.TIGHT`, ngspice at `jolty.spice.ngspice.OPTIONS`, Xyce at `jolty.spice.xyce.OPTIONS`, which the table's first row states | The fixtures here, every simulator's runs |
+| `defaults` | Its own defaults: no options line, but ngspice's `.options klu` with KLU | The same |
+| `equal-error` | Each setting of the precision suite's sweeps, its least time to the same correct digits of an exact answer | [The precision suite](../precision/README.md)'s fixtures, run as `--precision` runs them, or the results file `--plot` names |
+
+Every simulator runs each fixture at the temperature where its thermal voltage is jolty's, as `jolty.spice` runs them, so the simulators differ by their devices rather than their physical constants.
+Each cell gives the median time end to end, then in its analyses alone, and how far each analysis lay from jolty's run at the matched options, the reference: the largest difference over the nets read, two at each end of the circuit's top, as a fraction of the reference's largest magnitude or, in a transient, of its swing, the reference interpolated at the simulator's points.
+That says whether two simulators found the same solution, the condition for comparing their times; it is no error, as no simulator's run is an exact answer.
+Where jolty fails at the matched options, there is no reference, and each cell says so.
+A simulator whose run fails, or runs past `--timeout`, 300 s unless given, is marked with what stopped it: the first line of its message, the lines of what the simulator printed that say what went wrong, and how far an Xyce transient came; its row is never dropped.
+The results file holds every cell under `views`, by view, simulator and fixture, and the times among the others, so a view's times are compared with a baseline's as every time is.
+The equal-error view's target is `--digits`, or, on each output, the most digits that every simulator that runs the fixture reached; each simulator's time is its precision suite's engine time, of its fastest run that reached the target, beside that run's setting, and a simulator that never reached it is marked with the most it did.
 
 ## Baseline
 

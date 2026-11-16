@@ -129,7 +129,7 @@ Where the code does not meet a convention yet, a change that touches that code b
   Names are uniform, consistent and symmetric: the same word for the same thing in every layer, the same shape for the same kind of name, and an operation and its inverse, or a bound and its opposite, named as a pair, as `save_results` and `load_results`, `min_` and `max_`.
   They are formal, strict and principled: a name says what the thing is, in the domain's established terms, never how it happens to be computed, stored or used.
   A name that breaks this is renamed everywhere in the change that finds it, as one way to do one job requires.
-- **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.
+- **Feedback is facts:** jolty tells the agent what is true about its circuit and its own use, and never fixes either or says how to: a call jolty cannot take states what is true, such as the devices a result recorded, and the guide says how to call it.
   A problem names the instance by its path and the script line that placed it.
   The engine reports every problem it finds, not only the first.
   A number in a message is exact, or says how it was estimated, such as to first order.

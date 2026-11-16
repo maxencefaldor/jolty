@@ -119,8 +119,26 @@ struct Smooth {
 
 /// The smooth function `builtin` is, if it is one that jolty's numbers compute through
 /// their chain rule.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table, a row for each smooth function"
+)]
 const fn smooth(builtin: Builtin) -> Option<Smooth> {
     let (method, plain, slope) = match builtin {
+        Builtin::Expm1 => (
+            "exp_m1",
+            ["{a}.exp_m1()", "{a}.exp()", "{a}.exp()"],
+            "{x}.exp()",
+        ),
+        Builtin::Ln1p => (
+            "ln_1p",
+            [
+                "{a}.ln_1p()",
+                "({a} + 1.0).recip()",
+                "-(({a} + 1.0) * ({a} + 1.0)).recip()",
+            ],
+            "({x} + 1.0).recip()",
+        ),
         Builtin::Log => (
             "log10",
             [
