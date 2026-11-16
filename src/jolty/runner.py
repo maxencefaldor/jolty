@@ -1087,7 +1087,7 @@ def _extreme(
 
     A lot's direction is the sum of its parts'.
     """
-    lots: dict[variation.Lot, float] = {}
+    lots: dict[variation.LotMember, float] = {}
     for parameter, direction in zip(varied, directions, strict=True):
         if (key := variation.lot(parameter)) is not None:
             lots[key] = lots.get(key, 0.0) + direction

@@ -107,11 +107,11 @@ def sample(
     return drawn
 
 
-type Lot = tuple[str, str]
+type LotMember = tuple[str, str]
 """A lot's spread of one parameter: the lot's name and the parameter's path."""
 
 
-def lot(varied: Toleranced) -> Lot | None:
+def lot(varied: Toleranced) -> LotMember | None:
     """The lot whose spread `varied` shares, by name and parameter; None for none."""
     shared = varied.tolerance.lot
     return None if shared is None else (shared.name, varied.parameter)
@@ -132,7 +132,7 @@ def moved(
 def extreme(
     varied: Iterable[Toleranced],
     directions: Sequence[float],
-    lots: Mapping[Lot, float],
+    lots: Mapping[LotMember, float],
 ) -> dict[str, dict[str, float]]:
     """Each of `varied` at the extreme of its tolerance in its direction.
 
