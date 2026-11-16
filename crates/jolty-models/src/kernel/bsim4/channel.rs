@@ -10,7 +10,7 @@ use super::D;
 use super::prepare::Core;
 use crate::Real;
 use crate::kernel::bsim3::{
-    EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, above_half, above_tenth,
+    EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, Q, above_half, above_tenth,
     factor_above_tenth, reciprocal_above_tenth,
 };
 
@@ -39,6 +39,20 @@ pub(super) struct Operating<R: Real> {
     pub(super) vbseff: D<R>,
     pub(super) n: D<R>,
     pub(super) abulk0: D<R>,
+    /// What the noise reads of one finger: the mobility, the effective gate-source and
+    /// drain-source voltages, `EsatL`, `Abulk` after and before `keta`, the oxide's
+    /// capacitance through the inversion layer, the source and drain resistance, the
+    /// current over `Vdseff` and `nstar`.
+    pub(super) ueff: D<R>,
+    pub(super) vgsteff: D<R>,
+    pub(super) vdseff: D<R>,
+    pub(super) esat_l: D<R>,
+    pub(super) abulk: D<R>,
+    pub(super) abulk_unscaled: D<R>,
+    pub(super) coxeff: D<R>,
+    pub(super) rds: D<R>,
+    pub(super) ids_over_vds: D<R>,
+    pub(super) nstar: D<R>,
 }
 
 /// `b4v5temp.c`'s and `b4v5ld.c`'s `T1 / ((T1 − 1)² + 2·T1·MIN_EXP)` of `T1 = e^x`,
@@ -203,9 +217,9 @@ impl<R: Real> Core<R> {
         let t8 = t7.scale(p.ags * p.a0);
         let abulk = abulk0 - t1 * t8 * vgsteff;
         let abulk0 = above_tenth(abulk0);
-        let abulk = above_tenth(abulk);
+        let abulk_unscaled = above_tenth(abulk);
         let t0_keta = reciprocal_above_tenth(vbseff.scale(p.keta));
-        let abulk = abulk * t0_keta;
+        let abulk = abulk_unscaled * t0_keta;
 
         // The mobility, `mobmod` 0.
         let t0 = vgsteff + vth + vth;
@@ -403,6 +417,18 @@ impl<R: Real> Core<R> {
             vbseff,
             n,
             abulk0: abulk0 * t0_keta,
+            ueff,
+            vgsteff,
+            vdseff,
+            esat_l,
+            abulk,
+            abulk_unscaled,
+            coxeff,
+            rds,
+            ids_over_vds: ids,
+            nstar: (xdep.recip() * EPSSI)
+                .plus(self.coxe + p.cit)
+                .scale(vtm / Q),
         }
     }
 

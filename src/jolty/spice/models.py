@@ -333,6 +333,8 @@ mobility, and the body resistances it takes over from its card."""
 BSIM4_SELECTORS: Final = {
     "rbodymod": "body_resistance_model",
     "permod": "perimeter_model",
+    "fnoimod": "flicker_noise_model",
+    "tnoimod": "thermal_noise_model",
 }
 """A BSIM4 card's choices among its equations that jolty models more than one value
 of, each a whole number, by their SPICE names: jolty's name of each."""
@@ -364,14 +366,13 @@ choice of the drains or the sources an even number of fingers has fewer of."""
 
 BSIM4_UNREAD: Final = frozenset(
     {
-        *("lmin", "lmax", "wmin", "wmax", "fnoimod", "tnoimod"),
+        *("lmin", "lmax", "wmin", "wmax"),
         *("vgs_max", "vgd_max", "vgb_max", "vds_max", "vbs_max", "vbd_max"),
         *("vgsr_max", "vgdr_max", "vgbr_max", "vbsr_max", "vbdr_max"),
     }
 )
-"""What a BSIM4 card says that changes nothing ngspice computes outside its noise: its
-bin's ranges, which only select it, its noise models, which jolty's BSIM4 does not
-model yet, and the safe operating area, which only ngspice's checks read."""
+"""What a BSIM4 card says that changes nothing ngspice computes: its bin's ranges, which
+only select it, and the safe operating area, which only ngspice's checks read."""
 
 BSIM4_INSTANCE_UNREAD: Final = frozenset({"xgw", "ngcon", "sca", "scb", "scc", "sc"})
 """What a BSIM4 instance says that changes nothing ngspice computes with `BSIM4_MODES`:

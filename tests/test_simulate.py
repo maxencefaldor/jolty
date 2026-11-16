@@ -253,27 +253,6 @@ FOUR_KT = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
 """`4kT` at 27 °C, in joules."""
 
 
-def test_a_noise_analysis_refuses_a_device_whose_noise_is_not_modeled() -> None:
-    """A BSIM4, whose noise is not modeled, is named rather than left quiet."""
-
-    @component
-    def amplifier(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(1.8 * V), name="V1")
-        load = c.place(devices.resistor(10 * kohm), name="R1")
-        transistor = c.place(devices.bsim4(), name="M1")
-        c.connect(supply.positive, load.a, name="vdd")
-        c.connect(load.b, transistor.drain, transistor.gate, name="out")
-        c.connect(supply.negative, transistor.source, transistor.bulk, ground)
-
-    simulation = Simulation(amplifier())
-    simulation.run(OperatingPoint())
-    with pytest.raises(
-        SimulationError, match=re.escape("noise analysis runs on them: M1 (bsim4)")
-    ):
-        simulation.run(Noise("out", [1 * kHz]))
-
-
 def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> None:
     upper, lower = 1e3, 3e3
     simulation = Simulation(divider(5 * V, upper * ohm, lower * ohm))

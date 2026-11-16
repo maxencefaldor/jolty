@@ -18,12 +18,21 @@ import pytest
 
 from differential import SKIP, closest, compare
 from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
-from jolty.plan import TIGHT, Ac, DcSweep, OperatingPoint, Transient, decade, linear
+from jolty.plan import (
+    TIGHT,
+    Ac,
+    DcSweep,
+    Noise,
+    OperatingPoint,
+    Transient,
+    decade,
+    linear,
+)
 from jolty.settings import Settings
 from jolty.spice import gf180mcu, kits, ngspice, sg13g2, sky130
 from jolty.spice.expressions import STATISTICAL
 from jolty.spice.library import Library, Sample
-from jolty.units import GHz, MHz, V, celsius, fF, kHz, ns, ps
+from jolty.units import GHz, Hz, MHz, V, celsius, fF, kHz, kohm, ns, ps
 from jolty.waveforms import Pulse
 
 KITS: Final = (sky130.KIT, gf180mcu.KIT, sg13g2.KIT)
@@ -517,6 +526,80 @@ def test_sky130_transistors_admittances_agree_with_ngspice(
             found = response.values[:, simulation.unknowns.index(unknown)]
             scale = float(np.abs(spice).max())
             compare(found, spice, unknown, scale=scale, tolerance=AGREEMENT)
+
+
+NOISY: Final = {
+    "sky130-n": (sky130.KIT, "sky130_fd_pr__nfet_01v8", "tt", 1.8, 0.8, (1, 0.15)),
+    "sky130-p": (sky130.KIT, "sky130_fd_pr__pfet_01v8", "tt", -1.8, -0.9, (2, 0.5)),
+    "gf180mcu-n": (gf180mcu.KIT, "nmos_3p3", "typical", 3.3, 1.2, (1e-6, 5e-7)),
+    "gf180mcu-p": (gf180mcu.KIT, "pmos_3p3", "typical", -3.3, -1.4, (2e-6, 5e-7)),
+}
+"""BSIM4 transistors of the kits whose noise is compared, each with its kit, its
+corner, its stage's supply and gate, and its width and length as its kit writes them:
+SKY130's of the holistic thermal noise, `tnoimod` 1, GF180MCU's of the charge-based,
+`tnoimod` 0, both of BSIM4's flicker noise, `fnoimod` 1."""
+
+
+@SKIP
+@pytest.mark.parametrize("name", NOISY)
+def test_a_kits_transistor_makes_the_noise_of_ngspices(
+    kept: Settings, name: str
+) -> None:
+    """A common-source stage of a kit's BSIM4 transistor and 5 kΩ, from 1 Hz to 1 GHz.
+
+    Its output's noise, the channel's thermal and flicker noise and its resistances',
+    is compared with ngspice's, which reads the same library at the same corner, within
+    `AGREEMENT`: the operating point the noise is computed at agrees within it, and
+    the two engines' Boltzmann constants, ngspice's 1.38064852e-23 J/K, move the
+    densities by 3.4e-7 of themselves.
+    """
+    kit, model, corner, supply, gate, (width, length) = NOISY[name]
+    if kit is sky130.KIT:
+        sections = ((sky130.LIBRARY, corner),)
+    else:
+        library_path = gf180mcu.DIRECTORY / "sm141064.ngspice"
+        # The corner's section in place of the transistors' typical one.
+        sections = (
+            *(each for each in kit.typical if each != (library_path, "typical")),
+            (library_path, corner),
+        )
+    library = kits.read(kit, sections, settings=kept)
+
+    @component
+    def stage(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drain = c.place(devices.voltage_source(supply * V), name="VDD")
+        drive = c.place(devices.voltage_source(gate * V), name="V1")
+        load = c.place(devices.resistor(5 * kohm), name="RL")
+        placed = c.place(library.component(model, w=width, l=length), name="X1")
+        c.connect(drain.positive, load.a, name="vdd")
+        c.connect(load.b, placed["d"], name="out")
+        c.connect(drive.positive, placed["g"], name="in")
+        c.connect(drain.negative, drive.negative, placed["s"], placed["b"], ground)
+
+    simulation = Simulation(stage())
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, 1 * GHz, 2), source="V1"), TIGHT
+    )
+    root = kits.root(kit, kept)
+    raw = ngspice.run(
+        [
+            "* noise",
+            *NOMINAL.get(kit.name, ()),
+            f"VDD vdd 0 {supply!r}",
+            f"V1 in 0 {gate!r} ac 1",
+            "RL vdd out 5k",
+            f"X1 out in 0 0 {model} w={width!r} l={length!r}",
+        ],
+        "noise v(out) V1 dec 2 1 1g\nsetplot noise1",
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in sections),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=AGREEMENT
+    )
 
 
 @SKIP

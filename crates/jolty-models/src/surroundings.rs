@@ -129,10 +129,6 @@ impl<M: Model> Model for Surrounded<M> {
     fn foundry(&self) -> bool {
         self.inner.foundry()
     }
-
-    fn noise_modeled(&self) -> bool {
-        self.inner.noise_modeled()
-    }
 }
 
 /// A device's specification, and its own temperature.

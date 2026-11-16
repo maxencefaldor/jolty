@@ -506,7 +506,6 @@ The drain current folds in the threshold's short-channel, narrow-width, pocket i
 The charges under the gate follow `capmod` 2 with the charge's thickness, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges with their bias dependence, and two diodes, with their trap-assisted tunneling, join the body to the drain and the source, each with its depletion charge.
 The stress of the length of diffusion, from `diffusion_edge_a` and `diffusion_edge_b`, `SA` and `SB`, moves the threshold, `k2`, `eta0` and the saturation velocity; ngspice 47's `b4v5temp.c` scales the mobility too, then takes the unstressed one with `MULU0` (lines 1359 and 1420), so jolty's mobility is unstressed as ngspice's is.
 The transistor is symmetric: with the drain below the source, the two swap.
-Its noise is not modeled yet, so a [noise analysis](simulation.md#noise) refuses a circuit that holds one, naming each such transistor, rather than leave it quiet.
 jolty's BSIM4 is derived from BSIM4.5.0, developed by the UC Berkeley BSIM Research Group, Copyright 2005 Regents of the University of California, and used under the BSIM4 terms of use, which `NOTICE` reproduces.
 
 Its instance takes a MOSFET's geometry and fingers, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "toxe": 4.1 * nm, ...}`:
@@ -542,6 +541,9 @@ jolty keeps every derivative exact, the derivative of the current and charge it 
 The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or 49 of version 3.3, or of none, which ngspice reads as 3.3; ngspice runs a card of version 3.0, 3.1 or 3.2 with other models, which jolty does not have, so it refuses one.
 An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.
 The reader reads past what changes nothing ngspice computes: the bins' ranges, the safe operating area's `VGS_MAX` and the rest, and the parameters of the non-quasi-static models and HSPICE's area calculation, `ELM`, `ACM`'s and `GEO`, which it refuses on, as jolty models neither: a card or instance with `NQSMOD`, `ACNQSMOD` or `ACM` other than 0 is refused.
+
+In a [noise analysis](simulation.md#noise), the drain, source and body resistances make thermal noise, and the channel the thermal noise of `thermal_noise_model`, `TNOIMOD`, and the flicker noise of `flicker_noise_model`, `FNOIMOD`, as ngspice's `b4v5noi.c` computes them: at `TNOIMOD` 0, the charge-based noise of the inversion charge, `4kT·NTNOI·µeff·|Qinv|/(Leff² + µeff·|Qinv|·Rds)`; at 1, the holistic noise of the conductances, which moves the share `RNOIB` and `TNOIB` set to the resistance on the source side, as a resistance of `θ²·Vdseff/Ids` added to it; at `FNOIMOD` 0, SPICE2's flicker noise `KF·|Id|^AF/(f^EF·Leff²·Coxe)`, and at 1, BSIM4's of the oxide traps `NOIA`, `NOIB` and `NOIC`, its strong and weak inversion's densities combined in parallel.
+ngspice 47 gives a BSIM4 at `TNOIMOD` 1 a resistance of 1 mΩ behind its drain and its source in a deck that runs a noise analysis, where it has none in any other (`b4v5set.c`, lines 1823 and 1870; `b4v5temp.c`, lines 1638 and 1669); jolty adds none: SKY130's `nfet_01v8` in a stage makes ngspice's output noise within 4.2e-7 of itself there, and within 1.4e-7 where its drain and source have resistances of their own.
 
 ## VBIC
 

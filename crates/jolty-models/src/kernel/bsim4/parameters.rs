@@ -12,7 +12,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{BodyResistance, Perimeter, fringe};
+use super::{BodyResistance, FlickerNoise, Perimeter, ThermalNoise, fringe};
 use crate::kernel::bsim3::by_channel;
 use crate::kernel::jfet::Channel;
 use crate::{REFERENCE_TEMPERATURE, Real};
@@ -72,6 +72,10 @@ pub struct Bsim4Parameters<R: Real = f64> {
     /// What the diffusions' perimeters `ps` and `pd` include, `permod`, 0 or 1; default
     /// 1.
     pub perimeter_model: Perimeter,
+    /// The flicker noise model, `fnoimod`, 0 or 1; default 1.
+    pub flicker_noise_model: FlickerNoise,
+    /// The channel's thermal noise model, `tnoimod`, 0 or 1; default 0.
+    pub thermal_noise_model: ThermalNoise,
     /// Whether the size-dependent parameters are checked and clamped where they lie out
     /// of range, `paramchk = 1`; default true.
     pub check_parameters: bool,
@@ -2244,6 +2248,8 @@ impl<R: Real> Default for Bsim4Parameters<R> {
             mobility_multiplier: R::constant(1.0),
             body_resistance_model: BodyResistance::Zero,
             perimeter_model: Perimeter::One,
+            flicker_noise_model: FlickerNoise::One,
+            thermal_noise_model: ThermalNoise::Zero,
             check_parameters: true,
             charge_partition: 0.0,
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),

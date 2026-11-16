@@ -43,12 +43,6 @@ pub trait Model: Send + Sync {
     fn foundry(&self) -> bool {
         false
     }
-
-    /// Whether its devices' noise is modeled: a noise analysis refuses a circuit holding
-    /// a device whose noise is not, rather than leave it quiet.
-    fn noise_modeled(&self) -> bool {
-        true
-    }
 }
 
 /// An instance's parameters, read into its model's typed form: the terminals of its device,
@@ -109,10 +103,6 @@ impl<K: Kernel> Model for Differentiable<K> {
 
     fn foundry(&self) -> bool {
         K::FOUNDRY
-    }
-
-    fn noise_modeled(&self) -> bool {
-        K::NOISE_MODELED
     }
 }
 

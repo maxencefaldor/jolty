@@ -577,6 +577,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `eu` |  | The mobility exponent, `eu`; default 1.67 for an n-channel and 1 for a p-channel. |
 | `finger_spacing` |  | The distance between neighbouring fingers, `sd`, in meters; default twice `dmcg`. |
 | `fingers` | `1` | The number of fingers the channel's width is split into, `nf`; default 1. |
+| `flicker_noise_model` | `1` | The flicker noise model, `fnoimod`, 0 or 1; default 1. |
 | `fprout` | `0` | The rout degradation coefficient for pocket devices, `fprout`, in volts per square-root meter; default 0. |
 | `gamma1` |  | The body effect near the surface, `gamma1`, in square-root volts; default derived from `ndep`. |
 | `gamma2` |  | The body effect in the bulk, `gamma2`, in square-root volts; default derived from `nsub`. |
@@ -1010,6 +1011,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `tcjswg` | `0` | The temperature coefficient of cjswg, `tcjswg`, in per kelvin; default 0. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `thermal_noise_model` | `0` | The channel's thermal noise model, `tnoimod`, 0 or 1; default 0. |
 | `threshold_adjustment` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `tku0` | `0` | The temperature coefficient of KU0, `tku0`; default 0. |
 | `tnjts` | `0` | The temperature coefficient for NJTS, `tnjts`; default 0. |

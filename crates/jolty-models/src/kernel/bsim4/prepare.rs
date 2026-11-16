@@ -9,9 +9,9 @@
 use super::channel::theta;
 use super::charges::Depletion;
 use super::parameters::{Binned, Bsim4Parameters};
-use super::{BodyResistance, EPS0, PI, Perimeter};
+use super::{BodyResistance, EPS0, FlickerNoise, PI, Perimeter, ThermalNoise};
 use super::{D, dexp};
-use crate::kernel::bsim3::{EPSSI, KBOQ, Q, check, lost};
+use crate::kernel::bsim3::{EPSSI, KBOQ, Q, by_channel, check, lost};
 use crate::kernel::parts::series_value;
 use crate::{ParameterError, Real};
 
@@ -124,6 +124,27 @@ pub(super) struct Overlaps<R: Real> {
     pub(super) fingers: R,
 }
 
+/// The numbers of the noise models.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Noise {
+    pub(super) flicker_model: FlickerNoise,
+    pub(super) thermal_model: ThermalNoise,
+    pub(super) noia: f64,
+    pub(super) noib: f64,
+    pub(super) noic: f64,
+    pub(super) em: f64,
+    pub(super) ef: f64,
+    pub(super) af: f64,
+    pub(super) kf: f64,
+    pub(super) ntnoi: f64,
+    pub(super) tnoia: f64,
+    pub(super) tnoib: f64,
+    pub(super) rnoia: f64,
+    pub(super) rnoib: f64,
+    /// The effective length less twice `lintnoi`.
+    pub(super) length: f64,
+}
+
 /// A transistor's numbers at its temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedBsim4<R: Real> {
@@ -136,6 +157,11 @@ pub struct PreparedBsim4<R: Real> {
     /// The drain and source resistances' stamped values: each conductance, or each
     /// resistance where its current is an unknown, of the parallel copies together.
     pub(super) series: [R; 2],
+    /// The drain and source resistances, of the parallel copies together, none where
+    /// there is no node behind them.
+    pub(super) resistances: [R; 2],
+    pub(super) noise: Noise,
+    pub(super) temperature: f64,
     /// The conductances of the five body resistances of `rbodymod` 1, in the order of
     /// `BODY_RESISTANCES`, of the parallel copies together.
     pub(super) body_network: Option<[R; 5]>,
@@ -577,8 +603,8 @@ impl<R: Real> Bsim4Parameters<R> {
         let pdeff = perimeter(self.drain_perimeter, drain_perimeter);
         let aseff = self.source_area.unwrap_or(source_area);
         let adeff = self.drain_area.unwrap_or(drain_area);
-        let [drain_resistance, source_resistance] = self.resistances()?;
-        let series = [drain_resistance, source_resistance].map(series_value);
+        let resistances = self.resistances()?;
+        let series = resistances.map(series_value);
 
         // The junctions, `diomod` 1, and their trap-assisted tunneling.
         let gate_edge = weff_cj * fingers;
@@ -798,8 +824,32 @@ impl<R: Real> Bsim4Parameters<R> {
             [adeff, pdeff],
         );
 
+        let noise = Noise {
+            flicker_model: self.flicker_noise_model,
+            thermal_model: self.thermal_noise_model,
+            noia: self
+                .noia
+                .map_or(by_channel(self.channel, 6.25e41, 6.188e40), Real::value),
+            noib: self
+                .noib
+                .map_or(by_channel(self.channel, 3.125e26, 1.5e25), Real::value),
+            noic: self.noic.value(),
+            em: self.em.value(),
+            ef: self.ef.value(),
+            af: self.af.value(),
+            kf: self.kf.value(),
+            ntnoi: self.ntnoi.value(),
+            tnoia: self.tnoia.value(),
+            tnoib: self.tnoib.value(),
+            rnoia: self.rnoia.value(),
+            rnoib: self.rnoib.value(),
+            length: (leff - self.lintnoi * 2.0).value(),
+        };
         Ok(PreparedBsim4 {
             overlaps,
+            resistances,
+            noise,
+            temperature: temperature.value(),
             drain_depletion,
             source_depletion,
             core: Core {
