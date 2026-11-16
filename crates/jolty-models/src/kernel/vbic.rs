@@ -1667,7 +1667,8 @@ impl<R: Real> VbicParameters<R> {
 /// `x1` held by `TD · dx1/dt + x2 − Itzf = 0` and `x2` by `TD / 3 · dx2/dt + x2 − x1 = 0`,
 /// so `x2`, which flows from the intrinsic collector to the intrinsic emitter in the
 /// forward transport current's place, is `3 / (s² · TD² + 3 · s · TD + 3)` of it. At the
-/// operating point both are the forward transport current.
+/// operating point both are the forward transport current. Each is in the transistor's own
+/// orientation, as its currents are, so that a PNP's are its NPN mirror's reversed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExcessPhase {
     /// The local unknowns `x1` and `x2`.
@@ -1716,26 +1717,29 @@ impl ExcessPhase {
         let [filtered, delayed] = [first, second].map(|unknown| at.value(unknown));
         let [[first_first, first_second], [second_first, second_second]] = self.own;
         let one = R::constant(1.0);
-        stamp.add_residual(first, R::constant(delayed) - itzf.extend(bias.beyond));
+        stamp.add_residual(
+            first,
+            R::constant(delayed) - itzf.extend(bias.beyond) * sign,
+        );
         stamp.add_charge(first, delay * filtered);
         stamp.add_capacitance(first_first, delay);
         stamp.add_conductance(first_second, one);
         let entry = |index: usize| self.driven.get(index).copied().unwrap_or(usize::MAX);
         for ((plus, minus), derivative) in VARIABLES.into_iter().zip(itzf.gradient) {
-            stamp.add_conductance(entry(plus), -derivative * sign);
-            stamp.add_conductance(entry(minus), derivative * sign);
+            stamp.add_conductance(entry(plus), -derivative);
+            stamp.add_conductance(entry(minus), derivative);
         }
         stamp.add_residual(second, R::constant(delayed - filtered));
         stamp.add_charge(second, delay * delayed / 3.0);
         stamp.add_conductance(second_second, one);
         stamp.add_conductance(second_first, -one);
         stamp.add_capacitance(second_second, delay / 3.0);
-        let current = R::constant(sign * delayed);
+        let current = R::constant(delayed);
         stamp.add_residual(stamp_nodes.node(CI), current);
         stamp.add_residual(stamp_nodes.node(EI), -current);
         let [at_collector, at_emitter] = self.delivered;
-        stamp.add_conductance(at_collector, R::constant(sign));
-        stamp.add_conductance(at_emitter, R::constant(-sign));
+        stamp.add_conductance(at_collector, one);
+        stamp.add_conductance(at_emitter, -one);
     }
 }
 
@@ -1983,7 +1987,7 @@ impl Kernel for Vbic {
         }
         let transport = shape.excess.as_ref().map_or_else(
             || (branches.itzf - branches.itzr).value.value(),
-            |excess| excess.delayed(at) - branches.itzr.value.value(),
+            |excess| prepared.sign * excess.delayed(at) - branches.itzr.value.value(),
         );
         let base_emitter = [node(BI), node(EI)];
         let parasitic_base_emitter = [node(BX), node(BP)];
@@ -2042,11 +2046,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::ELEMENTARY_CHARGE;
     use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
 
     /// VBIC's thermal voltage at the reference temperature.
@@ -2346,17 +2351,15 @@ mod tests {
     #[test]
     fn a_pnp_mirrors_an_npn() {
         let full = with(FULL, SERIES);
-        let mut npn = Bench::new::<Vbic>(&full);
-        let mut pnp_bench = Bench::new::<Vbic>(&pnp(&full));
-        let x = biased(&npn, &full, [3.0, 0.75, 0.0, -1.0], 1.0);
-        let n = npn.settle(&x);
-        let p = pnp_bench.settle(&x.iter().map(|v| -v).collect::<Vec<_>>());
-        for (n, p) in n.residual.iter().zip(&p.residual) {
-            assert!((n + p).abs() <= 1e-15 * n.abs().max(1e-12), "{n} vs {p}");
-        }
-        for (n, p) in n.charge.iter().zip(&p.charge) {
-            assert!((n + p).abs() <= 1e-15 * n.abs().max(1e-24), "{n} vs {p}");
-        }
+        let x = biased(
+            &Bench::new::<Vbic>(&full),
+            &full,
+            [3.0, 0.75, 0.0, -1.0],
+            1.0,
+        );
+        assert_mirrors(&Differentiable::<Vbic>::new(), &full, &x);
+        let delayed = with(&full, r#""excess_phase_delay": 2e-12, "#);
+        assert_mirrors(&Differentiable::<Vbic>::new(), &delayed, &x);
     }
 
     #[test]

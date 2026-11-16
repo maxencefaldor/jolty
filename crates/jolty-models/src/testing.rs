@@ -3,6 +3,9 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 mod cases;
+mod laws;
+
+pub(crate) use laws::assert_mirrors;
 
 use crate::{
     BOLTZMANN, Binding, Contributions, Differentiable, Gradient, Groups, Input, Kernel, Model,
@@ -29,6 +32,8 @@ pub(crate) struct Bench {
 /// What one evaluation of a bench's device produced, with dense matrices.
 pub(crate) struct Evaluation {
     pub(crate) residual: Vec<f64>,
+    /// The largest magnitude of a term of each residual.
+    pub(crate) scale: Vec<f64>,
     pub(crate) charge: Vec<f64>,
     pub(crate) conductance: Vec<Vec<f64>>,
     pub(crate) capacitance: Vec<Vec<f64>>,
@@ -43,14 +48,20 @@ fn grouped(
     temperature: f64,
 ) -> Result<(Groups, Runs, Pattern, Vec<Unknown>), ParameterError> {
     let specification = model.read(parameters)?;
-    let terminals = specification.interface().terminals.len();
+    let interface = specification.interface();
+    let terminals = interface.terminals.len();
     let nodes: Vec<Node> = (0..terminals)
         .map(|index| Some(UnknownIndex::new(index)))
         .collect();
+    // Each terminal's unknown is of the nature the engine gives the net it joins.
     let mut unknowns: Vec<Unknown> = (0..terminals)
         .map(|index| Unknown {
             name: format!("n{index}"),
-            nature: Nature::Voltage,
+            nature: if interface.thermal.contains(&index) {
+                Nature::Temperature
+            } else {
+                Nature::Voltage
+            },
         })
         .collect();
     let mut builder = PatternBuilder::new();
@@ -128,6 +139,11 @@ impl Bench {
             .collect()
     }
 
+    /// The nature of each local unknown, a thermal terminal's a temperature.
+    pub(crate) fn natures(&self) -> Vec<Nature> {
+        self.unknowns.iter().map(|unknown| unknown.nature).collect()
+    }
+
     /// The unknowns the device's layout claims [pivoted](crate::Layout::pivoted).
     pub(crate) fn pivoted(&self) -> &[usize] {
         self.groups.pivoted()
@@ -162,10 +178,10 @@ impl Bench {
             .evaluate(&self.groups, input, &mut contributions, None);
         let Contributions {
             residual,
+            scale,
             charge,
             conductance,
             capacitance,
-            ..
         } = contributions;
         let dense = |values: &[f64]| {
             let mut matrix = vec![vec![0.0; n]; n];
@@ -178,6 +194,7 @@ impl Bench {
             conductance: dense(&conductance),
             capacitance: dense(&capacitance),
             residual,
+            scale,
             charge,
             limited,
         }

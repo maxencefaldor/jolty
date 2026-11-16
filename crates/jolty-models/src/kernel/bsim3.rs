@@ -751,10 +751,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::REFERENCE_TEMPERATURE;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
 
     /// A short n-channel with every effect of the drain current switched on: the poly
@@ -865,23 +866,12 @@ mod tests {
     fn a_p_channel_mirrors_an_n_channel() {
         for capmod in 0..4 {
             let n = with(SHORT, &format!(r#""capacitance_model": {capmod}"#));
-            let p = p_channel(&n);
-            let (mut n, mut p) = (Bench::new::<Bsim3>(&n), Bench::new::<Bsim3>(&p));
             for x in [
                 [2.0, 1.5, 0.0, -0.5],
                 [-1.0, 2.0, 0.0, -1.5],
                 [1.0, 0.3, 0.0, 0.2],
             ] {
-                let mirrored = x.map(|value| -value);
-                let (n, p) = (n.settle(&x), p.settle(&mirrored));
-                for (n, p) in n
-                    .residual
-                    .iter()
-                    .zip(&p.residual)
-                    .chain(n.charge.iter().zip(&p.charge))
-                {
-                    assert!((n + p).abs() <= 1e-15 * n.abs(), "{n} {p}");
-                }
+                assert_mirrors(&Differentiable::<Bsim3>::new(), &n, &x);
             }
         }
     }

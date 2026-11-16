@@ -1,14 +1,15 @@
 //! A device of every analog model of the standard library, in some of its regions and
 //! with its options on, at values of its local unknowns: the cases of the guards every
-//! model must pass, a kernel's evaluation allocating nothing and its Jacobian being the
-//! derivatives of its residuals and charges.
+//! model must pass, a kernel's evaluation allocating nothing, its Jacobian being the
+//! derivatives of its residuals and charges, and the laws of `laws.rs`.
 //!
 //! The crate's own tests and its integration tests read it alike, by its path, so it
 //! names nothing of the crate.
 
 /// A device of each model, by its model's name, its parameters and the values of its
 /// first local unknowns, its terminals first, the rest at [`REST`]; every analog model has
-/// one or more.
+/// one or more. A transistor's gives each parameter whose default depends on its polarity,
+/// so that its mirror, of the other polarity, has its numbers.
 pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     ("diode", "{}", &[0.7, 0.0]),
     (
@@ -27,19 +28,23 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         r#"{"level": 3, "channel": "p", "drain_resistance": 10, "source_resistance": 0.5}"#,
         &[-3.0, -2.0, 0.0, 0.0],
     ),
-    ("vdmos", "{}", &[12.0, 6.0, 0.0]),
     (
         "vdmos",
-        r#"{"channel": "p", "drain_resistance": 0.05, "source_resistance": 2,
-                "gate_resistance": 3, "body_resistance": 0.01, "quasi_saturation_resistance": 1,
+        r#"{"transconductance_parameter": 20}"#,
+        &[12.0, 6.0, 0.0],
+    ),
+    (
+        "vdmos",
+        r#"{"channel": "p", "transconductance_parameter": 10, "drain_resistance": 0.05,
+                "source_resistance": 2, "gate_resistance": 3, "body_resistance": 0.01, "quasi_saturation_resistance": 1,
                 "quasi_saturation_voltage": 10, "breakdown_voltage": 30, "thermal": true}"#,
         &[-12.0, -6.0, 0.0, 5.0],
     ),
-    ("bsim3", "{}", &[3.0, 2.0, 0.0, 0.0]),
+    ("bsim3", r#"{"u0": 0.067}"#, &[3.0, 2.0, 0.0, 0.0]),
     (
         "bsim3",
-        r#"{"channel": "p", "rsh": 20, "source_squares": 0.02, "capacitance_model": 0,
-                "noise_model": 2, "thermal": true}"#,
+        r#"{"channel": "p", "u0": 0.025, "rsh": 20, "source_squares": 0.02,
+                "capacitance_model": 0, "noise_model": 2, "thermal": true}"#,
         &[-3.0, -2.0, 0.0, 0.0],
     ),
     ("vbic", "{}", &[5.0, 0.7, 0.0, 0.0, 4.9, 4.9, 0.69]),

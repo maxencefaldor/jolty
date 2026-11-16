@@ -595,9 +595,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
 
     const CHARGED: &str = r#"{"gate_source_capacitance": 2e-12, "gate_drain_capacitance": 1e-12,
@@ -663,13 +664,7 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Jfet>("{}");
-        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
-        let n_currents = n.settle(&[3.0, -0.5, 0.0]).residual;
-        let p_currents = p.settle(&[-3.0, 0.5, 0.0]).residual;
-        for (n_current, p_current) in n_currents.iter().zip(&p_currents) {
-            assert!((n_current + p_current).abs() < 1e-15);
-        }
+        assert_mirrors(&Differentiable::<Jfet>::new(), "{}", &[3.0, -0.5, 0.0]);
     }
 
     #[test]
