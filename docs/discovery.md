@@ -28,7 +28,7 @@ The prompts, candidates, experiments and designs are all in [`discovery/`](https
 
 -   ![A notch that survives its tolerances, its schematic](images/gallery/notch.inside.schematic.png)
 
-    **[A notch that survives its tolerances](discovery/notch.md)** · 2/2 specs · ngspice within 9.5e-12
+    **[A notch that survives its tolerances](discovery/notch.md)** · 2/2 specs · ngspice within 9.4e-12
 
     The prompt asks for a notch at least 50 dB deep somewhere between 45 Hz and 55 Hz, a passband within 3 dB at 25 Hz and 100 Hz, from 1 % resistors and 5 % capacitors, on 95 % of the circuits built.
     A notch whose depth is set by phase rather than by a balance of values met it on every one of 200 samples, at least 65 dB deep; the twin-T, the textbook notch, met it on none.
@@ -55,7 +55,7 @@ The prompts, candidates, experiments and designs are all in [`discovery/`](https
 
 -   ![A NOR gate of three memristors, its schematic](images/gallery/memristive_nor.inside.schematic.png)
 
-    **[A NOR gate of three memristors](discovery/memristive-nor.md)** · 12/12 specs · ngspice within 4.9e-09
+    **[A NOR gate of three memristors](discovery/memristive-nor.md)** · 12/12 specs · ngspice within 9.3e-06
 
     The prompt asks for a NOR gate of three VTEAM memristors and one pulse of at most 10 ns, every output within 0.1 of its NOR and every input within 0.05 of its bit, with the pulse's amplitude 10 % off either way.
     MAGIC's gate, the textbook answer, works only between 1.30 V and 1.32 V, ±0.8 %; a 2.2 kΩ resistor across its inputs widens that to 1.14 V to 1.91 V, ±25 %, and meets the prompt.
