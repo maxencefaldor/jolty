@@ -67,11 +67,12 @@ each outcome, classified, and each simulator's failure rates;
 and ngspice, or the simulators ``--simulator`` names, judges each cell against the row's
 known answer, and renders the matrix; ``benchmarks/coverage/README.md`` says how.
 
-``--precision`` runs instead the fixtures of ``benchmarks/precision``, each in jolty and
-ngspice with Sparse 1.3 and with KLU, or the simulators ``--simulator`` names, at their
-defaults and along the ``--sweeps`` of their tolerances, scores each run against its
-exact answer, and draws a work-precision diagram per fixture;
-``benchmarks/precision/README.md`` says what each fixture measures.
+``--precision`` runs instead the fixtures of ``benchmarks/precision``, each in jolty,
+ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or the simulators
+``--simulator`` names, at their defaults and along the ``--sweeps`` of their
+tolerances, scores each run against its exact answer, and draws a work-precision
+diagram per fixture; ``benchmarks/precision/README.md`` says what each fixture
+measures.
 
 Each suite runs every simulator by its runner of ``benchmarks/simulators.py``, and
 writes its results headed by their provenance, ``benchmarks/measuring.py``'s.
@@ -1430,8 +1431,8 @@ class Bench(cli.CommandLine):
         description=(
             "The simulators --view, --robustness, --coverage or --precision runs, "
             "such as jolty, ngspice-sparse or xyce-serial; by default every one "
-            "installed for --view and --robustness, and jolty and ngspice with "
-            "Sparse and with KLU for --coverage and --precision."
+            "installed for --view, --robustness and --precision, and jolty and "
+            "ngspice with Sparse and with KLU for --coverage."
         ),
     )
     timeout: float = Field(

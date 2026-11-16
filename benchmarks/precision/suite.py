@@ -2,17 +2,17 @@
 """The precision suite: each simulator's error against exact answers, against its cost.
 
 ``scripts/bench --precision`` runs it through ``benchmarks/speed/bench.py``. Each
-fixture of ``fixtures.py`` runs in each simulator, jolty and ngspice 47 with Sparse 1.3
-and with KLU, each by its runner of ``benchmarks/simulators.py``, at its defaults and
-along two sweeps: the relative tolerance alone,
-from 1e-2 to 1e-8 in quarter decades, the other tolerances at their defaults, and every
-tolerance scaled together from the defaults by the same factor. At each point a run
-produced, the exact answer there scores it: the significant correct digits of its
-worst point, ``-log₁₀ max |found - exact| / |exact|``, and their mixed form, with the
-quantity's scale added to ``|exact|``, for a quantity that passes through or near
-zero; no score claims more digits than the exact answer's own rounding allows. Beside
-each score, the run's engine time, the median of its repeats, and its steps,
-rejections and Newton iterations.
+fixture of ``fixtures.py`` runs in each simulator installed, jolty, ngspice 47 with
+Sparse 1.3 and with KLU, and Xyce 7.10, each by its runner of
+``benchmarks/simulators.py``, at its defaults and along two sweeps: the relative
+tolerance alone, from 1e-2 to 1e-8 in quarter decades, the other tolerances at their
+defaults, and every tolerance scaled together from the defaults by the same factor.
+At each point a run produced, the exact answer there scores it: the significant
+correct digits of its worst point, ``-log₁₀ max |found - exact| / |exact|``, and their
+mixed form, with the quantity's scale added to ``|exact|``, for a quantity that passes
+through or near zero; no score claims more digits than the exact answer's own rounding
+allows. Beside each score, the run's engine time, the median of its repeats, and its
+steps, rejections and Newton iterations.
 
 Usage::
 
@@ -29,6 +29,7 @@ what the first diagrams found.
 """
 
 import math
+import re
 import statistics
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -59,8 +60,10 @@ from simulators import (
     Ngspice,
     Simulator,
     Unsupported,
+    Xyce,
     command,
     netlist,
+    runner,
     trouble,
 )
 
@@ -68,7 +71,8 @@ from jolty import circuit, foundry, plan, plots, results
 from jolty.errors import JoltyError
 from jolty.plan import Ac, Noise, Options, PoleZero, Transient
 from jolty.simulate import Elaborated, Simulation
-from jolty.spice import export, ngspice
+from jolty.spice import export, ngspice, xyce
+from jolty.units import VOLTAGE
 
 RELATIVE_TOLERANCES: Final = tuple(10 ** (-2 - step / 4) for step in range(25))
 """The relative tolerances each sweep runs: 1e-2 to 1e-8 in quarter decades, as the
@@ -92,9 +96,26 @@ SIMULATORS: Final = (
     Simulator.JOLTY,
     Simulator.NGSPICE_SPARSE,
     Simulator.NGSPICE_KLU,
+    Simulator.XYCE_SERIAL,
 )
 """The simulators that run the precision suite, as the research's design names
-them."""
+them, and Xyce."""
+
+XYCE_DEFAULTS: Final = {
+    "nonlin": {"reltol": 1e-3, "abstol": 1e-12, "rhstol": 1e-6},
+    "nonlin-tran": {"reltol": 1e-2, "abstol": 1e-6, "rhstol": 1e-2},
+    "timeint": {"reltol": 1e-3, "abstol": 1e-6},
+}
+"""Xyce 7.10.0's tolerances, by the group of its options: its Newton iteration's at an
+operating point and a DC sweep, ``NONLIN``'s (``N_NLS_NLParams.C``, lines 444, 445 and
+448), and in a transient, ``NONLIN-TRAN``'s (lines 109 to 111), and its time steps'
+error, ``TIMEINT``'s (``N_TIA_TIAParams.C``, lines 102 and 104)."""
+
+XYCE_STEPS: Final = {
+    "accepted": re.compile(r"^\s*Successful Step\s+(\d+)", re.MULTILINE),
+    "rejected": re.compile(r"^\s*Failed Steps\s+(\d+)", re.MULTILINE),
+}
+"""What Xyce's timing table states of a transient's steps, accepted and rejected."""
 
 
 class Sweep(StrEnum):
@@ -119,6 +140,30 @@ class Setting:
             voltage_tolerance=given.get("voltage_tolerance"),
             current_tolerance=given.get("current_tolerance"),
             charge_tolerance=given.get("charge_tolerance"),
+        )
+
+    def xyce_options(self) -> tuple[str, ...]:
+        """Xyce's options lines: none at defaults, else each group of its tolerances.
+
+        Along either sweep, each of its relative tolerances is the setting's, and each
+        absolute one its default, or scaled from it by the factor the setting scales
+        SPICE's tolerances by.
+        """
+        if self.sweep == "defaults":
+            return ()
+        factor = (
+            self.relative_tolerance / DEFAULTS["relative_tolerance"]
+            if self.sweep == Sweep.SCALED
+            else 1.0
+        )
+        return tuple(
+            f".options {group} "
+            + " ".join(
+                f"{name}="
+                + repr(self.relative_tolerance if name == "reltol" else value * factor)
+                for name, value in tolerances.items()
+            )
+            for group, tolerances in XYCE_DEFAULTS.items()
         )
 
     def tolerances(self) -> dict[str, float]:
@@ -306,6 +351,82 @@ def run_ngspice(
     return Measured(_spice_found(raw, analysis, vectors), seconds, counts)
 
 
+def run_xyce(
+    prepared: Prepared, setting: Setting, repeats: int, runner: Xyce
+) -> Measured:
+    """The fixture's analysis in Xyce, by `runner`, `repeats` times, a process each.
+
+    The deck is the circuit's netlist in Xyce's dialect, printing the vectors the
+    fixture reads, with the setting's tolerances; Xyce runs at the temperature where
+    its thermal voltage is jolty's, as ``jolty.spice.xyce`` runs it. Each repeat's time
+    is Xyce's own time for its analysis; the counts are the last repeat's.
+
+    Raises:
+        Unsupported: When Xyce cannot run the analysis, or write the circuit.
+        JoltyError: When Xyce fails, or runs out of time.
+    """
+    fixture = prepared.fixture
+    analysis = fixture.analysis
+    if isinstance(analysis, PoleZero) or (
+        isinstance(analysis, Transient) and analysis.periodic
+    ):
+        message = (
+            "Xyce 7.10 has no pole-zero analysis, and finds a periodic steady state "
+            "by harmonic balance alone, which the suite does not run"
+        )
+        raise Unsupported(message)
+    built = circuit(fixture.top)
+    try:
+        lines = netlist(built, (analysis,), dialect=export.XYCE)
+    except JoltyError as error:
+        raise Unsupported(str(error)) from error
+    vectors = {
+        read: export.vector(built, prepared.unknowns[read], dialect=export.XYCE)
+        for read in fixture.reads
+    }
+    statement = f".{command(analysis, export.flatten(built))}"
+    printed = None if isinstance(analysis, Noise) else list(vectors.values())
+    found = [
+        runner.run(lines, statement, printed=printed, options=setting.xyce_options())
+        for _ in range(repeats)
+    ]
+    last = found[-1]
+    counts = {
+        name: int(stated[-1])
+        for name, pattern in XYCE_STEPS.items()
+        if isinstance(analysis, Transient)
+        for stated in [pattern.findall(last.printed)]
+        if stated
+    }
+    return Measured(
+        _xyce_found(last, analysis, vectors),
+        [each.analysis_seconds for each in found],
+        counts,
+    )
+
+
+def _xyce_found(
+    found: xyce.Result, analysis: object, vectors: Mapping[str, str]
+) -> Found:
+    """What Xyce printed of the vectors a fixture reads, at its points.
+
+    Xyce prints no levels of a DC sweep, which steps through the plan's own.
+    """
+    match analysis:
+        case Transient():
+            points = found.real("time")
+        case plan.DcSweep(values=levels):
+            points = np.array([level.to(VOLTAGE, "a level") for level in levels])
+        case Ac():
+            points = found.real("frequency")
+            return Found(
+                points, {read: found.vectors[name] for read, name in vectors.items()}
+            )
+        case _:
+            return Found(found.real("frequency"), {"noise": found.real("onoise")})
+    return Found(points, {read: found.real(name) for read, name in vectors.items()})
+
+
 def _spice_found(
     raw: ngspice.Result, analysis: object, vectors: Mapping[str, str]
 ) -> Found:
@@ -461,6 +582,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
             f"it runs {', '.join(SIMULATORS)}"
         )
         raise SystemExit(message)
+    installed = [each for each in SIMULATORS if runner(each).version() is not None]
     document = SuiteResults(
         **provenance().model_dump(), versions=_versions(), repeats=repeats
     )
@@ -469,7 +591,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
     started = time.perf_counter()
     for name in names or list(every):
         document.fixtures[name] = run(
-            Prepared.of(every[name]), simulators or SIMULATORS, sweeps, repeats
+            Prepared.of(every[name]), simulators or installed, sweeps, repeats
         )
         save(output, document)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
@@ -478,12 +600,14 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
 
 
 def _versions() -> dict[str, str]:
-    """The versions of jolty, of ngspice, and of the exact answers' arithmetic."""
-    found = {"mpmath": metadata.version("mpmath"), "jolty": Jolty().version()}
-    stated = Ngspice().version()
-    if stated is not None:
-        found["ngspice"] = stated
-    return found
+    """The versions of jolty, of ngspice and Xyce, and of the exact answers' arithmetic.
+
+    Each other simulator's, where it is installed.
+    """
+    others = {"ngspice": Ngspice().version(), "xyce": Xyce().version()}
+    return {"mpmath": metadata.version("mpmath"), "jolty": Jolty().version()} | {
+        name: stated for name, stated in others.items() if stated is not None
+    }
 
 
 def run(
@@ -534,6 +658,8 @@ def _run(
         match simulator:
             case Simulator.NGSPICE_SPARSE | Simulator.NGSPICE_KLU:
                 measured = run_ngspice(prepared, setting, repeats, Ngspice(simulator))
+            case Simulator.XYCE_SERIAL:
+                measured = run_xyce(prepared, setting, repeats, Xyce())
             case _:
                 measured = run_jolty(prepared, setting, repeats)
     except Unsupported as reason:
@@ -578,8 +704,9 @@ COLORS: Final = {
     Simulator.JOLTY: plots.COLORS[0],
     Simulator.NGSPICE_SPARSE: plots.COLORS[1],
     Simulator.NGSPICE_KLU: plots.COLORS[2],
+    Simulator.XYCE_SERIAL: plots.COLORS[3],
 }
-"""Each simulator's color, the plots' first three, in their fixed order."""
+"""Each simulator's color, the plots' first four, in their fixed order."""
 
 STYLES: Final = {Sweep.RELTOL: "-", Sweep.SCALED: "--"}
 """Each sweep's line: solid for the relative tolerance alone, dashed for all scaled."""
@@ -725,9 +852,20 @@ def _minor(value: float, _: int | None) -> str:
     return EngFormatter(unit="s", sep=" ")(value) if leading in LABELED else ""
 
 
+def simulators_in(document: SuiteResults) -> list[Simulator]:
+    """The simulators of `SIMULATORS` that ran the fixtures of `document`, in order."""
+    found = {
+        each.simulator
+        for fixture in document.fixtures.values()
+        for each in fixture.runs
+    }
+    return [simulator for simulator in SIMULATORS if simulator in found]
+
+
 def defaults_table(document: SuiteResults) -> str:
     """Each simulator's digits and time at its defaults, by fixture and output."""
-    heads = ["fixture", "output", *(str(simulator) for simulator in SIMULATORS)]
+    simulators = simulators_in(document)
+    heads = ["fixture", "output", *(str(simulator) for simulator in simulators)]
     rows = [
         "| " + " | ".join(heads) + " |",
         "| " + " | ".join("---" for _ in heads) + " |",
@@ -735,7 +873,7 @@ def defaults_table(document: SuiteResults) -> str:
     for name, measured in document.fixtures.items():
         for output in measured.outputs:
             cells = [f"`{name}`", f"{output.name}, {output.score}"]
-            cells += [_default(measured, output, each) for each in SIMULATORS]
+            cells += [_default(measured, output, each) for each in simulators]
             rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
@@ -771,7 +909,8 @@ def equal_error_table(document: SuiteResults, digits: float | None) -> str:
     in no run is marked with the most it reached, one whose runs all failed with what
     its first failure said, and each with the runs that failed.
     """
-    heads = ["fixture", "output", "target", *(str(each) for each in SIMULATORS)]
+    simulators = simulators_in(document)
+    heads = ["fixture", "output", "target", *(str(each) for each in simulators)]
     rows = [
         "| " + " | ".join(heads) + " |",
         "| " + " | ".join("---" for _ in heads) + " |",
@@ -786,7 +925,7 @@ def equal_error_table(document: SuiteResults, digits: float | None) -> str:
                     for found in [each.scored(output)]
                     if found is not None
                 ]
-                for simulator in SIMULATORS
+                for simulator in simulators
             }
             reached = [
                 max(f.digits for _, f in runs) for runs in scored.values() if runs
@@ -795,7 +934,7 @@ def equal_error_table(document: SuiteResults, digits: float | None) -> str:
             cells = [f"`{name}`", f"{output.name}, {output.score}", f"{target:.1f}"]
             cells += [
                 _equal_error(measured.runs, simulator, scored[simulator], target)
-                for simulator in SIMULATORS
+                for simulator in simulators
             ]
             rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows)

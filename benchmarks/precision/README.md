@@ -7,7 +7,7 @@ The suite stays out of `scripts/check`, as the speed suite does: it times its ru
 ## Running
 
 ```sh
-scripts/bench --precision                       # every fixture, in jolty and in ngspice
+scripts/bench --precision                       # every fixture, in jolty, ngspice and Xyce, each installed
 scripts/bench --precision rc_step lc_tank       # only these fixtures
 scripts/bench --precision --simulator jolty     # one simulator, or several
 scripts/bench --precision --sweeps reltol       # one sweep of the tolerances, or both
@@ -37,7 +37,7 @@ The exact answers of the networks of 1,000 nodes take about a minute each on the
 | `ladder_10`, `_100`, `_1000` | ladders of so many nodes, their resistances log-uniform from 10 Ω to 10 kΩ and their capacitances from 1 pF to 1 nF, under the step, for five of their slowest time constants | the eigenpairs of their symmetric pencils | 50 of their nodes at every point, mixed |
 | `tree_10`, `_100`, `_1000` | random trees of so many nodes, each node's parent drawn among the nodes before it, their values as the ladders' | the same | the same |
 
-Every circuit is built with jolty's builder, and its element values are the doubles the circuit holds, which the exact answers read as they are, so that they answer the circuit both simulators read.
+Every circuit is built with jolty's builder, and its element values are the doubles the circuit holds, which the exact answers read as they are, so that they answer the circuit every simulator reads.
 The networks' values come from NumPy's generator seeded with 1,000 plus a ladder's size and 2,000 plus a tree's, so the same fixtures come back on every machine; their modes' rates spread over 4.5 decades for `tree_10` to 10.1 for `ladder_1000`.
 Their transients cover five of their slowest time constants, rounded up to a digit: from 30 µs for `tree_10` to 0.4 s for `ladder_1000`.
 
@@ -65,7 +65,10 @@ Each fixture runs at each simulator's defaults, ringed on its diagram, and along
 - **`reltol`:** the relative tolerance alone, from 1e-2 to 1e-8 in quarter decades, as the IVP test set's diagrams sweep theirs, the other tolerances at their defaults;
 - **`scaled`:** every tolerance scaled from its default by the same factor, the relative from 1e-2 to 1e-8: `reltol`, `vntol`, `abstol` and `chgtol` from SPICE's 1e-3, 1e-6 V, 1e-12 A and 1e-14 C.
 
-`trtol` stays at its 7, and a transient's longest step at its default, a fiftieth of the run, in both simulators.
+`trtol` stays at its 7, and a transient's longest step at its default, a fiftieth of the run, in every simulator.
+
+Xyce's tolerances are not SPICE's: it has a relative and an absolute tolerance, and one on the residual, for its Newton iteration at an operating point (`NONLIN`) and in a transient (`NONLIN-TRAN`), and a relative and an absolute one for its time steps' error (`TIMEINT`).
+Along either sweep, each of its relative tolerances is the sweep's, and each of the others is Xyce 7.10's own default, `suite.XYCE_DEFAULTS` from its source, or, in `scaled`, that default scaled by the same factor as SPICE's.
 
 ## Simulators
 
@@ -74,10 +77,11 @@ Each fixture runs at each simulator's defaults, ringed on its diagram, and along
 | `jolty` | `Simulation.run` on a fresh simulation of the circuit elaborated once, so that every repeat solves its operating point again, after one run to warm up, as the speed suite's timing does | the wall time of `Simulation.run`: the engine's work and its results made in Python |
 | `ngspice-sparse` | ngspice 47 on the netlist `jolty.spice.export` writes, saving the vectors the fixture reads, at the temperature where its thermal voltage is jolty's, as `jolty.spice.ngspice` runs it, with Sparse 1.3, its default | the growth of its own `Total analysis time` from `rusage`, which reads a wall clock: a run paused for 25 s reported 29.9 s where it took 4.9 unpaused |
 | `ngspice-klu` | the same with `.options klu` | the same |
+| `xyce-serial` | Xyce 7.10 on the netlist in its dialect, printing the same vectors, at the same temperature, as `jolty.spice.xyce` runs it, a process for each repeat | its own `Total Simulation Solvers Run Time` |
 
 Each setting runs in each simulator one after another, so that each runs under the load the others do, and every run records the load average as it began.
 ngspice's repeats run in one process, its first repeat with the setting up of its matrix, which the median passes over as jolty's repeats pass over nothing.
-ngspice 47 refuses noise and pole-zero analyses with KLU, and its `pss`, which searches an oscillator's frequency and returns harmonics, has no shooting for a circuit driven at a given period: those runs are recorded as unsupported, never as failures.
+ngspice 47 refuses noise and pole-zero analyses with KLU, and its `pss`, which searches an oscillator's frequency and returns harmonics, has no shooting for a circuit driven at a given period; Xyce 7.10 has no pole-zero analysis, and finds a periodic steady state by harmonic balance alone, which the suite does not run: those runs are recorded as unsupported, never as failures.
 A run that fails is recorded with what the simulator said, and drawn nowhere.
 
 ## The first diagrams

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from mpmath import mp, mpf
 
-from differential import SKIP
+from differential import SKIP, SKIP_XYCE
 from jolty import _core
 
 PRECISION = Path(__file__).parent.parent / "benchmarks" / "precision"
@@ -280,3 +280,53 @@ def test_equal_error_takes_each_simulator_s_fastest_run_to_the_target() -> None:
     # A target beyond a simulator's reach marks it with the most it reached.
     *_, row = equal_error_table(document, 5.0).splitlines()
     assert "| never: 4.2 digits at most; 1 failed |" in row
+
+
+def test_xyce_s_tolerances_follow_each_sweep() -> None:
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        XYCE_DEFAULTS,
+        Setting,
+        Sweep,
+    )
+
+    assert Setting("defaults", 1e-3).xyce_options() == ()
+    # Along the relative tolerance's sweep, each group's relative tolerance is the
+    # setting's and its absolute ones Xyce's own; scaled, those are scaled with it.
+    alone = Setting(Sweep.RELTOL, 1e-5).xyce_options()
+    scaled = Setting(Sweep.SCALED, 1e-5).xyce_options()
+    for group, (one, other) in zip(
+        XYCE_DEFAULTS, zip(alone, scaled, strict=True), strict=True
+    ):
+        defaults = XYCE_DEFAULTS[group]
+        assert one == f".options {group} " + " ".join(
+            f"{name}={1e-5 if name == 'reltol' else value!r}"
+            for name, value in defaults.items()
+        )
+        assert other == f".options {group} " + " ".join(
+            f"{name}={1e-5 if name == 'reltol' else value * 1e-2!r}"
+            for name, value in defaults.items()
+        )
+
+
+@SKIP_XYCE
+def test_xyce_runs_a_fixture_and_scores_it() -> None:
+    from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        Xyce,
+        run_xyce,
+        score,
+    )
+
+    prepared = Prepared.of(fixtures()["rc_step"])
+    setting = Setting("scaled", DEFAULTS["relative_tolerance"] / 100)
+    output = prepared.fixture.outputs[0]
+    ran = run_xyce(prepared, setting, 2, Xyce())
+    assert len(ran.seconds) == 2
+    assert ran.counts["accepted"] > 0
+    mixed = score(prepared.fixture.compare(ran.found)[output.name], output)["mixed"]
+    # Xyce's trapezoidal steps, its default, are at most a fiftieth of the run, as
+    # jolty's and ngspice's are: an error of at most about 8e-4 of the 1 V swing.
+    assert 3 < mixed.digits < mixed.limit
