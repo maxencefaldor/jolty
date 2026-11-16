@@ -19,8 +19,8 @@ models it needs and whether jolty has them.
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -28,7 +28,7 @@ from jolty import _core
 from jolty.errors import JoltyError
 from jolty.settings import Settings
 from jolty.spice.download import fetch
-from jolty.spice.library import VERILOG_A, Library, Use
+from jolty.spice.library import SIZES, VERILOG_A, Library, Use
 from jolty.spice.ngspice import Compatibility
 
 
@@ -166,7 +166,8 @@ def read(
     """`kit`'s model libraries, read at `sections`, as ngspice reads them.
 
     The files the kit includes come first, then each section, each library's typical
-    one unless given; ``temper`` is `temperature`, in kelvins.
+    one unless given, in the kit's compatibility mode; ``temper`` is `temperature`, in
+    kelvins.
 
     Raises:
         DownloadError: When a file cannot be downloaded, or its digest is wrong.
@@ -175,7 +176,7 @@ def read(
         SpiceError: When a file holds what jolty cannot read.
     """
     found = root(kit, settings)
-    library = Library(temperature)
+    library = Library(temperature, kit.compatibility)
     for path in kit.includes:
         library.include(found / path)
     for path, section in kit.typical if sections is None else sections:
@@ -201,6 +202,9 @@ class Device:
     element of its type names."""
     uses: tuple[Use, ...]
     """Each element it holds, the model it needs, and why jolty cannot read it."""
+    parameters: Mapping[str, float] = field(default_factory=dict)
+    """The parameters it is read with, its defaults but these: a subcircuit's length
+    and width, `l` and `w`, where its defaults are a size no bin holds."""
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -236,7 +240,11 @@ def inventory(
 
     Its devices are the subcircuits and the models its libraries define outside any
     subcircuit, each read at its parameters' defaults, as
-    [`Library.survey`][jolty.spice.Library.survey] reads it.
+    [`Library.survey`][jolty.spice.Library.survey] reads it; a subcircuit whose
+    defaults are a size that no bin of a MOSFET it holds holds, but that gives its
+    length `l` and width `w`, is read again at the middle of that model's first bin,
+    in the units of the library's `scale`, and is stated so where every bin it selects
+    then holds its size.
 
     Raises:
         DownloadError: When a file cannot be downloaded, or its digest is wrong.
@@ -246,12 +254,31 @@ def inventory(
     """
     library = read(kit, sections, settings=settings)
     return (
-        *(
-            Device(name, "subcircuit", library.survey(name))
-            for name in library.subcircuits
-        ),
+        *(_subcircuit(library, name) for name in library.subcircuits),
         *(
             Device(name, "model", (library.survey_model(name),))
             for name in library.models
         ),
     )
+
+
+def _subcircuit(library: Library, name: str) -> Device:
+    """The subcircuit `name` of `library`, read at a size a bin holds if it can be.
+
+    It is read at its defaults; where a MOSFET's size is one no bin holds, and the
+    subcircuit gives its length and width, `l` and `w`, again at the middle of the
+    first bin of that MOSFET's model, in the units of the library's `scale`.
+    """
+    uses = library.survey(name)
+    middle = next((use.middle for use in uses if use.middle is not None), None)
+    subcircuit = library.subcircuit(name)
+    sized = subcircuit is not None and subcircuit.defaults.keys() >= SIZES.keys()
+    if middle is None or subcircuit is None or not sized:
+        return Device(name, "subcircuit", uses)
+    scale = library.options.get("scale", 1.0)
+    length, width = middle
+    parameters = {"l": length / scale, "w": width / scale}
+    resized = library.survey(name, **parameters)
+    if any(use.middle is not None for use in resized):
+        return Device(name, "subcircuit", uses)
+    return Device(name, "subcircuit", resized, parameters)

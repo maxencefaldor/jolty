@@ -437,9 +437,9 @@ _FUNCTIONS: Final[dict[str, tuple[int | None, str]]] = {
 """Each function: its number of arguments, `None` for any, and how jolty writes it.
 
 jolty writes a function by its name, or by a template of its arguments. PSpice's
-``PWR`` and ngspice's power are of the magnitude of the base. A ``TABLE`` within an
-expression is ngspice's ``pwl``, extended beyond its ends; a ``TABLE`` source's, made by
-[`library`][jolty.spice.library], is a ``rounded_table``.
+``PWR`` is of the magnitude of the base, and ``POW`` as `_power` writes it. A
+``TABLE`` within an expression is ngspice's ``pwl``, extended beyond its ends; a
+``TABLE`` source's, made by [`library`][jolty.spice.library], is a ``rounded_table``.
 """
 
 
@@ -559,8 +559,8 @@ def translate(
     match expression:
         case Unary(operator, operand):
             return f"({operator}{written(operand)})"
-        case Binary("^", left, right):
-            return f"pow(abs({written(left)}), {written(right)})"
+        case Binary("^", left, right) | Call("pow", (left, right)):
+            return _power(written(left), written(right))
         case Binary(operator, left, right):
             return f"({written(left)} {operator} {written(right)})"
         case Conditional(condition, then, otherwise):
@@ -569,6 +569,25 @@ def translate(
             return _call(function, [written(part) for part in arguments])
         case leaf:
             return _leaf(leaf, parameters, node, current)
+
+
+def _power(base: str, exponent: str) -> str:
+    """`base` to the power of `exponent`, in jolty's language, as ngspice takes it.
+
+    A negative base to a whole power keeps its sign where the power is odd, as ngspice's
+    parameters and behavioral sources raise it (``xpressn.c``, lines 136 to 137 and 786
+    to 803; ``ptfuncs.c``, lines 69 to 87), where the exponent is a constant; any other
+    power is of the magnitude of the base, where ngspice's behavioral sources give 0 and
+    its parameters no number.
+    """
+    try:
+        power = _core.constant(exponent)
+    except ValueError:
+        power = math.nan
+    magnitude = f"pow(abs({base}), {exponent})"
+    if power.is_integer() and power % 2:
+        return f"(sgn({base}) * {magnitude})"
+    return magnitude
 
 
 def _leaf(

@@ -27,12 +27,14 @@ from jolty import (
     component,
     devices,
     ir,
+    results,
     spice,
 )
 from jolty.spice import models, sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
+from jolty.spice.ngspice import Compatibility
 from jolty.units import (
     VOLTAGE,
     A,
@@ -131,6 +133,8 @@ def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
         ("2 ^ 3 ^ 2", 512.0),
         ("PWR(-2, 2)", 4.0),
         ("PWRS(-2, 2)", -4.0),
+        ("POW(-2, 3) + (-2) ** 3 + PWR(-2, 3)", -8.0),
+        ("POW(-2, 2) + POW(-4, 0.5)", 6.0),
         ("LIMIT(5, 2, 1)", 2.0),
         ("LIMIT(5, 2) + AGAUSS(1, 0.1, 3) + AUNIF(2, 1)", 8.0),
         ("1 < 2 & 3 > 2 ? 10 : 20", 10.0),
@@ -920,7 +924,10 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
         ("level=14", "`N1` is a BSIM4 card of version 4.8"),
         ("level=54 version=4.5 capmod=1", "jolty models BSIM4 with `CAPMOD` 2 alone"),
         ("level=54 version=4.5 igcmod=1", "jolty models BSIM4 with `IGCMOD` 0 alone"),
-        ("level=54 version=4.5 rdsmod=1", "jolty models BSIM4 with `RDSMOD` 0 alone"),
+        (
+            "level=54 version=4.5 rgatemod=1",
+            "jolty models BSIM4 with `RGATEMOD` 0 alone",
+        ),
         ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
         ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),
     ],
@@ -1025,7 +1032,7 @@ def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
         ".model nch.x nmos(level=49 lmin=0 lmax=1 wmin=0 wmax=1 vth0=0.6)\n"
         ".subckt a d\nM1 d d 0 0 nch L=0.5u W=2u\nM2 d d 0 0 nch L=2u W=2u\n"
         "M3 d d 0 0 nch L=1.0000000005u W=2u\n.ends\n"
-        ".subckt wide d\nM1 d d 0 0 nch L=0.5u W=20u\n.ends\n"
+        ".subckt wide d\nM1 d d 0 0 nch L=0.5u W=20e-6\n.ends\n"
         ".subckt unsized d\nM1 d d 0 0 nch\n.ends"
     )
     thresholds = [
@@ -1033,9 +1040,85 @@ def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
         for instance in parts.component("a").definition.instances
     ]
     assert thresholds == [0.4, 0.5, 0.5]
-    for name in ("wide", "unsized"):
-        with pytest.raises(SpiceError, match="no model is named `nch`"):
-            parts.component(name)
+    with pytest.raises(
+        SpiceError,
+        match="no bin of `nch` holds a length of 5e-07 m and a width of 2e-05 m",
+    ):
+        parts.component("wide")
+    with pytest.raises(SpiceError, match="no bin of `nch` is selected without a size"):
+        parts.component("unsized")
+
+
+FINGERED: Final = (
+    ".model nch.1 nmos(level=54 version=4.5 lmin=0.1u lmax=1u wmin=1u wmax=3u "
+    "vth0=0.4)\n"
+    ".model nch.2 nmos(level=54 version=4.5 lmin=0.1u lmax=1u wmin=3u wmax=9u "
+    "vth0=0.5)\n"
+    ".subckt fingers d\nM1 d d 0 0 nch L=0.5u W=4u nf=2\n.ends\n"
+)
+"""Two bins of a BSIM4, 1 µm to 3 µm wide and 3 µm to 9 µm, and a transistor 4 µm wide
+in two fingers."""
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "option", "threshold"),
+    [
+        (None, "", 0.5),
+        ("hsa", "", 0.4),
+        ("hsa", ".option wnflag=0\n", 0.5),
+        (None, ".option wnflag=1\n", 0.4),
+    ],
+)
+def test_a_bin_holds_one_fingers_width_where_ngspice_divides_it(
+    compatibility: Compatibility | None, option: str, threshold: float
+) -> None:
+    """A bin holds the width over `nf` as INPgetModBin selects it.
+
+    It does in HSPICE's compatibility, or where the option `wnflag` asks.
+    """
+    parts = spice.Library(compatibility=compatibility)
+    parts.read(option + FINGERED, "fingers.lib")
+    (instance,) = parts.component("fingers").definition.instances
+    assert instance.parameters["vth0"] == threshold
+
+
+def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
+    """The option `scale` multiplies a BSIM4's lengths, and its areas by its square.
+
+    A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
+    and between its fingers, as `b4v5par.c` scales them, all in micrometres here.
+    """
+    parts = spice.Library()
+    parts.read(
+        ".option scale=1e-6\n.model nch nmos(level=54 version=4.5)\n"
+        ".subckt one d\nM1 d d 0 0 nch L=0.5 W=2 ad=1 pd=4 sa=0.25 sb=0.5 sd=0.125\n"
+        ".ends\n",
+        "scaled.lib",
+    )
+    (instance,) = parts.component("one").definition.instances
+    assert {
+        name: instance.parameters[name]
+        for name in (
+            "length",
+            "width",
+            "drain_area",
+            "drain_perimeter",
+            "diffusion_edge_a",
+            "diffusion_edge_b",
+            "finger_spacing",
+        )
+    } == pytest.approx(
+        {
+            "length": 5e-7,
+            "width": 2e-6,
+            "drain_area": 1e-12,
+            "drain_perimeter": 4e-6,
+            "diffusion_edge_a": 2.5e-7,
+            "diffusion_edge_b": 5e-7,
+            "finger_spacing": 1.25e-7,
+        },
+        rel=1e-15,
+    )
 
 
 def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
@@ -1250,6 +1333,35 @@ def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
     assert line == f"BB1 out 0 V={{({limited}+{table})}}"
 
 
+def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
+    """As `inpcom.c` makes `R = {f(V)}` a current `m V / (f(V) (1 + TC1 dT))`.
+
+    Two copies of 1 kΩ that grow by 10% a volt, a temperature coefficient of 1e-3 per
+    kelvin, read at 77 °C, 50 K above ngspice's 27 °C: at 2 V, 2 · 2 V / (1.2 kΩ ·
+    1.05).
+    """
+    parts = spice.Library(celsius(77).value)
+    parts.read(
+        ".subckt grown a\nR1 a 0 r={1k * (1 + 0.1 * abs(v(a)))} tc1=1e-3 m=2\n.ends",
+        "grown.lib",
+    )
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(2 * V), name="V1")
+        placed = c.place(parts.component("grown"), name="X1")
+        c.connect(source.positive, placed["a"], name="a")
+        c.connect(source.negative, placed["ground"], ground)
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint())
+    current = point.values[
+        simulation.unknowns.index(results.Unknown("V1:current", "current"))
+    ]
+    assert -current == pytest.approx(4 / (1.2e3 * 1.05), rel=1e-12)
+
+
 def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
     parts = library(
         ".model CX CAP(VC1=-1m)\n"
@@ -1462,6 +1574,87 @@ def test_a_library_reads_a_section_and_the_files_it_includes(tmp_path: Path) -> 
         spice.load(tmp_path / "loop.lib")
 
 
+MULTIPLIED: Final = (
+    ".model DX D(IS=1e-14 KF=0)\n"
+    ".model RN RES(KF=1e-12 AF=2)\n"
+    ".subckt cell a b\nR1 a b 3k\nR2 a b RN 3k m=2\nC1 a b 2p\nL1 a b 6n\n"
+    "D1 a b DX\nX1 a b inner m=2\n.ends\n"
+    ".subckt inner a b\nR1 a b 4k\n.ends\n"
+    ".subckt own a b m=1\nR1 a b {1k*m}\n.ends\n"
+    ".subckt sourced a b\nI1 a b 1m\n.ends\n"
+)
+"""Subcircuits a multiplier `m` multiplies, and one that reads `m` as its parameter."""
+
+
+def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
+    """As ngspice's `inp_fix_subckt_multiplier` adds `m` to each element.
+
+    Three copies of `cell` divide its resistors and its inductor by 3 and multiply its
+    capacitor and its diode by 3, its resistor's own 2 copies times 3, whose flicker
+    noise is `m KF (I / m)^AF` (`resnoise.c`), and its instance's 2 copies of `inner`
+    times 3; a subcircuit with a parameter `m` reads it as its own, and a current
+    source under a multiplier is refused.
+    """
+    parts = library(MULTIPLIED)
+    cell = parts.component("cell", m=3)
+    found = {
+        instance.name: instance.parameters for instance in cell.definition.instances
+    }
+    assert found["R1"]["resistance"] == pytest.approx(1e3)
+    assert found["R2"]["resistance"] == pytest.approx(500)
+    assert found["R2"]["flicker_coefficient"] == pytest.approx(1e-12 / 6)
+    assert found["C1"]["capacitance"] == pytest.approx(6e-12)
+    assert found["L1"]["inductance"] == pytest.approx(2e-9)
+    assert found["D1"]["saturation_current"] == pytest.approx(3e-14)
+    (inner,) = cell.children
+    (resistor,) = inner.definition.instances
+    assert resistor.parameters["resistance"] == pytest.approx(4e3 / 6)
+    (own,) = parts.component("own", m=2).definition.instances
+    assert own.parameters["resistance"] == pytest.approx(2e3)
+    with pytest.raises(SpiceError, match="multiplies no current source by its"):
+        parts.component("sourced", m=2)
+
+
+GEOMETRIC: Final = (
+    ".option scale=1e-6\n"
+    ".model rs r rsh=100 short=0.5u narrow=0.25u tc1r=1e-3 tnom=30\n"
+    ".model rd r r=7\n.model rn r\n"
+    ".model cc c cox=1e-3 capsw=1e-10 narrow=0.2u del=0.1u\n"
+    ".model ct c thick=1e-8 di=7.8 defw=2u\n.model cv c cap=3p cj=1\n"
+    ".subckt cards a\nR1 a 0 rs w=2 l=11\nR2 a 0 rs\nR3 a 0 rs 5k scale=2 m=2\n"
+    "R4 a 0 rd\nR5 a 0 rn\nC1 a 0 cc w=3 l=4\nC2 a 0 ct l=5\nC3 a 0 cv w=3 l=4\n"
+    ".ends\n"
+)
+"""SPICE3's resistor and capacitor cards, which size their elements by geometry."""
+
+
+def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
+    """As `restemp.c` and `captemp.c` take their values, the element's sizes scaled.
+
+    A resistor is `(L - 2 SHORT) / (W - 2 NARROW) RSH`, of 10 µm by 10 µm unless given,
+    or else its card's `R`, or else 1 mΩ; a capacitor `CJ (W - NARROW) (L - SHORT) + 2
+    CJSW (L - SHORT + W - NARROW)`, `DEL` the default of `SHORT` halved, `CJ` of `THICK`
+    and `DI` where the card gives them, 0 long unless given, or its card's `CAP`.
+    """
+    parts = library(GEOMETRIC)
+    found = {
+        instance.name: instance.parameters
+        for instance in parts.component("cards").definition.instances
+    }
+    resistances = [found[f"R{index}"]["resistance"] for index in range(1, 6)]
+    assert resistances == pytest.approx([2e3 / 3, 900 / 9.5, 5e3, 7, 1e-3], rel=1e-14)
+    assert found["R1"]["temperature_coefficient"] == 1e-3
+    assert found["R1"]["nominal_temperature"] == pytest.approx(303.15)
+    epsilon = 7.8 / (4e-7 * math.pi * 299792458.0**2)
+    capacitances = [found[f"C{index}"]["capacitance"] for index in range(1, 4)]
+    expected = [
+        1e-3 * 2.8e-6 * 3.8e-6 + 2e-10 * (3.8e-6 + 2.8e-6),
+        epsilon / 1e-8 * 2e-6 * 5e-6,
+        3e-12,
+    ]
+    assert capacitances == pytest.approx(expected, rel=1e-14)
+
+
 def test_a_subcircuits_if_blocks_choose_by_its_parameters() -> None:
     read = library(
         ".subckt pick a b mode=0\n.if (mode == 0)\nR1 a b 1k\n.elseif (mode == 1)\n"
@@ -1516,9 +1709,9 @@ def test_a_placements_draws_are_its_own_and_its_samples() -> None:
     assert _devices(first.component("matched"))["R1"][1]["resistance"] == 1e3
 
 
-def test_a_resistor_whose_value_reads_a_voltage_is_refused() -> None:
-    read = library(".subckt bent a b\nR1 a b r='1k * (1 + abs(v(a, b)))'\n.ends")
-    with pytest.raises(SpiceError, match="whose value reads a voltage or a current"):
+def test_a_capacitor_whose_value_reads_a_voltage_is_refused() -> None:
+    read = library(".subckt bent a b\nC1 a b c='1p * (1 + abs(v(a, b)))'\n.ends")
+    with pytest.raises(SpiceError, match="capacitor whose value reads a voltage"):
         read.component("bent")
 
 

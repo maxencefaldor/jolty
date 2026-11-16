@@ -676,12 +676,15 @@ turn them on, so ngspice computes at the nominal values jolty reads without a sa
 GF180MCU's `design.ngspice` sets both switches to 1, drawing each instance's mismatch
 and the process's spread."""
 
-AC_DEPARTED: Final = "BSIM4"
+AC_DEPARTED: Final = ("BSIM4", "resistor whose value reads a voltage")
 """The models whose frequency response departs from ngspice's: its BSIM4's capacitances
 with respect to the body are not the derivatives of its charges, as the guide's
 departures state, and a p-channel's drain at `DRIVE` biases its body forward, where
-they depart most. `test_sky130_transistors_admittances_agree_with_ngspice` compares
-BSIM4's with the body at the source."""
+they depart most; and its behavioral sources' derivative of `pow` of a negative base to
+an even power has the wrong sign, `pwr(a, b - 1) b` (`inpptree.c`, lines 613 to 632),
+which SKY130's `res_high_po` resistors raise.
+`test_sky130_transistors_admittances_agree_with_ngspice` compares BSIM4's with the body
+at the source."""
 
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
@@ -699,23 +702,26 @@ tolerance, so the two lie within twice it."""
 def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
     """Each subcircuit the inventory finds native, at its typical corner, as ngspice's.
 
-    One source holds every device's first pin at `DRIVE` and drives it at AC, through
-    a source of no volts of each device's own, which senses its current, its other
-    pins grounded; each device's current is compared at the operating point and from
-    1 kHz to 100 GHz with ngspice's, which reads the same libraries and places the same
-    subcircuits, at the same kelvins, but for the frequency response of a device of
-    `AC_DEPARTED`.
+    Each is placed with the parameters the inventory read it with. One source holds
+    every device's first pin at `DRIVE` and drives it at AC, through a source of no
+    volts of each device's own, which senses its current, its other pins grounded; each
+    device's current is compared at the operating point and from 1 kHz to 100 GHz with
+    ngspice's, which reads the same libraries and places the same subcircuits, at the
+    same kelvins, but for the frequency response of a device of `AC_DEPARTED`.
     """
     library = kits.read(kit, settings=kept)
     native = {
-        device.name: device.models
+        device.name: device
         for device in kits.inventory(kit, settings=kept)
         if device.status == "native" and device.kind == "subcircuit"
     }
     driven = {
         name: part
-        for name in native
-        if (part := library.component(name)).definition.ports[0].role == Role.SIGNAL
+        for name, device in native.items()
+        if (part := library.component(name, **device.parameters))
+        .definition.ports[0]
+        .role
+        == Role.SIGNAL
     }
 
     @component
@@ -745,7 +751,10 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     for number, (name, part) in enumerate(driven.items()):
         pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
         deck.append(f"VA{number} drive n{number} 0")
-        deck.append(f"X{number} n{number}{' 0' * (pins - 1)} {name}")
+        given = "".join(
+            f" {key}={value!r}" for key, value in native[name].parameters.items()
+        )
+        deck.append(f"X{number} n{number}{' 0' * (pins - 1)} {name}{given}")
     raw_point, raw_response = ngspice.runs(
         deck,
         ("op", "ac dec 1 1k 100g"),
@@ -760,8 +769,99 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         )
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
         assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
-        if any(model.startswith(AC_DEPARTED) for model in native[name]):
+        if any(model.startswith(AC_DEPARTED) for model in native[name].models):
             continue
+        spice_ac = raw_response.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            response.values[:, column],
+            spice_ac,
+            rtol=0,
+            atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
+QUOTED: Final = re.compile(r"=\s*\"")
+"""A card's value in double quotes outside braces, which ngspice 47 drops, warning of a
+"model issue" and reading the parameter's default, where jolty evaluates it, as the
+guide's departures state: SKY130's `res_generic_po`'s narrowing, 0.56% of its
+resistance."""
+
+CARDS: Final = {"r": "R", "c": "C"}
+"""The types of model cards a bare element places in
+`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's: the
+letter of each one's element."""
+
+
+@SKIP
+@pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
+def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
+    """Each resistor's and capacitor's card the inventory finds native, as ngspice's.
+
+    A bare element of each, which takes its value from its card's geometry and
+    defaults, is driven as `test_every_native_device_agrees_with_ngspice` drives a
+    device, at the operating point and from 1 kHz to 100 GHz; but for a card of a
+    value in double quotes outside braces, `QUOTED`, which ngspice drops.
+    """
+    library = kits.read(kit, settings=kept)
+    cards = [
+        (name, CARDS[card.kind])
+        for device in kits.inventory(kit, settings=kept)
+        if device.status == "native"
+        and device.kind == "model"
+        and (card := library.card(name := device.name, {})) is not None
+        and card.kind in CARDS
+        and not QUOTED.search(card.statement.text)
+    ]
+    if not cards:
+        return  # The kit has none, as GF180MCU, whose cards hold voltages yet.
+    elements = [
+        f"{letter}{number} n{number} 0 {name}"
+        for number, (name, letter) in enumerate(cards)
+    ]
+    pins = " ".join(f"n{number}" for number in range(len(cards)))
+    library.read(
+        f".subckt bare {pins}\n" + "\n".join(elements) + "\n.ends\n", "bare.lib"
+    )
+    bare = library.component("bare")
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(DRIVE * V), name="V0")
+        placed = c.place(bare, name="X0")
+        c.connect(source.negative, placed["ground"], ground)
+        senses = []
+        for number in range(len(cards)):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            c.connect(sense.negative, placed[f"n{number}"], name=f"n{number}")
+            senses.append(sense.positive)
+        c.connect(source.positive, *senses, name="drive")
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint(), TIGHT)
+    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    root = kits.root(kit, kept)
+    deck = [
+        f"* every native card of {kit.name}",
+        *NOMINAL.get(kit.name, ()),
+        f"V0 drive 0 {DRIVE!r} ac 1",
+    ]
+    for number, element in enumerate(elements):
+        deck += [f"VA{number} drive n{number} 0", element]
+    raw_point, raw_response = ngspice.runs(
+        deck,
+        ("op", "ac dec 1 1k 100g"),
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in kit.typical),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for number in range(len(cards)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
+        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(
             response.values[:, column],
