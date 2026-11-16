@@ -63,6 +63,15 @@ How the engine finds an operating point and sweeps it, which [the table of metho
 | The pivot threshold | A thousandth of the column's largest entry (`cktntask.c`, line 124) | A tenth | On random circuits' matrices, jolty's solutions' backward errors stay below 10⁻¹⁴, where a thousandth's reach 10⁻⁸ ([the table of methods](simulation.md#how-the-engine-solves-a-circuit)) |
 | A resistance below 1 Ω | A conductance | Its current an unknown of its own | Beside a conductance of more than a siemens, a node's picosiemens keep fewer than four digits; the results differ by rounding alone |
 
+## Small-signal analyses
+
+How the engine solves the circuit linearized at its operating point, for AC, noise, stability, sensitivity and pole-zero analyses.
+
+| Departure | ngspice 47 | jolty | Evidence |
+| --- | --- | --- | --- |
+| An AC sensitivity's frequencies on a linear sweep | The first as asked, each after it the one before times the step: `inc_freq` tests the sweep's type against AC's `LINEAR`, 3, where a sensitivity's is `SENS_LINEAR`, 15 (`cktsens.c`, line 831; `acdefs.h`, line 40; `sensdefs.h`, lines 80 to 87) | The frequencies asked for | The coverage matrix's first run: only the first frequency agreed |
+| Each solve with `G + jωC` | Solved once with the pivots kept from the frequency before | Refined while its componentwise backward error exceeds the machine epsilon and each step halves it | A series RLC far above its resonance: 11.4 correct digits in ngspice with KLU and before in jolty, 15.6 now |
+
 ## Devices
 
 Each device's departures are stated beside the device too, as the links say.
@@ -80,3 +89,4 @@ Each device's departures are stated beside the device too, as the links say.
 | Cards ngspice runs wrongly | VDMOS with `RQ` and `VQ` but no `RD`, and a depletion threshold `FC · VJ` above 2.5 V, where its charge jumps | Refused | [Power MOSFET](devices.md#power-mosfet) |
 | Switches at AC | ngspice 42's XSPICE switches give their small-signal conductance the opposite sign of their DC one | Written for ngspice as behavioral currents of their own law | [Switches](devices.md#switches) |
 | Self-heating | Only its electrothermal models, such as VBIC's | Every semiconductor on a thermal net | [Self-heating](devices.md#self-heating) |
+| A bipolar transistor's base-collector saturation current, its card giving no `IBE` or `IBC` | Multiplied by the area twice: the saturation current it takes is already the area's (`bjttemp.c`, lines 168 and 177 to 179), and is multiplied by it again (lines 198 to 202) | Multiplied once | The coverage matrix's `vreg`: its output 8 to 12 mV apart |
