@@ -158,7 +158,12 @@ def _analysis(fixture: Fixture, built: Built, simulation: Simulation) -> Fixture
         case Point():
             point = simulation.run(plan.OperatingPoint(), options)
             values = {net: point.voltage(net) for net in built.nets}
-            return FixtureRun(completed=True, strategy=point.strategy, values=(values,))
+            return FixtureRun(
+                completed=True,
+                iterations=point.iterations,
+                strategy=point.strategy,
+                values=(values,),
+            )
         case Sweep(source=source) as sweep:
             unit = _level(built, source)
             levels = [level * unit for level in sweep.levels]
@@ -168,7 +173,12 @@ def _analysis(fixture: Fixture, built: Built, simulation: Simulation) -> Fixture
                 {net: float(column[row]) for net, column in columns.items()}
                 for row in range(len(levels))
             )
-            return FixtureRun(completed=True, values=rows)
+            return FixtureRun(
+                completed=True,
+                iterations=sum(swept.iterations),
+                strategy=", ".join(dict.fromkeys(swept.strategies)),
+                values=rows,
+            )
         case Transient(stop=stop, method=method) as transient:
             waveforms = simulation.run(
                 plan.Transient(stop * s, max_step=transient.longest * s, method=method),

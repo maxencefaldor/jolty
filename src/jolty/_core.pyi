@@ -41,6 +41,7 @@ class SolvedPoint(RecordedValues):
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
+    iterations: int
 
 class OperatingPointResult(SolvedPoint):
     kind: Literal["operating_point"]
@@ -57,6 +58,8 @@ class DcSweepResult(RecordedValues):
     swept: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
+    strategies: list[str]
+    iterations: list[int]
 
 class AcResult(TypedDict):
     kind: Literal["ac"]
@@ -244,7 +247,7 @@ class Simulator:
     @property
     def instances(self) -> list[str]: ...
     def recording(
-        self, record: str
+        self, record: str, regions: bool
     ) -> tuple[
         list[
             tuple[str, list[str], list[bool], int, int, list[str], list[str], list[str]]

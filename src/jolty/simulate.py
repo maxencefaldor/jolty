@@ -472,7 +472,7 @@ class Simulation:
         process, mismatch = foundry_conditions
         self.circuit = built
         self._substituted = substituted
-        self._recordings: dict[str, results.Recording] = {}
+        self._recordings: dict[tuple[str, bool], results.Recording] = {}
         self._records: dict[tuple[str, ...], frozenset[str]] = {}
         self._core = core
         self.unknowns = tuple(
@@ -636,7 +636,8 @@ class Simulation:
 
         The result records the instances the analysis's ``record`` names, and at an
         operating point and in a transient those its ratings read besides (see
-        [`Plan`][jolty.plan.Plan]), and states where the analysis used logic devices
+        [`Plan`][jolty.plan.Plan]), and with its ``regions`` each other transistor's
+        region and margins alone, and states where the analysis used logic devices
         outside their domains, its ``excursions``, none in ngspice.
 
         Raises:
@@ -653,8 +654,11 @@ class Simulation:
             )
         encoded = json.dumps(self._encode(analysis), allow_nan=False)
         record = self._record(analysis)
-        settings = json.dumps({**chosen.to_json(), "record": record}, allow_nan=False)
-        recording = self._recording(json.dumps(record))
+        regions = isinstance(analysis, Recorded) and analysis.regions
+        settings = json.dumps(
+            {**chosen.to_json(), "record": record, "regions": regions}, allow_nan=False
+        )
+        recording = self._recording(json.dumps(record), regions=regions)
         _log([analysis], 1)
         try:
             outcome = self._core.run(encoded, settings, _engine())
@@ -828,17 +832,21 @@ class Simulation:
     def transistors(self) -> tuple[str, ...]:
         """The paths of the devices whose models distinguish regions of operation.
 
-        An operating point that records one reads its region by its path.
+        An operating point that records one, or every one's region, reads its region by
+        its path.
         """
-        recording = self._recording(json.dumps("all"))
+        recording = self._recording(json.dumps("all"), regions=False)
         return tuple(device.path for device in recording.devices if device.regions)
 
-    def _recording(self, record: str) -> results.Recording:
-        """What the record whose JSON text is `record` keeps, made once each."""
-        found = self._recordings.get(record)
+    def _recording(self, record: str, *, regions: bool) -> results.Recording:
+        """What the record whose JSON text is `record` keeps, made once each.
+
+        It keeps every other transistor's region besides when `regions`.
+        """
+        found = self._recordings.get((record, regions))
         if found is not None:
             return found
-        devices, composites = self._core.recording(record)
+        devices, composites = self._core.recording(record, regions)
         thermal = {name for name, heat in composites if heat}
         recorded = []
         for (
@@ -848,7 +856,7 @@ class Simulation:
             first,
             count,
             variables,
-            regions,
+            names,
             margins,
         ) in devices:
             thermal.update(
@@ -863,7 +871,7 @@ class Simulation:
                     tuple(terminals),
                     tuple(unknown.name for unknown in internals),
                     tuple(variables),
-                    tuple(regions),
+                    tuple(names),
                     tuple(margins),
                 )
             )
@@ -872,7 +880,7 @@ class Simulation:
             tuple(name for name, _ in composites),
             frozenset(thermal),
         )
-        self._recordings[record] = found
+        self._recordings[record, regions] = found
         return found
 
     def _encode(self, analysis: Analysis) -> JsonValue:
@@ -924,6 +932,8 @@ class Simulation:
                     outcome["logic"],
                     **_observed(outcome, recording),
                     parameter=outcome["parameter"],
+                    strategies=tuple(outcome["strategies"]),
+                    iterations=tuple(outcome["iterations"]),
                 )
             case "ac":
                 return results.AcResult(
@@ -1248,6 +1258,7 @@ class Simulation:
             self.unknowns,
             solved["values"],
             solved["strategy"],
+            solved["iterations"],
             self.nets,
             solved["logic"],
             **_observed(solved, recording),
@@ -1475,7 +1486,7 @@ class _Planned:
             if isinstance(outcome, str):
                 errors[name] = outcome
                 continue
-            recording = view._recording(self.records[name])  # noqa: SLF001 - one simulation's own
+            recording = view._recording(self.records[name], regions=False)  # noqa: SLF001 - one simulation's own
             found[name] = view._result(outcome, recording)  # noqa: SLF001 - one simulation's own
         ordered = {name: errors[name] for name in self.names if name in errors}
         return results.Run(index, found, ordered)

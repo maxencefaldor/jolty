@@ -6,8 +6,9 @@
 
 A report states facts, one section per analysis in the plan's order:
 
-- an operating point lists every unknown's value and every logic net's level, the strategy that found it, and each transistor's [region of operation](#regions-of-operation) with its margins to the regions' boundaries, those nearest a boundary first;
-- a search for operating points lists every unknown's value at each DC solution it found, the operating point first;
+- an operating point lists every unknown's value and every logic net's level, the strategy that found it and its Newton iterations, and each transistor's [region of operation](#regions-of-operation) with its margins to the regions' boundaries, those nearest a boundary first;
+- a search for operating points lists every unknown's value at each DC solution it found, the operating point first, and the Newton iterations that found each;
+- a DC sweep states the Newton iterations of all its levels, and how many levels each strategy but Newton iteration alone found;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
 - a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
@@ -74,7 +75,7 @@ A device recorded keeps its terminals' currents and charges, its own small-signa
 A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
 An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
 
-Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, every transistor, whose regions their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
+Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, the [region](#regions-of-operation) and margins alone of each transistor the record leaves out, which their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
 A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
 Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `max_memory` option bounds them all (see [Options](simulation.md#options)).
@@ -144,6 +145,16 @@ point.variable("M1", "saturation_margin")  # vds - vdsat, in volts
 regions = point.recording.devices[0].regions  # ("off", ..., "saturated")
 ```
 
+An analysis's `regions` keeps, of each transistor its record leaves out, its region and its margins alone, three of a MOSFET's 48 numbers, which `region` and `variable` read as they read a transistor recorded whole; `jolty simulate` asks for them at the plan's own operating points:
+
+<!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, which the page does not build -->
+
+```python
+point = simulation.run(OperatingPoint(regions=True))
+point.region("M1")  # such as "saturated"
+kept = point.recording.devices[0].variables  # ("region", "overdrive_voltage", ...)
+```
+
 | Model | Regions | Margins |
 | --- | --- | --- |
 | `mosfet` | `off` at or below its threshold, or `weak_inversion` below it at level 3 with fast surface states; then `linear` with the drain below saturation, `saturated` at or past it, as `mos1load.c` and `mos3load.c` switch | `overdrive_voltage`, `vgs − von`, and `saturation_margin`, `vds − vdsat` |
@@ -164,7 +175,7 @@ The report lists each transistor's region and margins, the transistor with the m
 <!-- output of: jolty simulate common_emitter.py --no-schematic --no-plot -->
 
 ```text
-op: operating point, found by Newton iteration
+op: operating point, found by Newton iteration in 11 iterations
   ...
   regions, nearest a boundary first:
     X1/Q1  active  base_emitter_voltage 663.5 mV  base_collector_voltage -5.594 V
@@ -203,6 +214,8 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `NoiseResult` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
 | `PoleZeroResult` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
+An operating point's `strategy` says how the engine found it, by Newton iteration alone, `direct`, or by the aid that took over where it failed, and its `iterations` count the Newton iterations that found it: the strategy's that found it, those of every strategy tried before it, and those of each solve again as the logic settled with it, as solving it afresh runs them, whatever the simulation remembered.
+A DC sweep's `strategies` and `iterations` say the same of the operating point at each level, from the level before it.
 A transient's `statistics` count its steps, accepted, rejected or tried again to land on an event, and the Newton iterations of those accepted.
 Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
 With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.
@@ -213,4 +226,4 @@ A name that is not an unknown, a recorded terminal, derivative or variable, or a
 
 The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 15 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+The header is in version 16 of the format; a file of an earlier version is not read, and simulating again writes it anew.

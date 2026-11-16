@@ -103,6 +103,13 @@ def test_every_transistor_reaches_each_region_its_model_distinguishes() -> None:
             assert point.region("T1") == region, (model, voltages)
             (device,) = point.recording.devices
             distinguished.update(device.regions)
+            # Its region recorded alone reads as recorded with all of its numbers.
+            alone = simulation.run(OperatingPoint(regions=True))
+            assert alone.region("T1") == region, (model, voltages)
+            for margin in device.margins:
+                found = alone.variable("T1", margin)
+                assert found == point.variable("T1", margin), (model, margin)
+            assert alone.currents.size == alone.conductances.size == 0, model
         reached = {region for region, _, _ in biases}
         assert reached == distinguished, f"{model} reaches each of its regions"
 

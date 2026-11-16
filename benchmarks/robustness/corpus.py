@@ -260,7 +260,8 @@ class FixtureRun:
     iterations: int | None = None
     """Its Newton iterations, where it counts them."""
     strategy: str | None = None
-    """How it found the operating point, where it says."""
+    """How it found the operating point, where it says: for a sweep, each strategy it
+    found a level's by, in the order it first did."""
     values: tuple[Solution, ...] = ()
     """The voltages compared: at the operating point, at each level of a sweep, or at
     a transient's end."""

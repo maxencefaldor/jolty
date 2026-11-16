@@ -120,7 +120,7 @@ def test_tools_mirror_the_service_requests() -> None:
 def test_simulate_answers_with_text_and_structured_content(script: Path) -> None:
     result = call("simulate_circuit", {"script": str(script)})
     assert not result.is_error
-    assert "op: operating point, found by Newton iteration" in text_of(result)
+    assert "op: operating point, found by Newton iteration in" in text_of(result)
     assert result.structured_content is not None
     assert result.structured_content["plots"] == []
     data = result.structured_content

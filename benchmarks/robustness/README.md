@@ -84,7 +84,7 @@ A simulator is a named configuration of one program, its version recorded in eve
 
 | Simulator | What runs |
 | --- | --- |
-| `jolty` | The engine at its defaults, each fixture in a Python process of its own; it counts a transient's Newton iterations, and not yet an operating point's. |
+| `jolty` | The engine at its defaults, each fixture in a Python process of its own; it counts the Newton iterations of an operating point, of a sweep's every level and of a transient, its operating point's among them. |
 | `ngspice-sparse` | ngspice in batch mode at its defaults, its direct solver Sparse 1.3, at the temperature where its thermal voltage is jolty's, as the differential tests run it; its iterations and analysis time from `rusage all`. |
 
 Each runs by its runner of [`../simulators.py`](../simulators.py), which names it and states its version.

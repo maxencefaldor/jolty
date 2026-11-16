@@ -17,12 +17,13 @@ UNKNOWNS = (
 
 def test_an_operating_point_lists_each_value() -> None:
     point = results.OperatingPointResult(
-        UNKNOWNS, np.array([5.0, 2.5, -2.5e-3]), "direct"
+        UNKNOWNS, np.array([5.0, 2.5, -2.5e-3]), "direct", 2
     )
     summary = report.report("op", point, max_unknowns=10)
     assert summary == report.OperatingPointReport(
         name="op",
         strategy="direct",
+        iterations=2,
         values=(
             report.Value(unknown="in", nature="voltage", value=5.0),
             report.Value(unknown="out", nature="voltage", value=2.5),
@@ -31,11 +32,36 @@ def test_an_operating_point_lists_each_value() -> None:
         unlisted=0,
     )
     assert summary.describe() == (
-        "op: operating point, found by Newton iteration\n"
+        "op: operating point, found by Newton iteration in 2 iterations\n"
         "  in          5 V\n"
         "  out         2.5 V\n"
         "  V1:current  -2.5 mA"
     )
+
+
+def test_a_dc_sweep_states_its_iterations_and_the_levels_each_aid_found() -> None:
+    values = np.array([[0.0, 0.0, 0.0], [1.0, 0.5, -5e-4], [2.0, 1.0, -1e-3]])
+    sweep = results.DcSweepResult(
+        UNKNOWNS,
+        "V1",
+        "voltage",
+        np.array([0.0, 1.0, 2.0]),
+        values,
+        strategies=("direct", "gmin_stepping", "direct"),
+        iterations=(5, 300, 4),
+    )
+    summary = report.report("sweep", sweep, max_unknowns=1)
+    assert isinstance(summary, report.DcSweepReport)
+    assert summary.iterations == 309
+    assert summary.strategies == {"direct": 2, "gmin_stepping": 1}
+    assert summary.describe().splitlines()[0] == (
+        "sweep: DC sweep of V1 from 0 V to 2 V in 3 levels, 309 iterations, "
+        "1 by gmin stepping"
+    )
+    # A sweep ngspice ran counts none.
+    unstated = report.report("sweep", replace(sweep, strategies=(), iterations=()), 1)
+    assert isinstance(unstated, report.DcSweepReport)
+    assert (unstated.iterations, unstated.strategies) == (None, {})
 
 
 def test_a_transient_states_the_range_of_each_unknown() -> None:
@@ -271,17 +297,19 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
 
 def test_dc_solutions_list_each_unknown_at_each() -> None:
     first = results.OperatingPointResult(
-        UNKNOWNS, np.array([3.3, 0.0, -1e-3]), "direct"
+        UNKNOWNS, np.array([3.3, 0.0, -1e-3]), "direct", 7
     )
     second = results.OperatingPointResult(
-        UNKNOWNS, np.array([3.3, 3.3, -2e-3]), "gmin_stepping"
+        UNKNOWNS, np.array([3.3, 3.3, -2e-3]), "gmin_stepping", 412
     )
     found = results.OperatingPointsResult(UNKNOWNS, (first, second))
     summary = report.report("states", found, max_unknowns=2)
     assert isinstance(summary, report.OperatingPointsReport)
     assert summary.strategies == ("direct", "gmin_stepping")
+    assert summary.iterations == (7, 412)
     assert summary.describe() == (
-        "states: 2 DC solutions, the operating point first\n"
+        "states: 2 DC solutions, the operating point first, found in 7 and 412 "
+        "iterations\n"
         "  in   3.3 V  3.3 V\n"
         "  out  0 V    3.3 V\n"
         "  ... and 1 more in the results file"
