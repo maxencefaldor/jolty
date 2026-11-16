@@ -6,8 +6,8 @@ as tight as jolty's, and reads the raw file it writes;
 [`runs`][jolty.spice.ngspice.runs] runs several in one ngspice; and
 [`read`][jolty.spice.ngspice.read] reads the plots of any raw file. Each runs at the
 temperature where ngspice's thermal voltage is jolty's,
-[`spice_celsius`][jolty.spice.ngspice.spice_celsius], so the two engines differ by their
-devices rather than their physical constants.
+[`option_temperature`][jolty.spice.ngspice.option_temperature], so the two engines
+differ by their devices rather than their physical constants.
 """
 
 import functools
@@ -52,7 +52,7 @@ _SPICE_THERMAL_VOLTAGE_PER_KELVIN: Final = 1.38064852e-23 / 1.6021766208e-19
 type Real = npt.NDArray[np.float64]
 
 
-def spice_celsius(temperature: float) -> float:
+def option_temperature(temperature: float) -> float:
     """Where ngspice's thermal voltage is jolty's at `temperature`, in degrees Celsius.
 
     The temperature is in kelvins. Running ngspice there, and its models' nominal
@@ -72,7 +72,7 @@ def same_kelvins(temperature: float) -> float:
     electron's charge, agrees with ngspice's at the same kelvins.
 
     Examples:
-        >>> round(spice_celsius(same_kelvins(300.15)), 9)
+        >>> round(option_temperature(same_kelvins(300.15)), 9)
         27.0
     """
     jolty = _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
@@ -263,7 +263,7 @@ def runs(
             runs no analysis, aborts one, or finds an operating point only as the end
             of a transient of fixed length, which it does not check to be one.
     """
-    nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
+    nominal = option_temperature(_core.REFERENCE_TEMPERATURE)
     temperature = running.get("temperature", _core.REFERENCE_TEMPERATURE)
     deck = [
         lines[0],
@@ -274,7 +274,7 @@ def runs(
         ),
         *lines[1:],
         running.get("options", OPTIONS),
-        f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
+        f".options temp={option_temperature(temperature)!r} tnom={nominal!r}",
         *(
             f".options seed={seed}"
             for seed in [running.get("seed")]

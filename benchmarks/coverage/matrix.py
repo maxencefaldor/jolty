@@ -634,8 +634,8 @@ def run_xyce(fixture: Fixture) -> Values:
     statements, kind = spice.xyce
     columns = _columns(spice.reads)
     if spice.thermal:
-        nominal = xyce.xyce_celsius(ROOM)
-        temperature = xyce.xyce_celsius(spice.temperature)
+        nominal = xyce.option_temperature(ROOM)
+        temperature = xyce.option_temperature(spice.temperature)
     else:
         nominal, temperature = ROOM - 273.15, spice.temperature - 273.15
     deck = [

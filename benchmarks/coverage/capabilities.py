@@ -620,7 +620,7 @@ def sweeps() -> list[Fixture]:
         values = np.asarray(found.traces[0].values_of("out"))
         return {name: complex(values[index][0]) for index, name in enumerate(hot)}
 
-    first, last = (ngspice.spice_celsius(k) for k in (kelvins[0], kelvins[-1]))
+    first, last = (ngspice.option_temperature(k) for k in (kelvins[0], kelvins[-1]))
     step = (last - first) / 2
     rows.append(
         Fixture(

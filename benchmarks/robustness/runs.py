@@ -378,10 +378,10 @@ def _options(fixture: Fixture) -> list[str]:
         if fixture.analysis.method == "backward_euler":
             given.append("maxord=1")
     temperature = fixture.circuit.temperature()
-    nominal = ngspice.spice_celsius(_core.REFERENCE_TEMPERATURE)
+    nominal = ngspice.option_temperature(_core.REFERENCE_TEMPERATURE)
     lines = [f".options {' '.join(given)}"] if given else []
     lines.append(
-        f".options temp={ngspice.spice_celsius(temperature)!r} tnom={nominal!r}"
+        f".options temp={ngspice.option_temperature(temperature)!r} tnom={nominal!r}"
     )
     return lines
 

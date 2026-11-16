@@ -26,9 +26,8 @@ from jolty import _core, ir
 from jolty.devices import BSIM3_CARD
 from jolty.errors import JoltyError
 from jolty.ir import Role
-from jolty.spice import models, sky130
-from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE, spice_celsius
-from jolty.spice.xyce import xyce_celsius
+from jolty.spice import models, ngspice, sky130, xyce
+from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 from jolty.units import ZERO_CELSIUS
 from jolty.unknowns import Unknown
 
@@ -51,7 +50,7 @@ class Dialect:
 
     simulator: str
     """The simulator's name, as its messages give it."""
-    celsius: Callable[[float], float]
+    option_temperature: Callable[[float], float]
     """Where the simulator's thermal voltage is jolty's at a temperature in kelvins, in
     its degrees Celsius."""
     separator: str
@@ -82,7 +81,7 @@ class Dialect:
 
 NGSPICE: Final = Dialect(
     simulator="ngspice",
-    celsius=spice_celsius,
+    option_temperature=ngspice.option_temperature,
     separator=".",
     # ngspice reads a width of 0 as the transient's stop time, while 1e-40 s vanishes
     # beside any rise longer than 1e-24 s.
@@ -140,7 +139,7 @@ _XYCE_LEVEL_THREE: Final = _XYCE_MOSFET | frozenset(
 
 XYCE: Final = Dialect(
     simulator="Xyce",
-    celsius=xyce_celsius,
+    option_temperature=xyce.option_temperature,
     separator=":",
     # Xyce reads a width of 0 as no width: only a width it is not given is its stop
     # time (`N_DEV_SourceData.C`, line 824).
@@ -430,7 +429,7 @@ def _model_card(
         given["noise_level"] = 1.0
     # VBIC computes its thermal voltage with its own constants in both engines, so its
     # temperatures are written as they are.
-    celsius = _plain if model == "vbic" else dialect.celsius
+    celsius = _plain if model == "vbic" else dialect.option_temperature
     card = " ".join(
         f"{names[key][0]}={_spice_value(key, value, names[key][1], celsius)}"
         for key, value in given.items()
@@ -689,7 +688,7 @@ def _own_temperature(instance: ir.Instance, model: str, dialect: Dialect) -> str
         JoltyError: When the device's own temperature moves it, and its SPICE element
             has none.
     """
-    celsius = _plain if model == "vbic" else dialect.celsius
+    celsius = _plain if model == "vbic" else dialect.option_temperature
 
     match instance.parameters:
         case {"temperature": int() | float() as held}:

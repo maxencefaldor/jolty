@@ -6,8 +6,8 @@ never links it. [`run`][jolty.spice.xyce.run] runs one analysis of a deck writte
 Xyce's dialect, [`XYCE`][jolty.spice.export.XYCE], with tolerances as tight as jolty's,
 and reads the values Xyce prints, with the times it reports. Each runs at the
 temperature where Xyce's thermal voltage is jolty's,
-[`xyce_celsius`][jolty.spice.xyce.xyce_celsius], so the two engines differ by their
-devices rather than their physical constants.
+[`option_temperature`][jolty.spice.xyce.option_temperature], so the two engines
+differ by their devices rather than their physical constants.
 
 A suite adds Xyce as one more simulator through `run`: the circuit written by
 `jolty.spice.export.netlist` in Xyce's dialect, a refusal there meaning Xyce cannot
@@ -131,7 +131,7 @@ def version() -> str | None:
     return lines[0] if lines else ""
 
 
-def xyce_celsius(temperature: float) -> float:
+def option_temperature(temperature: float) -> float:
     """Where Xyce's thermal voltage is jolty's at `temperature`, in degrees Celsius.
 
     The temperature is in kelvins. Running Xyce there, and its models' nominal
@@ -140,7 +140,7 @@ def xyce_celsius(temperature: float) -> float:
     below jolty's at the same kelvins.
 
     Examples:
-        >>> round(xyce_celsius(300.15), 3)
+        >>> round(option_temperature(300.15), 3)
         27.009
     """
     thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
@@ -205,11 +205,11 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         message = f"Xyce has no analysis {command}"
         raise JoltyError(message)
     kind, every = _PRINTED[command]
-    nominal = xyce_celsius(_core.REFERENCE_TEMPERATURE)
+    nominal = option_temperature(_core.REFERENCE_TEMPERATURE)
     deck = [
         *lines,
         *options,
-        f".options device temp={xyce_celsius(temperature)!r} tnom={nominal!r}",
+        f".options device temp={option_temperature(temperature)!r} tnom={nominal!r}",
         analysis,
         f".print {kind} format=csv precision={_PRECISION} file={VALUES} "
         + " ".join(every if printed is None else printed),
