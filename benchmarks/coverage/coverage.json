@@ -1,7 +1,7 @@
 {
   "simulators": {
     "jolty": {
-      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
+      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -16,11 +16,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "jolty 0.1.0",
-      "load": 9.6064453125,
+      "load": 3.04541015625,
       "date": "2026-11-16"
     },
     "ngspice-sparse": {
-      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
+      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -35,11 +35,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 9.6064453125,
+      "load": 3.04541015625,
       "date": "2026-11-16"
     },
     "ngspice-klu": {
-      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
+      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -54,7 +54,7 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 9.6064453125,
+      "load": 3.04541015625,
       "date": "2026-11-16"
     },
     "xyce-serial": {
@@ -3145,9 +3145,9 @@
       },
       "cells": {
         "jolty": {
-          "status": "unsupported",
-          "evidence": "fixture.cir:2: jolty has no element of letter `T`: `T1 in 0 out 0 Z0=50 TD=5n`",
-          "found": null
+          "status": "disagreed",
+          "evidence": "read no v(out)@1.4e-08, v(out)@5.5e-09, v(out)@8e-09",
+          "found": {}
         },
         "ngspice-sparse": {
           "status": "agreed",
