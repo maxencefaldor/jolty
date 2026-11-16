@@ -50,7 +50,8 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 
 `scripts/bench --compare A,B` times the builds of the revisions `A` and `B` against each other, the suite's fixtures or those named.
 Each revision is built once, by `uv sync`, in a worktree of its own in `--builds`, `target/builds/<commit>` by default, with a target directory of its own, and a second build of the same commit in `<commit>-2`.
-Each build runs in a process of its own interpreter, which imports the build's jolty, as `timing.py` says, and runs each fixture as the Python timing does, measuring each run by the wall clock and by the processor time of every thread of its process.
+Each run of a build takes a process of the build's own interpreter, which imports the build's jolty, as `timing.py` says, runs the fixture once to warm up and once more, as the Python timing does, and measures that run by the wall clock and by the processor time of every thread of its process.
+A process of its own for each run, its environment padded by a number of bytes drawn uniformly below a page, makes each run take another layout of its stack, its memory and its threads: where the stack begins, which the environment's size sets, can move a program's time by several percent (Mytkowicz, Diwan, Hauswirth and Sweeney, "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and two builds' processes differ in it, their interpreters' paths of different lengths, so these effects widen each build's interval rather than move its median.
 For each time of the suite, the two builds' runs alternate, round after round, each round in the reverse order of the one before, so that neither always follows the other, and the load average is read as each round begins and as it ends.
 A first round warms both up and is discarded.
 

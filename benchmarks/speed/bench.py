@@ -39,11 +39,12 @@ whose results ``benchmarks/speed/results`` holds. A working tree with changes to
 tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline. The
 baseline was measured at another time, under another load, so a change is decided by
 ``--compare`` instead: each revision built once in a worktree of its own, in
-``--builds``, and its runs made by a process of its build's interpreter,
-``benchmarks/speed/timing.py``, the two builds' runs of each time `alternated` round
-after round until each comparison is decided, and printed and written beside its
-results file as a table, wall and processor times apart. ``--nightly`` does the same
-for the checked-out commit against the previous night's, in a directory of its own.
+``--builds``, and each of its runs made `afresh` by a process of its build's
+interpreter, ``benchmarks/speed/timing.py``, the two builds' runs of each time
+`alternated` round after round until each comparison is decided, and printed and
+written beside its results file as a table, wall and processor times apart.
+``--nightly`` does the same for the checked-out commit against the previous night's,
+in a directory of its own.
 
 ``--scale`` runs each large fixture serially, on one thread with no block of its matrix
 dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
