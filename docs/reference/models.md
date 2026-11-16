@@ -582,6 +582,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `fprout` | `0` | The rout degradation coefficient for pocket devices, `fprout`, in volts per square-root meter; default 0. |
 | `gamma1` |  | The body effect near the surface, `gamma1`, in square-root volts; default derived from `ndep`. |
 | `gamma2` |  | The body effect in the bulk, `gamma2`, in square-root volts; default derived from `nsub`. |
+| `gate_resistance_model` | `0` | The gate's resistance network, `rgatemod`, 0 to 3; default 0. |
 | `gbmin` | `1e-12` | The least conductance of each body resistance, `gbmin`, in siemens; default 1e-12. |
 | `ijthdfwd` |  | The forward drain diode forward limiting current, `ijthdfwd`, in amperes; default `ijthsfwd`. |
 | `ijthdrev` |  | The reverse drain diode forward limiting current, `ijthdrev`, in amperes; default `ijthsrev`. |

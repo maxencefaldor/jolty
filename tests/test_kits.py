@@ -528,6 +528,171 @@ def test_sky130_transistors_admittances_agree_with_ngspice(
             compare(found, spice, unknown, scale=scale, tolerance=AGREEMENT)
 
 
+RF_TRANSISTORS: Final = (
+    "sky130_fd_pr__rf_nfet_01v8_bM02W1p65L0p15",
+    "sky130_fd_pr__rf_pfet_01v8_bM04W3p00L0p18",
+    "sky130_fd_pr__rf_nfet_01v8_lvt_bM04W5p00L0p25",
+    "sky130_fd_pr__rf_nfet_g5v0d10v5_bM04W5p00L0p50",
+)
+"""SKY130's RF transistors compared: BSIM4 4.5 cards of `rgatemod` 3, the gate
+electrode's resistance and the bias-dependent intrinsic-input one, with `rdsmod` 1 and
+`rbodymod` 1, each laid out with a dummy beside it, of the 1.8 V n- and p-channels, the
+1.8 V n-channel of low threshold and the 5 V n-channel."""
+
+RF_OUTPUT_DEPARTED: Final = frozenset({"sky130_fd_pr__rf_pfet_01v8_bM04W3p00L0p18"})
+"""The RF transistors whose output conductance in ngspice lies 2.1e-4 from the central
+difference of its own drain current, 0.1 mV each way, where jolty's is the derivative
+(the guide's departures)."""
+
+RF_REVERSE: Final = 0.5
+"""The volts a compared RF transistor's body lies reversed from its source, where
+ngspice's capacitances with respect to the body depart least from its charges'
+derivatives (the guide's departures)."""
+
+
+@SKIP
+@pytest.mark.parametrize("name", RF_TRANSISTORS)
+def test_sky130_rf_transistors_admittances_agree_with_ngspice(
+    kept: Settings, name: str
+) -> None:
+    """An RF transistor of SKY130, read natively, at its operating point and to 10 GHz.
+
+    Its gate and drain lie at half the 1.8 V supply, its body `RF_REVERSE` reversed;
+    its currents at the operating point, relative to its drain's, then driven at its
+    gate and at its drain in turn from 1 MHz to 10 GHz, relative to each one's
+    largest, are compared with ngspice's, which reads the same library at `tt`. Its
+    body's current, a junction's leakage of picoamperes, is not resolved by either
+    engine: each places the body's nodes within its voltage tolerance, 1 nV, of the
+    solution, and their kilohm to the bulk then carry a picoampere either way.
+
+    Its body network of `rbodymod` 1 lets the body follow the drive above a few GHz,
+    where ngspice's capacitances with respect to the body depart from its charges'
+    derivatives (the guide's departures), by 3.4e-5 of themselves with the body
+    reversed: they move a current by under 1e-6 of its largest up to 10 GHz, within
+    `AGREEMENT`, by up to 3.3e-6 at 30 GHz and 8.4e-6 at 100 GHz, as the square of the
+    frequency, and twice as much with the body 0.2 V forward. ngspice's output
+    conductance of `RF_OUTPUT_DEPARTED` is not its own current's derivative, and their
+    drain's current driven at the drain is left out.
+    """
+    sign = -1.0 if "pfet" in name else 1.0
+    library = kits.read(sky130.KIT, settings=kept)
+    half = sign * SUPPLY / 2
+    body = -sign * RF_REVERSE
+
+    @component
+    def biased(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drain = c.place(devices.voltage_source(half * V), name="VD")
+        gate = c.place(devices.voltage_source(half * V), name="VG")
+        bulk = c.place(devices.voltage_source(body * V), name="VB")
+        placed = c.place(library.component(name), name="X1")
+        c.connect(drain.positive, placed["d"], name="drain")
+        c.connect(gate.positive, placed["g"], name="gate")
+        c.connect(bulk.positive, placed["b"], name="body")
+        c.connect(drain.negative, gate.negative, bulk.negative, placed["s"], ground)
+
+    simulation = Simulation(biased())
+    deck = [
+        "* rf admittances",
+        f"VD drain 0 {half!r}",
+        f"VG gate 0 {half!r}",
+        f"VB body 0 {body!r}",
+        f"X1 drain gate 0 body {name}",
+    ]
+    sections = ((kits.root(sky130.KIT, kept) / sky130.LIBRARY, "tt"),)
+    kelvins = ngspice.same_kelvins(celsius(27).value)
+    sources = ("VD", "VG", "VB")
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice.run(
+        deck,
+        "op",
+        sections=sections,
+        compatibility=sky130.KIT.compatibility,
+        temperature=kelvins,
+    )
+    drain = float(np.abs(raw.real("i(vd)")).max())
+    for source in sources:
+        unknown = results.Unknown(f"{source}:current", "current")
+        spice = raw.real(f"i({source.lower()})")
+        found = point.values[[simulation.unknowns.index(unknown)]]
+        compare(found, spice, unknown, scale=drain, tolerance=AGREEMENT)
+    for driven in ("VD", "VG"):
+        response = simulation.run(Ac(driven, decade(1 * MHz, 10 * GHz, 2)), TIGHT)
+        excited = [
+            f"{line} ac 1" if line.startswith(f"{driven} ") else line for line in deck
+        ]
+        raw = ngspice.run(
+            excited,
+            "ac dec 2 1meg 10g",
+            sections=sections,
+            compatibility=sky130.KIT.compatibility,
+            temperature=kelvins,
+        )
+        for source in sources:
+            if name in RF_OUTPUT_DEPARTED and driven == source == "VD":
+                continue
+            unknown = results.Unknown(f"{source}:current", "current")
+            spice = raw.vectors[f"i({source.lower()})"]
+            found = response.values[:, simulation.unknowns.index(unknown)]
+            scale = float(np.abs(spice).max())
+            compare(found, spice, unknown, scale=scale, tolerance=AGREEMENT)
+
+
+@SKIP
+@pytest.mark.parametrize(
+    "name", [name for name in RF_TRANSISTORS if name not in RF_OUTPUT_DEPARTED]
+)
+def test_a_sky130_rf_transistor_makes_the_noise_of_ngspices(
+    kept: Settings, name: str
+) -> None:
+    """A common-source stage of an RF transistor and 1 kΩ, from 1 Hz to 100 MHz.
+
+    Its output's noise, the channel's holistic thermal noise and flicker noise and the
+    thermal noise of its drain, source, body and gate electrode's resistances, is
+    compared with ngspice's within `AGREEMENT`, as
+    `test_a_kits_transistor_makes_the_noise_of_ngspices` compares it. Above 100 MHz
+    the body network's noise reaches the drain through the body's capacitances, whose
+    departure from ngspice's moves the density by up to 4.4e-6 at 10 GHz. The output
+    conductance of `RF_OUTPUT_DEPARTED`, whose departure moves the stage's gain by
+    1e-5, is left out.
+    """
+    library = kits.read(sky130.KIT, settings=kept)
+    half = SUPPLY / 2
+
+    @component
+    def stage(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drain = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+        drive = c.place(devices.voltage_source(half * V), name="V1")
+        load = c.place(devices.resistor(1 * kohm), name="RL")
+        placed = c.place(library.component(name), name="X1")
+        c.connect(drain.positive, load.a, name="vdd")
+        c.connect(load.b, placed["d"], name="out")
+        c.connect(drive.positive, placed["g"], name="in")
+        c.connect(drain.negative, drive.negative, placed["s"], placed["b"], ground)
+
+    simulation = Simulation(stage())
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, 100 * MHz, 2), source="V1"), TIGHT
+    )
+    raw = ngspice.run(
+        [
+            "* rf noise",
+            f"VDD vdd 0 {SUPPLY!r}",
+            f"V1 in 0 {half!r} ac 1",
+            "RL vdd out 1k",
+            f"X1 out in 0 0 {name}",
+        ],
+        "noise v(out) V1 dec 2 1 100meg\nsetplot noise1",
+        sections=((kits.root(sky130.KIT, kept) / sky130.LIBRARY, "tt"),),
+        compatibility=sky130.KIT.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=AGREEMENT
+    )
+
+
 NOISY: Final = {
     "sky130-n": (sky130.KIT, "sky130_fd_pr__nfet_01v8", "tt", 1.8, 0.8, (1, 0.15)),
     "sky130-p": (sky130.KIT, "sky130_fd_pr__pfet_01v8", "tt", -1.8, -0.9, (2, 0.5)),

@@ -10,7 +10,8 @@ use super::channel::theta;
 use super::charges::Depletion;
 use super::parameters::{Binned, Bsim4Parameters};
 use super::{
-    BodyResistance, DrainSourceResistance, EPS0, FlickerNoise, PI, Perimeter, ThermalNoise,
+    BodyResistance, DrainSourceResistance, EPS0, FlickerNoise, GateResistance, PI, Perimeter,
+    ThermalNoise,
 };
 use super::{D, dexp};
 use crate::kernel::bsim3::{EPSSI, KBOQ, Q, by_channel, check, lost};
@@ -142,6 +143,21 @@ pub(super) struct External<R: Real> {
     pub(super) sheet: [R; 2],
 }
 
+/// The gate's resistances of `rgatemod` 1 to 3, and the factors of one copy's
+/// intrinsic-input conductance, which `b4v5ld.c` takes as
+/// `xrcrg1 · (xrcrg2 · vtm · β + Ids / Vdseff) · nf` of one finger's `β` and current over
+/// `Vdseff` (lines 1999 to 2019).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Gate<R: Real> {
+    pub(super) model: GateResistance,
+    /// The electrode's conductance of one copy, `grgeltd`.
+    pub(super) electrode: R,
+    /// `xrcrg1 · nf`, of the binned `xrcrg1`.
+    pub(super) xrcrg1_nf: R,
+    /// `xrcrg2 · vtm`, of the binned `xrcrg2` and the thermal voltage at the temperature.
+    pub(super) xrcrg2_vtm: R,
+}
+
 /// The numbers of the noise models.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Noise {
@@ -184,6 +200,8 @@ pub struct PreparedBsim4<R: Real> {
     /// The conductances of the five body resistances of `rbodymod` 1, in the order of
     /// `BODY_RESISTANCES`, of the parallel copies together.
     pub(super) body_network: Option<[R; 5]>,
+    /// The gate's resistances, none at `rgatemod` 0.
+    pub(super) gate: Option<Gate<R>>,
     pub(super) multiplier: R,
 }
 
@@ -608,6 +626,27 @@ impl<R: Real> Bsim4Parameters<R> {
             }
         };
 
+        // The gate electrode's resistance, `b4v5temp.c`'s `grgeltd` (lines 1559 to 1568):
+        // `rshg` along `xgw` and a third of a finger's junction width over `ngcon`,
+        // across `ngcon · nf` strips of the drawn length less `xgl`; 1 kS where it is not
+        // positive.
+        let gate = (self.gate_resistance_model != GateResistance::Zero).then(|| {
+            let ngcon = self.ngcon;
+            let resistance = self.rshg * (self.xgw + weff_cj / 3.0 / ngcon)
+                / (ngcon * fingers * (l_new - self.xgl));
+            let electrode = if resistance.value() > 0.0 {
+                resistance.recip()
+            } else {
+                R::constant(1.0e3)
+            };
+            Gate {
+                model: self.gate_resistance_model,
+                electrode,
+                xrcrg1_nf: binned.xrcrg1 * fingers,
+                xrcrg2_vtm: binned.xrcrg2 * vtm,
+            }
+        });
+
         // The diffusions, from their areas and perimeters where given.
         let dmcg = self.dmcg - self.dmcgt;
         let dmci = self.dmci.unwrap_or(self.dmcg);
@@ -719,6 +758,17 @@ impl<R: Real> Bsim4Parameters<R> {
             ),
         );
 
+        // `b4v5check.c` stops on these whatever the gate's model.
+        check(l_new.value() <= self.xgl.value(), || {
+            format!(
+                "xgl, {:?}, must be less than the drawn length plus xl, {:?}",
+                self.xgl.value(),
+                l_new.value()
+            )
+        })?;
+        check(self.ngcon.value() < 1.0, || {
+            format!("ngcon must be at least 1, not {:?}", self.ngcon.value())
+        })?;
         self.checked(
             &binned,
             [leff, weff],
@@ -967,6 +1017,7 @@ impl<R: Real> Bsim4Parameters<R> {
             source_junction,
             series,
             body_network,
+            gate,
             multiplier,
         })
     }

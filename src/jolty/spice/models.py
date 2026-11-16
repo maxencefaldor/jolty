@@ -325,14 +325,19 @@ BSIM4_INSTANCE: Final[Table] = {
     "delvto": ("threshold_adjustment", 1.0),
     "delvt0": ("threshold_adjustment", 1.0),
     "mulu0": ("mobility_multiplier", 1.0),
-    **{name: (name, 1.0) for name in ("rbdb", "rbsb", "rbpb", "rbps", "rbpd")},
+    **{
+        name: (name, 1.0)
+        for name in ("rbdb", "rbsb", "rbpb", "rbps", "rbpd", "xgw", "ngcon")
+    },
 }
 """A BSIM4 instance's own parameters: a MOSFET's, its fingers, the distances that set
 the stress of its length of diffusion, a shift of its threshold, a factor of its
-mobility, and the body resistances it takes over from its card."""
+mobility, and the body resistances and the gate's contacts it takes over from its
+card."""
 
 BSIM4_SELECTORS: Final = {
     "rbodymod": "body_resistance_model",
+    "rgatemod": "gate_resistance_model",
     "permod": "perimeter_model",
     "rdsmod": "drain_source_resistance_model",
     "fnoimod": "flicker_noise_model",
@@ -352,7 +357,6 @@ BSIM4_MODES: Final = {
     "tempmod": 0,
     "geomod": 0,
     "rgeomod": 0,
-    "rgatemod": 0,
     "igcmod": 0,
     "igbmod": 0,
     "trnqsmod": 0,
@@ -375,10 +379,9 @@ BSIM4_UNREAD: Final = frozenset(
 """What a BSIM4 card says that changes nothing ngspice computes: its bin's ranges, which
 only select it, and the safe operating area, which only ngspice's checks read."""
 
-BSIM4_INSTANCE_UNREAD: Final = frozenset({"xgw", "ngcon", "sca", "scb", "scc", "sc"})
+BSIM4_INSTANCE_UNREAD: Final = frozenset({"sca", "scb", "scc", "sc"})
 """What a BSIM4 instance says that changes nothing ngspice computes with `BSIM4_MODES`:
-its gate's contacts, which only the gate resistance reads, and its distances to the
-well's edge, which only the well proximity effect reads."""
+its distances to the well's edge, which only the well proximity effect reads."""
 
 BSIM4_DENSITIES: Final = {"ndep": 1e20, "nsd": 1.000001e24, "ngate": 1.000001e24}
 """The concentrations of a BSIM4 card that ngspice reads per cubic meter above a bound,

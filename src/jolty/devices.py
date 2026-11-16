@@ -2795,6 +2795,7 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     threshold_adjustment: Quantity | None = None,
     mobility_multiplier: float | None = None,
     body_resistance_model: Literal[0, 1] | None = None,
+    gate_resistance_model: Literal[0, 1, 2, 3] | None = None,
     perimeter_model: Literal[0, 1] | None = None,
     drain_source_resistance_model: Literal[0, 1] | None = None,
     flicker_noise_model: Literal[0, 1] | None = None,
@@ -2811,13 +2812,13 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     the modes SKY130's and GF180MCU's cards select. The keywords before `card` are the
     instance's: its drawn geometry and fingers, its diffusions, the distances that set
     the stress of its length of diffusion, a shift of its threshold and a factor of its
-    mobility, then the card's body and drain and source resistances' models, its
-    perimeter and noise models,
-    whether its sizes are checked and clamped, and the drain's share of the channel's
-    charge. Each entry of `card` is a parameter of the BSIM4.5 manual by its name, such
-    as ``vth0``, ``toxe`` or ``lvth0``, in SI units: a quantity where it has a
-    dimension, as [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number
-    where it has none. Parameters left out take ngspice's defaults.
+    mobility, then the card's body, gate, and drain and source resistances' models, its
+    perimeter and noise models, whether its sizes are checked and clamped, and the
+    drain's share of the channel's charge. Each entry of `card` is a parameter of the
+    BSIM4.5 manual by its name, such as ``vth0``, ``toxe`` or ``lvth0``, in SI units:
+    a quantity where it has a dimension, as
+    [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number where it has
+    none. Parameters left out take ngspice's defaults.
 
     The drain current folds in the threshold's short-channel, narrow-width, pocket and
     barrier lowering terms, the poly gate's depletion, the mobility's degradation,
@@ -2830,7 +2831,11 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     every parameter scales with the temperature as ngspice scales it. A sheet
     resistance ``rsh`` adds an internal node behind the drain and the source where
     ``drain_squares`` or ``source_squares`` is positive, and ``body_resistance_model``
-    1 three under the channel and the junctions. The charges under the gate follow
+    1 three under the channel and the junctions. ``gate_resistance_model`` 1 to 3 puts
+    the gate electrode's resistance of ``rshg`` before the channel's gate, at 2 in
+    series with the channel's bias-dependent intrinsic-input resistance of ``xrcrg1``
+    and ``xrcrg2``, and at 3 with that resistance after a node in the middle of the
+    gate, which the overlaps' charges lie on. The charges under the gate follow
     ``capmod`` 2, beside the overlaps' and the junctions'.
 
     Its resistances make thermal noise, and its channel the thermal noise of
@@ -2877,6 +2882,7 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
         {
             "channel": channel,
             "body_resistance_model": body_resistance_model,
+            "gate_resistance_model": gate_resistance_model,
             "perimeter_model": perimeter_model,
             "drain_source_resistance_model": drain_source_resistance_model,
             "flicker_noise_model": flicker_noise_model,

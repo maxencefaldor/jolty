@@ -12,7 +12,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{BodyResistance, DrainSourceResistance, FlickerNoise, Perimeter, ThermalNoise, fringe};
+use super::{
+    BodyResistance, DrainSourceResistance, FlickerNoise, GateResistance, Perimeter, ThermalNoise,
+    fringe,
+};
 use crate::kernel::bsim3::by_channel;
 use crate::kernel::jfet::Channel;
 use crate::{REFERENCE_TEMPERATURE, Real};
@@ -69,6 +72,8 @@ pub struct Bsim4Parameters<R: Real = f64> {
     pub mobility_multiplier: R,
     /// The body's resistance network, `rbodymod`, 0 or 1; default 0.
     pub body_resistance_model: BodyResistance,
+    /// The gate's resistance network, `rgatemod`, 0 to 3; default 0.
+    pub gate_resistance_model: GateResistance,
     /// What the diffusions' perimeters `ps` and `pd` include, `permod`, 0 or 1; default
     /// 1.
     pub perimeter_model: Perimeter,
@@ -2249,6 +2254,7 @@ impl<R: Real> Default for Bsim4Parameters<R> {
             threshold_adjustment: R::constant(0.0),
             mobility_multiplier: R::constant(1.0),
             body_resistance_model: BodyResistance::Zero,
+            gate_resistance_model: GateResistance::Zero,
             perimeter_model: Perimeter::One,
             drain_source_resistance_model: DrainSourceResistance::Zero,
             flicker_noise_model: FlickerNoise::One,
@@ -3082,6 +3088,8 @@ pub(super) struct Binned<R: Real> {
     pub(super) clc: R,
     pub(super) cle: R,
     pub(super) acde: R,
+    pub(super) xrcrg1: R,
+    pub(super) xrcrg2: R,
     pub(super) moin: R,
     pub(super) noff: R,
     pub(super) voffcv: R,
@@ -3523,6 +3531,14 @@ impl<R: Real> Bsim4Parameters<R> {
                 + self.lacde * inverse_length
                 + self.wacde * inverse_width
                 + self.pacde * inverse_area,
+            xrcrg1: self.xrcrg1
+                + self.lxrcrg1 * inverse_length
+                + self.wxrcrg1 * inverse_width
+                + self.pxrcrg1 * inverse_area,
+            xrcrg2: self.xrcrg2
+                + self.lxrcrg2 * inverse_length
+                + self.wxrcrg2 * inverse_width
+                + self.pxrcrg2 * inverse_area,
             moin: self.moin
                 + self.lmoin * inverse_length
                 + self.wmoin * inverse_width

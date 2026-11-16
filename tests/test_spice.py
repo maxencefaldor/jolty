@@ -875,14 +875,16 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
     meter above, `NSD` and `NGATE` up to 1e24, `NSUB` per cubic centimeter, a `U0`
     above 1 in cm²/(V·s) with its dependences, `VTHO` is `VTH0`, and with `BINUNIT` 1,
     its default, each length and width dependence per micrometer; its bins' ranges,
-    which only select it, are read past.
+    which only select it, are read past, and an instance's gate contacts, `XGW` and
+    `NGCON`, stand for its card's.
     """
     parts = library(
         ".model N1 NMOS(level=54 version=4.5 tnom=25 ndep=1.7e17 lndep=1e16 nsd=1e20\n"
         "+ ngate=3e25 nsub=6e16 u0=400 lu0=-20 vtho=0.5 lvth0=0.02 rbodymod=1\n"
-        "+ permod=0 paramchk=0 xpart=0.5 lmin=0.1u tnoimod=1 capmod=2 mobmod=0)\n"
+        "+ permod=0 paramchk=0 xpart=0.5 lmin=0.1u tnoimod=1 capmod=2 mobmod=0\n"
+        "+ rgatemod=3 xgw=0.5u)\n"
         ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.15u nf=2 sa=1u sb=2u sd=0.5u\n"
-        "+ nrd=2 delvto=0.1 rbpb=20\n.ends"
+        "+ nrd=2 delvto=0.1 rbpb=20 xgw=1u ngcon=2\n.ends"
     )
     (instance,) = parts.component("a").definition.instances
     assert instance.of == ir.DeviceOf(model="bsim4")
@@ -900,6 +902,7 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
             "vth0": 0.5,
             "lvth0": 2e-8,
             "body_resistance_model": 1,
+            "gate_resistance_model": 3,
             "perimeter_model": 0,
             "thermal_noise_model": 1,
             "check_parameters": False,
@@ -913,6 +916,8 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
             "drain_squares": 2.0,
             "threshold_adjustment": 0.1,
             "rbpb": 20.0,
+            "xgw": 1e-6,
+            "ngcon": 2.0,
         }
     )
 
@@ -925,8 +930,8 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
         ("level=54 version=4.5 capmod=1", "jolty models BSIM4 with `CAPMOD` 2 alone"),
         ("level=54 version=4.5 igcmod=1", "jolty models BSIM4 with `IGCMOD` 0 alone"),
         (
-            "level=54 version=4.5 rgatemod=1",
-            "jolty models BSIM4 with `RGATEMOD` 0 alone",
+            "level=54 version=4.5 rgatemod=4",
+            "gate_resistance_model is 0, 1, 2 or 3, not 4",
         ),
         ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
         ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),

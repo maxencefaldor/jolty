@@ -2643,6 +2643,66 @@ def test_bsim4_noise_agrees(name: str, decades: int) -> None:
     )
 
 
+_GATED: Final = {
+    f"rgatemod-{model}": devices.bsim4(
+        width=4 * um,
+        length=0.15 * um,
+        fingers=2,
+        gate_resistance_model=model,
+        drain_source_resistance_model=1,
+        card={
+            "vth0": 0.45 * V,
+            "rshg": 50 * ohm,
+            "xgw": 0.5 * um,
+            "ngcon": 2,
+            "xrcrg1": 10,
+            "xrcrg2": 2,
+            "rdw": 100 * ohm,
+            "rsw": 100 * ohm,
+        },
+    )
+    for model in (1, 2, 3)
+}
+"""A short n-channel of two fingers behind each gate network: `rgatemod` 1, the gate
+electrode's resistance alone, 2, it in series with the channel's bias-dependent
+intrinsic-input resistance, and 3, the two with the overlaps' charges between them."""
+
+
+@pytest.mark.parametrize("name", _GATED)
+def test_bsim4_gate_networks_agree(name: str) -> None:
+    """A BSIM4 stage's operating point and AC response to 10 GHz, as ngspice's.
+
+    Its transistor's gate lies behind each gate network, its body at its source, so
+    ngspice's capacitances with respect to the body, which are not its charges'
+    derivatives (the guide's departures), carry no current.
+    """
+    simulation = Simulation(bsim_stage(_GATED[name]))
+    kelvins = bsim_kelvins(celsius(27))
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(
+            point.values[column],
+            spice_value,
+            unknown,
+            scale=abs(spice_value),
+            tolerance=1e-6,
+        )
+    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        compare(
+            response.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
 _PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
     (0, 0.0),
     (1, 0.0),
