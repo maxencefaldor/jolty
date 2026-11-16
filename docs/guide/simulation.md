@@ -314,7 +314,8 @@ The random variables are drawn apart from one another, so to first order the out
 A response's phasor spreads in magnitude and in phase, each to first order of its phasor: the magnitude by the phasor's derivative along the phasor, the phase, in radians, across it.
 
 The result's `standard_deviation(output, part=None)` reads an output's standard deviation, a number at the operating point and an array over the points otherwise, `contributions(output, part=None)` each random variable's contribution and `shares(output, part=None)` its share, in the order of `random_variables`; a response takes `part`, `"magnitude"` or `"phase"`.
-The report states each output's standard deviation, at the operating point or where it is largest, and the random variables that contribute most there, the largest share first, a phase's in degrees.
+For an oscillator's periodic steady state, `period_derivatives` holds its period's derivative with respect to each random variable, and `period_standard_deviation()` its period's standard deviation.
+The report states each output's standard deviation, at the operating point or where it is largest, and the random variables that contribute most there, the largest share first, a phase's in degrees, and an oscillator's period's standard deviation.
 First order is exact as the spreads go to zero; how far it lies from a Monte Carlo analysis on the same circuit is measured in `tests/test_mismatch.py`, where it agrees within the samples' own statistics.
 
 ## Variants

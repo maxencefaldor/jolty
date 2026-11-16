@@ -1070,6 +1070,20 @@ class MismatchResult(_Watched):
         found = np.sqrt(np.sum(self.contributions(output, part) ** 2, axis=-1))
         return float(found) if found.ndim == 0 else found
 
+    def period_standard_deviation(self) -> float:
+        """The standard deviation of an oscillator's period, to first order, in seconds.
+
+        Raises:
+            KeyError: When the analysis differentiates no oscillator's period.
+        """
+        if self.period_derivatives is None:
+            message = "the analysis differentiates no oscillator's period"
+            raise KeyError(message)
+        deviations = np.array(
+            [variable.standard_deviation for variable in self.random_variables]
+        )
+        return float(np.sqrt(np.sum((self.period_derivatives * deviations) ** 2)))
+
     def shares(self, output: str, part: Part | None = None) -> Real:
         """Each random variable's share of the variance of `output`, in their order.
 

@@ -17,11 +17,20 @@ import numpy as np
 import pytest
 
 from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
-from jolty.plan import Ac, Mismatch, MonteCarlo, OperatingPoint, decade
+from jolty.plan import (
+    Ac,
+    DcSweep,
+    Mismatch,
+    MonteCarlo,
+    OperatingPoint,
+    Options,
+    PeriodicSteadyState,
+    decade,
+)
 from jolty.report import report
 from jolty.settings import Settings
 from jolty.spice import Library, Sample, kits, sg13g2, sky130, standard_deviation
-from jolty.units import A, GHz, MHz, V, kHz, kohm, nF, uA, um
+from jolty.units import A, F, GHz, H, MHz, V, format_si, kHz, kohm, nF, uA, um
 
 STANDARD_ERRORS: Final = 5
 """How many of Monte Carlo's standard errors the two standard deviations lie within."""
@@ -135,6 +144,61 @@ def test_a_responses_magnitude_and_phase_spread_as_their_closed_forms() -> None:
     text = report("spread", found, 10).describe()
     assert "out's magnitude: standard deviation largest" in text
     assert "out's phase" in text
+
+
+def test_a_sweeps_spread_scales_with_its_level() -> None:
+    """Along a sweep of the divider's supply, its output spreads with the supply.
+
+    `out = V R2 / (R1 + R2)`, so each contribution is the operating point's at 1 V times
+    the level, to the same rounding.
+    """
+    levels = [0.5 * V, 1 * V, 2 * V]
+    simulation = Simulation(divider())
+    swept = simulation.run(Mismatch(["out"], of=DcSweep("V1", levels)))
+    point = simulation.run(Mismatch(["out"]))
+    expected = np.outer([0.5, 1, 2], point.contributions("out"))
+    assert swept.contributions("out") == pytest.approx(expected, rel=1e-12, abs=1e-15)
+    text = report("swept", swept, 10).describe()
+    assert "out: standard deviation largest, 4.33 mV, at 2 V" in text
+
+
+def test_an_oscillators_period_spreads_with_its_tank() -> None:
+    """A tank's period scales with time, L and C alike, so it spreads with them.
+
+    Each part's own random variable moves its period by its value times the period's
+    derivative with respect to it, so the two sum to the period, `L ∂T/∂L + C ∂T/∂C =
+    T`, as `test_periodic.py` holds the sensitivities to it at a relative tolerance of
+    1e-6: within 1e-12.
+    """
+    inductance, capacitance = 1e-6, 1e-9
+    impedance = math.sqrt(inductance / capacitance)
+    expression = (
+        f"-{0.2 / impedance!r} * v(x) * (1 - (v(x) ^ 2 + ({impedance!r} * i(p)) ^ 2))"
+    )
+
+    @component
+    def tank(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        coil = devices.inductor(inductance * H).toleranced("inductance", 0.03, "normal")
+        plates = devices.capacitor(capacitance * F)
+        capacitor = c.place(plates.toleranced("capacitance", 0.03, "normal"), name="C1")
+        inductor = c.place(coil, name="L1")
+        regulation = c.place(devices.behavioral_current_source(expression), name="B1")
+        c.connect(capacitor.a, inductor.a, regulation.positive, regulation.x, name="t")
+        c.connect(inductor.b, regulation.p_positive, name="l")
+        c.connect(capacitor.b, regulation.negative, regulation.p_negative, ground)
+
+    found = Simulation(tank()).run(
+        Mismatch(["t"], of=PeriodicSteadyState()), Options(relative_tolerance=1e-6)
+    )
+    assert isinstance(found.result, results.PeriodicSteadyStateResult)
+    assert found.period_derivatives is not None
+    period = found.result.period
+    assert abs(sum(found.period_derivatives) / period - 1) <= 1e-12
+    spread = math.hypot(*found.period_derivatives) * 0.01
+    assert found.period_standard_deviation() == pytest.approx(spread, rel=1e-15)
+    deviation = format_si(found.period_standard_deviation(), "s")
+    assert f"standard deviation {deviation}" in report("ring", found, 10).describe()
 
 
 # A process kit's statistical functions.

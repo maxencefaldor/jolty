@@ -833,6 +833,15 @@ class MismatchReport(_Model):
         description="Random variables the outputs spread with."
     )
     outputs: tuple[OutputMismatch, ...]
+    period: float | None = Field(
+        default=None,
+        description="An oscillator's period, in seconds; null for any other analysis.",
+    )
+    period_standard_deviation: float | None = Field(
+        default=None,
+        description="The standard deviation of an oscillator's period, to first "
+        "order, in seconds; null for any other analysis.",
+    )
     unlisted: int = Field(
         description="Random variables left out of each output's list."
     )
@@ -863,6 +872,10 @@ class MismatchReport(_Model):
             lines.extend(f"  {row}" for row in _table(rows))
             if self.unlisted:
                 lines.append(f"      ... and {self.unlisted} more in the results file")
+        if self.period is not None and self.period_standard_deviation is not None:
+            period = format_si(self.period, "s")
+            deviation = format_si(self.period_standard_deviation, "s")
+            lines.append(f"  period = {period}, standard deviation {deviation}")
         return "\n".join(lines)
 
     def _spread(self, output: OutputMismatch) -> str:
@@ -1570,6 +1583,12 @@ def _mismatch(
         ("magnitude", "phase") if of == "ac" else (None,)
     )
     listed = min(max_unknowns, len(result.random_variables))
+    period, period_deviation = None, None
+    if result.period_derivatives is not None and isinstance(
+        result.result, results.PeriodicSteadyStateResult
+    ):
+        period = result.result.period
+        period_deviation = result.period_standard_deviation()
     return MismatchReport(
         name=name,
         of=of,
@@ -1583,6 +1602,8 @@ def _mismatch(
             for output in result.outputs
             for part in parts
         ),
+        period=period,
+        period_standard_deviation=period_deviation,
         unlisted=len(result.random_variables) - listed,
     )
 
