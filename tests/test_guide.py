@@ -27,6 +27,7 @@ import ast
 import contextlib
 import io
 import math
+import os
 import re
 import shlex
 import shutil
@@ -193,12 +194,15 @@ def output(commands: str, directory: Path, capsys: pytest.CaptureFixture[str]) -
             out, err = capsys.readouterr()
         else:
             assert program == "python", command
+            # A script prints as it would to a file: CI forces colour, which would set
+            # its tracebacks in escape codes; Python's own setting outranks it.
             ran = subprocess.run(  # noqa: S603 - a script of the repository's own
                 [sys.executable, *arguments],
                 capture_output=True,
                 check=False,
                 cwd=directory,
                 text=True,
+                env={**os.environ, "PYTHON_COLORS": "0"},
             )
             out, err = ran.stdout, ran.stderr
         printed.append(out + err)
