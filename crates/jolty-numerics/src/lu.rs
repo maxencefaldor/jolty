@@ -593,7 +593,7 @@ impl<T: Scalar> Shared<'_, T> {
         };
         let mut kept = std::mem::take(&mut workspace.kept);
         kept.resize(condensation.solved(), T::ZERO);
-        condensation.reduce(self.saved, (rhs, transposed), &mut kept);
+        condensation.reduce(self.saved, (&*rhs, transposed), &mut kept);
         self.solve_factored(&mut kept[..dimension], workspace, transposed);
         condensation.expand(self.saved, (&mut kept, transposed), rhs);
         workspace.kept = kept;

@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::{LinearError, Scalar};
-use crate::{Pattern, PatternBuilder};
+use crate::{Entry, Pattern, PatternBuilder};
 
 /// No index: a row or a column eliminated, or one kept.
 const NONE: usize = usize::MAX;
@@ -50,11 +50,9 @@ pub struct Condensation {
     /// The full pattern's row of each kept unknown's equation: its own, or the row of an
     /// unknown eliminated by another's row.
     rows: Vec<usize>,
-    /// The number of entries the eliminations fill, which the values they work on hold
-    /// after the full matrix's.
-    filled: usize,
-    /// Where each value of the kept unknowns' matrix lies among the values the eliminations
-    /// work on.
+    /// The full matrix's slot of each value the eliminations write, or [`NONE`] for one
+    /// only they fill: the kept unknowns' matrix, then each entry of a row or a column
+    /// eliminated later that an elimination writes to first.
     sources: Vec<usize>,
     /// Each unknown eliminated, in increasing order.
     eliminated: Vec<Eliminated>,
@@ -66,23 +64,134 @@ pub struct Condensation {
     /// unknown, each one's in increasing column: their columns and their places among the
     /// values worked on.
     row: Vec<Reference>,
-    /// The place among the values worked on of each product of an elimination: unknown
-    /// after unknown, for each entry of its column, for each entry of its row.
+    /// Where among the values the eliminations write each product of an elimination goes:
+    /// unknown after unknown, for each entry of its column, for each entry of its row.
     updates: Vec<usize>,
+    /// The eliminations whose pivots' rows, and those whose unknowns, an elimination before
+    /// reads, by their indices, in increasing order.
+    shared: (Vec<usize>, Vec<usize>),
 }
 
-/// An entry of an eliminated unknown's column or row, as an elimination reads it: its row or
-/// its column in the full pattern, its place among a solve's values, and its place among the
-/// values the eliminations work on.
+/// An entry of an eliminated unknown's column or row, as an elimination reads it: where a
+/// solve keeps the value of its row, or of its column, and where its own value lies.
 #[derive(Debug, Clone, Copy)]
 struct Reference {
-    /// The row of an entry of a column, or the column of an entry of a row.
-    index: usize,
-    /// Where a solve keeps that row's, or that column's, value: a kept unknown's index, or
-    /// the number of kept unknowns and the elimination's index among the eliminated.
+    /// Where a solve keeps the value of the entry's row, for an entry of a column, or of
+    /// its column, for an entry of a row: a kept unknown's index, or the number of kept
+    /// unknowns and the elimination's index among the eliminated, for a pivot's row or an
+    /// eliminated unknown.
     solved: usize,
-    /// Where its value lies among the values the eliminations work on.
-    slot: usize,
+    /// Where its value lies.
+    at: At,
+}
+
+/// Where an elimination reads a value: at its slot in the full matrix, where no elimination
+/// before writes it, as most are, or, with [`WRITTEN`] set, among the values the
+/// eliminations write.
+#[derive(Debug, Clone, Copy)]
+struct At(usize);
+
+/// The bit of an [`At`] that says it lies among the values the eliminations write: no slot
+/// reaches it, as no vector holds that many values.
+const WRITTEN: usize = 1 << (usize::BITS - 1);
+
+/// An elimination as it is laid out: its unknown, its pivot's row and where its pivot
+/// lies, where its column's and its row's entries lie, and where its updates begin.
+type Laid = ((usize, usize, Place), (usize, usize), (usize, usize), usize);
+
+/// The eliminations `laid` out, each pivot where `resolve` puts it, each flagged by the
+/// entries of `column` and `row`, every elimination's, of `count` kept unknowns: whether one
+/// before it reads its pivot's row or its unknown, and whether it reads the full matrix
+/// alone.
+fn eliminations(
+    laid: Vec<Laid>,
+    (column, row): (&[Reference], &[Reference]),
+    count: usize,
+    resolve: impl Fn(Place) -> At,
+) -> Vec<Eliminated> {
+    let mut shared = vec![(false, false); laid.len()];
+    for entry in column {
+        if let Some(later) = entry.solved.checked_sub(count) {
+            shared[later].0 = true;
+        }
+    }
+    for entry in row {
+        if let Some(later) = entry.solved.checked_sub(count) {
+            shared[later].1 = true;
+        }
+    }
+    laid.into_iter()
+        .zip(shared)
+        .map(
+            |(((unknown, row_of, pivot), columns, entries, updates), shared)| {
+                let pivot = resolve(pivot);
+                let simple = [pivot]
+                    .into_iter()
+                    .chain(column[columns.0..columns.1].iter().map(|entry| entry.at))
+                    .chain(row[entries.0..entries.1].iter().map(|entry| entry.at))
+                    .all(|at| at.0 & WRITTEN == 0);
+                Eliminated {
+                    unknown,
+                    row: row_of,
+                    pivot,
+                    column: columns,
+                    entries,
+                    updates,
+                    shared,
+                    simple,
+                }
+            },
+        )
+        .collect()
+}
+
+/// Where an entry lies while the eliminations are laid out: in the full matrix at its
+/// slot, at a claim among the kept entries, or after them, among those of rows and columns
+/// eliminated later.
+#[derive(Debug, Clone, Copy)]
+enum Place {
+    Full(usize),
+    Kept(usize),
+    Later(usize),
+}
+
+impl At {
+    /// The value at this place, of the full matrix's `values` and the `written` ones.
+    #[inline]
+    fn of<T: Copy>(self, values: &[T], written: &[T]) -> T {
+        if self.0 & WRITTEN == 0 {
+            values[self.0]
+        } else {
+            written[self.0 & !WRITTEN]
+        }
+    }
+}
+
+/// How an elimination reads its values: [`Full`], from the full matrix alone, for one that
+/// reads nothing an elimination before it wrote, or [`Either`], from wherever each lies.
+trait Read {
+    /// The value at `at`, of the full matrix's `values` and the `written` ones.
+    fn read<T: Copy>(at: At, values: &[T], written: &[T]) -> T;
+}
+
+/// Reads the full matrix alone.
+struct Full;
+
+impl Read for Full {
+    #[inline]
+    fn read<T: Copy>(at: At, values: &[T], _: &[T]) -> T {
+        values[at.0]
+    }
+}
+
+/// Reads the full matrix or the values written, as each [`At`] says.
+struct Either;
+
+impl Read for Either {
+    #[inline]
+    fn read<T: Copy>(at: At, values: &[T], written: &[T]) -> T {
+        at.of(values, written)
+    }
 }
 
 /// One unknown eliminated: where its pivot, its column, its row and its updates lie.
@@ -92,14 +201,23 @@ struct Eliminated {
     unknown: usize,
     /// The row of its pivot.
     row: usize,
-    /// Where its pivot lies among the values worked on.
-    pivot: usize,
+    /// Where its pivot lies.
+    pivot: At,
     /// Where its column's entries lie among [`Condensation::column`].
     column: (usize, usize),
     /// Where its row's entries lie among [`Condensation::row`].
     entries: (usize, usize),
     /// Where its updates begin among [`Condensation::updates`].
     updates: usize,
+    /// Whether an elimination before it reads the value of its pivot's row, as a column's
+    /// entry there, and of its unknown, as a row's entry there: a solve keeps what it makes
+    /// of those after the kept unknowns' values, and else reads and writes the right-hand
+    /// side alone, as an unknown that shares nothing with another needs.
+    shared: (bool, bool),
+    /// Whether every value it reads, its pivot and the other entries of its column and its
+    /// row, is the full matrix's, which no elimination before it wrote, as for an unknown
+    /// that shares nothing with another eliminated.
+    simple: bool,
 }
 
 impl Eliminated {
@@ -115,25 +233,25 @@ impl Eliminated {
 }
 
 /// What a factorization of a condensed matrix keeps for its solves: the values the
-/// eliminations worked on, the full matrix's then those they filled, the kept unknowns'
-/// matrix, each eliminated unknown's pivot, and the multipliers of its column, each entry
-/// over the pivot, in the order [`Condensation`] lists them.
+/// eliminations wrote, the kept unknowns' matrix first, each eliminated unknown's pivot,
+/// the multipliers of its column, each entry over the pivot, and the entries of its row,
+/// in the order [`Condensation`] lists them.
 #[derive(Debug, Clone)]
 pub(super) struct Saved<T> {
-    values: Vec<T>,
-    kept: Vec<T>,
+    written: Vec<T>,
     pivots: Vec<T>,
     multipliers: Vec<T>,
+    row: Vec<T>,
 }
 
 impl<T> Saved<T> {
     /// Nothing saved yet.
     pub(super) const fn new() -> Self {
         Self {
-            values: Vec::new(),
-            kept: Vec::new(),
+            written: Vec::new(),
             pivots: Vec::new(),
             multipliers: Vec::new(),
+            row: Vec::new(),
         }
     }
 }
@@ -193,6 +311,13 @@ impl Numbering {
             rows,
             eliminated: (eliminated_row, eliminated_column),
         }
+    }
+
+    /// Claims in `builder` the kept unknowns' entry at the full pattern's `row` and
+    /// `column`, if both are kept.
+    fn claim(&self, builder: &mut PatternBuilder, (row, column): (usize, usize)) -> Option<Entry> {
+        let (row, column) = (self.row_index[row], self.index[column]);
+        (row != NONE && column != NONE).then(|| builder.entry(row, column))
     }
 
     /// Where a solve keeps the value of `row`: its kept index, or after the kept unknowns,
@@ -363,95 +488,108 @@ impl Condensation {
     /// and column, in their order.
     fn of(full: Arc<Pattern>, taken: &[(usize, usize)]) -> Self {
         let numbering = Numbering::new(full.dimension(), taken);
-        let Numbering {
-            index,
-            unknowns,
-            row_index,
-            ..
-        } = &numbering;
-        let count = unknowns.len();
-        let is_kept =
-            |(row, column): (usize, usize)| row_index[row] != NONE && index[column] != NONE;
         let mut builder = PatternBuilder::new();
-        // The full pattern's entries among the kept unknowns, in its order of slots, each
-        // where it lies among the values worked on: its own slot.
-        let mut kept_entries = Vec::new();
-        for (slot, (row, column)) in full.positions().enumerate() {
-            if is_kept((row, column)) {
-                kept_entries.push((builder.entry(row_index[row], index[column]), slot));
-            }
-        }
-        // Where the eliminations read or write each entry among the values they work on:
-        // the full pattern's slot, or a place after them for an entry they fill, a kept one
-        // an entry of the kept pattern too.
-        let stored = full.len();
-        let mut filled: HashMap<(usize, usize), usize> = HashMap::new();
+        // The full pattern's entries among the kept unknowns, in its order of slots, and
+        // each entry the eliminations fill among them, with the full pattern's slot of each,
+        // or `NONE` for one filled.
+        let mut kept_entries: Vec<(Entry, usize)> = full
+            .positions()
+            .enumerate()
+            .filter_map(|(slot, position)| Some((numbering.claim(&mut builder, position)?, slot)))
+            .collect();
+        // Where each entry an elimination writes lies among the values written: a kept
+        // one's claim, or one of a row or a column eliminated later, in the order first
+        // written, with the full pattern's slot of each, or `NONE`.
+        let mut writes: HashMap<(usize, usize), Place> = HashMap::new();
+        let mut later: Vec<usize> = Vec::new();
         let mut evolving = Evolving::new(&full);
-        let mut place = |position: (usize, usize), evolving: &Evolving<'_>| {
-            let (row, column) = position;
-            evolving.slot(row, column).unwrap_or_else(|| {
-                let count = filled.len();
-                *filled.entry(position).or_insert_with(|| {
-                    let at = stored + count;
-                    if is_kept(position) {
-                        kept_entries.push((builder.entry(row_index[row], index[column]), at));
-                    }
-                    at
-                })
-            })
-        };
         let (mut list, mut column_entries, mut row_entries, mut updates) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for &(row, unknown) in taken {
-            let pivot = place((row, unknown), &evolving);
-            let first = (column_entries.len(), row_entries.len(), updates.len());
             let rows = evolving.column(unknown, row);
             let columns = evolving.row(row, unknown);
+            let first = (column_entries.len(), row_entries.len(), updates.len());
+            // An entry no elimination before wrote is read from the full matrix.
+            let read = |position: (usize, usize)| {
+                writes.get(&position).copied().unwrap_or_else(|| {
+                    Place::Full(evolving.slot(position.0, position.1).unwrap_or(NONE))
+                })
+            };
+            let pivot = read((row, unknown));
             for &each in &rows {
-                column_entries.push(Reference {
-                    index: each,
-                    solved: numbering.solved_row(each),
-                    slot: place((each, unknown), &evolving),
-                });
+                column_entries.push((numbering.solved_row(each), read((each, unknown))));
             }
             for &each in &columns {
-                row_entries.push(Reference {
-                    index: each,
-                    solved: numbering.solved_column(each),
-                    slot: place((row, each), &evolving),
-                });
+                row_entries.push((numbering.solved_column(each), read((row, each))));
             }
             for &target in &rows {
                 for &along in &columns {
-                    updates.push(place((target, along), &evolving));
+                    let position = (target, along);
+                    let place = *writes.entry(position).or_insert_with(|| {
+                        let slot = evolving.slot(target, along).unwrap_or(NONE);
+                        if let Some(entry) = numbering.claim(&mut builder, position) {
+                            kept_entries.push((entry, slot));
+                            Place::Kept(kept_entries.len() - 1)
+                        } else {
+                            later.push(slot);
+                            Place::Later(later.len() - 1)
+                        }
+                    });
+                    updates.push(place);
                 }
             }
             evolving.eliminate((row, unknown));
-            list.push(Eliminated {
-                unknown,
-                row,
-                pivot,
-                column: (first.0, column_entries.len()),
-                entries: (first.1, row_entries.len()),
-                updates: first.2,
-            });
+            list.push((
+                (unknown, row, pivot),
+                (first.0, column_entries.len()),
+                (first.1, row_entries.len()),
+                first.2,
+            ));
         }
-        let filled = filled.len();
-        let kept = builder.finish(count);
-        let mut sources = vec![0; kept.len()];
-        for (entry, at) in kept_entries {
-            sources[kept.slot(entry)] = at;
-        }
+        let kept = builder.finish(numbering.unknowns.len());
+        let mut sources = vec![NONE; kept.len()];
+        let claims: Vec<usize> = kept_entries
+            .iter()
+            .map(|&(entry, slot)| {
+                let at = kept.slot(entry);
+                sources[at] = slot;
+                at
+            })
+            .collect();
+        sources.extend(&later);
+        let written = |place: Place| match place {
+            Place::Full(slot) => slot,
+            Place::Kept(claim) => claims[claim],
+            Place::Later(offset) => kept.len() + offset,
+        };
+        let resolve = |place: Place| match place {
+            Place::Full(slot) => At(slot),
+            _ => At(written(place) | WRITTEN),
+        };
+        let reference = |(solved, place): (usize, Place)| Reference {
+            solved,
+            at: resolve(place),
+        };
+        let column: Vec<Reference> = column_entries.into_iter().map(reference).collect();
+        let row: Vec<Reference> = row_entries.into_iter().map(reference).collect();
+        let count = numbering.unknowns.len();
+        let eliminated = eliminations(list, (&column, &row), count, resolve);
+        let indices = |pick: fn(&Eliminated) -> bool| {
+            (0..eliminated.len())
+                .filter(|&index| pick(&eliminated[index]))
+                .collect()
+        };
+        let shared = (indices(|each| each.shared.0), indices(|each| each.shared.1));
         Self {
-            eliminated: list,
-            column: column_entries,
-            row: row_entries,
-            updates,
+            eliminated,
+            shared,
+            column,
+            row,
+            updates: updates.into_iter().map(written).collect(),
             full,
             kept: Arc::new(kept),
             unknowns: numbering.unknowns,
             rows: numbering.rows,
-            filled,
             sources,
         }
     }
@@ -493,37 +631,62 @@ impl Condensation {
         saved: &'a mut Saved<T>,
     ) -> Result<&'a [T], LinearError> {
         let Saved {
-            values: work,
-            kept,
+            written,
             pivots,
             multipliers,
+            row,
         } = saved;
-        work.clear();
-        work.extend_from_slice(values);
-        work.resize(values.len() + self.filled, T::ZERO);
+        written.clear();
+        written.extend(
+            self.sources
+                .iter()
+                .map(|&slot| if slot == NONE { T::ZERO } else { values[slot] }),
+        );
         pivots.clear();
         multipliers.clear();
+        row.resize(self.row.len(), T::ZERO);
+        let mut taken = (pivots, multipliers, row);
         for eliminated in &self.eliminated {
-            let pivot = work[eliminated.pivot];
-            if pivot.magnitude() == 0.0 || !pivot.is_finite() {
-                return Err(LinearError::Singular {
-                    columns: vec![eliminated.unknown],
-                });
-            }
-            pivots.push(pivot);
-            let mut updates = self.updates[eliminated.updates..].iter();
-            for entry in &self.column[eliminated.column()] {
-                let multiplier = work[entry.slot] / pivot;
-                multipliers.push(multiplier);
-                for (along, &slot) in self.row[eliminated.entries()].iter().zip(&mut updates) {
-                    let product = multiplier * work[along.slot];
-                    work[slot] -= product;
-                }
+            if eliminated.simple {
+                self.eliminate::<Full, T>(eliminated, (values, written), &mut taken)?;
+            } else {
+                self.eliminate::<Either, T>(eliminated, (values, written), &mut taken)?;
             }
         }
-        kept.clear();
-        kept.extend(self.sources.iter().map(|&at| work[at]));
-        Ok(kept)
+        Ok(&written[..self.kept.len()])
+    }
+
+    /// Eliminates `eliminated` from the full matrix's `values` and the `written` ones, as
+    /// [`Condensation::condense`] does, each value read as `R` reads it, keeping its pivot,
+    /// its column's multipliers and its row's entries in `taken`.
+    #[inline]
+    fn eliminate<R: Read, T: Scalar>(
+        &self,
+        eliminated: &Eliminated,
+        (values, written): (&[T], &mut [T]),
+        (pivots, multipliers, row): &mut (&mut Vec<T>, &mut Vec<T>, &mut Vec<T>),
+    ) -> Result<(), LinearError> {
+        let pivot = R::read(eliminated.pivot, values, written);
+        if pivot.magnitude() == 0.0 || !pivot.is_finite() {
+            return Err(LinearError::Singular {
+                columns: vec![eliminated.unknown],
+            });
+        }
+        pivots.push(pivot);
+        let range = eliminated.entries();
+        let along = &mut row[range.clone()];
+        for (value, entry) in along.iter_mut().zip(&self.row[range]) {
+            *value = R::read(entry.at, values, written);
+        }
+        let mut updates = self.updates[eliminated.updates..].iter();
+        for entry in &self.column[eliminated.column()] {
+            let multiplier = R::read(entry.at, values, written) / pivot;
+            multipliers.push(multiplier);
+            for (&along, &slot) in along.iter().zip(&mut updates) {
+                written[slot] -= multiplier * along;
+            }
+        }
+        Ok(())
     }
 
     /// The number of values a solve keeps, as [`Condensation::reduce`] and
@@ -533,53 +696,73 @@ impl Condensation {
         self.unknowns.len() + self.eliminated.len()
     }
 
-    /// Turns `rhs`, the right-hand side of the full system of the matrix `saved` was made
-    /// of, into what the eliminations make of it, and writes into `into`, of
-    /// [`Condensation::solved`] values, the kept unknowns' right-hand side, one value per
-    /// kept unknown, and what the solve of the transposed system reads of the others: as
-    /// the eliminations make `b`, or, when `transposed`, as their transposes make it,
-    /// row `r` of each pivot `p` taking the columns `e`'s value `b_e` times `A_rc/p` from
-    /// each other column `c` of the row.
+    /// Writes into `into`, of [`Condensation::solved`] values, the right-hand side of the
+    /// kept unknowns' system of the full system whose right-hand side is `rhs`, one value per
+    /// kept unknown, as the eliminations make it of `b`, and after them what each
+    /// elimination left of its pivot's row's value; or, when `transposed`, the right-hand
+    /// side of the transposed kept system, each pivot's row `r` taking each other column
+    /// `c` of the row's `A_rc/p` times its unknown's value, and after them what each left of
+    /// its unknown's.
     pub(super) fn reduce<T: Scalar>(
         &self,
         saved: &Saved<T>,
-        (rhs, transposed): (&mut [T], bool),
+        (rhs, transposed): (&[T], bool),
         into: &mut [T],
     ) {
         let count = self.unknowns.len();
-        let ranges = self.eliminated.iter().zip(&saved.pivots).enumerate();
-        for (index, (eliminated, &pivot)) in ranges {
-            if transposed {
-                let value = rhs[eliminated.unknown];
-                into[count + index] = value;
-                for entry in &self.row[eliminated.entries()] {
-                    rhs[entry.index] -= saved.values[entry.slot] / pivot * value;
-                }
-            } else {
-                let value = rhs[eliminated.row];
-                let range = eliminated.column();
-                let (entries, multipliers) =
-                    (&self.column[range.clone()], &saved.multipliers[range]);
-                for (entry, &multiplier) in entries.iter().zip(multipliers) {
-                    rhs[entry.index] -= multiplier * value;
-                }
-            }
-        }
-        let kept = if transposed {
+        let kept_indices = if transposed {
             &self.unknowns
         } else {
             &self.rows
         };
-        for (into, &index) in into.iter_mut().zip(kept) {
+        for (into, &index) in into.iter_mut().zip(kept_indices) {
             *into = rhs[index];
+        }
+        // The value each elimination takes, of its unknown or of its pivot's row: kept after
+        // the kept unknowns' where an elimination before it changes it, and else the
+        // right-hand side's.
+        let taken = |each: &Eliminated| {
+            if transposed {
+                (each.unknown, each.shared.1)
+            } else {
+                (each.row, each.shared.0)
+            }
+        };
+        let shared = if transposed {
+            &self.shared.1
+        } else {
+            &self.shared.0
+        };
+        for &index in shared {
+            into[count + index] = rhs[taken(&self.eliminated[index]).0];
+        }
+        let ranges = self.eliminated.iter().zip(&saved.pivots).enumerate();
+        for (index, (eliminated, &pivot)) in ranges {
+            let value = match taken(eliminated) {
+                (_, true) => into[count + index],
+                (row, false) => rhs[row],
+            };
+            if transposed {
+                let range = eliminated.entries();
+                for (entry, &along) in self.row[range.clone()].iter().zip(&saved.row[range]) {
+                    into[entry.solved] -= along / pivot * value;
+                }
+            } else {
+                let range = eliminated.column();
+                let (entries, multipliers) =
+                    (&self.column[range.clone()], &saved.multipliers[range]);
+                for (entry, &multiplier) in entries.iter().zip(multipliers) {
+                    into[entry.solved] -= multiplier * value;
+                }
+            }
         }
     }
 
-    /// Writes into `rhs`, the right-hand side `reduce` turned, the solution of the full
-    /// system from `solved`, the kept unknowns' solution and what `reduce` kept beyond it,
-    /// each eliminated unknown recovered from its pivot's row, the last first:
-    /// `(b_r − Σ A_rc x_c)/p`, or, when `transposed`, `b_e/p − Σ (A_ke/p) x_k` for the row
-    /// `r` of the pivot.
+    /// Writes into `rhs` the solution of the full system from `solved`, the kept unknowns'
+    /// solution and what `reduce` kept beyond it, each eliminated unknown recovered from its
+    /// pivot's row, the last first: `(b_r − Σ A_rc x_c)/p`, or, when `transposed`,
+    /// `b_e/p − Σ (A_ke/p) x_k` for the row `r` of the pivot, where `b` is still `rhs`'s
+    /// value for a row or an unknown `reduce` kept nothing of.
     pub(super) fn expand<T: Scalar>(
         &self,
         saved: &Saved<T>,
@@ -589,33 +772,50 @@ impl Condensation {
         let count = self.unknowns.len();
         let ranges = self.eliminated.iter().zip(&saved.pivots).enumerate().rev();
         for (index, (eliminated, &pivot)) in ranges {
-            solved[count + index] = if transposed {
+            // What `reduce` took, and whether it kept it; then where the value recovered
+            // goes, and whether an elimination before it reads it.
+            let (row, unknown) = eliminated.shared;
+            let ((taken, reduced), (recovered, read)) = if transposed {
+                ((eliminated.unknown, unknown), (eliminated.row, row))
+            } else {
+                ((eliminated.row, row), (eliminated.unknown, unknown))
+            };
+            let given = if reduced {
+                solved[count + index]
+            } else {
+                rhs[taken]
+            };
+            let value = if transposed {
                 let range = eliminated.column();
                 let (entries, multipliers) =
                     (&self.column[range.clone()], &saved.multipliers[range]);
-                entries.iter().zip(multipliers).fold(
-                    solved[count + index] / pivot,
-                    |value, (entry, &multiplier)| value - multiplier * solved[entry.solved],
-                )
-            } else {
-                self.row[eliminated.entries()]
+                entries
                     .iter()
-                    .fold(rhs[eliminated.row], |value, entry| {
-                        value - saved.values[entry.slot] * solved[entry.solved]
+                    .zip(multipliers)
+                    .fold(given / pivot, |value, (entry, &multiplier)| {
+                        value - multiplier * solved[entry.solved]
+                    })
+            } else {
+                let range = eliminated.entries();
+                self.row[range.clone()]
+                    .iter()
+                    .zip(&saved.row[range])
+                    .fold(given, |value, (entry, &along)| {
+                        value - along * solved[entry.solved]
                     })
                     / pivot
             };
-        }
-        let (kept, eliminated) = solved.split_at(count);
-        for (each, &value) in self.eliminated.iter().zip(eliminated) {
-            rhs[if transposed { each.row } else { each.unknown }] = value;
+            if read {
+                solved[count + index] = value;
+            }
+            rhs[recovered] = value;
         }
         let kept_indices = if transposed {
             &self.rows
         } else {
             &self.unknowns
         };
-        for (&index, &value) in kept_indices.iter().zip(kept) {
+        for (&index, &value) in kept_indices.iter().zip(&solved[..count]) {
             rhs[index] = value;
         }
     }
