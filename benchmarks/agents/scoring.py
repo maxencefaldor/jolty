@@ -453,8 +453,8 @@ def planned(result: service.SimulateResult) -> list[Shortfall]:
             if verdict.status not in PASSING
         ]
     for name, batch in (("yield", result.monte_carlo), ("variants", result.variants)):
-        if batch is not None and batch.passing is not None and not batch.passing.met:
-            found.append(unmet(name, batch.passing.describe()))
+        if batch is not None and batch.yield_ is not None and not batch.yield_.met:
+            found.append(unmet(name, batch.yield_.describe()))
     if result.fidelity is not None and not result.fidelity.ok:
         found.append(unmet("fidelity", result.fidelity.describe()))
     return found

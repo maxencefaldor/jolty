@@ -176,8 +176,8 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
         job = runner.Job(script=script, plan=script, max_unknowns=10)
         whole = _built(runner.run(job, alone)).monte_carlo
     assert whole is not None
-    assert whole.passing is not None
-    assert 0 < whole.passing.passing < SAMPLES
+    assert whole.yield_ is not None
+    assert 0 < whole.yield_.passing < SAMPLES
     merged = []
     for count in (1, 3, 7):
         directory = tmp_path / f"{count}.shards"

@@ -144,9 +144,9 @@ def test_the_yield_matches_an_independent_monte_carlo_run(
     report = outcome.monte_carlo
     assert report is not None
     assert (report.samples, report.toleranced, report.failed) == (SAMPLES, 2, 0)
-    assert report.passing is not None
+    assert report.yield_ is not None
     (spread,) = report.spreads
-    assert spread.passing == report.passing.passing
+    assert spread.passing == report.yield_.passing
     assert spread.values is not None
     assert spread.values.mean == pytest.approx(2.5, abs=1e-3)
 
@@ -156,11 +156,11 @@ def test_the_yield_matches_an_independent_monte_carlo_run(
     lower = 1e3 * (1 + generator.normal(0, 0.01 / 3, SAMPLES))
     out = 5 * lower / (upper + lower)
     independent = float(np.mean(np.abs(out - 2.5) <= 7.5e-3))
-    estimate = report.passing.estimate
+    estimate = report.yield_.estimate
     error = math.sqrt(2 * independent * (1 - independent) / SAMPLES)
     assert abs(estimate - independent) <= 4 * error
-    assert report.passing.lower <= independent <= report.passing.upper
-    assert report.passing.met is (estimate >= 0.9)
+    assert report.yield_.lower <= independent <= report.yield_.upper
+    assert report.yield_.met is (estimate >= 0.9)
 
 
 def test_a_yield_target_lies_above_0_and_at_most_1() -> None:
@@ -329,8 +329,8 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     assert report is not None
     assert (report.corners, report.failed) == (("low",), 0)
     assert "at low, seed 2" in report.describe()
-    assert report.passing is not None
-    assert report.passing.passing == 0
+    assert report.yield_ is not None
+    assert report.yield_.passing == 0
     # Every sample reads worst at the low supply, on the parts the seed draws.
     (spread,) = report.spreads
     assert spread.values is not None
@@ -511,8 +511,8 @@ def test_a_plans_variants_run_at_its_conditions_and_every_corner(
     assert spread.values.minimum == pytest.approx(min(hot), rel=1e-14)
     assert spread.values.maximum == pytest.approx(max(hot), rel=1e-14)
     assert spread.passing == sum(each >= 2.3 for each in hot)
-    assert report.passing is not None
-    assert report.passing.passing == spread.passing
+    assert report.yield_ is not None
+    assert report.yield_.passing == spread.passing
     assert report.describe().startswith(
         "variants: 5 runs of R2 resistance, at hot; 0 failed\n"
     )

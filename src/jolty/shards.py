@@ -201,7 +201,7 @@ def monte_carlo(
         corners=shard.corners,
         failed=failed,
         spreads=spreads_found,
-        passing=passing,
+        yield_=passing,
     )
     return analysed, saved(shard.conditions[0], count, shard.analyses, shard.specs)
 

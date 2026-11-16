@@ -888,7 +888,7 @@ def _variants(
         corners=tuple(condition.corner or "" for condition in conditions[1:]),
         failed=failed,
         spreads=spreads,
-        passing=passing,
+        yield_=passing,
     )
     return analysed, shards.saved(found[0], count, planned, specs)
 

@@ -55,7 +55,9 @@ _STRATEGIES = {
 
 
 class _Model(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
+    )
 
 
 class Value(_Model):
@@ -716,8 +718,9 @@ class MonteCarloReport(_Model):
     spreads: tuple[Spread, ...] = Field(
         default=(), description="What each requirement of the specs read."
     )
-    passing: Yield | None = Field(
+    yield_: Yield | None = Field(
         default=None,
+        alias="yield",
         description="How many samples meet every requirement; null without specs.",
     )
 
@@ -735,8 +738,8 @@ class MonteCarloReport(_Model):
         )
         lines = [head]
         lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)
-        if self.passing is not None:
-            lines.append(f"  {self.passing.describe()}")
+        if self.yield_ is not None:
+            lines.append(f"  {self.yield_.describe()}")
         return "\n".join(lines)
 
 
@@ -808,8 +811,9 @@ class VariantsReport(_Model):
     spreads: tuple[Spread, ...] = Field(
         default=(), description="What each requirement of the specs read."
     )
-    passing: Yield | None = Field(
+    yield_: Yield | None = Field(
         default=None,
+        alias="yield",
         description="How many runs meet every requirement; null without specs.",
     )
 
@@ -820,8 +824,8 @@ class VariantsReport(_Model):
         head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
         lines = [head]
         lines.extend(f"  {spread.describe(self.runs)}" for spread in self.spreads)
-        if self.passing is not None:
-            lines.append(f"  {self.passing.describe()}")
+        if self.yield_ is not None:
+            lines.append(f"  {self.yield_.describe()}")
         return "\n".join(lines)
 
 

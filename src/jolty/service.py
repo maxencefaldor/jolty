@@ -439,7 +439,7 @@ class SimulateResult(CommandResult):
             )
             and all(corner.ok for corner in self.corners)
             and all(
-                batch is None or batch.passing is None or batch.passing.met
+                batch is None or batch.yield_ is None or batch.yield_.met
                 for batch in (self.monte_carlo, self.variants)
             )
             and (self.worst_case is None or self.worst_case.ok)
@@ -659,7 +659,7 @@ class MergeResult(CommandResult):
     @override
     def ok(self) -> bool:
         """Whether the samples' yield reaches the specs' target, if they state one."""
-        passing = self.monte_carlo.passing
+        passing = self.monte_carlo.yield_
         return passing is None or passing.met
 
     @override
