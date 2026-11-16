@@ -77,7 +77,7 @@ A temperature is the simulation's, or the device's own where it has one, raised 
 <!-- output of: jolty simulate supply.py --no-schematic --no-plot -->
 
 ```text
-error[over-rating]: the temperature of `Q1` reaches 157.829335387 °C at the operating point of `op`, beyond its rating of 150.0 °C
+error[over-rating]: the temperature of `Q1` reaches 157.829574664 °C at the operating point of `op`, beyond its rating of 150.0 °C
   = Q1, supply.py:25 in supply()
 
 error[over-rating]: the voltage of `C1` at `a` over `b` reaches 19.99999999999999 V at 2e-06 s in `tran`, beyond its rating of 16.0 V
