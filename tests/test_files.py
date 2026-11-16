@@ -91,7 +91,7 @@ def every_kind() -> dict[str, results.AnalysisResult]:
         charges=np.array([1e-12, -1e-12, 0.0, 0.0]),
         conductances=np.zeros(8),
         capacitances=np.array([1e-12, -1e-12, -1e-12, 1e-12, 0.0, 0.0, 0.0, 0.0]),
-        readings=np.array([0.7, 1.0, 0.2]),
+        variables=np.array([0.7, 1.0, 0.2]),
     )
     return {
         "op": point,
@@ -106,7 +106,7 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             charges=np.zeros((2, 4)),
             conductances=np.zeros((2, 8)),
             capacitances=np.zeros((2, 8)),
-            readings=np.zeros((2, 3)),
+            variables=np.zeros((2, 3)),
         ),
         "bode": results.AcResult(
             UNKNOWNS,
@@ -127,7 +127,7 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             charges=np.ones((2, 4)),
             conductances=np.zeros((2, 8)),
             capacitances=np.ones((2, 8)),
-            readings=np.ones((2, 3)),
+            variables=np.ones((2, 3)),
             excursions=(EXCURSION,),
         ),
         "sensitivity": results.SensitivityResult(
@@ -311,7 +311,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 12
+    assert header["version"] == 13
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

@@ -1893,7 +1893,7 @@ def _observed(
         "charges": outcome["charges"],
         "conductances": outcome["conductances"],
         "capacitances": outcome["capacitances"],
-        "readings": outcome["variables"],
+        "variables": outcome["variables"],
     }
 
 

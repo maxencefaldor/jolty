@@ -256,7 +256,7 @@ def _state(result: _Observed, frames: np.ndarray) -> dict[str, JsonValue]:
     """
     recording = result.recording
     stored = _rows(result, "charges")
-    readings = _rows(result, "readings")
+    computed = _rows(result, "variables")
     conductances = _rows(result, "conductances")
     charges: dict[str, JsonValue] = {}
     variables: dict[str, dict[str, JsonValue]] = {}
@@ -268,9 +268,9 @@ def _state(result: _Observed, frames: np.ndarray) -> dict[str, JsonValue]:
             for name in names:
                 charges[name] = _series(stored[frames, terminal])
                 terminal += 1
-        if readings.size:
+        if computed.size:
             for own in device.variables:
-                values = _series(readings[frames, variable])
+                values = _series(computed[frames, variable])
                 variables.setdefault(device.path, {})[own] = values
                 variable += 1
         size = len(device.unknowns)

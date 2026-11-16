@@ -19,7 +19,7 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the hashes of the circuit and the plan they are of. The header is
-in version 12 of the format, which holds that provenance and the regions of operation
+in version 13 of the format, which holds that provenance and the regions of operation
 each recorded transistor's model distinguishes; a file of another version is not
 read.
 
@@ -378,7 +378,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[12] = 12
+    version: Literal[13] = 13
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -1005,7 +1005,7 @@ def _names(result: results.AnalysisResult) -> _Names:
     return _Names(unknowns=result.unknowns, nets=result.nets)
 
 
-_OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "readings")
+_OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "variables")
 """The arrays of what the recorded devices did, by the names of their fields."""
 
 
@@ -1040,7 +1040,7 @@ def _observed(
         "charges": data[f"{name}.charges"],
         "conductances": data[f"{name}.conductances"],
         "capacitances": data[f"{name}.capacitances"],
-        "readings": data[f"{name}.readings"],
+        "variables": data[f"{name}.variables"],
     }
 
 

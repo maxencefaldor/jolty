@@ -157,7 +157,7 @@ class _Index:
     blocks: tuple[tuple[int, int], ...]
     """Each device's first column of the derivatives, and its number of unknowns."""
     variables: dict[tuple[str, str], int]
-    """The column of the readings of each variable, by device and name."""
+    """The column of each variable, by device and name."""
     devices: dict[str, RecordedDevice]
     """The devices, by path."""
 
@@ -205,7 +205,7 @@ class Recording:
     `devices`, in order, then one for each of `composites`, each the sum of the device
     terminals behind it; its `conductances` and `capacitances` have one for each pair of
     each device's unknowns, its terminals then its internal unknowns, row by row; and
-    its `readings` one for each of each device's variables. Each is found by name in a
+    its `variables` one for each of each device's variables. Each is found by name in a
     dictionary, made the first time one is read. A simulation records what the plan's or
     the analysis's ``record`` names (see [`Plan`][jolty.plan.Plan]).
 
@@ -287,7 +287,7 @@ class Recording:
         return start + row * size + column
 
     def variable(self, instance: str, name: str) -> int:
-        """The column of the readings of the variable `name` of the device `instance`.
+        """The column of the variable `name` of the device `instance`.
 
         Raises:
             KeyError: When the result recorded no such variable; the message suggests
@@ -364,7 +364,7 @@ class Observed(TypedDict):
     charges: Real
     conductances: Real
     capacitances: Real
-    readings: Real
+    variables: Real
 
 
 def net_column(nets: tuple[str, ...], name: str) -> int:
@@ -522,7 +522,7 @@ class _Devices[T](_Unknowns[T]):
     charges: npt.NDArray[Any]
     conductances: npt.NDArray[Any]
     capacitances: npt.NDArray[Any]
-    readings: npt.NDArray[Any]
+    variables: npt.NDArray[Any]
 
     def charge(self, instance: str, terminal: str) -> T:
         """The charge `terminal` of `instance` holds.
@@ -564,7 +564,7 @@ class _Devices[T](_Unknowns[T]):
         Raises:
             KeyError: When the result recorded no such variable.
         """
-        return self._read(self.readings[..., self.recording.variable(instance, name)])
+        return self._read(self.variables[..., self.recording.variable(instance, name)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,7 +590,7 @@ class OperatingPointResult(_Devices[float], _Watched):
     capacitances: Real = field(default_factory=_none)
     """The derivative of each recorded equation's charge with respect to each unknown
     of its device."""
-    readings: Real = field(default_factory=_none)
+    variables: Real = field(default_factory=_none)
     """Each recorded variable's value, in SI base units."""
 
     def level(self, net: str) -> float:
@@ -672,7 +672,7 @@ class DcSweepResult(_Devices[Real], _Watched):
     """Each recorded derivative of a residual at each level, one row per level."""
     capacitances: Real = field(default_factory=_no_rows)
     """Each recorded derivative of a charge at each level, one row per level."""
-    readings: Real = field(default_factory=_no_rows)
+    variables: Real = field(default_factory=_no_rows)
     """Each recorded variable's value at each level, one row per level."""
     parameter: str | None = None
     """The parameter swept, by its path among the instance's, such as ``resistance``;
@@ -819,7 +819,7 @@ class TransientResult(_Devices[Real], _Watched):
     """Each recorded derivative of a residual at each time, one row per time."""
     capacitances: Real = field(default_factory=_no_rows)
     """Each recorded derivative of a charge at each time, one row per time."""
-    readings: Real = field(default_factory=_no_rows)
+    variables: Real = field(default_factory=_no_rows)
     """Each recorded variable's value at each time, one row per time."""
 
     def level(self, net: str) -> LogicTrace:
