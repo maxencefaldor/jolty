@@ -2800,8 +2800,9 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     every parameter scales with the temperature as ngspice scales it. A sheet
     resistance ``rsh`` adds an internal node behind the drain and the source where
     ``drain_squares`` or ``source_squares`` is positive, and ``body_resistance_model``
-    1 three under the channel and the junctions. Its charges and its noise are not
-    modeled yet.
+    1 three under the channel and the junctions. The charges under the gate follow
+    ``capmod`` 2, beside the overlaps' and the junctions'. Its noise is not modeled yet,
+    so a noise analysis refuses a circuit that holds one.
 
     Examples:
         >>> from jolty.units import V, nm, um

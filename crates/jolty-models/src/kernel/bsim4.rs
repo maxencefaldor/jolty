@@ -152,9 +152,10 @@ impl From<Perimeter> for u8 {
 ///
 /// The charges under the gate follow `capmod` 2, the charge-thickness model, with the
 /// drain's share of the channel's charge `xpart`, beside the overlaps' charges with their
-/// bias dependence, and each junction holds a depletion charge. Its noise is left out, as
-/// are the gate tunneling currents, the bias-dependent drain and source resistances, the
-/// gate resistance, the non-quasi-static models and the well proximity effect.
+/// bias dependence, and each junction holds a depletion charge. Its noise is not modeled
+/// yet, so a noise analysis refuses a circuit that holds one; the gate tunneling currents,
+/// the bias-dependent drain and source resistances, the gate resistance, the
+/// non-quasi-static models and the well proximity effect are left out.
 #[derive(Debug, Clone, Copy)]
 pub struct Bsim4;
 
@@ -487,6 +488,8 @@ impl<R: Real> PreparedBsim4<R> {
 
 impl Kernel for Bsim4 {
     const NAME: &'static str = "bsim4";
+    // Its noise, `b4v5noi.c`'s, is not modeled yet.
+    const NOISE_MODELED: bool = false;
     type Parameters<R: Real> = Bsim4Parameters<R>;
     type Shape = Bsim4Shape;
     type Prepared<R: Real> = PreparedBsim4<R>;

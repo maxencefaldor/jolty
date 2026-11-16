@@ -506,7 +506,7 @@ The drain current folds in the threshold's short-channel, narrow-width, pocket i
 The charges under the gate follow `capmod` 2 with the charge's thickness, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges with their bias dependence, and two diodes, with their trap-assisted tunneling, join the body to the drain and the source, each with its depletion charge.
 The stress of the length of diffusion, from `diffusion_edge_a` and `diffusion_edge_b`, `SA` and `SB`, moves the threshold, `k2`, `eta0` and the saturation velocity; ngspice 47's `b4v5temp.c` scales the mobility too, then takes the unstressed one with `MULU0` (lines 1359 and 1420), so jolty's mobility is unstressed as ngspice's is.
 The transistor is symmetric: with the drain below the source, the two swap.
-Its noise is not modeled yet: in a noise analysis it is quiet.
+Its noise is not modeled yet, so a [noise analysis](simulation.md#noise) refuses a circuit that holds one, naming each such transistor, rather than leave it quiet.
 jolty's BSIM4 is derived from BSIM4.5.0, developed by the UC Berkeley BSIM Research Group, Copyright 2005 Regents of the University of California, and used under the BSIM4 terms of use, which `NOTICE` reproduces.
 
 Its instance takes a MOSFET's geometry and fingers, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "toxe": 4.1 * nm, ...}`:

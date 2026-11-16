@@ -253,6 +253,15 @@ impl Placed {
         self.nominal
     }
 
+    /// Whether the device's noise is modeled, which a noise analysis needs.
+    #[must_use]
+    pub fn noise_modeled(&self) -> bool {
+        match &self.template.origin {
+            Origin::Model(made) => made.model.noise_modeled(),
+            Origin::Detector(_) | Origin::Driver(_) => true,
+        }
+    }
+
     /// Whether the device is a foundry's, which no analysis solves.
     #[must_use]
     pub fn foundry(&self) -> bool {
