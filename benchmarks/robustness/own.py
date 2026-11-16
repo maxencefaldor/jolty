@@ -49,7 +49,7 @@ ROOT: Final = BENCHMARKS.parent
 for _shared in (
     ROOT / "examples",
     BENCHMARKS / "speed" / "circuits",
-    ROOT / "discovery" / "memristive_nor",
+    ROOT / "docs" / "discovery" / "memristive_nor",
 ):
     if str(_shared) not in sys.path:
         sys.path.append(str(_shared))
@@ -512,7 +512,7 @@ def _folded() -> ir.Circuit:
     return ir.Circuit.model_validate_json(FOLDED.read_text(encoding="utf-8"))
 
 
-NOR: Final = ROOT / "discovery" / "memristive_nor"
+NOR: Final = ROOT / "docs" / "discovery" / "memristive_nor"
 """The memristive NOR discovery, whose candidates' module writes its bench."""
 
 

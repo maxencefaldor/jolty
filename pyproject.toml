@@ -95,7 +95,7 @@ convention = "google"
 "docs/*.py" = ["INP001", "T201"]
 # Discoveries run as scripts, outside any package: their numbers are the circuit, and
 # their explorations print what they found.
-"discovery/**" = ["INP001", "PLR2004", "T201"]
+"docs/discovery/**" = ["INP001", "PLR2004", "T201"]
 # The agents' benchmark runs as scripts, outside any package, and prints what it found.
 "benchmarks/agents/**/*.py" = ["INP001", "T201"]
 # The other suites, their fixtures' scripts and their runners run as scripts, outside
@@ -120,7 +120,7 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples", "docs", "benchmarks", "discovery"]
+include = ["src", "tests", "examples", "docs", "benchmarks"]
 
 [tool.ty.environment]
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the

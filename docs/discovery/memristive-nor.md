@@ -4,9 +4,9 @@ The best NOR gate of three memristors found: MAGIC's, its inputs shunted by 2.2 
 
 MAGIC's gate puts the two inputs in parallel, in series with the output, and turns the output off unless both inputs are off.
 With these memristors, whose on threshold is twice their off one, it works only between 1.30 V and 1.32 V: a gate with one input on needs the pulse above twice the output's threshold, and a gate with both inputs off turns them on just above their own.
-A resistor across the inputs takes the voltage off both-off inputs while barely changing a gate with one input on, and 2.2 kΩ balances the inputs' turning on against the output's turning off: every input computes NOR from 1.14 V to 1.91 V, ±25 % about 1.525 V. Simulate it with `jolty simulate discovery/memristive_nor/design.py`.
+A resistor across the inputs takes the voltage off both-off inputs while barely changing a gate with one input on, and 2.2 kΩ balances the inputs' turning on against the output's turning off: every input computes NOR from 1.14 V to 1.91 V, ±25 % about 1.525 V. Simulate it with `jolty simulate docs/discovery/memristive_nor/design.py`.
 
-[Open in 3D](memristive-nor.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/memristive_nor/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/memristive_nor){ .md-button }
+[Open in 3D](memristive-nor.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/docs/discovery/memristive_nor/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery/memristive_nor){ .md-button }
 
 17 devices and 18 unknowns.
 

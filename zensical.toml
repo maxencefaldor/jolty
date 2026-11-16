@@ -8,6 +8,7 @@ repo_name = "maxencefaldor/jolty"
 exclude_docs = """
 *.py
 __pycache__/
+discovery/*/
 """
 copyright = "Copyright 2026 Maxence Faldor. Licensed under the Apache License 2.0."
 extra_css = ["assets/jolty.css"]
