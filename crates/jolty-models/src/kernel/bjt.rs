@@ -579,7 +579,9 @@ fn shape<R: Real>(z: R) -> (R, R) {
 /// The forward transport current `u` delayed through the filter of an excess phase: the
 /// delayed current `x` and `y = td · dx/dt`, both in amperes, held by `td · dx/dt − y = 0`
 /// and `td · dy/dt + 3 · y + 3 · x − 3 · u = 0`, so `td² · x'' + 3 · td · x' + 3 · x = 3 · u`.
-/// At the operating point `x` is `u`.
+/// At the operating point `x` is `u`. Each is a current from the internal collector to the
+/// internal emitter, as the transistor's own currents are, so that a PNP's are its NPN
+/// mirror's reversed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExcessPhase {
     /// The local unknowns `x` and `y`.
@@ -626,7 +628,7 @@ impl ExcessPhase {
         let [x, y] = self.unknowns;
         let [delayed, slope] = [x, y].map(|unknown| at.value(unknown));
         let (forward, slopes) = state.forward_transport;
-        let driven = forward + bias.extend(slopes);
+        let driven = (forward + bias.extend(slopes)) * sign;
         stamp.add_residual(x, R::constant(-slope));
         stamp.add_charge(x, delay * delayed);
         stamp.add_residual(y, (R::constant(delayed + slope) - driven) * 3.0);
@@ -639,9 +641,9 @@ impl ExcessPhase {
         stamp.add_capacitance(y_y, delay);
         let [at_base, at_emitter, at_collector] = self.driven;
         let [by_emitter, by_collector] = slopes;
-        stamp.add_conductance(at_base, -(by_emitter + by_collector) * (3.0 * sign));
-        stamp.add_conductance(at_emitter, by_emitter * (3.0 * sign));
-        stamp.add_conductance(at_collector, by_collector * (3.0 * sign));
+        stamp.add_conductance(at_base, -(by_emitter + by_collector) * 3.0);
+        stamp.add_conductance(at_emitter, by_emitter * 3.0);
+        stamp.add_conductance(at_collector, by_collector * 3.0);
     }
 }
 
@@ -1335,11 +1337,11 @@ impl<R: Real> Added<'_, R> {
         let (mut transport, mut slopes) = state.transport;
         if let Some(excess) = &self.shape.excess {
             let (reverse, reverse_slopes) = state.reverse_transport;
-            transport = R::constant(excess.delayed(at)) - reverse;
+            transport = R::constant(sign * excess.delayed(at)) - reverse;
             slopes = reverse_slopes.map(|slope| -slope);
             let [at_collector, at_emitter] = excess.delivered;
-            stamp.add_conductance(at_collector, R::constant(sign));
-            stamp.add_conductance(at_emitter, R::constant(-sign));
+            stamp.add_conductance(at_collector, R::constant(1.0));
+            stamp.add_conductance(at_emitter, R::constant(-1.0));
         }
         let collector_emitter = (INNER_COLLECTOR, INNER_EMITTER);
         let current = (transport + bias.extend(slopes)) * sign;
@@ -1416,11 +1418,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::Input;
     use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
     use crate::{ELEMENTARY_CHARGE, UnknownIndex, thermal_voltage};
 
@@ -1457,17 +1460,9 @@ mod tests {
 
     #[test]
     fn a_pnp_mirrors_an_npn() {
-        let mut npn = Bench::new::<BipolarTransistor>(FULL);
-        let mut pnp =
-            Bench::new::<BipolarTransistor>(&FULL.replace('{', r#"{"polarity": "pnp", "#));
-        let n = npn.settle(&[3.0, 0.7, 0.0]);
-        let p = pnp.settle(&[-3.0, -0.7, 0.0]);
-        for (n, p) in n.residual.iter().zip(&p.residual) {
-            assert!((n + p).abs() <= 1e-15 * n.abs().max(1.0));
-        }
-        for (n, p) in n.charge.iter().zip(&p.charge) {
-            assert!((n + p).abs() <= 1e-15 * n.abs().max(1e-12));
-        }
+        let model = Differentiable::<BipolarTransistor>::new();
+        assert_mirrors(&model, FULL, &[3.0, 0.7, 0.0]);
+        assert_mirrors(&model, &excess(), &[3.0, 0.7, 0.0, 1e-3, 0.0]);
     }
 
     #[test]
