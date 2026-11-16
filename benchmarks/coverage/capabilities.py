@@ -209,7 +209,7 @@ XYCE_COMMANDS: Final = (
 
 JOLTY_ANALYSES: Final = (
     "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, "
-    "Sensitivity, Stability, Noise, PoleZero, TransferFunction"
+    "PeriodicSteadyState, Sensitivity, Stability, Noise, PoleZero, TransferFunction"
 )
 """jolty's analyses, as `jolty.plan.Analysis` lists them (`Analysis` is checked
 against this list by the tests)."""
