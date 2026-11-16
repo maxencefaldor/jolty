@@ -61,7 +61,7 @@ impl<T: Scalar> Solver<T> {
     }
 
     /// How much work the solver has done.
-    pub(crate) fn statistics(&self) -> jolty_numerics::Statistics {
+    pub(crate) fn statistics(&self) -> jolty_numerics::Work {
         self.lu.statistics()
     }
 

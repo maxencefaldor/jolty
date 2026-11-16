@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use jolty_numerics::{
     Complex64, Condensation, Entry, LinearError, Ordering, Pattern, PatternBuilder, Scalar,
-    SparseLu, Statistics, Workspace,
+    SparseLu, Work, Workspace,
 };
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -654,7 +654,7 @@ proptest! {
         let _ = solved(&mut used, &first);
         let _ = solved(&mut used, &second);
         used.reset();
-        prop_assert_eq!(used.statistics(), Statistics::default());
+        prop_assert_eq!(used.statistics(), Work::default());
         prop_assert_eq!(solved(&mut used, &second), solved(&mut fresh, &second));
         prop_assert_eq!(used.statistics(), fresh.statistics());
         prop_assert_eq!(used.entries(), fresh.entries());
@@ -785,7 +785,7 @@ fn falls_back_to_a_search_when_a_kept_pivot_becomes_too_small() {
     );
     assert_eq!(
         lu.statistics(),
-        Statistics {
+        Work {
             factorizations: 1,
             refactorizations: 0,
             fallbacks: 1,
@@ -916,7 +916,7 @@ fn keeps_the_factors_of_the_very_matrix_last_factored() {
     lu.factor(&changed).unwrap();
     assert_eq!(
         lu.statistics(),
-        Statistics {
+        Work {
             factorizations: 1,
             refactorizations: 1,
             fallbacks: 0,

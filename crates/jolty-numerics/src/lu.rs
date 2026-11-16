@@ -146,7 +146,7 @@ impl From<std::collections::TryReserveError> for LinearError {
 
 /// How much work a [`SparseLu`] has done, by kind, over the factorizations that succeeded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Statistics {
+pub struct Work {
     /// Factorizations that searched for every pivot: the first, and one after a failure.
     pub factorizations: usize,
     /// Factorizations that kept every pivot of the last, with no search.
@@ -189,7 +189,7 @@ pub struct SparseLu<T: Scalar> {
     condensed: (Vec<T>, Saved<T>),
     /// The solves' workspace.
     workspace: Workspace<T>,
-    statistics: Statistics,
+    statistics: Work,
 }
 
 /// What a solve with [`Shared`] factors writes as it goes: a value for each row of the
@@ -232,7 +232,7 @@ impl<T: Scalar> SparseLu<T> {
             current: false,
             condensed: (Vec::new(), Saved::new()),
             workspace: Workspace::new(dimension),
-            statistics: Statistics::default(),
+            statistics: Work::default(),
         }
     }
 
@@ -244,7 +244,7 @@ impl<T: Scalar> SparseLu<T> {
         self.numeric.forget();
         self.factored.clear();
         self.current = false;
-        self.statistics = Statistics::default();
+        self.statistics = Work::default();
     }
 
     /// Factors with `ordering`, of the same pattern, from now on, forgetting every
@@ -309,7 +309,7 @@ impl<T: Scalar> SparseLu<T> {
 
     /// How much work the solver has done.
     #[must_use]
-    pub fn statistics(&self) -> Statistics {
+    pub fn statistics(&self) -> Work {
         self.statistics
     }
 

@@ -610,7 +610,7 @@ mod tests {
 
     use jolty_ir::Circuit;
     use jolty_models::Library;
-    use jolty_numerics::Statistics;
+    use jolty_numerics::Work;
     use serde_json::{Value, json};
 
     use crate::{Conditions, Method, Options, Simulator, Transient};
@@ -656,7 +656,7 @@ mod tests {
 
     /// The factorizations that searched for pivots, from the first or from a pivot too
     /// small, the refactorizations and the reuses of factors, from `before` to `after`.
-    fn work(before: Statistics, after: Statistics) -> (usize, usize, usize) {
+    fn work(before: Work, after: Work) -> (usize, usize, usize) {
         (
             after.factorizations + after.fallbacks - before.factorizations - before.fallbacks,
             after.refactorizations - before.refactorizations,
@@ -692,15 +692,14 @@ mod tests {
         let mut simulator = ladder(5, &json!({"dc": 1.0}), false);
         simulator.operating_point(&Options::default()).unwrap();
         let statistics = simulator.state.solver.statistics();
-        assert_eq!(work(Statistics::default(), statistics), (1, 0, 1));
+        assert_eq!(work(Work::default(), statistics), (1, 0, 1));
     }
 
     #[test]
     fn a_nonlinear_operating_point_refactors_with_its_first_pivots() {
         let mut simulator = ladder(3, &json!({"dc": 1.0}), true);
         simulator.operating_point(&Options::default()).unwrap();
-        let (searched, refactored, _) =
-            work(Statistics::default(), simulator.state.solver.statistics());
+        let (searched, refactored, _) = work(Work::default(), simulator.state.solver.statistics());
         assert_eq!(searched, 1);
         assert!(refactored >= 2, "{refactored} refactorizations");
     }

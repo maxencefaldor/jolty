@@ -149,7 +149,7 @@ pub(crate) struct Meter {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Reading {
     iterations: usize,
-    solver: jolty_numerics::Statistics,
+    solver: jolty_numerics::Work,
     spent: Option<Profile>,
 }
 
@@ -177,7 +177,7 @@ impl Meter {
 
     /// Reads the meter and the sparse solver's `solver` statistics as an analysis starts,
     /// starting the clock if the analysis will `profile` and stopping it if not.
-    pub(crate) fn read(&mut self, profile: bool, solver: jolty_numerics::Statistics) -> Reading {
+    pub(crate) fn read(&mut self, profile: bool, solver: jolty_numerics::Work) -> Reading {
         match (&mut self.clock, profile) {
             (Some(clock), true) => clock.charge(),
             (None, true) => {
@@ -201,7 +201,7 @@ impl Meter {
     pub(crate) fn since(
         &mut self,
         start: &Reading,
-        solver: jolty_numerics::Statistics,
+        solver: jolty_numerics::Work,
     ) -> (Work, Option<Profile>) {
         let work = Work {
             iterations: self.iterations - start.iterations,
@@ -244,7 +244,7 @@ impl Simulator {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use jolty_numerics::Statistics;
+    use jolty_numerics::Work;
 
     use super::{Activity, Meter};
 
@@ -252,7 +252,7 @@ mod tests {
     fn a_profile_charges_each_span_to_the_activity_it_was_spent_in() {
         let mut meter = Meter::default();
         let before = Instant::now();
-        let start = meter.read(true, Statistics::default());
+        let start = meter.read(true, Work::default());
         let outer = meter.enter(Activity::StepControl);
         let inner = meter.enter(Activity::Factoring);
         let entered = Instant::now();
@@ -260,9 +260,9 @@ mod tests {
         meter.leave(inner);
         meter.leave(outer);
         meter.iterate();
-        let solver = Statistics {
+        let solver = Work {
             refactorizations: 2,
-            ..Statistics::default()
+            ..Work::default()
         };
         let (work, profile) = meter.since(&start, solver);
         let elapsed = before.elapsed();
