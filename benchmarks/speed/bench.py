@@ -1797,11 +1797,13 @@ def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
     the size of its environment sets (Mytkowicz, Diwan, Hauswirth and Sweeney,
     "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and
     with where the system places its memory and its threads, as two builds' processes
-    differ even for the same code: two persistent processes of one commit's two builds
-    on `dogwood` stayed 0.3% to 7.8% apart, their intervals apart. So each run takes a
-    process of its own, its environment padded by `padding` bytes, drawn below a page,
-    as every offset of the stack within a page then occurs, and these effects widen
-    each build's interval rather than move its median.
+    differ even for the same code: on `dogwood`, one commit's two builds, each timed by
+    one process for every round, were named apart in four of the suite's times, the
+    buck +3.0% and ``rc_mesh_100`` -6.3% among them, and in none once each run took a
+    process of its own, as the speed suite's page shows. So each run takes a process of
+    its own, its environment padded by `padding` bytes, drawn below a page, as every
+    offset of the stack within a page then occurs, and these effects widen each
+    build's interval rather than move its median.
     """
     worker = Worker.start(built, padding())
     try:
