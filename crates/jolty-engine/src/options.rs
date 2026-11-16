@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jolty_models::{Nature, Tasks};
 use jolty_numerics::{Dissecting, Ordering, reduce};
@@ -477,6 +477,13 @@ pub struct Options {
     /// the last digits a dissected factorization's order of operations gives; by default
     /// over every thread of its pool, each kind of work from its break-even on.
     pub parallelism: Parallelism,
+    /// The voltage, in volts, each net named, such as `amplifier/mid`, is held at while
+    /// a DC solution is first solved from zero, which is then released and solved again
+    /// from there, as SPICE's `.nodeset` starts an operating point: a guess that leads
+    /// Newton iteration to one solution of several. A net that voltage sources and
+    /// inductors join to the reference, or to a net named before it, is not held, as
+    /// they fix its voltage. None by default.
+    pub nodesets: BTreeMap<String, f64>,
 }
 
 impl Default for Options {
@@ -495,6 +502,7 @@ impl Default for Options {
             regions: false,
             profile: false,
             parallelism: Parallelism::default(),
+            nodesets: BTreeMap::new(),
         }
     }
 }

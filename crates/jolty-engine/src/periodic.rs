@@ -92,7 +92,7 @@ impl Simulator {
         for period in 1..=MOST_PERIODS {
             let mut monodromy = Monodromy::default();
             let carried = Carried::Monodromy(&mut monodromy);
-            let begun = Some((start.clone(), strategy));
+            let begun = Some((start.clone(), Some(strategy)));
             let mut waveforms = self.transient_with(transient, &period_options, begun, carried)?;
             let end = waveforms.values.last().unwrap_or(&start);
             let tolerances = self.tolerances(&start, end, options);

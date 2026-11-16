@@ -96,45 +96,6 @@ pub(crate) fn ends(device: &Placed, branch: Branch) -> (usize, usize) {
     (index(nodes[branch.from]), index(nodes[branch.to]))
 }
 
-/// Disjoint sets of nodes, merged by union by size with path halving.
-pub(crate) struct Partition {
-    parents: Vec<usize>,
-    sizes: Vec<usize>,
-}
-
-impl Partition {
-    /// `count` nodes, each in a set of its own.
-    pub(crate) fn new(count: usize) -> Self {
-        Self {
-            parents: (0..count).collect(),
-            sizes: vec![1; count],
-        }
-    }
-
-    /// The representative of the set holding `node`.
-    pub(crate) fn find(&mut self, mut node: usize) -> usize {
-        while self.parents[node] != node {
-            self.parents[node] = self.parents[self.parents[node]];
-            node = self.parents[node];
-        }
-        node
-    }
-
-    /// Merges the sets holding `a` and `b`; returns whether they were apart.
-    pub(crate) fn union(&mut self, a: usize, b: usize) -> bool {
-        let (mut a, mut b) = (self.find(a), self.find(b));
-        if a == b {
-            return false;
-        }
-        if self.sizes[a] < self.sizes[b] {
-            std::mem::swap(&mut a, &mut b);
-        }
-        self.parents[b] = a;
-        self.sizes[a] += self.sizes[b];
-        true
-    }
-}
-
 /// Names in backticks, joined as prose: `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` ``;
 /// past `limit` names, the rest are counted.
 pub(crate) fn list<'s>(names: impl IntoIterator<Item = &'s str>, limit: usize) -> String {
@@ -168,17 +129,5 @@ mod tests {
             list(["a", "b", "c", "d", "e"], 3),
             "`a`, `b`, `c` and 2 more"
         );
-    }
-
-    #[test]
-    fn a_partition_merges_sets() {
-        let mut partition = Partition::new(4);
-        assert!(partition.union(0, 1));
-        assert!(partition.union(2, 3));
-        assert!(!partition.union(1, 0));
-        assert_eq!(partition.find(1), partition.find(0));
-        assert_ne!(partition.find(1), partition.find(2));
-        assert!(partition.union(1, 3));
-        assert_eq!(partition.find(0), partition.find(2));
     }
 }

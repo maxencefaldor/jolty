@@ -2,6 +2,8 @@
 //! known in closed form.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
+
 use jolty_engine::{
     Conditions, DcSweep, ElaborationProblem, Endpoint, ExcursionKind, Options, Simulator,
     Transient, TransientResult, Work,
@@ -77,6 +79,8 @@ fn transient(stop: f64) -> Transient {
         method: jolty_engine::Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     }
 }
 

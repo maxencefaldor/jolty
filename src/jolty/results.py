@@ -798,7 +798,9 @@ class Profile:
 class Statistics:
     """How a transient analysis went."""
 
-    initial: str
+    initial: str | None
+    """How its operating point was found, such as ``direct``, or None for a transient
+    that starts from its initial conditions alone."""
     accepted: int
     rejected: int
     """Steps rejected for their error, or for Newton iteration that did not converge."""

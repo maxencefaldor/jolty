@@ -492,7 +492,12 @@ impl Simulator {
         } = &mut self.state.workspace;
         let previous = meter.enter(Activity::Assembling);
         let reactive = match mode {
-            Mode::Dc { shunt, anchor, .. } => {
+            Mode::Dc {
+                source_scale,
+                shunt,
+                anchor,
+                ..
+            } => {
                 let conductance = &contributions.conductance;
                 each_chunk(jacobian, inside, |start, chunk| {
                     chunk.copy_from_slice(&conductance[start..start + chunk.len()]);
@@ -507,6 +512,19 @@ impl Simulator {
                         let scale = &mut contributions.scale[index];
                         *scale = scale.max(current.abs());
                     }
+                }
+                // A forced node's equation is its voltage's, `v − v₀ = 0`, in place of its
+                // currents' sum: an ideal source holds it, whose current the sum would be.
+                for &(unknown, voltage) in &self.state.forced {
+                    let index = unknown.index();
+                    for &(slot, _) in self.elaborated.pattern.row(index) {
+                        jacobian[slot] = 0.0;
+                    }
+                    let (_, entry) = self.elaborated.node_diagonals[index];
+                    jacobian[self.elaborated.pattern.slot(entry)] = 1.0;
+                    let target = source_scale * voltage;
+                    contributions.residual[index] = x[index] - target;
+                    contributions.scale[index] = x[index].abs().max(target.abs());
                 }
                 None
             }
@@ -617,6 +635,7 @@ impl Simulator {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
@@ -801,6 +820,8 @@ mod tests {
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
             periodic: false,
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let waveforms = simulator.transient(&transient, &options).unwrap();
         let (searched, refactored, reused) = work(before, simulator.state.solver.statistics());
@@ -842,6 +863,8 @@ mod tests {
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
             periodic: false,
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let plain = ladder(3, &sine, true)
             .transient(&transient, &Options::default())

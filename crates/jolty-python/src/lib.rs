@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use jolty_engine::{
     Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, NoiseResult,
     OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
-    Statistics,
+    Statistics, Strategy,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -927,7 +927,7 @@ fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bou
 
 fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Bound<'_, PyDict>> {
     let result = PyDict::new(py);
-    result.set_item("initial", statistics.initial.name())?;
+    result.set_item("initial", statistics.initial.map(Strategy::name))?;
     result.set_item("accepted", statistics.accepted)?;
     result.set_item("rejected", statistics.rejected)?;
     result.set_item("landed", statistics.landed)?;

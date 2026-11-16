@@ -1035,3 +1035,60 @@ fn written(written: &Value, value: f64) -> Value {
         Value::from(value)
     }
 }
+
+/// Disjoint sets of nodes, merged by union by size with path halving.
+pub struct Partition {
+    parents: Vec<usize>,
+    sizes: Vec<usize>,
+}
+
+impl Partition {
+    /// `count` nodes, each in a set of its own.
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        Self {
+            parents: (0..count).collect(),
+            sizes: vec![1; count],
+        }
+    }
+
+    /// The representative of the set holding `node`.
+    pub fn find(&mut self, mut node: usize) -> usize {
+        while self.parents[node] != node {
+            self.parents[node] = self.parents[self.parents[node]];
+            node = self.parents[node];
+        }
+        node
+    }
+
+    /// Merges the sets holding `a` and `b`; returns whether they were apart.
+    pub fn union(&mut self, a: usize, b: usize) -> bool {
+        let (mut a, mut b) = (self.find(a), self.find(b));
+        if a == b {
+            return false;
+        }
+        if self.sizes[a] < self.sizes[b] {
+            std::mem::swap(&mut a, &mut b);
+        }
+        self.parents[b] = a;
+        self.sizes[a] += self.sizes[b];
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Partition;
+
+    #[test]
+    fn a_partition_merges_sets() {
+        let mut partition = Partition::new(4);
+        assert!(partition.union(0, 1));
+        assert!(partition.union(2, 3));
+        assert!(!partition.union(1, 0));
+        assert_eq!(partition.find(1), partition.find(0));
+        assert_ne!(partition.find(1), partition.find(2));
+        assert!(partition.union(1, 3));
+        assert_eq!(partition.find(0), partition.find(2));
+    }
+}

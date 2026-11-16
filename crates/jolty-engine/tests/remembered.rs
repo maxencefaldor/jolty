@@ -2,6 +2,7 @@
 //! the same as solved afresh.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -148,6 +149,8 @@ fn analyses() -> Vec<Analysis> {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     vec![
         Analysis::OperatingPoint,
@@ -174,6 +177,8 @@ fn analyses() -> Vec<Analysis> {
         }),
         Analysis::Transient(Transient {
             periodic: true,
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
             stop: 1e-3,
             ..transient.clone()
         }),
@@ -365,6 +370,8 @@ fn what_an_analysis_records_changes_none_of_its_numbers() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     });
     let plans = [
         (rectifier(), analyses()),
@@ -429,6 +436,8 @@ fn an_analysis_after_the_operating_point_again_factors_as_after_it_first() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     });
     let circuit = buck();
     let options = Options::default();

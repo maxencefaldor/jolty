@@ -1,6 +1,7 @@
 //! Every analysis against circuits whose answers are known in closed form.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
 use jolty_engine::{
@@ -668,6 +669,8 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
         method,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let waveforms = simulator
         .transient(&transient, options)
@@ -799,6 +802,8 @@ fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let options = Options {
         relative_tolerance: 1e-5,
@@ -863,6 +868,8 @@ fn no_step_is_longer_than_the_longest_allowed() {
             method: Method::Trapezoidal,
             breakpoints: times.clone(),
             periodic: false,
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let waveforms = simulator(&circuit)
             .transient(&transient, &Options::default())
@@ -913,6 +920,8 @@ fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>,
         method,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let waveforms = simulator
         .transient(&transient, &uniform_steps())
@@ -1052,6 +1061,8 @@ fn an_lc_tank_rings_at_its_resonant_frequency() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let waveforms = simulator
         .transient(&transient, &Options::default())
@@ -1105,6 +1116,8 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -1157,6 +1170,8 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -1247,6 +1262,8 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
             periodic: false,
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let outcome = simulator
             .run(&Analysis::Transient(transient), &options)
@@ -1416,6 +1433,8 @@ fn transient(
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     simulator(circuit).run(&Analysis::Transient(transient), options)
 }
@@ -1527,6 +1546,8 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let error = simulator(&circuit)
         .run(&Analysis::Transient(transient), &Options::default())
@@ -1585,6 +1606,8 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -1652,6 +1675,8 @@ fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -1761,6 +1786,8 @@ fn a_gate_converges_as_its_supply_powers_up() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: false,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let outcome = simulator(&circuit).run(&Analysis::Transient(transient), &Options::default());
     assert!(outcome.is_ok(), "{:?}", outcome.err());
@@ -1878,4 +1905,155 @@ fn a_step_starts_from_its_prediction() {
         statistics.iterations <= statistics.accepted + 2,
         "{statistics:?}"
     );
+}
+
+/// A source of 1 V charges 1 nF through 1 kΩ from `out`'s initial condition of 0.2 V.
+fn rc_from(initial: f64) -> (Circuit, BTreeMap<String, f64>) {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"dc": 1.0}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-9}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    (circuit, BTreeMap::from([("out".to_owned(), initial)]))
+}
+
+/// The RC charges from its initial condition alike whether the transient starts from the
+/// operating point solved with `out` forced, `in` at its source's 1 V, or from the initial
+/// conditions alone, `in` at zero until the first step: `out` is `1 − 0.8 e^{−t/τ}` either
+/// way, as only the capacitor's charge carries over the start. Both stay within the 2e-3 that
+/// the trapezoidal rule holds the RC's charge to at the default tolerances, as
+/// `an_rc_charges_exponentially_with_every_method` measures it.
+#[test]
+fn an_initial_condition_starts_an_rc_from_its_voltage() {
+    let (circuit, initial) = rc_from(0.2);
+    let tau = 1e-6;
+    for operating_point in [true, false] {
+        let mut simulator = simulator(&circuit);
+        let transient = Transient {
+            stop: 5.0 * tau,
+            max_step: None,
+            method: Method::Trapezoidal,
+            breakpoints: Vec::new(),
+            periodic: false,
+            initial_conditions: initial.clone(),
+            operating_point,
+        };
+        let waveforms = simulator
+            .transient(&transient, &Options::default())
+            .expect("a transient analysis");
+        let (input, out) = (index(&simulator, "in"), index(&simulator, "out"));
+        let first = &waveforms.values[0];
+        assert_close(first[out], 0.2, 1e-12);
+        assert_close(first[input], if operating_point { 1.0 } else { 0.0 }, 1e-12);
+        assert_eq!(waveforms.statistics.initial.is_some(), operating_point);
+        let error = waveforms
+            .times
+            .iter()
+            .zip(&waveforms.values)
+            .map(|(&time, values)| (values[out] - (1.0 - 0.8 * (-time / tau).exp())).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            error < 2e-3,
+            "from the operating point: {operating_point}, error {error:e}"
+        );
+    }
+}
+
+/// An initial condition on a net its source holds is the source's: it agrees, and the
+/// transient starts as without it, or it contradicts the source, which the analysis states.
+#[test]
+fn an_initial_condition_a_source_holds_must_agree_with_it() {
+    let (circuit, _) = rc_from(0.2);
+    let start = |voltage: f64| {
+        let transient = Transient {
+            stop: 1e-6,
+            max_step: None,
+            method: Method::Trapezoidal,
+            breakpoints: Vec::new(),
+            periodic: false,
+            initial_conditions: BTreeMap::from([("in".to_owned(), voltage)]),
+            operating_point: true,
+        };
+        simulator(&circuit).transient(&transient, &Options::default())
+    };
+    let waveforms = start(1.0).expect("a transient analysis");
+    assert_close(waveforms.values[0][1], 1.0, 1e-12);
+    let error = start(2.0).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid analysis: the initial condition of `in` is 2.0 V, but the voltage sources \
+         and inductors that fix it hold it at 1.0 V"
+    );
+    let transient = Transient {
+        stop: 1e-6,
+        max_step: None,
+        method: Method::Trapezoidal,
+        breakpoints: Vec::new(),
+        periodic: false,
+        initial_conditions: BTreeMap::from([("V1:current".to_owned(), 0.0)]),
+        operating_point: true,
+    };
+    let error = simulator(&circuit)
+        .transient(&transient, &Options::default())
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid analysis: the initial condition names `V1:current`, which is no net of the \
+         circuit"
+    );
+}
+
+/// A node whose current `2 mA · tanh(v)` flows into it, and out through 1 kΩ, has three
+/// solutions, `v = 2 tanh(v)`: zero, which Newton iteration finds from zero, and ±1.915 V. A
+/// nodeset of 1.5 V leads it to the positive one, and leaves the operating point there.
+#[test]
+fn a_nodeset_leads_the_operating_point_to_another_solution() {
+    let circuit = circuit(&[
+        (
+            "B1",
+            "behavioral_current_source",
+            json!({"expression": "2e-3 * tanh(v(x))"}),
+            &[("positive", "0"), ("negative", "x"), ("x", "x")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "x"), ("b", "0")],
+        ),
+    ]);
+    // The positive root of v = 2 tanh(v), by the fixed point that converges to it.
+    let mut root: f64 = 2.0;
+    for _ in 0..200 {
+        root = 2.0 * root.tanh();
+    }
+    let mut simulator = simulator(&circuit);
+    let x = index(&simulator, "x");
+    let plain = simulator
+        .operating_point(&Options::default())
+        .expect("an operating point");
+    assert!(plain.values[x].abs() < 1e-9, "{}", plain.values[x]);
+    let options = Options {
+        nodesets: BTreeMap::from([("x".to_owned(), 1.5)]),
+        ..Options::default()
+    };
+    let led = simulator
+        .operating_point(&options)
+        .expect("an operating point");
+    assert_close(led.values[x], root, 1e-6);
 }

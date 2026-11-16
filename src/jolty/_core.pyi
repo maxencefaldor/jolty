@@ -87,7 +87,7 @@ class Profile(TypedDict):
     other: float
 
 class Statistics(TypedDict):
-    initial: str
+    initial: str | None
     accepted: int
     rejected: int
     landed: int

@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use jolty_engine::{Endpoint, Location, LogicNet, Placed, Simulator};
+use jolty_engine::{Endpoint, Location, LogicNet, Partition, Placed, Simulator};
 use jolty_models::BranchKind;
 
 use crate::point::{GMIN_DEPENDENCE, MULTIPLE_OPERATING_POINTS, UNSTABLE_POLE};
 use crate::preferred::Series;
-use crate::structure::{Partition, REFERENCE, Structure, ends, index, list};
+use crate::structure::{REFERENCE, Structure, ends, index, list};
 use crate::{Diagnostic, Level, Rule};
 
 /// The most nodes or instances a message names before it counts the rest.

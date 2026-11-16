@@ -1,6 +1,7 @@
 //! The periodic steady state against closed form and against long transients.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use jolty_engine::{
@@ -61,6 +62,8 @@ fn run_with(
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     match simulator.run(&Analysis::Transient(transient), options) {
         Ok(AnalysisResult::Transient(waveforms)) => waveforms,
@@ -288,6 +291,8 @@ fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() 
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: true,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let options = Options {
         max_memory: 1e-9,
@@ -326,6 +331,8 @@ fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
         periodic: true,
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let error = simulator
         .run(&Analysis::Transient(transient), &Options::default())

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use jolty_models::{Changed, Runs, Tasks};
+use jolty_models::{Changed, Runs, Tasks, UnknownIndex};
 
 use crate::elaborate::ElaborationError;
 use crate::elaborated::{Devices, Elaborated, Origin, Origins};
@@ -79,6 +79,11 @@ pub(crate) struct State {
     /// What a DC sweep holds away from the run's own values, at the level or the number
     /// each is held at.
     pub(crate) held: BTreeMap<Held, f64>,
+    /// The nets a DC solution forces to a voltage while it is solved, each a node's
+    /// unknown and its voltage, which source stepping ramps as it ramps the sources: a
+    /// transient's initial conditions, or the nodesets until they are released; none
+    /// outside such a solution.
+    pub(crate) forced: Vec<(UnknownIndex, f64)>,
     /// Where the run's first operating point starts, in a chain of runs: none for a run
     /// that starts from zero.
     pub(crate) warm: Option<Warm>,
@@ -113,6 +118,7 @@ impl State {
             observer: Observer::new(),
             remembered: None,
             held: BTreeMap::new(),
+            forced: Vec::new(),
             warm: None,
             solves: 0,
         }
@@ -192,6 +198,7 @@ impl State {
         self.observer.reset();
         self.remembered = None;
         self.held.clear();
+        self.forced.clear();
         self.warm = None;
         self.solves = 0;
         Ok(true)
@@ -206,6 +213,7 @@ impl State {
         self.observer.reset();
         self.remembered = None;
         self.held.clear();
+        self.forced.clear();
         self.warm = None;
     }
 

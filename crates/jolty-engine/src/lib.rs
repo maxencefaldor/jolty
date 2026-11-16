@@ -102,7 +102,7 @@ use serde::Deserialize;
 pub use ac::{Ac, AcResult};
 pub use analysis::{Analysis, AnalysisResult};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, SummedTerminal};
-pub use elaborated::{Elaborated, Placed, Structure, StructureKey};
+pub use elaborated::{Elaborated, Partition, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseResult};
