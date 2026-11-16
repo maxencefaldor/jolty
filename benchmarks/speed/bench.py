@@ -97,7 +97,9 @@ import functools
 import hashlib
 import itertools
 import json
+import mmap
 import os
+import random
 import statistics
 import subprocess
 import sys
@@ -1727,8 +1729,10 @@ class Worker:
     answers: IO[str]
 
     @classmethod
-    def start(cls, built: Build) -> Worker:
+    def start(cls, built: Build, padding: int) -> Worker:
         """The worker of `built`, once it has said that it imported the build's jolty.
+
+        Its environment holds a variable of `padding` bytes besides this process's.
 
         Raises:
             SystemExit: When it imported another jolty, or could not start.
@@ -1740,7 +1744,7 @@ class Worker:
             stdout=subprocess.PIPE,
             text=True,
             cwd=ROOT,
-            env=outside(),
+            env=outside() | {"JOLTY_BENCH_PADDING": "x" * padding},
         )
         if process.stdin is None or process.stdout is None:
             message = f"{built.revision}'s process has no pipes"
@@ -1776,6 +1780,27 @@ class Worker:
         self.process.wait()
 
 
+def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
+    """One run of `request` in a process of `built` of its own, after one to warm up.
+
+    A program's time can move by several percent with where its stack begins, which
+    the size of its environment sets (Mytkowicz, Diwan, Hauswirth and Sweeney,
+    "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and
+    with where the system places its memory and its threads, as two builds' processes
+    differ even for the same code: two persistent processes of one commit's two builds
+    on `dogwood` stayed 0.3% to 7.8% apart, their intervals apart. So each run takes a
+    process of its own, its environment padded by `padding` bytes, drawn below a page,
+    as every offset of the stack within a page then occurs, and these effects widen
+    each build's interval rather than move its median.
+    """
+    worker = Worker.start(built, padding())
+    try:
+        worker.time(request)
+        return worker.time(request)
+    finally:
+        worker.close()
+
+
 def builds_compared(arguments: Bench) -> None:
     """Times the builds of the two revisions ``--compare`` names against each other.
 
@@ -1804,29 +1829,31 @@ def compared(
 ) -> list[str]:
     """Times the builds of `revisions` against each other on the fixtures `names`.
 
-    Each revision is built once in its own worktree, in ``--builds``, and each build's
-    runs take place in a process of its own, a `Worker`. Each time of the fixtures'
-    `requests` runs in `alternated` rounds, the first build's runs compared with the
-    second's, in at most ``--most-rounds`` once they are enough. Prints
+    Each revision is built once in its own worktree, in ``--builds``, and each run of a
+    build takes place `afresh`, in a process of its own, a `Worker`, its environment's
+    padding drawn from a generator seeded alike for every comparison. Each time of the
+    fixtures' `requests` runs in `alternated` rounds, the first build's runs compared
+    with the second's, in at most ``--most-rounds`` once they are enough. Prints
     the `comparison`, and writes it to `output`, as JSON, and beside it as Markdown.
     Returns each change named, its intervals apart.
     """
     first = build(revisions[0], arguments.builds, ())
     second = build(revisions[1], arguments.builds, (first.path,))
     pair = (first, second)
-    workers = [Worker.start(each) for each in pair]
+    generator = random.Random(0)  # noqa: S311 - paddings, drawn alike every time
+    page = mmap.PAGESIZE
+
+    def padding() -> int:
+        return generator.randrange(page)
+
     measured: dict[str, Rounds] = {}
     started = time.perf_counter()
-    try:
-        for key, request in requests(names, found).items():
-            print(f"timing {key} in both builds, round after round", flush=True)
-            measured[key] = alternated(
-                [functools.partial(worker.time, request) for worker in workers],
-                arguments.most_rounds,
-            )
-    finally:
-        for worker in workers:
-            worker.close()
+    for key, request in requests(names, found).items():
+        print(f"timing {key} in both builds, round after round", flush=True)
+        measured[key] = alternated(
+            [functools.partial(afresh, each, request, padding) for each in pair],
+            arguments.most_rounds,
+        )
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
     text, named = comparison(pair, measured)
     print(f"\n{text}")
