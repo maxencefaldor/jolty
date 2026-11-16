@@ -2323,7 +2323,9 @@ def _unbinned(
         return
     length, width = middle
     sizes = [
-        f"a {what} of {instance[key]!r} m" for key, what in _SIZES if key in instance
+        f"a {what} of {instance[key]!r} m"
+        for key, what in SIZES.items()
+        if key in instance
     ]
     held = f" holds {' and '.join(sizes)}" if sizes else " is selected without a size"
     message = f"no bin of `{name}`{held}"
@@ -2333,8 +2335,8 @@ def _unbinned(
     )
 
 
-_SIZES: Final = (("l", "length"), ("w", "width"))
-"""A MOSFET's sizes its bins are selected by, by their SPICE names."""
+SIZES: Final = {"l": "length", "w": "width"}
+"""A MOSFET's sizes its bins are selected by, by their SPICE names, and what each is."""
 
 
 class UnbinnedError(SpiceError):
