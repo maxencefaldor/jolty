@@ -158,7 +158,10 @@ jobs:
       - name: Mutate
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: scripts/mutants "$BASE"
+        # A change of many mutants outlasts the job, which would end the run cancelled:
+        # stopped 15 minutes short of the job's limit, cargo-mutants keeps the outcomes it
+        # has, and the report says which mutants it reached.
+        run: timeout --signal=INT 45m scripts/mutants "$BASE" || [ "$?" -eq 124 ]
       - name: Keep the outcomes
         if: always()
         uses: actions/upload-artifact@v7
