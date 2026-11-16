@@ -151,6 +151,9 @@ pub(crate) enum Carried<'a> {
     /// The derivatives with respect to the initial state, and an oscillator's with respect
     /// to its period, for a periodic steady state.
     Monodromy(&'a mut Monodromy),
+    /// Each accepted step's formula, and whether the integration restarts after it, in
+    /// their order, for the adjoint method to go back through.
+    Steps(&'a mut Vec<(Formula, bool)>),
 }
 
 /// The charges' derivatives with respect to one variable at the points a transient accepted
@@ -641,6 +644,7 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         match carried {
             Carried::Nothing => {}
+            Carried::Steps(steps) => steps.clear(),
             Carried::Forward(forward) => self.start_forward(forward, x, options)?,
             Carried::Monodromy(monodromy) => self.start_monodromy(monodromy, x, options),
         }
@@ -659,6 +663,10 @@ impl Simulator {
         let (at, formula) = ((time, x), (formula, restarted));
         match carried {
             Carried::Nothing => Ok(()),
+            Carried::Steps(steps) => {
+                steps.push((*formula.0, formula.1));
+                Ok(())
+            }
             Carried::Forward(forward) => self.advance_forward(forward, at, formula, options),
             Carried::Monodromy(monodromy) => {
                 self.advance_monodromy(monodromy, at, formula, options)

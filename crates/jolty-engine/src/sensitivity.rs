@@ -20,7 +20,9 @@
 //! operating point's (the direct method; D. E. Hocevar, P. Yang, T. N. Trick and B. D.
 //! Epler, "Transient sensitivity computation for MOSFET circuits", *IEEE Transactions on
 //! Computer-Aided Design* 4(4), 1985). Each step's Jacobian is evaluated again at its
-//! solution. A derivative moves no logic event, and no step.
+//! solution. A derivative moves no logic event, and no step. A scalar of the waveforms
+//! has its derivatives by the transpose of these steps instead, one backward pass whatever
+//! the number of parameters ([`crate::Objective`]).
 //!
 //! Over a periodic steady state, a period from the start `x₀` it repeats carries each
 //! parameter's derivatives the same way, the start held, to its end `∂φ/∂p`. The steady
@@ -164,7 +166,7 @@ pub(crate) struct Twin {
 impl Twin {
     /// Evaluates the twin where the device is: at the solution `x`, at `time` in a
     /// transient analysis or, with `None`, at an operating point or about one.
-    fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
+    pub(crate) fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
         let mut input = Input::new(x, time, gmin);
         input.limiting = false;
         self.made.evaluate(&input);
@@ -182,10 +184,19 @@ impl Twin {
 
     /// `aᵀ ∂f/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
     /// terms alone.
-    fn dot(&self, a: &[f64]) -> f64 {
+    pub(crate) fn residual_dot(&self, a: &[f64]) -> f64 {
         self.made
             .residual()
             .map(|(unknown, residual)| a[unknown] * residual.derivative)
+            .sum()
+    }
+
+    /// `aᵀ ∂q/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
+    /// terms alone.
+    pub(crate) fn charge_dot(&self, a: &[f64]) -> f64 {
+        self.made
+            .charge()
+            .map(|(unknown, charge)| a[unknown] * charge.derivative)
             .sum()
     }
 
@@ -413,7 +424,7 @@ impl Simulator {
 
     /// A twin of every device, for each number of its parameters its model reads as a
     /// real number, in the devices' order then the numbers'.
-    fn twins(&self) -> Vec<Twin> {
+    pub(crate) fn twins(&self) -> Vec<Twin> {
         let mut twins = Vec::new();
         let origins = self.origins();
         for (index, placed) in self.elaborated.devices.iter().enumerate() {
@@ -524,7 +535,7 @@ impl Simulator {
                 twin.evaluate(x, None, options.gmin);
                 adjoints
                     .iter()
-                    .map(|adjoint| -twin.dot(adjoint))
+                    .map(|adjoint| -twin.residual_dot(adjoint))
                     .collect::<Vec<f64>>()
             },
         );

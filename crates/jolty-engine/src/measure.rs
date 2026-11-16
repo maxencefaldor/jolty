@@ -36,6 +36,7 @@ use crate::{
     TransientResult,
 };
 
+pub(crate) use arithmetic::trapezoid;
 pub use arithmetic::{dampings, density, integrate, natural_frequencies, referred};
 
 /// How far past an end of an axis, relative to its span, a point still lies on it.
@@ -945,7 +946,7 @@ fn logarithms(frequencies: &[f64]) -> Vec<f64> {
 
 /// The mean of `values` over `points`, by the trapezoidal rule.
 fn mean(points: &[f64], values: &[f64]) -> f64 {
-    arithmetic::trapezoid(points, values) / (points[points.len() - 1] - points[0])
+    trapezoid(points, values) / (points[points.len() - 1] - points[0])
 }
 
 /// The value of `signal` at an operating point, or `at` a time or a level of the axis of a
