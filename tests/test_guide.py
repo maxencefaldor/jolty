@@ -16,12 +16,17 @@ quoted output, a text block, names on the line before it the commands that print
 between them, run one after another in a directory of copies of the examples and of
 the scripts of `tests/guide`. The quote is an excerpt of what they print: its lines are
 consecutive lines of the output, where a line `...` stands for any lines, and a `...`
-within a line for any text, such as a digest that changes with every build.
+within a line for any text, such as a digest that changes with every build. Results
+agree across machines to rounding, not to the bit, so a number the quote writes with a
+decimal point or an exponent, a rounded value, matches a printed one within one unit in
+its last quoted digit and `ULPS` units in the last place of a float; every other
+character, counts and names included, is exact.
 """
 
 import ast
 import contextlib
 import io
+import math
 import re
 import shlex
 import shutil
@@ -56,6 +61,19 @@ BLOCK = re.compile(
 
 MARKER = re.compile(r"^<!-- (?:not run|output of):", re.MULTILINE)
 """The start of a marker, wherever it stands."""
+
+NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+(?:e[+-]?\d+)?|e[+-]?\d+)(?![\d.])")
+"""A number written with a decimal point or an exponent: a rounded value."""
+
+ULPS = 4
+"""How many of a float's units in the last place two platforms' values may differ by.
+
+Their libm functions round apart by a few units, which a computation carries. A value
+printed to some digits then differs from the quoted one only where it sits near a
+rounding boundary, by one unit in the last printed digit, so a quoted number matches
+within that unit plus `ULPS` units in the last place of its value: at a report's 4
+digits about the unit alone, at the 17 digits a float prints in full about the units.
+"""
 
 SCRIPT_FUNCTIONS = ("plan", "specs")
 """The functions of a script that state its simulation, which `jolty.runner` calls."""
@@ -187,16 +205,48 @@ def output(commands: str, directory: Path, capsys: pytest.CaptureFixture[str]) -
     return "".join(printed)
 
 
-def excerpt(quote: str) -> re.Pattern[str]:
-    """The pattern of the outputs a quote is an excerpt of."""
-    lines = []
+def tolerance(number: str) -> float:
+    """How far a printed number may lie from a quoted one.
+
+    One unit in the quote's last printed digit, and `ULPS` units in the last place of
+    its value.
+    """
+    mantissa, _, exponent = number.partition("e")
+    decimals = len(mantissa.partition(".")[2])
+    unit = 10.0 ** (int(exponent or 0) - decimals)
+    return unit + ULPS * math.ulp(float(number))
+
+
+def excerpt(quote: str) -> tuple[re.Pattern[str], list[str]]:
+    """The pattern of the outputs a quote is an excerpt of, and the numbers it quotes.
+
+    Each number the pattern captures is the printed one in place of a quoted one.
+    """
+    lines: list[str] = []
+    numbers: list[str] = []
     for line in quote.splitlines():
         if line.strip() == "...":
             lines.append(r"(?:[^\n]*\n)*?")
-        else:
-            text = ".*?".join(re.escape(part) for part in line.split("..."))
-            lines.append(text + r"\n")
-    return re.compile("^" + "".join(lines), re.MULTILINE)
+            continue
+        parts = []
+        for part in line.split("..."):
+            numbers += NUMBER.findall(part)
+            texts = NUMBER.split(part)
+            parts.append(f"({NUMBER.pattern})".join(re.escape(text) for text in texts))
+        lines.append(".*?".join(parts) + r"\n")
+    return re.compile("^" + "".join(lines), re.MULTILINE), numbers
+
+
+def agrees(quote: str, printed: str) -> bool:
+    """Whether the quote is an excerpt of the printed text, its numbers to rounding."""
+    pattern, numbers = excerpt(quote)
+    return any(
+        all(
+            abs(float(found) - float(number)) <= tolerance(number)
+            for found, number in zip(match.groups(), numbers, strict=True)
+        )
+        for match in pattern.finditer(printed + "\n")
+    )
 
 
 @pytest.mark.parametrize(
@@ -216,4 +266,4 @@ def test_each_quoted_output_is_what_its_commands_print(
         shutil.copytree(directory, tmp_path, dirs_exist_ok=True)
     monkeypatch.chdir(tmp_path)
     printed = output(quote.note, tmp_path, capsys)
-    assert excerpt(quote.body).search(printed + "\n"), printed
+    assert agrees(quote.body, printed), printed
