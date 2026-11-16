@@ -276,8 +276,13 @@ SAMPLES: Final = 4000
 """The samples of each Monte Carlo analysis whose runs are one batch of the engine's."""
 
 KIT_SAMPLES: Final = 1000
-"""The samples of each Monte Carlo analysis that reads a kit's placements anew, each
-one reading of a placement taking about 4 ms."""
+"""The samples of each Monte Carlo analysis that reads SG13G2's placements anew, each
+reading about 4 ms."""
+
+MIM_SAMPLES: Final = 400
+"""The samples of each Monte Carlo analysis that reads SKY130's placements anew, each
+reading about 27 ms, nearly all of it the library's 11,855 parameters evaluated for the
+sample: five standard errors are 18 % of the standard deviation."""
 
 
 # Against Monte Carlo: tolerances, drawn by the engine.
@@ -497,7 +502,7 @@ def test_sky130s_mim_capacitor_spreads_a_response_as_monte_carlo_finds(
     phasors = np.array(
         [
             Simulation(mim_low_pass(mim, index)).run(analysis).voltage("out")
-            for index in range(KIT_SAMPLES)
+            for index in range(MIM_SAMPLES)
         ]
     )
     for part, samples in (("magnitude", np.abs(phasors)), ("phase", np.angle(phasors))):
