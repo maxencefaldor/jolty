@@ -139,8 +139,8 @@ The expression reads `v(a)`, the voltage of terminal `a`, `v(a, b)`, that of `a`
 
 ```python
 gain = devices.behavioral_voltage_source("limit(1e5 * v(inp, inn), -12, 12)")
-amplifier = c.place(gain)
-c.connect(amplifier.inp, signal)
+amplifier = c.place(gain, name="E1")
+c.connect(amplifier.inp, name="signal")
 ```
 
 A source's terminals are `positive` and `negative`, then each terminal its expression reads, then `p_positive` and `p_negative` for each port `p`.
@@ -254,7 +254,7 @@ So a transistor whose junction a thermal resistance holds to the ambient settles
 
 ```python
 transistor = c.place(devices.bipolar_transistor().heated(), name="Q1")
-mount = c.place(devices.thermal_resistance(200 * K / W), name="RTH")
+mount = c.place(devices.thermal_resistance(200 * K / W), name="RJA")
 c.connect(transistor.thermal, mount.a, name="junction")
 c.connect(mount.b, ground)
 ```

@@ -7,6 +7,8 @@ Vendors publish their parts as SPICE models: an op-amp as a macromodel subcircui
 
 `spice.load(*paths)` reads SPICE files into a `Library`, and `library.component(name, **parameters)` returns a subcircuit as a component, its parameters' defaults replaced by those given:
 
+<!-- not run: it reads Texas Instruments' model file, which `tests/test_vendor.py` downloads and checks -->
+
 ```python
 from jolty import Builder, Role, devices, spice
 from jolty.units import V
@@ -75,6 +77,8 @@ Every part's operating point also agrees at -40 °C and at 125 °C, but the AD22
 ## Writing SPICE
 
 `jolty.spice.export` writes a circuit the other way, as a SPICE netlist that ngspice reads, to check jolty against the reference simulator:
+
+<!-- not run: it exports a circuit `bench`, which the page does not build, and runs ngspice -->
 
 ```python
 from jolty import circuit

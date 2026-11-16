@@ -51,6 +51,8 @@ Each such pin joins the net through a connect element of its own:
 - an input reads the net through a threshold detector, at `threshold` of the supply above ground, one half unless given, and loads the net with `input_capacitance` to ground;
 - an output drives the net through a logic driver: a voltage between ground and supply that ramps over the transition, crossing half the supply when the output's level changes, and holds half the supply while the level is unknown.
 
+<!-- not run: a fragment of a component that defines the nets `vdd` and `analog_input` and places `load` -->
+
 ```python
 gate = devices.logic_gate(
     "not", rise=40 * ps, transition=20 * ps, electrical=True, input_capacitance=2 * fF
@@ -70,7 +72,9 @@ At the operating point, the logic and the analog circuit settle each other until
 
 ## Levels in results
 
-Every result holds the logic nets' levels beside its unknowns, and `level(net)` reads them, as a number: `0`, `1`, or NaN for unknown.
+Every result holds the logic nets' levels beside its unknowns, and `logic_level(net)` reads them, as a number: `0`, `1`, or NaN for unknown.
+
+<!-- not run: it reads the results of a circuit with a logic net `carry`, which the page does not build -->
 
 ```python
 point.logic_level("carry")  # a float

@@ -60,11 +60,10 @@ Every result holds the circuit's unknowns, named by path:
 Beside the unknowns, a result records what its plan's `record`, or its analysis's own, names of the circuit's devices and component instances, at every point it solved:
 
 ```python
-Plan({...}, record=["M1", "X1"])  # the transistor M1, and the ports of the instance X1
-Plan(
-    {...}, record=["X1/**", "!X1/bias/**"]
-)  # everything inside X1 but its bias network
-Plan({...}, record=["**"])  # every instance
+analyses = {"op": OperatingPoint(), "step": Transient(stop=1 * ms)}
+Plan(analyses, record=["M1", "X1"])  # the transistor M1, and the ports of X1
+Plan(analyses, record=["X1/**", "!X1/bias/**"])  # inside X1 but its bias network
+Plan(analyses, record=["**"])  # every instance
 Transient(stop=1 * ms, record=["D1"])  # this analysis records D1, whatever the plan's
 ```
 
@@ -81,8 +80,10 @@ A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no
 Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `max_memory` option bounds them all (see [Options](simulation.md#options)).
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
 
+<!-- output of: python unrecorded.py -->
+
 ```text
-KeyError: the result recorded no terminal named 'R1.a'; close names: R2.a; record its instance, as an analysis's or a plan's record=['R1'] does, or every instance, as record=['**'] does
+KeyError: "the result recorded no terminal named 'R1.a'; close names: R2.a; record its instance, as an analysis's or a plan's record=['R1'] does, or every instance, as record=['**'] does"
 ```
 
 A name mistaken for one of a recorded instance's says so, and suggests the closest names alone, such as `'R1', which the result recorded, has no terminal named 'R1.aa'; close names: R1.a`.
@@ -120,6 +121,8 @@ A device's variables are the quantities it computes on its way to its currents t
 | `jfet`, `bipolar_transistor`, `vbic` | its region and margins |
 | `voltage_controlled_memristor`, `current_controlled_memristor` | `resistance`, the one its state sets, and `rate`, how fast its state moves, toward off when positive, in full ranges per second |
 
+<!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, and its results, which the page does not build -->
+
 ```python
 point = simulation.run(OperatingPoint(record=["M1"]))
 point.conductance("M1.drain", "M1.gate")  # gm, in siemens
@@ -131,6 +134,8 @@ results["step"].variable("M1", "saturation_voltage")  # one per time point
 
 Each transistor states its region of operation, as its model's equations distinguish it, and its margins to the regions' boundaries, in volts: each margin is zero on a boundary, where the equations switch from one region to the next, and changes sign across it.
 Its variable `region` numbers its region among those its recorded device's `regions` names, and its device's `margins` names the variables that are its margins; `region(instance)` reads the region by name, and a simulation's `transistors` are the paths of its transistors:
+
+<!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, which the page does not build -->
 
 ```python
 point = simulation.run(OperatingPoint(record=simulation.transistors))
@@ -156,6 +161,8 @@ No region is guessed: a device whose model distinguishes none, such as a resisto
 
 The report lists each transistor's region and margins, the transistor with the margin nearest zero first, such as the [common-emitter amplifier](../gallery/common-emitter.md)'s:
 
+<!-- output of: jolty simulate common_emitter.py --no-schematic --no-plot -->
+
 ```text
 op: operating point, found by Newton iteration
   ...
@@ -171,6 +178,8 @@ The file holds the analyses that ran to their end; when none did, the command re
 A plan's batches go beside it as `<script>.batches.npz`, which `jolty.files.load_batches` reads back as each batch's [result](simulation.md#batches), with the requirements it measured.
 
 `jolty.files.load_results` reads it back as a dictionary of results by analysis name:
+
+<!-- not run: it reads the results file of a script `filter.py`, which the page does not write -->
 
 ```python
 results = load_results(Path("filter.results.npz"))

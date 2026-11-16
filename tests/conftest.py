@@ -20,6 +20,11 @@ import jolty
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 """The agents' benchmark, whose shared scripts their tests import."""
 
+collect_ignore = ["guide"]
+"""The scripts behind the guide's quoted outputs, which import the examples as they run
+beside them in `test_guide.py`, and which pytest's doctests would import without them.
+"""
+
 for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
     # The command line's entry point runs the command line as it loads.
     if not found.name.endswith(".__main__"):
