@@ -15,7 +15,7 @@ mod measure;
 use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
-    Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, NoiseResult,
+    Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, MismatchResult, NoiseResult,
     OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
     Statistics, Strategy, TransientResult,
 };
@@ -581,6 +581,44 @@ fn quantity_name(nature: Nature) -> &'static str {
     }
 }
 
+/// Adds what a mismatch analysis found to `result`: its outputs, its random variables, each
+/// its instance, lot, name, mean, standard deviation and derivatives, the outputs'
+/// derivatives with respect to them, and the result of the analysis it differentiated.
+fn add_mismatch<'py>(
+    py: Python<'py>,
+    result: &Bound<'py, PyDict>,
+    mismatch: MismatchResult,
+) -> PyResult<()> {
+    result.set_item("kind", "mismatch")?;
+    result.set_item("outputs", mismatch.outputs)?;
+    let random_variables: Vec<_> = mismatch
+        .random_variables
+        .into_iter()
+        .map(|variable| {
+            (
+                variable.instance,
+                variable.lot,
+                variable.name,
+                variable.mean,
+                variable.standard_deviation,
+                variable.derivatives,
+            )
+        })
+        .collect();
+    result.set_item("random_variables", random_variables)?;
+    match &mismatch.derivatives {
+        Derivatives::Real(points) => result.set_item("derivatives", cube(py, points)?)?,
+        Derivatives::Complex(points) => result.set_item("derivatives", cube(py, points)?)?,
+    }
+    result.set_item(
+        "period_derivatives",
+        mismatch
+            .period_derivatives
+            .map(|derivatives| PyArray1::from_vec(py, derivatives)),
+    )?;
+    result.set_item("result", outcome_to_python(py, *mismatch.result)?)
+}
+
 /// The outcome of an analysis as a dictionary whose `kind` names the analysis.
 pub(crate) fn outcome_to_python(
     py: Python<'_>,
@@ -640,6 +678,7 @@ pub(crate) fn outcome_to_python(
             )?;
             result.set_item("result", outcome_to_python(py, *sensitivities.result)?)?;
         }
+        AnalysisResult::Mismatch(mismatch) => add_mismatch(py, &result, mismatch)?,
         AnalysisResult::Stability(loop_gain) => {
             result.set_item("kind", "stability")?;
             result.set_item("probe", loop_gain.probe)?;

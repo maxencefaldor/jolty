@@ -19,6 +19,7 @@ import itertools
 import json
 import math
 import re
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -137,6 +138,74 @@ class Sample:
                 case "unif":
                     return nominal_value + nominal_value * spread * uniform
             return nominal_value + (spread if uniform > 0 else -spread)
+
+        return drawn
+
+
+def standard_deviation(function: str, arguments: tuple[float, ...]) -> float:
+    """The standard deviation of what the statistical function `function` draws.
+
+    It draws of `arguments` as [`Sample.draw`][jolty.spice.Sample.draw] defines it:
+    ``agauss(x, a, s)`` a normal number of standard deviation ``a / s``, and
+    ``gauss(x, r, s)`` of ``|x| r / s``, each 0 where ``a``, ``r`` or ``s`` is not
+    positive; ``aunif(x, a)`` a uniform one within ``|a|`` of ``x``, whose standard
+    deviation is ``|a| / √3``, and ``unif(x, r)`` within ``|x r|``; ``limit(x, a)``
+    ``x + a`` or ``x - a``, each half the time, so ``|a|``.
+
+    Examples:
+        >>> standard_deviation("agauss", (0.0, 0.03, 3.0))
+        0.01
+        >>> standard_deviation("aunif", (2.0, 0.3))
+        0.17320508075688773
+    """
+    nominal_value, spread, *rest = arguments
+    match function:
+        case "agauss" | "gauss":
+            sigma = rest[0]
+            if spread <= 0 or sigma <= 0:
+                return 0.0
+            scale = abs(nominal_value) if function == "gauss" else 1.0
+            return scale * spread / sigma
+        case "aunif":
+            return abs(spread) / math.sqrt(3)
+        case "unif":
+            return abs(nominal_value * spread) / math.sqrt(3)
+    return abs(spread)
+
+
+_STEP: Final = sys.float_info.epsilon ** (1 / 3)
+"""The step of the central difference that differentiates a placement's devices with
+respect to a random variable, per standard deviation of it: the cube root of the machine
+epsilon, which balances the difference's truncation error, of the order of the step
+squared, against its rounding error, of the order of the epsilon over the step, for a
+number that varies on the scale of the random variable's standard deviation (W. H.
+Press et al., *Numerical Recipes*, 3rd edition, 2007, §5.7)."""
+
+
+@dataclass(slots=True)
+class _Probe:
+    """Statistical functions at their nominal values, but for one call, moved.
+
+    The call `moved` takes its nominal value plus `offset`. Each call is recorded by
+    where its definitions are and which call of them it is, as a
+    [`Sample`][jolty.spice.Sample] keys its draws, with its function and its arguments.
+    """
+
+    moved: tuple[str, str] | None = None
+    offset: float = 0.0
+    calls: dict[tuple[str, str], tuple[str, tuple[float, ...]]] = field(
+        default_factory=dict
+    )
+
+    def draw(self, scope: str, name: str) -> Draw:
+        """The draws of the functions `name`'s definition calls in `scope`."""
+        calls = itertools.count()
+
+        def drawn(function: str, arguments: tuple[float, ...]) -> float:
+            call = (scope, f"{name}#{next(calls)}")
+            self.calls[call] = (function, arguments)
+            nominal_value = arguments[0]
+            return nominal_value + self.offset if call == self.moved else nominal_value
 
         return drawn
 
@@ -303,6 +372,84 @@ class Library:
         """
         return self._placed(name, _Drawing(sample, path), parameters)
 
+    def random_variables(
+        self, name: str, path: str, /, **parameters: float
+    ) -> tuple[ir.RandomVariable, ...]:
+        """The random variables of the subcircuit `name` placed at `path`.
+
+        Each is a call of a statistical function that the placement's definitions make,
+        within those it places too, and that moves its devices: its instance is the
+        placement whose definitions make the call, such as `path` or ``X1/Xinner``, and
+        its name the definition's name and the call's place among those it makes, such
+        as ``vth0#0``, as a [`Sample`][jolty.spice.Sample] keys its draws; its mean is
+        its nominal value, which [`component`][jolty.spice.Library.component] places,
+        and its standard deviation as
+        [`standard_deviation`][jolty.spice.standard_deviation] takes it. Each number of
+        the devices' parameters that it moves has its derivative with respect to it, by
+        the device's path in the circuit the subcircuit is placed in: a central
+        difference of the reading, the cube root of the machine epsilon times its
+        standard deviation either way, exact to rounding where the number is a
+        polynomial of degree two or less in it, as every open kit writes it. A call
+        whose standard deviation is 0, or that moves no device, is none; a call of the
+        library's own parameters, which every placement shares, is no placement's. The
+        `parameters` given replace the subcircuit's defaults, as `component` takes them.
+
+        Raises:
+            SpiceError: When no subcircuit is named `name`, it holds what jolty cannot
+                read, or a call moves which devices or numbers it places.
+        """
+        given = {key.casefold(): value for key, value in parameters.items()}
+
+        def read(probe: _Probe) -> dict[str, dict[str, float]]:
+            built, self._built = self._built, {}
+            try:
+                placed = self._placed(name, _Drawing(probe, path), given)
+            finally:
+                self._built = built
+            return _devices(placed, f"{path}{ir.SEPARATOR}")
+
+        recorded = _Probe()
+        nominal_numbers = read(recorded)
+        found: list[ir.RandomVariable] = []
+        for (scope, call), (function, arguments) in recorded.calls.items():
+            spread = standard_deviation(function, arguments)
+            if not scope or spread == 0:
+                continue
+            step = _STEP * spread
+            up, down = (
+                read(_Probe((scope, call), sign * step)) for sign in (1.0, -1.0)
+            )
+            if not up.keys() == down.keys() == nominal_numbers.keys() or any(
+                up[device].keys() != down[device].keys() for device in up
+            ):
+                message = (
+                    f"the call `{call}` of `{scope}` changes which devices or numbers "
+                    f"`{name}` places, so it has no derivative"
+                )
+                raise SpiceError(message)
+            derivatives = {
+                device: moved
+                for device, numbers in up.items()
+                if (
+                    moved := {
+                        number: (value - down[device][number]) / (2 * step)
+                        for number, value in numbers.items()
+                        if value != down[device][number]
+                    }
+                )
+            }
+            if derivatives:
+                found.append(
+                    ir.RandomVariable(
+                        instance=scope,
+                        name=call,
+                        mean=arguments[0],
+                        standard_deviation=spread,
+                        derivatives=derivatives,
+                    )
+                )
+        return tuple(found)
+
     def survey(self, name: str, /, **parameters: float) -> tuple[Use, ...]:
         """Each element the subcircuit `name` holds, within those it places too.
 
@@ -353,7 +500,7 @@ class Library:
         if subcircuit is None:
             message = f"no subcircuit is named `{name}`"
             raise SpiceError(message)
-        scope = self.values(drawing.sample)
+        scope = self._values(_Drawing(drawing.sample, ""))
         given = {key.casefold(): value for key, value in parameters.items()}
         return self._component(subcircuit, scope, given, drawing)
 
@@ -382,11 +529,20 @@ class Library:
             SpiceError: When parameters read one another in a cycle, or an expression is
                 wrong.
         """
+        return self._values(_Drawing(sample, ""))
+
+    def _values(self, drawing: _Drawing) -> dict[str, float]:
+        """The values of the parameters defined outside subcircuits, drawn by `drawing`.
+
+        Raises:
+            SpiceError: When parameters read one another in a cycle, or an expression is
+                wrong.
+        """
         celsius_temperature = self.temperature - ZERO_CELSIUS
         return _resolved(
             dict(self._parameters),
             {"temper": celsius_temperature},
-            _Drawing(sample, "").draws,
+            drawing.draws,
             self.functions,
         )
 
@@ -429,9 +585,7 @@ class Library:
         }
         listed = ",".join(f"{key}={value!r}" for key, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
-        if drawing.sample is not None:
-            sample = drawing.sample
-            name = f"{name}@{drawing.path}#{sample.seed}:{sample.index}"
+        name = drawing.named(name)
         if name not in self._built:
             translation = _Translation(self, subcircuit, (scope, local), drawing)
             self._built[name] = translation.component(name)
@@ -610,10 +764,11 @@ def _options(statement: Statement) -> dict[str, Expression]:
 class _Drawing:
     """How a placement's statistical functions draw.
 
-    They draw of `sample`, at `path`, or take their nominal values without a sample.
+    They draw of `sample`, at `path`, or take their nominal values without a sample, or
+    as a probe sets them.
     """
 
-    sample: Sample | None
+    sample: Sample | _Probe | None
     path: str
 
     def draws(self, name: str) -> Draw:
@@ -622,10 +777,41 @@ class _Drawing:
             return nominal
         return self.sample.draw(self.path, name)
 
+    def named(self, name: str) -> str:
+        """`name`, the placement's component's, told apart from another placement's.
+
+        Without a sample, every placement of the same parameters places the same
+        component.
+        """
+        match self.sample:
+            case Sample(seed=seed, index=index):
+                return f"{name}@{self.path}#{seed}:{index}"
+            case _Probe():
+                return f"{name}@{self.path}"
+        return name
+
     def within(self, instance: str) -> _Drawing:
         """How the placement of `instance` within this one draws."""
         path = f"{self.path}/{instance}" if self.path else instance
         return _Drawing(self.sample, path)
+
+
+def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
+    """The numbers of every device `placed` places, within the components it places too.
+
+    They come by the device's path, `prefix` then its path within `placed`, then by the
+    number's path.
+    """
+    children = {child.name: child for child in placed.children}
+    found: dict[str, dict[str, float]] = {}
+    for instance in placed.definition.instances:
+        path = f"{prefix}{instance.name}"
+        match instance.of:
+            case ir.DeviceOf():
+                found[path] = ir.numbers(instance.parameters)
+            case ir.ComponentOf(component=inner):
+                found |= _devices(children[inner], f"{path}{ir.SEPARATOR}")
+    return found
 
 
 def _resolved(

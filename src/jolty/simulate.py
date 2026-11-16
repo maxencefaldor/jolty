@@ -61,6 +61,7 @@ from jolty.plan import (
     DcSweep,
     Explicit,
     Grid,
+    Mismatch,
     MonteCarlo,
     Noise,
     OperatingPoint,
@@ -620,6 +621,10 @@ class Simulation:
     ) -> results.SensitivityResult: ...
     @overload
     def run(
+        self, analysis: Mismatch, options: Options | None = None
+    ) -> results.MismatchResult: ...
+    @overload
+    def run(
         self, analysis: Stability, options: Options | None = None
     ) -> results.StabilityResult: ...
     @overload
@@ -894,6 +899,9 @@ class Simulation:
                 return analysis.to_json(self._level(analysis))
             case Sensitivity(of=DcSweep() as sweep):
                 return analysis.to_json(self._level(sweep))
+            case Mismatch(of=of):
+                level = self._level(of) if isinstance(of, DcSweep) else VOLTAGE
+                return analysis.to_json(level, self._toleranced())
         return analysis.to_json()
 
     def _level(self, sweep: DcSweep) -> Dimension:
@@ -985,6 +993,7 @@ class Simulation:
     def _linear(
         self,
         outcome: _core.SensitivityResult
+        | _core.MismatchResult
         | _core.StabilityResult
         | _core.NoiseResult
         | _core.PoleZeroResult
@@ -1001,19 +1010,7 @@ class Simulation:
                         outcome["parameters"], outcome["values"], strict=True
                     )
                 )
-                differentiated = self._result(outcome["result"], recording)
-                if not isinstance(
-                    differentiated,
-                    results.OperatingPointResult
-                    | results.DcSweepResult
-                    | results.AcResult
-                    | results.TransientResult,
-                ):
-                    message = f"the engine differentiated {outcome['result']['kind']}"
-                    raise SimulationError(message)
-                derivatives = outcome["derivatives"]
-                if isinstance(differentiated, results.OperatingPointResult):
-                    derivatives = derivatives[0]
+                differentiated, derivatives = self._differentiated(outcome, recording)
                 return results.SensitivityResult(
                     unknowns,
                     tuple(outcome["outputs"]),
@@ -1022,6 +1019,8 @@ class Simulation:
                     differentiated,
                     outcome["period_derivatives"],
                 )
+            case "mismatch":
+                return self._mismatch(outcome, recording)
             case "transfer_function":
                 return results.TransferFunctionResult(
                     unknowns,
@@ -1075,6 +1074,66 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
 
+    def _differentiated(
+        self,
+        outcome: _core.SensitivityResult | _core.MismatchResult,
+        recording: results.Recording,
+    ) -> tuple[
+        results.OperatingPointResult
+        | results.DcSweepResult
+        | results.AcResult
+        | results.TransientResult,
+        results.Real | results.Complex,
+    ]:
+        """What a sensitivity or mismatch analysis differentiated, and its derivatives.
+
+        At an operating point, the derivatives are its one matrix of them.
+
+        Raises:
+            SimulationError: When the engine differentiated another analysis.
+        """
+        differentiated = self._result(outcome["result"], recording)
+        if not isinstance(
+            differentiated,
+            results.OperatingPointResult
+            | results.DcSweepResult
+            | results.AcResult
+            | results.TransientResult,
+        ):
+            message = f"the engine differentiated {outcome['result']['kind']}"
+            raise SimulationError(message)
+        derivatives = outcome["derivatives"]
+        if isinstance(differentiated, results.OperatingPointResult):
+            derivatives = derivatives[0]
+        return differentiated, derivatives
+
+    def _mismatch(
+        self, outcome: _core.MismatchResult, recording: results.Recording
+    ) -> results.MismatchResult:
+        """The result of a mismatch analysis, which recorded what `recording` says."""
+        random_variables = tuple(
+            ir.RandomVariable(
+                instance=instance,
+                lot=lot,
+                name=name,
+                mean=mean,
+                standard_deviation=deviation,
+                derivatives=derivatives,
+            )
+            for instance, lot, name, mean, deviation, derivatives in outcome[
+                "random_variables"
+            ]
+        )
+        differentiated, derivatives = self._differentiated(outcome, recording)
+        return results.MismatchResult(
+            self.unknowns,
+            tuple(outcome["outputs"]),
+            random_variables,
+            derivatives,
+            differentiated,
+            outcome["period_derivatives"],
+        )
+
     def _variants(self, variants: Variants) -> _core.Variants:
         """`variants` as the engine runs them, of the circuit this simulation runs.
 
@@ -1086,8 +1145,9 @@ class Simulation:
         with _elaborating():
             match variants:
                 case MonteCarlo(samples=samples, seed=seed):
+                    toleranced = json.dumps(self._toleranced(), allow_nan=False)
                     return _core.Variants.monte_carlo(
-                        elaborated, self._toleranced(), seed, samples
+                        elaborated, toleranced, seed, samples
                     )
                 case Grid(axes=axes, warm=warm):
                     stepped = [
@@ -1116,13 +1176,13 @@ class Simulation:
                         self._variants(first), self._variants(second)
                     )
 
-    def _toleranced(self) -> str:
+    def _toleranced(self) -> list[JsonValue]:
         """The circuit's toleranced numbers, as the engine draws samples of them.
 
         They leave out the numbers within a component instance a model stands in for,
         which the circuit the simulation runs does not hold.
         """
-        kept: list[JsonValue] = [
+        return [
             {
                 "instance": path,
                 "parameter": name,
@@ -1134,7 +1194,6 @@ class Simulation:
             )
             if not any(path.startswith(f"{inside}/") for inside in self._substituted)
         ]
-        return json.dumps(kept, allow_nan=False)
 
     def _shape(self, analysis: Analysis) -> results.AnalysisResult:
         """A result of `analysis` that holds no point, for measures to resolve.
@@ -1177,7 +1236,12 @@ class Simulation:
 
     def _linear_shape(
         self,
-        analysis: Sensitivity | Stability | Noise | PoleZero | TransferFunction,
+        analysis: Sensitivity
+        | Mismatch
+        | Stability
+        | Noise
+        | PoleZero
+        | TransferFunction,
         point: results.OperatingPointResult,
     ) -> results.AnalysisResult:
         """A small-signal result or sensitivities, as `_shape` makes it.
@@ -1191,6 +1255,10 @@ class Simulation:
                 rows = np.empty((0, len(unknowns)))
                 outputs = tuple(analysis.outputs)
                 return results.SensitivityResult(unknowns, outputs, (), rows, point)
+            case Mismatch():
+                rows = np.empty((0, len(unknowns)))
+                outputs = tuple(analysis.outputs)
+                return results.MismatchResult(unknowns, outputs, (), rows, point)
             case Stability():
                 frequencies = np.empty(0)
                 return results.StabilityResult(

@@ -87,6 +87,16 @@ EXCURSION = results.Excursion(
 """A logic cell's load outside the domain of its timing."""
 
 
+SPREAD = ir.RandomVariable(
+    lot="die",
+    name="waveform.dc",
+    mean=0,
+    standard_deviation=0.01,
+    derivatives={"V1": {"waveform.dc": 5.0}},
+)
+"""A lot's random variable, which moves a source's level."""
+
+
 def every_kind() -> dict[str, results.AnalysisResult]:
     point = results.OperatingPointResult(
         UNKNOWNS,
@@ -183,6 +193,13 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             results.TransientResult(
                 UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
             ),
+        ),
+        "spread": results.MismatchResult(
+            UNKNOWNS,
+            ("out",),
+            (SPREAD,),
+            np.array([[0.4]]),
+            point,
         ),
         "loop": results.StabilityResult(
             UNKNOWNS, "VP", np.array([1e3, 1e6]), np.array([100 - 1j, -0.5j]), point
@@ -293,7 +310,7 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     np.testing.assert_array_equal(step.variable("M1", "threshold_voltage"), [1, 1])
 
 
-def test_results_files_hold_sensitivities_and_what_they_differentiate(
+def test_results_files_hold_sensitivities_mismatches_and_what_they_differentiate(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "bench.results.npz"
@@ -310,6 +327,11 @@ def test_results_files_hold_sensitivities_and_what_they_differentiate(
     assert isinstance(over, results.SensitivityResult)
     assert isinstance(over.result, results.TransientResult)
     np.testing.assert_array_equal(over.derivative("out", "X1/R1", "resistance"), [0, 1])
+    spread = read["spread"]
+    assert isinstance(spread, results.MismatchResult)
+    assert spread.random_variables == (SPREAD,)
+    assert spread.standard_deviation("out") == pytest.approx(0.004, rel=1e-15)
+    assert isinstance(spread.result, results.OperatingPointResult)
     loop = read["loop"]
     assert isinstance(loop, results.StabilityResult)
     assert loop.probe == "VP"
@@ -354,7 +376,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 18
+    assert header["version"] == 19
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

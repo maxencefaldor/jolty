@@ -74,6 +74,7 @@ mod elaborated;
 mod kernels;
 mod logic;
 pub mod measure;
+mod mismatch;
 mod newton;
 mod noise;
 mod operating_point;
@@ -105,6 +106,7 @@ pub use elaborate::{ElaborationError, ElaborationProblem, Location, SummedTermin
 pub use elaborated::{Elaborated, Partition, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
+pub use mismatch::{Mismatch, MismatchResult, RandomVariable};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseResult};
 pub use operating_point::{OperatingPointResult, OperatingPoints, Strategy};
 pub use options::{BREAK_EVENS, BreakEvens, Options, Parallelism, Record, Sizes};
@@ -569,6 +571,10 @@ pub enum SimulationError {
     /// An analysis names a source that does not exist.
     #[error("there is no instance at `{0}`")]
     UnknownSource(String),
+    /// A mismatch analysis's random variables move numbers that no device's parameters hold
+    /// as a real number: each by the device's path and the number's.
+    #[error("no device holds a real number at {}", numbered(.0))]
+    UnknownParameters(Vec<(String, String)>),
     /// An analysis names an instance that is not an independent source.
     #[error("`{0}` is not an independent source")]
     NotASource(String),
@@ -640,6 +646,16 @@ pub enum SimulationError {
         .0.join(", ")
     )]
     Foundry(Vec<String>),
+}
+
+/// The numbers `numbers` names, each a device's path and a number's path, as a message lists
+/// them: `` `X1/R1` `resistance` ``.
+fn numbered(numbers: &[(String, String)]) -> String {
+    numbers
+        .iter()
+        .map(|(path, name)| format!("`{path}` `{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The clause of a singular error's message naming the `unknowns` its equations leave

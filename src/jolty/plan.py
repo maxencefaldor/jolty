@@ -30,7 +30,7 @@ from typing import Final, Literal
 
 from pydantic import JsonValue
 
-from jolty import _core
+from jolty import _core, ir
 from jolty.spice import ngspice
 from jolty.units import (
     FREQUENCY,
@@ -271,6 +271,25 @@ class PeriodicSteadyState(Recorded):
         return {"periodic_steady_state": steady}
 
 
+type Differentiated = DcSweep | Ac | Transient | PeriodicSteadyState | None
+"""An analysis a sensitivity or a mismatch analysis differentiates, None for the
+operating point."""
+
+
+def _differentiated(of: Differentiated, level: Dimension) -> JsonValue:
+    """The analysis `of` in the engine's format.
+
+    The levels of a DC sweep are checked against `level`.
+    """
+    match of:
+        case None:
+            return "operating_point"
+        case DcSweep():
+            return of.to_json(level)
+        case Ac() | Transient() | PeriodicSteadyState():
+            return of.to_json()
+
+
 @dataclass(frozen=True, slots=True)
 class Sensitivity:
     """How unknowns move with every number of every device's parameters.
@@ -286,7 +305,7 @@ class Sensitivity:
     """
 
     outputs: Sequence[str]
-    of: DcSweep | Ac | Transient | PeriodicSteadyState | None = None
+    of: Differentiated = None
 
     def to_json(self, level: Dimension = VOLTAGE) -> JsonValue:
         """The analysis in the engine's format.
@@ -294,14 +313,51 @@ class Sensitivity:
         The levels of a DC sweep it differentiates are checked against `level`.
         """
         outputs: list[JsonValue] = list(self.outputs)
-        match self.of:
-            case None:
-                of: JsonValue = "operating_point"
-            case DcSweep():
-                of = self.of.to_json(level)
-            case Ac() | Transient() | PeriodicSteadyState():
-                of = self.of.to_json()
-        return {"sensitivity": {"outputs": outputs, "of": of}}
+        return {
+            "sensitivity": {"outputs": outputs, "of": _differentiated(self.of, level)}
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Mismatch:
+    """How far unknowns spread, to first order, with the numbers samples draw at random.
+
+    Each output is an unknown by name, as a [`Sensitivity`][jolty.plan.Sensitivity]'s
+    is, and spreads at the operating point, or at each point of the analysis `of`, with
+    every random variable ([`RandomVariable`][jolty.ir.RandomVariable]): each part's own
+    factor and each lot's of the circuit's tolerances, as a Monte Carlo sample draws
+    them, and the `random_variables` given besides, such as a process kit's statistical
+    functions ([`Library.random_variables`][jolty.spice.Library.random_variables]). Its
+    derivative with respect to each is the sensitivity analysis's, summed over the
+    numbers the random variable moves; the random variables are drawn apart from one
+    another, so to first order the output's standard deviation is the root of the sum
+    of each derivative times its random variable's standard deviation, squared, and each
+    random variable's share of its variance is its own term's.
+    """
+
+    outputs: Sequence[str]
+    of: Differentiated = None
+    random_variables: Sequence[ir.RandomVariable] = ()
+
+    def to_json(
+        self, level: Dimension = VOLTAGE, toleranced: Sequence[JsonValue] = ()
+    ) -> JsonValue:
+        """The analysis in the engine's format, with the circuit's `toleranced` numbers.
+
+        The levels of a DC sweep it differentiates are checked against `level`.
+        """
+        outputs: list[JsonValue] = list(self.outputs)
+        given: list[JsonValue] = [
+            variable.model_dump(mode="json") for variable in self.random_variables
+        ]
+        return {
+            "mismatch": {
+                "outputs": outputs,
+                "of": _differentiated(self.of, level),
+                "toleranced": list(toleranced),
+                "random_variables": given,
+            }
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +479,7 @@ type Analysis = (
     | Transient
     | PeriodicSteadyState
     | Sensitivity
+    | Mismatch
     | Stability
     | Noise
     | PoleZero
