@@ -55,6 +55,7 @@ from jolty.spice.expressions import (
 )
 from jolty.spice.models import ModelCard
 from jolty.spice.netlist import Statement, statements, tokens
+from jolty.spice.ngspice import Compatibility
 from jolty.units import ZERO_CELSIUS, celsius
 
 GROUND: Final = "ground"
@@ -91,6 +92,9 @@ class Use:
     undefined: str | None = None
     """The parameter it reads that has no value, which an instance gives, if that is
     why it cannot be translated."""
+    middle: tuple[float, float] | None = None
+    """The length and the width, in meters, at the middle of the first bin of the model
+    it names, if it cannot be translated as no bin holds its size."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,13 +240,21 @@ class Library:
         ['in', 'out', 'ground']
     """
 
-    def __init__(self, temperature: float = _core.REFERENCE_TEMPERATURE) -> None:
-        """An empty library, which reads ``temper`` at `temperature`, in kelvins."""
+    def __init__(
+        self,
+        temperature: float = _core.REFERENCE_TEMPERATURE,
+        compatibility: Compatibility | None = None,
+    ) -> None:
+        """An empty library, which reads ``temper`` at `temperature`, in kelvins.
+
+        It reads its files as ngspice does in `compatibility`, its own unless given.
+        """
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
         self._parameters: list[tuple[str, Expression]] = []
         self._built: dict[str, Component] = {}
         self.temperature = temperature
+        self.compatibility = compatibility
         self.options: dict[str, float] = {}
         """The options its files set, such as ``scale``, by case-folded name."""
         self.functions: dict[str, Function] = {}
@@ -629,19 +641,33 @@ class Library:
 
         A bin is a MOSFET's card named `name` then a dot and a whole number whose
         ``LMIN`` to ``LMAX`` holds the instance's length and ``WMIN`` to ``WMAX`` its
-        width, both given on its element, a bound counted in; the last defined is taken
-        first, in a subcircuit's body, then globally.
+        width, divided among its [`fingers`][jolty.spice.Library.fingers], both given
+        on its element, a bound counted in; the last defined is taken first, in a
+        subcircuit's body, then globally.
         """
         if "l" not in instance or "w" not in instance:
             return None
+        size = (instance["l"], instance["w"] / self.fingers(instance))
         bins = _bins(name)
         for cards in (local, self._models):
             for key, card in reversed(list(cards.items())):
-                if bins.fullmatch(key) and models.holds(
-                    card, scope, (instance["l"], instance["w"])
-                ):
+                if bins.fullmatch(key) and models.holds(card, scope, size):
                     return card
         return None
+
+    def fingers(self, instance: Mapping[str, float]) -> float:
+        """What a MOSFET's width is divided by where its bin is selected.
+
+        As ngspice's ``INPgetModBin`` selects a bin (``inpgmod.c``, lines 268 to
+        302), that is the instance's fingers, ``nf``, where it gives them and the
+        library's option ``wnflag``, or else HSPICE's compatibility, asks for it; and
+        1 otherwise. An instance's own ``wnflag``, which ngspice reads there too, only
+        BSIM4's version 4.8 takes, which jolty does not model.
+        """
+        if "nf" not in instance:
+            return 1.0
+        hspice = 1.0 if self.compatibility == "hsa" else 0.0
+        return instance["nf"] if self.options.get("wnflag", hspice) else 1.0
 
     def subcircuit(self, name: str) -> Subcircuit | None:
         """The subcircuit `name`."""
@@ -1304,6 +1330,8 @@ class _Translation:
             self._translated(statement)
         except UndefinedError as error:
             self.library.use(Use(path, model, str(error), error.name))
+        except UnbinnedError as error:
+            self.library.use(Use(path, model, str(error), middle=error.middle))
         except SpiceError as error:
             self.library.use(Use(path, model, str(error)))
         else:
@@ -2087,6 +2115,8 @@ def _semiconductor(
         card = library.model(rest[0], cards)
         if card is None and "nmos" in kinds:
             card = library.binned(rest[0], cards, instance, translation.scope)
+            if card is None:
+                _unbinned(translation, statement, rest[0], instance)
         if card is None:
             message = f"no model is named `{rest[0]}`"
             raise statement.fail(message)
@@ -2105,6 +2135,52 @@ def _semiconductor(
         translation.add(statement, made.model, made.parameters, joined)
 
     return translated
+
+
+def _unbinned(
+    translation: _Translation,
+    statement: Statement,
+    name: str,
+    instance: Mapping[str, float],
+) -> None:
+    """Fails where `name` has bins, none of which holds the size of `instance`.
+
+    The error states the size, and carries the middle of the first bin defined.
+
+    Raises:
+        UnbinnedError: When the model has bins.
+    """
+    library = translation.library
+    card = library.card(name, translation.models)
+    middle = None if card is None else models.centre(card, translation.scope)
+    if middle is None:
+        return
+    length, width = middle
+    sizes = [
+        f"a {what} of {instance[key]!r} m" for key, what in _SIZES if key in instance
+    ]
+    held = f" holds {' and '.join(sizes)}" if sizes else " is selected without a size"
+    message = f"no bin of `{name}`{held}"
+    raise UnbinnedError(
+        str(statement.fail(message)),
+        (length, width * library.fingers(instance)),
+    )
+
+
+_SIZES: Final = (("l", "length"), ("w", "width"))
+"""A MOSFET's sizes its bins are selected by, by their SPICE names."""
+
+
+class UnbinnedError(SpiceError):
+    """An element names a binned model, none of whose bins holds its size."""
+
+    def __init__(self, message: str, middle: tuple[float, float]) -> None:
+        """The error `message` states, and its model's first bin's `middle`."""
+        super().__init__(message)
+        self.middle = middle
+        """The length and the width, in meters, at the middle of the ranges of the
+        first bin of its model, its width multiplied by its fingers where they divide
+        it."""
 
 
 _THERMAL_ELEMENTS: Final = {

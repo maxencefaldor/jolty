@@ -699,23 +699,26 @@ tolerance, so the two lie within twice it."""
 def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
     """Each subcircuit the inventory finds native, at its typical corner, as ngspice's.
 
-    One source holds every device's first pin at `DRIVE` and drives it at AC, through
-    a source of no volts of each device's own, which senses its current, its other
-    pins grounded; each device's current is compared at the operating point and from
-    1 kHz to 100 GHz with ngspice's, which reads the same libraries and places the same
-    subcircuits, at the same kelvins, but for the frequency response of a device of
-    `AC_DEPARTED`.
+    Each is placed with the parameters the inventory read it with. One source holds
+    every device's first pin at `DRIVE` and drives it at AC, through a source of no
+    volts of each device's own, which senses its current, its other pins grounded; each
+    device's current is compared at the operating point and from 1 kHz to 100 GHz with
+    ngspice's, which reads the same libraries and places the same subcircuits, at the
+    same kelvins, but for the frequency response of a device of `AC_DEPARTED`.
     """
     library = kits.read(kit, settings=kept)
     native = {
-        device.name: device.models
+        device.name: device
         for device in kits.inventory(kit, settings=kept)
         if device.status == "native" and device.kind == "subcircuit"
     }
     driven = {
         name: part
-        for name in native
-        if (part := library.component(name)).definition.ports[0].role == Role.SIGNAL
+        for name, device in native.items()
+        if (part := library.component(name, **device.parameters))
+        .definition.ports[0]
+        .role
+        == Role.SIGNAL
     }
 
     @component
@@ -745,7 +748,10 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     for number, (name, part) in enumerate(driven.items()):
         pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
         deck.append(f"VA{number} drive n{number} 0")
-        deck.append(f"X{number} n{number}{' 0' * (pins - 1)} {name}")
+        given = "".join(
+            f" {key}={value!r}" for key, value in native[name].parameters.items()
+        )
+        deck.append(f"X{number} n{number}{' 0' * (pins - 1)} {name}{given}")
     raw_point, raw_response = ngspice.runs(
         deck,
         ("op", "ac dec 1 1k 100g"),
@@ -760,7 +766,7 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         )
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
         assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
-        if any(model.startswith(AC_DEPARTED) for model in native[name]):
+        if any(model.startswith(AC_DEPARTED) for model in native[name].models):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(

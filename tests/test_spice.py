@@ -33,6 +33,7 @@ from jolty.spice import models, sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
+from jolty.spice.ngspice import Compatibility
 from jolty.units import (
     VOLTAGE,
     A,
@@ -1028,7 +1029,7 @@ def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
         ".model nch.x nmos(level=49 lmin=0 lmax=1 wmin=0 wmax=1 vth0=0.6)\n"
         ".subckt a d\nM1 d d 0 0 nch L=0.5u W=2u\nM2 d d 0 0 nch L=2u W=2u\n"
         "M3 d d 0 0 nch L=1.0000000005u W=2u\n.ends\n"
-        ".subckt wide d\nM1 d d 0 0 nch L=0.5u W=20u\n.ends\n"
+        ".subckt wide d\nM1 d d 0 0 nch L=0.5u W=20e-6\n.ends\n"
         ".subckt unsized d\nM1 d d 0 0 nch\n.ends"
     )
     thresholds = [
@@ -1036,9 +1037,46 @@ def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
         for instance in parts.component("a").definition.instances
     ]
     assert thresholds == [0.4, 0.5, 0.5]
-    for name in ("wide", "unsized"):
-        with pytest.raises(SpiceError, match="no model is named `nch`"):
-            parts.component(name)
+    with pytest.raises(
+        SpiceError,
+        match="no bin of `nch` holds a length of 5e-07 m and a width of 2e-05 m",
+    ):
+        parts.component("wide")
+    with pytest.raises(SpiceError, match="no bin of `nch` is selected without a size"):
+        parts.component("unsized")
+
+
+FINGERED: Final = (
+    ".model nch.1 nmos(level=54 version=4.5 lmin=0.1u lmax=1u wmin=1u wmax=3u "
+    "vth0=0.4)\n"
+    ".model nch.2 nmos(level=54 version=4.5 lmin=0.1u lmax=1u wmin=3u wmax=9u "
+    "vth0=0.5)\n"
+    ".subckt fingers d\nM1 d d 0 0 nch L=0.5u W=4u nf=2\n.ends\n"
+)
+"""Two bins of a BSIM4, 1 µm to 3 µm wide and 3 µm to 9 µm, and a transistor 4 µm wide
+in two fingers."""
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "option", "threshold"),
+    [
+        (None, "", 0.5),
+        ("hsa", "", 0.4),
+        ("hsa", ".option wnflag=0\n", 0.5),
+        (None, ".option wnflag=1\n", 0.4),
+    ],
+)
+def test_a_bin_holds_one_fingers_width_where_ngspice_divides_it(
+    compatibility: Compatibility | None, option: str, threshold: float
+) -> None:
+    """A bin holds the width over `nf` as INPgetModBin selects it.
+
+    It does in HSPICE's compatibility, or where the option `wnflag` asks.
+    """
+    parts = spice.Library(compatibility=compatibility)
+    parts.read(option + FINGERED, "fingers.lib")
+    (instance,) = parts.component("fingers").definition.instances
+    assert instance.parameters["vth0"] == threshold
 
 
 def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:

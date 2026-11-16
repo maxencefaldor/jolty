@@ -1141,15 +1141,41 @@ def holds(
     bound counted in; its expressions are evaluated in `scope`. A card of a level jolty
     does not model may be a bin too, which the device it makes then refuses.
     """
-    bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
-    level = card.parameters.get("level")
-    if level is None or evaluate(level, scope) not in BINNED_LEVELS:
+    bounds = _bounds(card, scope)
+    if bounds is None:
         return False
-    if any(bound is None for bound in bounds):
-        return False
-    lmin, lmax, wmin, wmax = (evaluate(bound, scope) for bound in bounds if bound)
+    lmin, lmax, wmin, wmax = bounds
     length, width = size
     return _within(length, lmin, lmax) and _within(width, wmin, wmax)
+
+
+def centre(card: ModelCard, scope: Mapping[str, float]) -> tuple[float, float] | None:
+    """The length and the width at the middle of the ranges of a MOSFET's bin, `card`.
+
+    None where the card is no bin, as [`holds`][jolty.spice.models.holds] reads one.
+    """
+    bounds = _bounds(card, scope)
+    if bounds is None:
+        return None
+    lmin, lmax, wmin, wmax = bounds
+    return (lmin + lmax) / 2, (wmin + wmax) / 2
+
+
+def _bounds(
+    card: ModelCard, scope: Mapping[str, float]
+) -> tuple[float, float, float, float] | None:
+    """A bin's ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX``, evaluated in `scope`.
+
+    None where the card is of a level ngspice does not bin, or lacks one of them.
+    """
+    level = card.parameters.get("level")
+    if level is None or evaluate(level, scope) not in BINNED_LEVELS:
+        return None
+    bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
+    if any(bound is None for bound in bounds):
+        return None
+    lmin, lmax, wmin, wmax = (evaluate(bound, scope) for bound in bounds if bound)
+    return lmin, lmax, wmin, wmax
 
 
 def _within(value: float, low: float, high: float) -> bool:
