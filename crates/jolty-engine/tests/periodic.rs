@@ -485,3 +485,30 @@ fn an_oscillators_period_is_found_so_it_has_no_times_to_step_onto() {
     );
     assert_eq!(simulator.operating_point_solves(), 0);
 }
+
+#[test]
+fn a_latch_that_its_growing_mode_tips_never_returns_and_says_so() {
+    // 2 mS of negative conductance, saturating as tanh, against 1 kΩ across 1 nF: the
+    // balanced state grows at 1e6 per second and tips into either of two stable ones,
+    // ±1.9 V, so the transient never comes back across the kick.
+    let mut simulator = simulator(&json!([
+        two_terminal("R1", ("resistor", "resistance", 1e3), "n", "0"),
+        two_terminal("C1", ("capacitor", "capacitance", 1e-9), "n", "0"),
+        {"name": "B1", "of": {"model": "behavioral_current_source"},
+         "parameters": {"expression": "-2e-3 * tanh(v(x))"},
+         "terminals": {"positive": "n", "negative": "0", "x": "n"}},
+    ]));
+    let analysis = Analysis::PeriodicSteadyState(PeriodicSteadyState::default());
+    let error = simulator
+        .run(&analysis, &Options::default())
+        .expect_err("a latch does not oscillate");
+    // The stretches double from the mode's natural period, 2π µs, forty times.
+    let time = TAU * 1e-6 * (2.0_f64.powi(40) - 1.0);
+    match error {
+        SimulationError::Unsettled { time: ran, returns } => {
+            assert_eq!(returns, 0);
+            assert!((ran - time).abs() <= 1e-12 * time, "{ran} against {time}");
+        }
+        other => panic!("an unsettled oscillation, not {other}"),
+    }
+}

@@ -603,8 +603,9 @@ pub enum SimulationError {
     /// An oscillator's transient from its operating point did not stop growing.
     #[error(
         "the oscillation from the operating point, kicked along its fastest-growing mode, \
-         did not stop growing in {time:e} s: it returned {returns} times, each further from \
-         the one before"
+         did not stop growing in {time:e} s: none of its {returns} returns to the hyperplane \
+         through the operating point across the kick came as near the return before as \
+         that one came to its own"
     )]
     Unsettled {
         /// The time the transient ran, in seconds.
