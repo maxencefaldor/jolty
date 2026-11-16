@@ -135,7 +135,7 @@ class Diagnostic(_Model):
         return "\n".join(lines)
 
 
-class Report(_Model):
+class CheckReport(_Model):
     """What a check found: its diagnostics, errors first, and how many of each level."""
 
     diagnostics: tuple[Diagnostic, ...] = Field(
@@ -254,7 +254,7 @@ def _apply(
 
 def report(
     diagnostics: Iterable[Diagnostic], chosen: Mapping[str, Level], limit: int
-) -> Report:
+) -> CheckReport:
     """The report of `diagnostics` at the `chosen` levels, listing `limit` of them."""
     leveled = [
         diagnostic.model_copy(update={"level": chosen[diagnostic.rule]})
@@ -263,7 +263,7 @@ def report(
     ]
     leveled.sort(key=lambda diagnostic: diagnostic.level is not Level.ERROR)
     errors = sum(diagnostic.level is Level.ERROR for diagnostic in leveled)
-    return Report(
+    return CheckReport(
         diagnostics=tuple(leveled[:limit]),
         errors=errors,
         warnings=len(leveled) - errors,

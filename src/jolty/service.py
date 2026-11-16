@@ -232,7 +232,7 @@ class BuildResult(CommandResult):
     """What a build produced."""
 
     circuit: CircuitSummary
-    report: checks.Report | None = Field(
+    report: checks.CheckReport | None = Field(
         description="What the structural checks found; null when checking is off or "
         "the circuit does not elaborate."
     )
@@ -359,7 +359,7 @@ class SimulateResult(CommandResult):
     """What a simulation produced."""
 
     circuit: CircuitSummary
-    report: checks.Report | None = Field(
+    report: checks.CheckReport | None = Field(
         description="What the structural checks found; null when checking is off or "
         "the circuit does not elaborate."
     )
@@ -1159,7 +1159,7 @@ def _first_point(
     )
 
 
-def _marked(report: checks.Report | None) -> tuple[str, ...]:
+def _marked(report: checks.CheckReport | None) -> tuple[str, ...]:
     """The paths of the instances the listed diagnostics name."""
     if report is None:
         return ()
@@ -1190,7 +1190,7 @@ class CheckResult(CommandResult):
         description="Why the circuit does not elaborate, each naming an instance and "
         "the script line that placed it."
     )
-    report: checks.Report | None = Field(
+    report: checks.CheckReport | None = Field(
         description="What the structural checks found; null when the circuit does "
         "not elaborate."
     )
@@ -1334,7 +1334,7 @@ def _report(
     request: BuildRequest | SimulateRequest,
     chosen: dict[str, Level],
     settings: Settings,
-) -> checks.Report | None:
+) -> checks.CheckReport | None:
     """The report of the checks the runner made, when the request asks for it."""
     if not request.check or built.problems:
         return None
