@@ -530,8 +530,8 @@ def test_a_grounded_capacitors_value_reads_its_node_as_its_voltage() -> None:
     ("given", "refusal"),
     [
         ("c='1e-12 * v(x)'", "reads another voltage or a current"),
-        ("c='1e-12 * abs(v(p, n))'", "reads no integral"),
-        ("c='1e-12 * tanh(v(p, n) * v(p, n))'", "reads no integral"),
+        ("c='1e-12 * abs(v(p, n))'", "has no integral in closed form"),
+        ("c='1e-12 * tanh(v(p, n) * v(p, n))'", "has no integral in closed form"),
         ("q='1e-12 * v(p, n)' tc1=1e-3", "jolty reads no `TC1` of a capacitor"),
         ("q='1e-12 * v(p, n)' q='2'", "a capacitor's charge `Q` is one expression"),
     ],
@@ -1588,6 +1588,7 @@ def _every_model() -> list[devices.Device]:
     """A device of every model the engine holds, as a script places it."""
     rate = 1e6 / s
     return [
+        devices.behavioral_capacitor("1e-12 * tanh(v(positive, negative))"),
         devices.behavioral_current_source("1e-3 * v(a, b)"),
         devices.behavioral_voltage_source("2 * i(p)"),
         devices.bipolar_transistor(polarity="pnp", forward_early_voltage=50 * V),
@@ -1907,9 +1908,9 @@ def test_a_placements_draws_are_its_own_and_its_samples() -> None:
     assert _devices(first.component("matched"))["R1"][1]["resistance"] == 1e3
 
 
-def test_a_capacitor_whose_value_reads_a_voltage_is_refused() -> None:
-    read = library(".subckt bent a b\nC1 a b c='1p * (1 + abs(v(a, b)))'\n.ends")
-    with pytest.raises(SpiceError, match="capacitor whose value reads a voltage"):
+def test_an_inductor_whose_value_reads_a_voltage_is_refused() -> None:
+    read = library(".subckt bent a b\nL1 a b {1u * (1 + abs(v(a, b)))}\n.ends")
+    with pytest.raises(SpiceError, match="inductor whose value reads a voltage"):
         read.component("bent")
 
 

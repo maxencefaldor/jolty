@@ -2002,11 +2002,16 @@ def _charge(
     own = Voltage(*nodes)
     written = _of_own_voltage(_folded(translation, capacitance), nodes)
     found = None if written is None else integral(written, own)
-    if found is None:
-        reason = "another voltage or a current" if written is None else "no integral"
+    if written is None:
         message = (
-            f"jolty reads no capacitor whose value reads {reason}, as its charge, "
-            "the value's integral over its voltage, needs in closed form"
+            "jolty reads no capacitor whose value reads another voltage or a current, "
+            "which makes no charge"
+        )
+        raise statement.fail(message)
+    if found is None:
+        message = (
+            "jolty reads no capacitor whose value has no integral in closed form over "
+            "its voltage, which its charge is"
         )
         raise statement.fail(message)
     zero = evaluate(substituted(found, own, Number(0.0)), {})
