@@ -44,7 +44,7 @@ pub(super) struct Operating<R: Real> {
 /// The clamp of `b3ld.c` that keeps a factor `1 + x` from approaching zero: `1 + x` down
 /// to `x = −0.9`, then `(17 + 20x) / (0.8 + x)`'s reciprocal, its first form's value and
 /// slope continued.
-fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
+pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.9 {
         (x + 1.0).recip()
     } else {
@@ -54,7 +54,7 @@ fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
 
 /// `1 + x`, continued below `x = −0.9` by `(0.8 + x) / (17 + 20x)`, as `b3ld.c` keeps
 /// such a factor positive.
-fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
+pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
     let above = if inclusive {
         x.value.value() >= -0.9
     } else {
@@ -68,7 +68,7 @@ fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
 }
 
 /// `x`, continued below 0.1 by `(0.2 − x) / (3 − 20x)`.
-fn above_tenth<R: Real>(x: D<R>) -> D<R> {
+pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < 0.1 {
         (-x + 0.2) / (-(x * 20.0) + 3.0)
     } else {
@@ -77,7 +77,7 @@ fn above_tenth<R: Real>(x: D<R>) -> D<R> {
 }
 
 /// `1 + x`, continued below `x = −0.5` by `(1 + 3x) / (3 + 8x)`.
-fn above_half<R: Real>(x: D<R>) -> D<R> {
+pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.5 {
         x + 1.0
     } else {

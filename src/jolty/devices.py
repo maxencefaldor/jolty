@@ -2111,19 +2111,67 @@ def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension |
     Raises:
         ValueError: When BSIM3 has no parameter `name`.
     """
-    base, extent = name, DIMENSIONLESS
-    if name not in BSIM3_CARD:
-        prefix, base = name[:1], name[1:]
-        if prefix not in {"l", "w", "p"} or base not in BSIM3_BINNED:
-            message = f"BSIM3 has no parameter `{name}`"
-            raise ValueError(message)
-        extent = LENGTH**2 if prefix == "p" else LENGTH
-    dimension = BSIM3_CARD[base]
+    dimension, extent = _bsim_parameter("BSIM3", name, BSIM3_CARD, BSIM3_BINNED)
     if dimension == "uc":
         dimension = PER_VOLT if mobility_model == 3 else LENGTH / VOLTAGE**2  # noqa: PLR2004 - mobmod 3's body effect
+    return _extended(dimension, extent)
+
+
+def _bsim_parameter[T](
+    model: str, name: str, card: Mapping[str, T], binned: frozenset[str]
+) -> tuple[T, Dimension]:
+    """The entry in `card` of `model`'s parameter `name`, and its extent.
+
+    The entry is the parameter's own, or that of the parameter it is a length, width or
+    area dependence of; the extent is what its dimension is times, meters or square
+    meters for a dependence.
+
+    Raises:
+        ValueError: When `model` has no parameter `name`.
+    """
+    if name in card:
+        return card[name], DIMENSIONLESS
+    prefix, base = name[:1], name[1:]
+    if prefix not in {"l", "w", "p"} or base not in binned:
+        message = f"{model} has no parameter `{name}`"
+        raise ValueError(message)
+    return card[base], LENGTH**2 if prefix == "p" else LENGTH
+
+
+def _extended(dimension: Dimension | None, extent: Dimension) -> Dimension | None:
+    """`dimension` times `extent`, ``None`` for a plain number."""
     if dimension is None:
         return None if extent == DIMENSIONLESS else extent
     return dimension * extent
+
+
+def _card(
+    parameters: dict[str, JsonValue],
+    card: Mapping[str, Quantity | float],
+    dimension_of: Callable[[str], Dimension | None],
+) -> None:
+    """Adds each entry of a model's `card` to `parameters`, its dimension checked.
+
+    Raises:
+        DimensionError: When a parameter has the wrong dimension.
+        ValueError: When the model has no parameter of a name in `card`, or a value is
+            not finite.
+    """
+    for name, value in card.items():
+        dimension = dimension_of(name)
+        match value:
+            case Quantity() if dimension is not None:
+                parameters[name] = value.to(dimension, name)
+            case int() | float() if dimension is None:
+                parameters[name] = finite(value, name)
+            case _:
+                unit = (
+                    "a plain number"
+                    if dimension is None
+                    else f"a quantity in {dimension}"
+                )
+                message = f"{name} takes {unit}, not {value!r}"
+                raise DimensionError(message)
 
 
 def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selectors
@@ -2219,22 +2267,589 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
     )
     if check_parameters is not None:
         parameters["check_parameters"] = check_parameters
-    for name, value in (card or {}).items():
-        dimension = bsim3_dimension(name, mobility_model)
-        match value:
-            case Quantity() if dimension is not None:
-                parameters[name] = value.to(dimension, name)
-            case int() | float() if dimension is None:
-                parameters[name] = finite(value, name)
-            case _:
-                unit = (
-                    "a plain number"
-                    if dimension is None
-                    else f"a quantity in {dimension}"
-                )
-                message = f"{name} takes {unit}, not {value!r}"
-                raise DimensionError(message)
+    _card(parameters, card or {}, lambda name: bsim3_dimension(name, mobility_model))
     return device("bsim3", parameters)
+
+
+BSIM4_CARD: Final[Mapping[str, Dimension | None]] = {
+    "toxe": LENGTH,
+    "toxp": LENGTH,
+    "toxm": LENGTH,
+    "toxref": LENGTH,
+    "dtox": LENGTH,
+    "epsrox": None,
+    "cdsc": CAPACITANCE / LENGTH**2,
+    "cdscb": CAPACITANCE / (VOLTAGE * LENGTH**2),
+    "cdscd": CAPACITANCE / (VOLTAGE * LENGTH**2),
+    "cit": CAPACITANCE / LENGTH**2,
+    "nfactor": None,
+    "xj": LENGTH,
+    "vsat": LENGTH / TIME,
+    "at": LENGTH / TIME,
+    "a0": None,
+    "ags": PER_VOLT,
+    "a1": PER_VOLT,
+    "a2": None,
+    "keta": PER_VOLT,
+    "nsub": LENGTH**-3,
+    "ndep": LENGTH**-3,
+    "nsd": LENGTH**-3,
+    "phin": VOLTAGE,
+    "ngate": LENGTH**-3,
+    "gamma1": VOLTAGE**_HALF,
+    "gamma2": VOLTAGE**_HALF,
+    "vbx": VOLTAGE,
+    "vbm": VOLTAGE,
+    "xt": LENGTH,
+    "k1": VOLTAGE**_HALF,
+    "kt1": VOLTAGE,
+    "kt1l": VOLTAGE * LENGTH,
+    "kt2": None,
+    "k2": None,
+    "k3": None,
+    "k3b": PER_VOLT,
+    "w0": LENGTH,
+    "dvtp0": LENGTH,
+    "dvtp1": PER_VOLT,
+    "lpe0": LENGTH,
+    "lpeb": LENGTH,
+    "dvt0": None,
+    "dvt1": None,
+    "dvt2": PER_VOLT,
+    "dvt0w": LENGTH**-1,
+    "dvt1w": LENGTH**-1,
+    "dvt2w": PER_VOLT,
+    "drout": None,
+    "dsub": None,
+    "vth0": VOLTAGE,
+    "ua": LENGTH / VOLTAGE,
+    "ua1": LENGTH / VOLTAGE,
+    "ub": (LENGTH / VOLTAGE) ** 2,
+    "ub1": (LENGTH / VOLTAGE) ** 2,
+    "uc": LENGTH / VOLTAGE**2,
+    "uc1": LENGTH / VOLTAGE**2,
+    "ud": LENGTH**-2,
+    "ud1": LENGTH**-2,
+    "up": LENGTH**-2,
+    "lp": LENGTH,
+    "u0": MOBILITY,
+    "eu": None,
+    "ute": None,
+    "voff": VOLTAGE,
+    "minv": None,
+    "voffl": VOLTAGE * LENGTH,
+    "cgso": CAPACITANCE / LENGTH,
+    "cgdo": CAPACITANCE / LENGTH,
+    "cgbo": CAPACITANCE / LENGTH,
+    "delta": VOLTAGE,
+    "rsh": RESISTANCE,
+    "rdsw": RESISTANCE,
+    "rdswmin": RESISTANCE,
+    "rsw": RESISTANCE,
+    "rdw": RESISTANCE,
+    "rdwmin": RESISTANCE,
+    "rswmin": RESISTANCE,
+    "prwg": PER_VOLT,
+    "prwb": VOLTAGE**-_HALF,
+    "prt": RESISTANCE,
+    "eta0": None,
+    "etab": PER_VOLT,
+    "pclm": None,
+    "pdiblc1": None,
+    "pdiblc2": None,
+    "pdiblcb": PER_VOLT,
+    "fprout": VOLTAGE / LENGTH**_HALF,
+    "pdits": PER_VOLT,
+    "pditsl": LENGTH**-1,
+    "pditsd": PER_VOLT,
+    "pscbe1": VOLTAGE / LENGTH,
+    "pscbe2": LENGTH / VOLTAGE,
+    "pvag": None,
+    "jss": CURRENT / LENGTH**2,
+    "jsws": CURRENT / LENGTH,
+    "jswgs": CURRENT / LENGTH,
+    "pbs": VOLTAGE,
+    "njs": None,
+    "xtis": None,
+    "mjs": None,
+    "pbsws": VOLTAGE,
+    "mjsws": None,
+    "pbswgs": VOLTAGE,
+    "mjswgs": None,
+    "cjs": CAPACITANCE / LENGTH**2,
+    "cjsws": CAPACITANCE / LENGTH,
+    "cjswgs": CAPACITANCE / LENGTH,
+    "jsd": CURRENT / LENGTH**2,
+    "jswd": CURRENT / LENGTH,
+    "jswgd": CURRENT / LENGTH,
+    "pbd": VOLTAGE,
+    "njd": None,
+    "xtid": None,
+    "mjd": None,
+    "pbswd": VOLTAGE,
+    "mjswd": None,
+    "pbswgd": VOLTAGE,
+    "mjswgd": None,
+    "cjd": CAPACITANCE / LENGTH**2,
+    "cjswd": CAPACITANCE / LENGTH,
+    "cjswgd": CAPACITANCE / LENGTH,
+    "vfbcv": VOLTAGE,
+    "vfb": VOLTAGE,
+    "tpb": VOLTAGE / TEMPERATURE,
+    "tcj": TEMPERATURE**-1,
+    "tpbsw": VOLTAGE / TEMPERATURE,
+    "tcjsw": TEMPERATURE**-1,
+    "tpbswg": VOLTAGE / TEMPERATURE,
+    "tcjswg": TEMPERATURE**-1,
+    "acde": LENGTH / VOLTAGE,
+    "moin": None,
+    "noff": None,
+    "voffcv": VOLTAGE,
+    "dmcg": LENGTH,
+    "dmci": LENGTH,
+    "dmdg": LENGTH,
+    "dmcgt": LENGTH,
+    "xgw": LENGTH,
+    "xgl": LENGTH,
+    "rshg": RESISTANCE,
+    "ngcon": None,
+    "xrcrg1": None,
+    "xrcrg2": None,
+    "lambda": None,
+    "vtl": LENGTH / TIME,
+    "lc": LENGTH,
+    "xn": None,
+    "vfbsdoff": VOLTAGE,
+    "tvfbsdoff": TEMPERATURE**-1,
+    "tvoff": TEMPERATURE**-1,
+    "lintnoi": LENGTH,
+    "lint": LENGTH,
+    "ll": None,
+    "llc": None,
+    "lln": None,
+    "lw": None,
+    "lwc": None,
+    "lwn": None,
+    "lwl": None,
+    "lwlc": None,
+    "wr": None,
+    "wint": LENGTH,
+    "dwg": LENGTH / VOLTAGE,
+    "dwb": LENGTH / VOLTAGE**_HALF,
+    "wl": None,
+    "wlc": None,
+    "wln": None,
+    "ww": None,
+    "wwc": None,
+    "wwn": None,
+    "wwl": None,
+    "wwlc": None,
+    "b0": LENGTH,
+    "b1": LENGTH,
+    "cgsl": CAPACITANCE / LENGTH,
+    "cgdl": CAPACITANCE / LENGTH,
+    "ckappas": VOLTAGE,
+    "ckappad": VOLTAGE,
+    "cf": CAPACITANCE / LENGTH,
+    "clc": LENGTH,
+    "cle": None,
+    "dwc": LENGTH,
+    "dlc": LENGTH,
+    "xw": LENGTH,
+    "xl": LENGTH,
+    "dlcig": LENGTH,
+    "dwj": LENGTH,
+    "alpha0": LENGTH / VOLTAGE,
+    "alpha1": PER_VOLT,
+    "beta0": VOLTAGE,
+    "agidl": CONDUCTANCE,
+    "bgidl": VOLTAGE / LENGTH,
+    "cgidl": VOLTAGE**3,
+    "egidl": VOLTAGE,
+    "aigc": None,
+    "bigc": None,
+    "cigc": PER_VOLT,
+    "aigsd": None,
+    "bigsd": None,
+    "cigsd": PER_VOLT,
+    "aigbacc": None,
+    "bigbacc": None,
+    "cigbacc": PER_VOLT,
+    "aigbinv": None,
+    "bigbinv": None,
+    "cigbinv": PER_VOLT,
+    "nigc": None,
+    "nigbinv": None,
+    "nigbacc": None,
+    "ntox": None,
+    "eigbinv": VOLTAGE,
+    "pigcd": None,
+    "poxedge": None,
+    "ijthdfwd": CURRENT,
+    "ijthsfwd": CURRENT,
+    "ijthdrev": CURRENT,
+    "ijthsrev": CURRENT,
+    "xjbvd": None,
+    "xjbvs": None,
+    "bvd": VOLTAGE,
+    "bvs": VOLTAGE,
+    "jtss": CURRENT / LENGTH**2,
+    "jtsd": CURRENT / LENGTH**2,
+    "jtssws": CURRENT / LENGTH,
+    "jtsswd": CURRENT / LENGTH,
+    "jtsswgs": CURRENT / LENGTH,
+    "jtsswgd": CURRENT / LENGTH,
+    "njts": None,
+    "njtssw": None,
+    "njtsswg": None,
+    "xtss": None,
+    "xtsd": None,
+    "xtssws": None,
+    "xtsswd": None,
+    "xtsswgs": None,
+    "xtsswgd": None,
+    "tnjts": None,
+    "tnjtssw": None,
+    "tnjtsswg": None,
+    "vtss": VOLTAGE,
+    "vtsd": VOLTAGE,
+    "vtssws": VOLTAGE,
+    "vtsswd": VOLTAGE,
+    "vtsswgs": VOLTAGE,
+    "vtsswgd": VOLTAGE,
+    "gbmin": CONDUCTANCE,
+    "rbdb": RESISTANCE,
+    "rbpb": RESISTANCE,
+    "rbsb": RESISTANCE,
+    "rbps": RESISTANCE,
+    "rbpd": RESISTANCE,
+    "rbps0": RESISTANCE,
+    "rbpsl": None,
+    "rbpsw": None,
+    "rbpsnf": None,
+    "rbpd0": RESISTANCE,
+    "rbpdl": None,
+    "rbpdw": None,
+    "rbpdnf": None,
+    "rbpbx0": RESISTANCE,
+    "rbpbxl": None,
+    "rbpbxw": None,
+    "rbpbxnf": None,
+    "rbpby0": RESISTANCE,
+    "rbpbyl": None,
+    "rbpbyw": None,
+    "rbpbynf": None,
+    "rbsbx0": RESISTANCE,
+    "rbsby0": RESISTANCE,
+    "rbdbx0": RESISTANCE,
+    "rbdby0": RESISTANCE,
+    "rbsdbxl": None,
+    "rbsdbxw": None,
+    "rbsdbxnf": None,
+    "rbsdbyl": None,
+    "rbsdbyw": None,
+    "rbsdbynf": None,
+    "saref": LENGTH,
+    "sbref": LENGTH,
+    "wlod": LENGTH,
+    "ku0": LENGTH,
+    "kvsat": None,
+    "kvth0": VOLTAGE * LENGTH,
+    "tku0": None,
+    "llodku0": None,
+    "wlodku0": None,
+    "llodvth": None,
+    "wlodvth": None,
+    "lku0": None,
+    "wku0": None,
+    "pku0": None,
+    "lkvth0": None,
+    "wkvth0": None,
+    "pkvth0": None,
+    "stk2": LENGTH,
+    "lodk2": None,
+    "steta0": LENGTH,
+    "lodeta0": None,
+    "web": None,
+    "wec": None,
+    "kvth0we": VOLTAGE,
+    "k2we": None,
+    "ku0we": None,
+    "scref": LENGTH,
+    "noia": None,
+    "noib": None,
+    "noic": None,
+    "tnoia": None,
+    "tnoib": None,
+    "rnoia": None,
+    "rnoib": None,
+    "ntnoi": None,
+    "em": VOLTAGE / LENGTH,
+    "ef": None,
+    "af": None,
+    "kf": None,
+}
+"""The parameters of a BSIM4 card, by the BSIM4.5 manual's names, and the dimension of
+each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
+``lln``, or for one in the manual's own units, as the gate tunneling's ``aigc``."""
+
+BSIM4_BINNED: Final = frozenset(
+    {
+        "cdsc",
+        "cdscb",
+        "cdscd",
+        "cit",
+        "nfactor",
+        "xj",
+        "vsat",
+        "at",
+        "a0",
+        "ags",
+        "a1",
+        "a2",
+        "keta",
+        "nsub",
+        "ndep",
+        "nsd",
+        "phin",
+        "ngate",
+        "gamma1",
+        "gamma2",
+        "vbx",
+        "vbm",
+        "xt",
+        "vfb",
+        "k1",
+        "kt1",
+        "kt1l",
+        "k2",
+        "kt2",
+        "k3",
+        "k3b",
+        "w0",
+        "lpe0",
+        "lpeb",
+        "dvtp0",
+        "dvtp1",
+        "dvt0",
+        "dvt1",
+        "dvt2",
+        "dvt0w",
+        "dvt1w",
+        "dvt2w",
+        "drout",
+        "dsub",
+        "vth0",
+        "ua",
+        "ua1",
+        "ub",
+        "ub1",
+        "uc",
+        "uc1",
+        "ud",
+        "ud1",
+        "up",
+        "lp",
+        "eu",
+        "u0",
+        "ute",
+        "voff",
+        "tvoff",
+        "minv",
+        "fprout",
+        "pdits",
+        "pditsd",
+        "delta",
+        "rdsw",
+        "rdw",
+        "rsw",
+        "prwg",
+        "prwb",
+        "prt",
+        "eta0",
+        "etab",
+        "pclm",
+        "pdiblc1",
+        "pdiblc2",
+        "pdiblcb",
+        "pscbe1",
+        "pscbe2",
+        "pvag",
+        "wr",
+        "dwg",
+        "dwb",
+        "b0",
+        "b1",
+        "alpha0",
+        "alpha1",
+        "beta0",
+        "agidl",
+        "bgidl",
+        "cgidl",
+        "egidl",
+        "aigc",
+        "bigc",
+        "cigc",
+        "aigsd",
+        "bigsd",
+        "cigsd",
+        "aigbacc",
+        "bigbacc",
+        "cigbacc",
+        "aigbinv",
+        "bigbinv",
+        "cigbinv",
+        "nigc",
+        "nigbacc",
+        "nigbinv",
+        "ntox",
+        "eigbinv",
+        "pigcd",
+        "poxedge",
+        "xrcrg1",
+        "xrcrg2",
+        "lambda",
+        "vtl",
+        "xn",
+        "vfbsdoff",
+        "tvfbsdoff",
+        "cgsl",
+        "cgdl",
+        "ckappas",
+        "ckappad",
+        "cf",
+        "clc",
+        "cle",
+        "vfbcv",
+        "acde",
+        "moin",
+        "noff",
+        "voffcv",
+        "kvth0we",
+        "k2we",
+        "ku0we",
+    }
+)
+"""The BSIM4 parameters that bin: each has a length, a width and an area dependence,
+its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
+
+
+def bsim4_dimension(name: str) -> Dimension | None:
+    """The dimension of BSIM4's parameter `name`, ``None`` for a plain number.
+
+    A binned dependence's is its parameter's times meters, or square meters for the
+    area's.
+
+    Examples:
+        >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
+        (True, None)
+
+    Raises:
+        ValueError: When BSIM4 has no parameter `name`.
+    """
+    return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
+
+
+def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selectors
+    *,
+    channel: Literal["n", "p"] | None = None,
+    width: Quantity | None = None,
+    length: Quantity | None = None,
+    multiplier: float | None = None,
+    fingers: float | None = None,
+    drain_area: Quantity | None = None,
+    source_area: Quantity | None = None,
+    drain_perimeter: Quantity | None = None,
+    source_perimeter: Quantity | None = None,
+    drain_squares: float | None = None,
+    source_squares: float | None = None,
+    diffusion_edge_a: Quantity | None = None,
+    diffusion_edge_b: Quantity | None = None,
+    finger_spacing: Quantity | None = None,
+    threshold_adjustment: Quantity | None = None,
+    mobility_multiplier: float | None = None,
+    body_resistance_model: Literal[0, 1] | None = None,
+    perimeter_model: Literal[0, 1] | None = None,
+    check_parameters: bool | None = None,
+    charge_partition: float | None = None,
+    nominal_temperature: Quantity | None = None,
+    card: Mapping[str, Quantity | float] | None = None,
+) -> Device:
+    """A MOSFET in BSIM4.5 between ``drain``, ``gate``, ``source`` and ``bulk``.
+
+    It follows the BSIM4.5.0 model of short channels (X. Xi, M. Dunga and others, UC
+    Berkeley, 2005), SPICE's level 14 and 54 of version 4.5, as ngspice 47 runs it, in
+    the modes SKY130's and GF180MCU's cards select. The keywords before `card` are the
+    instance's: its drawn geometry and fingers, its diffusions, the distances that set
+    the stress of its length of diffusion, a shift of its threshold and a factor of its
+    mobility, then the card's body resistance network and perimeter model, whether its
+    sizes are checked and clamped, and the drain's share of the channel's charge. Each
+    entry of `card` is a parameter of the BSIM4.5 manual by its name, such as ``vth0``,
+    ``toxe`` or ``lvth0``, in SI units: a quantity where it has a dimension, as
+    [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number where it has
+    none. Parameters left out take ngspice's defaults.
+
+    The drain current folds in the threshold's short-channel, narrow-width, pocket and
+    barrier lowering terms, the poly gate's depletion, the mobility's degradation,
+    velocity saturation and overshoot, the source end's velocity limit, the output
+    resistance's terms and the source and drain resistance ``rdsw``; the impact
+    ionization's substrate current and the gate-induced leakages flow into the body,
+    and two diodes, with their trap-assisted tunneling, join it to the drain and the
+    source. A binned card's ``l``, ``w`` and ``p`` dependences are on the reciprocal of
+    the effective length, width and their product in meters, not micrometers, and
+    every parameter scales with the temperature as ngspice scales it. A sheet
+    resistance ``rsh`` adds an internal node behind the drain and the source where
+    ``drain_squares`` or ``source_squares`` is positive, and ``body_resistance_model``
+    1 three under the channel and the junctions. Its charges and its noise are not
+    modeled yet.
+
+    Examples:
+        >>> from jolty.units import V, nm, um
+        >>> transistor = bsim4(
+        ...     width=2 * um,
+        ...     length=0.15 * um,
+        ...     card={"toxe": 4 * nm, "vth0": 0.5 * V, "k2": -0.02},
+        ... )
+        >>> transistor.parameters["toxe"], transistor.parameters["k2"]
+        (4e-09, -0.02)
+
+    Raises:
+        DimensionError: When a parameter has the wrong dimension.
+        ValueError: When BSIM4 has no parameter of a name in `card`, or a value is not
+            finite.
+    """
+    parameters = _parameters(
+        {
+            "width": (width, LENGTH),
+            "length": (length, LENGTH),
+            "drain_area": (drain_area, LENGTH**2),
+            "source_area": (source_area, LENGTH**2),
+            "drain_perimeter": (drain_perimeter, LENGTH),
+            "source_perimeter": (source_perimeter, LENGTH),
+            "diffusion_edge_a": (diffusion_edge_a, LENGTH),
+            "diffusion_edge_b": (diffusion_edge_b, LENGTH),
+            "finger_spacing": (finger_spacing, LENGTH),
+            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
+        },
+        {
+            "multiplier": multiplier,
+            "fingers": fingers,
+            "drain_squares": drain_squares,
+            "source_squares": source_squares,
+            "mobility_multiplier": mobility_multiplier,
+            "charge_partition": charge_partition,
+        },
+        {
+            "channel": channel,
+            "body_resistance_model": body_resistance_model,
+            "perimeter_model": perimeter_model,
+        },
+    )
+    if check_parameters is not None:
+        parameters["check_parameters"] = check_parameters
+    _card(parameters, card or {}, bsim4_dimension)
+    return device("bsim4", parameters)
 
 
 type LogicLevel = Literal[0, 1] | None

@@ -41,6 +41,10 @@ const SIGNED: &[(&str, &[&str])] = &[
         "bsim3",
         &["vth0", "lvth0", "wvth0", "pvth0", "threshold_adjustment"],
     ),
+    (
+        "bsim4",
+        &["vth0", "lvth0", "wvth0", "pvth0", "threshold_adjustment"],
+    ),
     ("jfet", &[]),
     ("mosfet", &["threshold_voltage", "threshold_adjustment"]),
     ("vbic", &[]),
@@ -69,6 +73,9 @@ const SYMMETRIES: &[(&str, Option<Alike>)] = &[
     // under the swap by 1.4e-4 of the largest at `capmod` 0, 2 and 3, and by 1.5 times it at
     // `capmod` 1.
     ("bsim3", None),
+    // BSIM4's charges, written against the source as BSIM3's are, are not smooth through
+    // `vds = 0` either.
+    ("bsim4", None),
     (
         "jfet",
         Some((

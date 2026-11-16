@@ -32,6 +32,7 @@
 pub(crate) mod behavioral;
 pub(crate) mod bjt;
 pub(crate) mod bsim3;
+pub(crate) mod bsim4;
 pub(crate) mod connect;
 pub(crate) mod controlled;
 pub(crate) mod diode;

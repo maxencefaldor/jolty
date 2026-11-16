@@ -48,6 +48,11 @@ BIASES: dict[str, tuple[Bias, ...]] = {
         ("linear", {}, {"drain": 0.05, "gate": 2}),
         ("saturated", {}, {"drain": 3, "gate": 3}),
     ),
+    "bsim4": (
+        ("weak_inversion", {"vth0": 0.5}, {"drain": 1, "gate": 0.1}),
+        ("linear", {"vth0": 0.5}, {"drain": 0.05, "gate": 1.8}),
+        ("saturated", {"vth0": 0.5}, {"drain": 1.8, "gate": 1.8}),
+    ),
     "vdmos": (
         ("linear", {}, {"drain": 0.5, "gate": 6}),
         ("saturated", {}, {"drain": 10, "gate": 4}),
