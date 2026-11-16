@@ -6,7 +6,7 @@ its default direct solver, Sparse 1.3, or with KLU; and Xyce, serially or its pa
 build on MPI ranks. Each has one runner, `Jolty`, `Ngspice` or `Xyce`, built on
 `jolty.simulate`, `jolty.spice.ngspice` and `jolty.spice.xyce`, which names its
 simulator, states its version (`Runner`), and runs a deck in it the one way every
-suite does; each suite reads of the run what it measures: the speed suite its time,
+suite does; each suite reads of the run what it measures: the speed suite its times,
 the corpus its outcome, the matrix its cell, the precision suite its points.
 
 Beside them, what the suites write of a plan's analyses for another simulator, the
@@ -17,6 +17,7 @@ lines that say what went wrong (`trouble`).
 
 import math
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -82,13 +83,30 @@ class Jolty:
 
     def run(
         self, circuit: ir.Circuit, analyses: Mapping[str, Analysis], options: Options
-    ) -> dict[str, results.AnalysisResult]:
-        """Elaborates `circuit`, and runs the `analyses` on it in turn, by name."""
+    ) -> Analysed:
+        """Elaborates `circuit`, and runs the `analyses` on it in turn, by name.
+
+        Raises:
+            JoltyError: When the circuit does not elaborate, or an analysis fails.
+        """
         simulation = Simulation(circuit)
-        return {
-            name: simulation.run(analysis, options)
-            for name, analysis in analyses.items()
-        }
+        found: dict[str, results.AnalysisResult] = {}
+        analysis_seconds = 0.0
+        for name, analysis in analyses.items():
+            started = time.perf_counter()
+            found[name] = simulation.run(analysis, options)
+            analysis_seconds += time.perf_counter() - started
+        return Analysed(found, analysis_seconds)
+
+
+@dataclass(frozen=True, slots=True)
+class Analysed:
+    """What jolty found of a circuit's analyses, by name, and how long they took."""
+
+    found: dict[str, results.AnalysisResult]
+    analysis_seconds: float
+    """The wall time of the analyses alone, each ``Simulation.run``: the engine's work
+    and its results made in Python, the circuit's elaboration left out."""
 
 
 KLU: Final = ".options klu"

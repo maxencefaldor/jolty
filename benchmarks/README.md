@@ -5,6 +5,7 @@ Each suite runs a fixed set of fixtures, each a circuit with its analyses and wh
 
 ```sh
 scripts/bench                  # the speed suite: the fixtures timed in Rust and in Python, against a baseline's times
+scripts/bench --view matched   # every simulator's times at matched options; defaults and equal-error, the other two views
 scripts/bench --precision      # the precision suite: each simulator's error against exact answers, against its cost
 scripts/bench --robustness     # the corpus of hard circuits: each simulator's outcome on each, and its failure rate
 scripts/bench --coverage       # the coverage matrix: what each simulator offers, each cell a fixture that ran
@@ -12,7 +13,7 @@ scripts/bench --coverage       # the coverage matrix: what each simulator offers
 
 | Suite | What it measures | Its fixtures and results |
 | --- | --- | --- |
-| [Speed](speed/README.md) | The engine's time on circuits from a bipolar amplifier to a mesh of 90,000 nodes, in Rust and in Python, beside ngspice's and Xyce's | `speed/circuits`, `speed/plans`, `speed/results` |
+| [Speed](speed/README.md) | The engine's time on circuits from a bipolar amplifier to a mesh of 90,000 nodes, in Rust and in Python, and every simulator's in three views: at matched options, at its own defaults, and at equal error | `speed/circuits`, `speed/plans`, `speed/results` |
 | [Precision](precision/README.md) | The correct digits of each simulator's runs against exact answers, and what they cost | `precision/fixtures.py`, `precision/results`, outside the repository |
 | [Robustness](robustness/README.md) | Each simulator's outcome on hard circuits, jolty's own and third-party decks, and its failure rate | `robustness/own.py`, `robustness/decks.py`, `robustness/results`, outside the repository |
 | [Coverage](coverage/README.md) | What each simulator offers, each row of analyses, models, syntax and outputs a fixture that ran | `coverage/capabilities.py`, `coverage/coverage.json`, `coverage/matrix.md` |

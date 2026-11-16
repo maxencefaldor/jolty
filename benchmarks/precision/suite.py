@@ -279,7 +279,7 @@ def run_ngspice(
     given = [
         f"{SPICE_NAMES[name]}={value!r}" for name, value in setting.tolerances().items()
     ]
-    options = f".options {' '.join(given)}" if given else "*"
+    options = f".options {' '.join(given)}" if given else ngspice.NO_OPTIONS
     (raw,) = runner.runs(lines, (commands,), options=options)
     if raw.printed.count(runner.solver) < repeats:
         message = f"ngspice did not run {runner.simulator}'s solver:\n{raw.printed}"
@@ -432,19 +432,21 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
     repeats: int,
     output: Path,
     plot: Path | None,
-) -> None:
+) -> SuiteResults:
     """Runs the fixtures `names`, writes their results to `output`, and draws them.
 
     Every fixture runs without names, in the `SIMULATORS` without simulators named;
     given a results file to `plot`, it draws that file's diagrams and table instead.
+    Returns the results drawn.
 
     Raises:
         SystemExit: When a fixture named does not exist, or a simulator named does not
             run the suite.
     """
     if plot is not None:
-        draw(SuiteResults.model_validate(load(plot)), plot.with_suffix(""))
-        return
+        read = SuiteResults.model_validate(load(plot))
+        draw(read, plot.with_suffix(""))
+        return read
     every = fixtures()
     unknown = [name for name in names if name not in every]
     if unknown:
@@ -472,6 +474,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
         save(output, document)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
     draw(document, output.with_suffix(""))
+    return document
 
 
 def _versions() -> dict[str, str]:
@@ -756,3 +759,70 @@ def _default(
     scored = found.scored(output)
     digits = "" if scored is None else f"{scored.digits:.1f} digits, "
     return f"{digits}{duration(found.seconds)}"
+
+
+def equal_error_table(document: SuiteResults, digits: float | None) -> str:
+    """Each simulator's least engine time to the same correct digits, by output.
+
+    On each fixture's output, the target is `digits`, or the most that every
+    simulator that runs the fixture reached, at its defaults or along a sweep; each
+    simulator's time is that of its fastest run, of every setting, that reached the
+    target, beside the setting and the digits it reached. A simulator that reached it
+    in no run is marked with the most it reached, one whose runs all failed with what
+    its first failure said, and each with the runs that failed.
+    """
+    heads = ["fixture", "output", "target", *(str(each) for each in SIMULATORS)]
+    rows = [
+        "| " + " | ".join(heads) + " |",
+        "| " + " | ".join("---" for _ in heads) + " |",
+    ]
+    for name, measured in document.fixtures.items():
+        for output in measured.outputs:
+            scored = {
+                simulator: [
+                    (each, found)
+                    for each in measured.runs
+                    if each.simulator == simulator
+                    for found in [each.scored(output)]
+                    if found is not None
+                ]
+                for simulator in SIMULATORS
+            }
+            reached = [
+                max(f.digits for _, f in runs) for runs in scored.values() if runs
+            ]
+            target = digits if digits is not None else min(reached, default=math.nan)
+            cells = [f"`{name}`", f"{output.name}, {output.score}", f"{target:.1f}"]
+            cells += [
+                _equal_error(measured.runs, simulator, scored[simulator], target)
+                for simulator in SIMULATORS
+            ]
+            rows.append("| " + " | ".join(cells) + " |")
+    return "\n".join(rows)
+
+
+def _equal_error(
+    runs: Sequence[FixtureRun],
+    simulator: Simulator,
+    scored: Sequence[tuple[FixtureRun, Scored]],
+    target: float,
+) -> str:
+    """A simulator's fastest run to `target` digits of its `scored` runs, as a cell."""
+    own = [each for each in runs if each.simulator == simulator]
+    failed = [each for each in own if each.status == "failed"]
+    if not own or all(each.status == "unsupported" for each in own):
+        return "unsupported" if own else ""
+    if not scored:
+        return f"failed: {failed[0].message}" if failed else ""
+    noted = f"; {len(failed)} failed" if failed else ""
+    enough = [(each, found) for each, found in scored if found.digits >= target]
+    if not enough:
+        most = max(found.digits for _, found in scored)
+        return f"never: {most:.1f} digits at most{noted}"
+    each, found = min(enough, key=lambda pair: pair[0].seconds)
+    setting = (
+        each.sweep
+        if each.sweep == "defaults"
+        else f"{each.sweep} {each.relative_tolerance:.3g}"
+    )
+    return f"{duration(each.seconds)}, {setting}, {found.digits:.1f} digits{noted}"

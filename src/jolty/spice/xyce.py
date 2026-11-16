@@ -279,7 +279,8 @@ def execute(
 
     Raises:
         JoltyError: When Xyce is not installed and no `launch` is given.
-        XyceTimeoutError: When it runs for more than `timeout` seconds.
+        XyceTimeoutError: When it runs for more than `timeout` seconds, with what it
+            had printed.
     """
     if launch is None:
         if EXECUTABLE is None:
@@ -299,8 +300,13 @@ def execute(
                 timeout=timeout,
                 cwd=directory,
             )
-        except subprocess.TimeoutExpired:
-            message = f"Xyce ran for more than {timeout:g} s"
+        except subprocess.TimeoutExpired as expired:
+            # The output so far: bytes on POSIX, text where communicate gathered it.
+            printed = "".join(
+                part.decode(errors="replace") if isinstance(part, bytes) else part or ""
+                for part in (expired.stdout, expired.stderr)
+            )
+            message = f"Xyce ran for more than {timeout:g} s:\n{printed}"
             raise XyceTimeoutError(message) from None
         seconds = time.perf_counter() - started
         values = directory / VALUES

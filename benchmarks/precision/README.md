@@ -13,6 +13,7 @@ scripts/bench --precision --simulator jolty     # one simulator, or several
 scripts/bench --precision --sweeps reltol       # one sweep of the tolerances, or both
 scripts/bench --precision --repeats 9           # the runs each setting's time is the median of
 scripts/bench --precision --plot RESULTS        # the diagrams and table of a results file
+scripts/bench --view equal-error                # each simulator's least time to the same digits
 ```
 
 The results go to `results/<commit>.json`, `-dirty` for a working tree with changes to tracked files, and a later run on the same commit adds its fixtures to the file, so that the suite can run in pieces.
@@ -103,6 +104,7 @@ At their defaults, the simulators reach the same digits on the RC steps and the 
 
 Few digits at defaults: on the RC steps the longest step, a fiftieth of the run, holds both simulators at 3.8 digits whatever their tolerances ask, and on the RLC and the tank both error controls accept about nine steps a period, which misses the tank's frequency by 5%.
 `results/<commit>/defaults.md` holds the table of every fixture.
+`scripts/bench --view equal-error` runs the suite and writes `results/<commit>/equal-error.md` beside it, each simulator's least time to the same correct digits of each output, the speed suite's view at equal error ([`../speed/README.md`](../speed/README.md)).
 
 What the sweeps found:
 

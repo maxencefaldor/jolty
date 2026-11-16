@@ -2950,3 +2950,17 @@ def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
         :, simulation.unknowns.index(results.Unknown("X1/dt", "temperature"))
     ]
     assert rise.max() > 25.0  # Most of its 29 K.
+
+
+def test_a_run_states_its_time_and_stops_at_its_timeout() -> None:
+    """The results of a run of ngspice carry its time, and a timeout stops it.
+
+    A transient whose longest step is a picosecond takes ten million steps over
+    10 µs, far longer than a hundredth of a second.
+    """
+    lines = ["rc", "R1 in out 1k", "C1 out 0 1n", "V1 in 0 PULSE(0 1 0 1n 1n 1u 2u)"]
+    (point,) = ngspice.runs(lines, ["op"])
+    assert point.seconds is not None
+    assert point.seconds > 0
+    with pytest.raises(ngspice.NgspiceTimeoutError, match=r"more than 0\.01 s"):
+        ngspice.runs(lines, ["tran 1p 10u"], timeout=0.01)

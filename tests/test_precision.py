@@ -210,3 +210,73 @@ def test_both_simulators_run_a_fixture_and_score_it() -> None:
         # time constant, whose error is at most about (h/τ)²/12 = 8e-4 of the 1 V
         # swing, and far above the exact answer's rounding.
         assert 3 < mixed.digits < mixed.limit
+
+
+def test_equal_error_takes_each_simulator_s_fastest_run_to_the_target() -> None:
+    from fixtures import ScoredOutput  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        FixtureResults,
+        FixtureRun,
+        Scored,
+        Simulator,
+        SuiteResults,
+        equal_error_table,
+    )
+
+    output = ScoredOutput("v(out)", "mixed", 1.0, "V")
+
+    def scored(
+        simulator: Simulator, tolerance: float, digits: float, seconds: float
+    ) -> FixtureRun:
+        return FixtureRun(
+            simulator=simulator,
+            sweep="reltol",
+            relative_tolerance=tolerance,
+            load=1.0,
+            status="scored",
+            seconds=seconds,
+            scores={"v(out)": {"mixed": Scored(digits=digits, limit=15.0, at=0.0)}},
+        )
+
+    runs = [
+        scored(Simulator.JOLTY, 1e-3, 3.0, 1e-4),
+        scored(Simulator.JOLTY, 1e-5, 5.5, 3e-4),
+        scored(Simulator.JOLTY, 1e-7, 6.0, 9e-4),
+        scored(Simulator.NGSPICE_SPARSE, 1e-3, 4.2, 2e-4),
+        scored(Simulator.NGSPICE_SPARSE, 1e-5, 4.0, 1e-4),
+        FixtureRun(
+            simulator=Simulator.NGSPICE_SPARSE,
+            sweep="reltol",
+            relative_tolerance=1e-7,
+            load=1.0,
+            status="failed",
+            message="timestep too small",
+        ),
+        FixtureRun(
+            simulator=Simulator.NGSPICE_KLU,
+            sweep="defaults",
+            relative_tolerance=1e-3,
+            load=1.0,
+            status="unsupported",
+        ),
+    ]
+    document = SuiteResults(
+        commit="0",
+        machine={},
+        versions={},
+        repeats=1,
+        fixtures={
+            "rc": FixtureResults(
+                describes="", reference="", outputs=[output], seconds=0.0, runs=runs
+            )
+        },
+    )
+    # The target is the most digits every simulator that ran reached: ngspice's 4.2.
+    *_, row = equal_error_table(document, None).splitlines()
+    assert row == (
+        "| `rc` | v(out), mixed | 4.2 | 300 µs, reltol 1e-05, 5.5 digits "
+        "| 200 µs, reltol 0.001, 4.2 digits; 1 failed | unsupported |"
+    )
+    # A target beyond a simulator's reach marks it with the most it reached.
+    *_, row = equal_error_table(document, 5.0).splitlines()
+    assert "| never: 4.2 digits at most; 1 failed |" in row

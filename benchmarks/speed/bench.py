@@ -17,8 +17,10 @@ Usage::
     scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
     scripts/bench --scale             the large fixtures, each run once in Python
     scripts/bench --scale --largest   and the 50,000 inverters' chain on each too
-    scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
-    scripts/bench --xyce              Xyce on them, and how far it lies from jolty
+    scripts/bench --view matched      every simulator on the fixtures, options matched
+    scripts/bench --view defaults     every simulator on them, each at its defaults
+    scripts/bench --view equal-error  every simulator's least time to equal error, on
+                                      the precision suite's fixtures
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
     scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
     scripts/bench --robustness        the hard circuits' corpus, in every simulator
@@ -37,11 +39,17 @@ every threshold at its break-even, and prints the speed-ups and its results'
 fingerprint, which must be the same on every number of threads; it runs the 50,000
 inverters' chain so only with ``--largest``, and else once with the defaults.
 
-``--xyce`` runs Xyce instead, serially at its own defaults, on each fixture's netlist in
-Xyce's dialect, each analysis in an Xyce of its own, and records its time end to end,
-its analyses' own time as it reports it, and how far the voltages it prints lie from
-jolty's; with ``--scale``, Xyce's parallel build, ``--xyce-mpi``, runs each large
-fixture on 1, 2, 4, 8 and 16 MPI ranks too.
+``--view`` times every simulator instead, the owner's three views of them: jolty,
+ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or those ``--simulator``
+names. ``matched`` runs each at options as tight as jolty's tightest,
+``jolty.plan.TIGHT``, ``jolty.spice.ngspice.OPTIONS`` and ``jolty.spice.xyce.OPTIONS``,
+and ``defaults`` each at its own; each records its time end to end and in its analyses,
+as it reports them, and how far the voltages it found lie from jolty's at the matched
+options, or what stopped it, and prints the view's table, a row per fixture.
+With ``--scale``, Xyce's parallel build, ``--xyce-mpi``, runs each large fixture on 1,
+2, 4, 8 and 16 MPI ranks too. ``equal-error`` runs the precision suite, as
+``--precision`` does, and prints each simulator's least time to the same correct
+digits of each fixture's exact answer.
 
 ``--break-even`` measures instead from which size of circuit setting one threshold of
 ``Parallelism`` makes one run faster than running it serially, on 2, 4, 8 threads and
@@ -75,6 +83,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -87,6 +96,7 @@ from types import ModuleType
 from typing import Final
 
 import numpy as np
+import numpy.typing as npt
 
 # The suites' measuring helpers and runners lie beside the suites' directories.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -102,13 +112,25 @@ from measuring import (
     results_directory,
     results_path,
     save,
+    shown,
 )
 from pydantic import Field
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
-from simulators import Jolty, Ngspice, Simulator, Xyce, command, netlist
+from simulators import (
+    RUSAGE,
+    Jolty,
+    Ngspice,
+    Simulator,
+    Xyce,
+    command,
+    netlist,
+    runner,
+    trouble,
+)
 
 from jolty import circuit, cli, ir, plan, results, simulate
-from jolty.plan import Ac, MonteCarlo, Options, Parallelism, Plan
+from jolty.errors import JoltyError
+from jolty.plan import Ac, Analysis, MonteCarlo, Options, Parallelism, Plan, Transient
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice, xyce
 from jolty.unknowns import Unknown
@@ -281,7 +303,7 @@ def run(
     The options are the plan's unless given. Returns each analysis's result, by name.
     """
     chosen = loaded.plan.options if options is None else options
-    return Jolty().run(loaded.circuit, loaded.plan.analyses, chosen)
+    return Jolty().run(loaded.circuit, loaded.plan.analyses, chosen).found
 
 
 def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
@@ -583,59 +605,42 @@ def commands(loaded: Loaded) -> list[str]:
     ]
 
 
-def run_ngspice(name: str, lines: Sequence[str], control: Sequence[str]) -> float:
-    """Runs the commands `control` on the fixture `name`'s netlist `lines` in ngspice.
+class View(StrEnum):
+    """A view of every simulator's times, the owner's three, which ``--view`` gives.
 
-    Returns its time from its start to its exit, as long as it takes.
-
-    Raises:
-        SystemExit: When ngspice fails, or finishes fewer analyses than it was given.
+    Every simulator at matched options, each as tight as jolty's tightest; each at its
+    own defaults; and each at equal measured error, its least time to the same correct
+    digits of the precision suite's exact answers.
     """
-    executed = Ngspice().execute(lines, control, timeout=None)
-    if executed.code != 0 or executed.printed.count("No. of Data Rows") != len(control):
-        message = f"ngspice did not run every analysis of {name}:\n{executed.printed}"
-        raise SystemExit(message)
-    return executed.seconds
+
+    MATCHED = "matched"
+    DEFAULTS = "defaults"
+    EQUAL_ERROR = "equal-error"
 
 
-def ngspice_timings(
-    names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool
-) -> dict[str, Timing]:
-    """The times of ngspice, from its start to its exit, on the fixtures `names`.
-
-    Each runs once if at `scale`; a Monte Carlo fixture is not timed.
-
-    Raises:
-        SystemExit: When ngspice is not installed.
-    """
-    runner = Ngspice()
-    if runner.version() is None:
-        message = "ngspice is not installed"
-        raise SystemExit(message)
-    timings: dict[str, Timing] = {}
-    for name in names:
-        loaded = load_fixture(found[name])
-        if loaded.plan.monte_carlo is not None:
-            continue
-        print(f"timing {name} in ngspice", flush=True)
-        lines = netlist(loaded.circuit, loaded.plan.analyses.values())
-        work = functools.partial(run_ngspice, name, lines, commands(loaded))
-        timings[f"{runner.simulator}/{name}"] = timed(work, once=scale)
-    return timings
-
+VIEWED: Final = (
+    Simulator.JOLTY,
+    Simulator.NGSPICE_SPARSE,
+    Simulator.NGSPICE_KLU,
+    Simulator.XYCE_SERIAL,
+)
+"""The simulators a view of the fixtures' times runs, each that is installed."""
 
 RANKS: Final = (1, 2, 4, 8, 16)
-"""The MPI ranks ``--xyce --scale`` runs Xyce's parallel build on: as far as the 16
-cores of `dogwood`, the machine Xyce is built on, which the lab shares."""
+"""The MPI ranks a view with ``--scale`` runs Xyce's parallel build on: as far as the
+16 cores of `dogwood`, the machine Xyce is built on, which the lab shares."""
 
 PRINTED: Final = 2
-"""The nets at each end of a fixture's top that Xyce prints, so that what it writes
-costs little beside what it solves, as other simulators' comparisons turn output off:
-the first two and the last two."""
+"""The nets at each end of a fixture's top that ngspice saves and Xyce prints, so that
+what they write costs little beside what they solve, as other simulators' comparisons
+turn output off: the first two and the last two."""
+
+PROGRESS: Final = re.compile(r"Percent complete: (\S+) %")
+"""What Xyce prints of how far its transient has come."""
 
 
 def printed(loaded: Loaded) -> list[str]:
-    """The nets of the fixture's top Xyce prints: `PRINTED` at each end, in order."""
+    """The nets of the fixture's top the views read: `PRINTED` at each end, in order."""
     top = loaded.circuit.components[loaded.circuit.top]
     ground = {port.name for port in top.ports if port.role is ir.Role.GROUND}
     nets = list(
@@ -649,116 +654,322 @@ def printed(loaded: Loaded) -> list[str]:
     return list(dict.fromkeys(nets[:PRINTED] + nets[-PRINTED:]))
 
 
-def deviation(
-    circuit: ir.Circuit,
-    found: results.AnalysisResult,
-    spice: xyce.Result,
-    nets: Sequence[str],
-) -> float:
-    """How far Xyce's voltages of `nets` lie from jolty's, as a fraction of their size.
+def tightened(options: Options) -> Options:
+    """`options` as tight as `jolty.plan.TIGHT`, as the matched view runs jolty."""
+    return dataclasses.replace(
+        options, **{name: getattr(plan.TIGHT, name) for name in plan.TIGHT.to_json()}
+    )
 
-    The largest difference over the nets, each over the largest magnitude of jolty's
-    voltage, or in a transient its swing, jolty's waveform interpolated at Xyce's
-    times.
+
+def stated(view: View, runner: Jolty | Ngspice | Xyce) -> str:
+    """The options `runner`'s simulator runs the fixtures at in `view`, as stated.
+
+    At matched options, jolty's are `jolty.plan.TIGHT`'s, ngspice's
+    `jolty.spice.ngspice.OPTIONS` and Xyce's `jolty.spice.xyce.OPTIONS`; ngspice with
+    KLU adds its solver's line in either view.
+    """
+    matched = view is View.MATCHED
+    match runner:
+        case Jolty():
+            tight = ", ".join(f"{n}={v!r}" for n, v in plan.TIGHT.to_json().items())
+            lines = [f"jolty.plan.TIGHT: {tight}"] if matched else []
+        case Ngspice():
+            lines = [*([ngspice.OPTIONS] if matched else []), *runner.options]
+        case Xyce():
+            lines = list(xyce.OPTIONS) if matched else []
+    return "; ".join(f"`{line}`" for line in lines) or "its defaults"
+
+
+@dataclass(frozen=True, slots=True)
+class Voltages:
+    """The voltages of the nets a view reads, as one analysis found them.
+
+    At the points it chose: a transient's times or a response's frequencies, and none
+    at an operating point.
+    """
+
+    points: npt.NDArray[np.float64] | None
+    nets: dict[str, npt.NDArray[np.complex128]]
+
+
+def jolty_voltages(found: results.AnalysisResult, nets: Sequence[str]) -> Voltages:
+    """The voltages of `nets` jolty `found`.
 
     Raises:
         TypeError: When the result is of an analysis other than an operating point, a
             small-signal response or a transient.
     """
-    worst = 0.0
-    for net in nets:
-        name = export.vector(circuit, Unknown(net, "voltage"), dialect=export.XYCE)
-        theirs = spice.vectors[name]
-        match found:
-            case results.TransientResult():
-                waveform = found.voltage(net)
-                ours = np.interp(spice.real("time"), found.times, waveform)
-                scale = float(np.ptp(waveform))
-                difference = np.abs(ours - theirs.real)
-            case results.AcResult():
-                ours = found.voltage(net)
-                scale = float(np.abs(ours).max())
-                difference = np.abs(ours - theirs)
-            case results.OperatingPointResult():
-                level = found.voltage(net)
-                scale = abs(level)
-                difference = np.abs(level - theirs[:1].real)
-            case _:
-                message = f"no fixture's {type(found).__name__} is compared with Xyce"
-                raise TypeError(message)
-        worst = max(worst, float(difference.max()) / (scale or 1.0))
-    return worst
-
-
-def run_xyce(
-    loaded: Loaded,
-    jolty: Mapping[str, results.AnalysisResult],
-    runner: Xyce,
-    *,
-    once: bool,
-) -> tuple[Timing, Timing, dict[str, float]]:
-    """Xyce's runs of the fixture by `runner`, and its deviation from jolty's results.
-
-    Each analysis runs in an Xyce of its own, at Xyce's defaults, printing `printed`;
-    a run of the fixture is its analyses' in turn, each timed from its process's start
-    to its exit, as ngspice's are, `repeated` as every fixture is, or `once`. Returns
-    the median time end to end, and of its analyses as Xyce's own report gives it.
-    """
-    lines = netlist(loaded.circuit, loaded.plan.analyses.values(), dialect=export.XYCE)
-    nets = printed(loaded)
-    vectors = [
-        export.vector(loaded.circuit, Unknown(net, "voltage"), dialect=export.XYCE)
-        for net in nets
-    ]
-    statements = {
-        name: f".{command(analysis, loaded.circuit)}"
-        for name, analysis in loaded.plan.analyses.items()
-    }
-    deviations: dict[str, float] = {}
-
-    def each() -> tuple[float, float]:
-        seconds = analysis_seconds = 0.0
-        for name, statement in statements.items():
-            found = runner.run(
-                lines, statement, printed=vectors, options=(), timeout=None
-            )
-            seconds += found.seconds
-            analysis_seconds += found.analysis_seconds
-            deviations[name] = deviation(loaded.circuit, jolty[name], found, nets)
-        return seconds, analysis_seconds
-
-    found, load = repeated(each, once=once)
-    walls = [seconds for seconds, _ in found]
-    analyses = [analysis_seconds for _, analysis_seconds in found]
-    return (
-        Timing(statistics.median(walls), len(found), load),
-        Timing(statistics.median(analyses), len(found), load),
-        deviations,
+    match found:
+        case results.TransientResult():
+            points = found.times
+        case results.AcResult():
+            points = found.frequencies
+        case results.OperatingPointResult():
+            points = None
+        case _:
+            message = f"no fixture's {type(found).__name__} is viewed"
+            raise TypeError(message)
+    return Voltages(
+        points,
+        {net: np.atleast_1d(np.asarray(found.voltage(net), complex)) for net in nets},
     )
 
 
-def xyce_timings(
+def spice_voltages(
+    found: ngspice.Result | xyce.Result,
+    analysis: Analysis,
+    vectors: Mapping[str, str],
+) -> Voltages:
+    """The voltages ngspice or Xyce `found` of `analysis`, each net by its vector."""
+    match analysis:
+        case Transient():
+            points = found.real("time")
+        case Ac():
+            points = found.real("frequency")
+        case _:
+            points = None
+    return Voltages(
+        points,
+        {
+            net: found.vectors[name][: None if points is not None else 1]
+            for net, name in vectors.items()
+        },
+    )
+
+
+def deviations(
+    analyses: Mapping[str, Analysis],
+    reference: Mapping[str, Voltages],
+    found: Mapping[str, Voltages],
+) -> dict[str, float]:
+    """How far each analysis `found` lies from the `reference`, as a fraction of it.
+
+    For each analysis, the largest difference over the nets, each over the largest
+    magnitude of the reference's voltage or, in a transient, its swing, the reference
+    interpolated at the points found.
+    """
+    worst: dict[str, float] = {}
+    for name, voltages in found.items():
+        expected = reference[name]
+        largest = 0.0
+        for net, values in voltages.nets.items():
+            ours = expected.nets[net]
+            there = (
+                ours
+                if voltages.points is None or expected.points is None
+                else np.interp(voltages.points, expected.points, ours)
+            )
+            swing = isinstance(analyses[name], Transient)
+            scale = float(np.ptp(ours.real) if swing else np.abs(ours).max())
+            largest = max(largest, float(np.abs(values - there).max()) / (scale or 1.0))
+        worst[name] = largest
+    return worst
+
+
+@dataclass(frozen=True, slots=True)
+class Ran:
+    """One run of a fixture's analyses in one simulator, and the voltages it found."""
+
+    seconds: float
+    """Its time end to end: jolty's elaboration and analyses, their results made in
+    Python, or each process of another simulator from its start to its exit, summed."""
+    analysis_seconds: float
+    """Its analyses' own time: jolty's ``Simulation.run``, or what the other simulator
+    reports of them, summed."""
+    voltages: dict[str, Voltages]
+    """By analysis."""
+
+
+def ran(
+    view: View,
+    runner: Jolty | Ngspice | Xyce,
+    loaded: Loaded,
+    nets: Sequence[str],
+    timeout: float,
+) -> Ran:
+    """One run of the fixture's analyses by `runner`, at `view`'s options.
+
+    jolty runs in this process; ngspice runs every analysis in one process, saving the
+    `nets` alone, and Xyce each in a process of its own, printing them; each for at most
+    `timeout` seconds.
+
+    Raises:
+        JoltyError: When the run fails, runs out of time, or another simulator cannot
+            read the fixture's netlist.
+    """
+    matched = view is View.MATCHED
+    analyses = loaded.plan.analyses
+    match runner:
+        case Jolty():
+            options = loaded.plan.options
+            started = time.perf_counter()
+            analysed = runner.run(
+                loaded.circuit, analyses, tightened(options) if matched else options
+            )
+            seconds = time.perf_counter() - started
+            voltages = {
+                name: jolty_voltages(found, nets)
+                for name, found in analysed.found.items()
+            }
+            return Ran(seconds, analysed.analysis_seconds, voltages)
+        case Ngspice():
+            vectors = {
+                net: export.vector(loaded.circuit, Unknown(net, "voltage"))
+                for net in nets
+            }
+            lines = netlist(loaded.circuit, analyses.values())
+            lines.append(f".save {' '.join(vectors.values())}")
+            *others, last = commands(loaded)
+            found = runner.runs(
+                lines,
+                [*others, f"{last}\nrusage all"],
+                options=ngspice.OPTIONS if matched else ngspice.NO_OPTIONS,
+                timeout=timeout,
+            )
+            printed, seconds = found[-1].printed, found[-1].seconds
+            stated = RUSAGE["analysis_seconds"].search(printed)
+            if runner.solver not in printed or stated is None or seconds is None:
+                message = f"ngspice ran another solver, or stated no time:\n{printed}"
+                raise JoltyError(message)
+            voltages = {
+                name: spice_voltages(each, analysis, vectors)
+                for (name, analysis), each in zip(analyses.items(), found, strict=True)
+            }
+            return Ran(seconds, float(stated.group(1)), voltages)
+        case Xyce():
+            vectors = {
+                net: export.vector(
+                    loaded.circuit, Unknown(net, "voltage"), dialect=export.XYCE
+                )
+                for net in nets
+            }
+            lines = netlist(loaded.circuit, analyses.values(), dialect=export.XYCE)
+            seconds = analysis_seconds = 0.0
+            voltages = {}
+            for name, analysis in analyses.items():
+                each = runner.run(
+                    lines,
+                    f".{command(analysis, loaded.circuit)}",
+                    printed=list(vectors.values()),
+                    options=xyce.OPTIONS if matched else (),
+                    timeout=timeout,
+                )
+                seconds += each.seconds
+                analysis_seconds += each.analysis_seconds
+                voltages[name] = spice_voltages(each, analysis, vectors)
+            return Ran(seconds, analysis_seconds, voltages)
+
+
+@dataclass(frozen=True, slots=True)
+class Cell:
+    """A fixture's runs in one simulator in one view, as its table shows them.
+
+    Their median times end to end and in their analyses, and how far each analysis
+    lay from the reference, jolty at the matched options; or what stopped them.
+    """
+
+    options: str
+    """The options the simulator ran at, as `stated`."""
+    load: float
+    """The load average over the last minute as the runs began."""
+    load_after: float
+    """The same as they ended."""
+    seconds: Timing | None = None
+    analysis_seconds: Timing | None = None
+    deviations: dict[str, float] = dataclasses.field(default_factory=dict)
+    failed: str | None = None
+    """What stopped the runs, if anything did."""
+
+
+def stopped(error: JoltyError) -> str:
+    """What stopped a run, as a view's table says: what went wrong, and how far.
+
+    The first line of the error, then each line of what the simulator printed that
+    says what went wrong, and the last of Xyce's reports of how far its transient
+    came.
+    """
+    message = str(error)
+    first, *rest = message.splitlines() or [""]
+    said = [first.removesuffix(":"), *filter(None, [trouble("\n".join(rest))])]
+    reached = PROGRESS.findall(message)
+    if reached:
+        said.append(f"{float(reached[-1]):.3g}% of its transient done")
+    return "; ".join(said)
+
+
+def cell(
+    options: str,
+    work: Callable[[], Ran],
+    analyses: Mapping[str, Analysis],
+    reference: Mapping[str, Voltages] | None,
+    *,
+    once: bool,
+) -> Cell:
+    """The runs of `work` at the `options` stated, `repeated` or `once`, as a `Cell`.
+
+    The first run that fails stops them, and the cell says what stopped it; else each
+    of the `analyses` the first run found is compared with the `reference`, if there
+    is one.
+    """
+    load = load_average()
+    try:
+        found, _ = repeated(work, once=once)
+    except JoltyError as error:
+        return Cell(options, load, load_average(), failed=stopped(error))
+    return Cell(
+        options,
+        load,
+        load_average(),
+        Timing(statistics.median(each.seconds for each in found), len(found), load),
+        Timing(
+            statistics.median(each.analysis_seconds for each in found),
+            len(found),
+            load,
+        ),
+        {} if reference is None else deviations(analyses, reference, found[0].voltages),
+    )
+
+
+def view_timings(  # noqa: PLR0913 - the view, its fixtures, and how they run
+    view: View,
     names: Iterable[str],
     found: Mapping[str, Fixture],
+    simulators: Sequence[Simulator],
     *,
     parallel: Path | None,
     ranks: Sequence[int],
     scale: bool,
-) -> tuple[dict[str, Timing], dict[str, dict[str, object]]]:
-    """Xyce's times on the fixtures `names`, and how far each run lay from jolty's.
+    timeout: float,
+) -> dict[str, dict[str, Cell]]:
+    """Each fixture of `names` in each of `simulators` in `view`, by configuration.
 
-    Each runs once if at `scale`, serially and, given Xyce's `parallel` build, on each
-    of `ranks` MPI ranks; a Monte Carlo fixture is not timed.
+    Each simulator named or, without names, each of `VIEWED` installed, and given
+    Xyce's `parallel` build at `scale`, it on each of `ranks` MPI ranks; each runs a
+    fixture `repeated`, or once at `scale`, for at most `timeout` seconds a run; a
+    Monte Carlo fixture is not viewed. Each fixture runs first in jolty at the matched
+    options, the reference every run's voltages are compared with, unless it fails.
 
     Raises:
-        SystemExit: When Xyce is not installed.
+        SystemExit: When a simulator named is not installed or not one a view runs.
     """
-    if xyce.EXECUTABLE is None:
-        message = "Xyce is not installed"
+    chosen = simulators or [
+        each for each in VIEWED if runner(each).version() is not None
+    ]
+    strange = [each for each in chosen if each not in VIEWED]
+    missing = [
+        each
+        for each in chosen
+        if each not in strange and runner(each).version() is None
+    ]
+    if strange or missing:
+        message = (
+            f"a view runs {', '.join(VIEWED)}, each that is installed, "
+            f"not {', '.join([*strange, *missing])}"
+        )
         raise SystemExit(message)
-    timings: dict[str, Timing] = {}
-    agreements: dict[str, dict[str, object]] = {}
-    runners = {str(Simulator.XYCE_SERIAL): Xyce()}
+    runners: dict[str, Jolty | Ngspice | Xyce] = {
+        str(each): runner(each) for each in chosen
+    }
     if parallel is not None and scale:
         runners |= {
             f"{Simulator.XYCE_MPI}/{count} ranks": Xyce.from_parallel_build(
@@ -766,31 +977,66 @@ def xyce_timings(
             )
             for count in ranks
         }
+    cells: dict[str, dict[str, Cell]] = {}
     for name in names:
         loaded = load_fixture(found[name])
         if loaded.plan.monte_carlo is not None:
             continue
-        print(f"running {name} in jolty, to compare", flush=True)
-        jolty = run(loaded)
-        for configuration, runner in runners.items():
+        print(f"running {name} in jolty at the matched options, the reference")
+        nets = printed(loaded)
+        try:
+            found_tight = run(loaded, tightened(loaded.plan.options))
+        except JoltyError as error:
+            print(f"  no reference: {stopped(error)}", flush=True)
+            reference = None
+        else:
+            reference = {
+                analysis: jolty_voltages(result, nets)
+                for analysis, result in found_tight.items()
+            }
+        for configuration, each in runners.items():
             print(f"timing {name} in {configuration}", flush=True)
-            seconds, analysis_seconds, deviations = run_xyce(
-                loaded, jolty, runner, once=scale
+            work = functools.partial(ran, view, each, loaded, nets, timeout)
+            measured = cell(
+                stated(view, each), work, loaded.plan.analyses, reference, once=scale
             )
-            key = f"{configuration}/{name}"
-            timings[key] = seconds
-            timings[f"{key}/analysis"] = analysis_seconds
-            agreements[key] = {"deviations": deviations, "load after": load_average()}
-            print(
-                f"  {duration(seconds.seconds)} end to end, "
-                f"{duration(analysis_seconds.seconds)} in Xyce's analyses, over "
-                f"{seconds.runs} runs at load {seconds.load:.2f}; deviation from jolty "
-                + ", ".join(
-                    f"{each} {value:.1e}" for each, value in deviations.items()
-                ),
-                flush=True,
-            )
-    return timings, agreements
+            cells.setdefault(name, {})[configuration] = measured
+            print(f"  {entry(measured)}", flush=True)
+    return cells
+
+
+def entry(measured: Cell) -> str:
+    """A cell as the view's table writes it."""
+    if measured.failed is not None:
+        return f"failed: {measured.failed}"
+    if measured.seconds is None or measured.analysis_seconds is None:
+        return ""
+    lying = ", ".join(f"{n} {v:.1e}" for n, v in measured.deviations.items()) or (
+        "no reference, as jolty failed at the matched options"
+    )
+    return (
+        f"{duration(measured.seconds.seconds)}, "
+        f"{duration(measured.analysis_seconds.seconds)} in its analyses; {lying}"
+    )
+
+
+def view_table(cells: Mapping[str, Mapping[str, Cell]]) -> str:
+    """A view's table of `cells`: a row per fixture, a column per configuration.
+
+    Its first row states each configuration's options.
+    """
+    configurations = list(dict.fromkeys(c for row in cells.values() for c in row))
+    options = {c: row[c].options for row in cells.values() for c in row}
+    rows = [
+        ["fixture", *configurations],
+        ["---"] * (len(configurations) + 1),
+        ["options", *(options[c] for c in configurations)],
+    ]
+    rows += [
+        [f"`{name}`", *(entry(row[c]) if c in row else "" for c in configurations)]
+        for name, row in cells.items()
+    ]
+    return "\n".join("| " + " | ".join(row) + " |" for row in rows)
 
 
 def baseline(given: str | None) -> Path | None:
@@ -1142,8 +1388,20 @@ class Bench(cli.CommandLine):
             "by default, or --scale spreads a run on, 1, 2, 4, 8 and every core."
         ),
     )
-    ngspice: bool = Field(
-        default=False, description="Time ngspice instead, for context."
+    view: View | None = Field(
+        default=None,
+        description=(
+            "Time every simulator instead, in one view: at matched options, at its "
+            "own defaults, or at equal error on the precision suite's fixtures."
+        ),
+    )
+    digits: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "The correct digits --view equal-error times each simulator to; on each "
+            "output, the most that every simulator reached by default."
+        ),
     )
     robustness: bool = Field(
         default=False,
@@ -1170,16 +1428,18 @@ class Bench(cli.CommandLine):
     simulator: list[Simulator] = Field(
         default_factory=list,
         description=(
-            "The simulators --robustness, --coverage or --precision runs, such as "
-            "jolty, ngspice-sparse or xyce-serial; by default every one installed "
-            "for --robustness, and jolty and ngspice with Sparse and with KLU for "
-            "--coverage and --precision."
+            "The simulators --view, --robustness, --coverage or --precision runs, "
+            "such as jolty, ngspice-sparse or xyce-serial; by default every one "
+            "installed for --view and --robustness, and jolty and ngspice with "
+            "Sparse and with KLU for --coverage and --precision."
         ),
     )
     timeout: float = Field(
         default=TIMEOUT,
         gt=0,
-        description="The seconds --robustness lets a run take before it stops it.",
+        description=(
+            "The seconds --view or --robustness lets a run take before it stops it."
+        ),
     )
     sweeps: list[suite.Sweep] = Field(
         default_factory=lambda: list(suite.Sweep),
@@ -1193,21 +1453,15 @@ class Bench(cli.CommandLine):
     plot: Path | None = Field(
         default=None,
         description=(
-            "With --precision, draw the diagrams and table of this results file "
-            "instead."
-        ),
-    )
-    xyce: bool = Field(
-        default=False,
-        description=(
-            "Time Xyce instead, at its defaults, with how far it lies from jolty."
+            "With --precision or --view equal-error, draw the diagrams and tables "
+            "of this results file of the precision suite instead."
         ),
     )
     xyce_mpi: Path | None = Field(
         default=None,
         description=(
-            "Xyce's parallel build, which --xyce --scale runs on 1, 2, 4, 8 and 16 "
-            "MPI ranks, or the --threads given."
+            "Xyce's parallel build, which --view with --scale runs on 1, 2, 4, 8 and "
+            "16 MPI ranks too, or the --threads given."
         ),
     )
     baseline: str | None = Field(
@@ -1236,13 +1490,13 @@ def merged(
     timings: Mapping[str, Timing],
     profiles: Mapping[str, object] | None = None,
     fingerprints: Mapping[str, object] | None = None,
-    agreements: Mapping[str, object] | None = None,
+    views: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """The results file `output`, with what this run measured added.
 
-    `timings`, `profiles`, `fingerprints` and `agreements` each add to what the file
-    holds of its kind, if anything: `agreements`, how far another simulator's runs lay
-    from jolty's.
+    `timings`, `profiles`, `fingerprints` and `views` each add to what the file holds
+    of its kind, if anything: `views`, each cell of a view's table, by its view, its
+    configuration and its fixture.
     """
     earlier = load(output) if output.is_file() else {}
     written = {**earlier.get("timings", {})}
@@ -1256,7 +1510,7 @@ def merged(
         "timings": written,
         "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
         "fingerprints": earlier.get("fingerprints", {}) | dict(fingerprints or {}),
-        "agreements": earlier.get("agreements", {}) | dict(agreements or {}),
+        "views": earlier.get("views", {}) | dict(views or {}),
     }
 
 
@@ -1296,9 +1550,12 @@ def coverage(arguments: Bench) -> None:
     matrix.measure(arguments.fixtures, arguments.simulator)
 
 
-def precision(arguments: Bench) -> None:
-    """Runs the precision suite's fixtures, or draws a results file's diagrams."""
-    suite.measure(
+def precision(arguments: Bench) -> suite.SuiteResults:
+    """Runs the precision suite's fixtures, or draws a results file's diagrams.
+
+    Returns the results it drew.
+    """
+    return suite.measure(
         arguments.fixtures,
         arguments.simulator,
         arguments.sweeps,
@@ -1308,11 +1565,25 @@ def precision(arguments: Bench) -> None:
     )
 
 
+def equal_error(arguments: Bench) -> None:
+    """Prints each simulator's least time to equal error, from the precision suite.
+
+    The suite runs as ``--precision`` runs it, or its results file `--plot` names is
+    read, and the table goes beside its diagrams too.
+    """
+    document = precision(arguments)
+    table = suite.equal_error_table(document, arguments.digits)
+    drawn = arguments.plot or arguments.output or results_path(Suite.PRECISION)
+    path = drawn.with_suffix("") / f"{View.EQUAL_ERROR}.md"
+    path.write_text(table + "\n", encoding="utf-8")
+    print(f"\n{table}")
+
+
 def instead(arguments: Bench) -> bool:
     """Runs the suite `arguments` name instead of the timing, if they name one.
 
-    Returns whether they did: ``--robustness``, ``--coverage``, ``--precision`` or
-    ``--break-even``.
+    Returns whether they did: ``--robustness``, ``--coverage``, ``--precision``,
+    ``--view equal-error`` or ``--break-even``.
     """
     if arguments.robustness:
         robustness(arguments)
@@ -1320,11 +1591,52 @@ def instead(arguments: Bench) -> bool:
         coverage(arguments)
     elif arguments.precision:
         precision(arguments)
+    elif arguments.view is View.EQUAL_ERROR:
+        equal_error(arguments)
     elif arguments.break_even is not None:
         break_evens(arguments, arguments.break_even)
     else:
         return False
     return True
+
+
+def viewed(
+    arguments: Bench,
+    view: View,
+    names: Sequence[str],
+    found: Mapping[str, Fixture],
+    output: Path,
+) -> tuple[dict[str, Timing], dict[str, object]]:
+    """Times the fixtures `names` in `view`, and writes its table beside `output`.
+
+    Returns each configuration's times end to end and in its analyses, and each cell,
+    by view, configuration and fixture.
+    """
+    cells = view_timings(
+        view,
+        names,
+        found,
+        arguments.simulator,
+        parallel=arguments.xyce_mpi,
+        ranks=arguments.threads or RANKS,
+        scale=arguments.scale,
+        timeout=arguments.timeout,
+    )
+    timings: dict[str, Timing] = {}
+    views: dict[str, object] = {}
+    for name, row in cells.items():
+        for configuration, each in row.items():
+            key = f"{view}/{configuration}/{name}"
+            views[key] = dataclasses.asdict(each)
+            if each.seconds is not None and each.analysis_seconds is not None:
+                timings[key] = each.seconds
+                timings[f"{key}/analysis"] = each.analysis_seconds
+    table = view_table(cells)
+    path = output.with_suffix("") / f"{view}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(table + "\n", encoding="utf-8")
+    print(f"\n{table}\nwrote {shown(path)}")
+    return timings, views
 
 
 def measure(arguments: Bench) -> None:
@@ -1347,17 +1659,9 @@ def measure(arguments: Bench) -> None:
     started = time.perf_counter()
     found_profiles: dict[str, dict[str, Profiled]] = {}
     fingerprints: dict[str, dict[str, str]] = {}
-    agreements: dict[str, dict[str, object]] = {}
-    if arguments.ngspice:
-        timings = ngspice_timings(names, found, scale=arguments.scale)
-    elif arguments.xyce:
-        timings, agreements = xyce_timings(
-            names,
-            found,
-            parallel=arguments.xyce_mpi,
-            ranks=arguments.threads or RANKS,
-            scale=arguments.scale,
-        )
+    views: dict[str, object] = {}
+    if arguments.view is not None:
+        timings, views = viewed(arguments, arguments.view, names, found, output)
     else:
         timings = {} if arguments.scale else rust(names, found)
         spread = {
@@ -1385,7 +1689,7 @@ def measure(arguments: Bench) -> None:
         }
         for name, analyses in found_profiles.items()
     }
-    save(output, merged(output, timings, profiled, fingerprints, agreements))
+    save(output, merged(output, timings, profiled, fingerprints, views))
     if against is not None and against.resolve() != output.resolve():
         before = {
             key: Timing(**value) for key, value in load(against)["timings"].items()

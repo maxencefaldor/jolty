@@ -444,7 +444,7 @@ def _options(options: Options, analysis: Analysis) -> str:
     ]
     if isinstance(analysis, Transient):
         given.append(_METHODS[analysis.method])
-    return f".options {' '.join(given)}" if given else "*"
+    return f".options {' '.join(given)}" if given else ngspice.NO_OPTIONS
 
 
 def _table(
