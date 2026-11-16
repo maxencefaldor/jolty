@@ -84,56 +84,96 @@ fn moved(
         .value
 }
 
+/// A transient of the rectifier by `method`, its steps a hundredth of its two periods.
+fn transient(method: Method) -> Transient {
+    Transient {
+        stop: 2e-6,
+        max_step: Some(1e-8),
+        method,
+        breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
+    }
+}
+
 #[test]
 fn an_objectives_derivatives_match_finite_differences() {
+    let functionals = [
+        Functional::Integral("out".to_owned()),
+        Functional::Value {
+            unknown: "out".to_owned(),
+            at: 1.234_5e-6,
+        },
+        Functional::Sum("a".to_owned()),
+    ];
+    let instances = rectifier();
     for method in [Method::Trapezoidal, Method::Gear2] {
-        let objective = Objective {
-            functional: Functional::Integral("out".to_owned()),
-            of: Transient {
-                stop: 2e-6,
-                max_step: Some(1e-8),
-                method,
-                breakpoints: Vec::new(),
-                initial_conditions: BTreeMap::new(),
-                operating_point: true,
-            },
-        };
-        let instances = rectifier();
-        let mut simulator = Simulator::new(
-            &circuit_of(&instances),
-            &Library::standard(),
-            &Conditions::default(),
-        )
-        .expect("an elaborated circuit");
-        let found = simulator
-            .objective(&objective, &fixed_steps())
-            .expect("an objective");
-        assert_eq!(found.parameters.len(), 10, "{:?}", found.parameters);
-        for (parameter, exact) in found.parameters.iter().zip(&found.derivatives) {
-            let (device, name) = (parameter.instance.as_str(), parameter.name.as_str());
-            if parameter.value == 0.0 {
-                continue;
+        for functional in &functionals {
+            let objective = Objective {
+                functional: functional.clone(),
+                of: transient(method),
+            };
+            let mut simulator = Simulator::new(
+                &circuit_of(&instances),
+                &Library::standard(),
+                &Conditions::default(),
+            )
+            .expect("an elaborated circuit");
+            let found = simulator
+                .objective(&objective, &fixed_steps())
+                .expect("an objective");
+            assert_eq!(found.parameters.len(), 10, "{:?}", found.parameters);
+            for (parameter, exact) in found.parameters.iter().zip(&found.derivatives) {
+                let (device, name) = (parameter.instance.as_str(), parameter.name.as_str());
+                let step = 1e-4 * parameter.value;
+                let above = moved(
+                    &instances,
+                    (device, name, parameter.value + step),
+                    &objective,
+                );
+                let below = moved(
+                    &instances,
+                    (device, name, parameter.value - step),
+                    &objective,
+                );
+                let finite = (above - below) / (2.0 * step);
+                // A central difference's truncation error, the parameter's relative step
+                // squared, 1e-8, times the curvature, with the solves' rounding over the
+                // step.
+                assert!(
+                    (exact - finite).abs() <= 1e-5 * exact.abs().max(finite.abs()),
+                    "{method:?}, {functional:?}: d/d{device}.{name}: adjoint {exact}, \
+                     finite differences {finite}"
+                );
             }
-            let step = 1e-4 * parameter.value;
-            let above = moved(
-                &instances,
-                (device, name, parameter.value + step),
-                &objective,
-            );
-            let below = moved(
-                &instances,
-                (device, name, parameter.value - step),
-                &objective,
-            );
-            let finite = (above - below) / (2.0 * step);
-            // A central difference's truncation error, the parameter's relative step
-            // squared, 1e-8, times the curvature, with the solves' rounding over the step.
-            assert!(
-                (exact - finite).abs() <= 1e-5 * exact.abs().max(finite.abs()).max(1e-300),
-                "{method:?}: d/d{device}.{name}: adjoint {exact}, finite differences {finite}"
-            );
         }
     }
+}
+
+#[test]
+fn an_objectives_time_lies_within_the_run() {
+    let mut simulator = Simulator::new(
+        &circuit_of(&rectifier()),
+        &Library::standard(),
+        &Conditions::default(),
+    )
+    .expect("an elaborated circuit");
+    let objective = Objective {
+        functional: Functional::Value {
+            unknown: "out".to_owned(),
+            at: 3e-6,
+        },
+        of: transient(Method::Trapezoidal),
+    };
+    let error = simulator
+        .objective(&objective, &Options::default())
+        .expect_err("a time after the run");
+    assert_eq!(
+        error,
+        SimulationError::InvalidAnalysis(
+            "an objective's time lies within the run, from 0 to 2e-6, not 3e-6".to_owned()
+        )
+    );
 }
 
 #[test]
@@ -146,14 +186,7 @@ fn an_objective_names_an_unknown_that_exists() {
     .expect("an elaborated circuit");
     let objective = Objective {
         functional: Functional::Integral("nowhere".to_owned()),
-        of: Transient {
-            stop: 1e-6,
-            max_step: None,
-            method: Method::Trapezoidal,
-            breakpoints: Vec::new(),
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
-        },
+        of: transient(Method::Trapezoidal),
     };
     let error = simulator
         .objective(&objective, &Options::default())

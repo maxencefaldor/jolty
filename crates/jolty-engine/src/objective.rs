@@ -38,7 +38,7 @@ use jolty_numerics::Pattern;
 use jolty_numerics::integration::Formula;
 use serde::Deserialize;
 
-use crate::measure::trapezoid;
+use crate::measure::{interpolated, trapezoid};
 use crate::newton::step_matrix;
 use crate::sensitivity::{Parameter, Twin};
 use crate::transient::Carried;
@@ -55,15 +55,50 @@ pub struct Objective {
     pub of: Transient,
 }
 
-/// A scalar of a transient's waveforms.
+/// A scalar of a transient's waveforms: of one unknown, by name, such as `out` or
+/// `V1:current`.
 ///
-/// In JSON, an object with one key, such as `{"integral": "out"}`.
+/// In JSON, an object with one key, such as `{"integral": "out"}` or
+/// `{"value": {"unknown": "out", "at": 1e-6}}`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Functional {
-    /// The integral over the run of an unknown, by name, such as `out` or `V1:current`, by
-    /// the trapezoidal rule over the points the transient accepted.
+    /// The unknown's integral over the run, by the trapezoidal rule over the points the
+    /// transient accepted.
     Integral(String),
+    /// The unknown's value at a time within the run, interpolated linearly between the
+    /// points the transient accepted on either side, as a measure reads it; a breakpoint of
+    /// the transient there lands a point on it.
+    Value {
+        /// The unknown.
+        unknown: String,
+        /// The time, in seconds.
+        at: f64,
+    },
+    /// The sum of the unknown's values at every point the transient accepted.
+    Sum(String),
+}
+
+impl Functional {
+    /// The unknown it reads, by name.
+    fn unknown(&self) -> &str {
+        match self {
+            Self::Integral(unknown) | Self::Value { unknown, .. } | Self::Sum(unknown) => unknown,
+        }
+    }
+
+    /// Its value on `values`, an unknown's at each of `times`, and its derivative with
+    /// respect to the unknown at each.
+    fn read(&self, times: &[f64], values: &[f64]) -> (f64, Vec<f64>) {
+        match *self {
+            Self::Integral(_) => (trapezoid(times, values), trapezoid_weights(times)),
+            Self::Value { at, .. } => (
+                interpolated(at, times, values),
+                interpolation_weights(at, times),
+            ),
+            Self::Sum(_) => (values.iter().sum(), vec![1.0; values.len()]),
+        }
+    }
 }
 
 /// The value of an [`Objective`], and its derivatives.
@@ -140,10 +175,11 @@ impl Simulator {
     ) -> Result<(f64, Vec<Twin>, TransientResult), SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let Functional::Integral(name) = &objective.functional;
+            let functional = &objective.functional;
+            let name = functional.unknown();
             let unknown = self
                 .unknown(name)
-                .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))?
+                .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))?
                 .index();
             self.undelayed(
                 "an objective's derivatives",
@@ -157,6 +193,14 @@ impl Simulator {
                 ));
             }
             let transient = &objective.of;
+            if let Functional::Value { at, .. } = *functional
+                && !(0.0..=transient.stop).contains(&at)
+            {
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "an objective's time lies within the run, from 0 to {:?}, not {at:?}",
+                    transient.stop
+                )));
+            }
             if !transient.initial_conditions.is_empty() || !transient.operating_point {
                 return Err(SimulationError::InvalidAnalysis(
                     "an objective's derivatives are found for transients from the operating \
@@ -170,8 +214,7 @@ impl Simulator {
             let mut result =
                 self.transient_with(transient, options, None, Carried::Steps(&mut steps))?;
             let values: Vec<f64> = result.values.iter().map(|x| x[unknown]).collect();
-            let value = trapezoid(&result.times, &values);
-            let weights = trapezoid_weights(&result.times);
+            let (value, weights) = functional.read(&result.times, &values);
             let seed = |point: usize, into: &mut [f64]| into[unknown] += weights[point];
             let waveforms = (&result, steps.as_slice());
             self.backward(&mut twins, waveforms, (&seed, fold), options)?;
@@ -304,6 +347,27 @@ fn add_transposed_product(pattern: &Pattern, values: &[f64], x: &[f64], into: &m
             into[column] += values[slot] * factor;
         }
     }
+}
+
+/// The derivative of the linear interpolation at `at` between `times` with respect to the
+/// value at each time: of the two on either side, each its share of the gap, or one at a
+/// time `at` is, and at the end it lies beyond, as numpy's `interp` reads them.
+fn interpolation_weights(at: f64, times: &[f64]) -> Vec<f64> {
+    let mut weights = vec![0.0; times.len()];
+    let after = times.partition_point(|&time| time < at);
+    match (after.checked_sub(1), times.get(after)) {
+        (Some(before), Some(&time)) if time > at => {
+            let share = (at - times[before]) / (time - times[before]);
+            weights[before] = 1.0 - share;
+            weights[after] = share;
+        }
+        // At a time, or before the first, which reads the first value.
+        (_, Some(_)) => weights[after] = 1.0,
+        // After the last, which reads the last value.
+        (Some(before), None) => weights[before] = 1.0,
+        (None, None) => {}
+    }
+    weights
 }
 
 /// The derivative of the trapezoidal rule's integral over `times` with respect to the value

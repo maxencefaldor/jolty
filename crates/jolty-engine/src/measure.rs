@@ -932,7 +932,7 @@ impl Axis<'_> {
 }
 
 /// numpy's interpolation of `values`, given at `points`, at the one point `at`.
-fn interpolated(at: f64, points: &[f64], values: &[f64]) -> f64 {
+pub(crate) fn interpolated(at: f64, points: &[f64], values: &[f64]) -> f64 {
     arithmetic::interpolate(&[at], points, values)
         .first()
         .copied()
