@@ -34,13 +34,13 @@ Each instance records the file and the line of the statement that placed it, so 
 
 jolty reads a file as PSpice and ngspice read it:
 
-- resistors, capacitors and inductors, with their model cards' scales, and mutual inductances, `K`, which couple inductors;
+- resistors, capacitors and inductors, with their model cards' scales and their copies, `M`, and mutual inductances, `K`, which couple inductors;
 - independent sources at their DC level, or with their `PULSE`, `SIN`, `PWL` or `EXP` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
 - diodes of level 1, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, positive areas and multipliers, and models that inherit from one another through `AKO:`;
 - linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;
 - `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
 - switches of PSpice's `VSWITCH` and `ISWITCH` models, `S` and `W`, a `W` switch reading the current of a source of a voltage as a current-controlled source does;
-- subcircuit instances, with their parameters, and `.param` statements;
+- subcircuit instances, with their parameters, and a multiplier `m`, where the subcircuit has no parameter of that name, which multiplies each element it holds as ngspice's: a resistor's and an inductor's copies divide its value, a capacitor's multiply it, and a diode's, a transistor's and an instance's copies are multiplied by it, sources of a current under a multiplier being errors; and `.param` statements;
 - what process design kits write, as the [foundry's guide](foundry.md#the-open-process-kits) tells: `.include` and `.lib` sections, `.option scale`, a subcircuit's `.if` blocks and its own parameters, which its instances may give, `temper`, and the statistical functions `agauss`, `gauss`, `aunif`, `unif` and two-argument `limit`, at their nominal values unless a placement is drawn in a sample;
 - `.ic` and `.nodeset` outside subcircuits, each node's voltage written `V(node)=value`, kept by the library as `initial_conditions` and `nodesets`, by node as written, for a plan's transient and options to take, as the [simulation guide](simulation.md#initial-conditions-and-nodesets) tells.
 

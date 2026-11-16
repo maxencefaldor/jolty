@@ -567,8 +567,14 @@ class Library:
     ) -> Component:
         """The component of `subcircuit` with the `given` parameters, in `scope`.
 
-        Its statistical functions draw as `drawing` does.
+        Its statistical functions draw as `drawing` does. A multiplier `m` given to a
+        subcircuit that has no parameter of that name multiplies every element it
+        holds, as [`MULTIPLIED`][jolty.spice.library.MULTIPLIED] says.
         """
+        multiplier = 1.0
+        if "m" in given and "m" not in subcircuit.defaults:
+            multiplier = given["m"]
+            given = {key: value for key, value in given.items() if key != "m"}
         unknown = sorted(set(given) - set(subcircuit.defaults))
         if unknown:
             message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
@@ -595,11 +601,17 @@ class Library:
             for parameter in subcircuit.defaults
             if parameter in local
         }
+        if multiplier != 1:
+            # ngspice gives the subcircuit a parameter `m` that its elements read
+            # (`inp_fix_subckt_multiplier` in `inpcom.c`, lines 4216 to 4230).
+            local["m"] = values["m"] = multiplier
         listed = ",".join(f"{key}={value!r}" for key, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
         name = drawing.named(name)
         if name not in self._built:
-            translation = _Translation(self, subcircuit, (scope, local), drawing)
+            translation = _Translation(
+                self, subcircuit, (scope, local), drawing, multiplier
+            )
             self._built[name] = translation.component(name)
         return self._built[name]
 
@@ -1035,11 +1047,14 @@ class _Translation:
         subcircuit: Subcircuit,
         scopes: tuple[Mapping[str, float], Mapping[str, float]],
         drawing: _Drawing,
+        multiplier: float = 1.0,
     ) -> None:
         self.library = library
         self.subcircuit = subcircuit
         self.globals, self.scope = scopes
         self.drawing = drawing
+        self.multiplier = multiplier
+        """The subcircuit's multiplier, which multiplies each element it holds."""
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
         self.parameters: dict[str, Expression] = {}
@@ -1124,6 +1139,17 @@ class _Translation:
         if written is not None:
             return written
         return evaluate(self.parse(word), self.scope, self.draw)
+
+    def multiplied(self, instance: Mapping[str, float]) -> dict[str, float]:
+        """An element's `instance` parameters, its copies `m` times the subcircuit's.
+
+        ngspice multiplies them so in HSPICE's compatibility, and in its others gives
+        the element the subcircuit's alone (``inpcom.c``, lines 4257 to 4283); jolty
+        multiplies them in each, as copies of copies are.
+        """
+        if self.multiplier == 1:
+            return dict(instance)
+        return {**instance, "m": instance.get("m", 1.0) * self.multiplier}
 
     def parse(self, text: str) -> Expression:
         """The expression `text` writes, each call of the user's functions written out.
@@ -1347,6 +1373,12 @@ class _Translation:
             )
             raise statement.fail(message)
         letter = _letter(statement)
+        if self.multiplier != 1 and letter in _UNMULTIPLIED:
+            message = (
+                f"jolty multiplies no {_ELEMENT_KINDS[letter]} by its subcircuit's "
+                f"multiplier `m`, here {self.multiplier!r}"
+            )
+            raise statement.fail(message)
         translate = _ELEMENTS.get(letter)
         if translate is None:
             kind = _UNREAD_ELEMENTS.get(letter)
@@ -1548,6 +1580,21 @@ _ELEMENT_KINDS: Final = {
 }
 """What an element of a letter is when it names no model card."""
 
+MULTIPLIED: Final = frozenset("rcldjmqx")
+"""The elements, by letter, that a subcircuit's multiplier `m` multiplies, which a
+subcircuit is given where it has no parameter of that name.
+
+ngspice multiplies each of its elements but its V, E, H, A, K, N, O, P, S, T, U, W and Y
+elements and its B sources of a voltage (``inpcom.c``, lines 4240 to 4256): a
+resistor's and an inductor's value divided by it, a capacitor's multiplied, and a
+diode's, a transistor's and a subcircuit instance's copies `m` multiplied. jolty does
+not multiply sources of a current, I, F, G and B elements, yet, and refuses them under a
+multiplier other than 1."""
+
+_UNMULTIPLIED: Final = frozenset("ifg")
+"""The elements, by letter, that ngspice multiplies by a subcircuit's multiplier and
+jolty does not yet: sources of a current, but for B sources, which say so themselves."""
+
 _UNREAD_ELEMENTS: Final = {
     "o": "ngspice's lossy transmission line, LTRA",
     "u": "ngspice's uniform RC line, URC",
@@ -1734,7 +1781,10 @@ def _passive(
     gives its temperature coefficients and nominal temperature. The element's own
     coefficients, ``TC=tc1,tc2`` or each by name, override the card's. Only a resistor
     has an exponential coefficient, ``TCE``, and only a resistor and a capacitor voltage
-    coefficients, ``VC1`` and ``VC2``.
+    coefficients, ``VC1`` and ``VC2``. Its copies in parallel, its ``M`` times its
+    subcircuit's multiplier, divide a resistor's and an inductor's value and multiply a
+    capacitor's, and a resistor's flicker noise is theirs, ``m · KF · (|I| / m)^AF``,
+    as ngspice adds it (``resnoise.c``, line 109).
     """
     letter = kind[0]
     curved = frozenset(_CURVATURE) if model != "inductor" else frozenset()
@@ -1745,7 +1795,9 @@ def _passive(
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
         _check_keywords(
-            statement, assigned, frozenset({letter, "tc", "temp", "dtemp", *drifts})
+            statement,
+            assigned,
+            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts}),
         )
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
@@ -1771,6 +1823,13 @@ def _passive(
             )
             raise statement.fail(message)
         value = translation.value(values[0])
+        own = {
+            name: translation.value(words[0])
+            for name, words in assigned.items()
+            if name == "m" and words
+        }
+        copies = translation.multiplied(own).get("m", 1.0)
+        value = value * copies if model == "capacitor" else value / copies
         given: dict[str, float] = {}
         if card is not None:
             drawing, prefix = translation.drawing, card.name.casefold()
@@ -1790,20 +1849,21 @@ def _passive(
                 if name in read
             }
         given |= _coefficients(translation, statement, assigned, drifts)
-        own = {
+        temperatures = {
             name: translation.value(words[0])
             for name, words in assigned.items()
             if name in {"temp", "dtemp"} and words
         }
         parameters: dict[str, JsonValue] = {parameter: value}
         parameters |= _temperatures(given)
-        parameters |= models.own_temperature(given, own, statement)
+        parameters |= models.own_temperature(given, temperatures, statement)
         parameters |= {
             _CURVATURE[name]: amount
             for name, amount in given.items()
             if name in _CURVATURE
         }
         if given.get("kf", 0.0) != 0:
+            given["kf"] *= copies ** (1 - given.get("af", 1.0))
             parameters |= {
                 _FLICKER[name]: amount
                 for name, amount in given.items()
@@ -2101,11 +2161,13 @@ def _semiconductor(
         if len(nodes) != len(terminals) or not rest:
             message = f"the element joins {len(terminals)} nodes, then names its model"
             raise statement.fail(message)
-        instance = {
-            key: translation.value(values[0])
-            for key, values in assigned.items()
-            if values
-        }
+        instance = translation.multiplied(
+            {
+                key: translation.value(values[0])
+                for key, values in assigned.items()
+                if values
+            }
+        )
         if "nmos" in kinds:
             scale = library.options.get("scale", 1.0)
             instance = {
@@ -2190,9 +2252,14 @@ _THERMAL_ELEMENTS: Final = {
 """The thermal element a resistor or a capacitor on a thermal node is, and the
 parameter of its value."""
 
-_SCALED: Final = {"w": 1, "l": 1, "pd": 1, "ps": 1, "ad": 2, "as": 2}
+_SCALED: Final = {
+    **dict.fromkeys(("w", "l", "pd", "ps", "sa", "sb", "sd", "sc"), 1),
+    **dict.fromkeys(("ad", "as"), 2),
+}
 """The sizes of a MOSFET's element that ngspice's ``scale`` option scales, by the power
-of it each takes: a length's 1, an area's 2 (``mos1par.c``)."""
+of it each takes: a length's 1, an area's 2 (``mos1par.c``), and a BSIM4's distances to
+its diffusion's edges, between its fingers and to its well's edge (``b4v5par.c``, lines
+87 to 111)."""
 
 _MOSFET: Final = _semiconductor(
     ("drain", "gate", "source", "bulk"), frozenset({"nmos", "pmos"})
@@ -2250,9 +2317,13 @@ def _transistor(translation: _Translation, statement: Statement) -> None:
         if word.casefold() != "off":
             message = f"a VDMOS takes no `{word}`"
             raise statement.fail(message)
-    instance = {
-        key: translation.value(values[0]) for key, values in assigned.items() if values
-    }
+    instance = translation.multiplied(
+        {
+            key: translation.value(values[0])
+            for key, values in assigned.items()
+            if values
+        }
+    )
     made = translation.device(card, instance, statement)
     joined = {
         terminal: translation.net(node)
@@ -2299,9 +2370,13 @@ def _bipolar(translation: _Translation, statement: Statement) -> None:
         message = f"`{card.name}` is a model of type `{card.kind}`"
         raise statement.fail(message)
     nodes, rest = positional[1:named], positional[named + 1 :]
-    instance = {
-        key: translation.value(values[0]) for key, values in assigned.items() if values
-    }
+    instance = translation.multiplied(
+        {
+            key: translation.value(values[0])
+            for key, values in assigned.items()
+            if values
+        }
+    )
     # An initial state, `OFF`, only guides the search for the operating point.
     areas = [word for word in rest if word.casefold() not in {"off", "on"}]
     if areas:
@@ -2570,6 +2645,12 @@ def _arbitrary(translation: _Translation, statement: Statement) -> None:
         raise statement.fail(message)
     positive, negative, kind, written = match.groups()
     output = "voltage" if kind.casefold() == "v" else "current"
+    if output == "current" and translation.multiplier != 1:
+        message = (
+            "jolty multiplies no behavioral current by its subcircuit's multiplier "
+            f"`m`, here {translation.multiplier!r}"
+        )
+        raise statement.fail(message)
     expression = translation.parse(written)
     _behavioral(translation, statement, output, (positive, negative), expression)
 
@@ -2733,12 +2814,14 @@ def _instance(translation: _Translation, statement: Statement) -> None:
         )
         raise statement.fail(message)
     functions = translation.library.functions
-    given = {
-        parameter: evaluate(
-            inlined(expression, functions), translation.scope, translation.draw
-        )
-        for parameter, expression in models.assignments(statement, assigned).items()
-    }
+    given = translation.multiplied(
+        {
+            parameter: evaluate(
+                inlined(expression, functions), translation.scope, translation.draw
+            )
+            for parameter, expression in models.assignments(statement, assigned).items()
+        }
+    )
     child = translation.library.place(
         subcircuit, translation.globals, given, translation.drawing.within(name)
     )

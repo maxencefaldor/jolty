@@ -1079,6 +1079,45 @@ def test_a_bin_holds_one_fingers_width_where_ngspice_divides_it(
     assert instance.parameters["vth0"] == threshold
 
 
+def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
+    """The option `scale` multiplies a BSIM4's lengths, and its areas by its square.
+
+    A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
+    and between its fingers, as `b4v5par.c` scales them, all in micrometres here.
+    """
+    parts = spice.Library()
+    parts.read(
+        ".option scale=1e-6\n.model nch nmos(level=54 version=4.5)\n"
+        ".subckt one d\nM1 d d 0 0 nch L=0.5 W=2 ad=1 pd=4 sa=0.25 sb=0.5 sd=0.125\n"
+        ".ends\n",
+        "scaled.lib",
+    )
+    (instance,) = parts.component("one").definition.instances
+    assert {
+        name: instance.parameters[name]
+        for name in (
+            "length",
+            "width",
+            "drain_area",
+            "drain_perimeter",
+            "diffusion_edge_a",
+            "diffusion_edge_b",
+            "finger_spacing",
+        )
+    } == pytest.approx(
+        {
+            "length": 5e-7,
+            "width": 2e-6,
+            "drain_area": 1e-12,
+            "drain_perimeter": 4e-6,
+            "diffusion_edge_a": 2.5e-7,
+            "diffusion_edge_b": 5e-7,
+            "finger_spacing": 1.25e-7,
+        },
+        rel=1e-15,
+    )
+
+
 def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
     @component
     def bench(c: Builder) -> None:
@@ -1501,6 +1540,47 @@ def test_a_library_reads_a_section_and_the_files_it_includes(tmp_path: Path) -> 
     (tmp_path / "loop.lib").write_text(".include loop.lib\n", encoding="utf-8")
     with pytest.raises(SpiceError, match="includes itself"):
         spice.load(tmp_path / "loop.lib")
+
+
+MULTIPLIED: Final = (
+    ".model DX D(IS=1e-14 KF=0)\n"
+    ".model RN RES(KF=1e-12 AF=2)\n"
+    ".subckt cell a b\nR1 a b 3k\nR2 a b RN 3k m=2\nC1 a b 2p\nL1 a b 6n\n"
+    "D1 a b DX\nX1 a b inner m=2\n.ends\n"
+    ".subckt inner a b\nR1 a b 4k\n.ends\n"
+    ".subckt own a b m=1\nR1 a b {1k*m}\n.ends\n"
+    ".subckt sourced a b\nI1 a b 1m\n.ends\n"
+)
+"""Subcircuits a multiplier `m` multiplies, and one that reads `m` as its parameter."""
+
+
+def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
+    """As ngspice's `inp_fix_subckt_multiplier` adds `m` to each element.
+
+    Three copies of `cell` divide its resistors and its inductor by 3 and multiply its
+    capacitor and its diode by 3, its resistor's own 2 copies times 3, whose flicker
+    noise is `m KF (I / m)^AF` (`resnoise.c`), and its instance's 2 copies of `inner`
+    times 3; a subcircuit with a parameter `m` reads it as its own, and a current
+    source under a multiplier is refused.
+    """
+    parts = library(MULTIPLIED)
+    cell = parts.component("cell", m=3)
+    found = {
+        instance.name: instance.parameters for instance in cell.definition.instances
+    }
+    assert found["R1"]["resistance"] == pytest.approx(1e3)
+    assert found["R2"]["resistance"] == pytest.approx(500)
+    assert found["R2"]["flicker_coefficient"] == pytest.approx(1e-12 / 6)
+    assert found["C1"]["capacitance"] == pytest.approx(6e-12)
+    assert found["L1"]["inductance"] == pytest.approx(2e-9)
+    assert found["D1"]["saturation_current"] == pytest.approx(3e-14)
+    (inner,) = cell.children
+    (resistor,) = inner.definition.instances
+    assert resistor.parameters["resistance"] == pytest.approx(4e3 / 6)
+    (own,) = parts.component("own", m=2).definition.instances
+    assert own.parameters["resistance"] == pytest.approx(2e3)
+    with pytest.raises(SpiceError, match="multiplies no current source by its"):
+        parts.component("sourced", m=2)
 
 
 def test_a_subcircuits_if_blocks_choose_by_its_parameters() -> None:
