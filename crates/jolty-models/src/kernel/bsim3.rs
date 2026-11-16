@@ -67,12 +67,6 @@ const VT0: f64 = 1.380_648_52e-23 * 300.15 / 1.602_176_620_8e-19;
 /// and bulk-source voltages.
 type D<R> = Dual<R, 3>;
 
-/// The natural logarithm of `x`, with its derivatives.
-fn ln<R: Real>(x: D<R>) -> D<R> {
-    let value = x.value;
-    x.chain((value.ln(), value.recip()))
-}
-
 /// `n` for an n-channel and `p` for a p-channel.
 pub(crate) const fn by_channel(channel: Channel, n: f64, p: f64) -> f64 {
     match channel {

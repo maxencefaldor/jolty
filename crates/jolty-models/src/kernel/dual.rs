@@ -55,6 +55,19 @@ impl<R: Real, const N: usize> Dual<R, N> {
         self.chain((exponential, exponential))
     }
 
+    /// The natural logarithm.
+    pub(crate) fn ln(self) -> Self {
+        self.chain((self.value.ln(), self.value.recip()))
+    }
+
+    /// The value, which must be positive, raised to `exponent`, a number that the
+    /// variables do not move: the derivative, `exponent · value^exponent / value`, divides
+    /// the power by the value rather than raising the value again.
+    pub(crate) fn pow(self, exponent: R) -> Self {
+        let power = self.value.pow(exponent);
+        self.chain((power, exponent * power / self.value))
+    }
+
     /// The reciprocal.
     pub(crate) fn recip(self) -> Self {
         self.chain((self.value.recip(), -(self.value * self.value).recip()))

@@ -7,7 +7,7 @@
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use super::prepare::Core;
-use super::{D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, Mobility, Q, ln};
+use super::{D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, Mobility, Q};
 use crate::Real;
 
 /// What the channel yields at one bias, in the frame where the drain lies at or above the
@@ -183,7 +183,7 @@ impl<R: Real> Core<R> {
             let t0 = vgst.plus(-p.voff) / n.scale(vtm);
             t0.exp().scale(vtm * self.cdep0 / self.cox)
         } else {
-            let t1 = t10 * ln(vgst_nvt.exp() + 1.0);
+            let t1 = t10 * (vgst_nvt.exp() + 1.0).ln();
             let t2 = (t10 * exp_arg.exp()).scale(self.cox / (vtm * self.cdep0)) + 1.0;
             t1 / t2
         };

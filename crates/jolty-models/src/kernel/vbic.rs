@@ -609,7 +609,7 @@ impl<R: Real> Depletion<R> {
         let complement = -(grading - 1.0);
         // P · (1 − (1 − v / P)^(1 − M)) / (1 − M), the power law's charge.
         let law = |voltage: Dual<R, N>| {
-            -(power(-(voltage.divide(potential) - 1.0), complement) - 1.0)
+            -((-(voltage.divide(potential) - 1.0)).pow(complement) - 1.0)
                 .scale(potential / complement)
         };
         if smoothing.value() <= 0.0 {
@@ -663,7 +663,8 @@ impl<R: Real> Depletion<R> {
                 let offset = voltage.plus(shift);
                 let edge = (offset - root(offset)) * 0.5 - Dual::constant(shift);
                 let below = |edge: Dual<R, N>| {
-                    -power(-(edge.divide(potential) - 1.0), complement)
+                    -(-(edge.divide(potential) - 1.0))
+                        .pow(complement)
                         .scale(potential / complement)
                 };
                 let slope = (-(limit - 1.0)).pow(-grading);
@@ -671,17 +672,6 @@ impl<R: Real> Depletion<R> {
             }
         }
     }
-}
-
-/// `base^exponent`, `exponent` a number the variables do not move.
-fn power<R: Real, const N: usize>(base: Dual<R, N>, exponent: R) -> Dual<R, N> {
-    let value = base.value;
-    base.chain((value.pow(exponent), exponent * value.pow(exponent - 1.0)))
-}
-
-/// The natural logarithm.
-fn logarithm<R: Real, const N: usize>(value: Dual<R, N>) -> Dual<R, N> {
-    value.chain((value.value.ln(), value.value.recip()))
 }
 
 /// What a transistor's temperature sets of its currents and charges.
@@ -888,7 +878,8 @@ impl<R: Real> Core<R> {
                 let across = -(vbci.plus(-avalanche.potential));
                 let depleted = ((across * across + 0.01).sqrt() + across) * 0.5;
                 let factor = depleted.scale(avalanche.coefficient)
-                    * (-power(depleted, avalanche.grading - 1.0)
+                    * (-depleted
+                        .pow(avalanche.grading - 1.0)
                         .scale(avalanche.exponent_coefficient))
                     .exp();
                 ibcj - (itzf - itzr - ibcj) * factor
@@ -953,8 +944,8 @@ impl<R: Real> Core<R> {
         let q2 = ifi.scale(knee_forward) + iri.scale(knee_reverse);
         let rolloff = transport.rolloff;
         let qb = match transport.form {
-            BaseCharge::Vbic => (q1 + power(power(q1, rolloff.recip()) + q2 * 4.0, rolloff)) * 0.5,
-            BaseCharge::GummelPoon => q1 * (power(q2 * 4.0 + 1.0, rolloff) + 1.0) * 0.5,
+            BaseCharge::Vbic => (q1 + (q1.pow(rolloff.recip()) + q2 * 4.0).pow(rolloff)) * 0.5,
+            BaseCharge::GummelPoon => q1 * ((q2 * 4.0 + 1.0).pow(rolloff) + 1.0) * 0.5,
         };
         TransportState { ifi, iri, q1, qb }
     }
@@ -1005,7 +996,7 @@ impl<R: Real> Core<R> {
         let kbci = (self.exponential(vbci, one).scale(collector.doping) + 1.0).sqrt();
         let kbcx = (self.exponential(vbcx, one).scale(collector.doping) + 1.0).sqrt();
         let ratio = (kbci + 1.0) / (kbcx + 1.0);
-        let iohm = (vrci + (kbci - kbcx - logarithm(ratio)).scale(self.thermal_voltage))
+        let iohm = (vrci + (kbci - kbcx - ratio.ln()).scale(self.thermal_voltage))
             .divide(collector.resistance);
         let velocity = collector.inverse_saturation;
         let derf = iohm.scale(velocity * collector.resistance)
