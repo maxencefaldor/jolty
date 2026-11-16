@@ -2064,7 +2064,7 @@ class Stressed:
     """The time of each point, or None at an operating point."""
 
     def diagnostics(self) -> list[checks.Diagnostic]:
-        """The diagnostics of over-rating and derating, one per bound at most."""
+        """The diagnostics of over-rating and near-rating, one per bound at most."""
         found = []
         high = int(np.argmax(self.stress))
         low = int(np.argmin(self.stress))
@@ -2080,8 +2080,8 @@ class Stressed:
             reach = sign * (bound - origin)
             if sign * value > sign * bound:
                 found.append(self._diagnostic(checks.OVER_RATING, point, bound, value))
-            elif reach > 0 and sign * (value - origin) > checks.DERATED * reach:
-                found.append(self._diagnostic(checks.DERATING, point, bound, value))
+            elif reach > 0 and sign * (value - origin) > checks.DERATING_FACTOR * reach:
+                found.append(self._diagnostic(checks.NEAR_RATING, point, bound, value))
         return found
 
     def _diagnostic(
@@ -2109,7 +2109,9 @@ class Stressed:
             beyond = "beyond" if value > bound else "below"
             judged = f"{beyond} its rating of {bound!r} {unit}"
         else:
-            judged = f"past {checks.DERATED:.0%} of its rating of {bound!r} {unit}"
+            judged = (
+                f"past {checks.DERATING_FACTOR:.0%} of its rating of {bound!r} {unit}"
+            )
         return checks.Diagnostic(
             rule=rule.name,
             level=rule.level,

@@ -137,7 +137,7 @@ def test_a_stress_beyond_its_rating_is_an_error() -> None:
 def test_a_stress_past_its_derating_is_a_warning() -> None:
     # 1 W at rest is 80 % of 1.25 W, and 20 V within 25 V is 80 % of it.
     found = raised(supply(rated_power=4.5, rated_voltage=24))
-    assert [rule for rule, _ in found] == ["derating", "derating"]
+    assert [rule for rule, _ in found] == ["near-rating", "near-rating"]
     power = stated(
         "the power `R1` dissipates reaches {} W at 2e-06 s in `tran`, "
         "past 80% of its rating of 4.5 W",

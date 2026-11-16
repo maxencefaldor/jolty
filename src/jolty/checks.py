@@ -33,8 +33,8 @@ class Rule:
     condition: str
 
 
-PHASE_MARGIN: Final = Rule(
-    "phase-margin",
+LOW_PHASE_MARGIN: Final = Rule(
+    "low-phase-margin",
     Level.WARN,
     "A stability analysis's loop gain falls through 0 dB with a phase margin below "
     "45°: the loop's step response overshoots by more than about a fifth and rings, "
@@ -42,16 +42,19 @@ PHASE_MARGIN: Final = Rule(
     "diagnostic names the probe, the margin and the crossover frequency.",
 )
 
-GAIN_MARGIN: Final = Rule(
-    "gain-margin",
+MIN_PHASE_MARGIN: Final = 45.0
+"""The phase margin, in degrees, below which low-phase-margin states a loop's."""
+
+LOW_GAIN_MARGIN: Final = Rule(
+    "low-gain-margin",
     Level.WARN,
     "A stability analysis's loop gain is above -6 dB where its phase, unwrapped from "
     "the lowest frequency, first falls through -180°: less than doubling the loop's "
     "gain makes it oscillate. The diagnostic names the probe and the margin.",
 )
 
-DERATED: Final = 0.8
-"""The fraction of a rating past which the rule derating states a stress."""
+MIN_GAIN_MARGIN: Final = 6.0
+"""The gain margin, in decibels, below which low-gain-margin states a loop's."""
 
 OVER_RATING: Final = Rule(
     "over-rating",
@@ -63,8 +66,8 @@ OVER_RATING: Final = Rule(
     "Each rating raises one diagnostic per analysis and bound, at the furthest point.",
 )
 
-DERATING: Final = Rule(
-    "derating",
+NEAR_RATING: Final = Rule(
+    "near-rating",
     Level.WARN,
     "A stress a device's rating limits lies within the rating but beyond 80 % of a "
     "bound away from zero, a temperature's from 0 °C, at an operating point or at any "
@@ -73,7 +76,10 @@ DERATING: Final = Rule(
     "analysis and bound, at the furthest point.",
 )
 
-ON_RESULTS: Final = (PHASE_MARGIN, GAIN_MARGIN, OVER_RATING, DERATING)
+DERATING_FACTOR: Final = 0.8
+"""The fraction of a rating past which near-rating states a stress."""
+
+ON_RESULTS: Final = (LOW_PHASE_MARGIN, LOW_GAIN_MARGIN, OVER_RATING, NEAR_RATING)
 """The rules on analyses' results, which a simulation checks once it has them."""
 
 

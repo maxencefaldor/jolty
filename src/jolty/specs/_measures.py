@@ -47,12 +47,6 @@ _DIMENSIONS: Final[dict[results.Nature, Dimension]] = {
 }
 """The dimension of each quantity an unknown is."""
 
-MIN_PHASE_MARGIN: Final = 45.0
-"""The phase margin, in degrees, below which the rule phase-margin states a loop's."""
-
-MIN_GAIN_MARGIN: Final = 6.0
-"""The gain margin, in decibels, below which the rule gain-margin states a loop's."""
-
 type _Explainer = Mapping[str, Callable[[Sequence[float]], str]]
 """Messages by the reasons the engine gives, each made from the numbers it states."""
 
@@ -65,10 +59,10 @@ def diagnose(
 ) -> tuple[checks.Diagnostic, ...]:
     """The diagnostics of the rules on the analyses' results `solved`, by analysis.
 
-    Each stability analysis's loop gain raises phase-margin when it falls through 0 dB
-    with less than 45° of phase margin, and gain-margin when its phase falls through
-    -180° with less than 6 dB of gain margin, each measured as `phase_margin` and
-    `gain_margin` measure them.
+    Each stability analysis's loop gain raises low-phase-margin when it falls through 0
+    dB with less than 45° of phase margin, and low-gain-margin when its phase falls
+    through -180° with less than 6 dB of gain margin, each measured as `phase_margin`
+    and `gain_margin` measure them.
     """
     found: list[checks.Diagnostic] = []
     for name, result in solved.items():
@@ -81,19 +75,19 @@ def diagnose(
         except MeasureError:
             pass
         else:
-            if phase < MIN_PHASE_MARGIN:
+            if phase < checks.MIN_PHASE_MARGIN:
                 message = (
                     f"{loop} has a phase margin of {phase!r}° at its crossover, "
                     f"{unity!r} Hz"
                 )
-                found.append(_diagnostic(checks.PHASE_MARGIN, message))
+                found.append(_diagnostic(checks.LOW_PHASE_MARGIN, message))
         try:
             gain = gain_margin(name).read(result).value
         except MeasureError:
             continue
-        if gain < MIN_GAIN_MARGIN:
+        if gain < checks.MIN_GAIN_MARGIN:
             message = f"{loop} has a gain margin of {gain!r} dB"
-            found.append(_diagnostic(checks.GAIN_MARGIN, message))
+            found.append(_diagnostic(checks.LOW_GAIN_MARGIN, message))
     return tuple(found)
 
 
