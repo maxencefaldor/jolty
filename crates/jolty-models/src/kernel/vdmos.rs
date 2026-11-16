@@ -976,9 +976,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
     use crate::thermal_voltage;
 
@@ -1085,19 +1086,15 @@ mod tests {
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
         for parameters in [FULL.to_owned(), quasi(FULL)] {
+            let x = [12.0, 6.0, 0.3, 11.5, 0.31, 5.9, 0.2];
+            assert_mirrors(&Differentiable::<Vdmos>::new(), &parameters, &x);
+            // The threshold and the saturation voltage are the transistor's own, reversed
+            // in a p-channel; the rest are of either.
             let mut n = Bench::new::<Vdmos>(&parameters);
             let mut p = Bench::new::<Vdmos>(&p_channel(&parameters));
-            let x = [12.0, 6.0, 0.3, 11.5, 0.31, 5.9, 0.2];
             let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
-            let n_evaluation = n.settle(&x);
-            let p_evaluation = p.settle(&mirrored);
-            for (n_residual, p_residual) in n_evaluation.residual.iter().zip(&p_evaluation.residual)
-            {
-                assert!(
-                    (n_residual + p_residual).abs() <= 1e-15 * n_residual.abs(),
-                    "{n_residual} {p_residual}"
-                );
-            }
+            n.settle(&x);
+            p.settle(&mirrored);
             let (n_values, p_values) = (n.variables(), p.variables());
             let polar = [true, true, false, false, false, false, false];
             for (index, ((n_value, p_value), polar)) in

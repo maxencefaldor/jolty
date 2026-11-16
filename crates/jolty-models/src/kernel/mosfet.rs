@@ -336,7 +336,8 @@ pub struct MosfetParameters<R: Real = f64> {
     /// Level 3: the gate field's degradation of the mobility, `theta`, per volt;
     /// default 0.
     pub mobility_modulation: Option<R>,
-    /// Level 3: the saturation field factor, `kappa`; default 0.2.
+    /// Level 3: the saturation field factor, `kappa`; default 0.2, and 0 for no channel
+    /// shortening, as ngspice reads it.
     pub saturation_field_factor: Option<R>,
     /// Level 3: the width lost to diffusion at each side, `wd`, in meters; default 0.
     pub width_narrowing: Option<R>,
@@ -1307,7 +1308,7 @@ impl<R: Real> MosfetParameters<R> {
                 * SILICON_PERMITTIVITY
                 / (oxide * geometry.single_width),
             mobility_modulation: non_negative("mobility_modulation", self.mobility_modulation)?,
-            saturation_field_factor: ParameterError::positive(
+            saturation_field_factor: ParameterError::non_negative(
                 "saturation_field_factor",
                 self.saturation_field_factor.unwrap_or(R::constant(0.2)),
             )?,
@@ -1427,9 +1428,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
-        assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
@@ -1587,18 +1589,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Mosfet>(CHARGED);
-        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
-        let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
-        let n_residuals = n.settle(&x).residual;
-        let p_residuals = p.settle(&mirrored).residual;
-        for (n_residual, p_residual) in n_residuals.iter().zip(&p_residuals) {
-            assert!(
-                (n_residual + p_residual).abs() < 1e-18,
-                "{n_residuals:?} {p_residuals:?}"
-            );
-        }
+        assert_mirrors(&Differentiable::<Mosfet>::new(), CHARGED, &x);
     }
 
     #[test]

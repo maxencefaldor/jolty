@@ -101,7 +101,7 @@ use serde::Deserialize;
 
 pub use ac::{Ac, AcResult};
 pub use analysis::{Analysis, AnalysisResult};
-pub use elaborate::{Composite, ElaborationError, ElaborationProblem, Location};
+pub use elaborate::{ElaborationError, ElaborationProblem, Location, SummedTerminal};
 pub use elaborated::{Elaborated, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
@@ -366,8 +366,8 @@ impl Simulator {
     /// charges sum to its own. One on the reference, which is the ambient as well as the
     /// ground, sums its electrical terminals only.
     #[must_use]
-    pub fn composites(&self) -> &[Composite] {
-        &self.elaborated.composites
+    pub fn summed_terminals(&self) -> &[SummedTerminal] {
+        &self.elaborated.summed_terminals
     }
 
     /// The node that the terminal `terminal` of the device, component instance or logic

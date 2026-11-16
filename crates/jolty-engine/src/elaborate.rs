@@ -27,7 +27,7 @@ use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
 /// is the ambient as well as the ground, so a port on it sums its electrical terminals
 /// only: heat into the ambient is no current.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Composite {
+pub struct SummedTerminal {
     /// Its instance's path and its own name, such as `X1.vdd`.
     pub(crate) name: String,
     /// Its instance's path, such as `X1`.
@@ -40,7 +40,7 @@ pub struct Composite {
     pub(crate) members: Vec<(usize, usize)>,
 }
 
-impl Composite {
+impl SummedTerminal {
     /// Its instance's path and its own name, such as `X1.vdd`.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -409,8 +409,8 @@ pub(crate) fn elaborate(
         return Err(ElaborationError(problems));
     };
     let bound = binder.finish()?;
-    let composites = composites(&ports, &pins, &classes, &templates);
-    let parts = (partition, composites, ground.clone());
+    let summed_terminals = summed_terminals(&ports, &pins, &classes, &templates);
+    let parts = (partition, summed_terminals, ground.clone());
     Ok(Elaborated::assemble(bound, parts, temperature))
 }
 
@@ -418,12 +418,12 @@ pub(crate) fn elaborate(
 /// thermal, each with the device terminals it sums: the ports, in the order the walk met
 /// them, then the logic devices' pins and terminals. The analog devices were placed in the
 /// order the walk found them, so the walk's index of each is its index among the devices.
-fn composites(
+fn summed_terminals(
     ports: &[PortRecord],
     pins: &[LogicPins],
     classes: &Classes<'_>,
     templates: &[Arc<Template>],
-) -> Vec<Composite> {
+) -> Vec<SummedTerminal> {
     let ports = ports
         .iter()
         .filter(|port| port.net.is_none_or(|net| classes.nodes[net].is_some()))
@@ -444,7 +444,7 @@ fn composites(
                     Member::Logic { device, pin } => pins[device].members(pin),
                 })
                 .collect();
-            Composite {
+            SummedTerminal {
                 name: port.name.clone(),
                 owner: port.owner.clone(),
                 node: classes.node(port.net),
@@ -455,7 +455,7 @@ fn composites(
     let logic = pins.iter().flat_map(|device| {
         (0..device.names.len()).filter_map(|pin| {
             let on_electrical = pin >= device.elements.len() || device.elements[pin].is_some();
-            on_electrical.then(|| Composite {
+            on_electrical.then(|| SummedTerminal {
                 name: format!("{}.{}", device.path, device.names[pin]),
                 owner: device.path.clone(),
                 node: classes.node(device.nets[pin]),

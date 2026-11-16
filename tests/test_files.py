@@ -325,7 +325,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 16
+    assert header["version"] == 17
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

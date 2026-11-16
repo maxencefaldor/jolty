@@ -186,7 +186,8 @@ pub(crate) fn critical_voltage(saturation: f64, slope: f64) -> f64 {
 /// backward falls to the critical voltage, as in SPICE3. A step deep into reverse bias is
 /// bounded, as in ngspice. Returns the limited voltage, or `None` when `new` needs no
 /// limiting.
-pub(crate) fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
+#[must_use]
+pub fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
     if new > critical && (new - old).abs() > 2.0 * slope {
         Some(if old > 0.0 {
             let argument = 1.0 + (new - old) / slope;
@@ -214,7 +215,8 @@ pub(crate) fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> O
 /// around its `threshold`: steps are bounded relative to the distance from the threshold,
 /// so the drain current's square law cannot overshoot. Returns the limited voltage, or
 /// `None` when `new` needs no limiting.
-pub(crate) fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
+#[must_use]
+pub fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     let high = (2.0 * (old - threshold)).abs() + 2.0;
     let low = (old - threshold).abs() + 1.0;
     let on = threshold + 3.5;

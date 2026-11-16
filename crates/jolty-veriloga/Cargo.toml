@@ -1,0 +1,44 @@
+[package]
+name = "jolty-veriloga"
+description = "A compiler of Verilog-A into jolty's device kernels, and the kernels it compiled."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["kernels"]
+# The kernels compiled from Verilog-A, which the compiler itself does not need.
+kernels = []
+# The tests of the models compiled from sources the repository does not hold, which
+# `tests/test_veriloga.py` fetches and compiles into `tests/fetched/kernels/` first.
+fetched = []
+
+[dependencies]
+jolty-models.workspace = true
+schemars.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+criterion.workspace = true
+jolty-engine.workspace = true
+jolty-ir.workspace = true
+jolty-models = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
+
+[[bench]]
+name = "evaluation"
+harness = false
+
+[[test]]
+name = "fetched"
+path = "tests/fetched/main.rs"
+required-features = ["fetched"]
+
+[lints]
+workspace = true

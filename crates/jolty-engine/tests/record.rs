@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 
 use jolty_engine::{
-    Ac, Composite, Conditions, DcSweep, Method, Options, Record, RecordedValues, RecordedView,
-    Recording, Simulator, Transient,
+    Ac, Conditions, DcSweep, Method, Options, Record, RecordedValues, RecordedView, Recording,
+    Simulator, SummedTerminal, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -77,7 +77,7 @@ fn tight() -> Options {
 
 /// The names of the values every observation holds under `record`, as [`Recording`] lays
 /// them out: each terminal of each recorded device, such as `R1.a`, then each recorded
-/// composite terminal; each pair of each recorded device's unknowns, its terminals then its
+/// summed terminal; each pair of each recorded device's unknowns, its terminals then its
 /// internal unknowns, row by row; and each recorded device's variables.
 #[derive(Debug, Default)]
 struct Columns {
@@ -117,12 +117,13 @@ impl Columns {
                     .map(|&name| (placed.path().to_owned(), name)),
             );
         }
-        columns.terminals.extend(
-            recorded
-                .composites
-                .iter()
-                .map(|&composite| simulator.composites()[composite].name().to_owned()),
-        );
+        columns
+            .terminals
+            .extend(recorded.summed_terminals.iter().map(|&summed_terminal| {
+                simulator.summed_terminals()[summed_terminal]
+                    .name()
+                    .to_owned()
+            }));
         columns
     }
 
@@ -169,7 +170,7 @@ fn per_node<T: Copy + Into<Complex64>>(simulator: &Simulator, values: &[T]) -> P
         }
     }
     assert_eq!(
-        index + simulator.composites().len(),
+        index + simulator.summed_terminals().len(),
         values.len(),
         "a value per terminal"
     );
@@ -467,13 +468,13 @@ fn nested(outside: (&str, &str)) -> Simulator {
         .expect("an elaborated circuit")
 }
 
-/// Each composite terminal's name, with the device terminals it sums, by name.
-fn composites(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
+/// Each summed terminal's name, with the device terminals it sums, by name.
+fn summed_terminals(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
     simulator
-        .composites()
+        .summed_terminals()
         .iter()
-        .map(|composite| {
-            let members = composite
+        .map(|summed_terminal| {
+            let members = summed_terminal
                 .members()
                 .iter()
                 .map(|&(device, terminal)| {
@@ -481,7 +482,7 @@ fn composites(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
                     format!("{}.{}", placed.path(), placed.terminals()[terminal])
                 })
                 .collect();
-            (composite.name(), members)
+            (summed_terminal.name(), members)
         })
         .collect()
 }
@@ -490,7 +491,7 @@ fn composites(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
 fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
     let mut simulator = nested(("in", "0"));
     assert_eq!(
-        composites(&simulator),
+        summed_terminals(&simulator),
         [
             ("X1.p", vec!["X1/X2/R1.a".to_owned(), "X1/R4.a".to_owned()]),
             ("X1.q", vec!["X1/X2/R2.b".to_owned(), "X1/R4.b".to_owned()]),
@@ -499,9 +500,9 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
         ]
     );
     let owners: Vec<&str> = simulator
-        .composites()
+        .summed_terminals()
         .iter()
-        .map(Composite::owner)
+        .map(SummedTerminal::owner)
         .collect();
     assert_eq!(owners, ["X1", "X1", "X1/X2", "X1/X2"]);
     let columns = Columns::from_record(&simulator, &Record::All);
@@ -516,7 +517,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
     );
     assert!((current("X1.q") + 4.5e-3).abs() < 1e-12);
     assert!((current("X1/X2.a") - 1.5e-3).abs() < 1e-12);
-    for (name, members) in composites(&simulator) {
+    for (name, members) in summed_terminals(&simulator) {
         let summed: f64 = members.iter().map(|member| current(member)).sum();
         assert_exact(current(name), summed);
     }
@@ -536,7 +537,7 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
     let record = instances(&["X1"]);
     let recorded = simulator.recorded(&record, false);
     assert_eq!(recorded.devices, Vec::<usize>::new());
-    assert_eq!(recorded.composites, [0, 1]);
+    assert_eq!(recorded.summed_terminals, [0, 1]);
     let options = Options {
         record: record.clone(),
         ..tight()
@@ -580,7 +581,11 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "y", "b": "0"}}
     ]));
-    let named: Vec<&str> = simulator.composites().iter().map(Composite::name).collect();
+    let named: Vec<&str> = simulator
+        .summed_terminals()
+        .iter()
+        .map(SummedTerminal::name)
+        .collect();
     assert_eq!(named, ["U1.a", "U1.y", "U1.supply", "U1.ground"]);
     let transient = Transient {
         stop: 1e-8,

@@ -176,7 +176,7 @@ class _Index:
                 for device in recording.devices
                 for terminal in device.terminals
             ),
-            *recording.composites,
+            *recording.summed_terminals,
         )
         unknowns: dict[str, tuple[int, int]] = {}
         blocks: list[tuple[int, int]] = []
@@ -208,12 +208,12 @@ class Recording:
     """What a result recorded of the devices beside the unknowns, and where.
 
     A result's `currents` and `charges` have a column for each terminal of each of
-    `devices`, in order, then one for each of `composites`, each the sum of the device
-    terminals behind it; its `conductances` and `capacitances` have one for each pair of
-    each device's unknowns, its terminals then its internal unknowns, row by row; and
-    its `variables` one for each of each device's variables. Each is found by name in a
-    dictionary, made the first time one is read. A simulation records what the plan's or
-    the analysis's ``record`` names (see [`Plan`][jolty.plan.Plan]).
+    `devices`, in order, then one for each of `summed_terminals`, each the sum of the
+    device terminals behind it; its `conductances` and `capacitances` have one for each
+    pair of each device's unknowns, its terminals then its internal unknowns, row by
+    row; and its `variables` one for each of each device's variables. Each is found by
+    name in a dictionary, made the first time one is read. A simulation records what the
+    plan's or the analysis's ``record`` names (see [`Plan`][jolty.plan.Plan]).
 
     Examples:
         >>> recording = Recording((RecordedDevice("R1", ("a", "b")),), ("X1.p",))
@@ -225,11 +225,11 @@ class Recording:
 
     devices: tuple[RecordedDevice, ...] = ()
     """The devices recorded, in order."""
-    composites: tuple[str, ...] = ()
+    summed_terminals: tuple[str, ...] = ()
     """The terminals recorded of component instances and logic devices, such as
     ``X1.vdd``, in order."""
     thermal: frozenset[str] = frozenset()
-    """The thermal terminals among the devices' and the composites', such as
+    """The thermal terminals among the devices' and the summed terminals', such as
     ``Q1.thermal``: each one's current is the heat flowing into it, in watts."""
     _index: list[_Index] = field(
         default_factory=list, init=False, repr=False, compare=False
@@ -329,7 +329,8 @@ class Recording:
         """Whether the result recorded the device or the terminals at `instance`."""
         prefix = f"{instance}."
         return instance in self._columns().devices or any(
-            composite.startswith(prefix) for composite in self.composites
+            summed_terminal.startswith(prefix)
+            for summed_terminal in self.summed_terminals
         )
 
     def _columns(self) -> _Index:

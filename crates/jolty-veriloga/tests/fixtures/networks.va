@@ -1,0 +1,45 @@
+// Shorts and branch currents, written to exercise how the compiler joins nodes and
+// keeps currents: the current of a short read, a node joined to another by a short,
+// two nodes joined to each other and through one to the ground where a parameter says,
+// and the noise of a branch whose current another branch reads, as PSP's drain reads
+// its induced gate noise's.
+
+`include "disciplines.vams"
+
+module networks(a, b);
+    inout a, b;
+    electrical a, b;
+    electrical inner, joined, upper, lower, noise;
+    branch (a, inner) short;
+    branch (noise) source;
+    branch (noise) load;
+
+    (* desc = "The resistance of each resistor", units = "Ohm" *)
+    parameter real r = 1e3 from (0:inf);
+    (* desc = "The share of the noise current a's current carries" *)
+    parameter real k = 0.1;
+    (* desc = "The density of the noise current", units = "A^2/Hz" *)
+    parameter real s = 1e-20 from [0:inf);
+    (* desc = "Whether the lower node is shorted to the ground" *)
+    parameter integer grounded = 0 from [0:1];
+
+    (* desc = "The current of the short from a to the inner node", units = "A" *)
+    real shorted;
+
+    analog begin
+        V(short) <+ 0;
+        V(inner, joined) <+ 0;
+        I(inner, b) <+ V(inner, b) / r;
+        I(joined, b) <+ V(joined, b) / r;
+        shorted = I(short);
+        V(upper, lower) <+ 0;
+        if (grounded)
+            V(lower) <+ 0;
+        else
+            I(lower) <+ V(lower) / r;
+        I(a, upper) <+ V(a, upper) / r;
+        I(source) <+ white_noise(s, "source");
+        I(load) <+ V(load) / r;
+        I(a, b) <+ k * I(source);
+    end
+endmodule

@@ -3,6 +3,8 @@
 .venv-free-threaded/
 # What cargo-mutants writes: a run's outcomes, and those of the run before it
 mutants.out*/
+# The kernels compiled from the third-party Verilog-A sources the tests fetch
+crates/jolty-veriloga/tests/fetched/kernels/
 __pycache__/
 .hypothesis/
 .pytest_cache/

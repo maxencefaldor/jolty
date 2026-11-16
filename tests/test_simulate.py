@@ -574,7 +574,12 @@ def divider_cell(c: Builder) -> None:
 def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
     simulation = Simulation(two_dividers())
     point = simulation.run(OperatingPoint(record=["X1", "X2"]))
-    assert point.recording.composites == ("X1.top", "X1.bottom", "X2.top", "X2.bottom")
+    assert point.recording.summed_terminals == (
+        "X1.top",
+        "X1.bottom",
+        "X2.top",
+        "X2.bottom",
+    )
     assert point.recording.devices == ()
     assert point.current("X1", "top") == pytest.approx(2e-3)
     assert point.current("X2", "bottom") == pytest.approx(-2e-3)
@@ -621,7 +626,7 @@ def test_a_record_names_instances_and_patterns_of_their_paths() -> None:
     )
     point = simulation.run(OperatingPoint(record=["X1/**", "X2"]))
     assert [device.path for device in point.recording.devices] == ["X1/R1", "X1/R2"]
-    assert point.recording.composites == ("X2.top", "X2.bottom")
+    assert point.recording.summed_terminals == ("X2.top", "X2.bottom")
     assert point.current("X1/R1", "a") == pytest.approx(2e-3)
     assert point.current("X2", "top") == pytest.approx(2e-3)
     starred = simulation.run(OperatingPoint(record=["X?/R1"]))
