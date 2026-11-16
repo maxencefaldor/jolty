@@ -141,8 +141,8 @@ impl Method {
     pub fn longest_common_step(
         self,
         previous_step: f64,
-        constant_step: (f64, Bound),
-        mut shortest: impl FnMut((f64, f64)) -> (f64, Bound),
+        constant_step: (f64, ErrorBound),
+        mut shortest: impl FnMut((f64, f64)) -> (f64, ErrorBound),
     ) -> f64 {
         if !self.is_multistep() {
             return constant_step.0;
@@ -158,8 +158,8 @@ impl Method {
                 return reach;
             }
             let power = match bound {
-                Bound::Charge => by_charge,
-                Bound::Current => by_current,
+                ErrorBound::Charge => by_charge,
+                ErrorBound::Current => by_current,
             };
             // The slope of ln Λ(C(h/h₀)) in ln h, and Newton's step on ln Λ − ln h.
             let slope = -power * gear2_elasticity(ratio);
@@ -229,7 +229,7 @@ fn gear2_elasticity(ratio: f64) -> f64 {
 
 /// Which of a charge's two tolerances holds its longest step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Bound {
+pub enum ErrorBound {
     /// The tolerance on the charge.
     Charge,
     /// The tolerance on the current it carries, which grows with the step.
@@ -245,12 +245,12 @@ pub const CONSTANT_STEP: (f64, f64) = (1.0, 1.0);
 /// from its [unit steps](Method::unit_steps) `unit`: the longer of the two, and the tolerance
 /// that holds it, its charge's where they are equal.
 #[must_use]
-pub fn longest_at((by_charge, by_current): (f64, f64), scales: (f64, f64)) -> (f64, Bound) {
+pub fn longest_at((by_charge, by_current): (f64, f64), scales: (f64, f64)) -> (f64, ErrorBound) {
     let (charge, current) = (by_charge * scales.0, by_current * scales.1);
     if charge >= current {
-        (charge, Bound::Charge)
+        (charge, ErrorBound::Charge)
     } else {
-        (current, Bound::Current)
+        (current, ErrorBound::Current)
     }
 }
 
@@ -487,8 +487,8 @@ mod tests {
                     units
                         .iter()
                         .map(|&unit| longest_at(unit, scales))
-                        .min_by(|a: &(f64, Bound), b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-                        .unwrap_or((f64::INFINITY, Bound::Charge))
+                        .min_by(|a: &(f64, ErrorBound), b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                        .unwrap_or((f64::INFINITY, ErrorBound::Charge))
                 };
                 let constant_step = shortest(method.scales(1.0));
                 let common = method.longest_common_step(previous_step, constant_step, shortest);

@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use jolty_models::{Input, LogicLevel};
 use jolty_numerics::integration::{
-    Bound, CONSTANT_STEP, Formula, Method, divided_difference, longest_at,
+    CONSTANT_STEP, ErrorBound, Formula, Method, divided_difference, longest_at,
 };
 use serde::Deserialize;
 
@@ -1271,7 +1271,7 @@ impl Simulator {
                 worst: 0,
                 longest: f64::INFINITY,
             },
-            (f64::INFINITY, Bound::Charge),
+            (f64::INFINITY, ErrorBound::Charge),
         );
         // The largest ratio, at the first unknown that reaches it, and the shortest of the
         // charges' longest steps at a constant step's error constant, found in each piece and
@@ -1394,8 +1394,8 @@ fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
 /// The shortest of the charges' longest steps at the scales `scales`, from their unit steps
 /// `units`, and the tolerance that holds it: on one thread, one charge after another; spread,
 /// by pieces, which find the same, as `least` is a total order.
-fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) -> (f64, Bound) {
-    let none = (f64::INFINITY, Bound::Charge);
+fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) -> (f64, ErrorBound) {
+    let none = (f64::INFINITY, ErrorBound::Charge);
     if inside.is_none() {
         return units
             .iter()
@@ -1414,7 +1414,7 @@ fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) ->
 
 /// The shorter of two charges' longest steps, and the tolerance that holds it: the least by
 /// length, then by tolerance, so that the same is found however the pieces split the charges.
-fn least(a: (f64, Bound), b: (f64, Bound)) -> (f64, Bound) {
+fn least(a: (f64, ErrorBound), b: (f64, ErrorBound)) -> (f64, ErrorBound) {
     if b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).is_lt() {
         b
     } else {
