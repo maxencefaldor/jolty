@@ -1,7 +1,7 @@
 {
   "simulators": {
     "jolty": {
-      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "commit": "af5dc2dd9f329ef1e19c7ac68fa7d40d2b12e803-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -16,11 +16,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "jolty 0.1.0",
-      "load": 14.31591796875,
-      "date": "2026-11-15"
+      "load": 5.763671875,
+      "date": "2026-11-16"
     },
     "ngspice-sparse": {
-      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "commit": "af5dc2dd9f329ef1e19c7ac68fa7d40d2b12e803-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -35,11 +35,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 14.31591796875,
-      "date": "2026-11-15"
+      "load": 5.763671875,
+      "date": "2026-11-16"
     },
     "ngspice-klu": {
-      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "commit": "af5dc2dd9f329ef1e19c7ac68fa7d40d2b12e803-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -54,8 +54,8 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 14.31591796875,
-      "date": "2026-11-15"
+      "load": 5.763671875,
+      "date": "2026-11-16"
     },
     "xyce-serial": {
       "commit": "092e86f461070c479575c90ee88f587c93d238ea",
@@ -3565,9 +3565,14 @@
       },
       "cells": {
         "jolty": {
-          "status": "unsupported",
-          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.func twice(x) {2*x}`",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
         },
         "ngspice-sparse": {
           "status": "agreed",

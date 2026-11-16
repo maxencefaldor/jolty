@@ -52,6 +52,7 @@ from jolty.plan import (
 from jolty.simulate import Simulation
 from jolty.specs import Specs, crossing, evaluate
 from jolty.spice import Library, export, ngspice
+from jolty.spice.library import FUNCTION, INITIAL
 from jolty.units import (
     A,
     Hz,
@@ -228,7 +229,9 @@ def _rejected(error: JoltyError) -> Unsupported:
 def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
     """A deck's elements read by jolty's SPICE reader, as the top of a circuit.
 
-    The deck's title is left out, and its other lines become a subcircuit's body.
+    The deck's title is left out, its subcircuits and the statements a library reads
+    outside them, its functions, initial conditions and nodesets, stay outside, and its
+    other lines become a subcircuit's body.
 
     Raises:
         Unsupported: When the reader refuses a line, with its message.
@@ -239,7 +242,8 @@ def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
     for line in lines[1:]:
         keyword = line.split()[0].casefold() if line.split() else ""
         within = within or keyword == ".subckt"
-        (definitions if within else elements).append(line)
+        outside = within or keyword in {FUNCTION, *INITIAL}
+        (definitions if outside else elements).append(line)
         within = within and keyword != ".ends"
     library = Library()
     try:

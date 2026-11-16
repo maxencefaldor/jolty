@@ -1367,3 +1367,43 @@ def test_a_name_that_holds_a_path_separator_is_refused(
 ) -> None:
     with pytest.raises(SpiceError, match=re.escape(message)):
         library(f".subckt part a\n{element}\nR2 a 0 1k\n.ends").component("part")
+
+
+def test_user_functions_are_written_out_in_every_expression() -> None:
+    parts = library(
+        ".func twice(x) {2*x}\n"
+        ".func Quad(x) = {twice(twice(x))}\n"
+        ".param p={quad(1)}\n"
+        ".subckt parts a\n"
+        "R1 a 0 {twice(p)}\n"
+        "B1 b 0 V={twice(V(a))}\n"
+        "R2 b 0 1k\n"
+        ".ends"
+    )
+    read = {
+        instance.name: instance.parameters
+        for instance in parts.component("parts").definition.instances
+    }
+    assert parts.values()["p"] == 4.0
+    assert read["R1"]["resistance"] == 8.0
+    assert read["B1"]["expression"] == "(2.0 * v(a))"
+
+
+@pytest.mark.parametrize(
+    ("functions", "message"),
+    [
+        (".func f(x) {f(x)}", "a function calls itself: `f` calls `f`"),
+        (
+            ".func f(x) {g(x)}\n.func g(x) {1 + f(x)}",
+            "a function calls itself: `f` calls `g` calls `f`",
+        ),
+        (".func f(x, y) {x*y}", "`f` takes 2 arguments, not 1"),
+    ],
+)
+def test_a_function_that_calls_itself_is_refused_by_name(
+    functions: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=re.escape(message)):
+        library(f"{functions}\n.subckt part a\nR1 a 0 {{f(2)}}\n.ends").component(
+            "part"
+        )
