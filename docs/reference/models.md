@@ -1556,6 +1556,15 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 
+## `transmission_line`
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `characteristic_impedance` | required | The characteristic impedance `Z₀`, in ohms, SPICE's `Z0`; positive. |
+| `delay` | required | The time a wave takes from one port to the other, in seconds, SPICE's `TD`; positive. |
+| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+
 ## `vbic`
 
 | Parameter | Default | Description |

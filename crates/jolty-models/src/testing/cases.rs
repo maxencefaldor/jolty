@@ -168,6 +168,11 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
                 "law": "exponential"}"#,
         &[1.0, 0.0, 0.5],
     ),
+    (
+        "transmission_line",
+        r#"{"characteristic_impedance": 50, "delay": 1e-9}"#,
+        &[1.0, 0.0, 0.5, 0.0, 2e-3, -1e-3],
+    ),
     ("thermal_resistance", r#"{"resistance": 10}"#, &[5.0, 0.0]),
     ("thermal_capacitance", r#"{"capacitance": 2}"#, &[5.0, 0.0]),
     (

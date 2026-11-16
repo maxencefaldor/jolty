@@ -26,6 +26,7 @@ from jolty import _core, ir
 from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, ngspice, sky130, xyce
+from jolty.spice.library import TRANSMISSION_LINE
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 from jolty.units import ZERO_CELSIUS
 from jolty.unknowns import Unknown
@@ -185,6 +186,10 @@ XYCE: Final = Dialect(
             "which is ngspice's, yet"
         ),
         "foundry_mosfet": "SKY130's process design kit is written for ngspice",
+        "transmission_line": (
+            "Xyce's lossless line, its T, is not compared with jolty's, which is "
+            "ngspice's, yet"
+        ),
     },
 )
 """Xyce 7.10.0's dialect: its devices' parameters, as its sources name them, and the
@@ -304,6 +309,9 @@ ELEMENTS = {
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
     "voltage_controlled_memristor": Element("B", ("positive", "negative")),
     "current_controlled_memristor": Element("B", ("positive", "negative")),
+    "transmission_line": Element(
+        "T", ("positive1", "negative1", "positive2", "negative2")
+    ),
 }
 
 
@@ -848,10 +856,26 @@ def _device(
             except ValueError as error:
                 raise _unwritable(str(error)) from None
         case _:
-            (number,) = values.values()
-            value = repr(number)
+            value = _value(model, values)
     lines.append(f"{element(instance, dialect)} {nodes} {value}{own}")
     return lines
+
+
+_KEYWORDED: Final = {"transmission_line": TRANSMISSION_LINE}
+"""The elements SPICE writes the values of as keywords: each parameter by its SPICE
+names, the first its own."""
+
+
+def _value(model: str, values: Mapping[str, JsonValue]) -> str:
+    """The value of an element of `model`: one number, or its keywords."""
+    keywords = _KEYWORDED.get(model)
+    if keywords is None:
+        (number,) = values.values()
+        return repr(number)
+    names: dict[str, str] = {}
+    for spice, name in keywords.items():
+        names.setdefault(name, spice.upper())
+    return " ".join(f"{spice}={values[name]!r}" for name, spice in names.items())
 
 
 def _varying(

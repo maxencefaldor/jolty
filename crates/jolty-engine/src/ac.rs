@@ -2,7 +2,7 @@
 
 use std::f64::consts::TAU;
 
-use jolty_models::{Contributions, Nature, UnknownIndex};
+use jolty_models::{Contributions, DelayedEntry, Nature, UnknownIndex};
 use jolty_numerics::Complex64;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -61,7 +61,7 @@ impl Simulator {
                     .observer
                     .currents(&self.elaborated.groups, &self.state.runs, index);
             let found = over_frequencies(
-                Linearization::new(&self.state.solver),
+                self.linearization(),
                 &self.state.workspace.contributions,
                 &ac.frequencies,
                 &options.parallelism,
@@ -116,6 +116,43 @@ impl Simulator {
         let operating_point = self.operating_point(options)?;
         self.evaluate(&operating_point.values, None, (1.0, options.gmin), true);
         Ok(operating_point)
+    }
+
+    /// The matrices of the circuit linearized at the operating point the workspace was
+    /// last evaluated at, to factor at any frequency: `G + sC`, and the parts of `G` its
+    /// delay lines read in the past each times `e^{−s·delay}`.
+    pub(crate) fn linearization(&self) -> Linearization {
+        let delayed = self.state.runs.delayed(&self.elaborated.groups);
+        Linearization::new(&self.state.solver, delayed)
+    }
+
+    /// Fails with [`SimulationError::Delayed`], for `analysis` and the `reason` it gives,
+    /// when the circuit holds a delay line.
+    pub(crate) fn undelayed(
+        &self,
+        analysis: &'static str,
+        reason: &'static str,
+    ) -> Result<(), SimulationError> {
+        let mut devices: Vec<usize> = self
+            .state
+            .runs
+            .delayed(&self.elaborated.groups)
+            .iter()
+            .map(|part| part.device)
+            .collect();
+        if devices.is_empty() {
+            return Ok(());
+        }
+        devices.sort_unstable();
+        devices.dedup();
+        Err(SimulationError::Delayed {
+            analysis,
+            reason,
+            devices: devices
+                .into_iter()
+                .map(|device| format!("`{}`", self.elaborated.devices[device].path()))
+                .collect(),
+        })
     }
 
     /// The unknown named `output`, and the one named `reference` it is taken over, if
@@ -324,22 +361,28 @@ impl<R> FrequencyRun<R> {
 }
 
 /// The matrix `G + jωC` of a circuit linearized at its operating point, factored at any
-/// frequency.
+/// frequency, each part of `G` a delay line reads in the past multiplied by `e^{−jωτ}`,
+/// `τ` its delay.
 #[derive(Clone)]
 pub(crate) struct Linearization {
     solver: Solver<Complex64>,
     matrix: Vec<Complex64>,
     refinement: Refinement<Complex64>,
+    /// Each part of `G` that a delay line reads in the past, which `G` holds whole, as
+    /// at DC.
+    delayed: Vec<DelayedEntry>,
 }
 
 impl Linearization {
     /// A linearization over the matrices of `solver`, the simulator's, whose ordering it
-    /// shares.
-    pub(crate) fn new(solver: &Solver<f64>) -> Self {
+    /// shares, of a circuit whose delay lines read the parts `delayed` of its `G` in the
+    /// past.
+    pub(crate) fn new(solver: &Solver<f64>, delayed: Vec<DelayedEntry>) -> Self {
         Self {
             solver: solver.sharing(),
             matrix: vec![Complex64::default(); solver.pattern().len()],
             refinement: Refinement::default(),
+            delayed,
         }
     }
 
@@ -372,6 +415,11 @@ impl Linearization {
             .zip(&contributions.capacitance)
         {
             *value = conductance + s * capacitance;
+        }
+        for part in &self.delayed {
+            if let Some(value) = self.matrix.get_mut(part.position as usize) {
+                *value += ((-s * part.delay).exp() - 1.0) * part.conductance;
+            }
         }
         self.solver
             .factor_refined(&self.matrix, &mut self.refinement)

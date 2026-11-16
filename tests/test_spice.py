@@ -512,6 +512,54 @@ def test_a_mutual_inductance_couples_inductors_it_names(
         library(f".subckt a x\nL1 x 0 1m\nL2 x 0 1m\n{text}\n.ends").component("a")
 
 
+def test_transmission_lines_read_their_delay_as_ngspice_does() -> None:
+    parts = library(
+        ".subckt a p q r\nT1 p 0 q 0 Z0=50 TD=1n IC=1,0,1,0\n"
+        "T2 q 0 r 0 ZO=75 F=100meg NL=0.5\nT3 r 0 0 0 Z0=50\n.ends"
+    )
+    timed, normalized, defaulted = parts.component("a").definition.instances
+    assert timed.of == ir.DeviceOf(model="transmission_line")
+    assert timed.parameters == {"characteristic_impedance": 50.0, "delay": 1e-9}
+    assert timed.terminals == {
+        "positive1": "p",
+        "negative1": spice.GROUND,
+        "positive2": "q",
+        "negative2": spice.GROUND,
+    }
+    # A half wavelength at 100 MHz, and ngspice's quarter wavelength at 1 GHz.
+    assert normalized.parameters["delay"] == pytest.approx(5e-9, rel=1e-15)
+    assert defaulted.parameters["delay"] == pytest.approx(0.25e-9, rel=1e-15)
+
+    @component
+    def matched(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        line = c.place(devices.transmission_line(50 * ohm, 1 * ns), name="T1")
+        load = c.place(devices.resistor(50 * ohm), name="R1")
+        c.connect(source.positive, line.positive1, name="a")
+        c.connect(line.positive2, load.a, name="b")
+        c.connect(source.negative, line.negative1, line.negative2, load.b, ground)
+
+    written = [line for line in netlist(circuit(matched())) if line.startswith("T")]
+    assert written == ["TT1 a 0 b 0 Z0=50.0 TD=1e-09"]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("T1 x 0 y 0 TD=1n", "gives its characteristic impedance, `Z0`"),
+        ("T1 x 0 y Z0=50 TD=1n", "joins four nodes"),
+        ("T1 x 0 y 0 Z0=50 TD=1n LEN=2", "jolty reads no `LEN` here"),
+        ("O1 x 0 y 0 LOSSY", "of letter `O`, ngspice's lossy transmission line, LTRA"),
+    ],
+)
+def test_a_transmission_line_is_read_whole_and_a_lossy_one_refused(
+    text: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=message):
+        library(f".subckt a x y\n{text}\n.ends").component("a")
+
+
 def test_a_current_controlled_switch_senses_its_source_in_series() -> None:
     parts = library(
         ".model SW ISWITCH(ION=2m IOFF=1m RON=10)\n"
@@ -1271,6 +1319,7 @@ def _every_model() -> list[devices.Device]:
         devices.resistor(1 * kohm).held_at(celsius(85)),
         devices.thermal_capacitance(1 * J / K),
         devices.thermal_resistance(10 * K / W),
+        devices.transmission_line(50 * ohm, 1 * ns),
         devices.voltage_controlled_current_source(1e-3 * A / V),
         devices.voltage_controlled_memristor(
             on_resistance=1 * kohm,

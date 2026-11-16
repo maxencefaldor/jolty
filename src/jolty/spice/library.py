@@ -1321,7 +1321,9 @@ class _Translation:
         letter = _letter(statement)
         translate = _ELEMENTS.get(letter)
         if translate is None:
-            message = f"jolty has no element of letter `{letter.upper()}`"
+            kind = _UNREAD_ELEMENTS.get(letter)
+            named = "" if kind is None else f", {kind}"
+            message = f"jolty has no element of letter `{letter.upper()}`{named}"
             raise statement.fail(message)
         translate(self, statement)
 
@@ -1514,8 +1516,17 @@ _ELEMENT_KINDS: Final = {
     "h": "controlled source",
     "b": "behavioral source",
     "k": "mutual inductance",
+    "t": "transmission line",
 }
 """What an element of a letter is when it names no model card."""
+
+_UNREAD_ELEMENTS: Final = {
+    "o": "ngspice's lossy transmission line, LTRA",
+    "u": "ngspice's uniform RC line, URC",
+    "y": "ngspice's lossy transmission line, TXL",
+    "p": "ngspice's coupled transmission lines, CPL",
+}
+"""The elements ngspice has and jolty reads not yet, by letter, and what each is."""
 
 
 def _needed(translation: _Translation, statement: Statement) -> str:
@@ -2546,6 +2557,83 @@ def _current_switch(translation: _Translation, statement: Statement) -> None:
     )
 
 
+TRANSMISSION_LINE: Final = {
+    "z0": "characteristic_impedance",
+    "zo": "characteristic_impedance",
+    "td": "delay",
+}
+"""A T element's parameters, by the SPICE names ngspice's ``tra.c`` (lines 13 to 16)
+gives them, each parameter's own name first."""
+
+_LINE_KEYWORDS: Final = frozenset(
+    {*TRANSMISSION_LINE, "f", "nl", "v1", "i1", "v2", "i2"}
+)
+"""What a T element gives: its parameters, the frequency at which it is a normalized
+length, and initial conditions, as ``tra.c`` (lines 13 to 22) names them."""
+
+_QUARTER_WAVE_AT_GHZ: Final = (0.25, 1e9)
+"""A T element's normalized length and frequency where it gives neither, as ngspice's
+``trasetup.c`` (lines 94 to 99) sets them: a quarter wavelength at 1 GHz."""
+
+
+def _transmission_line(translation: _Translation, statement: Statement) -> None:
+    """A T element, a lossless transmission line, between two ports of two nodes.
+
+    Its characteristic impedance is ``Z0``, or ``ZO``. Its delay is ``TD``, or else the
+    normalized length ``NL`` over the frequency ``F``, either taking ngspice's default
+    where it is not given (``tratemp.c``, lines 35 to 37). Its initial conditions,
+    ``IC`` or ``V1``, ``I1``, ``V2`` and ``I2``, change nothing jolty computes, as an
+    element's ``IC`` does not.
+    """
+    positional, assigned = _keywords(tokens(statement.text))
+    _check_keywords(statement, assigned, _LINE_KEYWORDS)
+    if len(positional) != 5:  # noqa: PLR2004 - a name and four nodes
+        message = "a transmission line joins four nodes"
+        raise statement.fail(message)
+    _, *nodes = positional
+
+    def given(name: str) -> float | None:
+        words = assigned.get(name)
+        if words is None:
+            return None
+        if len(words) != 1:
+            message = f"`{name.upper()}` has one value"
+            raise statement.fail(message)
+        return translation.value(words[0])
+
+    read: dict[str, float] = {}
+    for spice, name in TRANSMISSION_LINE.items():
+        value = given(spice)
+        if value is not None:
+            read.setdefault(name, value)
+    impedance = read.get("characteristic_impedance")
+    if impedance is None:
+        message = "a transmission line gives its characteristic impedance, `Z0`"
+        raise statement.fail(message)
+    delay = read.get("delay")
+    if delay is None:
+        length, frequency = given("nl"), given("f")
+        default_length, default_frequency = _QUARTER_WAVE_AT_GHZ
+        delay = (default_length if length is None else length) / (
+            default_frequency if frequency is None else frequency
+        )
+    parameters: dict[str, JsonValue] = {
+        "characteristic_impedance": impedance,
+        "delay": delay,
+    }
+    # The line's terminals are in the order of SPICE's nodes, each port's in turn.
+    terminals = device("transmission_line", parameters).terminals
+    translation.add(
+        statement,
+        "transmission_line",
+        parameters,
+        {
+            terminal: translation.net(node)
+            for terminal, node in zip(terminals, nodes, strict=True)
+        },
+    )
+
+
 def _instance(translation: _Translation, statement: Statement) -> None:
     """An X instance of a subcircuit, with its parameters."""
     words = [word for word in tokens(statement.text) if word.casefold() != "params:"]
@@ -2617,6 +2705,7 @@ _ELEMENTS: Final[dict[str, Callable[[_Translation, Statement], None]]] = {
     "b": _arbitrary,
     "k": _mutual,
     "s": _switch,
+    "t": _transmission_line,
     "w": _current_switch,
     "x": _instance,
 }

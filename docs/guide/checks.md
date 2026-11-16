@@ -55,6 +55,7 @@ warn[unstable-pole]: the operating point is unstable: its poles at 50000.0 ± 99
 
 An oscillator raises it by design, so it is a warning, which a plan for one can ignore.
 The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is checked at its operating point for gmin-dependence alone.
+A circuit with a [transmission line](devices.md#transmission-lines), whose delay gives it infinitely many poles, is not checked for them either.
 
 ## On analyses' results
 

@@ -332,6 +332,53 @@ def transformer(c: Builder) -> None:
     )
 
 
+@component
+def transmission_lines(c: Builder) -> None:
+    """A pulse down two lines in a row, into a resistor and a capacitor.
+
+    The first line's source is of half its impedance, and the second line of another
+    impedance and delay: every edge rings back and forth along both, and every corner
+    arrives a delay after it leaves.
+
+    ngspice reads each delayed wave through three points whatever corner lies between
+    them (``traload.c``, lines 89 to 141): at steps of 20 ps, ``near`` peaks 3 mV high
+    at 11.5 ns, where the source's fall meets a reflection's corner, 0.4 mV at 2 ps and
+    0.08 mV at 0.5 ps, converging on jolty's 0.809548 V, which jolty reaches within
+    1e-5 V at 20 ps. The transient compares at 2 ps, where ngspice's error is within
+    the comparison's tolerance.
+    """
+    ground = c.port("ground", Role.GROUND)
+    drive = Pulse(
+        initial=0 * V,
+        pulsed=1 * V,
+        delay=1 * ns,
+        rise=0.5 * ns,
+        fall=0.5 * ns,
+        width=10 * ns,
+        period=40 * ns,
+    )
+    source = c.place(devices.voltage_source(drive), name="V1")
+    feed = c.place(devices.resistor(25 * ohm), name="R1")
+    first = c.place(devices.transmission_line(50 * ohm, 2 * ns), name="T1")
+    second = c.place(devices.transmission_line(75 * ohm, 3 * ns), name="T2")
+    load = c.place(devices.resistor(200 * ohm), name="RL")
+    hold = c.place(devices.capacitor(2 * pF), name="CL")
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, first.positive1, name="near")
+    c.connect(first.positive2, second.positive1, name="middle")
+    c.connect(second.positive2, load.a, hold.a, name="out")
+    c.connect(
+        source.negative,
+        first.negative1,
+        first.negative2,
+        second.negative1,
+        second.negative2,
+        load.b,
+        hold.b,
+        ground,
+    )
+
+
 _JFET = devices.jfet(
     threshold_voltage=-1.8 * V,
     transconductance_parameter=1.3 * mA / V**2,
@@ -1598,6 +1645,7 @@ def flickering(c: Builder) -> None:
         memristive,
         ion_drift,
         expressions,
+        transmission_lines,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
@@ -1843,6 +1891,7 @@ def test_dc_sweeps_agree(
         current_switched,
         transformer,
         expressions,
+        transmission_lines,
     ],
 )
 def test_ac_responses_agree(top: Callable[[], Component]) -> None:
@@ -1995,6 +2044,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (lit, 30 * ms, 20 * us),
         (memristive, 3 * ms, 1 * us),
         (ion_drift, 2 * s, 1 * ms),
+        (transmission_lines, 30 * ns, 0.002 * ns),
     ],
 )
 def test_transients_agree(

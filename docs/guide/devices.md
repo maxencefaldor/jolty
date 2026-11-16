@@ -71,6 +71,26 @@ transformer = c.place(
 
 Each winding is a short at DC, so a winding across a voltage source is a loop the [checks](checks.md) flag.
 
+### Transmission lines
+
+`transmission_line(characteristic_impedance, delay)` is a lossless line, SPICE's `T`, as ngspice 47 defines it: port `k`, 1 or 2, joins terminals `positive{k}` and `negative{k}`, and its current, from `positive{k}` into the line and out at `negative{k}`, is the unknown `current{k}`.
+Each port is a voltage behind the characteristic impedance `Z₀`, the wave that left the other port a delay `τ` before: `v₁ − Z₀ i₁ = v₂(t − τ) + Z₀ i₂(t − τ)`, and the same with the ports swapped.
+
+```python
+line = c.place(devices.transmission_line(50 * ohm, 1 * ns), name="T2")
+```
+
+At DC a line is exactly a short through from port to port, `v₁ = v₂` and `i₁ = −i₂`, and an AC analysis multiplies each delayed term by `e^{−jωτ}`, so a quarter-wave line inverts its load's impedance about `Z₀`.
+A transient keeps the points it accepted over the longest delay of its lines, and reads each delayed wave from them by interpolation of its integration method's order, within the run between two corners, so that no interpolation spans the corner a wave turns at.
+Before time zero the lines rest at the operating point.
+Every corner of the waveforms, the start, each breakpoint and each restart of the integration, arrives at a line's other port a delay later, and the transient steps onto it there: its steps are never longer than the shortest delay while edges keep arriving, and where its waves are piecewise linear they agree with the lattice of their reflections to rounding.
+ngspice departs from this three ways: it steps onto an arriving corner only where the wave's slope changes by more than its tolerances, `REL` and `ABS` of 1 (`traacct.c`, lines 94 to 120); it reads each delayed wave through three points whatever corner lies between them (`traload.c`, lines 89 to 141); and it scales one term of its DC equations by `1 − gmin` (line 56).
+jolty steps onto every corner, interpolates within the runs between them, and its DC equations are the line's own.
+In `tests/test_ngspice.py`'s `transmission_lines`, at steps of 20 ps, ngspice's wave at `near` peaks 3 mV high at 11.5 ns, where the source's fall meets a reflection's corner, 0.4 mV at 2 ps and 0.08 mV at 0.5 ps, converging on jolty's 0.809548 V, which jolty reaches within 1e-5 V at 20 ps; the transients compare at 2 ps.
+The interpolation's error is of the order of a step's truncation error, which the transient controls on the circuit's charges and not on the lines' waves themselves: a circuit of resistors and lines alone takes steps as long as its longest step allows between the corners.
+A pole-zero analysis, a periodic steady state, and sensitivities over frequency and time refuse a circuit with a line, whose delay gives it infinitely many poles, makes the state a period starts from hold the waves on its lines, and puts its past in its derivatives; the [checks](checks.md) leave its growing modes unchecked.
+The SPICE reader reads `T` elements, their delay `TD` or a normalized length `NL` at a frequency `F`, defaulting as ngspice does to a quarter wavelength at 1 GHz, and takes their initial conditions as it takes any element's; ngspice's lossy lines, `O`, `U`, `Y` and `P`, it refuses by name.
+
 ## Ratings
 
 Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, minimum=..., terminals=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, the `"power"` it dissipates, or its `"temperature"`.

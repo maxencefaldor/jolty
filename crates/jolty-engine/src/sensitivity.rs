@@ -47,7 +47,7 @@ use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, solve_each_in_range};
 use serde::Deserialize;
 
-use crate::ac::{Linearization, over_frequencies};
+use crate::ac::over_frequencies;
 use crate::elaborated::{Origin, Origins};
 use crate::newton::{add_product, step_matrix};
 use crate::periodic::Shot;
@@ -332,11 +332,19 @@ impl Simulator {
                 (Derivatives::Real(found?), AnalysisResult::DcSweep(result))
             }
             Differentiated::Ac(ac) => {
+                self.undelayed(
+                    "sensitivity over frequency",
+                    "its derivatives leave out those of the terms its lines delay",
+                )?;
                 let response = self.ac(ac, options)?;
                 let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
                 (Derivatives::Complex(found), AnalysisResult::Ac(response))
             }
             Differentiated::Transient(transient) => {
+                self.undelayed(
+                    "sensitivity over time",
+                    "its derivatives leave out those of the past its lines read",
+                )?;
                 let mut forward = Forward::new(outputs, twins);
                 let carried = Carried::Forward(&mut forward);
                 let waveforms = self.transient_with(transient, options, None, carried)?;
@@ -602,7 +610,7 @@ impl Simulator {
         let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
         let twins = &*twins;
         over_frequencies(
-            Linearization::new(&self.state.solver),
+            self.linearization(),
             &self.state.workspace.contributions,
             &response.frequencies,
             &options.parallelism,

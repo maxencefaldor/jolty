@@ -24,7 +24,7 @@ use jolty_models::Nature;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::{Linearization, over_frequencies};
+use crate::ac::over_frequencies;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A stability analysis: the loop gain through a probe, at each frequency.
@@ -94,7 +94,7 @@ impl Simulator {
                 .excite(&self.elaborated.groups, index, &mut level);
             let operating_point = self.linearize(&stability.frequencies, options)?;
             let gains = over_frequencies(
-                Linearization::new(&self.state.solver),
+                self.linearization(),
                 &self.state.workspace.contributions,
                 &stability.frequencies,
                 &options.parallelism,
