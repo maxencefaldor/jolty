@@ -2,7 +2,7 @@
 """Every Python block of the guide and the README runs, and every output they quote.
 
 A page's Python blocks run in order in one namespace, so a block may build on those
-before it. A block is an excerpt of a script, as `.rumdl.toml` lints it: its namespace
+before it. A block is an excerpt of a script, as rumdl lints it: its namespace
 starts with what its script would import, the names of `jolty` and of its modules
 `units`, `plan` and `specs`, and with what the body of a component holds, its builder
 `c` and its ground port `ground`. A block that defines a script's `plan` or `specs`
