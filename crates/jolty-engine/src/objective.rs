@@ -540,6 +540,6 @@ mod tests {
             }
         }
         // Every transient but those with logic, delay lines or initial conditions.
-        assert_eq!((checked, refused), (48, 10), "worst {worst:e}");
+        assert_eq!((checked, refused), (49, 10), "worst {worst:e}");
     }
 }
