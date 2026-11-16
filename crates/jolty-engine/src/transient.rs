@@ -1340,28 +1340,12 @@ impl Simulator {
         if available < needed {
             return None;
         }
-        let used: Vec<&(f64, Vec<f64>)> = history.points().skip(available - needed).collect();
-        let mut times = [0.0; HISTORY + 1];
-        for (slot, (time, _)) in times.iter_mut().zip(&used) {
-            *slot = *time;
-        }
-        times[needed - 1] = new.0;
         // Each unknown's work is its own, spread as Newton iteration spreads its work on each
         // unknown.
         let inside = options.parallelism.inside(new.1.len());
-        let mut differences = vec![0.0; new.1.len()];
-        each_chunk(&mut differences, inside, |start, chunk| {
-            let mut samples = [0.0; HISTORY + 1];
-            for (offset, difference) in chunk.iter_mut().enumerate() {
-                let index = start + offset;
-                for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
-                    *slot = charge[index];
-                }
-                samples[needed - 1] = new.1[index];
-                *difference = divided_difference(&times[..needed], &mut samples[..needed]);
-            }
-        });
-        let differences = self.filtered(differences, span.alpha, inside);
+        let mut differences = std::mem::take(&mut self.state.workspace.differences);
+        divided_differences((history, new), needed, inside, &mut differences);
+        self.filter(&mut differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
         let natures = &self.elaborated.natures;
         // Each charge's tolerances, on the charge and on the current it carries over the step,
@@ -1443,10 +1427,11 @@ impl Simulator {
         let longest = method.longest_common_step(previous, shortest_at_constant, |scales| {
             shortest(&units, scales, inside)
         });
+        self.state.workspace.differences = differences;
         Some(Judgement { longest, ..worst })
     }
 
-    /// The charges' divided `differences` filtered through the step's equations at its end,
+    /// Filters the charges' divided `differences` through the step's equations at its end,
     /// whose formula's coefficient of the new charge is `alpha`: `C (G + αC)⁻¹ α d`.
     ///
     /// An error `e` in the formula's derivative of the charges moves the step's solution by
@@ -1457,20 +1442,22 @@ impl Simulator {
     /// of implicit formulas for the solution of ODEs", SIAM Journal on Scientific and
     /// Statistical Computing 1(1), 1980; Hairer and Wanner, "Solving Ordinary Differential
     /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
-    /// taken as they are.
+    /// left as they are.
     ///
     /// The work on each unknown and each stored entry is split as `inside` says, the same
     /// bits however it is.
-    fn filtered(&mut self, differences: Vec<f64>, alpha: f64, inside: Option<Inside>) -> Vec<f64> {
+    fn filter(&mut self, differences: &mut [f64], alpha: f64, inside: Option<Inside>) {
         let Workspace {
             contributions,
             jacobian,
+            moved,
             meter,
             ..
         } = &mut self.state.workspace;
         step_matrix(jacobian, contributions, alpha, inside);
-        let mut moved = vec![0.0; differences.len()];
-        each_chunk(&mut moved, inside, |start, chunk| {
+        moved.clear();
+        moved.resize(differences.len(), 0.0);
+        each_chunk(moved, inside, |start, chunk| {
             for (moved, &difference) in chunk.iter_mut().zip(&differences[start..]) {
                 *moved = alpha * difference;
             }
@@ -1478,22 +1465,54 @@ impl Simulator {
         let previous = meter.enter(Activity::Factoring);
         let solved = self.state.solver.factor(jacobian).and_then(|mut factors| {
             meter.enter(Activity::Solving);
-            factors.solve(&mut moved)
+            factors.solve(moved)
         });
         meter.leave(previous);
         if solved.is_err() {
-            return differences;
+            return;
         }
-        let mut filtered = vec![0.0; differences.len()];
+        differences.fill(0.0);
         let capacitance = &contributions.capacitance;
         add_product(
             &self.elaborated.pattern,
-            (capacitance, &moved),
-            &mut filtered,
+            (capacitance, moved),
+            differences,
             inside,
         );
-        filtered
     }
+}
+
+/// Writes into `differences` each charge's divided difference over the last `needed`
+/// points: those of `history`, then `new`, its work on each unknown split as `inside` says.
+fn divided_differences(
+    (history, new): (&History, (f64, &[f64])),
+    needed: usize,
+    inside: Option<Inside>,
+    differences: &mut Vec<f64>,
+) {
+    // The times and the charges of the points used, oldest first, then the new one's.
+    let mut times = [0.0; HISTORY + 1];
+    let mut charges: [&[f64]; HISTORY + 1] = [&[]; HISTORY + 1];
+    let used = history
+        .points()
+        .skip(history.len() + 1 - needed)
+        .map(|(time, charge)| (*time, charge.as_slice()));
+    for ((time, charge), (at, held)) in times.iter_mut().zip(&mut charges).zip(used.chain([new])) {
+        *time = at;
+        *charge = held;
+    }
+    differences.clear();
+    differences.resize(new.1.len(), 0.0);
+    each_chunk(differences, inside, |start, chunk| {
+        let mut samples = [0.0; HISTORY + 1];
+        for (offset, difference) in chunk.iter_mut().enumerate() {
+            let index = start + offset;
+            for (slot, charge) in samples.iter_mut().zip(&charges[..needed]) {
+                *slot = charge[index];
+            }
+            *difference = divided_difference(&times[..needed], &mut samples[..needed]);
+        }
+    });
 }
 
 /// The length of the step after one `length` long judged `judged`, or of the step in its

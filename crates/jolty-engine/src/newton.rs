@@ -220,6 +220,12 @@ pub(crate) struct Workspace {
     resolution: Vec<f64>,
     /// The last Newton step.
     step: Vec<f64>,
+    /// The charges' divided differences of the step a transient judges last, and then
+    /// those filtered through its equations, kept so that no step allocates them.
+    pub(crate) differences: Vec<f64>,
+    /// The differences times the formula's coefficient, solved through the step's
+    /// equations, as the filter of the last judged step left them.
+    pub(crate) moved: Vec<f64>,
     /// The Newton iterations run, and the time spent while an analysis profiles.
     pub(crate) meter: Meter,
 }
@@ -233,6 +239,8 @@ impl Workspace {
             jacobian: vec![0.0; stored],
             resolution: vec![0.0; unknowns],
             step: vec![0.0; unknowns],
+            differences: Vec::new(),
+            moved: Vec::new(),
             meter: Meter::default(),
         }
     }
@@ -258,6 +266,8 @@ impl Workspace {
         ] {
             values.fill(0.0);
         }
+        self.differences.clear();
+        self.moved.clear();
         self.meter = Meter::default();
     }
 }
@@ -492,6 +502,7 @@ impl Simulator {
             resolution,
             step,
             meter,
+            ..
         } = &mut self.state.workspace;
         let previous = meter.enter(Activity::Assembling);
         let reactive = match mode {
