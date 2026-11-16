@@ -218,10 +218,13 @@ mod tests {
         for parameters in [FIVE_VOLTS, pulse] {
             for (model, x) in [
                 (
-                    &crate::Native::<VoltageSource>::new() as &dyn crate::Model,
+                    &crate::Differentiable::<VoltageSource>::new() as &dyn crate::Model,
                     &[1.0, -0.5, 1e-3][..],
                 ),
-                (&crate::Native::<CurrentSource>::new(), &[1.0, -0.5][..]),
+                (
+                    &crate::Differentiable::<CurrentSource>::new(),
+                    &[1.0, -0.5][..],
+                ),
             ] {
                 let (excitation, derivative) =
                     crate::testing::excitation_and_derivative(model, parameters, x);

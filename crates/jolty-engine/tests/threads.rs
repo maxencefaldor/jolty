@@ -10,8 +10,8 @@ use jolty_engine::{
 };
 use jolty_ir::Circuit;
 use jolty_models::{
-    Branch, BranchKind, Interface, Kernel, Layout, Library, Local, Native, ParameterError, Real,
-    Stamp, ThermalResistanceParameters,
+    Branch, BranchKind, Differentiable, Interface, Kernel, Layout, Library, Local, ParameterError,
+    Real, Stamp, ThermalResistanceParameters,
 };
 use rayon::ThreadPoolBuilder;
 use serde_json::json;
@@ -132,7 +132,7 @@ fn ladder() -> Circuit {
 /// the threads the spies recorded, as their index in their pool and the pool's threads.
 fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
     let mut library = Library::standard();
-    library.add(Native::<Spy>::new());
+    library.add(Differentiable::<Spy>::new());
     let mut simulator =
         Simulator::new(&ladder(), &library, &Conditions::default()).expect("the ladder");
     let options = Options {

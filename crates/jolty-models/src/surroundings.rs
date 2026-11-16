@@ -165,8 +165,8 @@ mod tests {
     use crate::testing::{Bench, assert_close};
     use crate::{REFERENCE_TEMPERATURE, Resistor};
 
-    fn model() -> Surrounded<crate::Native<Resistor>> {
-        Surrounded::new(crate::Native::<Resistor>::new())
+    fn model() -> Surrounded<crate::Differentiable<Resistor>> {
+        Surrounded::new(crate::Differentiable::<Resistor>::new())
     }
 
     /// The current through 1 kΩ, drifting by 1e-3 per kelvin, with 1 V across it.

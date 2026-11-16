@@ -5,9 +5,9 @@ use jolty_numerics::{Pattern, PatternBuilder};
 mod cases;
 
 use crate::{
-    BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Nature,
-    Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Unknown,
-    UnknownIndex,
+    BOLTZMANN, Binding, Contributions, Differentiable, Gradient, Groups, Input, Kernel, Model,
+    Nature, Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs,
+    Unknown, UnknownIndex,
 };
 
 /// One device whose terminals each connect to an unknown of their own, its instance in a
@@ -90,7 +90,7 @@ impl Bench {
         parameters: &str,
         temperature: f64,
     ) -> Result<Self, ParameterError> {
-        Self::of(&Native::<K>::new(), parameters, temperature)
+        Self::of(&Differentiable::<K>::new(), parameters, temperature)
     }
 
     /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
@@ -467,7 +467,7 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
 /// its instance prepared with the number a little above and below, and that their values
 /// are the instance's own.
 pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64]) {
-    assert_model_parameter_gradients_match(&Native::<K>::new(), parameters, x, None);
+    assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, None);
 }
 
 /// As [`assert_parameter_gradients_match`], in a transient analysis at `time`.
@@ -476,7 +476,7 @@ pub(crate) fn assert_parameter_gradients_match_at<K: Kernel>(
     x: &[f64],
     time: f64,
 ) {
-    assert_model_parameter_gradients_match(&Native::<K>::new(), parameters, x, Some(time));
+    assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, Some(time));
 }
 
 /// As [`assert_parameter_gradients_match`], for a device of any `model`, at `time` in a

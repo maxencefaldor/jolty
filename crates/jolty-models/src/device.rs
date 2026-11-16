@@ -66,9 +66,9 @@ pub trait Specification: fmt::Debug + Send + Sync {
 
 /// The [`Model`] of a [`Kernel`], whose instances give their exact derivatives with respect
 /// to any of their parameters.
-pub struct Native<K>(PhantomData<fn() -> K>);
+pub struct Differentiable<K>(PhantomData<fn() -> K>);
 
-impl<K: Kernel> Native<K> {
+impl<K: Kernel> Differentiable<K> {
     /// The model of `K`.
     #[must_use]
     pub fn new() -> Self {
@@ -76,19 +76,19 @@ impl<K: Kernel> Native<K> {
     }
 }
 
-impl<K: Kernel> Default for Native<K> {
+impl<K: Kernel> Default for Differentiable<K> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K> fmt::Debug for Native<K> {
+impl<K> fmt::Debug for Differentiable<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Native")
+        f.write_str("Differentiable")
     }
 }
 
-impl<K: Kernel> Model for Native<K> {
+impl<K: Kernel> Model for Differentiable<K> {
     fn name(&self) -> &'static str {
         K::NAME
     }

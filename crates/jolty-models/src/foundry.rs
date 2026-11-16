@@ -111,7 +111,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{Model, Native};
+    use crate::{Differentiable, Model};
 
     fn parameters(value: serde_json::Value) -> jolty_ir::Parameters {
         let serde_json::Value::Object(map) = value else {
@@ -122,9 +122,9 @@ mod tests {
 
     #[test]
     fn a_foundry_mosfet_has_a_mosfets_terminals_and_is_a_foundrys() {
-        let model = Native::<FoundryMosfet>::new();
+        let model = Differentiable::<FoundryMosfet>::new();
         assert!(model.foundry());
-        assert!(!Native::<crate::Resistor>::new().foundry());
+        assert!(!Differentiable::<crate::Resistor>::new().foundry());
         let interface = model
             .read(&parameters(json!({
                 "pdk": "sky130",

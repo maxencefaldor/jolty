@@ -73,7 +73,7 @@ pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{Model, Native, ParameterError, Specification};
+pub use device::{Differentiable, Model, ParameterError, Specification};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input};
 pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
@@ -133,34 +133,34 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
-        library.add(Native::<BehavioralCurrentSource>::new());
-        library.add(Native::<BehavioralVoltageSource>::new());
+        library.add(Differentiable::<BehavioralCurrentSource>::new());
+        library.add(Differentiable::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
         library.add(Thermal::<Bsim3>::new());
         library.add(Thermal::<Resistor>::new());
-        library.add(Native::<Capacitor>::new());
-        library.add(Native::<Inductor>::new());
-        library.add(Native::<CoupledInductors>::new());
-        library.add(Native::<VoltageSource>::new());
-        library.add(Native::<CurrentSource>::new());
-        library.add(Native::<CurrentControlledCurrentSource>::new());
-        library.add(Native::<CurrentControlledVoltageSource>::new());
-        library.add(Native::<VoltageControlledVoltageSource>::new());
-        library.add(Native::<VoltageControlledCurrentSource>::new());
-        library.add(Native::<VoltageControlledSwitch>::new());
-        library.add(Native::<FoundryMosfet>::new());
-        library.add(Native::<CurrentControlledSwitch>::new());
+        library.add(Differentiable::<Capacitor>::new());
+        library.add(Differentiable::<Inductor>::new());
+        library.add(Differentiable::<CoupledInductors>::new());
+        library.add(Differentiable::<VoltageSource>::new());
+        library.add(Differentiable::<CurrentSource>::new());
+        library.add(Differentiable::<CurrentControlledCurrentSource>::new());
+        library.add(Differentiable::<CurrentControlledVoltageSource>::new());
+        library.add(Differentiable::<VoltageControlledVoltageSource>::new());
+        library.add(Differentiable::<VoltageControlledCurrentSource>::new());
+        library.add(Differentiable::<VoltageControlledSwitch>::new());
+        library.add(Differentiable::<FoundryMosfet>::new());
+        library.add(Differentiable::<CurrentControlledSwitch>::new());
         library.add(Thermal::<Diode>::new());
         library.add(Thermal::<Jfet>::new());
         library.add(Thermal::<Mosfet>::new());
         library.add(Thermal::<Vdmos>::new());
         library.add(Thermal::<Vbic>::new());
-        library.add(Native::<Photocell>::new());
-        library.add(Native::<VoltageControlledMemristor>::new());
-        library.add(Native::<CurrentControlledMemristor>::new());
-        library.add(Native::<ThermalResistance>::new());
-        library.add(Native::<ThermalCapacitance>::new());
-        library.add(Native::<HeatSource>::new());
+        library.add(Differentiable::<Photocell>::new());
+        library.add(Differentiable::<VoltageControlledMemristor>::new());
+        library.add(Differentiable::<CurrentControlledMemristor>::new());
+        library.add(Differentiable::<ThermalResistance>::new());
+        library.add(Differentiable::<ThermalCapacitance>::new());
+        library.add(Differentiable::<HeatSource>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library
