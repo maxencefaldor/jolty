@@ -1583,6 +1583,46 @@ def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
         parts.component("sourced", m=2)
 
 
+GEOMETRIC: Final = (
+    ".option scale=1e-6\n"
+    ".model rs r rsh=100 short=0.5u narrow=0.25u tc1r=1e-3 tnom=30\n"
+    ".model rd r r=7\n.model rn r\n"
+    ".model cc c cox=1e-3 capsw=1e-10 narrow=0.2u del=0.1u\n"
+    ".model ct c thick=1e-8 di=7.8 defw=2u\n.model cv c cap=3p cj=1\n"
+    ".subckt cards a\nR1 a 0 rs w=2 l=11\nR2 a 0 rs\nR3 a 0 rs 5k scale=2 m=2\n"
+    "R4 a 0 rd\nR5 a 0 rn\nC1 a 0 cc w=3 l=4\nC2 a 0 ct l=5\nC3 a 0 cv w=3 l=4\n"
+    ".ends\n"
+)
+"""SPICE3's resistor and capacitor cards, which size their elements by geometry."""
+
+
+def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
+    """As `restemp.c` and `captemp.c` take their values, the element's sizes scaled.
+
+    A resistor is `(L - 2 SHORT) / (W - 2 NARROW) RSH`, of 10 µm by 10 µm unless given,
+    or else its card's `R`, or else 1 mΩ; a capacitor `CJ (W - NARROW) (L - SHORT) + 2
+    CJSW (L - SHORT + W - NARROW)`, `DEL` the default of `SHORT` halved, `CJ` of `THICK`
+    and `DI` where the card gives them, 0 long unless given, or its card's `CAP`.
+    """
+    parts = library(GEOMETRIC)
+    found = {
+        instance.name: instance.parameters
+        for instance in parts.component("cards").definition.instances
+    }
+    resistances = [found[f"R{index}"]["resistance"] for index in range(1, 6)]
+    assert resistances == pytest.approx([2e3 / 3, 900 / 9.5, 5e3, 7, 1e-3], rel=1e-14)
+    assert found["R1"]["temperature_coefficient"] == 1e-3
+    assert found["R1"]["nominal_temperature"] == pytest.approx(303.15)
+    epsilon = 7.8 / (4e-7 * math.pi * 299792458.0**2)
+    capacitances = [found[f"C{index}"]["capacitance"] for index in range(1, 4)]
+    expected = [
+        1e-3 * 2.8e-6 * 3.8e-6 + 2e-10 * (3.8e-6 + 2.8e-6),
+        epsilon / 1e-8 * 2e-6 * 5e-6,
+        3e-12,
+    ]
+    assert capacitances == pytest.approx(expected, rel=1e-14)
+
+
 def test_a_subcircuits_if_blocks_choose_by_its_parameters() -> None:
     read = library(
         ".subckt pick a b mode=0\n.if (mode == 0)\nR1 a b 1k\n.elseif (mode == 1)\n"

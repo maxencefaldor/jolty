@@ -34,7 +34,7 @@ Each instance records the file and the line of the statement that placed it, so 
 
 jolty reads a file as PSpice and ngspice read it:
 
-- resistors, capacitors and inductors, with their model cards' scales and their copies, `M`, and mutual inductances, `K`, which couple inductors;
+- resistors, capacitors and inductors, with PSpice's model cards' scales and their copies, `M`, SPICE3's cards of a resistor or a capacitor, of type `R` or `C`, which size an element of no value of its own by its width and length as ngspice does, its sheet resistance or its capacitances per area and per perimeter, its narrowing and shortening, and its default size and value, and mutual inductances, `K`, which couple inductors;
 - independent sources at their DC level, or with their `PULSE`, `SIN`, `PWL` or `EXP` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
 - diodes of level 1, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, positive areas and multipliers, and models that inherit from one another through `AKO:`;
 - linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;

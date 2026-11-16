@@ -498,7 +498,11 @@ class Library:
         scope = self.values()
         model = _described(card, scope)
         try:
-            models.device(card, scope, {}, card.statement)
+            if card.kind in models.GEOMETRIC:
+                read = models.geometric_values(card, scope)
+                models.geometric(card, read, {}, card.statement)
+            else:
+                models.device(card, scope, {}, card.statement)
         except UndefinedError as error:
             return Use(card.name, model, str(error), error.name)
         except SpiceError as error:
@@ -1777,27 +1781,33 @@ def _passive(
 ) -> Callable[[_Translation, Statement], None]:
     """The translation of a resistor, capacitor or inductor.
 
-    Its model card, of type `kind`, scales its value by the parameter of its letter, and
-    gives its temperature coefficients and nominal temperature. The element's own
-    coefficients, ``TC=tc1,tc2`` or each by name, override the card's. Only a resistor
-    has an exponential coefficient, ``TCE``, and only a resistor and a capacitor voltage
-    coefficients, ``VC1`` and ``VC2``. Its copies in parallel, its ``M`` times its
-    subcircuit's multiplier, divide a resistor's and an inductor's value and multiply a
-    capacitor's, and a resistor's flicker noise is theirs, ``m · KF · (|I| / m)^AF``,
-    as ngspice adds it (``resnoise.c``, line 109).
+    Its model card, of PSpice's type `kind`, scales its value by the parameter of its
+    letter, and gives its temperature coefficients and nominal temperature; SPICE3's
+    card of a resistor or a capacitor, of the type of its letter, gives its value from
+    its geometry where the element gives none, as
+    [`geometric`][jolty.spice.models.geometric] says, from the element's width ``W``
+    and length ``L``, which ngspice's ``scale`` scales (``resparam.c``, lines 59 and
+    63; ``capparam.c``, lines 50 and 54). The element's own coefficients, ``TC=tc1,tc2``
+    or each by name, override the card's. Only a resistor has an exponential
+    coefficient, ``TCE``, and only a resistor and a capacitor voltage coefficients,
+    ``VC1`` and ``VC2``, and a ``SCALE`` that multiplies their value. Its copies in
+    parallel, its ``M`` times its subcircuit's multiplier, divide a resistor's and an
+    inductor's value and multiply a capacitor's, and a resistor's flicker noise is
+    theirs, ``m · KF · (|I| / m)^AF``, as ngspice adds it (``resnoise.c``, line 109).
     """
     letter = kind[0]
     curved = frozenset(_CURVATURE) if model != "inductor" else frozenset()
     drifts = frozenset(_DRIFT) if model == "resistor" else frozenset({"tc1", "tc2"})
     drifts |= curved
     noisy = frozenset({"kf", "af"}) if model == "resistor" else frozenset()
+    sized = frozenset({"w", "l", "scale"}) if model != "inductor" else frozenset()
 
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
         _check_keywords(
             statement,
             assigned,
-            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts}),
+            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts, *sized}),
         )
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
@@ -1807,47 +1817,35 @@ def _passive(
         values = []
         for word in rest:
             found = translation.library.model(word, translation.models)
-            if found is not None and found.kind == kind:
+            if found is not None and found.kind in {kind, letter} & _CARDS:
                 card = found
             else:
                 values.append(word)
         if letter in assigned:
             values.extend(assigned[letter])
-        if len(values) != 1:
+        geometric = card is not None and card.kind in models.GEOMETRIC
+        if len(values) > 1 or not (values or geometric):
             message = f"a {model} has one value"
             raise statement.fail(message)
-        if _reads_unknowns(translation.parse(values[0])):
+        if values and _reads_unknowns(translation.parse(values[0])):
             message = (
                 f"jolty reads no {model} whose value reads a voltage or a current, "
                 "which ngspice makes a behavioral source"
             )
             raise statement.fail(message)
-        value = translation.value(values[0])
         own = {
             name: translation.value(words[0])
             for name, words in assigned.items()
-            if name == "m" and words
+            if name in {"m", *sized} and words
         }
+        scale = translation.library.options.get("scale", 1.0)
+        own |= {name: own[name] * scale for name in ("w", "l") if name in own}
+        if values:
+            own[letter] = translation.value(values[0])
+        read = models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
+        value, given = _valued(translation, statement, card, own, (letter, read))
         copies = translation.multiplied(own).get("m", 1.0)
         value = value * copies if model == "capacitor" else value / copies
-        given: dict[str, float] = {}
-        if card is not None:
-            drawing, prefix = translation.drawing, card.name.casefold()
-            scale = card.parameters.get(letter, Number(1.0))
-            value *= evaluate(
-                scale, translation.scope, drawing.draws(f"{prefix}.{letter}")
-            )
-            read = (
-                models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
-            )
-            _check_model(card, translation.scope, read | {letter}, statement)
-            given = {
-                name: evaluate(
-                    expression, translation.scope, drawing.draws(f"{prefix}.{name}")
-                )
-                for name, expression in card.parameters.items()
-                if name in read
-            }
         given |= _coefficients(translation, statement, assigned, drifts)
         temperatures = {
             name: translation.value(words[0])
@@ -1877,6 +1875,55 @@ def _passive(
         )
 
     return translated
+
+
+def _valued(
+    translation: _Translation,
+    statement: Statement,
+    card: ModelCard | None,
+    own: Mapping[str, float],
+    reading: tuple[str, frozenset[str]],
+) -> tuple[float, dict[str, float]]:
+    """A passive element's value, before its copies, and what its `card` says of it.
+
+    `reading` is the letter of its value and the parameters of its drift and noise a
+    card gives. The element's `own` parameters hold its value by that letter, where it
+    gives one, and its sizes; SPICE3's `card` of a resistor or a capacitor gives its
+    value from its geometry where the element gives none, and PSpice's scales the
+    element's by the parameter of that letter, and gives those of its drift and noise.
+
+    Raises:
+        SpiceError: When the card gives what jolty does not model.
+    """
+    letter, read = reading
+    if card is not None and card.kind in models.GEOMETRIC:
+        prefix = card.name.casefold()
+        values = models.geometric_values(
+            card,
+            translation.scope,
+            lambda name: translation.drawing.draws(f"{prefix}.{name}"),
+            statement,
+        )
+        made = models.geometric(card, values, own, statement)
+        return made.value, made.drift
+    value = own[letter] * own.get("scale", 1.0)
+    if card is None:
+        return value, {}
+    drawing, prefix = translation.drawing, card.name.casefold()
+    factor = card.parameters.get(letter, Number(1.0))
+    value *= evaluate(factor, translation.scope, drawing.draws(f"{prefix}.{letter}"))
+    _check_model(card, translation.scope, read | {letter}, statement)
+    given = {
+        name: evaluate(expression, translation.scope, drawing.draws(f"{prefix}.{name}"))
+        for name, expression in card.parameters.items()
+        if name in read
+    }
+    return value, given
+
+
+_CARDS: Final = frozenset({"res", "cap", "ind", *models.GEOMETRIC})
+"""The types of the model cards of a resistor, capacitor or inductor jolty reads:
+PSpice's ``RES``, ``CAP`` and ``IND``, and SPICE3's ``R`` and ``C``."""
 
 
 def _reads_unknowns(expression: Expression) -> bool:

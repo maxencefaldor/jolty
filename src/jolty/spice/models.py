@@ -12,6 +12,7 @@ model is an error, never silently dropped.
 """
 
 import json
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -637,6 +638,175 @@ def own_temperature(
     return {}
 
 
+def _nominal(_name: str) -> Draw:
+    """The draws of a definition's statistical functions at their nominal values."""
+    return nominal
+
+
+RESISTOR_CARD: Final = {
+    **{name: name for name in ("rsh", "narrow", "short", "tc1", "tc2", "tce", "kf")},
+    **{name: name for name in ("af", "lf", "wf", "ef", "tnom", "r", "noise", "defw")},
+    "bv_max": "bv_max",
+    "dw": "narrow",
+    "dlr": "short",
+    "tc1r": "tc1",
+    "tc2r": "tc2",
+    "res": "r",
+    "w": "defw",
+    "l": "defl",
+    "noisy": "noise",
+}
+"""The parameters of SPICE3's resistor card, of type ``r``, by each name ngspice reads
+(``res.c``, its model's and, for ``noise``, its instances' defaults): the name of each
+here."""
+
+CAPACITOR_CARD: Final = {
+    **{name: name for name in ("cap", "cj", "cjsw", "narrow", "short", "del", "tc1")},
+    **{name: name for name in ("tc2", "tnom", "di", "thick", "bv_max", "defw")},
+    "defl": "defl",
+    "cox": "cj",
+    "capsw": "cjsw",
+    "w": "defw",
+    "l": "defl",
+}
+"""The parameters of SPICE3's capacitor card, of type ``c``, by each name ngspice reads
+(``cap.c``): the name of each here."""
+
+GEOMETRIC: Final = {"r": RESISTOR_CARD, "c": CAPACITOR_CARD}
+"""SPICE3's cards of a resistor and a capacitor, which size them by their geometry, by
+type: the names of their parameters."""
+
+DEFAULT_WIDTH: Final = 10e-6
+"""The width, in meters, of a resistor or a capacitor whose card and element give none
+(``ressetup.c``, line 31, and ``capsetup.c``, line 38)."""
+
+DEFAULT_RESISTOR_LENGTH: Final = 10e-6
+"""The length, in meters, of a resistor whose card and element give none
+(``ressetup.c``, line 32); a capacitor's is 0, its card's ``DEFL`` unread
+(``capsetup.c``, line 96)."""
+
+LEAST_RESISTANCE: Final = 1e-3
+"""The resistance, in ohms, of a resistor of a card that gives it none, nor a sheet
+resistance its geometry makes one of (``restemp.c``, line 79)."""
+
+VACUUM_PERMITTIVITY: Final = 1 / (4e-7 * math.pi * 299792458.0**2)
+"""The vacuum's permittivity as ngspice's capacitor reads it, in farads per meter:
+``1 / (μ₀ c²)``, μ₀ = 4π·10⁻⁷ H/m (``const.h``, lines 44 to 47)."""
+
+SILICA_RELATIVE_PERMITTIVITY: Final = 3.9
+"""Silicon dioxide's permittivity relative to the vacuum's, a capacitor's insulator's
+where its card gives none (``const.h``, line 51)."""
+
+
+def geometric_values(
+    card: ModelCard,
+    scope: Mapping[str, float],
+    draws: Callable[[str], Draw] = _nominal,
+    statement: Statement | None = None,
+) -> dict[str, float]:
+    """SPICE3's resistor or capacitor `card`'s parameters, by `GEOMETRIC`'s names.
+
+    Each is evaluated in `scope`, the statistical functions of each parameter's drawn
+    by `draws` of its name, at their nominal values unless given. ``BV_MAX``, which only
+    ngspice's checks of the safe operating area read, is left out.
+
+    Raises:
+        SpiceError: When the card gives a parameter ngspice's device has not, stated at
+            `statement`, the card's own unless given.
+    """
+    table = GEOMETRIC[card.kind]
+    values: dict[str, float] = {}
+    for name, expression in card.parameters.items():
+        if name not in table:
+            raise unmatched(card, name, statement or card.statement)
+        if table[name] != "bv_max":
+            values[table[name]] = evaluate(expression, scope, draws(name))
+    return values
+
+
+@dataclass(frozen=True, slots=True)
+class Geometric:
+    """What a resistor or capacitor of SPICE3's card is: its value and its drift.
+
+    The value is in ohms or farads, before its copies; the drift is its temperature
+    coefficients ``tc1``, ``tc2`` and ``tce``, its nominal temperature ``tnom`` and its
+    flicker noise ``kf`` and ``af``, by SPICE's names, as its card gives them.
+    """
+
+    value: float
+    drift: dict[str, float]
+
+
+def geometric(
+    card: ModelCard,
+    values: Mapping[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> Geometric:
+    """The resistor or capacitor SPICE3's `card`, of `values`, makes for `instance`.
+
+    `values` are the card's parameters by the names `GEOMETRIC` gives them; `instance`
+    the element's own: its value, ``r`` or ``c``, if it gives one, its width ``w`` and
+    length ``l`` in meters, and its ``scale``, which multiplies its value. Its value is
+    ngspice's: a resistor's ``(L - 2·SHORT) / (W - 2·NARROW) · RSH`` where that is
+    positive, or else its card's ``R``, or else 1 mΩ (``restemp.c``, lines 67 to 81),
+    its flicker coefficient divided by its noise area, ``(L - 2·SHORT)^LF · (W -
+    2·NARROW)^WF`` where the element gives a size (``ressetup.c``, lines 60 to 64); a
+    capacitor's its card's ``CAP``, or else ``CJ · (W - NARROW) · (L - SHORT) + 2 · CJSW
+    · (L - SHORT + W - NARROW)``, ``CJ`` given or of its insulator's ``THICK`` and
+    relative permittivity ``DI``, ``DEL`` the default of each of ``NARROW`` and
+    ``SHORT`` halved (``capsetup.c``, lines 71 to 88; ``captemp.c``, lines 60 to 72).
+
+    Raises:
+        SpiceError: When the card turns a resistor's noise off, or gives its flicker
+            noise a frequency exponent other than 1, which jolty's resistor does not
+            model.
+    """
+    resistor = card.kind == "r"
+    letter = "r" if resistor else "c"
+    width = instance.get("w", values.get("defw", DEFAULT_WIDTH))
+    sized = "w" in instance or "l" in instance
+    drift = {
+        name: value
+        for name, value in values.items()
+        if name in {"tc1", "tc2", "tce", "tnom", "kf", "af"}
+    }
+    if resistor:
+        if values.get("noise", 1.0) != 1:
+            message = f"`{card.name}` makes no noise, which jolty's resistor makes"
+            raise statement.fail(message)
+        if values.get("kf", 0.0) != 0 and values.get("ef", 1.0) != 1:
+            raise unmatched(card, "ef", statement)
+        length = instance.get("l", values.get("defl", DEFAULT_RESISTOR_LENGTH))
+        long = length - 2 * values.get("short", 0.0)
+        wide = width - 2 * values.get("narrow", 0.0)
+        sheet = values.get("rsh", 0.0)
+        if letter in instance:
+            value = instance[letter]
+        elif length * width * sheet > 0:
+            value = long / wide * sheet
+        else:
+            value = values.get("r", LEAST_RESISTANCE)
+        if "kf" in drift and sized:
+            drift["kf"] /= long ** values.get("lf", 1.0) * wide ** values.get("wf", 1.0)
+    else:
+        length = instance.get("l", 0.0)
+        cut = values.get("del")
+        long = length - values.get("short", 0.0 if cut is None else 2 * cut)
+        wide = width - values.get("narrow", 0.0 if cut is None else 2 * cut)
+        thick = values.get("thick", 0.0)
+        relative = values.get("di", SILICA_RELATIVE_PERMITTIVITY)
+        permittivity = relative * VACUUM_PERMITTIVITY
+        area = values.get("cj", permittivity / thick if thick > 0 else 0.0)
+        if letter in instance:
+            value = instance[letter]
+        elif "cap" in values:
+            value = values["cap"]
+        else:
+            value = area * wide * long + values.get("cjsw", 0.0) * 2 * (long + wide)
+    return Geometric(value * instance.get("scale", 1.0), drift)
+
+
 NOISE: Final = frozenset({"nlev", "gdsnoi"})
 """PSpice's choices among a MOSFET's noise equations, which jolty reads past: it keeps
 SPICE's own, which it writes for ngspice 43 and later as `nlev=1`."""
@@ -765,11 +935,6 @@ class Made:
 
     model: str
     parameters: dict[str, JsonValue]
-
-
-def _nominal(_name: str) -> Draw:
-    """The draws of a definition's statistical functions at their nominal values."""
-    return nominal
 
 
 def device(

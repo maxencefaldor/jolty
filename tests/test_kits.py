@@ -777,6 +777,97 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         )
 
 
+QUOTED: Final = re.compile(r"=\s*\"")
+"""A card's value in double quotes outside braces, which ngspice 47 drops, warning of a
+"model issue" and reading the parameter's default, where jolty evaluates it, as the
+guide's departures state: SKY130's `res_generic_po`'s narrowing, 0.56% of its
+resistance."""
+
+CARDS: Final = {"r": "R", "c": "C"}
+"""The types of model cards a bare element places in
+`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's: the
+letter of each one's element."""
+
+
+@SKIP
+@pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
+def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
+    """Each resistor's and capacitor's card the inventory finds native, as ngspice's.
+
+    A bare element of each, which takes its value from its card's geometry and
+    defaults, is driven as `test_every_native_device_agrees_with_ngspice` drives a
+    device, at the operating point and from 1 kHz to 100 GHz; but for a card of a
+    value in double quotes outside braces, `QUOTED`, which ngspice drops.
+    """
+    library = kits.read(kit, settings=kept)
+    cards = [
+        (name, CARDS[card.kind])
+        for device in kits.inventory(kit, settings=kept)
+        if device.status == "native"
+        and device.kind == "model"
+        and (card := library.card(name := device.name, {})) is not None
+        and card.kind in CARDS
+        and not QUOTED.search(card.statement.text)
+    ]
+    if not cards:
+        return  # The kit has none, as GF180MCU, whose cards hold voltages yet.
+    elements = [
+        f"{letter}{number} n{number} 0 {name}"
+        for number, (name, letter) in enumerate(cards)
+    ]
+    pins = " ".join(f"n{number}" for number in range(len(cards)))
+    library.read(
+        f".subckt bare {pins}\n" + "\n".join(elements) + "\n.ends\n", "bare.lib"
+    )
+    bare = library.component("bare")
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(DRIVE * V), name="V0")
+        placed = c.place(bare, name="X0")
+        c.connect(source.negative, placed["ground"], ground)
+        senses = []
+        for number in range(len(cards)):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            c.connect(sense.negative, placed[f"n{number}"], name=f"n{number}")
+            senses.append(sense.positive)
+        c.connect(source.positive, *senses, name="drive")
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint(), TIGHT)
+    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    root = kits.root(kit, kept)
+    deck = [
+        f"* every native card of {kit.name}",
+        *NOMINAL.get(kit.name, ()),
+        f"V0 drive 0 {DRIVE!r} ac 1",
+    ]
+    for number, element in enumerate(elements):
+        deck += [f"VA{number} drive n{number} 0", element]
+    raw_point, raw_response = ngspice.runs(
+        deck,
+        ("op", "ac dec 1 1k 100g"),
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in kit.typical),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for number in range(len(cards)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
+        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        spice_ac = raw_response.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            response.values[:, column],
+            spice_ac,
+            rtol=0,
+            atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
 def test_the_tables_name_every_status() -> None:
     """The guide's names of the statuses are those `kits.Status` holds."""
     assert set(STATUSES) == set(typing.get_args(kits.Status.__value__))
