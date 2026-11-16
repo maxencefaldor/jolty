@@ -1135,7 +1135,7 @@ impl Kernel for BipolarTransistor {
         shape.emitter_series.add(emitter_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
         let [vbe, vbc] = bias.voltages;
-        memory.variables = Bipolar::variables(vbe, vbc, prepared.sign);
+        memory.variables = Bipolar::variables(vbe, vbc);
         let state = prepared.junctions.evaluate(vbe, vbc, at.gmin);
         let added = Added {
             shape,
@@ -1908,8 +1908,8 @@ mod tests {
 
     /// A transistor is cut off with neither junction forward, active with its base-emitter
     /// junction alone forward, saturated with both, and reversed with its base-collector
-    /// junction alone; its margins are the junctions' voltages, which a PNP's mirror, and
-    /// each region switches where its margin vanishes.
+    /// junction alone; its margins are the junctions' voltages, a PNP's equal to an NPN's
+    /// at the voltages reversed, and each region switches where its margin vanishes.
     #[test]
     fn reports_its_region_and_margins() {
         let mut npn = Bench::new::<BipolarTransistor>("{}");
@@ -1926,11 +1926,7 @@ mod tests {
             npn.settle(&x);
             assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
             pnp.settle(&x.map(|value| -value));
-            assert_eq!(
-                pnp.region(),
-                (region, margins.map(|m| -m).to_vec()),
-                "{x:?}"
-            );
+            assert_eq!(pnp.region(), (region, margins.to_vec()), "{x:?}");
         }
         let switches = [
             ([5.0, -0.1, 0.0], [5.0, 0.1, 0.0], BASE_EMITTER),

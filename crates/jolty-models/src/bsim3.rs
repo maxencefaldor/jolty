@@ -304,8 +304,9 @@ enum Region {
 }
 
 /// The regions a transistor's equations distinguish, and its margins to their boundaries:
-/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in its own polarity, with the drain and the
-/// source swapped where the drain lies below the source, as the equations swap them.
+/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in an n-channel's sign as
+/// [`Regions::margins`] are, with the drain and the source swapped where the drain lies
+/// below the source, as the equations swap them.
 const REGIONS: Regions = Regions {
     names: &["weak_inversion", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -570,8 +571,8 @@ impl Kernel for Bsim3 {
             sign * terminals.threshold,
             sign * terminals.saturation,
             f64::from(terminals.region as u8),
-            sign * overdrive,
-            sign * margin,
+            overdrive,
+            margin,
         ];
         let added = Oriented {
             nodes: &shape.stamp,
@@ -1020,8 +1021,9 @@ mod tests {
         p.settle(&[-2.0, -1.5, 0.0, 0.5]);
         let (n, p) = (n.variables(), p.variables());
         assert!(n[0] > 0.3 && n[0] < 1.0 && n[1] > 0.0, "{n:?}");
-        // Every variable but the region is a voltage, which mirrors.
-        let polar = [true, true, false, true, true];
+        // The threshold and saturation voltages mirror; the region and the margins, in an
+        // n-channel's sign, are the same.
+        let polar = [true, true, false, false, false];
         let mirrored: Vec<f64> = p
             .iter()
             .zip(polar)

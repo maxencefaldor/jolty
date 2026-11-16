@@ -143,9 +143,10 @@ enum Region {
 }
 
 /// The regions a transistor's equations distinguish, and its margin to their boundary,
-/// `vds − vdsat`, in its own polarity, with the drain and the source swapped where the
-/// drain lies below the source: the drain-source voltage over the softened overdrive
-/// divided by the triode's multiplier, where the law turns from linear to saturated.
+/// `vds − vdsat`, in an n-channel's sign as [`Regions::margins`] are, with the drain and the
+/// source swapped where the drain lies below the source: the drain-source voltage over the
+/// softened overdrive divided by the triode's multiplier, where the law turns from linear
+/// to saturated.
 const REGIONS: Regions = Regions {
     names: &["linear", "saturated"],
     margins: &[SATURATION_MARGIN],
@@ -663,7 +664,7 @@ impl Kernel for Vdmos {
             by_gate.value(),
             body.value(),
             f64::from(conduction.region as u8),
-            sign * conduction.margin,
+            conduction.margin,
         ];
     }
 
@@ -1101,7 +1102,7 @@ mod tests {
                 );
             }
             let (n_values, p_values) = (n.variables(), p.variables());
-            let polar = [true, true, false, false, false, false, true];
+            let polar = [true, true, false, false, false, false, false];
             for (index, ((n_value, p_value), polar)) in
                 n_values.iter().zip(&p_values).zip(polar).enumerate()
             {
@@ -1410,8 +1411,8 @@ mod tests {
     /// A transistor is linear with its drain below its softened overdrive and saturated
     /// past it, there being no region below its threshold, where the softened overdrive
     /// keeps it conducting, saturated; its margin vanishes where `VDMOSload` switches, the
-    /// drain and the source swapping where the drain lies below, and a p-channel's mirrors
-    /// an n-channel's.
+    /// drain and the source swapping where the drain lies below, a p-channel's equal to an
+    /// n-channel's at the voltages reversed.
     #[test]
     fn reports_its_region_and_margin() {
         let parameters = r#"{"triode_conductance_multiplier": 0.5}"#;
@@ -1428,7 +1429,7 @@ mod tests {
             p.settle(&x.map(|value| -value));
             let ((n_region, n_margin), (p_region, p_margin)) = (n.region(), p.region());
             assert_eq!((n_region, p_region), (region, region), "{x:?}");
-            assert_close(&n_margin, &p_margin.iter().map(|m| -m).collect::<Vec<_>>());
+            assert_close(&n_margin, &p_margin);
         }
         let (from, to) = ([0.5, 6.0, 0.0], [12.0, 6.0, 0.0]);
         assert_switches_where_margin_vanishes(&mut n, (&from, &to), SATURATION_MARGIN);

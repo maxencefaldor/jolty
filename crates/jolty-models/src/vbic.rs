@@ -1883,7 +1883,7 @@ impl Kernel for Vbic {
             .evaluate(Dual::variables(bias.voltages), at.gmin);
         let sign = prepared.sign;
         let [base_emitter, _, base_collector, ..] = bias.voltages;
-        memory.variables = Bipolar::variables(base_emitter, base_collector, sign);
+        memory.variables = Bipolar::variables(base_emitter, base_collector);
         let added = Oriented {
             nodes: &shape.stamp,
             sign,
@@ -2701,8 +2701,8 @@ mod tests {
     /// A transistor is cut off with neither intrinsic junction forward, active with its
     /// base-emitter junction alone forward, saturated with both, and reversed with its
     /// base-collector junction alone; its margins are the intrinsic junctions' voltages,
-    /// `Vbei` and `Vbci`, which a PNP's mirror, and each region switches where its margin
-    /// vanishes.
+    /// `Vbei` and `Vbci`, a PNP's equal to an NPN's at the voltages reversed, and each
+    /// region switches where its margin vanishes.
     #[test]
     fn reports_its_region_and_margins() {
         let mut npn = Bench::new::<Vbic>("{}");
@@ -2723,11 +2723,7 @@ mod tests {
             npn.settle(&x);
             assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
             pnp.settle(&x.map(|value| -value));
-            assert_eq!(
-                pnp.region(),
-                (region, margins.map(|m| -m).to_vec()),
-                "{x:?}"
-            );
+            assert_eq!(pnp.region(), (region, margins.to_vec()), "{x:?}");
         }
         let switches = [
             (at(5.0, -0.1, 0.0), at(5.0, 0.1, 0.0), BASE_EMITTER),

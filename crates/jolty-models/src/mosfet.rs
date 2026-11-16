@@ -197,8 +197,9 @@ enum Region {
 }
 
 /// The regions a transistor's equations distinguish, and its margins to their boundaries:
-/// `vgs − von` and `vds − vdsat`, in its own polarity, with the drain and the source
-/// swapped where the drain lies below the source, as the equations swap them.
+/// `vgs − von` and `vds − vdsat`, in an n-channel's sign as [`Regions::margins`] are, with
+/// the drain and the source swapped where the drain lies below the source, as the
+/// equations swap them.
 const REGIONS: Regions = Regions {
     names: &["off", "weak_inversion", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -952,8 +953,8 @@ impl Kernel for Mosfet {
             0.0,
             0.0,
             f64::from(conduction.region as u8),
-            sign * overdrive,
-            sign * margin,
+            overdrive,
+            margin,
         ];
         let added = Oriented {
             nodes: &shape.stamp,
@@ -1518,7 +1519,7 @@ mod tests {
         p.settle(&mirrored);
         let (n_values, p_values) = (n.variables(), p.variables());
         assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
-        let polar = [true, true, false, false, false, false, true, true];
+        let polar = [true, true, false, false, false, false, false, false];
         for (index, ((n_value, p_value), polar)) in
             n_values.iter().zip(&p_values).zip(polar).enumerate()
         {
@@ -1533,7 +1534,8 @@ mod tests {
     /// A level 1 transistor is off at or below its threshold, saturated with its drain at
     /// or past `vgs − vto`, and linear below it, the drain and the source swapping where the
     /// drain lies below; its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which
-    /// vanish where `mos1load.c` switches, and a p-channel's mirror an n-channel's.
+    /// vanish where `mos1load.c` switches, a p-channel's equal to an n-channel's at the
+    /// voltages reversed.
     #[test]
     fn reports_its_region_and_margins() {
         let parameters = r#"{"threshold_voltage": 1, "saturation_current": 1e-30}"#;
@@ -1549,7 +1551,7 @@ mod tests {
             bench.settle(&x);
             assert_eq!(bench.region(), (region, margins.to_vec()), "{x:?}");
             p.settle(&x.map(|value| -value));
-            assert_eq!(p.region(), (region, margins.map(|m| -m).to_vec()), "{x:?}");
+            assert_eq!(p.region(), (region, margins.to_vec()), "{x:?}");
         }
         let switches = [
             ([3.0, 0.5, 0.0, 0.0], [3.0, 1.5, 0.0, 0.0], OVERDRIVE),

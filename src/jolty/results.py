@@ -129,7 +129,9 @@ class RecordedDevice:
     margins: tuple[str, ...] = ()
     """Its variables that are its margins to the regions' boundaries, in volts, such as
     ``saturation_margin``: each is zero on a boundary, where its model's equations
-    switch from one region to the next, and changes sign across it."""
+    switch from one region to the next, changes sign across it, and is positive where
+    the transistor is on, or saturated, whatever its polarity: a p-channel's or a PNP's
+    is an n-channel's or an NPN's at its voltages reversed."""
 
     @property
     def unknowns(self) -> tuple[str, ...]:

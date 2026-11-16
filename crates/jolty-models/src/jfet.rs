@@ -121,9 +121,9 @@ enum Region {
 }
 
 /// The regions a JFET's equations distinguish, and its margins to their boundaries:
-/// `vgs − vto` and `vds − vdsat`, `vdsat` being `max(vgs − vto, 0)`, in its own polarity,
-/// with the drain and the source swapped where the drain lies below the source, as the
-/// equations swap them.
+/// `vgs − vto` and `vds − vdsat`, `vdsat` being `max(vgs − vto, 0)`, in an n-channel's sign
+/// as [`Regions::margins`] are, with the drain and the source swapped where the drain lies
+/// below the source, as the equations swap them.
 const REGIONS: Regions = Regions {
     names: &["off", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -442,7 +442,7 @@ impl Kernel for Jfet {
         }
 
         let (region, [overdrive, margin]) = prepared.channel.region(vgs, vgs - vgd);
-        memory.variables = [f64::from(region as u8), sign * overdrive, sign * margin];
+        memory.variables = [f64::from(region as u8), overdrive, margin];
         let (current, gm, gds) = prepared.channel.evaluate(vgs, vgs - vgd);
         let current = current + gm * beyond_source + gds * (beyond_source - beyond_drain);
         let channel = (INNER_DRAIN, INNER_SOURCE);
@@ -641,7 +641,8 @@ mod tests {
     /// A JFET is off at or below its threshold, linear with its drain within `vgs − vto`,
     /// and saturated past it, the drain and the source swapping where the drain lies below;
     /// its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which vanish where
-    /// `jfetload.c` switches, and a p-channel's mirror an n-channel's.
+    /// `jfetload.c` switches, a p-channel's equal to an n-channel's at the voltages
+    /// reversed.
     #[test]
     fn reports_its_region_and_margins() {
         let mut n = Bench::new::<Jfet>("{}");
@@ -656,7 +657,7 @@ mod tests {
             n.settle(&x);
             assert_eq!(n.region(), (region, margins.to_vec()), "{x:?}");
             p.settle(&x.map(|value| -value));
-            assert_eq!(p.region(), (region, margins.map(|m| -m).to_vec()), "{x:?}");
+            assert_eq!(p.region(), (region, margins.to_vec()), "{x:?}");
         }
         let switches = [
             ([5.0, -3.0, 0.0], [5.0, -1.0, 0.0], OVERDRIVE),

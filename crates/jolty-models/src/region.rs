@@ -22,6 +22,9 @@ pub struct Regions {
     /// The variables that are the margins to the regions' boundaries, in volts: each is
     /// zero on a boundary, where the equations switch from one region to the next, and
     /// changes sign across it.
+    /// Each is in an n-channel's or an NPN's sign whatever the transistor's polarity, a
+    /// p-channel's or a PNP's taken at its voltages reversed, so that a positive margin
+    /// means on, or saturated, for every transistor, as designers write `|vgs| − |vth|`.
     pub margins: &'static [&'static str],
 }
 
@@ -40,10 +43,12 @@ pub(crate) const OVERDRIVE: &str = "overdrive_voltage";
 /// channel's law turns from linear to saturated, `vds − vdsat`.
 pub(crate) const SATURATION_MARGIN: &str = "saturation_margin";
 
-/// The base-emitter voltage of a bipolar transistor's intrinsic junction.
+/// The voltage across a bipolar transistor's intrinsic base-emitter junction, in an NPN's
+/// sign: a PNP's is its emitter's over its base's.
 pub(crate) const BASE_EMITTER: &str = "base_emitter_voltage";
 
-/// The base-collector voltage of a bipolar transistor's intrinsic junction.
+/// The voltage across a bipolar transistor's intrinsic base-collector junction, in an NPN's
+/// sign: a PNP's is its collector's over its base's.
 pub(crate) const BASE_COLLECTOR: &str = "base_collector_voltage";
 
 /// The region of a bipolar transistor, by which of its two intrinsic junctions injects: one
@@ -64,7 +69,7 @@ pub(crate) enum Bipolar {
 
 impl Bipolar {
     /// The regions of a bipolar transistor, in the order of [`Bipolar`]'s, and its margins:
-    /// its intrinsic junctions' voltages, in its own polarity.
+    /// its intrinsic junctions' voltages, in an NPN's sign.
     pub(crate) const REGIONS: Regions = Regions {
         names: &["cut_off", "active", "saturated", "reversed"],
         margins: &[BASE_EMITTER, BASE_COLLECTOR],
@@ -74,15 +79,15 @@ impl Bipolar {
     pub(crate) const VARIABLE_NAMES: [&str; 3] = [REGION, BASE_EMITTER, BASE_COLLECTOR];
 
     /// The values of [`Bipolar::VARIABLE_NAMES`] at the intrinsic base-emitter and
-    /// base-collector voltages `vbe` and `vbc`, oriented as an NPN's, of a transistor whose
-    /// polarity's sign is `sign`.
-    pub(crate) fn variables(vbe: f64, vbc: f64, sign: f64) -> [f64; 3] {
+    /// base-collector voltages `vbe` and `vbc`, oriented as an NPN's whatever the
+    /// transistor's polarity.
+    pub(crate) fn variables(vbe: f64, vbc: f64) -> [f64; 3] {
         let region = match (vbe > 0.0, vbc > 0.0) {
             (false, false) => Self::CutOff,
             (true, false) => Self::Active,
             (true, true) => Self::Saturated,
             (false, true) => Self::Reversed,
         };
-        [f64::from(region as u8), sign * vbe, sign * vbc]
+        [f64::from(region as u8), vbe, vbc]
     }
 }
