@@ -1813,26 +1813,16 @@ def _passive(
             message = "an element joins two nodes"
             raise statement.fail(message)
         _, a, b, *rest = positional
-        card: ModelCard | None = None
-        values = []
-        for word in rest:
-            found = translation.library.model(word, translation.models)
-            if found is not None and found.kind in {kind, letter} & _CARDS:
-                card = found
-            else:
-                values.append(word)
+        card, values = _card_and_values(translation, rest, {kind, letter} & _CARDS)
         if letter in assigned:
             values.extend(assigned[letter])
         geometric = card is not None and card.kind in models.GEOMETRIC
         if len(values) > 1 or not (values or geometric):
             message = f"a {model} has one value"
             raise statement.fail(message)
-        if values and _reads_unknowns(translation.parse(values[0])):
-            message = (
-                f"jolty reads no {model} whose value reads a voltage or a current, "
-                "which ngspice makes a behavioral source"
-            )
-            raise statement.fail(message)
+        if values and _reads_unknowns(written := translation.parse(values[0])):
+            _value_of_voltage(translation, statement, (a, b), written, assigned)
+            return
         own = {
             name: translation.value(words[0])
             for name, words in assigned.items()
@@ -1875,6 +1865,73 @@ def _passive(
         )
 
     return translated
+
+
+def _card_and_values(
+    translation: _Translation, words: Sequence[str], kinds: set[str]
+) -> tuple[ModelCard | None, list[str]]:
+    """The model card of one of `kinds` that `words` name, if any, and the others."""
+    card: ModelCard | None = None
+    values = []
+    for word in words:
+        found = translation.library.model(word, translation.models)
+        if found is not None and found.kind in kinds:
+            card = found
+        else:
+            values.append(word)
+    return card, values
+
+
+def _value_of_voltage(
+    translation: _Translation,
+    statement: Statement,
+    nodes: tuple[str, str],
+    resistance: Expression,
+    assigned: Mapping[str, list[str]],
+) -> None:
+    """A resistor whose value reads a voltage or a current, as ngspice makes it.
+
+    ngspice makes it a behavioral current, ``I = m · V(a, b) / (R · (1 + TC1 · ΔT +
+    TC2 · ΔT²))`` (``inpcom.c``, lines 6149 to 6151 and 6825 to 6870), its model card
+    and sizes left out, ΔT the temperature above 27 °C (``asrcload.c``, lines 41 to
+    51), here the temperature the library is read at, at which its ``temper`` is too;
+    and
+    without noise, as ngspice's behavioral current has none, unless the element asks
+    for it, which jolty does not read.
+
+    Raises:
+        SpiceError: When the element is a capacitor or an inductor, which jolty reads
+            not yet so, or gives a coefficient but its temperature's.
+    """
+    if _letter(statement) != "r":
+        kind = _ELEMENT_KINDS[_letter(statement)]
+        message = (
+            f"jolty reads no {kind} whose value reads a voltage or a current, which "
+            "ngspice makes a behavioral source"
+        )
+        raise statement.fail(message)
+    given = _coefficients(translation, statement, assigned, frozenset(_DRIFT))
+    unread = sorted(set(given) - {"tc1", "tc2"})
+    if unread:
+        message = (
+            f"jolty reads no `{unread[0].upper()}` of a resistor whose value reads a "
+            "voltage or a current"
+        )
+        raise statement.fail(message)
+    rise = translation.library.temperature - _core.REFERENCE_TEMPERATURE
+    factor = 1 + given.get("tc1", 0.0) * rise + given.get("tc2", 0.0) * rise**2
+    own = {
+        name: translation.value(words[0])
+        for name, words in assigned.items()
+        if name == "m" and words
+    }
+    copies = translation.multiplied(own).get("m", 1.0)
+    current = Binary(
+        "*",
+        Binary("/", Voltage(nodes[0], nodes[1]), resistance),
+        Number(copies / factor),
+    )
+    _behavioral(translation, statement, "current", nodes, current)
 
 
 def _valued(

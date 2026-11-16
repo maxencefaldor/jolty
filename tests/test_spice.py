@@ -27,6 +27,7 @@ from jolty import (
     component,
     devices,
     ir,
+    results,
     spice,
 )
 from jolty.spice import models, sky130
@@ -132,6 +133,8 @@ def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
         ("2 ^ 3 ^ 2", 512.0),
         ("PWR(-2, 2)", 4.0),
         ("PWRS(-2, 2)", -4.0),
+        ("POW(-2, 3) + (-2) ** 3 + PWR(-2, 3)", -8.0),
+        ("POW(-2, 2) + POW(-4, 0.5)", 6.0),
         ("LIMIT(5, 2, 1)", 2.0),
         ("LIMIT(5, 2) + AGAUSS(1, 0.1, 3) + AUNIF(2, 1)", 8.0),
         ("1 < 2 & 3 > 2 ? 10 : 20", 10.0),
@@ -1330,6 +1333,35 @@ def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
     assert line == f"BB1 out 0 V={{({limited}+{table})}}"
 
 
+def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
+    """As `inpcom.c` makes `R = {f(V)}` a current `m V / (f(V) (1 + TC1 dT))`.
+
+    Two copies of 1 kΩ that grow by 10% a volt, a temperature coefficient of 1e-3 per
+    kelvin, read at 77 °C, 50 K above ngspice's 27 °C: at 2 V, 2 · 2 V / (1.2 kΩ ·
+    1.05).
+    """
+    parts = spice.Library(celsius(77).value)
+    parts.read(
+        ".subckt grown a\nR1 a 0 r={1k * (1 + 0.1 * abs(v(a)))} tc1=1e-3 m=2\n.ends",
+        "grown.lib",
+    )
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(2 * V), name="V1")
+        placed = c.place(parts.component("grown"), name="X1")
+        c.connect(source.positive, placed["a"], name="a")
+        c.connect(source.negative, placed["ground"], ground)
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint())
+    current = point.values[
+        simulation.unknowns.index(results.Unknown("V1:current", "current"))
+    ]
+    assert -current == pytest.approx(4 / (1.2e3 * 1.05), rel=1e-12)
+
+
 def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
     parts = library(
         ".model CX CAP(VC1=-1m)\n"
@@ -1677,9 +1709,9 @@ def test_a_placements_draws_are_its_own_and_its_samples() -> None:
     assert _devices(first.component("matched"))["R1"][1]["resistance"] == 1e3
 
 
-def test_a_resistor_whose_value_reads_a_voltage_is_refused() -> None:
-    read = library(".subckt bent a b\nR1 a b r='1k * (1 + abs(v(a, b)))'\n.ends")
-    with pytest.raises(SpiceError, match="whose value reads a voltage or a current"):
+def test_a_capacitor_whose_value_reads_a_voltage_is_refused() -> None:
+    read = library(".subckt bent a b\nC1 a b c='1p * (1 + abs(v(a, b)))'\n.ends")
+    with pytest.raises(SpiceError, match="capacitor whose value reads a voltage"):
         read.component("bent")
 
 

@@ -676,12 +676,15 @@ turn them on, so ngspice computes at the nominal values jolty reads without a sa
 GF180MCU's `design.ngspice` sets both switches to 1, drawing each instance's mismatch
 and the process's spread."""
 
-AC_DEPARTED: Final = "BSIM4"
+AC_DEPARTED: Final = ("BSIM4", "resistor whose value reads a voltage")
 """The models whose frequency response departs from ngspice's: its BSIM4's capacitances
 with respect to the body are not the derivatives of its charges, as the guide's
 departures state, and a p-channel's drain at `DRIVE` biases its body forward, where
-they depart most. `test_sky130_transistors_admittances_agree_with_ngspice` compares
-BSIM4's with the body at the source."""
+they depart most; and its behavioral sources' derivative of `pow` of a negative base to
+an even power has the wrong sign, `pwr(a, b - 1) b` (`inpptree.c`, lines 613 to 632),
+which SKY130's `res_high_po` resistors raise.
+`test_sky130_transistors_admittances_agree_with_ngspice` compares BSIM4's with the body
+at the source."""
 
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
