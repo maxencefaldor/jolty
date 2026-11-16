@@ -149,6 +149,7 @@ fn read_at_dc(options: &Options) -> Options {
         truncation_tolerance: unread.truncation_tolerance,
         max_memory: unread.max_memory,
         record: unread.record,
+        regions: unread.regions,
         profile: unread.profile,
         parallelism: Parallelism {
             max_unknowns_per_interior: options.parallelism.max_unknowns_per_interior,
@@ -252,8 +253,9 @@ impl Simulator {
             && remembered.solved_under(&self.state.held, options)
         {
             let (solved, mut point) = (remembered.solved.clone(), remembered.point.clone());
+            // Restoring it evaluated every device there, its steps not limited.
             self.restore(options);
-            point.observation = self.observe_dc(&point.values, options);
+            point.observation = self.observe_evaluated();
             return Ok((solved, point));
         }
         self.reset_logic();

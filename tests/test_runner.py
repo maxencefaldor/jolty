@@ -127,9 +127,15 @@ def test_the_plan_s_own_operating_points_report_every_transistor_s_region(
     assert [(each.path, each.region) for each in point.transistors] == [
         ("Q1", "active")
     ]
-    # The analysis's record, then every transistor.
-    terminals = ("R1.a", "R1.b", "Q1.collector", "Q1.base", "Q1.emitter")
-    assert _recorded(tmp_path) == [terminals]
+    # The analysis's record in full, and every other transistor's region alone.
+    assert _recorded(tmp_path) == [("R1.a", "R1.b")]
+    saved = load_results(tmp_path / RESULTS)["op"]
+    assert isinstance(saved, results.OperatingPointResult)
+    assert [(device.path, device.variables) for device in saved.recording.devices] == [
+        ("R1", ()),
+        ("Q1", ("region", "base_emitter_voltage", "base_collector_voltage")),
+    ]
+    assert saved.region("Q1") == "active"
 
 
 def test_an_analysis_records_its_own_record_or_else_the_plan_s(

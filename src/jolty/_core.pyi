@@ -247,7 +247,7 @@ class Simulator:
     @property
     def instances(self) -> list[str]: ...
     def recording(
-        self, record: str
+        self, record: str, regions: bool
     ) -> tuple[
         list[
             tuple[str, list[str], list[bool], int, int, list[str], list[str], list[str]]

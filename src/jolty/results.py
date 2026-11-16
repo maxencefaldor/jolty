@@ -112,7 +112,11 @@ def _columns(same: _Same) -> dict[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class RecordedDevice:
-    """A device whose terminals, derivatives and variables a result recorded."""
+    """A device whose terminals, derivatives and variables a result recorded.
+
+    A transistor whose region alone it recorded has no terminal and no internal
+    unknown, and of its variables its ``region`` and its `margins` alone.
+    """
 
     path: str
     """Its path, such as ``X1/M1``."""

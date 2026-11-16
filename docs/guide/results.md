@@ -75,7 +75,7 @@ A device recorded keeps its terminals' currents and charges, its own small-signa
 A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
 An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
 
-Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, every transistor, whose regions their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
+Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, the [region](#regions-of-operation) and margins alone of each transistor the record leaves out, which their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
 A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
 Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `max_memory` option bounds them all (see [Options](simulation.md#options)).
@@ -143,6 +143,16 @@ point = simulation.run(OperatingPoint(record=simulation.transistors))
 point.region("M1")  # such as "saturated"
 point.variable("M1", "saturation_margin")  # vds - vdsat, in volts
 regions = point.recording.devices[0].regions  # ("off", ..., "saturated")
+```
+
+An analysis's `regions` keeps, of each transistor its record leaves out, its region and its margins alone, three of a MOSFET's 48 numbers, which `region` and `variable` read as they read a transistor recorded whole; `jolty simulate` asks for them at the plan's own operating points:
+
+<!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, which the page does not build -->
+
+```python
+point = simulation.run(OperatingPoint(regions=True))
+point.region("M1")  # such as "saturated"
+kept = point.recording.devices[0].variables  # ("region", "overdrive_voltage", ...)
 ```
 
 | Model | Regions | Margins |

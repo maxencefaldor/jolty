@@ -1133,10 +1133,7 @@ def _analyses(
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
         try:
-            transistors = simulation.transistors if recorded else ()
-            chosen = _recording(
-                analysis, plan, recorded=recorded, transistors=transistors
-            )
+            chosen = _recording(analysis, plan, recorded=recorded)
             result = simulation.run(chosen, plan.options)
         except JoltyError as error:
             reports.append(report.FailureReport(name=name, error=str(error)))
@@ -1151,16 +1148,10 @@ def _analyses(
     return solved, tuple(reports)
 
 
-def _recording(
-    analysis: Analysis,
-    plan: Plan,
-    *,
-    recorded: bool,
-    transistors: tuple[str, ...] = (),
-) -> Analysis:
+def _recording(analysis: Analysis, plan: Plan, *, recorded: bool) -> Analysis:
     """`analysis` recording what it names, or else the `plan`'s record, when `recorded`.
 
-    An operating point records the `transistors` besides, whose regions its report
+    An operating point records every transistor's region besides, which its report
     lists. Otherwise it records nothing, beyond what the checks read.
     """
     if not isinstance(analysis, Recorded):
@@ -1168,9 +1159,8 @@ def _recording(
     if not recorded:
         return replace(analysis, record=())
     record = plan.record if analysis.record is None else analysis.record
-    if isinstance(analysis, OperatingPoint):
-        record = (*(record or ()), *transistors)
-    return replace(analysis, record=record)
+    regions = isinstance(analysis, OperatingPoint)
+    return replace(analysis, record=record, regions=regions)
 
 
 def _call(

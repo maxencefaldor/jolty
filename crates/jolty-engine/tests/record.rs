@@ -88,7 +88,7 @@ struct Columns {
 
 impl Columns {
     fn from_record(simulator: &Simulator, record: &Record) -> Self {
-        let recorded = simulator.recorded(record);
+        let recorded = simulator.recorded(record, false);
         let mut columns = Self::default();
         for &device in &recorded.devices {
             let placed = &simulator.devices()[device];
@@ -534,7 +534,7 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
     let everything = simulator.operating_point(&tight()).unwrap();
     let all = Columns::from_record(&simulator, &Record::All);
     let record = instances(&["X1"]);
-    let recorded = simulator.recorded(&record);
+    let recorded = simulator.recorded(&record, false);
     assert_eq!(recorded.devices, Vec::<usize>::new());
     assert_eq!(recorded.composites, [0, 1]);
     let options = Options {
@@ -632,7 +632,10 @@ fn pulse() -> Transient {
 #[test]
 fn nothing_beyond_the_unknowns_is_recorded_by_default() {
     let mut simulator = simulator(&bench());
-    assert_eq!(simulator.recorded(&Record::default()), Recording::default());
+    assert_eq!(
+        simulator.recorded(&Record::default(), false),
+        Recording::default()
+    );
     let point = simulator.operating_point(&Options::default()).unwrap();
     assert_eq!(point.observation, RecordedValues::default());
     let waveforms = simulator.transient(&pulse(), &Options::default()).unwrap();
@@ -651,7 +654,7 @@ fn nothing_beyond_the_unknowns_is_recorded_by_default() {
 fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
     let record = instances(&["C1", "M1", "R9"]);
     let mut simulator = simulator(&bench());
-    assert_eq!(simulator.recorded(&record).devices, [2, 4]);
+    assert_eq!(simulator.recorded(&record, false).devices, [2, 4]);
     let all = Columns::from_record(&simulator, &Record::All);
     let some = Columns::from_record(&simulator, &record);
     assert_eq!(
@@ -697,6 +700,46 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
             assert_eq!(found[index], expected[all.terminal(name)]);
         }
     }
+}
+
+#[test]
+fn a_transistor_s_region_recorded_alone_reads_as_its_variables_recorded_in_full() {
+    let mut simulator = simulator(&bench());
+    // M1, the one transistor, is the last device, and its variables the last of all.
+    let recorded = simulator.recorded(&Record::default(), true);
+    assert_eq!((recorded.devices.len(), recorded.regions), (0, vec![4]));
+    assert!(
+        simulator
+            .recorded(&instances(&["M1"]), true)
+            .regions
+            .is_empty(),
+        "a transistor the record names keeps all of its numbers once"
+    );
+    let placed = &simulator.devices()[4];
+    let picked = simulator.region_variables(4);
+    let names: Vec<&str> = picked
+        .iter()
+        .map(|&index| placed.variable_names()[index])
+        .collect();
+    assert_eq!(names, ["region", "overdrive_voltage", "saturation_margin"]);
+    let width = placed.variable_names().len();
+    let regions = Options {
+        record: Record::default(),
+        regions: true,
+        ..tight()
+    };
+    let mut apart = self::simulator(&bench());
+    let every = simulator.transient(&pulse(), &tight()).unwrap();
+    let alone = apart.transient(&pulse(), &regions).unwrap();
+    assert_eq!(alone.values, every.values);
+    for (found, expected) in alone.observations.iter().zip(every.observations.iter()) {
+        assert!(found.currents.is_empty() && found.conductances.is_empty());
+        let variables = &expected.variables[expected.variables.len() - width..];
+        let kept: Vec<f64> = picked.iter().map(|&index| variables[index]).collect();
+        assert_eq!(found.variables, kept);
+    }
+    let point = apart.operating_point(&regions).unwrap();
+    assert_eq!(point.observation.variables.len(), picked.len());
 }
 
 #[test]

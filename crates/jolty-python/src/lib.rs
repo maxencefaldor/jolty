@@ -375,38 +375,57 @@ impl Simulator {
         paths
     }
 
-    /// What the record whose JSON text is `record` keeps, in the order of every result's
-    /// arrays: each recorded device, as its path, its terminals' names, whether each is
-    /// thermal, the index among the unknowns of its first internal unknown and their
-    /// number, its variables' names, and the names of its regions and of its margins, none
-    /// for a device that is no transistor; then each recorded terminal of a component
-    /// instance or a logic device, as its name, such as `X1.vdd`, and whether it is thermal.
-    fn recording(&self, record: &str) -> PyResult<Recording> {
+    /// What the record whose JSON text is `record` keeps, and every other transistor's
+    /// region when `regions`, in the order of every result's arrays: each recorded device,
+    /// as its path, its terminals' names, whether each is thermal, the index among the
+    /// unknowns of its first internal unknown and their number, its variables' names, and
+    /// the names of its regions and of its margins, none for a device that is no
+    /// transistor; then each transistor whose region alone is recorded, alike, with no
+    /// terminal, no internal unknown and its region variables alone; then each recorded
+    /// terminal of a component instance or a logic device, as its name, such as `X1.vdd`,
+    /// and whether it is thermal.
+    fn recording(&self, record: &str, regions: bool) -> PyResult<Recording> {
         let record: Record = serde_json::from_str(record).map_err(|error| unreadable(&error))?;
         let simulator = self.lock();
-        let recorded = simulator.recorded(&record);
-        let devices = recorded
-            .devices
-            .iter()
-            .map(|&index| {
-                let device = &simulator.devices()[index];
-                let thermal = (0..device.terminals().len())
-                    .map(|terminal| device.thermal().contains(&terminal))
-                    .collect();
-                let internals = device.internals();
-                let regions = device.regions();
-                (
-                    device.path().to_owned(),
-                    device.terminals().to_vec(),
-                    thermal,
-                    internals.start,
-                    internals.len(),
-                    device.variable_names().to_vec(),
-                    regions.names.to_vec(),
-                    regions.margins.to_vec(),
-                )
-            })
-            .collect();
+        let recorded = simulator.recorded(&record, regions);
+        let in_full = recorded.devices.iter().map(|&index| {
+            let device = &simulator.devices()[index];
+            let thermal = (0..device.terminals().len())
+                .map(|terminal| device.thermal().contains(&terminal))
+                .collect();
+            let internals = device.internals();
+            let regions = device.regions();
+            (
+                device.path().to_owned(),
+                device.terminals().to_vec(),
+                thermal,
+                internals.start,
+                internals.len(),
+                device.variable_names().to_vec(),
+                regions.names.to_vec(),
+                regions.margins.to_vec(),
+            )
+        });
+        let regions_alone = recorded.regions.iter().map(|&index| {
+            let device = &simulator.devices()[index];
+            let names = device.variable_names();
+            let regions = device.regions();
+            (
+                device.path().to_owned(),
+                Vec::new(),
+                Vec::new(),
+                0,
+                0,
+                simulator
+                    .region_variables(index)
+                    .into_iter()
+                    .map(|variable| names[variable])
+                    .collect(),
+                regions.names.to_vec(),
+                regions.margins.to_vec(),
+            )
+        });
+        let devices = in_full.chain(regions_alone).collect();
         let composites = recorded
             .composites
             .iter()
