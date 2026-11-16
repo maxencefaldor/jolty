@@ -86,9 +86,30 @@ impl<T: Scalar> Solver<T> {
     pub(crate) fn factor(&mut self, values: &[T]) -> Result<Factors<'_, T>, SimulationError> {
         let names = &self.names;
         match self.lu.factor(values) {
-            Ok(factors) => Ok(Factors { factors, names }),
+            Ok(lu) => Ok(Factors {
+                lu,
+                names,
+                refined: None,
+            }),
             Err(error) => Err(named(error, names)),
         }
+    }
+
+    /// Factors the matrix whose stored values are `values`, as [`Solver::factor`] does,
+    /// each solve with its factors then refined against it, as [`Factors::solve`] says.
+    ///
+    /// # Errors
+    ///
+    /// As [`Solver::factor`].
+    pub(crate) fn factor_refined<'a>(
+        &'a mut self,
+        values: &'a [T],
+        refinement: &'a mut Refinement<T>,
+    ) -> Result<Factors<'a, T>, SimulationError> {
+        let pattern = Arc::clone(self.pattern());
+        let mut factors = self.factor(values)?;
+        factors.refined = Some((values, pattern, refinement));
+        Ok(factors)
     }
 
     /// The simulation error of the linear `error` of a system in the circuit's unknowns,
@@ -108,40 +129,132 @@ impl<T: Scalar> fmt::Debug for Solver<T> {
 
 /// The LU factors of one of the circuit's matrices, ready to solve systems with it.
 pub(crate) struct Factors<'a, T: Scalar> {
-    factors: jolty_numerics::Factors<'a, T>,
+    lu: jolty_numerics::Factors<'a, T>,
     names: &'a [String],
+    /// The matrix factored, its stored values and their pattern, and the buffers its
+    /// refinement works in, when each solve is refined against it.
+    refined: Option<(&'a [T], Arc<Pattern>, &'a mut Refinement<T>)>,
+}
+
+/// The buffers a refined solve works in, kept from one solve to the next so that none
+/// allocates: a sweep solves thousands of small systems, each in a few hundred
+/// nanoseconds.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Refinement<T> {
+    given: Vec<T>,
+    residual: Vec<T>,
+    candidate: Vec<T>,
+    left: Vec<T>,
+    scale: Vec<f64>,
 }
 
 impl<'a, T: Scalar> Factors<'a, T> {
     /// Solves `A x = rhs` and leaves `x` in `rhs`.
+    ///
+    /// Factors kept for a matrix factored by [`Solver::factor_refined`] refine the
+    /// solution against it by iterative refinement in working precision while that pays
+    /// (Higham, *Accuracy and Stability of Numerical Algorithms*, 2002, §12.3): while the
+    /// componentwise backward error `ω = maxᵢ |b − A x|ᵢ / (|A| |x| + |b|)ᵢ` of Oettli and
+    /// Prager exceeds the machine epsilon, a correction solved from the residual is taken
+    /// if it at least halves `ω`. Elimination with pivots chosen for another matrix, as a
+    /// sweep keeps them from one frequency to the next, can lose the digits of a small
+    /// unknown that the system determines well; one step of this refinement makes the
+    /// solve componentwise backward stable (Skeel, *Mathematics of Computation* 35, 1980),
+    /// which keeps them.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
     /// unknowns whose values are not.
     pub(crate) fn solve(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
-        self.factors
-            .solve(rhs)
-            .map_err(|error| named(error, self.names))
+        self.refine(rhs, false)
     }
 
-    /// Solves the transposed system `Aᵀ x = rhs` and leaves `x` in `rhs`.
+    /// Solves the transposed system `Aᵀ x = rhs` and leaves `x` in `rhs`, refined as
+    /// [`Factors::solve`] refines.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
     /// unknowns whose values are not.
     pub(crate) fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
-        self.factors
-            .solve_transpose(rhs)
-            .map_err(|error| named(error, self.names))
+        self.refine(rhs, true)
+    }
+
+    /// Solves `A x = rhs`, or `Aᵀ x = rhs` if `transposed`, then refines as
+    /// [`Factors::solve`] says.
+    fn refine(&mut self, rhs: &mut [T], transposed: bool) -> Result<(), SimulationError> {
+        let Some((matrix, pattern, work)) = self.refined.take() else {
+            return self.plain(rhs, transposed);
+        };
+        let refined = self.refine_with(matrix, &pattern, work, rhs, transposed);
+        self.refined = Some((matrix, pattern, work));
+        refined
+    }
+
+    /// Refines as [`Factors::solve`] says, against the stored `matrix` of `pattern`, in
+    /// the buffers of `work`.
+    fn refine_with(
+        &mut self,
+        matrix: &[T],
+        pattern: &Pattern,
+        work: &mut Refinement<T>,
+        rhs: &mut [T],
+        transposed: bool,
+    ) -> Result<(), SimulationError> {
+        work.given.clear();
+        work.given.extend_from_slice(rhs);
+        self.plain(rhs, transposed)?;
+        let mut error = backward_error(
+            pattern,
+            matrix,
+            rhs,
+            &work.given,
+            transposed,
+            &mut work.residual,
+            &mut work.scale,
+        );
+        while error > f64::EPSILON {
+            work.candidate.clear();
+            work.candidate.extend_from_slice(&work.residual);
+            self.plain(&mut work.candidate, transposed)?;
+            for (value, correction) in work.candidate.iter_mut().zip(rhs.iter()) {
+                *value += *correction;
+            }
+            let next = backward_error(
+                pattern,
+                matrix,
+                &work.candidate,
+                &work.given,
+                transposed,
+                &mut work.left,
+                &mut work.scale,
+            );
+            if next > error / 2.0 {
+                break;
+            }
+            rhs.copy_from_slice(&work.candidate);
+            std::mem::swap(&mut work.residual, &mut work.left);
+            error = next;
+        }
+        Ok(())
+    }
+
+    /// Solves `A x = rhs`, or `Aᵀ x = rhs` if `transposed`, with the factors alone.
+    fn plain(&mut self, rhs: &mut [T], transposed: bool) -> Result<(), SimulationError> {
+        let solved = if transposed {
+            self.lu.solve_transpose(rhs)
+        } else {
+            self.lu.solve(rhs)
+        };
+        solved.map_err(|error| named(error, self.names))
     }
 
     /// The factors, to solve with from several threads at once, each with a workspace of
     /// its own, as [`jolty_numerics::Factors::shared`] says.
     pub(crate) fn shared(&self) -> Shared<'a, T> {
         Shared {
-            factors: self.factors.shared(),
+            factors: self.lu.shared(),
             names: self.names,
         }
     }
@@ -194,6 +307,46 @@ impl<T: Scalar> Shared<'_, T> {
             .solve_transpose(rhs, workspace)
             .map_err(|error| named(error, self.names))
     }
+}
+
+/// The componentwise backward error of `x` as a solution of `A x = b`, or `Aᵀ x = b` if
+/// `transposed`, `A` the stored `values` of `pattern`: `maxᵢ |rᵢ| / (|A| |x| + |b|)ᵢ`, the
+/// residual `r = b − A x` left in `residual` and the denominators in `scale`. A row whose
+/// denominator is zero has a zero residual too, and counts for nothing. Each `|·|` is a
+/// number's [`Scalar::size`], a complex number's `|re| + |im|`, which bounds `|a x|` by
+/// `|a| |x|` as the modulus does, within √2 of it, without a square root for each entry.
+fn backward_error<T: Scalar>(
+    pattern: &Pattern,
+    values: &[T],
+    x: &[T],
+    b: &[T],
+    transposed: bool,
+    residual: &mut Vec<T>,
+    scale: &mut Vec<f64>,
+) -> f64 {
+    scale.clear();
+    scale.extend(b.iter().map(|value| value.size()));
+    residual.clear();
+    residual.extend_from_slice(b);
+    for row in 0..x.len() {
+        for &(slot, column) in pattern.row(row) {
+            let (to, from) = if transposed {
+                (column, row)
+            } else {
+                (row, column)
+            };
+            let term = values[slot] * x[from];
+            residual[to] -= term;
+            scale[to] += values[slot].size() * x[from].size();
+        }
+    }
+    residual
+        .iter()
+        .zip(scale.iter())
+        .filter(|&(_, &scale)| scale > 0.0)
+        .fold(0.0, |most: f64, (value, scale)| {
+            most.max(value.size() / scale)
+        })
 }
 
 /// The simulation error of the linear `error`, naming the first [`NAMED_UNKNOWNS`] of the

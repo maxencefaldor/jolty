@@ -44,6 +44,15 @@ _NUMBER: Final = re.compile(
 )
 
 
+class UndefinedError(SpiceError):
+    """An expression reads a name that no parameter or constant has."""
+
+    def __init__(self, message: str, name: str) -> None:
+        """The error that `name` is undefined, stated by `message`."""
+        super().__init__(message)
+        self.name = name
+
+
 def number(text: str) -> float | None:
     """The number `text` writes, with its scale suffix, or `None` if it is not one.
 
@@ -145,6 +154,11 @@ _LEVELS: Final = (
 """The binary operators at each level of precedence, loosest first, and what each is."""
 
 
+_ENCLOSING: Final = {"{": "}", "'": "'", '"': '"'}
+"""The marks that may enclose an expression: braces, or single or double quotes, as
+HSPICE writes them, one within another, as in SKY130's ``{"-tol_nfom/2"}``."""
+
+
 def parse(text: str) -> Expression:
     """The expression `text` writes, with or without braces or quotes around it.
 
@@ -152,8 +166,8 @@ def parse(text: str) -> Expression:
         SpiceError: When `text` is not an expression.
     """
     stripped = text.strip()
-    if stripped[:1] in {"{", "'"} and stripped[-1:] in {"}", "'"}:
-        stripped = stripped[1:-1]
+    while len(stripped) > 1 and _ENCLOSING.get(stripped[0]) == stripped[-1]:
+        stripped = stripped[1:-1].strip()
     parser = _Parser(stripped)
     expression = parser.conditional()
     if parser.position < len(stripped.rstrip()):
@@ -360,8 +374,27 @@ def names(expression: Expression) -> set[str]:
     return set()
 
 
-def evaluate(expression: Expression, parameters: Mapping[str, float]) -> float:
+STATISTICAL: Final = {"agauss": 3, "gauss": 3, "aunif": 2, "unif": 2, "limit": 2}
+"""ngspice's statistical functions, by name, and their number of arguments, the first
+the nominal value each draws about (numparam's ``xpressn.c``). ``limit`` of any other
+number of arguments is PSpice's, which holds its first between its next two."""
+
+type Draw = Callable[[str, tuple[float, ...]], float]
+"""The value a statistical function, by name, draws with its arguments' values."""
+
+
+def nominal(_function: str, arguments: tuple[float, ...]) -> float:
+    """The nominal value of a statistical function: its first argument, undrawn."""
+    return arguments[0]
+
+
+def evaluate(
+    expression: Expression, parameters: Mapping[str, float], draw: Draw = nominal
+) -> float:
     """The value of `expression`, which reads no voltage or current, with `parameters`.
+
+    Each statistical function it calls takes the value `draw` draws, its nominal one
+    unless given, in the order the expression writes them, inner calls first.
 
     Raises:
         SpiceError: When the expression reads a voltage, a current or an unknown name,
@@ -372,11 +405,49 @@ def evaluate(expression: Expression, parameters: Mapping[str, float]) -> float:
         message = f"a parameter's expression reads no voltage or current, not `{name}`"
         raise SpiceError(message)
 
-    written = translate(expression, parameters, unread, unread)
+    drawn = _drawn(expression, parameters, draw)
+    written = translate(drawn, parameters, unread, unread)
     try:
         return _core.constant(written)
     except ValueError as error:
         raise SpiceError(str(error)) from None
+
+
+def _drawn(
+    expression: Expression, parameters: Mapping[str, float], draw: Draw
+) -> Expression:
+    """`expression` with each statistical function's call replaced by what it draws.
+
+    Raises:
+        SpiceError: When a statistical function takes the wrong number of arguments.
+    """
+
+    def drawn(part: Expression) -> Expression:
+        return _drawn(part, parameters, draw)
+
+    match expression:
+        case Call(function, arguments) if function in STATISTICAL and not (
+            function == "limit" and len(arguments) != STATISTICAL[function]
+        ):
+            if len(arguments) != STATISTICAL[function]:
+                message = (
+                    f"`{function}` takes {STATISTICAL[function]} arguments, not "
+                    f"{len(arguments)}"
+                )
+                raise SpiceError(message)
+            values = tuple(
+                evaluate(drawn(argument), parameters, draw) for argument in arguments
+            )
+            return Number(draw(function, values))
+        case Call(function, arguments):
+            return Call(function, tuple(drawn(argument) for argument in arguments))
+        case Unary(operator, operand):
+            return Unary(operator, drawn(operand))
+        case Binary(operator, left, right):
+            return Binary(operator, drawn(left), drawn(right))
+        case Conditional(condition, then, otherwise):
+            return Conditional(drawn(condition), drawn(then), drawn(otherwise))
+    return expression
 
 
 def translate(
@@ -432,7 +503,7 @@ def _leaf(
             return _number(_CONSTANTS[name])
         case Name(name):
             message = f"no parameter is named `{name}`"
-            raise SpiceError(message)
+            raise UndefinedError(message, name)
         case Voltage(positive, negative):
             return _voltage(positive, negative, node)
         case Current(source):

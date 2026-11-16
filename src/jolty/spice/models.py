@@ -13,7 +13,7 @@ model is an error, never silently dropped.
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -22,7 +22,15 @@ from pydantic import JsonValue
 from jolty import _core
 from jolty.devices import BSIM3_BINNED, BSIM3_CARD
 from jolty.errors import SpiceError
-from jolty.spice.expressions import Expression, Number, evaluate, number, parse
+from jolty.spice.expressions import (
+    Draw,
+    Expression,
+    Number,
+    evaluate,
+    nominal,
+    number,
+    parse,
+)
 from jolty.spice.netlist import Statement, tokens
 from jolty.units import celsius
 
@@ -682,22 +690,29 @@ class Made:
     parameters: dict[str, JsonValue]
 
 
+def _nominal(_name: str) -> Draw:
+    """The draws of a definition's statistical functions at their nominal values."""
+    return nominal
+
+
 def device(
     card: ModelCard,
     scope: Mapping[str, float],
     instance: Mapping[str, float],
     statement: Statement,
+    draws: Callable[[str], Draw] = _nominal,
 ) -> Made:
     """The device a model card makes for an instance with `instance` parameters.
 
     An instance's parameters include its area. The card's expressions are evaluated in
-    `scope`.
+    `scope`, the statistical functions of each parameter's drawn by `draws` of its
+    name, at their nominal values unless given.
 
     Raises:
         SpiceError: When the model's type or a parameter has no jolty counterpart.
     """
     every = {
-        name: evaluate(expression, scope)
+        name: evaluate(expression, scope, draws(name))
         for name, expression in card.parameters.items()
     }
     own = own_temperature(every, instance, statement)
@@ -751,7 +766,13 @@ def _device(
     """
     match card.kind:
         case "d":
-            area = instance.get("area", 1.0) * instance.get("m", 1.0)
+            level = values.pop("level", 1.0)
+            if level != 1:
+                message = (
+                    f"`{card.name}` is a diode of level {level:g}; jolty models level 1"
+                )
+                raise statement.fail(message)
+            area = _area(instance, statement)
             values = _area_scaled(
                 "diode", values, area, ("is", "cjo", "cj0", "cj"), ("rs",)
             )
@@ -761,7 +782,7 @@ def _device(
         case "npn" | "pnp":
             made = _bipolar_device(card, values, instance, statement)
         case "njf" | "pjf":
-            area = instance.get("area", 1.0) * instance.get("m", 1.0)
+            area = _area(instance, statement)
             values = _area_scaled(
                 "jfet", values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs")
             )
@@ -796,6 +817,19 @@ def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceErr
         f"jolty's devices have no counterpart to `{parameter.upper()}` of `{card.name}`"
     )
     return statement.fail(message)
+
+
+def _area(instance: Mapping[str, float], statement: Statement) -> float:
+    """An element's area times its number of copies, as SPICE scales a device by it.
+
+    Raises:
+        SpiceError: When it is not positive, which leaves the device no junction.
+    """
+    area = instance.get("area", 1.0) * instance.get("m", 1.0)
+    if not area > 0:
+        message = f"the element's area times its copies is positive, not {area!r}"
+        raise statement.fail(message)
+    return area
 
 
 def _scaled(
@@ -901,7 +935,7 @@ def _bipolar(
         for name, value in values.items()
         if name not in BIPOLAR_INFINITE_AT_ZERO or value != 0
     }
-    area = instance.get("area", 1.0) * instance.get("m", 1.0)
+    area = _area(instance, statement)
     multiplied = (
         *("is", "ikf", "ik", "ikr", "ise", "isc", "itf", "cje", "cjc", "irb"),
         *("iss", "cjs", "csub", "ccs"),
@@ -981,19 +1015,37 @@ BIN_TOLERANCE: Final = 1e-9
 ngspice's ``INPgetModBin`` counts it."""
 
 
+BSIM4_LEVELS: Final = frozenset({14, 54})
+"""The levels of BSIM4's cards, as ngspice reads them (``inpdomod.c``, line 297)."""
+
+BSIM_SOI_LEVELS: Final = frozenset({10, 58})
+"""The levels of BSIM-SOI's cards, as ngspice reads them (``inpdomod.c``, line 347)."""
+
+HISIM2_LEVELS: Final = frozenset({68})
+"""The level of HiSIM2's cards, as ngspice reads them (``inpdomod.c``, line 363)."""
+
+HISIM_HV_LEVELS: Final = frozenset({73})
+"""The level of HiSIM_HV's cards, as ngspice reads them (``inpdomod.c``, line 371)."""
+
+BINNED_LEVELS: Final = BSIM3_LEVELS | BSIM4_LEVELS | HISIM2_LEVELS | HISIM_HV_LEVELS
+"""The levels of the MOSFETs ngspice selects bins of, BSIM3's, BSIM4's, HiSIM2's and
+HiSIM_HV's (``INPgetModBin`` in ``inpgmod.c``)."""
+
+
 def holds(
     card: ModelCard, scope: Mapping[str, float], size: tuple[float, float]
 ) -> bool:
-    """Whether a BSIM3 `card` is a bin for an instance of `size`, its length and width.
+    """Whether a MOSFET's `card` is a bin for an instance of `size`.
 
-    As ngspice selects a bin, a card that gives ``LMIN``, ``LMAX``, ``WMIN`` and
-    ``WMAX`` holds an instance whose length lies between the first two and whose width
-    between the others, on a bound counted in; its expressions are evaluated in
-    `scope`.
+    As ngspice selects a bin, a card of a level it bins, `BINNED_LEVELS`, that gives
+    ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX`` holds an instance whose length, the first
+    of `size`, lies between the first two and whose width between the others, on a
+    bound counted in; its expressions are evaluated in `scope`. A card of a level jolty
+    does not model may be a bin too, which the device it makes then refuses.
     """
     bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
     level = card.parameters.get("level")
-    if level is None or evaluate(level, scope) not in BSIM3_LEVELS:
+    if level is None or evaluate(level, scope) not in BINNED_LEVELS:
         return False
     if any(bound is None for bound in bounds):
         return False

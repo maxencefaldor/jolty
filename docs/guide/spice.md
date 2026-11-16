@@ -36,11 +36,12 @@ jolty reads a file as PSpice and ngspice read it:
 
 - resistors, capacitors and inductors, with their model cards' scales, and mutual inductances, `K`, which couple inductors;
 - independent sources at their DC level, or with their `PULSE`, `SIN` or `PWL` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
-- diodes, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, areas and multipliers, and models that inherit from one another through `AKO:`;
+- diodes of level 1, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, positive areas and multipliers, and models that inherit from one another through `AKO:`;
 - linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;
 - `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
 - switches of PSpice's `VSWITCH` and `ISWITCH` models, `S` and `W`, a `W` switch reading the current of a source of a voltage as a current-controlled source does;
-- subcircuit instances, with their parameters, and `.param` statements.
+- subcircuit instances, with their parameters, and `.param` statements;
+- what process design kits write, as the [foundry's guide](foundry.md#the-open-process-kits) tells: `.include` and `.lib` sections, `.option scale`, a subcircuit's `.if` blocks and its own parameters, which its instances may give, `temper`, and the statistical functions `agauss`, `gauss`, `aunif`, `unif` and two-argument `limit`, at their nominal values unless a placement is drawn in a sample.
 
 Parameters may read one another in any order, and expressions know PSpice's `TEMP`, `VT` and `GMIN`.
 Expressions are read with PSpice's functions and ngspice's meanings, written in [jolty's expression language](../reference/expressions.md): `PWR(x, y)` is `|x|^y`, a `TABLE` within an expression extends beyond its ends, and a `TABLE` source holds beyond its ends with its corners rounded, as ngspice's XSPICE `pwl` model rounds them.
