@@ -18,7 +18,7 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 ``hiss.densities`` and ``hiss.contributions``, and where each analysis used logic
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
-simulated them, and the hashes of the circuit and the plan they are of. The header is
+simulated them, and the digests of the circuit and the plan they are of. The header is
 in version 14 of the format, which holds that provenance and the regions of operation
 each recorded transistor's model distinguishes; a file of another version is not
 read.
@@ -248,8 +248,8 @@ _PACKAGE: Final = Path(__file__).resolve().parent
 """jolty's own directory, whose modules and engine a build is."""
 
 
-def circuit_hash(circuit: ir.Circuit) -> str:
-    """A SHA-256 hash, in hexadecimal, of what a simulation reads of `circuit`.
+def circuit_digest(circuit: ir.Circuit) -> str:
+    """A SHA-256 digest, in hexadecimal, of what a simulation reads of `circuit`.
 
     It hashes the circuit in the circuit format without each instance's
     [`SourceLocation`][jolty.ir.SourceLocation], the script line that placed it, which
@@ -269,9 +269,9 @@ def circuit_hash(circuit: ir.Circuit) -> str:
         ...     return Circuit(
         ...         top="top", components={"top": Component(instances=(resistor,))}
         ...     )
-        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("b/a.py", 1e3))
+        >>> circuit_digest(placed("a.py", 1e3)) == circuit_digest(placed("b/a.py", 1e3))
         True
-        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("a.py", 2e3))
+        >>> circuit_digest(placed("a.py", 1e3)) == circuit_digest(placed("a.py", 2e3))
         False
     """
     sourceless = {
@@ -283,7 +283,7 @@ def circuit_hash(circuit: ir.Circuit) -> str:
 
 @functools.cache
 def build() -> str:
-    """A SHA-256 hash of jolty's build: its engine, its Python modules and the Python.
+    """A SHA-256 digest of jolty's build: its engine, its Python modules and the Python.
 
     It hashes the bytes of the engine's library and of every module of the package, by
     their paths within it, and the interpreter's version, since a measure a script
@@ -315,14 +315,14 @@ def platform() -> str:
     return f"{sysconfig.get_platform()} {library} {release}"
 
 
-def plan_hash(plan: Plan) -> str:
-    """A SHA-256 hash, in hexadecimal, of `plan`'s analyses, options and conditions.
+def plan_digest(plan: Plan) -> str:
+    """A SHA-256 digest, in hexadecimal, of `plan`'s analyses, options and conditions.
 
     It hashes them as their representations spell them.
 
     Examples:
         >>> from jolty.plan import OperatingPoint
-        >>> plan_hash(Plan({"op": OperatingPoint()})) == plan_hash(
+        >>> plan_digest(Plan({"op": OperatingPoint()})) == plan_digest(
         ...     Plan({"op": OperatingPoint()})
         ... )
         True
@@ -334,7 +334,7 @@ class Provenance(BaseModel):
     """Where results come from, as a results file states it.
 
     The jolty, the build and the platform that simulated them, and the circuit and the
-    plan they are of, by their hashes. Every results file states it, and
+    plan they are of, by their digests. Every results file states it, and
     [`load_results`][jolty.files.load_results] given a circuit refuses a file whose
     results are of another.
     """
@@ -350,12 +350,12 @@ class Provenance(BaseModel):
     )
     circuit: str | None = Field(
         default=None,
-        description="The [`circuit_hash`][jolty.files.circuit_hash] of the circuit "
+        description="The [`circuit_digest`][jolty.files.circuit_digest] of the circuit "
         "they are of, when it was given.",
     )
     plan: str | None = Field(
         default=None,
-        description="The [`plan_hash`][jolty.files.plan_hash] of the plan they are "
+        description="The [`plan_digest`][jolty.files.plan_digest] of the plan they are "
         "of, when it was given.",
     )
 
@@ -371,8 +371,8 @@ class Provenance(BaseModel):
             jolty=version("jolty"),
             build=build(),
             platform=platform(),
-            circuit=None if circuit is None else circuit_hash(circuit),
-            plan=None if plan is None else plan_hash(plan),
+            circuit=None if circuit is None else circuit_digest(circuit),
+            plan=None if plan is None else plan_digest(plan),
         )
 
 
@@ -593,11 +593,11 @@ def load_results(
     with np.load(path, allow_pickle=False) as data:
         header = _header(path, data)
         of = header.provenance.circuit
-        if circuit is not None and of is not None and of != circuit_hash(circuit):
+        if circuit is not None and of is not None and of != circuit_digest(circuit):
             message = (
                 f"{path} holds the results of another circuit than the one given: "
                 f"its circuit's hash is {of[:12]}, the one given's "
-                f"{circuit_hash(circuit)[:12]}; simulate the circuit again"
+                f"{circuit_digest(circuit)[:12]}; simulate the circuit again"
             )
             raise JoltyError(message)
         recordings = tuple(recording.recording() for recording in header.recordings)
@@ -1282,13 +1282,13 @@ class Shard:
     sample `start`, or None where the circuit does not elaborate. `analyses` names
     every analysis of the plan, and `specs` are those its samples were measured
     against, if any, each requirement's measure the batch's measure at its
-    place. Shards of one run of the analysis share their `fingerprint`, which
+    place. Shards of one run of the analysis share their `digest`, which
     [`jolty.shards`][jolty.shards] makes.
     """
 
     start: int
     stop: int
-    fingerprint: str
+    digest: str
     samples: int
     seed: int
     toleranced: int
@@ -1365,10 +1365,10 @@ def _quantity(bound: _Bound | None) -> Quantity | None:
 
 class _Shard(_Model):
     format: Literal["jolty-shard"] = "jolty-shard"
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     start: int
     stop: int
-    fingerprint: str
+    digest: str
     samples: int
     seed: int
     toleranced: int
@@ -1393,7 +1393,7 @@ def save_shard(path: Path, shard: Shard) -> None:
     header = _Shard(
         start=shard.start,
         stop=shard.stop,
-        fingerprint=shard.fingerprint,
+        digest=shard.digest,
         samples=shard.samples,
         seed=shard.seed,
         toleranced=shard.toleranced,
@@ -1434,7 +1434,7 @@ def load_shard(path: Path) -> Shard:
         return Shard(
             start=header.start,
             stop=header.stop,
-            fingerprint=header.fingerprint,
+            digest=header.digest,
             samples=header.samples,
             seed=header.seed,
             toleranced=header.toleranced,

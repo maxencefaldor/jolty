@@ -10,9 +10,9 @@ of its own, which a failed shard runs again; it writes a
 [`Shard`][jolty.files.Shard] to ``shard-<start>-<stop>.npz``, and ``jolty merge``
 reports the shards of a directory as one run of every sample reports them.
 
-Each shard carries a [`fingerprint`][jolty.shards.fingerprint] of what its numbers
+Each shard carries a [`digest`][jolty.shards.digest] of what its numbers
 depend on, which leaves out where the scripts that built its circuits lie, and the
-merge refuses shards whose fingerprints differ, or whose samples leave a gap or
+merge refuses shards whose digests differ, or whose samples leave a gap or
 overlap.
 """
 
@@ -36,15 +36,15 @@ _PACKAGE: Final = Path(__file__).resolve().parent
 """jolty's own directory, whose modules and engine a build is."""
 
 
-def fingerprint(described: Mapping[str, JsonValue]) -> str:
-    """A SHA-256 hash, in hexadecimal, of what a shard's numbers depend on.
+def digest(described: Mapping[str, JsonValue]) -> str:
+    """A SHA-256 digest, in hexadecimal, of what a shard's numbers depend on.
 
     It hashes `described`, which says what the shard ran, with jolty's version, its
     [`build`][jolty.files.build] and its [`platform`][jolty.files.platform]: the
     determinism contract holds the bits to one build on one platform.
 
     Examples:
-        >>> len(fingerprint({"samples": 10}))
+        >>> len(digest({"samples": 10}))
         64
     """
     document = {
@@ -63,7 +63,7 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
     Also returns the paths, in the order of the shards' samples.
 
     Raises:
-        JoltyError: When there is no shard, a file is not one, the shards' fingerprints
+        JoltyError: When there is no shard, a file is not one, the shards' digests
             differ, naming the shards of each, or their samples leave a gap or overlap,
             naming the shards beside each, every one of them.
     """
@@ -104,7 +104,7 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
     merged = files.Shard(
         start=0,
         stop=first.samples,
-        fingerprint=first.fingerprint,
+        digest=first.digest,
         samples=first.samples,
         seed=first.seed,
         toleranced=first.toleranced,
@@ -118,14 +118,14 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
 
 
 def _same(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
-    """Checks that the shards `loaded` share their fingerprint.
+    """Checks that the shards `loaded` share their digest.
 
     Raises:
-        JoltyError: When they do not, naming the shards of each fingerprint.
+        JoltyError: When they do not, naming the shards of each digest.
     """
     by: dict[str, list[Path]] = {}
     for path, shard in loaded:
-        by.setdefault(shard.fingerprint, []).append(path)
+        by.setdefault(shard.digest, []).append(path)
     if len(by) == 1:
         return
     listed = "; ".join(
@@ -134,7 +134,7 @@ def _same(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
     )
     message = (
         "the shards ran other circuits, plans, options, builds or platforms, as their "
-        f"fingerprints differ: {listed}"
+        f"digests differ: {listed}"
     )
     raise JoltyError(message)
 

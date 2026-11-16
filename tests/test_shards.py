@@ -4,7 +4,7 @@
 Merging the shards of 1, 3 and 7 ranges of a plan's samples, run on three threads,
 gives the report and the batch file of one run of every sample on one thread, bit for
 bit, and the same batches at every condition. Shards of one circuit built by scripts
-in two places merge. Shards of other fingerprints, and shards whose samples leave a gap
+in two places merge. Shards of other digests, and shards whose samples leave a gap
 or overlap, do not merge, and the error names them. A shard
 killed while it runs leaves no file, and run again writes the same file each time.
 """
@@ -203,7 +203,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
     assert plan_s is not None
     assert len(plan_s.reasons) > 3
     for other in others:
-        assert other.fingerprint == first.fingerprint
+        assert other.digest == first.digest
         for mine, theirs in zip(other.conditions, first.conditions, strict=True):
             _same(mine, theirs)
 
@@ -218,7 +218,7 @@ def test_shards_of_other_fingerprints_do_not_merge(tmp_path: Path) -> None:
     message = str(raised.value)
     assert message.startswith(
         "the shards ran other circuits, plans, options, builds or platforms, as their "
-        "fingerprints differ: shard-0-35.npz has "
+        "digests differ: shard-0-35.npz has "
     )
     assert "; shard-35-70.npz has " in message
 
@@ -238,7 +238,7 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
         "one/divider.py",
         "two/divider.py",
     ]
-    assert files.circuit_hash(built[0]) == files.circuit_hash(built[1])
+    assert files.circuit_digest(built[0]) == files.circuit_digest(built[1])
     first = _shard(places[0], directory, 0, 35)
     second = _shard(places[1], directory, 35, SAMPLES)
     shard, ordered = shards.merge([first, second])
@@ -252,13 +252,13 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
         text.replace("capacitor(1 * nF", "capacitor(2 * nF"), encoding="utf-8"
     )
     other = _shard(changed, tmp_path / "changed.shards", 35, SAMPLES)
-    with pytest.raises(JoltyError, match="as their fingerprints differ"):
+    with pytest.raises(JoltyError, match="as their digests differ"):
         shards.merge([first, other])
 
 
 def test_shards_of_other_interiors_do_not_merge(tmp_path: Path) -> None:
     # The interiors of a dissected factorization order its operations, so they join a
-    # shard's fingerprint, where the thresholds that only spread work do not.
+    # shard's digest, where the thresholds that only spread work do not.
     script = _script(tmp_path)
     directory = tmp_path / "divider.shards"
     first = _shard(script, directory, 0, 35)
@@ -274,7 +274,7 @@ def test_shards_of_other_interiors_do_not_merge(tmp_path: Path) -> None:
         SAMPLES,
         runner.Thresholds(max_unknowns_per_interior=2),
     )
-    with pytest.raises(JoltyError, match="fingerprints differ"):
+    with pytest.raises(JoltyError, match="digests differ"):
         shards.merge([first, dissected])
 
 
@@ -300,7 +300,7 @@ def test_gaps_and_overlaps_name_the_shards(tmp_path: Path) -> None:
     with pytest.raises(JoltyError, match="there is no shard to merge"):
         shards.merge([])
     (directory / "shard-70-80.npz").write_bytes(b"not a shard")
-    with pytest.raises(JoltyError, match="is not a jolty shard file of version 2"):
+    with pytest.raises(JoltyError, match="is not a jolty shard file of version 3"):
         shards.merge([directory / "shard-70-80.npz"])
 
 
@@ -420,7 +420,7 @@ def test_a_shard_warns_when_every_sample_s_shards_pass_10_gb() -> None:
         failed=0,
         size=1_200_000,
         total=12_000_000_000,
-        fingerprint="0" * 64,
+        digest="0" * 64,
     )
     assert report.describe().endswith(
         "\nwarning: the shards of every sample hold 12 GB of arrays, more than 10 GB"

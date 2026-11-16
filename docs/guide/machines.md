@@ -13,10 +13,10 @@ jolty simulate amp.py --samples 1000000:2000000
 ```
 
 A shard runs its samples at the plan's own conditions and at every corner, as a run of every sample does, and runs none of the plan's other analyses, draws no schematic and no plot.
-It writes them to `amp.shards/shard-0-1000000.npz`, or into the directory `--shards` names, and reports its samples, how many failed, the bytes of its arrays, and its fingerprint:
+It writes them to `amp.shards/shard-0-1000000.npz`, or into the directory `--shards` names, and reports its samples, how many failed, the bytes of its arrays, and its digest:
 
 ```text
-shard: samples 0 up to 1000000 of 10000000; 0 failed; 75 MB of arrays, fingerprint 29ac764e3ed3
+shard: samples 0 up to 1000000 of 10000000; 0 failed; 75 MB of arrays, digest 29ac764e3ed3
 ```
 
 A shard is a command with no state of its own: the same command writes the same file, byte for byte, and a shard that fails, or whose machine stops, is simply run again.
@@ -30,7 +30,7 @@ Its file appears whole or not at all, copied under a hidden name beside it and t
 jolty merge amp.shards
 ```
 
-It reads every `shard-*-*.npz` file of the directory, checks that they share their fingerprint and that their samples tile every sample of the analysis, no gap and no overlap, and joins their batches, at each of the plan's conditions, in the order of their samples.
+It reads every `shard-*-*.npz` file of the directory, checks that they share their digest and that their samples tile every sample of the analysis, no gap and no overlap, and joins their batches, at each of the plan's conditions, in the order of their samples.
 It then judges every sample against the specs the shards measured, as a run of every sample does, saves the batch at the plan's own conditions to `amp.batches.npz` beside the directory, the file the run of every sample saves, and plots it beside that file.
 Its report is that run's Monte Carlo report, bit for bit, and its batch file holds that run's batch of the samples, the same bytes where the run traced the probes the shards traced.
 The merge runs no script, so it needs neither the scripts nor what they import, only the shards.
@@ -44,10 +44,10 @@ shard-30-50.npz and shard-40-45.npz both hold samples 40 up to 45
 
 ## Fingerprints
 
-A shard's fingerprint is a SHA-256 hash of what its numbers depend on: each condition's circuit in the circuit format, its temperature and process corner; the analyses, the options and the fidelity's models; the samples and their seed; the requirements and the yield target; the unknowns traced; jolty's version and its build, the engine's library, its Python modules and the interpreter; and the platform, the one Python was built for and its C library's version.
-Shards of other fingerprints do not merge, as their numbers could differ: the bits are the same on one build and one platform, and only agree within tolerance across platforms, whose math libraries round apart.
+A shard's digest is the SHA-256 of what its numbers depend on: each condition's circuit in the circuit format, its temperature and process corner; the analyses, the options and the fidelity's models; the samples and their seed; the requirements and the yield target; the unknowns traced; jolty's version and its build, the engine's library, its Python modules and the interpreter; and the platform, the one Python was built for and its C library's version.
+Shards of other digests do not merge, as their numbers could differ: the bits are the same on one build and one platform, and only agree within tolerance across platforms, whose math libraries round apart.
 So every machine runs the same build of jolty, such as the same wheel, on the same platform, and the same scripts, from the same directory, since a circuit names the script lines that placed its instances.
-The parallelism of the options changes no result but `max_unknowns_per_interior`'s, which reorders the factorization's arithmetic and so the last digits, and the fingerprint leaves the rest out, as it does the threads.
+The parallelism of the options changes no result but `max_unknowns_per_interior`'s, which reorders the factorization's arithmetic and so the last digits, and the digest leaves the rest out, as it does the threads.
 A measure a script writes is hashed by its words, not its code.
 
 ## Launching

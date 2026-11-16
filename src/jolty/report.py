@@ -768,7 +768,7 @@ class ShardReport(_Model):
         description="The bytes of the arrays the shards of every sample hold: as many "
         "a sample as this shard's."
     )
-    fingerprint: str = Field(
+    digest: str = Field(
         description="The SHA-256 hash of what the shard's numbers depend on, which "
         "every shard of one analysis shares."
     )
@@ -779,7 +779,7 @@ class ShardReport(_Model):
         head = (
             f"shard: samples {self.start} up to {self.stop} of {self.samples}{at}; "
             f"{self.failed} failed; {format_si(self.size, 'B')} of arrays, "
-            f"fingerprint {self.fingerprint[:12]}"
+            f"digest {self.digest[:12]}"
         )
         if self.total <= LARGE:
             return head

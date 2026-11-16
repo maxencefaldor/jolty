@@ -26,13 +26,13 @@ from jolty.files import (
     Batch,
     Provenance,
     build,
-    circuit_hash,
+    circuit_digest,
     circuit_path,
     load_batches,
     load_circuit,
     load_provenance,
     load_results,
-    plan_hash,
+    plan_digest,
     results_path,
     save_batches,
     save_circuit,
@@ -356,8 +356,8 @@ def test_a_results_file_states_its_provenance(tmp_path: Path) -> None:
     found = load_provenance(path)
     assert found == Provenance.of(written, plan)
     assert found.jolty == jolty.__version__
-    assert found.circuit == circuit_hash(written)
-    assert found.plan == plan_hash(plan)
+    assert found.circuit == circuit_digest(written)
+    assert found.plan == plan_digest(plan)
     save_results(path, every_kind())
     assert load_provenance(path).circuit is None
     assert load_provenance(path).build == build()

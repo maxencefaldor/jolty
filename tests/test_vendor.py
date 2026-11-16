@@ -57,7 +57,7 @@ class Part:
     """A vendor's macromodel: where its file is, its digest, and its subcircuit."""
 
     path: str
-    sha256: str
+    digest: str
     subcircuit: str
 
 
@@ -91,7 +91,7 @@ def downloads(pytestconfig: pytest.Config) -> Path:
 
 
 def _file(part: Part, downloads: Path) -> Path:
-    return spice.fetch(_MIRROR + part.path, part.sha256, downloads)
+    return spice.fetch(_MIRROR + part.path, part.digest, downloads)
 
 
 def _inverting(

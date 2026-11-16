@@ -729,7 +729,7 @@ def _sampled(  # noqa: PLR0913 - the analysis, where it runs, and what it judges
     return files.Shard(
         start=taken.start,
         stop=taken.stop,
-        fingerprint=shards.fingerprint(described),
+        digest=shards.digest(described),
         samples=monte_carlo.samples,
         seed=monte_carlo.seed,
         toleranced=0 if nominal is None else len(variation.toleranced(nominal.built)),
@@ -791,7 +791,7 @@ def _shard(  # noqa: PLR0913 - the job, the plan, and where its samples run
         failed=failed,
         size=size,
         total=size * monte_carlo.samples // len(taken),
-        fingerprint=shard.fingerprint,
+        digest=shard.digest,
     )
 
 
@@ -811,13 +811,13 @@ def _described(
 ) -> dict[str, JsonValue]:
     """What the numbers of a shard of `monte_carlo`'s samples depend on, as JSON.
 
-    It is the analyses and the options, but for the parallelism, which changes no
-    result save for the interiors its factorization is dissected into; the fidelity's
-    models, by scope; the samples and their seed; each condition's corner,
-    temperature, process corner, and the [`circuit_hash`][jolty.files.circuit_hash] of
-    its circuit, which leaves out the script lines that placed its instances, none where
-    it does not elaborate; the requirements of `specs`, in words, and their yield
-    target; and the unknowns `traces` names.
+    It is the analyses and the options, but for the parallelism, which changes no result
+    save for the interiors its factorization is dissected into; the fidelity's models,
+    by scope; the samples and their seed; each condition's corner, temperature, process
+    corner, and the [`circuit_digest`][jolty.files.circuit_digest] of its circuit, which
+    leaves out the script lines that placed its instances, none where it does not
+    elaborate; the requirements of `specs`, in words, and their yield target; and the
+    unknowns `traces` names.
     """
     hashed: dict[int, str] = {}
 
@@ -826,7 +826,7 @@ def _described(
         if chosen is None:
             return None
         if id(chosen.built) not in hashed:
-            hashed[id(chosen.built)] = files.circuit_hash(chosen.built)
+            hashed[id(chosen.built)] = files.circuit_digest(chosen.built)
         return hashed[id(chosen.built)]
 
     options = plan.options.to_json()

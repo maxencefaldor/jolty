@@ -614,7 +614,7 @@ class MergeRequest(_Model):
 
     The shards are the shard-START-STOP.npz files that jolty simulate --samples writes
     into a directory, each the samples from START up to STOP. The merge refuses shards
-    whose fingerprints differ, as they ran other circuits, plans, options, builds or
+    whose digests differ, as they ran other circuits, plans, options, builds or
     platforms, and shards whose samples leave a gap or overlap; it joins their batches
     in the order of their samples, and reports every sample against the specs the
     shards measured, as a simulation of every sample in one run does, bit for bit. It
@@ -686,7 +686,7 @@ async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
 
     Raises:
         JoltyError: When the directory holds no shard, a file is not one, the shards'
-            fingerprints differ, or their samples leave a gap or overlap.
+            digests differ, or their samples leave a gap or overlap.
     """
     del settings
     started = time.perf_counter()

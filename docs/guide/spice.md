@@ -26,7 +26,7 @@ A subcircuit's pins become its ports, in order.
 A subcircuit that reaches SPICE's global ground, node `0`, has one more port, `spice.GROUND`, which the circuit joins to its own ground.
 Each instance records the file and the line of the statement that placed it, so a problem in an imported part names where the part says it.
 
-`spice.fetch(url, sha256)` downloads a model file from where its maker publishes it, checks its SHA-256 digest, and keeps it in the [`cache`](../reference/configuration.md) directory, where later calls read it.
+`spice.fetch(url, digest)` downloads a model file from where its maker publishes it, checks its SHA-256 digest, and keeps it in the [`cache`](../reference/configuration.md) directory, where later calls read it.
 
 ## What jolty reads
 
