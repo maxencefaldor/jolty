@@ -67,6 +67,16 @@ impl<R: Real, const N: usize> Dual<R, N> {
         self.chain((self.value.ln(), self.value.recip()))
     }
 
+    /// `ln(1 + x)` of the value `x`, as [`Real::ln_1p`] computes it.
+    pub(crate) fn ln_1p(self) -> Self {
+        self.chain((self.value.ln_1p(), (self.value + 1.0).recip()))
+    }
+
+    /// `eˣ − 1` of the value `x`, as [`Real::exp_m1`] computes it.
+    pub(crate) fn exp_m1(self) -> Self {
+        self.chain((self.value.exp_m1(), self.value.exp()))
+    }
+
     /// The value, which must be positive, raised to `exponent`, a number that the
     /// variables do not move: the derivative, `exponent · value^exponent / value`, divides
     /// the power by the value rather than raising the value again.

@@ -30,7 +30,13 @@ pub(crate) enum Probe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
     Exp,
+    /// `eˣ − 1`, to its last digit where `x` is near zero: jolty's, as C's `expm1`; not
+    /// in the Verilog-AMS standard.
+    Expm1,
     Ln,
+    /// `ln(1 + x)`, to its last digit where `x` is near zero: jolty's, as C's `log1p`;
+    /// not in the Verilog-AMS standard.
+    Ln1p,
     /// The logarithm to base 10, Verilog-A's `log`.
     Log,
     Sqrt,
@@ -56,7 +62,9 @@ impl Builtin {
     fn named(name: &str) -> Option<Self> {
         Some(match name {
             "exp" => Self::Exp,
+            "expm1" => Self::Expm1,
             "ln" => Self::Ln,
+            "ln1p" => Self::Ln1p,
             "log" => Self::Log,
             "sqrt" => Self::Sqrt,
             "pow" => Self::Pow,
