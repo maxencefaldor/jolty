@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "give no arguments, or a source, a kernel and the name its header gives the source"
+                "the compiler takes no arguments, or a source and a kernel, and optionally the name its header gives the source"
                     .into(),
             );
         }
