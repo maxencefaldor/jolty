@@ -20,11 +20,11 @@ the current ``V1:current``, or a voltage relative to the voltage of a ``referenc
 Bounds are quantities, such as ``2 * V``; a gain is in decibels, a phase in degrees, an
 overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
 
-The engine reads every measure this module makes, in Rust, from a result's arrays:
-the measure resolves its signals to the result's unknowns and its quantities to SI
-base units, its [`Native`][jolty.specs.Native] form, and the engine computes the number,
-as a batch of runs does without Python. A `Measure` a script makes with a `read` of
-its own is read in Python.
+The engine reads every measure this module makes, in Rust, from a result's arrays: the
+measure resolves its signals to the result's unknowns and its quantities to SI base
+units, its [`ResolvedMeasure`][jolty.specs.ResolvedMeasure] form, and the engine
+computes the number, as a batch of runs does without Python. A `Measure` a script makes
+with a `read` of its own is read in Python.
 
 Examples:
     >>> from jolty.units import V, kHz
@@ -68,10 +68,10 @@ from jolty.specs._requirements import (
     Judged,
     Measure,
     MeasureError,
-    Native,
     Plain,
     Reading,
     Requirement,
+    ResolvedMeasure,
     Specs,
     Spread,
     Status,
@@ -98,10 +98,10 @@ __all__ = [
     "Judged",
     "Measure",
     "MeasureError",
-    "Native",
     "Plain",
     "Reading",
     "Requirement",
+    "ResolvedMeasure",
     "Specs",
     "Spread",
     "Status",

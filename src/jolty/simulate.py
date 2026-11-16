@@ -1274,7 +1274,7 @@ class _Reading:
     """How a batch reads one measure: by the engine, in Python, or not at all."""
 
     measure: specs.Measure
-    native: specs.Native | None = None
+    resolved: specs.ResolvedMeasure | None = None
     """The measure resolved for the engine, which reads it."""
     slot: int = -1
     """Its place among the measures the engine reads."""
@@ -1377,22 +1377,22 @@ class _Planned:
         if name in self.refused:
             reason = f"the analysis {name} failed"
             return _Reading(measure, reason=reason, everywhere=True)
-        if measure.native is None or self.simulation.foundry:
+        if measure.resolved is None or self.simulation.foundry:
             return _Reading(measure)
         shape = self.simulation._shape(self.analyses[name])  # noqa: SLF001 - one simulation's own
         try:
-            native = measure.native(shape)
+            resolved = measure.resolved(shape)
         except (JoltyError, KeyError) as error:
             return _Reading(measure, reason=str(error.args[0]))
-        slot = sum(reading.native is not None for reading in self.readings)
-        return _Reading(measure, native=native, slot=slot)
+        slot = sum(reading.resolved is not None for reading in self.readings)
+        return _Reading(measure, resolved=resolved, slot=slot)
 
     def _in_python(self) -> list[int]:
         """The measures read in Python, by their indices."""
         return [
             index
             for index, reading in enumerate(self.readings)
-            if reading.native is None and reading.reason is None
+            if reading.resolved is None and reading.reason is None
         ]
 
     def _readings(self, index: int, run: results.Run) -> None:
@@ -1417,9 +1417,9 @@ class _Planned:
         """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
         simulation = self.simulation
         measures = [
-            (self.engine[reading.measure.analysis], reading.native.measure)
+            (self.engine[reading.measure.analysis], reading.resolved.measure)
             for reading in self.readings
-            if reading.native is not None
+            if reading.resolved is not None
         ]
         traces = [(self.engine[name], columns) for name, columns in self.traces]
         views: dict[int, Simulation] = {}
@@ -1606,9 +1606,9 @@ class _Planned:
         columns = _Columns(runs, len(self.readings))
         units: list[Dimension | results.Plain | None] = []
         for place, reading in enumerate(self.readings):
-            if reading.native is not None:
+            if reading.resolved is not None:
                 columns.engine(place, reading, found)
-                units.append(reading.native.unit)
+                units.append(reading.resolved.unit)
             elif reading.reason is not None:
                 analysis = reading.measure.analysis
                 where = (
@@ -1739,7 +1739,7 @@ class _Columns:
 
     def engine(self, place: int, reading: _Reading, found: _core.BatchResult) -> None:
         """Writes what the engine read of the measure at `place`, or why not."""
-        if reading.native is None:
+        if reading.resolved is None:
             return
         failed = f"the analysis {reading.measure.analysis} failed"
         column = found["causes"][:, reading.slot]
@@ -1754,7 +1754,7 @@ class _Columns:
                 table[cause] = self.told(failed)
             else:
                 error = _core.MeasureError(reason, numbers)
-                table[cause] = self.told(reading.native.explain(error))
+                table[cause] = self.told(reading.resolved.explain(error))
         self.causes[:, place] = table[np.where(column >= 0, column, -1)]
 
     def unresolved(

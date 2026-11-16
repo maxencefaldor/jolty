@@ -98,7 +98,7 @@ class Reading:
 
 
 @dataclass(frozen=True, slots=True)
-class Native:
+class ResolvedMeasure:
     """A measure resolved for the engine to read, against one kind of result.
 
     Its `measure` holds its signals as the indices of the result's unknowns, and its
@@ -183,7 +183,7 @@ class Measure:
     read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
     """Reads the measure from the analysis's result; raises a `JoltyError`, or a
     `KeyError` for an unknown the result lacks, when it cannot."""
-    native: Callable[[results.AnalysisResult], Native] | None = field(
+    resolved: Callable[[results.AnalysisResult], ResolvedMeasure] | None = field(
         default=None, repr=False, compare=False
     )
     """Resolves the measure for the engine to read against a result, from no more

@@ -121,7 +121,7 @@ def alike(
     """What the measure `name` reads of `result`, the engine's and numpy's alike."""
     native = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)
-    assert native.native is not None
+    assert native.resolved is not None
     read, expected = outcome(native, result), outcome(numpy, result)
     if expected in MATH_RANGE or (
         expected[0] == "ValueError" and expected[1].startswith(MATH_DOMAIN)

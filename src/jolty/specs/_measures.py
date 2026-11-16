@@ -17,9 +17,9 @@ from jolty import _core, checks, results
 from jolty.specs._requirements import (
     Measure,
     MeasureError,
-    Native,
     Plain,
     Reading,
+    ResolvedMeasure,
 )
 from jolty.units import (
     CURRENT,
@@ -56,7 +56,7 @@ MIN_GAIN_MARGIN: Final = 6.0
 type _Explainer = Mapping[str, Callable[[Sequence[float]], str]]
 """Messages by the reasons the engine gives, each made from the numbers it states."""
 
-type _Resolve = Callable[[results.AnalysisResult], Native]
+type _Resolve = Callable[[results.AnalysisResult], ResolvedMeasure]
 """Resolves a measure against a result for the engine to read."""
 
 
@@ -118,11 +118,11 @@ def value(
     traces = _Signal(signal, reference)
     _check(at, "at")
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         match result:
             case results.OperatingPointResult() if at is None:
                 resolved, dimension = traces.resolve(result.unknowns)
-                return Native(
+                return ResolvedMeasure(
                     _core.Measure.value(resolved, None), dimension, _explain()
                 )
             case results.OperatingPointResult():
@@ -148,7 +148,9 @@ def value(
             raise MeasureError(message)
         point = axis.convert(at, "at")
         measure = _core.Measure.value(resolved, point)
-        return Native(measure, dimension, _explain(axis.outside({"at": ("at", at)})))
+        return ResolvedMeasure(
+            measure, dimension, _explain(axis.outside({"at": ("at", at)}))
+        )
 
     described = str(traces) if at is None else f"{traces} at {at}"
     return _native(analysis, described, None, resolve)
@@ -171,10 +173,10 @@ def gain(
     transfer = _Transfer(*_signals(output, over, reference))
     _check(at, "at")
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = transfer.resolve(result)
         measure = _core.Measure.gain(resolved, _FREQUENCIES.convert(at, "at"))
-        return Native(measure, "dB", transfer.explain(at=at))
+        return ResolvedMeasure(measure, "dB", transfer.explain(at=at))
 
     return _native(analysis, f"gain of {transfer} at {at}", "dB", resolve)
 
@@ -196,10 +198,10 @@ def phase(
     transfer = _Transfer(*_signals(output, over, reference))
     _check(at, "at")
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = transfer.resolve(result)
         measure = _core.Measure.phase(resolved, _FREQUENCIES.convert(at, "at"))
-        return Native(measure, "°", transfer.explain(at=at))
+        return ResolvedMeasure(measure, "°", transfer.explain(at=at))
 
     return _native(analysis, f"phase of {transfer} at {at}", "°", resolve)
 
@@ -232,9 +234,9 @@ def bandwidth(
             f"the gain of {transfer} stays within {drop:g} dB of its gain at {lowest}"
         )
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         measure = _core.Measure.bandwidth(transfer.resolve(result), drop)
-        return Native(measure, FREQUENCY, transfer.explain({"stays": stays}))
+        return ResolvedMeasure(measure, FREQUENCY, transfer.explain({"stays": stays}))
 
     return _native(analysis, f"{drop:g} dB bandwidth of {transfer}", None, resolve)
 
@@ -254,9 +256,9 @@ def crossover(
     """
     transfer = _Transfer(*_signals(output, over, reference))
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         measure = _core.Measure.crossover(transfer.resolve(result))
-        return Native(measure, FREQUENCY, transfer.explain(transfer.unity))
+        return ResolvedMeasure(measure, FREQUENCY, transfer.explain(transfer.unity))
 
     return _native(analysis, f"crossover frequency of {transfer}", None, resolve)
 
@@ -276,9 +278,9 @@ def phase_margin(
     """
     transfer = _Transfer(*_signals(output, over, reference))
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         measure = _core.Measure.phase_margin(transfer.resolve(result))
-        return Native(measure, "°", transfer.explain(transfer.unity))
+        return ResolvedMeasure(measure, "°", transfer.explain(transfer.unity))
 
     return _native(analysis, f"phase margin of {transfer}", "°", resolve)
 
@@ -300,9 +302,9 @@ def gain_margin(
     transfer = _Transfer(*_signals(output, over, reference))
     inverted = f"the phase of {transfer} never falls through -180°"
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         measure = _core.Measure.gain_margin(transfer.resolve(result))
-        return Native(
+        return ResolvedMeasure(
             measure, "dB", transfer.explain({"uncrossed": lambda _: inverted})
         )
 
@@ -414,11 +416,11 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
     window = _Window(_Signal(signal, reference), start, stop)
     unresolved = f"{window} steps too little to resolve its levels"
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "a rise time", transient=True)
         measure = _core.Measure.rise_time(resolved.signal, resolved.window, low, high)
         explain = resolved.explain({"uncrossed": lambda _: unresolved})
-        return Native(measure, TIME, explain)
+        return ResolvedMeasure(measure, TIME, explain)
 
     return _native(analysis, f"rise time of {window}", None, resolve)
 
@@ -438,10 +440,10 @@ def overshoot(
     """
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "an overshoot", transient=True)
         measure = _core.Measure.overshoot(resolved.signal, resolved.window)
-        return Native(measure, "%", resolved.explain())
+        return ResolvedMeasure(measure, "%", resolved.explain())
 
     return _native(analysis, f"overshoot of {window}", "%", resolve)
 
@@ -469,10 +471,10 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "a settling time", transient=True)
         measure = _core.Measure.settling_time(resolved.signal, resolved.window, band)
-        return Native(measure, TIME, resolved.explain())
+        return ResolvedMeasure(measure, TIME, resolved.explain())
 
     described = f"{100 * band:g}% settling time of {window}"
     return _native(analysis, described, None, resolve)
@@ -493,13 +495,13 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
     window = _Window(_Signal(signal, reference), start, stop)
     uncrossed = f"{window} does not cross {level}"
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "a crossing", transient=True)
         through = level.to(resolved.dimension, "the level")
         measure = _core.Measure.crossing(
             resolved.signal, resolved.window, through, edge
         )
-        return Native(
+        return ResolvedMeasure(
             measure, TIME, resolved.explain({"uncrossed": lambda _: uncrossed})
         )
 
@@ -525,7 +527,7 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
     _check(level, "the level")
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "a frequency", transient=True)
         through = None if level is None else level.to(resolved.dimension, "the level")
         measure = _core.Measure.frequency(resolved.signal, resolved.window, through)
@@ -534,7 +536,7 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
             middle = format_si(numbers[0], str(resolved.dimension))
             return f"{window} rises through {middle} fewer than twice"
 
-        return Native(measure, FREQUENCY, resolved.explain({"rises": rises}))
+        return ResolvedMeasure(measure, FREQUENCY, resolved.explain({"rises": rises}))
 
     return _native(analysis, f"frequency of {window}", None, resolve)
 
@@ -581,12 +583,12 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
         "silent": lambda _: f"{window} has no component at {fundamental}",
     }
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, "a distortion", transient=True)
         measure = _core.Measure.distortion(
             resolved.signal, resolved.window, hertz, harmonics
         )
-        return Native(measure, "dB", resolved.explain(explainer))
+        return ResolvedMeasure(measure, "dB", resolved.explain(explainer))
 
     described = f"distortion of {window} at {fundamental}"
     return _native(analysis, described, "dB", resolve)
@@ -602,12 +604,14 @@ def noise_density(analysis: str, *, at: Quantity, referred: bool = False) -> Mea
     """
     _check(at, "at")
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         spectrum = _spectrum(result, "a noise density", referred=referred)
         point = _FREQUENCIES.convert(at, "at")
         unit = _noise_unit(spectrum, referred=referred) / rtHz.dimension
         explain = _explain(_FREQUENCIES.outside({"at": ("at", at)}))
-        return Native(_core.Measure.noise_density(point, referred), unit, explain)
+        return ResolvedMeasure(
+            _core.Measure.noise_density(point, referred), unit, explain
+        )
 
     referral = " referred to the input" if referred else ""
     return _native(analysis, f"noise density{referral} at {at}", None, resolve)
@@ -630,7 +634,7 @@ def integrated_noise(
     _check(start, "start")
     _check(stop, "stop")
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         spectrum = _spectrum(result, "an integrated noise", referred=referred)
         low = None if start is None else _FREQUENCIES.convert(start, "start")
         high = None if stop is None else _FREQUENCIES.convert(stop, "stop")
@@ -648,7 +652,9 @@ def integrated_noise(
         points = {"start": ("start", start), "stop": ("stop", stop)}
         explain = _explain(_FREQUENCIES.outside(points), explainer)
         measure = _core.Measure.integrated_noise(low, high, referred)
-        return Native(measure, _noise_unit(spectrum, referred=referred), explain)
+        return ResolvedMeasure(
+            measure, _noise_unit(spectrum, referred=referred), explain
+        )
 
     referral = " referred to the input" if referred else ""
     lowest = "the lowest frequency" if start is None else str(start)
@@ -664,13 +670,13 @@ def solutions(analysis: str) -> Measure:
     ``solutions("states") >= 3`` for its two states and the balance between them.
     """
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         if not isinstance(result, results.OperatingPointsResult):
             message = (
                 f"solutions reads a search for operating points, not {_kind(result)}"
             )
             raise MeasureError(message)
-        return Native(_core.Measure.solutions(), "", _explain())
+        return ResolvedMeasure(_core.Measure.solutions(), "", _explain())
 
     return _native(analysis, "DC solutions", "", resolve)
 
@@ -685,9 +691,9 @@ def damping(analysis: str) -> Measure:
     ringing.
     """
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         _poles(result, "a damping")
-        return Native(_core.Measure.damping(), "", _explain(_POLES))
+        return ResolvedMeasure(_core.Measure.damping(), "", _explain(_POLES))
 
     return _native(analysis, "least damping ratio of the poles", "", resolve)
 
@@ -699,9 +705,11 @@ def dominant_pole(analysis: str) -> Measure:
     frequencies, which dominates how it settles.
     """
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         _poles(result, "a dominant pole")
-        return Native(_core.Measure.dominant_pole(), FREQUENCY, _explain(_POLES))
+        return ResolvedMeasure(
+            _core.Measure.dominant_pole(), FREQUENCY, _explain(_POLES)
+        )
 
     return _native(analysis, "dominant pole", None, resolve)
 
@@ -962,10 +970,10 @@ def _statistic(
 ) -> Measure:
     """The measure of `statistic` over `window`, from its points and values."""
 
-    def resolve(result: results.AnalysisResult) -> Native:
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
         resolved = window.resolve(result, f"a {name}", transient=False)
         measure = statistic(resolved.signal, resolved.window)
-        return Native(measure, resolved.dimension, resolved.explain())
+        return ResolvedMeasure(measure, resolved.dimension, resolved.explain())
 
     return _native(analysis, f"{name} of {window}", None, resolve)
 
