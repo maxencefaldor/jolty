@@ -95,6 +95,7 @@ writes its results headed by their provenance, ``benchmarks/measuring.py``'s.
 import dataclasses
 import functools
 import hashlib
+import itertools
 import json
 import os
 import statistics
@@ -222,7 +223,9 @@ FEWEST_SECONDS: Final = 5.0
 """The least time the Python timing repeats a fixture for, as long as criterion
 measures each benchmark."""
 
-FEWEST_ROUNDS: Final = next(count for count in range(1, 64) if rank(count) is not None)
+FEWEST_ROUNDS: Final = next(
+    count for count in itertools.count(1) if rank(count) is not None
+)
 """The fewest rounds of compared works: the fewest runs whose median has an interval
 at `CONFIDENCE`, 6 at 95%, as `measuring.rank` derives."""
 
