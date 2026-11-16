@@ -71,6 +71,11 @@ The break-evens' sweeps and `--scale` run their settings in the same rounds, eac
 `scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's, the second build of the newest comparison in `DIR` but today's, as `--compare` does, and writes the comparison to `DIR/<date>/compare.json` and `compare.md`, beside the earlier nights'.
 On its first night it builds the commit twice, a comparison that must name no change.
 It then removes every build but tonight's, the next night's first.
+A checkout of its own, kept at `main` by the line that runs it, runs it each night from its user's crontab, nothing installed outside that user's home:
+
+```sh
+0 3 * * * cd CHECKOUT && git fetch -q origin && git checkout -q --detach origin/main && scripts/bench --nightly "$HOME/jolty-nightly"
+```
 
 ## What the times measure
 
