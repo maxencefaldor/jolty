@@ -45,7 +45,10 @@ pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
 };
-pub use kernel::bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
+pub use kernel::bjt::{
+    BipolarCapacitanceTemperatureModel, BipolarTemperatureModel, BipolarTransistor,
+    BipolarTransistorParameters, Polarity,
+};
 pub use kernel::bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
 pub use kernel::bsim4::{
     BodyResistance, Bsim4, Bsim4Parameters, DrainSourceResistance, FlickerNoise, GateResistance,
