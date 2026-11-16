@@ -353,13 +353,25 @@ its transients, and the time points it accepted and rejected."""
 TROUBLE: Final = re.compile(
     r"error|warning|abort|too small|singular|converge|fail|trouble", re.IGNORECASE
 )
-"""What marks the lines of ngspice's output that say what went wrong."""
+"""What marks the lines of a simulator's output that say what went wrong."""
+
+
+NUMBER: Final = re.compile(r"\b\d[\d.]*(?:e[-+]?\d+)?\b", re.IGNORECASE)
+"""A number in a line of what a simulator printed, such as a line of its netlist or a
+time, but not a digit within a name."""
 
 
 def trouble(printed: str) -> str:
-    """The lines of what ngspice `printed` that say what went wrong, once each."""
-    lines = [line.strip() for line in printed.splitlines() if TROUBLE.search(line)]
-    return " | ".join(dict.fromkeys(lines))[:2000]
+    """The lines of what a simulator `printed` that say what went wrong, once each.
+
+    Lines that differ only in their numbers, such as a warning at each of many lines of
+    the netlist, are one, and the first stands for them.
+    """
+    once: dict[str, str] = {}
+    for line in printed.splitlines():
+        if TROUBLE.search(line):
+            once.setdefault(NUMBER.sub("#", line.strip()), line.strip())
+    return " | ".join(once.values())[:2000]
 
 
 XYCE_STEPS: Final = {

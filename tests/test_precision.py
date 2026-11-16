@@ -349,3 +349,24 @@ def test_jolty_s_sweep_is_scored_at_its_levels() -> None:
     np.testing.assert_array_equal(
         ran.found.points, [each.value for each in sweep.values]
     )
+
+
+def test_a_stopped_run_says_each_kind_of_trouble_once_and_how_far_it_came() -> None:
+    from simulators import stopped  # noqa: PLC0415 - importable only once the path holds it
+
+    said = "\n".join(
+        [
+            "Xyce ran for more than 300 s:",
+            *(
+                f"Netlist warning in file circuit.cir at or near line {n}"
+                for n in (4, 6)
+            ),
+            " Device MOSFET level 1: Duplicated model and device name instance MX1_M1",
+            "***** Percent complete: 5.00002 %",
+            "***** Percent complete: 6.00002 %",
+        ]
+    )
+    assert stopped(said) == (
+        "Xyce ran for more than 300 s; Netlist warning in file circuit.cir at or "
+        "near line 4; 6% of its transient done"
+    )
