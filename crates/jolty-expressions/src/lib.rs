@@ -516,13 +516,24 @@ mod tests {
                         + rounded_table(v(z), 0.1, -0.5, 1, 0, 0, 0.5, 2)";
             let values = [x, y, z];
             let (_, gradient) = evaluate(text, &values);
+            let value = evaluate(text, &values).0;
             for (index, derivative) in gradient.iter().enumerate() {
                 let step = 1e-6;
                 let mut above = values;
                 above[index] += step;
                 let mut below = values;
                 below[index] -= step;
-                let numeric = (evaluate(text, &above).0 - evaluate(text, &below).0) / (2.0 * step);
+                let (high, low) = (evaluate(text, &above).0, evaluate(text, &below).0);
+                // A corner within the step, as `max`, `limit` and `table` have, makes the
+                // one-sided differences part by the slope's jump there, a unit at
+                // least for these terms; where the value is smooth they part by its
+                // curvature times the step, under 1e-2 below a curvature of 1e4. Only a
+                // smooth point has a derivative the central difference approximates.
+                let (forward, backward) = ((high - value) / step, (value - low) / step);
+                if (forward - backward).abs() > 1e-2 * derivative.abs().max(1.0) {
+                    continue;
+                }
+                let numeric = (high - low) / (2.0 * step);
                 prop_assert!((numeric - derivative).abs() < 1e-5 * derivative.abs().max(1.0),
                     "variable {index}: analytic {derivative}, numeric {numeric}");
             }
