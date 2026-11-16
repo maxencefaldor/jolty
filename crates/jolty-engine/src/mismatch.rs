@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::sensitivity::Twin;
+use crate::derivative::Twin;
 use crate::variants::Toleranced;
 use crate::{AnalysisResult, Derivatives, Differentiated, Options, SimulationError, Simulator};
 

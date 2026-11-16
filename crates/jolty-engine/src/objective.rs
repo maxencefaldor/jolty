@@ -1,46 +1,25 @@
 //! Objectives: a scalar of a transient's waveforms, and its derivative with respect to every
-//! number of every device's parameters, by the discrete adjoint of the steps the transient
-//! took.
+//! number of every device's parameters, by the transient's VJP ([`Simulator::vjp`]).
 //!
-//! Each step to the point `k` solves `f(x_k) + α q(x_k) + h_k = 0`, where the history
-//! `h_k = β₀ q_{k-1} + β₁ q'_{k-1} + γ r_{k-1}` of the step's formula reads the charges at
-//! the last point, `q'` those at the point before it, or at the last again where the
-//! integration restarted, and their derivative `r`, which the step leaves as
-//! `r_k = α q_k + h_k`. The direct method ([`crate::Sensitivity`] over time) carries each
-//! parameter's derivatives of `x`, `q`, `q'` and `r` forward through these steps; the
-//! adjoint method carries the objective's derivatives with respect to `q`, `q'` and `r`,
-//! `λ_q`, `λ_q'` and `λ_r`, backward from the last point to the first, all zero after the
-//! last, with one transposed solve per step whatever the number of parameters. At the point
-//! `k`, where the objective's derivative with respect to the unknowns is `c_k`:
-//!
-//! ```text
-//! μ  = λ_q + α λ_r, and + λ_q' where the integration restarts after the point
-//! (G + α C)ᵀ λ = c_k + Cᵀ μ,          G and C evaluated at x_k
-//! dL/dp += −λᵀ ∂f/∂p + (μ − α λ)ᵀ ∂q/∂p
-//! λ_q ← β₀ (λ_r − λ), and + λ_q' where it does not restart
-//! λ_q' ← β₁ (λ_r − λ),  λ_r ← γ (λ_r − λ)
-//! ```
-//!
-//! At the operating point the transient starts from, where the charges' derivative is zero
-//! and the point before is the point itself, `μ = λ_q + λ_q'` and the DC Jacobian takes the
-//! step's place: `Gᵀ λ = c_0 + Cᵀ μ`, and `dL/dp += −λᵀ ∂f/∂p + μᵀ ∂q/∂p`.
-//!
-//! This is the transpose of the direct method, step for step: the derivatives are those of
-//! the solution the transient computed, each step's Jacobian and each parameter's partial
-//! derivatives evaluated again, exactly, at the step's solution, and the steps where they
-//! fell, as a derivative moves no step. The two agree to the rounding of their solves.
+//! The scalar is a linear function of the waveforms, or interpolates them linearly, so its
+//! derivative with respect to the unknown at each point is a cotangent on them, which the
+//! discrete adjoint of the steps the transient took carries back to every parameter in one
+//! backward pass, one transposed solve a step whatever the number of parameters. The
+//! derivatives are those of the solution the transient computed, with its steps where they
+//! fell, as a derivative moves no step, and agree with the direct method's to the rounding
+//! of their solves.
 //!
 //! The backward pass reads the waveforms the transient keeps as its result, and keeps
 //! besides only each step's formula, four numbers a step; it evaluates the circuit and
 //! factors its Jacobian once more at each point, as the direct method does.
 
-use jolty_numerics::Pattern;
-use jolty_numerics::integration::Formula;
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
+use crate::derivative::Twin;
 use crate::measure::{interpolated, trapezoid};
-use crate::newton::step_matrix;
-use crate::sensitivity::{Parameter, Twin};
+use crate::sensitivity::Parameter;
 use crate::transient::Carried;
 use crate::{Options, SimulationError, Simulator, Transient, TransientResult};
 
@@ -114,10 +93,6 @@ pub struct ObjectiveResult {
     pub result: TransientResult,
 }
 
-/// What adds the objective's derivative with respect to the unknowns at a point, by its
-/// index, to the vector it is given.
-type Seed<'a> = &'a dyn Fn(usize, &mut [f64]);
-
 /// What takes each term of an objective's derivatives, every parameter's at once.
 type Fold<'a> = &'a mut (dyn FnMut(&[f64]) + Send);
 
@@ -133,12 +108,8 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownOutput`] for a functional of no unknown,
-    /// [`SimulationError::Delayed`] for a circuit with delay lines, whose past the
-    /// derivatives would leave out, [`SimulationError::InvalidAnalysis`] for a circuit with
-    /// logic, whose drivers the backward pass cannot evaluate again as they were at each
-    /// point, and for a transient with initial conditions, which hold its start apart from
-    /// its parameters; [`SimulationError::Singular`] when a Jacobian is, and the errors of
-    /// the transient.
+    /// [`SimulationError::InvalidAnalysis`] for a time outside the run, and the errors of
+    /// [`Simulator::vjp`] over time.
     pub fn objective(
         &mut self,
         objective: &Objective,
@@ -181,17 +152,7 @@ impl Simulator {
                 .unknown(name)
                 .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))?
                 .index();
-            self.undelayed(
-                "an objective's derivatives",
-                "they leave out those of the past its lines read",
-            )?;
-            if !self.elaborated.logic.nets.is_empty() {
-                return Err(SimulationError::InvalidAnalysis(
-                    "an objective's derivatives are found for circuits without logic, whose \
-                     drivers a point evaluated again after the run does not see as they were"
-                        .to_owned(),
-                ));
-            }
+            self.replayable()?;
             let transient = &objective.of;
             if let Functional::Value { at, .. } = *functional
                 && !(0.0..=transient.stop).contains(&at)
@@ -201,151 +162,38 @@ impl Simulator {
                     transient.stop
                 )));
             }
-            if !transient.initial_conditions.is_empty() || !transient.operating_point {
-                return Err(SimulationError::InvalidAnalysis(
-                    "an objective's derivatives are found for transients from the operating \
-                     point without initial conditions"
-                        .to_owned(),
-                ));
-            }
             let mut twins = self.twins();
             let reading = self.read_meter(options.profile);
+            let start = self.start_of(transient)?;
             let mut steps = Vec::new();
             let mut result =
                 self.transient_with(transient, options, None, Carried::Steps(&mut steps))?;
             let values: Vec<f64> = result.values.iter().map(|x| x[unknown]).collect();
             let (value, weights) = functional.read(&result.times, &values);
-            let seed = |point: usize, into: &mut [f64]| into[unknown] += weights[point];
+            let dimension = self.elaborated.unknowns.len();
+            let seed: BTreeMap<usize, Vec<f64>> = weights
+                .iter()
+                .enumerate()
+                .filter(|&(_, &weight)| weight != 0.0)
+                .map(|(point, &weight)| {
+                    let mut values = vec![0.0; dimension];
+                    values[unknown] = weight;
+                    (point, values)
+                })
+                .collect();
             let waveforms = (&result, steps.as_slice());
-            self.backward(&mut twins, waveforms, (&seed, fold), options)?;
+            let mut each = |_: usize, terms: &[f64]| fold(terms);
+            self.backward(
+                &mut twins,
+                waveforms,
+                &[&seed],
+                (&start, None),
+                &mut each,
+                options,
+            )?;
             (result.statistics.work, result.statistics.profile) = self.metered_since(&reading);
             Ok((value, twins, result))
         })
-    }
-
-    /// The terms of the derivative, with respect to the number of each of `twins`, of an
-    /// objective of the waveforms `result`, whose derivative with respect to the unknowns
-    /// at each point `seed` adds to the vector it is given, each term of every twin's at
-    /// once to `fold`: the adjoint of the steps `steps` that reached the points after the
-    /// first, from the last point back to the operating point.
-    fn backward(
-        &mut self,
-        twins: &mut [Twin],
-        (result, steps): (&TransientResult, &[(Formula, bool)]),
-        (seed, fold): (Seed<'_>, Fold<'_>),
-        options: &Options,
-    ) -> Result<(), SimulationError> {
-        let dimension = self.elaborated.unknowns.len();
-        let gmin = options.gmin;
-        let inside = options.parallelism.inside(dimension);
-        // The objective's derivatives with respect to the charges at the last point, at
-        // the one before it and to their rate, which the steps after the point read.
-        let mut charge = vec![0.0; dimension];
-        let mut before = vec![0.0; dimension];
-        let mut rate = vec![0.0; dimension];
-        for (point, &(formula, restarted)) in steps.iter().enumerate().rev() {
-            let point = point + 1;
-            let (time, x) = (result.times[point], &result.values[point]);
-            // The derivative with respect to the charges at the point, all told, and what
-            // goes on to those at the point before it.
-            let mut held = std::mem::take(&mut charge);
-            let onward = if restarted {
-                add(&mut held, 1.0, &before);
-                vec![0.0; dimension]
-            } else {
-                std::mem::take(&mut before)
-            };
-            add(&mut held, formula.alpha, &rate);
-            self.evaluate(x, Some(time), (1.0, gmin), false);
-            let workspace = &mut self.state.workspace;
-            let mut adjoint = vec![0.0; dimension];
-            seed(point, &mut adjoint);
-            let capacitance = &workspace.contributions.capacitance;
-            add_transposed_product(&self.elaborated.pattern, capacitance, &held, &mut adjoint);
-            step_matrix(
-                &mut workspace.jacobian,
-                &workspace.contributions,
-                formula.alpha,
-                inside,
-            );
-            self.state
-                .solver
-                .factor(&self.state.workspace.jacobian)?
-                .solve_transpose(&mut adjoint)?;
-            let mut shifted = held;
-            add(&mut shifted, -formula.alpha, &adjoint);
-            let terms = options.parallelism.spread(
-                twins,
-                || (),
-                |(), twin| {
-                    twin.evaluate(x, Some(time), gmin);
-                    (twin.charge_dot(&shifted), -twin.residual_dot(&adjoint))
-                },
-            );
-            let (charged, resistive): (Vec<f64>, Vec<f64>) = terms.into_iter().unzip();
-            fold(&charged);
-            fold(&resistive);
-            let mut through = rate;
-            add(&mut through, -1.0, &adjoint);
-            charge = onward;
-            add(&mut charge, formula.beta[0], &through);
-            before = through
-                .iter()
-                .map(|value| formula.beta[1] * value)
-                .collect();
-            rate = through.iter().map(|value| formula.gamma * value).collect();
-        }
-        // The operating point, where the charges' derivative is zero and the point before
-        // is the point itself.
-        let x = &result.values[0];
-        let mut held = charge;
-        add(&mut held, 1.0, &before);
-        self.evaluate(x, Some(0.0), (1.0, gmin), false);
-        let mut adjoint = vec![0.0; dimension];
-        seed(0, &mut adjoint);
-        let capacitance = &self.state.workspace.contributions.capacitance;
-        add_transposed_product(&self.elaborated.pattern, capacitance, &held, &mut adjoint);
-        let charged = options.parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                twin.evaluate(x, Some(0.0), gmin);
-                twin.charge_dot(&held)
-            },
-        );
-        fold(&charged);
-        self.evaluate(x, None, (1.0, gmin), false);
-        self.state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?
-            .solve_transpose(&mut adjoint)?;
-        let resistive = options.parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                twin.evaluate(x, None, gmin);
-                -twin.residual_dot(&adjoint)
-            },
-        );
-        fold(&resistive);
-        Ok(())
-    }
-}
-
-/// Adds `scale` times `x` to `into`.
-fn add(into: &mut [f64], scale: f64, x: &[f64]) {
-    for (value, term) in into.iter_mut().zip(x) {
-        *value += scale * term;
-    }
-}
-
-/// Adds to `into` the product of the transpose of the matrix of `pattern` whose stored
-/// values are `values` and the vector `x`, the matrix's rows in order.
-fn add_transposed_product(pattern: &Pattern, values: &[f64], x: &[f64], into: &mut [f64]) {
-    for (row, &factor) in x.iter().enumerate() {
-        for &(slot, column) in pattern.row(row) {
-            into[column] += values[slot] * factor;
-        }
     }
 }
 
@@ -539,7 +387,8 @@ mod tests {
                 }
             }
         }
-        // Every transient but those with logic, delay lines or initial conditions.
-        assert_eq!((checked, refused), (49, 10), "worst {worst:e}");
+        // Every transient but those with logic or delay lines, those from initial
+        // conditions among them.
+        assert_eq!((checked, refused), (53, 6), "worst {worst:e}");
     }
 }

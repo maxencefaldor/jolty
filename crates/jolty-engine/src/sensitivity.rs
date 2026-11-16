@@ -1,69 +1,35 @@
 //! Sensitivities: how the unknowns asked for move with every number of every device's
-//! parameters, at the operating point, along a DC sweep, over frequency and over time.
+//! parameters, at the operating point, along a DC sweep, over frequency, over time and
+//! along a periodic steady state's period.
 //!
-//! At a DC point `F(x, p) = 0`, an output `y = x_k` moves with a parameter `p` by
-//! `dy/dp = −λᵀ ∂F/∂p`, where `Jᵀ λ = e_k` and `J = ∂F/∂x`: one transposed solve per output
-//! serves every parameter, however many (the adjoint method). A DC sweep's levels are each
-//! such a point.
-//!
-//! Over frequency, the response to an excitation `b` solves `(G + jωC) x = b`, so it moves
-//! by `dx/dp = −(G + jωC)⁻¹ (dG/dp + jω dC/dp) x`, read through the adjoint at each
-//! frequency. `G` and `C` move with `p` directly, and through the operating point, which
-//! moves by `s = −G⁻¹ ∂F/∂p`: the first part is exact, and the second a central difference of
-//! the devices' `G` and `C` a microvolt either way along `s`, since the devices give their
-//! derivatives with respect to their voltages, not their second derivatives.
-//!
-//! Over time, each step solves `f(x) + α q(x) + h = 0`, where the integration formula's `α`
-//! and history `h` stand for the charges' derivative. Its derivative with respect to `p`
-//! carries `s = dx/dp` from step to step: `J s = −(∂f/∂p + α ∂q/∂p + h_p)`, where `h_p` is the
-//! same formula's history of the charges' derivatives `dq/dp = C s + ∂q/∂p`, starting from the
-//! operating point's (the direct method; D. E. Hocevar, P. Yang, T. N. Trick and B. D.
-//! Epler, "Transient sensitivity computation for MOSFET circuits", *IEEE Transactions on
-//! Computer-Aided Design* 4(4), 1985). Each step's Jacobian is evaluated again at its
-//! solution. A derivative moves no logic event, and no step. A scalar of the waveforms
-//! has its derivatives by the transpose of these steps instead, one backward pass whatever
-//! the number of parameters ([`crate::Objective`]).
-//!
-//! Over a periodic steady state, a period from the start `x₀` it repeats carries each
-//! parameter's derivatives the same way, the start held, to its end `∂φ/∂p`. The steady
-//! state moves with `p` so that it still repeats: `(Φ − I) dx₀/dp = −∂φ/∂p`, by the same
-//! monodromy matrix and in the same units as shooting, or for an oscillator, whose period
-//! `T` moves too, the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [dx₀/dp, dT/dp] =
-//! [−∂φ/∂p, 0]`, its start still orthogonal to the flow. A second period from `x₀` then
-//! carries the derivatives from `dx₀/dp`, each step's charge terms also scaled by
-//! `−(dT/dp) / T`, every point at its fraction of the period. Where `Φ − I` is singular,
-//! a neutral direction, `dx₀/dp` leaves every quantity a period conserves as it was, as
-//! shooting does, no singular value counting as zero but within the rounding.
-//!
-//! Each device's `∂F/∂p` is exact: its instance prepared again computing with the
-//! derivative of every number with respect to the parameter differentiated against, and
-//! evaluated where the instance itself is, into a block of its own whose map places it
-//! among the circuit's equations, so that a parameter costs what its instance does, not
-//! what the circuit does.
+//! A sensitivity is the analysis's Jacobian, each output at each point against each
+//! parameter, which its JVP ([`Simulator::jvp`]) finds a column at a time and its VJP
+//! ([`Simulator::vjp`]) a row at a time: one tangent per parameter, or one cotangent per
+//! output at each point, and for an oscillator's period one more. It takes whichever
+//! costs the fewer solves, counted for the circuit at hand. At a DC point and over
+//! frequency each point is solved apart, so the VJP's `k` outputs cost `k` transposed
+//! solves a point and the JVP's `P` parameters `P` solves: the VJP unless there are fewer
+//! parameters than outputs. Over time, a cotangent at a point pulls back over every step
+//! before it, so `k` outputs at `N + 1` points cost `k (N + 1)(N + 2) / 2` transposed
+//! solves, where the JVP costs `P (N + 1)`, and along a period the VJP solves twice for
+//! each cotangent as the JVP does for each tangent, once from the end besides. A
+//! transient takes at least a point per longest step, so the JVP is taken at once when it
+//! costs no more at that least number, and for a circuit with logic, whose points the VJP
+//! cannot evaluate again as they were; otherwise the transient records its steps, and the
+//! cheaper goes through them once it has ended.
 
 use std::collections::BTreeMap;
 
 use jolty_ir::numbers;
-use jolty_models::{Gradient, Input, UnknownIndex};
-use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, solve_each_in_range};
+use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::over_frequencies;
+use crate::derivative::{Cotangent, Forward, Saved, Start, Twin, units};
 use crate::elaborated::{Origin, Origins};
-use crate::newton::{add_product, step_matrix};
-use crate::periodic::Shot;
-use crate::state::Held;
-use crate::sweep::Swept;
-use crate::transient::{Carried, Tangent};
 use crate::{
     Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
-    PeriodicSteadyStateResult, SimulationError, Simulator, Transient,
+    SimulationError, Simulator, Transient,
 };
-
-/// How far the operating point moves, along its derivative, in the central difference
-/// of `G` and `C`: its largest voltage moves this many volts either way.
-const BIAS_STEP: f64 = 1e-6;
 
 /// A sensitivity analysis: how the unknowns `outputs` move with every device parameter
 /// along the analysis `of`.
@@ -77,7 +43,8 @@ pub struct Sensitivity {
     pub of: Differentiated,
 }
 
-/// An analysis a sensitivity analysis differentiates.
+/// An analysis differentiated: by a sensitivity or a mismatch analysis, or by a JVP or a
+/// VJP.
 ///
 /// In JSON, the operating point is the string `"operating_point"`, and the others are
 /// objects with one key, such as `{"transient": {"stop": 1e-3}}`.
@@ -110,9 +77,10 @@ pub struct Parameter {
     pub value: f64,
 }
 
-/// The derivatives of a sensitivity analysis: for each point of the analysis it
-/// differentiates, one at an operating point, each output's derivative with respect to each
-/// parameter.
+/// Derivatives at each point of an analysis, one at an operating point: of a sensitivity
+/// analysis, each output's derivative with respect to each parameter, by point, then
+/// output, then parameter, and of a JVP, each unknown's along each tangent, by point,
+/// then unknown, then tangent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Derivatives {
     /// The derivatives of values, at an operating point, along a sweep or over time.
@@ -149,124 +117,6 @@ pub(crate) struct Differentiation {
     /// the number of each twin.
     pub(crate) period_derivatives: Option<Vec<f64>>,
     pub(crate) result: AnalysisResult,
-}
-
-/// A device's instance computing with the derivative of every number with respect to one
-/// number of its parameters.
-pub(crate) struct Twin {
-    /// The index of the device it is made from.
-    device: usize,
-    pub(crate) parameter: Parameter,
-    made: jolty_models::Twin,
-    /// Whether a sweep holds its number, which then moves nothing: the number swept, or
-    /// any of a source the sweep holds at a level, which replaces its waveform.
-    fixed: bool,
-}
-
-impl Twin {
-    /// Evaluates the twin where the device is: at the solution `x`, at `time` in a
-    /// transient analysis or, with `None`, at an operating point or about one.
-    pub(crate) fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
-        let mut input = Input::new(x, time, gmin);
-        input.limiting = false;
-        self.made.evaluate(&input);
-    }
-
-    /// `∂f/∂p`, by unknown, as last evaluated, among `dimension` unknowns.
-    fn residual(&self, dimension: usize) -> Vec<f64> {
-        dense(self.made.residual(), dimension)
-    }
-
-    /// `∂q/∂p`, by unknown, as last evaluated, among `dimension` unknowns.
-    fn charge(&self, dimension: usize) -> Vec<f64> {
-        dense(self.made.charge(), dimension)
-    }
-
-    /// `aᵀ ∂f/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
-    /// terms alone.
-    pub(crate) fn residual_dot(&self, a: &[f64]) -> f64 {
-        self.made
-            .residual()
-            .map(|(unknown, residual)| a[unknown] * residual.derivative)
-            .sum()
-    }
-
-    /// `aᵀ ∂q/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
-    /// terms alone.
-    pub(crate) fn charge_dot(&self, a: &[f64]) -> f64 {
-        self.made
-            .charge()
-            .map(|(unknown, charge)| a[unknown] * charge.derivative)
-            .sum()
-    }
-
-    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` at `(ω, x)`, for the vector `a` of the equations, as last
-    /// evaluated: the instance's own entries alone, each at its row and column of
-    /// `positions`.
-    fn product(
-        &self,
-        positions: &[(usize, usize)],
-        a: &[Complex64],
-        (omega, x): (f64, &[Complex64]),
-    ) -> Complex64 {
-        self.made
-            .entries()
-            .map(|(slot, conductance, capacitance)| {
-                let (row, column) = positions[slot];
-                let derivative =
-                    Complex64::new(conductance.derivative, omega * capacitance.derivative);
-                a[row] * derivative * x[column]
-            })
-            .sum()
-    }
-}
-
-/// The derivatives `sparse` carries, by index, among `dimension`, the others zero; one
-/// index's derivatives add.
-fn dense(sparse: impl Iterator<Item = (usize, Gradient)>, dimension: usize) -> Vec<f64> {
-    let mut values = vec![0.0; dimension];
-    for (index, value) in sparse {
-        values[index] += value.derivative;
-    }
-    values
-}
-
-/// The direct method's state along a transient: each parameter's derivatives of the
-/// charges, and the outputs' derivatives at every accepted point.
-pub(crate) struct Forward {
-    outputs: Vec<UnknownIndex>,
-    twins: Vec<Twin>,
-    tangents: Vec<Tangent>,
-    found: Vec<Vec<Vec<f64>>>,
-    /// Each parameter's derivatives of the state a period starts from, which it holds;
-    /// none for a transient from the operating point, which moves with the parameters.
-    shifts: Option<Vec<Vec<f64>>>,
-    /// An oscillator's period, and its derivative with respect to each parameter, which
-    /// scales every step.
-    stretch: Option<(f64, Vec<f64>)>,
-    /// The charges themselves, while the period stretches, whose formula's terms the
-    /// steps' lengths divide.
-    charges: Option<Tangent>,
-    /// Each parameter's derivatives of the unknowns at the last point, kept for a period
-    /// whose end they are.
-    ends: Option<Vec<Vec<f64>>>,
-}
-
-impl Forward {
-    /// The direct method for `outputs` and every parameter of `twins`, along a transient
-    /// from its operating point.
-    fn new(outputs: Vec<UnknownIndex>, twins: Vec<Twin>) -> Self {
-        Self {
-            outputs,
-            twins,
-            tangents: Vec::new(),
-            found: Vec::new(),
-            shifts: None,
-            stretch: None,
-            charges: None,
-            ends: None,
-        }
-    }
 }
 
 impl Simulator {
@@ -314,72 +164,154 @@ impl Simulator {
         &mut self,
         outputs: &[String],
         of: &Differentiated,
-        mut twins: Vec<Twin>,
+        twins: Vec<Twin>,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
-        let outputs = outputs
+        let kept = outputs
             .iter()
             .map(|name| {
                 self.unknown(name)
+                    .map(jolty_models::UnknownIndex::index)
                     .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut period_derivatives = None;
-        let (derivatives, result) = match of {
-            Differentiated::OperatingPoint => {
-                let point = self.operating_point(options)?;
-                let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
-                (
-                    Derivatives::Real(vec![found]),
-                    AnalysisResult::OperatingPoint(point),
-                )
-            }
-            Differentiated::DcSweep(sweep) => {
-                let result = self.dc_sweep(sweep, options)?;
-                let swept = self.swept(sweep)?;
-                let found =
-                    self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
-                self.hold(swept, None)?;
-                (Derivatives::Real(found?), AnalysisResult::DcSweep(result))
-            }
-            Differentiated::Ac(ac) => {
-                self.undelayed(
-                    "sensitivity over frequency",
-                    "its derivatives leave out those of the terms its lines delay",
-                )?;
-                let response = self.ac(ac, options)?;
-                let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
-                (Derivatives::Complex(found), AnalysisResult::Ac(response))
-            }
+        let parameters = twins.len();
+        let backward = match of {
             Differentiated::Transient(transient) => {
-                self.undelayed(
-                    "sensitivity over time",
-                    "its derivatives leave out those of the past its lines read",
-                )?;
-                let mut forward = Forward::new(outputs, twins);
-                let carried = Carried::Forward(&mut forward);
-                let waveforms = self.transient_with(transient, options, None, carried)?;
-                twins = forward.twins;
-                (
-                    Derivatives::Real(forward.found),
-                    AnalysisResult::Transient(waveforms),
-                )
+                if self.replayable().is_err() {
+                    false
+                } else {
+                    let least = self.longest_step(transient)?;
+                    let points = (transient.stop / least).ceil();
+                    // The least number of points, a whole number below 2⁵³.
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a ceiling of a positive ratio, below 2⁵³ for any run that \
+                                  fits in memory"
+                    )]
+                    let points = points as usize + 1;
+                    Self::cheaper_backward(of, kept.len(), parameters, points)
+                }
             }
-            Differentiated::PeriodicSteadyState(analysis) => {
-                let (found, shot) = self.shot_steady_state(analysis, options)?;
-                let forward = Forward::new(outputs, twins);
-                let forward = self.along_period((analysis, &found), shot, forward, options)?;
-                twins = forward.twins;
-                period_derivatives = forward.stretch.map(|(_, derivatives)| derivatives);
-                (
-                    Derivatives::Real(forward.found),
-                    AnalysisResult::PeriodicSteadyState(found),
-                )
+            Differentiated::PeriodicSteadyState(_) => true,
+            _ => kept.len() <= parameters,
+        };
+        if !backward {
+            let pushed = self.push_forward(of, twins, units(parameters), &kept, options)?;
+            return Ok(Differentiation {
+                twins: pushed.twins,
+                derivatives: pushed.tangents,
+                period_derivatives: pushed.period,
+                result: pushed.result,
+            });
+        }
+        let (result, saved) = self.run_saving(of, options)?;
+        let points = match &result {
+            AnalysisResult::DcSweep(sweep) => sweep.values.len(),
+            AnalysisResult::Ac(response) => response.values.len(),
+            AnalysisResult::Transient(waveforms) => waveforms.values.len(),
+            AnalysisResult::PeriodicSteadyState(found) => found.waveforms.values.len(),
+            _ => 1,
+        };
+        if Self::cheaper_backward(of, kept.len(), parameters, points) {
+            return self.by_rows(twins, (result, saved), (&kept, points), options);
+        }
+        // Over time or a period, more points than the least make the JVP the cheaper.
+        let directions = units(parameters);
+        let (forward, period_derivatives) = match (&saved, &result) {
+            (Saved::Transient(start, steps), AnalysisResult::Transient(waveforms)) => {
+                let mut forward = Forward::new(twins, directions, kept, start.clone());
+                self.replay(&mut forward, (waveforms, steps), options)?;
+                (forward, None)
             }
+            (Saved::Period(steps, system), AnalysisResult::PeriodicSteadyState(found)) => {
+                let forward = Forward::new(twins, directions, kept, Start::Held(None));
+                let mut forward = self.along_period((found, steps, system), forward, options)?;
+                let period = forward.stretch.take().map(|(_, derivatives)| derivatives);
+                (forward, period)
+            }
+            _ => return self.by_rows(twins, (result, saved), (&kept, points), options),
         };
         Ok(Differentiation {
+            twins: forward.twins,
+            derivatives: Derivatives::Real(forward.found),
+            period_derivatives,
+            result,
+        })
+    }
+
+    /// Whether the VJP of `of` costs fewer solves than its JVP, for the derivatives of
+    /// `outputs` unknowns at each of `points` points with respect to `parameters`
+    /// parameters, as the module's documentation counts them.
+    fn cheaper_backward(
+        of: &Differentiated,
+        outputs: usize,
+        parameters: usize,
+        points: usize,
+    ) -> bool {
+        let rows = outputs * points;
+        match of {
+            Differentiated::Transient(_) => {
+                outputs * points * (points + 1) / 2 < parameters * points
+            }
+            Differentiated::PeriodicSteadyState(analysis) => {
+                let cotangents = rows + usize::from(analysis.period.is_none());
+                outputs * points * (points + 1) / 2 + cotangents * points < 2 * parameters * points
+            }
+            _ => outputs <= parameters,
+        }
+    }
+
+    /// The derivatives of the unknowns `kept` at each of the `points` of the result
+    /// `result`, which left `saved`, with respect to each of `twins`' parameters, a row at
+    /// a time: the VJP of a cotangent on each unknown kept at each point, and for an
+    /// oscillator's period one more.
+    fn by_rows(
+        &mut self,
+        mut twins: Vec<Twin>,
+        (result, saved): (AnalysisResult, Saved),
+        (kept, points): (&[usize], usize),
+        options: &Options,
+    ) -> Result<Differentiation, SimulationError> {
+        let unknowns = self.elaborated.unknowns.len();
+        let oscillator = matches!(&saved, Saved::Period(_, (_, _, Some(_))));
+        let parameters = twins.len();
+        if let AnalysisResult::Ac(response) = &result {
+            let one = Complex64::new(1.0, 0.0);
+            let cotangents = unit_rows(kept, points, unknowns, one);
+            let pulled = self.pull_frequencies(&mut twins, response, &cotangents, options)?;
+            return Ok(Differentiation {
+                twins,
+                derivatives: Derivatives::Complex(by_point(pulled, kept.len())),
+                period_derivatives: None,
+                result,
+            });
+        }
+        let mut cotangents = unit_rows(kept, points, unknowns, 1.0);
+        if oscillator {
+            cotangents.push(Cotangent {
+                points: BTreeMap::new(),
+                period: 1.0,
+            });
+        }
+        let mut pulled = vec![vec![0.0; parameters]; cotangents.len()];
+        let mut fold = |index: usize, terms: &[f64]| {
+            for (total, term) in pulled[index].iter_mut().zip(terms) {
+                *total += term;
+            }
+        };
+        self.pull(
+            &mut twins,
+            (&saved, &result),
+            &cotangents,
+            &mut fold,
+            options,
+        )?;
+        let period_derivatives = if oscillator { pulled.pop() } else { None };
+        Ok(Differentiation {
             twins,
-            derivatives,
+            derivatives: Derivatives::Real(by_point(pulled, kept.len())),
             period_derivatives,
             result,
         })
@@ -476,7 +408,7 @@ impl Simulator {
     /// The twin of the device at `index` that differentiates against its number
     /// `parameter`, made from what the device is made from now; none when its model reads
     /// no real number there.
-    fn twin(&self, index: usize, parameter: Parameter) -> Option<Twin> {
+    pub(crate) fn twin(&self, index: usize, parameter: Parameter) -> Option<Twin> {
         let origins = self.origins();
         let origin = origins.of(index);
         if !matches!(origin, Origin::Model(_)) {
@@ -494,426 +426,39 @@ impl Simulator {
             fixed: false,
         })
     }
+}
 
-    /// Each output's derivative with respect to each twin's parameter at the DC solution
-    /// `x`, by the adjoint method.
-    fn adjoint(
-        &mut self,
-        outputs: &[UnknownIndex],
-        twins: &mut [Twin],
-        x: &[f64],
-        options: &Options,
-    ) -> Result<Vec<Vec<f64>>, SimulationError> {
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        let factors = self
-            .state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?;
-        let shared = factors.shared();
-        let parallelism = &options.parallelism;
-        let dimension = x.len();
-        let adjoints = parallelism.spread(
-            &mut outputs.to_vec(),
-            || shared.workspace(),
-            |workspace, output| {
-                let mut adjoint = vec![0.0; dimension];
-                adjoint[output.index()] = 1.0;
-                shared.solve_transpose(&mut adjoint, workspace)?;
-                Ok(adjoint)
-            },
-        );
-        let adjoints = adjoints
-            .into_iter()
-            .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
-        let by_twin = parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                if twin.fixed {
-                    return vec![0.0; adjoints.len()];
-                }
-                twin.evaluate(x, None, options.gmin);
-                adjoints
-                    .iter()
-                    .map(|adjoint| -twin.residual_dot(adjoint))
-                    .collect::<Vec<f64>>()
-            },
-        );
-        let mut found = vec![Vec::with_capacity(by_twin.len()); outputs.len()];
-        for derivatives in by_twin {
-            for (of_output, derivative) in found.iter_mut().zip(derivatives) {
-                of_output.push(derivative);
-            }
+/// A cotangent of `one` on each unknown of `kept`, among `unknowns`, at each of `points`
+/// points, by point then unknown kept.
+fn unit_rows<T: Copy + Default>(
+    kept: &[usize],
+    points: usize,
+    unknowns: usize,
+    one: T,
+) -> Vec<Cotangent<T>> {
+    let mut cotangents = Vec::with_capacity(kept.len() * points + 1);
+    for point in 0..points {
+        for &unknown in kept {
+            let mut values = vec![T::default(); unknowns];
+            values[unknown] = one;
+            cotangents.push(Cotangent {
+                points: BTreeMap::from([(point, values)]),
+                period: 0.0,
+            });
         }
-        Ok(found)
     }
+    cotangents
+}
 
-    /// The adjoint derivatives at each level of the sweep `result`, of `swept` as `sweep`
-    /// names it, held there, and the twins of its device prepared again there, from what
-    /// its instance is made of: a number the sweep holds moves nothing.
-    fn along_sweep(
-        &mut self,
-        outputs: &[UnknownIndex],
-        twins: &mut [Twin],
-        (swept, sweep): (Swept, &DcSweep),
-        result: &crate::DcSweepResult,
-        options: &Options,
-    ) -> Result<Vec<Vec<Vec<f64>>>, SimulationError> {
-        let mut found = Vec::with_capacity(result.swept.len());
-        for (&level, x) in result.swept.iter().zip(&result.values) {
-            self.hold(swept, Some(level))?;
-            for twin in twins.iter_mut().filter(|twin| twin.device == swept.device) {
-                twin.fixed = match swept.held {
-                    Held::Level(_) => true,
-                    Held::Number(_) => sweep.parameter.as_ref() == Some(&twin.parameter.name),
-                };
-                if !twin.fixed
-                    && let Some(made) = self.twin(swept.device, twin.parameter.clone())
-                {
-                    *twin = made;
-                }
-            }
-            found.push(self.adjoint(outputs, twins, x, options)?);
+/// The rows `pulled`, by point then output, `outputs` a point, grouped by point.
+fn by_point<T>(pulled: Vec<Vec<T>>, outputs: usize) -> Vec<Vec<Vec<T>>> {
+    let mut rows = pulled.into_iter();
+    let mut found = Vec::new();
+    loop {
+        let point: Vec<Vec<T>> = rows.by_ref().take(outputs).collect();
+        if point.is_empty() {
+            return found;
         }
-        Ok(found)
-    }
-
-    /// The derivatives of the outputs' phasors in `response` at each of its frequencies.
-    fn over_frequency(
-        &mut self,
-        outputs: &[UnknownIndex],
-        twins: &mut [Twin],
-        response: &crate::AcResult,
-        options: &Options,
-    ) -> Result<Vec<Vec<Vec<Complex64>>>, SimulationError> {
-        let x = &response.operating_point.values;
-        // How the operating point moves with each parameter, and G and C with it.
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        let factors = self
-            .state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?;
-        let shared = factors.shared();
-        let dimension = x.len();
-        // Each twin stays evaluated at the operating point, which the response reads too.
-        let moved = options.parallelism.spread(
-            twins,
-            || shared.workspace(),
-            |workspace, twin| {
-                twin.evaluate(x, None, options.gmin);
-                let mut shift: Vec<f64> = twin
-                    .residual(dimension)
-                    .iter()
-                    .map(|value| -value)
-                    .collect();
-                shared.solve(&mut shift, workspace)?;
-                Ok(shift)
-            },
-        );
-        let moved = moved
-            .into_iter()
-            .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
-        let mut bias = Vec::with_capacity(twins.len());
-        for shift in &moved {
-            bias.push(self.bias_derivative(x, shift, options));
-        }
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
-        let twins = &*twins;
-        over_frequencies(
-            self.linearization(),
-            &self.state.workspace.contributions,
-            &response.frequencies,
-            &options.parallelism,
-            &|factors, index, frequency| {
-                let phasors = &response.values[index];
-                let omega = std::f64::consts::TAU * frequency;
-                let mut adjoints = Vec::with_capacity(outputs.len());
-                for output in outputs {
-                    let mut adjoint = vec![Complex64::default(); dimension];
-                    adjoint[output.index()] = Complex64::new(1.0, 0.0);
-                    factors.solve_transpose(&mut adjoint)?;
-                    adjoints.push(adjoint);
-                }
-                let mut at = vec![Vec::with_capacity(twins.len()); outputs.len()];
-                for (twin, moving) in twins.iter().zip(&bias) {
-                    for (adjoint, derivatives) in adjoints.iter().zip(&mut at) {
-                        let mut total = twin.product(&positions, adjoint, (omega, phasors));
-                        if let Some((conductance, capacitance)) = moving {
-                            let entries = positions.iter().zip(conductance.iter().zip(capacitance));
-                            total += entries
-                                .map(|(&(row, column), (g, c))| {
-                                    adjoint[row] * Complex64::new(*g, omega * c) * phasors[column]
-                                })
-                                .sum::<Complex64>();
-                        }
-                        derivatives.push(-total);
-                    }
-                }
-                Ok(at)
-            },
-        )
-    }
-
-    /// The derivatives of `G` and `C`, by stored position, as the operating point `x` moves
-    /// along `shift`: a central difference whose largest voltage moves [`BIAS_STEP`] either
-    /// way. `None` when no voltage moves.
-    fn bias_derivative(
-        &mut self,
-        x: &[f64],
-        shift: &[f64],
-        options: &Options,
-    ) -> Option<(Vec<f64>, Vec<f64>)> {
-        let largest = self
-            .elaborated
-            .unknowns
-            .iter()
-            .zip(shift)
-            .filter(|(unknown, _)| !unknown.nature.is_current())
-            .fold(0.0_f64, |most, (_, value)| most.max(value.abs()));
-        if largest == 0.0 || !largest.is_finite() {
-            return None;
-        }
-        let step = BIAS_STEP / largest;
-        let mut ends = [(); 2].map(|()| (Vec::new(), Vec::new()));
-        for (end, sign) in ends.iter_mut().zip([1.0, -1.0]) {
-            let moved: Vec<f64> = x
-                .iter()
-                .zip(shift)
-                .map(|(value, along)| value + sign * step * along)
-                .collect();
-            self.evaluate(&moved, None, (1.0, options.gmin), false);
-            let contributions = &self.state.workspace.contributions;
-            *end = (
-                contributions.conductance.clone(),
-                contributions.capacitance.clone(),
-            );
-        }
-        let [(g_up, c_up), (g_down, c_down)] = ends;
-        let difference = |up: &[f64], down: &[f64]| -> Vec<f64> {
-            up.iter()
-                .zip(down)
-                .map(|(above, below)| (above - below) / (2.0 * step))
-                .collect()
-        };
-        Some((difference(&g_up, &g_down), difference(&c_up, &c_down)))
-    }
-
-    /// Each parameter's derivatives along the period `found` of the periodic steady state
-    /// `analysis`, whose period `shot` carried: `forward`, carried once from the start held
-    /// to the period's end, then again from the start's own derivatives, and with an
-    /// oscillator's period's.
-    fn along_period(
-        &mut self,
-        (analysis, found): (&PeriodicSteadyState, &PeriodicSteadyStateResult),
-        shot: Shot,
-        mut forward: Forward,
-        options: &Options,
-    ) -> Result<Forward, SimulationError> {
-        let waveforms = &found.waveforms;
-        let start = waveforms.values.first().cloned().unwrap_or_default();
-        let transient = Transient {
-            stop: found.period,
-            max_step: analysis.max_step,
-            method: analysis.method,
-            breakpoints: analysis.breakpoints.clone(),
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
-        };
-        let begun = || Some((start.clone(), waveforms.statistics.initial));
-        let unknowns = start.len();
-        forward.shifts = Some(vec![vec![0.0; unknowns]; forward.twins.len()]);
-        forward.ends = Some(Vec::new());
-        self.transient_with(&transient, options, begun(), Carried::Forward(&mut forward))?;
-        // (Φ − I) dx₀/dp + ∂φ/∂T dT/dp = −∂φ/∂p, in shooting's units, bordered for an
-        // oscillator by the phase condition's row.
-        let (matrix, tolerances, scale) = shot.system();
-        let mut columns: Vec<Vec<f64>> = forward
-            .ends
-            .take()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|end| {
-                let mut column: Vec<f64> = end
-                    .iter()
-                    .zip(&tolerances)
-                    .map(|(derivative, tolerance)| -derivative / tolerance)
-                    .collect();
-                column.extend(scale.map(|_| 0.0));
-                column
-            })
-            .collect();
-        solve_each_in_range(&matrix, &mut columns)
-            .map_err(|error| self.state.solver.name(error))?;
-        forward.stretch = scale.map(|scale| {
-            let derivatives = columns.iter().map(|column| column[unknowns] * scale);
-            (found.period, derivatives.collect())
-        });
-        forward.shifts = Some(
-            columns
-                .iter()
-                .map(|column| {
-                    column
-                        .iter()
-                        .zip(&tolerances)
-                        .map(|(scaled, tolerance)| scaled * tolerance)
-                        .collect()
-                })
-                .collect(),
-        );
-        self.transient_with(&transient, options, begun(), Carried::Forward(&mut forward))?;
-        Ok(forward)
-    }
-
-    /// Starts the direct method at a transient's operating point `x`: each parameter's
-    /// derivative of the solution, by the DC Jacobian, and of the charges the transient
-    /// starts from; or, for a period from the state `x`, which it holds, from the
-    /// derivatives of that state the forward method was given.
-    pub(crate) fn start_forward(
-        &mut self,
-        forward: &mut Forward,
-        x: &[f64],
-        options: &Options,
-    ) -> Result<(), SimulationError> {
-        let shifts = match forward.shifts.clone() {
-            Some(shifts) => shifts,
-            None => self.operating_shifts(&mut forward.twins, x, options)?,
-        };
-        let at = forward
-            .outputs
-            .iter()
-            .map(|output| shifts.iter().map(|shift| shift[output.index()]).collect())
-            .collect();
-        // A state that only time moves holds at the operating point, and has a charge
-        // only once time passes.
-        self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
-        forward.charges = forward
-            .stretch
-            .as_ref()
-            .map(|_| Tangent::new(self.state.workspace.contributions.charge.clone()));
-        forward.tangents.clear();
-        let inside = options.parallelism.inside(x.len());
-        for (twin, moved) in forward.twins.iter_mut().zip(&shifts) {
-            twin.evaluate(x, Some(0.0), options.gmin);
-            let mut charge = twin.charge(x.len());
-            let capacitances = &self.state.workspace.contributions.capacitance;
-            add_product(
-                &self.elaborated.pattern,
-                (capacitances, moved),
-                &mut charge,
-                inside,
-            );
-            forward.tangents.push(Tangent::new(charge));
-        }
-        forward.found = vec![at];
-        Ok(())
-    }
-
-    /// Each parameter of `twins`' derivative of the operating point `x`, by the DC
-    /// Jacobian.
-    fn operating_shifts(
-        &mut self,
-        twins: &mut [Twin],
-        x: &[f64],
-        options: &Options,
-    ) -> Result<Vec<Vec<f64>>, SimulationError> {
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut factors = self
-            .state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?;
-        twins
-            .iter_mut()
-            .map(|twin| {
-                twin.evaluate(x, None, options.gmin);
-                let mut moved: Vec<f64> =
-                    twin.residual(x.len()).iter().map(|value| -value).collect();
-                factors.solve(&mut moved)?;
-                Ok(moved)
-            })
-            .collect()
-    }
-
-    /// Carries the direct method over the step a transient accepted at `time`, its solution
-    /// `x`, by `formula`; `restarted` says whether the integration restarts after it. While
-    /// an oscillator's period stretches, each parameter's history also takes the charges'
-    /// terms the steps divide, `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, times `−(dT/dp) / T`.
-    pub(crate) fn advance_forward(
-        &mut self,
-        forward: &mut Forward,
-        (time, x): (f64, &[f64]),
-        (formula, restarted): (&Formula, bool),
-        options: &Options,
-    ) -> Result<(), SimulationError> {
-        self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let inside = options.parallelism.inside(x.len());
-        let workspace = &mut self.state.workspace;
-        let contributions = &workspace.contributions;
-        step_matrix(
-            &mut workspace.jacobian,
-            contributions,
-            formula.alpha,
-            inside,
-        );
-        let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
-        let charge_now = &self.state.workspace.contributions.charge;
-        let stretched = match (&forward.stretch, &forward.charges) {
-            (Some((period, derivatives)), Some(charges)) => {
-                let divided = charges.divided(charge_now, formula);
-                Some((divided, period, derivatives))
-            }
-            _ => None,
-        };
-        let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
-        let mut ends = Vec::new();
-        for (index, (twin, tangent)) in forward
-            .twins
-            .iter_mut()
-            .zip(&mut forward.tangents)
-            .enumerate()
-        {
-            twin.evaluate(x, Some(time), options.gmin);
-            let partial_charge = twin.charge(x.len());
-            let mut history = tangent.history(formula);
-            if let Some((divided, period, derivatives)) = &stretched {
-                let by = derivatives[index] / *period;
-                for (term, divided) in history.iter_mut().zip(divided) {
-                    *term -= by * divided;
-                }
-            }
-            let mut moved: Vec<f64> = twin
-                .residual(x.len())
-                .iter()
-                .zip(&partial_charge)
-                .zip(&history)
-                .map(|((residual, charge), term)| -(residual + formula.alpha * charge + term))
-                .collect();
-            factors.solve(&mut moved)?;
-            for (output, derivatives) in forward.outputs.iter().zip(&mut at) {
-                derivatives.push(moved[output.index()]);
-            }
-            let mut charge = partial_charge;
-            let capacitances = &self.state.workspace.contributions.capacitance;
-            add_product(
-                &self.elaborated.pattern,
-                (capacitances, &moved),
-                &mut charge,
-                inside,
-            );
-            tangent.advance(charge, &history, formula, restarted);
-            if forward.ends.is_some() {
-                ends.push(moved);
-            }
-        }
-        if let Some(charges) = &mut forward.charges {
-            let history = charges.history(formula);
-            let charge = self.state.workspace.contributions.charge.clone();
-            charges.advance(charge, &history, formula, restarted);
-        }
-        if let Some(kept) = &mut forward.ends {
-            *kept = ends;
-        }
-        forward.found.push(at);
-        Ok(())
+        found.push(point);
     }
 }

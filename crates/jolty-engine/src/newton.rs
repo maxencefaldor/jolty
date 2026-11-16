@@ -194,6 +194,17 @@ pub(crate) fn add_product(
     });
 }
 
+/// Replaces the row of the node `index` in `jacobian`, a matrix of `elaborated`'s pattern
+/// by its stored values, by that of its forced voltage's equation, `v − v₀ = 0`: one on
+/// its diagonal, zero elsewhere.
+pub(crate) fn force_row(elaborated: &Elaborated, jacobian: &mut [f64], index: usize) {
+    for &(slot, _) in elaborated.pattern.row(index) {
+        jacobian[slot] = 0.0;
+    }
+    let (_, entry) = elaborated.node_diagonals[index];
+    jacobian[elaborated.pattern.slot(entry)] = 1.0;
+}
+
 /// The sum of the `count` terms `term` gives, by [`reduce::sum`]'s fixed order, on the
 /// calling thread without `inside`, and else on the threads of the current rayon pool, at
 /// least [`Inside::chunks`] chunks a task.
@@ -531,11 +542,7 @@ impl Simulator {
                 // currents' sum: an ideal source holds it, whose current the sum would be.
                 for &(unknown, voltage) in &self.state.forced {
                     let index = unknown.index();
-                    for &(slot, _) in self.elaborated.pattern.row(index) {
-                        jacobian[slot] = 0.0;
-                    }
-                    let (_, entry) = self.elaborated.node_diagonals[index];
-                    jacobian[self.elaborated.pattern.slot(entry)] = 1.0;
+                    force_row(&self.elaborated, jacobian, index);
                     let target = source_scale * voltage;
                     contributions.residual[index] = x[index] - target;
                     contributions.scale[index] = x[index].abs().max(target.abs());

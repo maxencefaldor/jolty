@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use jolty_engine::{
-    Ac, Conditions, DcSweep, Derivatives, Differentiated, Method, Options, PeriodicSteadyState,
-    Sensitivity, SimulationError, Simulator, Transient,
+    Ac, Conditions, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, Method, Options,
+    ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -182,7 +182,8 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
     }
 }
 
-/// The derivatives of a sensitivity analysis, by point, output and parameter, as phasors.
+/// The derivatives of a sensitivity analysis or a JVP, by point, then row, then column, as
+/// phasors.
 fn complex(derivatives: &Derivatives) -> Vec<Vec<Vec<Complex64>>> {
     match derivatives {
         Derivatives::Real(points) => points
@@ -383,4 +384,375 @@ fn sensitivities_through_an_inductor_and_a_port_match_finite_differences_over_a_
         ..PeriodicSteadyState::default()
     });
     assert_matches(&instances, &["t", "L1:current"], &steady, 1e-4);
+}
+
+/// The largest disagreement allowed between the JVP and the VJP, relative to the
+/// magnitudes of the terms `vᵢ Jᵢⱼ tⱼ` they sum: the two sum the same terms in other
+/// orders, from solves of the same matrices and their transposes, so they differ by the
+/// rounding of those sums and solves, which the adjoint's check against the direct method
+/// over the corpus measured at 4.8e-13 at worst (elm, 16 November 2026); a term either
+/// leaves out shows by its own size.
+const TRANSPOSED: f64 = 1e-11;
+
+/// A number between −1 and 1 that `index` picks, the same on every run: tangents and
+/// cotangents with no structure a mistake could hide in.
+fn picked(index: usize) -> f64 {
+    let wrapped = (index * 7919 + 13) % 1000;
+    f64::from(u32::try_from(wrapped).expect("below 1000")) / 500.0 - 1.0
+}
+
+/// A cotangent of numbers [`picked`] on each of `unknowns` at each of `points`, on values
+/// if `real` and else on phasors, and on an oscillator's period if it has one.
+fn picked_cotangent(
+    (points, unknowns): (usize, usize),
+    real: bool,
+    period: Option<f64>,
+) -> Cotangents {
+    let value = |point: usize, unknown: usize| picked(point * unknowns + unknown + 1);
+    if real {
+        return Cotangents::Real(vec![Cotangent {
+            points: (0..points)
+                .map(|point| {
+                    (
+                        point,
+                        (0..unknowns).map(|unknown| value(point, unknown)).collect(),
+                    )
+                })
+                .collect(),
+            period: period.unwrap_or(0.0),
+        }]);
+    }
+    Cotangents::Complex(vec![Cotangent {
+        points: (0..points)
+            .map(|point| {
+                let row = (0..unknowns).map(|unknown| {
+                    Complex64::new(value(point, unknown), value(point + 1, unknown))
+                });
+                (point, row.collect())
+            })
+            .collect(),
+        period: 0.0,
+    }])
+}
+
+/// Checks the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` along `of` in the circuit of
+/// `instances`, with respect to `parameters`, for a tangent and a cotangent of numbers
+/// [`picked`], each parameter moved relative to its value, and that the JVP along the
+/// tangent is the Jacobian's columns, which the JVP finds along each parameter, combined
+/// by it; to [`TRANSPOSED`] of the magnitudes of the terms. Returns the worst relative
+/// disagreement of the two.
+fn assert_transposes(instances: &Value, parameters: &[(&str, &str)], of: &Differentiated) -> f64 {
+    transposes_with(instances, parameters, of, &options(of))
+}
+
+/// [`assert_transposes`] with `options`.
+fn transposes_with(
+    instances: &Value,
+    parameters: &[(&str, &str)],
+    of: &Differentiated,
+    options: &Options,
+) -> f64 {
+    let circuit = circuit_of(instances);
+    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("an elaborated circuit");
+    let names: Vec<(String, String)> = parameters
+        .iter()
+        .map(|&(instance, name)| (instance.to_owned(), name.to_owned()))
+        .collect();
+    let units: Vec<Vec<f64>> = (0..names.len())
+        .map(|index| {
+            (0..names.len())
+                .map(|at| f64::from(u8::from(at == index)))
+                .collect()
+        })
+        .collect();
+    let columns = simulator
+        .jvp(of, &names, &units, options)
+        .expect("the Jacobian's columns");
+    let tangent: Vec<f64> = columns
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| picked(index) * parameter.value)
+        .collect();
+    let along = simulator
+        .jvp(of, &names, std::slice::from_ref(&tangent), options)
+        .expect("a JVP");
+    let pullback = simulator.vjp(of, &names, options).expect("a VJP");
+    let jacobian = complex(&columns.tangents);
+    let pushed = complex(&along.tangents);
+    let unknowns = simulator.unknowns().len();
+    let real = matches!(columns.tangents, Derivatives::Real(_));
+    let period = columns.period.as_ref().map(|_| picked(0));
+    let cotangents = picked_cotangent((jacobian.len(), unknowns), real, period);
+    let pulled = simulator
+        .pull_back(&pullback, &cotangents, options)
+        .expect("a pullback");
+    let pulled: Vec<Complex64> = match pulled {
+        ParameterCotangents::Real(rows) => rows[0].iter().map(|&value| value.into()).collect(),
+        ParameterCotangents::Complex(rows) => rows[0].clone(),
+    };
+    let cotangent = |point: usize, unknown: usize| match &cotangents {
+        Cotangents::Real(each) => Complex64::from(each[0].points[&point][unknown]),
+        Cotangents::Complex(each) => each[0].points[&point][unknown],
+    };
+    // ⟨v, J t⟩, the JVP along t against its columns combined, and the terms' magnitudes;
+    // a solve's rounding is relative to the whole of the vector it solves for.
+    let (mut forward, mut magnitude) = (Complex64::default(), 0.0);
+    for (point, rows) in jacobian.iter().enumerate() {
+        let terms_of = |row: &Vec<Complex64>| -> f64 {
+            row.iter().zip(&tangent).map(|(j, t)| (j * t).norm()).sum()
+        };
+        let whole = rows.iter().map(terms_of).fold(f64::MIN_POSITIVE, f64::max);
+        for (unknown, row) in rows.iter().enumerate() {
+            let combined: Complex64 = row.iter().zip(&tangent).map(|(j, t)| j * t).sum();
+            let terms = terms_of(row);
+            let found = pushed[point][unknown][0];
+            assert!(
+                (found - combined).norm() <= TRANSPOSED * whole,
+                "J t at point {point}, unknown {unknown}: {found} against {combined}"
+            );
+            let weight = cotangent(point, unknown);
+            forward += weight * found;
+            magnitude += weight.norm() * terms;
+        }
+    }
+    if let (Some(weight), Some(derivatives)) = (period, &along.period) {
+        forward += Complex64::from(weight * derivatives[0]);
+        let columns = columns.period.as_ref().expect("the period's columns");
+        let terms: f64 = columns
+            .iter()
+            .zip(&tangent)
+            .map(|(j, t)| (j * t).abs())
+            .sum();
+        magnitude += weight.abs() * terms;
+    }
+    let backward: Complex64 = pulled.iter().zip(&tangent).map(|(p, t)| p * t).sum();
+    let gap = (forward - backward).norm();
+    assert!(
+        gap <= TRANSPOSED * magnitude,
+        "⟨v, J t⟩ = {forward} against ⟨Jᵀ v, t⟩ = {backward}, terms of {magnitude:e}"
+    );
+    gap / magnitude
+}
+
+#[test]
+fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
+    let diode_parameters = [
+        ("V1", "waveform.dc"),
+        ("R1", "resistance"),
+        ("D1", "saturation_current"),
+        ("D1", "series_resistance"),
+        ("R3", "resistance"),
+    ];
+    let mut worst = assert_transposes(&diode(), &diode_parameters, &Differentiated::OperatingPoint);
+    let sweep = Differentiated::DcSweep(DcSweep {
+        source: "V1".to_owned(),
+        parameter: None,
+        values: (0..=10).map(|step| f64::from(step) * 0.5).collect(),
+    });
+    worst = worst.max(assert_transposes(&diode(), &diode_parameters, &sweep));
+    let ac = Differentiated::Ac(Ac {
+        source: "VG".to_owned(),
+        frequencies: vec![1e3, 1e6, 1e8, 1e9],
+    });
+    let amplifier_parameters = [
+        ("RD", "resistance"),
+        ("M1", "width"),
+        ("M1", "threshold_voltage"),
+        ("CL", "capacitance"),
+        ("RG", "resistance"),
+    ];
+    worst = worst.max(assert_transposes(
+        &loaded_amplifier(),
+        &amplifier_parameters,
+        &ac,
+    ));
+    let rectifier_parameters = [
+        ("V1", "waveform.sine.amplitude"),
+        ("R1", "resistance"),
+        ("D1", "saturation_current"),
+        ("D1", "junction_capacitance"),
+        ("C1", "capacitance"),
+        ("R2", "resistance"),
+    ];
+    for method in [Method::Trapezoidal, Method::Gear2] {
+        let transient = Differentiated::Transient(Transient {
+            stop: 2e-6,
+            max_step: Some(1e-8),
+            method,
+            breakpoints: Vec::new(),
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
+        });
+        worst = worst.max(assert_transposes(
+            &rectifier(),
+            &rectifier_parameters,
+            &transient,
+        ));
+    }
+    let steady = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
+        period: Some(1e-6),
+        max_step: Some(1e-8),
+        ..PeriodicSteadyState::default()
+    });
+    worst = worst.max(assert_transposes(
+        &rectifier(),
+        &rectifier_parameters,
+        &steady,
+    ));
+    // A tank whose conductance holds its radius through an impedance of its own: an
+    // oscillator, whose period is one more output, at the tolerances its period's
+    // derivatives are checked at in `periodic.rs`.
+    let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
+    let impedance = (inductance / capacitance).sqrt();
+    let expression = format!(
+        "-{:e} * v(x) * (1 - (v(x) ^ 2 + ({impedance:e} * i(p)) ^ 2))",
+        0.2 / impedance
+    );
+    let tank = json!([
+        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": capacitance},
+         "terminals": {"a": "t", "b": "0"}},
+        {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": inductance},
+         "terminals": {"a": "t", "b": "l"}},
+        {"name": "B1", "of": {"model": "behavioral_current_source"},
+         "parameters": {"expression": expression},
+         "terminals": {"positive": "t", "negative": "0", "x": "t",
+                       "p_positive": "l", "p_negative": "0"}},
+    ]);
+    let oscillator = Differentiated::PeriodicSteadyState(PeriodicSteadyState::default());
+    let tank_options = Options {
+        relative_tolerance: 1e-10,
+        voltage_tolerance: 1e-13,
+        current_tolerance: 1e-16,
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let tank_parameters = [("C1", "capacitance"), ("L1", "inductance")];
+    worst = worst.max(transposes_with(
+        &tank,
+        &tank_parameters,
+        &oscillator,
+        &tank_options,
+    ));
+    assert!(worst <= TRANSPOSED, "worst {worst:e}");
+}
+
+/// A 1 V source through 1 kΩ into 1 nF: an RC of time constant 1 µs.
+fn rc() -> Value {
+    json!([
+        {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+         "terminals": {"positive": "in", "negative": "0"}},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
+         "terminals": {"a": "in", "b": "out"}},
+        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
+         "terminals": {"a": "out", "b": "0"}}
+    ])
+}
+
+#[test]
+fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
+    // From `out` = 0 V, `out = V (1 − e^(−t/RC))`: `d out/dR = −V t/(R²C) e^(−t/RC)`,
+    // `d out/dV = 1 − e^(−t/RC)` and `d out/dC = −V t/(RC²) e^(−t/RC)`, the same whether the
+    // operating point is solved with `out` held there, or not solved at all, every other
+    // unknown starting at zero. The steps' trapezoidal rule errs by `(h/τ)² (t/τ) / 12` of
+    // the waveform for steps of `h`, 7e-7 by `t = 2τ` for `h = τ/500`, and its derivatives
+    // alike; held to 1e-5 of each derivative's largest, which leaves room for the backward
+    // Euler steps from the start, whose error is `h₀/2τ` for the first step's `h₀`.
+    let (resistance, capacitance, level): (f64, f64, f64) = (1e3, 1e-9, 1.0);
+    let tau = resistance * capacitance;
+    let names = [
+        ("R1".to_owned(), "resistance".to_owned()),
+        ("V1".to_owned(), "waveform.dc".to_owned()),
+        ("C1".to_owned(), "capacitance".to_owned()),
+    ];
+    let units = vec![
+        vec![1.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0],
+        vec![0.0, 0.0, 1.0],
+    ];
+    for operating_point in [false, true] {
+        let transient = Differentiated::Transient(Transient {
+            stop: 2.0 * tau,
+            max_step: Some(tau / 500.0),
+            method: Method::Trapezoidal,
+            breakpoints: Vec::new(),
+            initial_conditions: BTreeMap::from([("out".to_owned(), 0.0)]),
+            operating_point,
+        });
+        let mut simulator = Simulator::new(
+            &circuit_of(&rc()),
+            &Library::standard(),
+            &Conditions::default(),
+        )
+        .expect("an elaborated circuit");
+        let options = options(&transient);
+        let found = simulator
+            .jvp(&transient, &names, &units, &options)
+            .expect("the RC's JVP");
+        let jolty_engine::AnalysisResult::Transient(waveforms) = &found.result else {
+            panic!("a transient's waveforms");
+        };
+        let Derivatives::Real(points) = &found.tangents else {
+            panic!("real derivatives");
+        };
+        let out = simulator.unknown("out").expect("out").index();
+        let exact = |time: f64| {
+            let decay = (-time / tau).exp();
+            [
+                -level * time / (resistance * resistance * capacitance) * decay,
+                1.0 - decay,
+                -level * time / (resistance * capacitance * capacitance) * decay,
+            ]
+        };
+        let largest = [
+            level / (resistance * std::f64::consts::E),
+            1.0,
+            level / (capacitance * std::f64::consts::E),
+        ];
+        for (time, at) in waveforms.times.iter().zip(points) {
+            for ((found, exact), largest) in at[out].iter().zip(exact(*time)).zip(largest) {
+                assert!(
+                    (found - exact).abs() <= 1e-5 * largest,
+                    "from the operating point {operating_point}, at {time:e} s: {found:e} \
+                     against {exact:e}"
+                );
+            }
+        }
+        // The VJP of the cotangent on `out` at the middle and the last points is those rows
+        // of the JVP's columns.
+        let pullback = simulator
+            .vjp(&transient, &names, &options)
+            .expect("the RC's VJP");
+        let unknowns = simulator.unknowns().len();
+        let last = points.len() - 1;
+        let rows: Vec<usize> = vec![last / 2, last];
+        let cotangents = Cotangents::Real(
+            rows.iter()
+                .map(|&point| {
+                    let mut values = vec![0.0; unknowns];
+                    values[out] = 1.0;
+                    Cotangent {
+                        points: BTreeMap::from([(point, values)]),
+                        period: 0.0,
+                    }
+                })
+                .collect(),
+        );
+        let ParameterCotangents::Real(pulled) = simulator
+            .pull_back(&pullback, &cotangents, &options)
+            .expect("a pullback")
+        else {
+            panic!("real cotangents");
+        };
+        for (row, pulled) in rows.iter().zip(&pulled) {
+            for (found, exact) in pulled.iter().zip(&points[*row][out]) {
+                assert!(
+                    (found - exact).abs() <= TRANSPOSED * exact.abs(),
+                    "from the operating point {operating_point}, at point {row}: VJP {found:e} \
+                     against JVP {exact:e}"
+                );
+            }
+        }
+    }
 }

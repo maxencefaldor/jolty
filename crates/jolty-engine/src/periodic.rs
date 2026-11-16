@@ -131,6 +131,9 @@ pub(crate) struct Monodromy {
     at: Vec<Vec<f64>>,
     /// The derivatives with respect to an oscillator's period.
     stretch: Option<Stretch>,
+    /// Each step's formula, and whether the integration restarts after it, in their order,
+    /// for the derivatives with respect to the parameters to go through again.
+    steps: Vec<(Formula, bool)>,
 }
 
 /// The derivatives with respect to an oscillator's period, every step's length a fixed
@@ -185,8 +188,9 @@ impl Shot {
             tangents,
             at,
             stretch,
+            steps,
         } = monodromy;
-        drop(tangents);
+        drop((tangents, steps));
         let flow: Option<Vec<f64>> = stretch.map(|stretch| {
             stretch
                 .at
@@ -212,6 +216,12 @@ impl Shot {
             scale
         });
         (matrix, tolerances, scale)
+    }
+
+    /// The steps the period took, each its formula and whether the integration restarts
+    /// after it, in their order, leaving none.
+    pub(crate) fn take_steps(&mut self) -> Vec<(Formula, bool)> {
+        std::mem::take(&mut self.monodromy.steps)
     }
 
     /// Whether an oscillator's orbit moves: whether a change of its period by its scale
@@ -505,6 +515,7 @@ impl Simulator {
             charges[column][row] += capacitance;
         }
         monodromy.tangents = charges.into_iter().map(Tangent::new).collect();
+        monodromy.steps.clear();
         monodromy.at = (0..unknowns)
             .map(|column| {
                 let mut unit = vec![0.0; unknowns];
@@ -532,6 +543,7 @@ impl Simulator {
         (formula, restarted): (&Formula, bool),
         options: &Options,
     ) -> Result<(), SimulationError> {
+        monodromy.steps.push((*formula, restarted));
         self.evaluate(x, Some(time), (1.0, options.gmin), false);
         let inside = options.parallelism.inside(x.len());
         let workspace = &mut self.state.workspace;

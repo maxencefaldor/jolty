@@ -8,6 +8,7 @@ use jolty_numerics::integration::{
 };
 use serde::Deserialize;
 
+use crate::derivative::Forward;
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{
     Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, all, each_chunk, pieces, step_matrix,
@@ -16,7 +17,6 @@ use crate::options::{Inside, NUMBERS_PER_GIB};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
 use crate::record::{Observer, Read};
-use crate::sensitivity::Forward;
 use crate::{
     Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError, Simulator,
     Strategy, Work,
@@ -610,7 +610,7 @@ impl Simulator {
     }
 
     /// The longest step `transient` allows, after checking its times.
-    fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
+    pub(crate) fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
         // Without unknowns, nothing analog needs steps, and the logic moves on at once.
         let longest = if self.elaborated.unknowns.is_empty() {
             transient.stop

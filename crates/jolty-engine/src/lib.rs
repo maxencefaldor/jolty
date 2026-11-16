@@ -68,6 +68,7 @@
 mod ac;
 mod analysis;
 pub mod batch;
+mod derivative;
 mod elaborate;
 mod elaborated;
 #[cfg(test)]
@@ -103,6 +104,7 @@ use serde::Deserialize;
 
 pub use ac::{Ac, AcResult};
 pub use analysis::{Analysis, AnalysisResult};
+pub use derivative::{Cotangent, Cotangents, Jvp, ParameterCotangents, Pullback};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, SummedTerminal};
 pub use elaborated::{Elaborated, Partition, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
@@ -573,8 +575,9 @@ pub enum SimulationError {
     /// An analysis names a source that does not exist.
     #[error("there is no instance at `{0}`")]
     UnknownSource(String),
-    /// A mismatch analysis's random variables move numbers that no device's parameters hold
-    /// as a real number: each by the device's path and the number's.
+    /// A derivative is asked with respect to numbers, or a mismatch analysis's random
+    /// variables move numbers, that no device's parameters hold as a real number: each by
+    /// the device's path and the number's.
     #[error("no device holds a real number at {}", numbered(.0))]
     UnknownParameters(Vec<(String, String)>),
     /// An analysis names an instance that is not an independent source.
