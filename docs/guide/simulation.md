@@ -35,6 +35,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Transient(stop, max_step=None, method="trapezoidal", breakpoints=(), initial_conditions={}, operating_point=True)` | the response over time, from the operating point, or from [initial conditions](#initial-conditions-and-nodesets), until `stop` |
 | `PeriodicSteadyState(period=None, max_step=None, method="trapezoidal", breakpoints=())` | one period of the [steady state](#periodic-steady-state) a circuit repeats: driven by sources of `period`, or an oscillator's, whose period it finds |
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters but a device's [own temperature](devices.md), at the operating point or at each point of the analysis `of` |
+| `Mismatch(outputs, of=None, random_variables=())` | each output's [standard deviation](#mismatch), to first order, with the circuit's tolerances and the random variables given, such as a process kit's, and which of them it comes from |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
 | `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |
@@ -106,9 +107,10 @@ Newton's step solves the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂T�
 
 An oscillator's operating point is an equilibrium it leaves, and a state every period repeats, so shooting cannot start there: it starts on the orbit, which a transient from the operating point finds.
 The transient starts from the operating point kicked along the natural mode that grows fastest, its pole the [pole-zero analysis's](#poles-and-zeros) with the largest real part, by one tolerance in the unknown the mode moves most in units of its tolerance, the smallest step off the operating point the analysis resolves.
-It returns to the hyperplane through the operating point across the kick once a period, and runs, in stretches twice as long as the one before, the first the mode's natural period, until a return comes no further from the one before than that one from its own: the oscillation has stopped growing.
+It returns to the hyperplane through the operating point across the kick once a period, and runs, in stretches twice as long as the one before, the first the mode's natural period, until a return comes no further from the one before than that one from its own, which was further than their tolerance: the oscillation has grown past what the analysis resolves and stopped growing; returns within tolerance of each other come nearer or further by the chance of each step's own error.
+Each stretch restarts the integration with backward Euler's steps, which damp the oscillation a little, so a return is compared only with those of its own stretch, and a stretch's steps are at most a fiftieth of the period the returns before it show, as a period's own are.
 Shooting starts from that return, its period the time since the one before, and converges, as the circuits of the tests do, in three or four periods.
-An oscillator whose operating point no mode grows from, such as a lossless tank, does not start, and the analysis says so; one that has not stopped growing after 40 stretches, such as a latch, which tips into a stable state and never returns, fails, saying how long its transient ran and how often it returned.
+An oscillator whose operating point no mode grows from, such as a lossless tank, does not start, and the analysis says so, as it does when shooting converges onto the operating point, a state every period repeats, where no unknown moves by its tolerance as the period moves by its own; one that has not stopped growing after 40 stretches, such as a latch, which tips into a stable state and never returns, fails, saying how long its transient ran and how often it returned.
 The sources hold steady over each period, so a source that kicks a transient, such as the examples' pulses, has no place in an oscillator's circuit.
 A tank whose conductance feeds it inside a circle and drains it outside, so that it is lossless on the circle, has the period `2π√(LC)` exactly, and the analysis finds it within the trapezoidal formula's phase error, `(ωh)²/12` of the period for a step `h`, and the circle's radius within the energy the period's first two steps of backward Euler drain (`crates/jolty-engine/tests/periodic.rs`).
 The examples' five-stage ring oscillator's period agrees with its long transient's settled period to 2.8·10⁻⁸ at a relative tolerance of 10⁻⁹ and steps of at most 1 ps, within the 5.9·10⁻⁸ its transient's periods scatter by; at the default tolerance and steps of at most 5 ps, it lies 2.9·10⁻⁵ from that reference, where the transient's settled period lies 1.7·10⁻⁴ from it, and at 10⁻⁵, 2.7·10⁻⁴, where the transient's lies 1.6·10⁻⁴ from it (`tests/test_periodic.py`, on an Apple M2 Max).
@@ -134,7 +136,7 @@ A sensitivity analysis differentiates unknowns, such as `out` or `V1:current`, w
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
-Given another analysis, it differentiates the outputs at each of its points instead: each level of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, and each time of a transient:
+Given another analysis, it differentiates the outputs at each of its points instead: each level of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, each time of a transient, and each point of a periodic steady state's period, at its fraction of the period:
 
 ```python
 Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
@@ -144,11 +146,19 @@ A parameter is a number of a device's parameters, named by the device's path and
 At a DC point, the derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
 Over frequency, the adjoint at each frequency reads how the matrix `G + jωC` moves with each parameter, directly and through the operating point; the second part is a central difference along the operating point's own derivative, a microvolt either way, since devices give no second derivatives.
 Over time, the direct method carries each parameter's derivative of the solution from step to step through the same integration formula, starting from the operating point's, with each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985); a derivative moves no step and no logic event.
+Over a [periodic steady state](#periodic-steady-state), a period from the start `x₀` it repeats carries each parameter's derivatives the same way, the start held, to its end, `∂φ/∂p`; the steady state moves so that it still repeats, `(Φ − I) dx₀/dp = −∂φ/∂p`, by the converged period's monodromy matrix, in shooting's units, a neutral direction left where it was, and an oscillator's period moves with it, by the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [dx₀/dp, dT/dp] = [−∂φ/∂p, 0]`, its start still orthogonal to the flow.
+A second period from `x₀` then carries each parameter's derivatives from `dx₀/dp`, each step's charge terms scaled by `−(dT/dp)/T` too, every step a fixed fraction of the period, so the derivatives along the period are at fixed fractions of it.
+The three periods take the same steps, and no singular value of the bordered system counts as zero but within its rounding.
+A tank whose conductance holds its radius through an impedance of its own scales with time, L and C alike, so `L ∂T/∂L + C ∂T/∂C = T`: the derivatives meet it as far as Newton's iterates meet each step's equations, to 256 ε at a relative tolerance of 10⁻¹⁰ and 7·10⁻¹⁰ at the default 10⁻³, and central differences of the period, each run settled and shot afresh, to 1.2·10⁻⁷, a square root's truncation for steps of 10⁻³ (`crates/jolty-engine/tests/periodic.rs`).
 Each device's own derivative with respect to a parameter is exact: every device computes with dual numbers that carry the derivative of each value with respect to the parameter through the same equations, temperature scaling included.
 A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
 
 The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, a number at the operating point and an array over the points otherwise, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
-Its `result` holds the result of the analysis differentiated, whose levels, frequencies or times the derivatives follow.
+Its `result` holds the result of the analysis differentiated, whose levels, frequencies or times the derivatives follow, and for an oscillator's periodic steady state, `period_derivative(instance, parameter)` reads its period's derivative, in seconds per the parameter's unit, and `period_derivatives` all of them, in the order of `parameters`:
+
+```python
+Plan({"tuning": Sensitivity(["out"], of=PeriodicSteadyState())})
+```
 
 ## Stability
 
@@ -285,6 +295,28 @@ A normal tolerance's extreme is its three standard deviations, and a logarithmic
 The runs of each circuit run as a [batch](#batches) of listed values, one for the moves and one for the extremes.
 The extremes follow each value's first-order slope, as PSpice's do, so a value that bends over a tolerance may be worse inside it; a Monte Carlo analysis samples the inside.
 The report states how many runs it took and each requirement's verdict, its worst over its bounds and conditions, and `jolty simulate` exits with 1 when one fails.
+
+## Mismatch
+
+A mismatch analysis states how far each output spreads, one standard deviation, and which random variables it spreads with, from one analysis rather than many samples, as Spectre's `dcmatch` and `acmatch` do:
+
+```python
+def plan() -> Plan:
+    return Plan({"spread": Mismatch(["out"])})
+```
+
+A random variable is a number a Monte Carlo sample draws at random, with its mean, its standard deviation and the derivative of each device's number it moves (`ir.RandomVariable`).
+Each toleranced parameter draws one for its own factor, `instance` its device's path and `name` the parameter's: of mean 0 and standard deviation the tolerance over √3 for a uniform one and over 3 for a normal one, its parameter moving by its value per unit; a logarithmic one draws the exponent of its factor, of standard deviation 1/√3 or 1/3, its parameter moving by its value times `ln(1 + relative)`.
+Each lot draws one per parameter, its `lot` the lot's name, which moves every part that names it alike.
+`random_variables` adds others, such as those of a process kit's statistical functions, which [`Library.random_variables`](foundry.md#the-open-process-kits) reads for a placement.
+An output's derivative with respect to a random variable is the [sensitivity analysis's](#sensitivities) derivative with respect to each number it moves, times the number's own derivative, summed, at the operating point or at each point of the analysis `of`, at the values the parameters take in the run, so that a corner or a variant spreads about its own values.
+The random variables are drawn apart from one another, so to first order the output spreads with the root of the sum of each random variable's contribution squared, its derivative times its standard deviation, and each random variable's share of the variance is its own term's.
+A response's phasor spreads in magnitude and in phase, each to first order of its phasor: the magnitude by the phasor's derivative along the phasor, the phase, in radians, across it.
+
+The result's `standard_deviation(output, part=None)` reads an output's standard deviation, a number at the operating point and an array over the points otherwise, `contributions(output, part=None)` each random variable's contribution and `shares(output, part=None)` its share, in the order of `random_variables`; a response takes `part`, `"magnitude"` or `"phase"`.
+For an oscillator's periodic steady state, `period_derivatives` holds its period's derivative with respect to each random variable, and `period_standard_deviation()` its period's standard deviation.
+The report states each output's standard deviation, at the operating point or where it is largest, and the random variables that contribute most there, the largest share first, a phase's in degrees, and an oscillator's period's standard deviation.
+First order is exact as the spreads go to zero; how far it lies from a Monte Carlo analysis on the same circuit is measured in `tests/test_mismatch.py`, where it agrees within the samples' own statistics.
 
 ## Variants
 

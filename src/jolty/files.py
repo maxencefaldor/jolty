@@ -19,11 +19,11 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 18 of the format, which holds that provenance, the regions of operation
+in version 19 of the format, which holds that provenance, the regions of operation
 each recorded transistor's model distinguishes, the Newton iterations that found each
-operating point, each recording's summed terminals as its ``summed_terminals``, and a
-periodic steady state as an analysis of its own; a file of another version is not
-read.
+operating point, each recording's summed terminals as its ``summed_terminals``, a
+periodic steady state as an analysis of its own, and a mismatch analysis's random
+variables; a file of another version is not read.
 
 Examples:
     >>> import tempfile
@@ -145,6 +145,21 @@ class _SensitivityResult(_Model):
     kind: Literal["sensitivity"] = "sensitivity"
     outputs: tuple[str, ...]
     parameters: tuple[tuple[str, str], ...]
+    period: bool = Field(
+        default=False,
+        description="Whether the arrays hold an oscillator's period's derivatives.",
+    )
+    result: _Entry
+
+
+class _MismatchResult(_Model):
+    kind: Literal["mismatch"] = "mismatch"
+    outputs: tuple[str, ...]
+    random_variables: tuple[ir.RandomVariable, ...]
+    period: bool = Field(
+        default=False,
+        description="Whether the arrays hold an oscillator's period's derivatives.",
+    )
     result: _Entry
 
 
@@ -198,6 +213,7 @@ type _Entry = Annotated[
     | _TransientResult
     | _PeriodicSteadyStateResult
     | _SensitivityResult
+    | _MismatchResult
     | _StabilityResult
     | _NoiseResult
     | _PoleZeroResult
@@ -405,7 +421,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[18] = 18
+    version: Literal[19] = 19
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -771,9 +787,10 @@ def _indexed(
     return recordings.setdefault(recording, len(recordings))
 
 
-def _save_linear(
+def _save_linear(  # noqa: C901 - one case per kind of result
     name: str,
     result: results.SensitivityResult
+    | results.MismatchResult
     | results.StabilityResult
     | results.NoiseResult
     | results.PoleZeroResult
@@ -802,12 +819,25 @@ def _save_linear(
                 [parameter.value for parameter in result.parameters], dtype=float
             )
             arrays[f"{name}.derivatives"] = result.derivatives
+            if result.period_derivatives is not None:
+                arrays[f"{name}.period_derivatives"] = result.period_derivatives
             return _SensitivityResult(
                 outputs=result.outputs,
                 parameters=tuple(
                     (parameter.instance, parameter.name)
                     for parameter in result.parameters
                 ),
+                period=result.period_derivatives is not None,
+                result=_save(f"{name}.result", result.result, arrays, recordings),
+            )
+        case results.MismatchResult():
+            arrays[f"{name}.derivatives"] = result.derivatives
+            if result.period_derivatives is not None:
+                arrays[f"{name}.period_derivatives"] = result.period_derivatives
+            return _MismatchResult(
+                outputs=result.outputs,
+                random_variables=result.random_variables,
+                period=result.period_derivatives is not None,
                 result=_save(f"{name}.result", result.result, arrays, recordings),
             )
         case results.StabilityResult():
@@ -938,6 +968,7 @@ def _load_linear(
     data: Mapping[str, np.ndarray],
     name: str,
     entry: _SensitivityResult
+    | _MismatchResult
     | _StabilityResult
     | _NoiseResult
     | _PoleZeroResult
@@ -970,7 +1001,7 @@ def _load_linear(
                 ),
             )
         case _SensitivityResult(
-            outputs=outputs, parameters=named, result=differentiated
+            outputs=outputs, parameters=named, period=period, result=differentiated
         ):
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
@@ -978,23 +1009,33 @@ def _load_linear(
                     named, data[f"{name}.parameters"], strict=True
                 )
             )
-            found = _load(data, f"{name}.result", differentiated, header, recordings)
-            if isinstance(
-                found,
-                results.SensitivityResult
-                | results.StabilityResult
-                | results.NoiseResult
-                | results.PoleZeroResult
-                | results.TransferFunctionResult
-                | results.OperatingPointsResult,
-            ):
-                message = (
-                    f"the sensitivities {name} differentiate neither an operating "
-                    "point, a sweep, a response nor a transient"
-                )
-                raise JoltyError(message)
+            found = _differentiated(
+                _load(data, f"{name}.result", differentiated, header, recordings), name
+            )
             return results.SensitivityResult(
-                unknowns, outputs, parameters, data[f"{name}.derivatives"], found
+                unknowns,
+                outputs,
+                parameters,
+                data[f"{name}.derivatives"],
+                found,
+                data[f"{name}.period_derivatives"] if period else None,
+            )
+        case _MismatchResult(
+            outputs=outputs,
+            random_variables=random_variables,
+            period=period,
+            result=differentiated,
+        ):
+            found = _differentiated(
+                _load(data, f"{name}.result", differentiated, header, recordings), name
+            )
+            return results.MismatchResult(
+                unknowns,
+                outputs,
+                random_variables,
+                data[f"{name}.derivatives"],
+                found,
+                data[f"{name}.period_derivatives"] if period else None,
             )
         case _StabilityResult(probe=probe, found=found, recording=recording):
             point = f"{name}.operating_point"
@@ -1051,9 +1092,37 @@ def _load_linear(
             )
 
 
+def _differentiated(
+    found: results.AnalysisResult, name: str
+) -> (
+    results.OperatingPointResult
+    | results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult
+):
+    """`found`, the result the analysis `name` differentiates.
+
+    Raises:
+        JoltyError: When it is no operating point, sweep, response or transient.
+    """
+    if isinstance(
+        found,
+        results.OperatingPointResult
+        | results.DcSweepResult
+        | results.AcResult
+        | results.TransientResult,
+    ):
+        return found
+    message = (
+        f"the analysis {name} differentiates neither an operating point, a sweep, a "
+        "response nor a transient"
+    )
+    raise JoltyError(message)
+
+
 def _names(result: results.AnalysisResult) -> _Names:
     """The names of the columns of `result`'s circuit."""
-    if isinstance(result, results.SensitivityResult):
+    if isinstance(result, results.SensitivityResult | results.MismatchResult):
         return _names(result.result)
     if isinstance(result, results.OperatingPointsResult):
         return _names(result.points[0])

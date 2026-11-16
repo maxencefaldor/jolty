@@ -7,7 +7,10 @@ produces it, and the engine validates and elaborates it. Parameter values are nu
 SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance],
 each naming its parameter by [path][jolty.ir.parameter], so that it may reach into an
 object, as ``waveform.dc`` names a source's DC level. A device may also state
-[`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses.
+[`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses. A
+[`RandomVariable`][jolty.ir.RandomVariable], a number a sample draws at random and the
+parameters it moves, is no part of a circuit, but what its tolerances and a process
+kit's statistical functions make.
 """
 
 from collections.abc import Mapping
@@ -128,6 +131,34 @@ class Tolerance(_Spread):
     """
 
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
+
+
+class RandomVariable(_Model):
+    """A number a Monte Carlo sample draws at random, and how it moves the devices.
+
+    A part's tolerance draws one for its own factor and one for its lot's, and a process
+    kit's statistical function, such as ``agauss``, one per placement and call. It is
+    not part of a circuit: a mismatch analysis
+    ([`Mismatch`][jolty.plan.Mismatch]) makes the tolerances' from the circuit and takes
+    a kit's from the plan, as its reader finds them
+    ([`Library.random_variables`][jolty.spice.Library.random_variables]).
+    """
+
+    instance: str | None = None
+    """The path of the instance that draws it: the part whose tolerance it is, or the
+    placement whose definitions call a kit's statistical function; None for a lot's."""
+    lot: str | None = None
+    """The name of the lot whose shared spread it is, if it is one."""
+    name: str
+    """What it is within its instance or lot: the parameter a tolerance spreads, such as
+    ``resistance``, or which call of a statistical function it is, such as ``vth0#0``,
+    its definition's name and its place among the calls the definition makes."""
+    mean: float = Field(allow_inf_nan=False)
+    """Its mean, which the circuit's parameters are at."""
+    standard_deviation: float = Field(ge=0, allow_inf_nan=False)
+    derivatives: Mapping[str, Mapping[str, float]]
+    """The derivative of each number it moves with respect to it, by the device's path,
+    then by the number's path among its parameters, in SI base units per unit of it."""
 
 
 def part_number(number: str) -> str:
@@ -298,4 +329,33 @@ def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | Non
                 found = found[int(key)]
             case _:
                 return None
+    return found
+
+
+def numbers(parameters: Mapping[str, JsonValue]) -> dict[str, float]:
+    """Every number among `parameters`, in the order they are written, by its path.
+
+    A path is as [`parameter`][jolty.ir.parameter] reads it; a flag is no number.
+
+    Examples:
+        >>> numbers({"resistance": 1e3, "waveform": {"dc": 5, "on": True}})
+        {'resistance': 1000.0, 'waveform.dc': 5.0}
+    """
+    found: dict[str, float] = {}
+
+    def walk(path: str, value: JsonValue) -> None:
+        match value:
+            case bool():
+                pass
+            case int() | float():
+                found[path] = float(value)
+            case dict():
+                for key, inner in value.items():
+                    walk(f"{path}.{key}", inner)
+            case list():
+                for index, inner in enumerate(value):
+                    walk(f"{path}.{index}", inner)
+
+    for key, value in parameters.items():
+        walk(key, value)
     return found

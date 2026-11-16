@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use jolty_engine::{
-    Ac, Conditions, DcSweep, Derivatives, Differentiated, Method, Options, Sensitivity,
-    SimulationError, Simulator, Transient,
+    Ac, Conditions, DcSweep, Derivatives, Differentiated, Method, Options, PeriodicSteadyState,
+    Sensitivity, SimulationError, Simulator, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -102,12 +102,13 @@ fn tight() -> Options {
     }
 }
 
-/// The options `of` runs at: tight, and for a transient, with a truncation tolerance no
-/// step's error reaches, so every run takes the same steps, growing to the longest, and
-/// finite differences see what the parameters move, not where the steps fall.
+/// The options `of` runs at: tight, and for a transient or a periodic steady state, with a
+/// truncation tolerance no step's error reaches, so every run takes the same steps,
+/// growing to the longest, and finite differences see what the parameters move, not where
+/// the steps fall.
 fn options(of: &Differentiated) -> Options {
     match of {
-        Differentiated::Transient(_) => Options {
+        Differentiated::Transient(_) | Differentiated::PeriodicSteadyState(_) => Options {
             truncation_tolerance: f64::INFINITY,
             ..tight()
         },
@@ -169,6 +170,13 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             simulator
                 .transient(transient, &options(of))
                 .expect("waveforms")
+                .values,
+        ),
+        Differentiated::PeriodicSteadyState(analysis) => pick(
+            simulator
+                .periodic_steady_state(analysis, &options(of))
+                .expect("a periodic steady state")
+                .waveforms
                 .values,
         ),
     }
@@ -323,6 +331,18 @@ fn sensitivities_over_time_match_finite_differences() {
 }
 
 #[test]
+fn sensitivities_along_a_periodic_steady_state_match_finite_differences() {
+    // The rectifier's load holds its charge for a period, 10 kΩ across 100 pF, so each
+    // parameter moves the state the period starts from as well as the period's own.
+    let steady = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
+        period: Some(1e-6),
+        max_step: Some(1e-8),
+        ..PeriodicSteadyState::default()
+    });
+    assert_matches(&rectifier(), &["a", "out"], &steady, 1e-4);
+}
+
+#[test]
 fn a_sensitivity_names_unknowns_that_exist() {
     let circuit = circuit_of(&diode());
     let mut simulator =
@@ -335,4 +355,32 @@ fn a_sensitivity_names_unknowns_that_exist() {
         .sensitivity(&sensitivity, &Options::default())
         .unwrap_err();
     assert_eq!(error, SimulationError::UnknownOutput("nowhere".to_owned()));
+}
+
+#[test]
+fn sensitivities_through_an_inductor_and_a_port_match_finite_differences_over_a_period() {
+    // A sine into a tank whose conductance reads its inductor's current through a port:
+    // the inductor's flux, on its branch current, carries the state as a charge does, and
+    // the conductance's derivative with respect to that current shapes every tangent.
+    let instances = json!([
+        {"name": "V1", "of": {"model": "voltage_source"},
+         "parameters": {"waveform": {"sine": {"offset": 0.1, "amplitude": 1.0, "frequency": 5e6}}},
+         "terminals": {"positive": "in", "negative": "0"}},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 100.0},
+         "terminals": {"a": "in", "b": "t"}},
+        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
+         "terminals": {"a": "t", "b": "0"}},
+        {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-6},
+         "terminals": {"a": "t", "b": "l"}},
+        {"name": "B1", "of": {"model": "behavioral_current_source"},
+         "parameters": {"expression": "-6e-3 * v(x) * (1 - (v(x) ^ 2 + (31.6 * i(p)) ^ 2))"},
+         "terminals": {"positive": "t", "negative": "0", "x": "t",
+                       "p_positive": "l", "p_negative": "0"}},
+    ]);
+    let steady = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
+        period: Some(2e-7),
+        max_step: Some(2e-9),
+        ..PeriodicSteadyState::default()
+    });
+    assert_matches(&instances, &["t", "L1:current"], &steady, 1e-4);
 }

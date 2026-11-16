@@ -1,5 +1,6 @@
 //! Dense linear solves, for the small systems whose every entry is filled.
 
+use faer::linalg::solvers::Svd;
 use faer::linalg::svd::SvdError;
 use faer::{Mat, MatRef};
 
@@ -41,25 +42,12 @@ pub fn solve_in_range(
     (cutoff, slack): (f64, f64),
 ) -> Result<usize, LinearError> {
     let n = rhs.len();
-    assert_eq!(
-        a.len(),
-        n * n,
-        "a square matrix of the right-hand side's rows"
-    );
-    if n == 0 {
+    let Some(decomposed) = Decomposed::new(a, n)? else {
         return Ok(0);
-    }
-    let singular = |_: SvdError| LinearError::Singular {
-        columns: Vec::new(),
     };
-    let svd = Mat::from_fn(n, n, |row, column| a[column * n + row])
-        .svd()
-        .map_err(singular)?;
-    let (u, v) = (svd.U(), svd.V());
-    let values: Vec<f64> = svd.S().column_vector().iter().copied().collect();
-    let rounding = f64::from(u32::try_from(n).unwrap_or(u32::MAX)) * f64::EPSILON * values[0];
-    let projected: Vec<f64> = (0..n).map(|k| dot(u.col(k), rhs)).collect();
-    let mut rank = values.iter().take_while(|&&value| value > rounding).count();
+    let projected = decomposed.projected(rhs);
+    let values = &decomposed.values;
+    let mut rank = decomposed.rounded_rank();
     let mut left_out: f64 = projected[rank..].iter().map(|part| part * part).sum();
     while let Some(least) = rank.checked_sub(1)
         && values[least] <= cutoff
@@ -68,45 +56,165 @@ pub fn solve_in_range(
         left_out += projected[least] * projected[least];
         rank = least;
     }
-    let solution = if rank == n {
-        truncated((u, &values, v), rhs, rounding)
-    } else {
-        let (range, kept) = (u.subcols(0, rank), v.subcols(0, rank));
-        let mut reduced = kept.transpose() * range;
-        for (row, &value) in values[..rank].iter().enumerate() {
-            for column in 0..rank {
-                reduced[(row, column)] *= value;
-            }
-        }
-        let inner = reduced.svd().map_err(singular)?;
-        let inner_values: Vec<f64> = inner.S().column_vector().iter().copied().collect();
-        let within = truncated(
-            (inner.U(), &inner_values, inner.V()),
-            &projected[..rank],
-            rounding,
-        );
-        (0..n)
-            .map(|row| (0..rank).map(|k| range[(row, k)] * within[k]).sum::<f64>())
-            .collect()
-    };
+    let solution = decomposed.kept(rank)?.solve(&projected);
     finite(&solution)?;
     rhs.copy_from_slice(&solution);
     Ok(rank)
 }
 
-/// `V Σ⁺ Uᵀ b` from the singular value decomposition `(U, Σ, V)`, a singular value at most
-/// `cutoff` counting as zero.
-fn truncated(
-    (u, values, v): (MatRef<'_, f64>, &[f64], MatRef<'_, f64>),
-    rhs: &[f64],
-    cutoff: f64,
-) -> Vec<f64> {
+/// Solves `A x = b` for each right-hand side `b` of `columns`, each of as many rows as `A`,
+/// as [`solve_in_range`] solves one with no singular value counting as zero but those within
+/// the rounding, the matrix decomposed once for all of them; leaves each `x` in its column
+/// and returns the rank of `A`.
+///
+/// # Errors
+///
+/// Returns [`LinearError::Singular`] as [`solve_in_range`] does, for any column.
+///
+/// # Panics
+///
+/// Panics unless `a` holds the square of the columns' length.
+pub fn solve_each_in_range(a: &[f64], columns: &mut [Vec<f64>]) -> Result<usize, LinearError> {
+    let n = columns.first().map_or(0, Vec::len);
+    let Some(decomposed) = Decomposed::new(a, n)? else {
+        return Ok(0);
+    };
+    let rank = decomposed.rounded_rank();
+    let kept = decomposed.kept(rank)?;
+    for column in columns {
+        let solution = kept.solve(&decomposed.projected(column));
+        finite(&solution)?;
+        column.copy_from_slice(&solution);
+    }
+    Ok(rank)
+}
+
+/// The singular value decomposition `A = U Σ Vᵀ` of a square matrix, and the rounding below
+/// which its singular values count as zero: `n ε` times the largest.
+struct Decomposed {
+    svd: Svd<f64>,
+    values: Vec<f64>,
+    rounding: f64,
+}
+
+/// What solving in the range of a decomposed matrix keeps of it: its first `rank` singular
+/// values, and where it keeps fewer than all, the decomposition of the reduced system
+/// `Σ_r V_rᵀ U_r`.
+struct Kept<'a> {
+    decomposed: &'a Decomposed,
+    rank: usize,
+    reduced: Option<(Svd<f64>, Vec<f64>)>,
+}
+
+/// The error of a decomposition whose singular values did not converge.
+fn unconverged(_: SvdError) -> LinearError {
+    LinearError::Singular {
+        columns: Vec::new(),
+    }
+}
+
+impl Decomposed {
+    /// The decomposition of the matrix `a` of `n` rows in column-major order; none when it
+    /// has none.
+    fn new(a: &[f64], n: usize) -> Result<Option<Self>, LinearError> {
+        assert_eq!(
+            a.len(),
+            n * n,
+            "a square matrix of the right-hand side's rows"
+        );
+        if n == 0 {
+            return Ok(None);
+        }
+        let svd = Mat::from_fn(n, n, |row, column| a[column * n + row])
+            .svd()
+            .map_err(unconverged)?;
+        let values: Vec<f64> = svd.S().column_vector().iter().copied().collect();
+        let rounding = f64::from(u32::try_from(n).unwrap_or(u32::MAX)) * f64::EPSILON * values[0];
+        Ok(Some(Self {
+            svd,
+            values,
+            rounding,
+        }))
+    }
+
+    /// The singular values above the rounding.
+    fn rounded_rank(&self) -> usize {
+        self.values
+            .iter()
+            .take_while(|&&value| value > self.rounding)
+            .count()
+    }
+
+    /// `Uᵀ b`, the parts of `b` along each column of `U`.
+    fn projected(&self, rhs: &[f64]) -> Vec<f64> {
+        let u = self.svd.U();
+        (0..rhs.len()).map(|k| dot(u.col(k), rhs)).collect()
+    }
+
+    /// What solving in the range keeps of the first `rank` singular values.
+    fn kept(&self, rank: usize) -> Result<Kept<'_>, LinearError> {
+        let reduced = if rank == self.values.len() {
+            None
+        } else {
+            let (u, v) = (self.svd.U(), self.svd.V());
+            let mut reduced = v.subcols(0, rank).transpose() * u.subcols(0, rank);
+            for (row, &value) in self.values[..rank].iter().enumerate() {
+                for column in 0..rank {
+                    reduced[(row, column)] *= value;
+                }
+            }
+            let inner = reduced.svd().map_err(unconverged)?;
+            let values = inner.S().column_vector().iter().copied().collect();
+            Some((inner, values))
+        };
+        Ok(Kept {
+            decomposed: self,
+            rank,
+            reduced,
+        })
+    }
+}
+
+impl Kept<'_> {
+    /// The solution in the range kept, of the least norm among the least-squares ones, for
+    /// a right-hand side of parts `projected` along `U`'s columns: `x = U_r y`, where `y`
+    /// solves `Σ_r V_rᵀ U_r y = U_rᵀ b`, or `x = V Σ⁻¹ Uᵀ b` where all are kept.
+    fn solve(&self, projected: &[f64]) -> Vec<f64> {
+        let decomposed = self.decomposed;
+        let (u, v) = (decomposed.svd.U(), decomposed.svd.V());
+        let rounding = decomposed.rounding;
+        let Some((inner, values)) = &self.reduced else {
+            return truncated((v, &decomposed.values, rounding), projected);
+        };
+        let within = truncated(
+            (inner.V(), values, rounding),
+            &inner_projected(inner, projected, self.rank),
+        );
+        (0..u.nrows())
+            .map(|row| (0..self.rank).map(|k| u[(row, k)] * within[k]).sum::<f64>())
+            .collect()
+    }
+}
+
+/// The parts along the reduced system's left singular vectors of the first `rank` of
+/// `projected`.
+fn inner_projected(inner: &Svd<f64>, projected: &[f64], rank: usize) -> Vec<f64> {
+    let u = inner.U();
+    (0..rank)
+        .map(|k| dot(u.col(k), &projected[..rank]))
+        .collect()
+}
+
+/// `V Σ⁺ c` for the parts `c = Uᵀ b` of a right-hand side along the left singular vectors
+/// of the decomposition `(U, Σ, V)`, `(V, Σ)` given, a singular value at most `cutoff`
+/// counting as zero.
+fn truncated((v, values, cutoff): (MatRef<'_, f64>, &[f64], f64), projected: &[f64]) -> Vec<f64> {
     let mut solution = vec![0.0; v.nrows()];
-    for (k, &value) in values.iter().enumerate() {
+    for (k, (&value, &part)) in values.iter().zip(projected).enumerate() {
         if value <= cutoff {
             break;
         }
-        let along = dot(u.col(k), rhs) / value;
+        let along = part / value;
         for (entry, &direction) in solution.iter_mut().zip(v.col(k).iter()) {
             *entry += along * direction;
         }
@@ -284,5 +392,25 @@ mod tests {
                 columns: vec![0, 1]
             })
         );
+    }
+
+    #[test]
+    fn solves_each_column_as_one_solve_does() {
+        // The regular system above, and the singular one, whose columns' solutions keep
+        // x₂ where it is: each column as `solve_in_range` solves it alone.
+        for a in [[2.0, 1.0, 1.0, 3.0], [-0.5, 0.0, 0.2, 0.0]] {
+            let mut columns = vec![vec![3.0, 5.0], vec![1.0, 0.0], vec![1.0, 1e-3]];
+            let alone: Vec<Vec<f64>> = columns
+                .iter()
+                .map(|column| {
+                    let mut solved = column.clone();
+                    solve_in_range(&a, &mut solved, EXACT).unwrap();
+                    solved
+                })
+                .collect();
+            let rank = solve_each_in_range(&a, &mut columns).unwrap();
+            assert_eq!(rank, if a[1] == 0.0 { 1 } else { 2 });
+            assert_eq!(columns, alone);
+        }
     }
 }

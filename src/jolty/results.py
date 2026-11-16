@@ -37,7 +37,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field
 
-from jolty import _core
+from jolty import _core, ir
 from jolty.units import Dimension
 from jolty.unknowns import Nature, Unknown
 
@@ -889,7 +889,10 @@ class SensitivityResult(_Watched):
     `derivatives` has one row per output and one column per parameter, in SI base
     units, at an operating point. Along a DC sweep, over a response or over time, it has
     one such matrix per level, frequency or time of `result`, first, as `result`'s own
-    values have one row per point; a response's are the derivatives of its phasors.
+    values have one row per point; a response's are the derivatives of its phasors, and
+    a periodic steady state's are at each point's fraction of the period. For an
+    oscillator's periodic steady state, `period_derivatives` holds its period's
+    derivative with respect to each parameter.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -916,6 +919,9 @@ class SensitivityResult(_Watched):
     derivatives: Real | Complex
     result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
     """The result of the analysis differentiated."""
+    period_derivatives: Real | None = None
+    """For an oscillator's periodic steady state, its period's derivative with respect
+    to each parameter, in their order; None otherwise."""
 
     def derivative(
         self, output: str, instance: str, parameter: str
@@ -927,11 +933,29 @@ class SensitivityResult(_Watched):
         Raises:
             KeyError: When the analysis has no such output or parameter.
         """
+        found = self.derivatives[
+            ..., self._row(output), self._column(instance, parameter)
+        ]
+        return float(found) if found.ndim == 0 else found
+
+    def period_derivative(self, instance: str, parameter: str) -> float:
+        """The derivative of an oscillator's period with respect to `parameter`.
+
+        The parameter is `instance`'s, and the derivative in seconds per its SI unit.
+
+        Raises:
+            KeyError: When the analysis has no such parameter, or differentiates no
+                oscillator's period.
+        """
+        if self.period_derivatives is None:
+            message = "the analysis differentiates no oscillator's period"
+            raise KeyError(message)
+        return float(self.period_derivatives[self._column(instance, parameter)])
+
+    def _column(self, instance: str, parameter: str) -> int:
         labels = [f"{found.instance} {found.name}" for found in self.parameters]
         missing = "the analysis has no parameter"
-        index = _find(labels, f"{instance} {parameter}", missing)
-        found = self.derivatives[..., self._row(output), index]
-        return float(found) if found.ndim == 0 else found
+        return _find(labels, f"{instance} {parameter}", missing)
 
     def gradient(self, output: str) -> Real | Complex:
         """The derivative of `output` with respect to each parameter, in their order.
@@ -939,6 +963,144 @@ class SensitivityResult(_Watched):
         It is one per point of `result`, first, but at an operating point.
         """
         return self.derivatives[..., self._row(output), :]
+
+    def _row(self, output: str) -> int:
+        return _find(list(self.outputs), output, "the analysis has no output")
+
+
+type Part = Literal["magnitude", "phase"]
+"""What of a response's phasor a mismatch analysis spreads: its magnitude, or its phase,
+in radians."""
+
+
+@dataclass(frozen=True, slots=True)
+class MismatchResult(_Watched):
+    """How far each output spreads, to first order, with each random variable.
+
+    `derivatives` holds each output's derivative with respect to each of
+    `random_variables`, laid out as a sensitivity's are by parameter: one row per output
+    and one column per random variable at an operating point, and one such matrix per
+    point of `result` otherwise, a response's the derivatives of its phasors. A random
+    variable's contribution to an output is its derivative times its standard
+    deviation; the random variables are drawn apart from one another, so to first order
+    the output's standard deviation is the root of the sum of its contributions squared,
+    and each random variable's share of its variance its contribution's square over that
+    sum. A response's phasor spreads in magnitude and in phase, each to first order of
+    its phasor's: `part` chooses which, as a response's results need one.
+
+    Examples:
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([0.5]), ""
+        ... )
+        >>> moves = {"R2": {"resistance": 1e3}}
+        >>> mismatch = MismatchResult(
+        ...     point.unknowns,
+        ...     ("out",),
+        ...     (
+        ...         ir.RandomVariable(
+        ...             instance="R2",
+        ...             name="resistance",
+        ...             mean=0,
+        ...             standard_deviation=0.01,
+        ...             derivatives=moves,
+        ...         ),
+        ...     ),
+        ...     np.array([[2.5e-4]]),
+        ...     point,
+        ... )
+        >>> mismatch.standard_deviation("out")
+        2.5e-06
+    """
+
+    unknowns: tuple[Unknown, ...]
+    outputs: tuple[str, ...]
+    """The unknowns spread, by name, in the order of `derivatives`' rows."""
+    random_variables: tuple[ir.RandomVariable, ...]
+    """Every random variable, in the order of `derivatives`' columns: the circuit's
+    tolerances', each part's own then each lot's, in the order of the toleranced
+    numbers, then those the analysis was given."""
+    derivatives: Real | Complex
+    result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
+    """The result of the analysis differentiated."""
+    period_derivatives: Real | None = None
+    """For an oscillator's periodic steady state, its period's derivative with respect
+    to each random variable, in their order; None otherwise."""
+
+    def contributions(self, output: str, part: Part | None = None) -> Real:
+        """Each random variable's contribution to `output`, in their order.
+
+        It is one row at an operating point, and one per point of `result` otherwise;
+        of a response, `part` of its phasor's.
+
+        Raises:
+            KeyError: When the analysis has no such output.
+            ValueError: When `part` is given for a result of real values, or not for a
+                response's.
+        """
+        deviations = np.array(
+            [variable.standard_deviation for variable in self.random_variables]
+        )
+        terms = self.derivatives[..., self._row(output), :] * deviations
+        if not isinstance(self.result, AcResult):
+            if part is not None:
+                message = f"a mismatch of real values spreads no {part}"
+                raise ValueError(message)
+            return terms
+        if part is None:
+            message = "a response's mismatch spreads its magnitude or its phase"
+            raise ValueError(message)
+        phasors = self.result.values[:, column(self.unknowns, output)]
+        along = np.conj(phasors)[:, None] * terms
+        magnitudes = np.abs(phasors)[:, None]
+        if part == "magnitude":
+            return along.real / magnitudes
+        return along.imag / magnitudes**2
+
+    def standard_deviation(self, output: str, part: Part | None = None) -> float | Real:
+        """The standard deviation of `output`, to first order.
+
+        It is one number at an operating point, and one per point of `result` otherwise;
+        of a response, `part` of its phasor's.
+
+        Raises:
+            KeyError: When the analysis has no such output.
+            ValueError: When `part` is given for a result of real values, or not for a
+                response's.
+        """
+        found = np.sqrt(np.sum(self.contributions(output, part) ** 2, axis=-1))
+        return float(found) if found.ndim == 0 else found
+
+    def period_standard_deviation(self) -> float:
+        """The standard deviation of an oscillator's period, to first order, in seconds.
+
+        Raises:
+            KeyError: When the analysis differentiates no oscillator's period.
+        """
+        if self.period_derivatives is None:
+            message = "the analysis differentiates no oscillator's period"
+            raise KeyError(message)
+        deviations = np.array(
+            [variable.standard_deviation for variable in self.random_variables]
+        )
+        return float(np.sqrt(np.sum((self.period_derivatives * deviations) ** 2)))
+
+    def shares(self, output: str, part: Part | None = None) -> Real:
+        """Each random variable's share of the variance of `output`, in their order.
+
+        It is one row at an operating point, and one per point of `result` otherwise;
+        of a response, `part` of its phasor's. A point where the output does not spread
+        shares nothing.
+
+        Raises:
+            KeyError: When the analysis has no such output.
+            ValueError: When `part` is given for a result of real values, or not for a
+                response's.
+        """
+        squares = self.contributions(output, part) ** 2
+        variance = np.sum(squares, axis=-1, keepdims=True)
+        return np.divide(
+            squares, variance, out=np.zeros_like(squares), where=variance > 0
+        )
 
     def _row(self, output: str) -> int:
         return _find(list(self.outputs), output, "the analysis has no output")
@@ -1247,6 +1409,7 @@ type AnalysisResult = (
     | TransientResult
     | PeriodicSteadyStateResult
     | SensitivityResult
+    | MismatchResult
     | StabilityResult
     | NoiseResult
     | PoleZeroResult

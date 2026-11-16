@@ -83,7 +83,15 @@ solution, such as a latch's states, read with jolty.specs.solutions, DcSweep(sou
 values), Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
 max_step, method), Sensitivity(outputs, of=None): the derivative of each output unknown
 with respect to every number of every device's parameters at the operating point, or
-at each level, frequency or time of the DcSweep, Ac or Transient given as of, and
+at each level, frequency or time of the DcSweep, Ac, Transient or PeriodicSteadyState
+given as of, an oscillator's period's too, read with period_derivative(instance,
+parameter), Mismatch(outputs, of=None, random_variables=()): each output's standard
+deviation, to first order, with the circuit's tolerances, each part's and each lot's
+factor a random variable, and the random_variables given, such as a process kit's
+statistical functions as Library.random_variables(name, path) reads them, at the same
+points as a Sensitivity, a response's in magnitude and in phase, read with
+standard_deviation(output, part=None), and each random variable's contribution and
+share of the variance, largest first in the report, and
 Stability(probe, frequencies): the loop gain through a 0 V voltage source in series
 with a feedback loop, its positive terminal toward the side the signal enters, read
 with jolty.specs.phase_margin, gain_margin and crossover, and Noise(output,
