@@ -30,7 +30,7 @@ pub enum Endpoint {
     },
     /// The connect element `device`: a threshold detector that drives the net, or a logic
     /// driver that follows it.
-    Element {
+    Terminal {
         /// The element's index among [`Simulator::devices`](crate::Simulator::devices).
         device: usize,
     },

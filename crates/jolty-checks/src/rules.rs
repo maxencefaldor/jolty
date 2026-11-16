@@ -150,7 +150,7 @@ pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut
 fn location(simulator: &Simulator, end: Endpoint) -> &Location {
     match end {
         Endpoint::Pin { device, .. } => simulator.logic_devices()[device].location(),
-        Endpoint::Element { device } => simulator.devices()[device].location(),
+        Endpoint::Terminal { device } => simulator.devices()[device].location(),
     }
 }
 

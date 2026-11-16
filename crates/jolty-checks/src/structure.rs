@@ -26,7 +26,7 @@ impl<'a> Structure<'a> {
         let mut elements = vec![false; simulator.devices().len()];
         for net in simulator.logic_nets() {
             for end in net.sources.iter().chain(&net.loads) {
-                if let Endpoint::Element { device } = *end {
+                if let Endpoint::Terminal { device } = *end {
                     elements[device] = true;
                 }
             }

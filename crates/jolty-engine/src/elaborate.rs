@@ -765,7 +765,7 @@ impl Elements<'_> {
         } else {
             self.driver(at.clone(), terminals)
         };
-        let element_end = Endpoint::Element { device: element };
+        let element_end = Endpoint::Terminal { device: element };
         let (sources, loads) = if input {
             self.partition.detectors.push((element, own));
             (vec![element_end], vec![end])
