@@ -107,7 +107,7 @@ pub use jolty_numerics::integration::Method;
 pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseResult};
 pub use operating_point::{OperatingPointResult, OperatingPoints, Strategy};
-pub use options::{Options, Parallelism, Record};
+pub use options::{BREAK_EVENS, BreakEvens, Options, Parallelism, Record, Sizes};
 pub use pole_zero::{Mode, PoleZero, PoleZeroResult};
 pub use profile::{Profile, Work};
 pub use record::{RecordedSeries, RecordedValues, RecordedView, Recording};

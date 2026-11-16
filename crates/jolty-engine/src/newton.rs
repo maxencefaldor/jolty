@@ -40,18 +40,20 @@ fn step_error((value, step): (f64, f64), nature: Nature, options: &Options) -> f
 
 /// Does `each` for every chunk of `values` and the index of its first value: for one chunk
 /// of them all on the calling thread without `inside`, and else for each chunk of
-/// [`reduce::CHUNK`] values, on the threads of the current rayon pool as they take them.
+/// [`reduce::CHUNK`] values, on the threads of the current rayon pool as they take them,
+/// at least [`Inside::chunks`] a task.
 pub(crate) fn each_chunk<T: Send>(
     values: &mut [T],
     inside: Option<Inside>,
     each: impl Fn(usize, &mut [T]) + Sync,
 ) {
-    if inside.is_none() {
+    let Some(inside) = inside else {
         each(0, values);
         return;
-    }
+    };
     values
         .par_chunks_mut(reduce::CHUNK)
+        .with_min_len(inside.chunks)
         .enumerate()
         .for_each(|(index, chunk)| each(index * reduce::CHUNK, chunk));
 }
@@ -69,11 +71,11 @@ fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
     (none, join): (R, impl Fn(R, R) -> R + Sync + Send),
     each: impl Fn(usize, [&mut [f64]; N]) -> R + Sync,
 ) -> R {
-    if inside.is_none() {
+    let Some(inside) = inside else {
         return each(0, planes);
-    }
+    };
     let whole = Planes { first: 0, planes };
-    rayon::iter::split(whole, Planes::halve)
+    rayon::iter::split(whole, |part| part.halve(inside.chunks))
         .map(|part| each(part.first, part.planes))
         .reduce(|| none, join)
 }
@@ -95,12 +97,13 @@ struct Planes<'a, const N: usize> {
 }
 
 impl<const N: usize> Planes<'_, N> {
-    /// The values split in two at a multiple of [`reduce::CHUNK`] values from the first, or
-    /// whole with `None` when they fill one chunk or less.
-    fn halve(self) -> (Self, Option<Self>) {
+    /// The values split in two at a multiple of [`reduce::CHUNK`] values from the first,
+    /// each half at least `least` chunks, or whole with `None` when they fill fewer than
+    /// twice as many.
+    fn halve(self, least: usize) -> (Self, Option<Self>) {
         let count = self.planes.first().map_or(0, |plane| plane.len());
         let chunks = count.div_ceil(reduce::CHUNK);
-        if chunks < 2 {
+        if chunks < 2 * least.max(1) {
             return (self, None);
         }
         let at = chunks / 2 * reduce::CHUNK;
@@ -121,8 +124,8 @@ impl<const N: usize> Planes<'_, N> {
 }
 
 /// Whether `holds` holds of every index below `count`, asked on the calling thread without
-/// `inside`, and else in chunks of [`reduce::CHUNK`] indices on the threads of the current
-/// rayon pool: the same answer either way.
+/// `inside`, and else in tasks of at least [`Inside::chunks`] chunks of [`reduce::CHUNK`]
+/// indices on the threads of the current rayon pool: the same answer either way.
 pub(crate) fn all(
     count: usize,
     inside: Option<Inside>,
@@ -130,17 +133,18 @@ pub(crate) fn all(
 ) -> bool {
     match inside {
         None => (0..count).all(holds),
-        Some(_) => (0..count)
+        Some(inside) => (0..count)
             .into_par_iter()
-            .with_min_len(reduce::CHUNK)
+            .with_min_len(inside.chunks * reduce::CHUNK)
             .all(holds),
     }
 }
 
 /// What `each` finds of each of the ranges [`reduce::CHUNK`] long that the indices below
 /// `count` fall into, in their order, on the calling thread without `inside`, and else on
-/// the threads of the current rayon pool: the ranges are the same however many threads
-/// take them, so a fold of the findings in their order is the same bits on any number.
+/// the threads of the current rayon pool, at least [`Inside::chunks`] ranges a task: the
+/// ranges are the same however many threads take them, so a fold of the findings in their
+/// order is the same bits on any number.
 pub(crate) fn pieces<R: Send>(
     count: usize,
     inside: Option<Inside>,
@@ -150,8 +154,9 @@ pub(crate) fn pieces<R: Send>(
     let pieces = count.div_ceil(reduce::CHUNK);
     match inside {
         None => (0..pieces).map(|piece| each(range(piece))).collect(),
-        Some(_) => (0..pieces)
+        Some(inside) => (0..pieces)
             .into_par_iter()
+            .with_min_len(inside.chunks)
             .map(|piece| each(range(piece)))
             .collect(),
     }
@@ -190,11 +195,12 @@ pub(crate) fn add_product(
 }
 
 /// The sum of the `count` terms `term` gives, by [`reduce::sum`]'s fixed order, on the
-/// calling thread without `inside`, and else on the threads of the current rayon pool.
+/// calling thread without `inside`, and else on the threads of the current rayon pool, at
+/// least [`Inside::chunks`] chunks a task.
 fn sum(count: usize, term: impl Fn(usize) -> f64 + Sync, inside: Option<Inside>) -> f64 {
     match inside {
         None => reduce::sum(count, term),
-        Some(_) => reduce::sum_in_parallel(count, term),
+        Some(inside) => reduce::sum_in_parallel(count, term, inside.chunks),
     }
 }
 
@@ -359,7 +365,7 @@ impl Simulator {
         };
         // The devices evaluate, and the work on each unknown and each stored entry splits,
         // as the options spread them, the same bits either way.
-        let instances = self.elaborated.devices.len();
+        let instances = self.elaborated.groups.evaluated();
         self.state.tasks = options.parallelism.evaluation(instances);
         let inside = options.parallelism.inside(x.len());
         // A DC solution starts afresh from its guess; a time step goes on from the last.

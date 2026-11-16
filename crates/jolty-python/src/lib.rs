@@ -76,15 +76,22 @@ impl Pool {
 }
 
 impl Pool {
-    /// `work`, a run under `options`: inside the pool, on its threads, when the options let
-    /// the run spread its work over threads, and else on the calling thread, which a run
-    /// that spreads nothing never leaves, so that it waits on no thread of the pool.
-    fn run<T: Send>(&self, options: &Options, work: impl FnOnce() -> T + Send) -> T {
-        if options.parallelism.spreads() {
-            self.inner.install(work)
-        } else {
-            work()
+    /// `work`, a run under `options` that `spreads` its work over threads or not, as
+    /// `jolty_engine::Simulator::spreads` says: inside the pool, on its threads, when it
+    /// spreads and the pool has two or more, and else on the calling thread, which a run
+    /// that spreads nothing never leaves, so that it waits on no thread of the pool, under
+    /// `options` capped at that one thread, as its parallelism's defaults then read.
+    fn run<T: Send>(
+        &self,
+        (options, spreads): (&Options, bool),
+        work: impl FnOnce(&Options) -> T + Send,
+    ) -> T {
+        if spreads && self.inner.current_num_threads() >= 2 {
+            return self.inner.install(|| work(options));
         }
+        let mut alone = options.clone();
+        alone.parallelism.max_threads = Some(1);
+        work(&alone)
     }
 }
 
@@ -462,9 +469,12 @@ impl Simulator {
     ) -> PyResult<Bound<'py, PyList>> {
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let found = py.detach(|| {
-            pool.run(&options, || {
+            let spreads = self
+                .lock()
+                .spreads(&Analysis::OperatingPoint, &options, pool.threads());
+            pool.run((&options, spreads), |options| {
                 let mut simulator = self.lock();
-                jolty_checks::check_operating_point(&mut simulator, &options)
+                jolty_checks::check_operating_point(&mut simulator, options)
             })
         });
         diagnostics_to_python(
@@ -511,9 +521,10 @@ impl Simulator {
             serde_json::from_str(analysis).map_err(|error| unreadable(&error))?;
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let outcome = py.detach(|| {
-            pool.run(&options, || {
+            let spreads = self.lock().spreads(&analysis, &options, pool.threads());
+            pool.run((&options, spreads), |options| {
                 let mut simulator = self.lock();
-                simulator.run(&analysis, &options)
+                simulator.run(&analysis, options)
             })
         });
         outcome_to_python(
@@ -962,6 +973,15 @@ fn default_options() -> PyResult<String> {
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
+/// The break-evens each threshold of the engine's parallelism left unset takes, on each
+/// number of threads they were measured on, as a JSON object: the threads, then each
+/// threshold's break-evens, none where no size measured paid.
+#[pyfunction]
+fn break_evens() -> PyResult<String> {
+    serde_json::to_string(&jolty_engine::BREAK_EVENS)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
 /// The name of every model, analog and logic, in alphabetical order.
 #[pyfunction]
 fn models() -> Vec<&'static str> {
@@ -1133,6 +1153,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
     module.add_function(wrap_pyfunction!(defaulted, module)?)?;
     module.add_function(wrap_pyfunction!(default_options, module)?)?;
+    module.add_function(wrap_pyfunction!(break_evens, module)?)?;
     module.add_function(wrap_pyfunction!(level, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     module.add_function(wrap_pyfunction!(schema, module)?)?;

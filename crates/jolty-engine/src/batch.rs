@@ -369,7 +369,10 @@ impl Batch {
     /// in, and hands each run's outcome to `sink` at its index; returns their summary.
     ///
     /// A run spreads its own work across threads, as its options' parallelism allows, only
-    /// when the range holds fewer runs than the pool has threads.
+    /// when the range holds fewer runs than the pool has threads; it orders its matrix by
+    /// the minimum degree unless the options set the interiors of a dissection, whose
+    /// default depends on the threads a run takes, so that every run finds the same bits
+    /// however many threads the pool has and however the runs split into ranges.
     ///
     /// # Errors
     ///
@@ -399,8 +402,10 @@ impl Batch {
             .map(|(_, options)| {
                 let mut options = options.clone();
                 if range.end - range.start >= threads {
-                    options.parallelism.threads = Some(1);
+                    options.parallelism.max_threads = Some(1);
                 }
+                let interiors = &mut options.parallelism.max_unknowns_per_interior;
+                *interiors = interiors.or(Some(usize::MAX));
                 options
             })
             .collect();

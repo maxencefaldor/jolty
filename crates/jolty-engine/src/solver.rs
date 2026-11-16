@@ -44,6 +44,11 @@ impl<T: Scalar> Solver<T> {
         Solver::new(Arc::clone(self.lu.ordering()), Arc::clone(&self.names))
     }
 
+    /// The ordering this solver factors with.
+    pub(crate) fn ordering(&self) -> &Arc<Ordering> {
+        self.lu.ordering()
+    }
+
     /// The pattern of the matrices this solver factors.
     pub(crate) fn pattern(&self) -> &Arc<Pattern> {
         self.lu.pattern()

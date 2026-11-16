@@ -193,13 +193,11 @@ fn a_run_spreads_its_work_over_its_threads_alone() {
     assert_eq!(alone, BTreeSet::from([(0, 1)]));
     let capped = Options {
         parallelism: Parallelism {
-            threads: Some(2),
+            max_threads: Some(2),
             min_solves_per_task: Some(1),
             min_instances_per_task: Some(1),
-            min_unknowns_inside: Some(1),
-            // The interiors order the factorization's operations otherwise, and so its
-            // results' last digits, which this run compares with the serial one's.
-            max_unknowns_per_interior: None,
+            min_unknowns_per_task: Some(1),
+            ..Parallelism::default()
         },
         ..Options::default()
     };
@@ -220,7 +218,7 @@ fn a_run_spreads_its_work_over_its_threads_alone() {
     // A run capped above its caller's pool runs on that pool.
     let above = Options {
         parallelism: Parallelism {
-            threads: Some(8),
+            max_threads: Some(8),
             ..capped.parallelism
         },
         ..capped

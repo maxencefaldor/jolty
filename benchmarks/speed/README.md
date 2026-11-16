@@ -10,12 +10,12 @@ The benchmarks stay out of `scripts/check`, which must stay fast and determinist
 scripts/bench                      # the suite: a few minutes, before and after a change
 scripts/bench bjt_amp buck         # only these fixtures
 scripts/bench --scale              # the large fixtures, each run once, and spread over threads
-scripts/bench --scale --largest    # and the 50,000 inverters' chain spread over threads too
+scripts/bench --scale --largest    # and the 50,000 inverters' chain on each number of threads too
 scripts/bench --ngspice            # ngspice on the fixtures' netlists, for context
 scripts/bench --xyce               # Xyce on them, and how far it lies from jolty
 scripts/bench --xyce --scale --xyce-mpi PATH  # and Xyce's parallel build on 1 to 16 ranks
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
-scripts/bench --break-even min_unknowns_inside  # from which size a threshold pays
+scripts/bench --break-even min_unknowns_per_task  # from which size a threshold pays
 ```
 
 `scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, and prints them against a baseline's, flagging every change over 5%.
@@ -122,108 +122,89 @@ It takes two fifths of jolty's time on the chain of 500 inverters and half on th
 
 ## One run spread over threads
 
-A run does all its work on its own thread unless a threshold of `Parallelism` lets a kind of it spread, as [the guide](../../docs/guide/simulation.md#options) says, and no fixture's plan sets one, so the suite times the serial paths alone.
+A run spreads each kind of its work over the engine's threads in tasks of at least its threshold of `Parallelism`, once the work fills such a task for every thread, as [the guide](../../docs/guide/simulation.md#options) says, and no fixture's plan sets one, so the suite times each fixture with every threshold at its default, its break-even below.
 
 ### Break-evens
 
-`scripts/bench --break-even NAME` measures from which size of circuit setting the threshold `NAME` makes one run faster than leaving it unset.
+`scripts/bench --break-even NAME` measures from which size of circuit setting the threshold `NAME` makes one run faster than running it serially.
 It sweeps circuits of the fixtures' scripts at several sizes: chains of inverters and meshes for the three thresholds a transient reads, and `ac_wide`'s response at fewer frequencies a decade for `min_solves_per_task`.
-Each circuit runs its fixtures' plan with the threshold unset, on one thread, and set, on 2, 4 and 8 threads and every core, one after another, round after round, until there are three rounds at least and they have taken five seconds for each.
+Each circuit runs its fixtures' plan serially, on one thread with every threshold set to spread none of its work, a task of all of its solves, devices or unknowns and interiors as large as the circuit, and with the threshold set and the others still spreading none, on 2, 4 and 8 threads and every core, one after another, round after round, each round in the reverse order of the one before, until there are three rounds at least and they have taken five seconds for each.
+Alternating the order keeps any run from always following the same one: on `cedar`, the median of a serial run of the mesh of 50 a side was 261 ms when it always followed one on 64 threads and 225 ms when it followed one on 2, though none dissected the mesh.
 Each time is the median of its rounds, printed beside the load average as they began and as they ended.
-A run with the threshold set must find the bits of the run left unset, or the sweep stops, but for a dissection: its interiors, of a size for each number of threads, order the factorization otherwise.
+A run with the threshold set must find the bits of the serial run, or the sweep stops, but for a dissection: its interiors, of a size for each number of threads, order the factorization otherwise.
 `--sizes` and `--threads` sweep other sizes and threads, and naming a script, such as `inverter_chain`, sweeps its circuits alone.
 
 On each number of threads, the threshold is set at each size so that it spreads the circuit's work over every thread, however small the circuit:
 
 | Threshold | Set to | So that |
 | --- | --- | --- |
-| `min_instances_per_task` | the circuit's devices over the threads, rounded up | its devices evaluate in a task a thread |
-| `min_unknowns_inside` | 1 | its work on each unknown spreads, in chunks of 1,024 |
-| `max_unknowns_per_interior` | its unknowns over the threads, rounded up | its matrix's block is dissected into an interior a thread or more |
+| `min_instances_per_task` | the circuit's devices over the threads, rounded down | each group of its devices evaluates in a task a thread, but a linear group, whose devices are evaluated once a run, in one |
+| `min_unknowns_per_task` | its unknowns over the threads, rounded down | its work on each unknown spreads in a task a thread, in whole chunks of 1,024 |
+| `max_unknowns_per_interior` | its unknowns over the threads, rounded up | its matrix's block is dissected into an interior a thread or more, where that costs fewer multiply-adds than the minimum degree |
 | `min_solves_per_task` | its solves, its frequencies but the first, over the threads, rounded down | its frequencies are solved in a task a thread |
 
 The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster.
-Its value is the circuit's unknowns for `min_unknowns_inside`, which then spreads from that size on, and for each other threshold the value it was set to there: a task's devices or solves, or an interior's most unknowns.
-Set to it, such a threshold spreads a circuit of that size over every thread in pieces as large as there, and a larger one in more pieces as large; it spreads a smaller circuit in fewer pieces than threads, which may lose, from two tasks' worth of solves, from one task's worth of devices, and from a block larger than an interior.
+Its value is the value the threshold was set to there: a task's solves, devices or unknowns, or an interior's most unknowns.
+Set to it, a threshold of tasks spreads a circuit of that size over every thread in tasks as large as there, and a larger one in tasks as large or larger, but spreads none of a smaller one's work, which would make fewer tasks than threads, an arrangement the sweep does not measure; an interior's most unknowns dissects a smaller circuit's block into fewer interiors than threads, where that still costs fewer multiply-adds.
 
-The sweeps ran on the machine of the baseline, with the engine of commit `6fe8824`, on 15 November 2026 from 11:58 to 13:12, each in pieces of at most ten minutes, their sizes given by `--sizes`, while two other agents built and ran the engine and ngspice on the same cores: the load average was 7 to 19 on the 12 cores, the measurement's own threads included.
-Each change is a spread run's time against the unset run's, at the smallest size from which every larger one gained too, and at the size below it; the load is the load average as that size's rounds began and as they ended.
+The sweeps ran on `cedar`, an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads, with the engine of the change that set the defaults below, on 16 November 2026 from 05:58 to 07:02 UTC, while another user's program kept one core busy: the load average, the measurement's own threads included, was 1.4 to 37 on the 64 threads.
+A chain's block is never dissected, its nested dissection costing three to four times the minimum degree's multiply-adds, so `max_unknowns_per_interior` swept chains of 10, 100 and 500 inverters alone; and `min_unknowns_per_task` swept chains of 100, 500, 1,000 and 2,000, its chain of 5,000 stopped for time, a chain's transient having doubled its steps since a step's charges are held to SPICE's charge tolerance.
+Each change is a spread run's time against the serial run's, at the smallest size from which every larger one gained too, and at the size below it; the load is the load average as that size's rounds began and as they ended.
 
 | Threshold | Circuits | Threads | Pays from | There | Below | Break-even | Load |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `min_instances_per_task` | chains of inverters | 2 | 100 inverters, 202 devices | -3.8% | +2.0% at 70 | 101 | 10.7 to 9.5 |
-| `min_instances_per_task` | chains of inverters | 4 | 200 inverters, 402 devices | -18.1% | +1.6% at 100 | 101 | 9.5 to 12.0 |
-| `min_instances_per_task` | chains of inverters | 8 | 500 inverters, 1,002 devices | -1.9% | +23.1% at 300 | 126 | 12.0 to 12.2 |
-| `min_instances_per_task` | chains of inverters | 12 | 1,000 inverters, 2,002 devices | -9.6% | +21.4% at 700 | 167 | 12.2 to 11.0 |
-| `min_instances_per_task` | meshes | 2 | 100 a side, 29,901 devices | -8.6% | +0.5% at 70 | 14,951 | 14.8 to 12.1 |
-| `min_instances_per_task` | meshes | 4 | 100 a side, 29,901 devices | -10.4% | +5.7% at 70 | 7,476 | 14.8 to 12.1 |
-| `min_instances_per_task` | meshes | 8 | 100 a side, 29,901 devices | -6.3% | +18.9% at 70 | 3,738 | 14.8 to 12.1 |
-| `min_instances_per_task` | meshes | 12 | 100 a side, 29,901 devices | -4.8% | +29.9% at 70 | 2,492 | 14.8 to 12.1 |
-| `min_unknowns_inside` | chains of inverters | 2 | 5,000 inverters, 35,004 unknowns | -8.5% | +3.0% at 4,000 | 35,004 | 11.5 to 15.7 |
-| `min_unknowns_inside` | chains of inverters | 4 | 3,000 inverters, 21,004 unknowns | -3.6% | +12.9% at 2,000 | 21,004 | 12.3 to 13.1 |
-| `min_unknowns_inside` | chains of inverters | 8 | 5,000 inverters, 35,004 unknowns | -9.1% | +8.7% at 4,000 | 35,004 | 11.5 to 15.7 |
-| `min_unknowns_inside` | chains of inverters | 12 | 5,000 inverters, 35,004 unknowns | -2.4% | +27.9% at 4,000 | 35,004 | 11.5 to 15.7 |
-| `min_unknowns_inside` | meshes | 2 | none to 300 a side, 90,001 unknowns | | +5.8% at 300 | | 15.8 to 10.6 |
-| `min_unknowns_inside` | meshes | 4 | none to 300 a side, 90,001 unknowns | | +0.1% at 300 | | 15.8 to 10.6 |
-| `min_unknowns_inside` | meshes | 8 | none to 300 a side, 90,001 unknowns | | +3.2% at 300 | | 15.8 to 10.6 |
-| `min_unknowns_inside` | meshes | 12 | none to 300 a side, 90,001 unknowns | | +4.4% at 300 | | 15.8 to 10.6 |
-| `max_unknowns_per_interior` | chains of inverters | 2 | none to 5,000 inverters, 35,004 unknowns | | +3.8% at 5,000 | | 15.3 to 10.4 |
-| `max_unknowns_per_interior` | chains of inverters | 4 | none to 5,000 inverters, 35,004 unknowns | | +6.2% at 5,000 | | 15.3 to 10.4 |
-| `max_unknowns_per_interior` | chains of inverters | 8 | none to 5,000 inverters, 35,004 unknowns | | +9.5% at 5,000 | | 15.3 to 10.4 |
-| `max_unknowns_per_interior` | chains of inverters | 12 | none to 5,000 inverters, 35,004 unknowns | | +45.4% at 5,000 | | 15.3 to 10.4 |
-| `max_unknowns_per_interior` | meshes | 2 | 70 a side, 4,901 unknowns | -17.0% | +14.8% at 50 | 2,451 | 13.8 to 13.3 |
-| `max_unknowns_per_interior` | meshes | 4 | 70 a side, 4,901 unknowns | -20.9% | +1.0% at 50 | 1,226 | 13.8 to 13.3 |
-| `max_unknowns_per_interior` | meshes | 8 | 70 a side, 4,901 unknowns | -16.7% | +22.7% at 50 | 613 | 13.8 to 13.3 |
-| `max_unknowns_per_interior` | meshes | 12 | 100 a side, 10,001 unknowns | -38.7% | +3.2% at 70 | 834 | 17.3 to 15.1 |
-| `min_solves_per_task` | `bjt_amp`'s response | 2 | 40 a decade, 360 solves | -11.4% | +3.2% at 30 | 180 | 15.4 to 12.9 |
-| `min_solves_per_task` | `bjt_amp`'s response | 4 | 30 a decade, 270 solves | -1.5% | +3.1% at 20 | 67 | 16.0 to 15.4 |
-| `min_solves_per_task` | `bjt_amp`'s response | 8 | 40 a decade, 360 solves | -7.6% | +5.5% at 30 | 45 | 15.4 to 12.9 |
-| `min_solves_per_task` | `bjt_amp`'s response | 12 | 40 a decade, 360 solves | -3.7% | +16.9% at 30 | 30 | 15.4 to 12.9 |
+| `min_solves_per_task` | `bjt_amp`'s response | 2 | 1,111 a decade, 9,999 solves | -3.3% | +0.9% at 500 | 4,999 | 3.42 to 3.44 |
+| `min_solves_per_task` | `bjt_amp`'s response | 4 | 5 a decade, 45 solves | -0.4% | +1.8% at 2 | 11 | 6.81 to 5.17 |
+| `min_solves_per_task` | `bjt_amp`'s response | 8 | 10 a decade, 90 solves | -4.4% | +2.0% at 5 | 11 | 5.17 to 7.78 |
+| `min_solves_per_task` | `bjt_amp`'s response | 64 | 30 a decade, 270 solves | -7.4% | +1.8% at 20 | 4 | 5.81 to 4.64 |
+| `min_instances_per_task` | chains of inverters | 2 | none to 1,000 inverters, 2,002 devices | | +14.2% at 1,000 | | 10.50 to 18.96 |
+| `min_instances_per_task` | chains of inverters | 4 | 500 inverters, 1,002 devices | -2.9% | +4.2% at 300 | 250 | 15.28 to 13.94 |
+| `min_instances_per_task` | chains of inverters | 8 | 500 inverters, 1,002 devices | -10.3% | +0.4% at 300 | 125 | 15.28 to 13.94 |
+| `min_instances_per_task` | chains of inverters | 64 | none to 1,000 inverters, 2,002 devices | | +20.7% at 1,000 | | 10.50 to 18.96 |
+| `max_unknowns_per_interior` | meshes | 2 | 100 a side, 10,001 unknowns | -21.3% | +0.5% at 70 | 5,001 | 14.67 to 15.36 |
+| `max_unknowns_per_interior` | meshes | 4 | 100 a side, 10,001 unknowns | -29.3% | +0.7% at 70 | 2,501 | 14.67 to 15.36 |
+| `max_unknowns_per_interior` | meshes | 8 | 100 a side, 10,001 unknowns | -41.2% | +2.7% at 70 | 1,251 | 14.67 to 15.36 |
+| `max_unknowns_per_interior` | meshes | 64 | 100 a side, 10,001 unknowns | -20.5% | +46.3% at 70 | 157 | 14.67 to 15.36 |
+| `max_unknowns_per_interior` | chains of inverters | 2 | none to 500 inverters, 3,504 unknowns | | +0.2% at 500 | | 3.62 to 1.39 |
+| `max_unknowns_per_interior` | chains of inverters | 4 | none to 500 inverters, 3,504 unknowns | | +0.1% at 500 | | 3.62 to 1.39 |
+| `max_unknowns_per_interior` | chains of inverters | 8 | none to 500 inverters, 3,504 unknowns | | +0.0% at 500 | | 3.62 to 1.39 |
+| `max_unknowns_per_interior` | chains of inverters | 64 | 500 inverters, 3,504 unknowns | -0.0% | +0.3% at 100 | 55 | 3.62 to 1.39 |
+| `min_unknowns_per_task` | chains of inverters | 2 | none to 2,000 inverters, 14,004 unknowns | | +8.0% at 2,000 | | 19.37 to 11.53 |
+| `min_unknowns_per_task` | chains of inverters | 4 | none to 2,000 inverters, 14,004 unknowns | | +9.9% at 2,000 | | 19.37 to 11.53 |
+| `min_unknowns_per_task` | chains of inverters | 8 | none to 2,000 inverters, 14,004 unknowns | | +8.5% at 2,000 | | 19.37 to 11.53 |
+| `min_unknowns_per_task` | chains of inverters | 64 | none to 2,000 inverters, 14,004 unknowns | | +39.9% at 2,000 | | 19.37 to 11.53 |
+| `min_unknowns_per_task` | meshes | 2 | 300 a side, 90,001 unknowns | -1.1% | +4.8% at 100 | 45,000 | 5.01 to 2.03 |
+| `min_unknowns_per_task` | meshes | 4 | 300 a side, 90,001 unknowns | -1.2% | +7.4% at 100 | 22,500 | 5.01 to 2.03 |
+| `min_unknowns_per_task` | meshes | 8 | 300 a side, 90,001 unknowns | -1.2% | +3.6% at 100 | 11,250 | 5.01 to 2.03 |
+| `min_unknowns_per_task` | meshes | 64 | 300 a side, 90,001 unknowns | -0.7% | +19.2% at 100 | 1,406 | 5.01 to 2.03 |
 
-Interleaving puts both sides of a comparison under the same load, but the load changed from round to round, by a few percent of a run, so a break-even whose gain is a few percent, such as the meshes' tasks of instances, is uncertain by a size of the sweep: the meshes of 50 a side gained on 2 and 4 threads, where those of 70 lost on all four.
-A chain spends 12% of its run factoring, by the profile above, and a dissection, which factors more slowly on one thread, spread that too little to pay; a mesh spends most of its run factoring, in few Newton iterations, so that spreading its work on each unknown cost more than it saved.
-Each threshold was measured alone, the others unset, so a dissection of a chain whose devices spread too, which leaves the factorization a larger share of the run, may pay sooner.
+A threshold left unset takes its break-even measured on the most threads a run may use or fewer, and spreads none of its work where no size of a script paid, as `jolty.plan.BREAK_EVENS` holds them; `max_unknowns_per_interior`, which orders the factorization and so its results' last digits, takes its break-even on the threads likewise, and none on one: `min_solves_per_task` 4,999, 11, 11 and 4 on 2, 4, 8 and 64 threads, `min_instances_per_task` none, 250, 125 and none, `min_unknowns_per_task` none on every number, and `max_unknowns_per_interior` 5,001, 2,501, 1,251 and 157.
+Interiors of 5,001, the largest, the mesh of 100 a side's break-even on 2 threads, made its run 51% slower on 64 threads of `cedar` than serially, so the interiors too depend on the threads, and a run on another number finds other last digits wherever it dissects a block.
+A mesh's devices are linear, evaluated once a run, for their entries: in a first sweep, whose rounds kept one order, which favoured the spread runs, spreading their rows lost at 100 a side on every number of threads, by 1.0% to 12.5%, and gained at 300 a side by 4.0% at most, so a linear device counts no instance toward `min_instances_per_task`, a mesh's evaluation stays on its run's thread, and the sweep measures chains alone.
+A chain's devices spread paid on 4 and 8 threads, in tasks of 250 and 125 MOSFETs, but on no chain up to 1,000 inverters on 2 threads, where a task took each group of MOSFETs whole, or on 64 in tasks of 31.
+On 2 threads the amplifier's frequencies paid from 9,999 alone: two tasks of 2,250 lost 0.9% at 500 a decade, where tasks of 900 had gained 22.6% at 200, as the solves at closer frequencies, which keep their pivots, cost less each.
+A chain's block is never dissected, so its runs with `max_unknowns_per_interior` set did the serial run's work, and lay within 0.3% of it on every number of threads, the 0.0% of 500 inverters on 64 threads counting as a gain; a mesh's block is dissected from 100 a side at every size of interior swept, and at 70 a side only into interiors of 313 or fewer, where it lost on 64 threads; dissected into interiors of a 64th of its unknowns, the mesh of 300 a side ran 5.2 times as fast on 64 threads as serially.
+The work on each unknown spread lost on every chain up to 2,000 inverters, by 8.0% to 39.9% at 2,000, and gained on the mesh of 300 a side alone, by 0.7% to 1.2%, so it spreads by default on no number of threads, as a chain would lose where a mesh barely gains.
+
+### The suite at the defaults
+
+Each fixture of the suite but `monte_carlo`, whose batches run each run on one thread, ran serially, on one thread with no block dissected, and at the defaults, alternately, round after round, by `bench.interleaved`, on 16 November 2026: on `cedar` on its 64 threads at 07:24 UTC, the load average at 1.2 to 2.2, and on this baseline's Apple M2 Max on 4 of its 12 cores at 07:24 UTC, while other programs kept the load average at 4 to 7; each time is the median of its rounds.
+
+| Fixture | `cedar`, serially | `cedar`, defaults | Change | M2 Max, serially | M2 Max, defaults | Change |
+| --- | --- | --- | --- | --- | --- | --- |
+| `bjt_amp` | 1.594 ms | 1.59 ms | -0.2% | 1.025 ms | 1.067 ms | +4.1% |
+| `ac_wide` | 21.7 ms | 9.969 ms | -54.1% | 14 ms | 7.349 ms | -47.5% |
+| `buck` | 1.201 s | 1.199 s | -0.2% | 720.8 ms | 718.1 ms | -0.4% |
+| `inverter_chain_500` | 8.362 s | 8.358 s | -0.0% | 5.331 s | 3.217 s | -39.7% |
+| `rc_mesh_100` | 1.627 s | 1.274 s | -21.7% | 1.122 s | 482.6 ms | -57.0% |
+
+Every fixture found the serial run's bits but `rc_mesh_100`, which the defaults dissect, its 109 points the same and its voltages within 2.1e-15 V of the serial run's.
+On 64 threads a chain's devices and its work on each unknown stay on one thread, their break-evens none there, and `bjt_amp`'s 71 frequencies fill no task of 4 for each of 64 threads; on 4, they fill tasks of 11, which lost 4.1% of the amplifier's run on the M2 Max, where they gained on `cedar`'s 4 threads from 45 solves.
 
 ### Scaling
 
-`scripts/bench --scale` runs each large fixture once serially, its plan setting no threshold, and then once with every threshold set at its break-even, on 1, 2, 4 and 8 threads and every core.
-The spread runs of `inverter_chain_50000` took 17 minutes here, so it runs them only with `--largest`; `--threads` names other numbers of threads.
+`scripts/bench --scale` runs each large fixture once serially, on one thread with no block of its matrix dissected, and then once with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core.
+The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Max, so it runs them only with `--largest`, and else once at the defaults; `--threads` names other numbers of threads.
 It prints each run's time, its speed-up against the serial run and against the spread run on one thread, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
-The spread runs must find the same bits on every number of threads, and those of the serial run unless they dissect the factorization, which orders it otherwise, or it stops.
+The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.
 The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, and the fingerprints.
-
-The thresholds are the break-evens above and no others: each at the largest of its break-evens on 2, 4, 8 and 12 threads on the circuits of the fixture's script, so that it pays wherever it spreads on any of them, and left unset where none paid.
-`min_solves_per_task` takes the amplifier's, though no large fixture solves at frequencies.
-
-| Fixtures | `min_instances_per_task` | `min_unknowns_inside` | `max_unknowns_per_interior` | `min_solves_per_task` |
-| --- | --- | --- | --- | --- |
-| `inverter_chain_5000`, `_50000` | 167 | 35,004 | unset | 180 |
-| `rc_mesh_300` | 14,951 | unset | 2,451 | 180 |
-
-Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300` on 15 November 2026 at 13:11, on the same machine and engine as the break-evens and under the same load, and `inverter_chain_50000` from 13:16 to 13:39 by the same runs in four processes, the serial run, the spread one on one thread, those on 2 and 4 and those on 8 and 12, so that none took more than ten minutes:
-
-| Fixture | Threads | Time | Against serial | Against 1 thread | Load |
-| --- | --- | --- | --- | --- | --- |
-| `inverter_chain_5000` | serially | 29.22 s |  |  | 14.8 |
-| `inverter_chain_5000` | 1 | 28.72 s | 1.02 | 1.00 | 13.4 |
-| `inverter_chain_5000` | 2 | 23.2 s | 1.26 | 1.24 | 11.4 |
-| `inverter_chain_5000` | 4 | 16.5 s | 1.77 | 1.74 | 12.1 |
-| `inverter_chain_5000` | 8 | 15.9 s | 1.84 | 1.81 | 10.9 |
-| `inverter_chain_5000` | 12 | 21.77 s | 1.34 | 1.32 | 10.1 |
-| `rc_mesh_300` | serially | 19.66 s |  |  | 9.8 |
-| `rc_mesh_300` | 1 | 9.716 s | 2.02 | 1.00 | 9.2 |
-| `rc_mesh_300` | 2 | 5.622 s | 3.50 | 1.73 | 11.6 |
-| `rc_mesh_300` | 4 | 4.27 s | 4.60 | 2.28 | 11.3 |
-| `rc_mesh_300` | 8 | 4.535 s | 4.33 | 2.14 | 11.6 |
-| `rc_mesh_300` | 12 | 6.293 s | 3.12 | 1.54 | 12.4 |
-| `inverter_chain_50000` | serially | 300.85 s | | | 9.4 |
-| `inverter_chain_50000` | 1 | 300.75 s | 1.00 | 1.00 | 4.3 |
-| `inverter_chain_50000` | 2 | 236.64 s | 1.27 | 1.27 | 6.3 |
-| `inverter_chain_50000` | 4 | 178.77 s | 1.68 | 1.68 | 9.1 |
-| `inverter_chain_50000` | 8 | 152.51 s | 1.97 | 1.97 | 11.9 |
-| `inverter_chain_50000` | 12 | 169.58 s | 1.77 | 1.77 | 11.3 |
-
-The chains' results were `6bd38191db1d7442` and `ebcc554ba5c4164b` serially and spread on every number of threads, and the mesh's `eb34cf8cbfa7c065` serially and `2a41b88522b56dbe` dissected on every number.
-On one thread a chain spreads nothing, every threshold needing two threads, while the mesh's dissection alone halves its run: its dissected factorization is faster than the minimum degree's on one thread too.
-A chain's factorization and solves stay on one thread, no dissection having paid on a chain alone, and the chain of 50,000 inverters ran at most 1.97 times as fast, on 8 threads.
-On 12 threads both ran slower than on 8, their threads sharing the cores with the other programs, which kept the load average at 10 to 15, so a quiet machine's times are the ones to judge the scaling by.

@@ -47,7 +47,7 @@ shard-30-50.npz and shard-40-45.npz both hold samples 40 up to 45
 A shard's digest is the SHA-256 of what its numbers depend on: each condition's circuit in the circuit format, its temperature and process corner; the analyses, the options and the fidelity's models; the samples and their seed; the requirements and the yield target; the unknowns traced; jolty's version and its build, the engine's library, its Python modules and the interpreter; and the platform, the one Python was built for and its C library's version.
 Shards of other digests do not merge, as their numbers could differ: the bits are the same on one build and one platform, and only agree within tolerance across platforms, whose math libraries round apart.
 So every machine runs the same build of jolty, such as the same wheel, on the same platform, and the same scripts, from the same directory, since a circuit names the script lines that placed its instances.
-The parallelism of the options changes no result but `max_unknowns_per_interior`'s, which reorders the factorization's arithmetic and so the last digits, and the digest leaves the rest out, as it does the threads.
+The parallelism of the options changes no result but `max_unknowns_per_interior`'s, which reorders the factorization's arithmetic and so the last digits, as its default does on another number of threads for a circuit large enough to dissect, though not in a batch with a run for every thread, each run on one; the digest leaves the rest out, as it does the threads.
 A measure a script writes is hashed by its words, not its code.
 
 ## Launching

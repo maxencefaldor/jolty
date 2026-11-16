@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::{
     Ac, AcResult, DcSweep, DcSweepResult, Noise, NoiseResult, OperatingPointResult,
     OperatingPoints, Options, PoleZero, PoleZeroResult, Sensitivity, SensitivityResult,
-    SimulationError, Simulator, Stability, StabilityResult, TransferFunction,
+    SimulationError, Simulator, Sizes, Stability, StabilityResult, TransferFunction,
     TransferFunctionResult, Transient, TransientResult,
 };
 
@@ -64,6 +64,46 @@ pub enum AnalysisResult {
 }
 
 impl Simulator {
+    /// Whether a run of `analysis` with `options` in a pool of `threads` threads may spread
+    /// any of its work, as [`crate::Parallelism::fills_threads`] says of what it spreads:
+    /// the circuit's device instances, its unknowns, whether the ordering the options ask
+    /// for dissects a block, which it makes here if no run has, and the frequencies of a
+    /// small-signal analysis, or a sensitivity's right-hand sides, which it counts only as
+    /// it runs, so that a sensitivity may always spread. A run that may not spreads
+    /// nothing on any number of threads, so it may run on its caller's thread alone,
+    /// outside any pool; one whose ordering does not fit in memory fails as it prepares.
+    #[must_use]
+    pub fn spreads(&self, analysis: &Analysis, options: &Options, threads: usize) -> bool {
+        let solves = match analysis {
+            Analysis::Ac(ac) => ac.frequencies.len(),
+            Analysis::Noise(noise) => noise.frequencies.len(),
+            Analysis::Stability(stability) => stability.frequencies.len(),
+            Analysis::Sensitivity(_) => usize::MAX,
+            Analysis::OperatingPoint
+            | Analysis::DcSweep(_)
+            | Analysis::Transient(_)
+            | Analysis::PoleZero(_)
+            | Analysis::OperatingPoints(_)
+            | Analysis::TransferFunction(_) => 0,
+        };
+        let elaborated = &self.elaborated;
+        let parallelism = &options.parallelism;
+        let usable = parallelism
+            .max_threads
+            .map_or(threads, |most| most.min(threads));
+        let dissected = parallelism.spreads()
+            && elaborated
+                .ordering(parallelism.dissecting_on(usable))
+                .is_ok_and(|ordering| ordering.is_dissected());
+        let sizes = Sizes {
+            instances: elaborated.groups.evaluated(),
+            unknowns: elaborated.unknowns().len(),
+            dissected,
+            solves,
+        };
+        parallelism.fills_threads(sizes, threads)
+    }
+
     /// Runs `analysis` with `options`.
     ///
     /// # Errors

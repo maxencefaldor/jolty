@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use jolty_models::Nature;
+use jolty_models::{Nature, Tasks};
+use jolty_numerics::{Dissecting, Ordering, reduce};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -9,6 +10,60 @@ use crate::SimulationError;
 
 /// The numbers of eight bytes a gibibyte holds.
 pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
+
+/// The break-evens of the thresholds of [`Parallelism`] that spread a kind of work in
+/// tasks: on each number of [`BreakEvens::threads`], the least size of a task from which
+/// spreading that work over every thread made a run faster than a serial one, on circuits
+/// of the speed suite's fixtures' scripts at several sizes; none where no size measured
+/// did. Measured by `scripts/bench --break-even` on an AMD Ryzen Threadripper 3970X of 32
+/// cores and 64 threads, as the guide states each measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BreakEvens {
+    /// The numbers of threads they were measured on, in increasing order.
+    pub threads: [usize; 4],
+    /// [`Parallelism::min_solves_per_task`]'s, on the amplifier's response at 1 to 1,111
+    /// frequencies a decade.
+    pub min_solves_per_task: [Option<usize>; 4],
+    /// [`Parallelism::min_instances_per_task`]'s, on chains of 1 to 1,000 inverters.
+    pub min_instances_per_task: [Option<usize>; 4],
+    /// [`Parallelism::min_unknowns_per_task`]'s, on chains of 100 to 2,000 inverters and
+    /// meshes of 10 to 300 nodes a side.
+    pub min_unknowns_per_task: [Option<usize>; 4],
+    /// [`Parallelism::max_unknowns_per_interior`]'s, the most unknowns of an interior from
+    /// which dissecting a block into a thread's interior or more made a run faster, on
+    /// meshes of 10 to 300 nodes a side.
+    pub max_unknowns_per_interior: [Option<usize>; 4],
+}
+
+impl BreakEvens {
+    /// The break-even, of those `measured` on each of [`BreakEvens::threads`], that a run
+    /// on `threads` threads takes: the one measured on the most threads no more than
+    /// `threads`; none on one thread, which spreads nothing.
+    #[must_use]
+    pub fn on(&self, measured: [Option<usize>; 4], threads: usize) -> Option<usize> {
+        self.threads
+            .iter()
+            .zip(measured)
+            .rev()
+            .find(|&(&each, _)| each <= threads)
+            .and_then(|(_, least)| least)
+    }
+
+    /// The least of those `measured`, which no run's break-even is below.
+    fn least(measured: [Option<usize>; 4]) -> Option<usize> {
+        measured.into_iter().flatten().min()
+    }
+}
+
+/// The break-evens each threshold of [`Parallelism`] left unset takes, on 2, 4, 8 and 64
+/// threads.
+pub const BREAK_EVENS: BreakEvens = BreakEvens {
+    threads: [2, 4, 8, 64],
+    min_solves_per_task: [Some(4_999), Some(11), Some(11), Some(4)],
+    min_instances_per_task: [None, Some(250), Some(125), None],
+    min_unknowns_per_task: [None, None, None, None],
+    max_unknowns_per_interior: [Some(5_001), Some(2_501), Some(1_251), Some(157)],
+};
 
 /// What an analysis records of the circuit's devices beside the unknowns: the current into
 /// each terminal and the charge it holds, and each device's derivatives and variables.
@@ -50,65 +105,153 @@ impl Record {
 /// the factorization of its matrix's large blocks. Every result is the same bits however
 /// the work is split.
 /// No setting but [`Parallelism::max_unknowns_per_interior`] changes any result: that one
-/// orders the factorization's operations otherwise, so results agree with those of the
-/// factorization on one thread to within its rounding rather than bit for bit.
+/// orders the factorization's operations otherwise, so results agree with those of another
+/// to within its rounding rather than bit for bit, as they do on another number of threads
+/// where its default dissects a block.
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
-/// run that spreads its work uses at most its `threads`, on a pool of exactly that many
-/// threads of its own when they are fewer than its caller's pool has, and a
+/// run that spreads its work uses at most its `max_threads`, on a pool of exactly that
+/// many threads of its own when they are fewer than its caller's pool has, and a
 /// [batch](crate::batch::Batch) runs each of its runs on one thread whenever it has a run
 /// for every thread of its pool. Spreading work costs the time of waking threads, which a
-/// small run's work does not repay, so each kind of work spreads only once its threshold
-/// is set: none is by default, and a run does all its work on its own thread.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+/// small run's work does not repay, so each kind of work spreads only in tasks of at least
+/// its threshold, its least size per task, once it fills such a task for every thread the
+/// run may use, as the break-evens were measured: one task, on the run's own thread, for
+/// less. Each threshold defaults to its break-even on the threads
+/// the run may use, [`BREAK_EVENS`], the least size of a task from which spreading made a
+/// run faster, measured on an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads;
+/// the guide states each measurement.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {
     /// The most threads a run spreads its own work over; none for every thread of the pool
     /// it runs in, and 1 to run it on one thread alone. A run that may spread its work over
     /// two or more, fewer than the pool it is called in has, runs on a pool of exactly that
     /// many threads of its own, which every task it spreads runs on.
-    pub threads: Option<usize>,
+    pub max_threads: Option<usize>,
     /// The fewest frequencies, right-hand sides or parameters' derivatives a task takes
-    /// when a run spreads them; none, by default, to take them all on the run's thread.
+    /// when a run spreads them, at most one task a thread; none, by default, for its
+    /// break-even on the threads the run may use, [`BREAK_EVENS`].
     pub min_solves_per_task: Option<usize>,
-    /// The device instances a task evaluates when a run evaluates its devices in
-    /// parallel; none, by default, to evaluate them on the run's thread.
+    /// The fewest device instances of a group a task evaluates when a run spreads its
+    /// devices' evaluation, at most one task of a group a thread, a linear group's
+    /// instances, evaluated once a run, for their entries, taking their residuals and
+    /// charges from them in one task; none, by default, for its break-even on the threads
+    /// the run may use, [`BREAK_EVENS`].
     pub min_instances_per_task: Option<usize>,
-    /// The fewest unknowns a circuit has for its Newton iteration's and its transient step
-    /// control's work on each unknown and each stored entry of its matrix to spread over the
-    /// threads a run may use; none, by default, to keep that work on the run's thread.
-    pub min_unknowns_inside: Option<usize>,
-    /// The most unknowns of an interior when a run factors its matrix in parallel: each
-    /// block of its block triangular form with more is ordered by nested dissection into
-    /// interiors of at most as many, unless one cannot split, and the separators between
-    /// them, whose factorizations and solves spread over the threads a run may use; none,
-    /// by default, to factor every block on the run's thread, ordered by the minimum
-    /// degree. It changes the order of the factorization's operations, so the last digits
-    /// of results, which it gives the same bits on any number of threads.
+    /// The fewest unknowns, or stored entries of the matrix, a task takes when a run
+    /// spreads its Newton iteration's and its transient step control's work on each, in
+    /// whole chunks of [`jolty_numerics::reduce::CHUNK`], which the threads take as they
+    /// free; none, by default, for its break-even on the threads the run may use,
+    /// [`BREAK_EVENS`].
+    pub min_unknowns_per_task: Option<usize>,
+    /// The most unknowns of an interior when a run's ordering dissects a block of its
+    /// matrix's block triangular form: each block of more is ordered by nested dissection
+    /// into interiors of at most as many, unless one cannot split, and the separators
+    /// between them, whose factorizations and solves spread over the threads a run may
+    /// use, wherever that costs the block's elimination fewer multiply-adds than its
+    /// minimum degree ordering, as [`Dissecting::Cheaper`] counts them, and is otherwise
+    /// ordered by the minimum degree, on the run's thread. It changes the order of the
+    /// factorization's operations, so the last digits of results, which it gives the same
+    /// bits on any number of threads; none, by default, for its break-even on the threads
+    /// the run may use, [`BREAK_EVENS`], and the minimum degree's ordering on one, so that
+    /// results agree across numbers of threads to within the factorization's rounding.
     pub max_unknowns_per_interior: Option<usize>,
 }
 
+impl Default for Parallelism {
+    /// Every thread of the pool, and each threshold at its break-even.
+    fn default() -> Self {
+        Self {
+            max_threads: None,
+            min_solves_per_task: None,
+            min_instances_per_task: None,
+            min_unknowns_per_task: None,
+            max_unknowns_per_interior: None,
+        }
+    }
+}
+
 impl Parallelism {
-    /// How many tasks a run splits `items` independent solves into: one per thread it may
-    /// use, each taking at least [`Parallelism::min_solves_per_task`] of them, and one when
-    /// that is unset or there are too few.
+    /// How many tasks a run splits `items` independent solves into: one for each thread it
+    /// may use, each of at least [`Parallelism::min_solves_per_task`] of them, when they
+    /// fill a task for every one, and else one.
     #[must_use]
     pub fn tasks(&self, items: usize) -> usize {
-        let Some(least) = self.min_solves_per_task else {
-            return 1;
-        };
-        self.usable().min(items / least.max(1)).max(1)
+        self.split(Kind::Solves, items)
+            .map_or(1, |tasks| tasks.count(items))
     }
 
-    /// The threads a run may spread its work over: its [`Parallelism::threads`], but no
+    /// The least items a task of `kind` takes on `threads` threads: its threshold, if set,
+    /// and else its break-even there; none, never to spread it.
+    fn least(&self, kind: Kind, threads: usize) -> Option<usize> {
+        let (set, measured) = self.threshold(kind);
+        set.or_else(|| BREAK_EVENS.on(measured, threads))
+    }
+
+    /// The threshold of `kind`, if set, and its break-evens.
+    const fn threshold(&self, kind: Kind) -> (Option<usize>, [Option<usize>; 4]) {
+        match kind {
+            Kind::Solves => (self.min_solves_per_task, BREAK_EVENS.min_solves_per_task),
+            Kind::Instances => (
+                self.min_instances_per_task,
+                BREAK_EVENS.min_instances_per_task,
+            ),
+            Kind::Unknowns => (
+                self.min_unknowns_per_task,
+                BREAK_EVENS.min_unknowns_per_task,
+            ),
+        }
+    }
+
+    /// Tasks of at least `least` items, one for each of `threads`, two or more, when
+    /// `items` fill a task for every one; none else.
+    fn filled(least: usize, items: usize, threads: usize) -> Option<Tasks> {
+        let tasks = tasks_of(least, threads);
+        (threads >= 2 && items / tasks.least >= threads).then_some(tasks)
+    }
+
+    /// Tasks of at least the least items of `kind`, one for each thread a run may use,
+    /// when `items` fill a task for every one of them; none else. Items that do not fill
+    /// two however many threads there are never ask for the pool, which would start
+    /// rayon's global one when a run is called in none.
+    fn split(&self, kind: Kind, items: usize) -> Option<Tasks> {
+        let (set, measured) = self.threshold(kind);
+        let fewest = set.or_else(|| BreakEvens::least(measured))?;
+        Self::filled(fewest, items, 2)?;
+        let threads = self.usable();
+        Self::filled(self.least(kind, threads)?, items, threads)
+    }
+
+    /// Whether some kind of work of a run of `sizes` fills a task of its threshold for
+    /// every one of `threads` threads, those of the pool it would run in, or as many as
+    /// its [`Parallelism::max_threads`] if fewer, so that the run spreads it: its instances
+    /// or its unknowns, its ordering dissects a block, or its solves fill them.
+    #[must_use]
+    pub fn fills_threads(&self, sizes: Sizes, threads: usize) -> bool {
+        let threads = self.max_threads.map_or(threads, |most| most.min(threads));
+        let fills = |kind, items| {
+            self.least(kind, threads)
+                .and_then(|least| Self::filled(least, items, threads))
+                .is_some()
+        };
+        self.spreads()
+            && threads >= 2
+            && (fills(Kind::Instances, sizes.instances)
+                || fills(Kind::Unknowns, sizes.unknowns)
+                || sizes.dissected
+                || fills(Kind::Solves, sizes.solves))
+    }
+
+    /// The threads a run may spread its work over: its [`Parallelism::max_threads`], but no
     /// more than the rayon pool it runs in has.
     fn usable(&self) -> usize {
         let threads = rayon::current_num_threads();
-        self.threads.map_or(threads, |most| most.min(threads))
+        self.max_threads.map_or(threads, |most| most.min(threads))
     }
 
-    /// Runs `run`, a run's work, on at most its [`Parallelism::threads`]. When the run may
-    /// spread its work, and its threads are two or more but fewer than the pool it is
+    /// Runs `run`, a run's work, on at most its [`Parallelism::max_threads`]. When the run
+    /// may spread its work, and its threads are two or more but fewer than the pool it is
     /// called in has, it runs on a pool of exactly that many threads, made for it: rayon
     /// runs every task that a task of a pool spawns on that pool, so every task the run
     /// spreads runs on one of them. Else it runs where it is called, and a run that spreads
@@ -124,7 +267,7 @@ impl Parallelism {
     ) -> Result<T, SimulationError> {
         // A run that spreads nothing never asks for the pool it is called in, which would
         // start rayon's global one when it is called in none.
-        let Some(most) = self.threads.filter(|&most| self.spreads() && most >= 2) else {
+        let Some(most) = self.max_threads.filter(|&most| most >= 2) else {
             return run();
         };
         if most >= rayon::current_num_threads() {
@@ -141,54 +284,74 @@ impl Parallelism {
     }
 
     /// Whether a run may spread any of its work across threads, and so must run inside
-    /// its caller's pool: once a threshold of [`Parallelism`] lets one kind of work spread.
-    /// A run that may not touches no thread but its own.
+    /// its caller's pool: unless its [`Parallelism::max_threads`] is one. A run that may
+    /// not touches no thread but its own.
     #[must_use]
     pub const fn spreads(&self) -> bool {
-        self.min_solves_per_task.is_some()
-            || self.min_instances_per_task.is_some()
-            || self.min_unknowns_inside.is_some()
-            || self.max_unknowns_per_interior.is_some()
+        !matches!(self.max_threads, Some(..2))
     }
 
-    /// How a run factors its matrix: the most unknowns of an interior its ordering
-    /// dissects its large blocks into, [`Parallelism::max_unknowns_per_interior`], and the
-    /// threads it may use for them, all it may use; none and one when that is unset.
+    /// How a run whose matrix's largest block holds `largest_block` unknowns orders it:
+    /// by [`Dissecting::Cheaper`] with [`Parallelism::max_unknowns_per_interior`], or its
+    /// break-even on the threads the run may use; none, for the minimum degree's ordering,
+    /// where it has no break-even or the block holds no more. A block no break-even could
+    /// dissect never asks for the pool, which would start rayon's global one when a run
+    /// is called in none.
     #[must_use]
-    pub(crate) fn factorization(&self) -> (Option<usize>, usize) {
-        match self.max_unknowns_per_interior {
-            Some(interiors) => (Some(interiors), self.usable()),
-            None => (None, 1),
+    pub(crate) fn dissecting(&self, largest_block: usize) -> Option<Dissecting> {
+        let measured = BREAK_EVENS.max_unknowns_per_interior;
+        let most = self
+            .max_unknowns_per_interior
+            .or_else(|| measured.into_iter().flatten().min())?;
+        if largest_block <= most {
+            return None;
+        }
+        self.dissecting_on(self.usable())
+    }
+
+    /// How a run on `threads` threads orders its matrix's blocks, as
+    /// [`Parallelism::dissecting`] says.
+    #[must_use]
+    pub(crate) fn dissecting_on(&self, threads: usize) -> Option<Dissecting> {
+        self.max_unknowns_per_interior
+            .or_else(|| BREAK_EVENS.on(BREAK_EVENS.max_unknowns_per_interior, threads))
+            .map(Dissecting::Cheaper)
+    }
+
+    /// The threads a run's factorization of `ordering` spreads over: all it may use, for
+    /// one that dissects a block, and one for a run that spreads nothing.
+    #[must_use]
+    pub(crate) fn factorization(&self, ordering: &Ordering) -> usize {
+        if self.spreads() && ordering.is_dissected() {
+            self.usable()
+        } else {
+            1
         }
     }
 
     /// How a run's devices split their evaluation among threads: every group at once, each
-    /// in tasks of [`Parallelism::min_instances_per_task`] of its instances, then the
-    /// values of the circuit's equations gathered in parts where their contributions
-    /// balance, as many as the threads ask for as they take them; none, to evaluate them on
-    /// the run's thread, when that is unset, the circuit's `instances` fill no more than one
-    /// task, or the run may use one thread alone. The bits found are the same either way.
+    /// that is not linear in tasks of at least [`Parallelism::min_instances_per_task`] of
+    /// its instances, as [`Tasks::count`] says, then the values of the circuit's equations gathered in parts
+    /// where their contributions balance, as many as the threads ask for as they take
+    /// them; none, to evaluate them on the run's thread, when the `instances` it evaluates,
+    /// those of its groups that are not linear, fill no task for every thread it may use,
+    /// or it may use one alone. The bits found are the same either way.
     #[must_use]
-    pub fn evaluation(&self, instances: usize) -> Option<jolty_models::Tasks> {
-        let per_task = NonZeroUsize::new(self.min_instances_per_task?)?;
-        if self.usable() < 2 || instances <= per_task.get() {
-            return None;
-        }
-        Some(jolty_models::Tasks {
-            instances: per_task,
-        })
+    pub fn evaluation(&self, instances: usize) -> Option<Tasks> {
+        self.split(Kind::Instances, instances)
     }
 
     /// Whether a run spreads its work on each of the circuit's `unknowns` unknowns and on
     /// each stored entry of its matrix among threads, in Newton iteration and in a
-    /// transient's step control, as [`Inside`] does: once the circuit has at least
-    /// [`Parallelism::min_unknowns_inside`] unknowns and the run may use two threads or
-    /// more; none, to do it all on the run's thread. The bits found are the same either
+    /// transient's step control, as [`Inside`] does: once its unknowns fill a task of at
+    /// least [`Parallelism::min_unknowns_per_task`] for every thread the run may use, two
+    /// or more; none, to do it all on the run's thread. The bits found are the same either
     /// way.
     #[must_use]
     pub(crate) fn inside(&self, unknowns: usize) -> Option<Inside> {
-        let least = self.min_unknowns_inside?;
-        (self.usable() >= 2 && unknowns >= least.max(1)).then_some(Inside)
+        self.split(Kind::Unknowns, unknowns).map(|tasks| Inside {
+            chunks: tasks.least.get().div_ceil(reduce::CHUNK),
+        })
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
@@ -221,12 +384,48 @@ impl Parallelism {
     }
 }
 
+/// A kind of work a run spreads in tasks, each with a threshold of [`Parallelism`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Frequencies, right-hand sides or parameters' derivatives.
+    Solves,
+    /// Device instances.
+    Instances,
+    /// Unknowns and stored entries.
+    Unknowns,
+}
+
+/// Tasks of at least `least` items, one a thread of `threads`, one at least of each.
+fn tasks_of(least: usize, threads: usize) -> Tasks {
+    Tasks {
+        least: NonZeroUsize::new(least).unwrap_or(NonZeroUsize::MIN),
+        threads: NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN),
+    }
+}
+
+/// What a run's work counts, which [`Parallelism::fills_threads`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sizes {
+    /// The device instances it evaluates, those of the groups that are not linear.
+    pub instances: usize,
+    /// The circuit's unknowns.
+    pub unknowns: usize,
+    /// Whether its ordering dissects a block of its matrix's block triangular form.
+    pub dissected: bool,
+    /// The independent solves of its analysis: its frequencies, or its right-hand sides.
+    pub solves: usize,
+}
+
 /// That a run spreads its work on each unknown and each stored entry over the threads of
 /// its pool: in chunks of [`jolty_numerics::reduce::CHUNK`] of them, whatever the number of
 /// threads, which rayon splits among the threads as they take them, so that a fast thread
-/// takes more chunks than a slow one; a sum adds the chunks' totals in their order.
+/// takes more chunks than a slow one, each task at least `chunks` of them; a sum adds the
+/// chunks' totals in their order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Inside;
+pub(crate) struct Inside {
+    /// The fewest chunks a task takes.
+    pub(crate) chunks: usize,
+}
 
 /// The numerical settings of a simulation: tolerances and iteration limits, and what its
 /// results record.
@@ -271,8 +470,9 @@ pub struct Options {
     /// default not, as the clock adds about a tenth to a small circuit's transient. It
     /// changes no other result.
     pub profile: bool,
-    /// How a run spreads its own work across threads, which changes no result; by default
-    /// it does all its work on its own thread.
+    /// How a run spreads its own work across threads, which changes no result but for
+    /// the last digits a dissected factorization's order of operations gives; by default
+    /// over every thread of its pool, each kind of work from its break-even on.
     pub parallelism: Parallelism,
 }
 
@@ -374,10 +574,10 @@ impl Options {
         }
         let parallelism = &self.parallelism;
         let counts = [
-            ("threads", parallelism.threads),
+            ("max_threads", parallelism.max_threads),
             ("min_solves_per_task", parallelism.min_solves_per_task),
             ("min_instances_per_task", parallelism.min_instances_per_task),
-            ("min_unknowns_inside", parallelism.min_unknowns_inside),
+            ("min_unknowns_per_task", parallelism.min_unknowns_per_task),
             (
                 "max_unknowns_per_interior",
                 parallelism.max_unknowns_per_interior,

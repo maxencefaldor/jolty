@@ -16,7 +16,7 @@ use jolty_engine::batch::{Batch, Measured, Run, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced, toleranced};
 use jolty_engine::{
-    Analysis, Derivatives, Elaborated, OperatingPoints, Options, Parallelism, Record,
+    Analysis, BREAK_EVENS, Derivatives, Elaborated, OperatingPoints, Options, Parallelism, Record,
     SimulationError, Simulator, Structure, Values,
 };
 use jolty_ir::{Circuit, Distribution, Lot, Name, Tolerance};
@@ -559,21 +559,32 @@ fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     }
 }
 
-/// A run's own work stays on one thread by default, and when its options cap its threads
-/// at one, and finds what it finds spread over many.
+/// A run's own work stays on one thread when its options cap its threads at one, and
+/// spreads by default once it fills a task for every thread, and finds what it finds spread over
+/// many.
 #[test]
 fn a_run_on_one_thread_finds_what_it_finds_on_many() {
     let (circuit, analyses, plan) = benchmark("ac_wide");
     let options = spreading(plan.clone());
     let serial = Options {
         parallelism: Parallelism {
-            threads: Some(1),
+            max_threads: Some(1),
             ..options.parallelism.clone()
         },
         ..options.clone()
     };
-    assert_eq!(Parallelism::default().tasks(10_000), 1);
-    assert_eq!(serial.parallelism.tasks(10_000), 1);
+    let eight = ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .expect("a pool");
+    let least = BREAK_EVENS
+        .on(BREAK_EVENS.min_solves_per_task, 8)
+        .expect("solves spread on 8 threads");
+    let tasks = |parallelism: &Parallelism, items| eight.install(|| parallelism.tasks(items));
+    assert_eq!(tasks(&Parallelism::default(), 8 * least - 1), 1);
+    assert_eq!(tasks(&Parallelism::default(), 8 * least), 8);
+    assert_eq!(tasks(&Parallelism::default(), 100 * least), 8);
+    assert_eq!(tasks(&serial.parallelism, 10_000), 1);
     let run = |options: &Options| {
         let pool = ThreadPoolBuilder::new()
             .num_threads(8)
@@ -1142,15 +1153,16 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
     }
 }
 
-/// The ways the runs below spread their own work: devices evaluated in tasks of 1, 3 and
-/// 64 instances, the work of Newton iteration and step control on each unknown and each
-/// stored entry split in chunks of 1,024, and both at once.
-const SPREADS: [(Option<usize>, Option<usize>); 5] = [
-    (Some(1), None),
-    (Some(3), None),
-    (Some(64), None),
-    (None, Some(1)),
-    (Some(3), Some(1)),
+/// The ways the runs below spread their own work: devices evaluated in tasks of at least
+/// 1, 3 and 64 instances, the work of Newton iteration and step control on each unknown
+/// and each stored entry split in tasks of a chunk of 1,024 or more, and both at once;
+/// `usize::MAX` spreads none.
+const SPREADS: [(usize, usize); 5] = [
+    (1, usize::MAX),
+    (3, usize::MAX),
+    (64, usize::MAX),
+    (usize::MAX, 1),
+    (3, 1),
 ];
 
 /// Asserts that `analyses` of `circuit` with `options`, run on pools of 2, 3 and 8 threads
@@ -1159,7 +1171,7 @@ fn spread_finds_what_one_thread_finds(
     circuit: &Circuit,
     analyses: &[Analysis],
     options: &Options,
-    spreads: &[(Option<usize>, Option<usize>)],
+    spreads: &[(usize, usize)],
 ) {
     let elaborated = shared(circuit);
     let run = |options: &Options| -> Vec<Bits> {
@@ -1170,7 +1182,13 @@ fn spread_finds_what_one_thread_finds(
             .map(|analysis| bits(&simulator.run(analysis, options)))
             .collect()
     };
-    let serial = run(options);
+    let serial = run(&Options {
+        parallelism: Parallelism {
+            max_threads: Some(1),
+            ..options.parallelism.clone()
+        },
+        ..options.clone()
+    });
     assert!(
         serial.iter().all(|(numbers, _)| !numbers.is_empty()),
         "{serial:?}"
@@ -1183,8 +1201,8 @@ fn spread_finds_what_one_thread_finds(
         for &(instances, unknowns) in spreads {
             let parallel = Options {
                 parallelism: Parallelism {
-                    min_instances_per_task: instances,
-                    min_unknowns_inside: unknowns,
+                    min_instances_per_task: Some(instances),
+                    min_unknowns_per_task: Some(unknowns),
                     ..options.parallelism.clone()
                 },
                 ..options.clone()
@@ -1193,7 +1211,7 @@ fn spread_finds_what_one_thread_finds(
             let found = pool.install(|| run(&parallel));
             assert_eq!(
                 found, serial,
-                "{threads} threads, tasks of {instances:?} instances, inside from {unknowns:?}"
+                "{threads} threads, tasks of {instances} instances and {unknowns} unknowns"
             );
         }
     }
@@ -1231,7 +1249,7 @@ fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
         unknowns > 3 * jolty_numerics::reduce::CHUNK,
         "{unknowns} unknowns"
     );
-    let spreads = [(None, Some(1)), (Some(64), Some(1))];
+    let spreads = [(usize::MAX, 1), (64, 1)];
     spread_finds_what_one_thread_finds(&circuit, &[start], &options, &spreads);
 }
 
@@ -1270,8 +1288,8 @@ fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
     spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default(), &SPREADS);
 }
 
-/// `options` with the factorization dissected into interiors of at most `interiors`
-/// unknowns.
+/// `options` with the factorization dissected, where that costs fewer multiply-adds, into
+/// interiors of at most `interiors` unknowns.
 fn dissecting(options: &Options, interiors: usize) -> Options {
     Options {
         parallelism: Parallelism {
@@ -1283,38 +1301,28 @@ fn dissecting(options: &Options, interiors: usize) -> Options {
 }
 
 /// A run whose options dissect its factorization finds the same bits on 1, 2, 3 and 8
-/// threads: the amplifier's operating point, response and transient, and the latch's
-/// every DC solution, dissected into interiors of two unknowns; the operating point of
-/// the mesh of 10,000 nodes, into interiors of 500, its separators' fronts dense; and the
-/// first tenth of a nanosecond of the chain of 500 inverters, into interiors of 250, its
-/// block the chain's 500 nodes once the solver has eliminated the displacements. A row
-/// above a block that takes in more than a chunk of its columns, as a supply's joined to
-/// every node, is the sparse solver's own test's
+/// threads: the operating point of the mesh of 10,000 nodes and its first tenth of a
+/// microsecond, dissected into interiors of at most 157 and 500 unknowns, its separators'
+/// fronts dense, which costs 0.88 and about 0.92 times the minimum degree's
+/// multiply-adds. A small circuit's block, or a chain's, whose dissection costs more, is
+/// not dissected, so the sparse solver's own tests dissect the small matrices whose
+/// pivots its interiors delay, and a row above a block that takes in more than a chunk of
+/// its columns, as a supply's joined to every node
 /// (`a_supplied_mesh_is_the_same_bits_on_any_number_of_threads`).
 #[test]
 fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
-    let (amplifier, analyses, options) = benchmark("bjt_amp");
     let (mesh, _, mesh_options) = benchmark("rc_mesh_100");
-    let (chain, _, chain_options) = benchmark("inverter_chain_500");
     let start: Analysis =
-        serde_json::from_value(json!({"transient": {"stop": 1e-10, "method": "trapezoidal"}}))
+        serde_json::from_value(json!({"transient": {"stop": 1e-7, "method": "trapezoidal"}}))
             .expect("a transient");
-    let cases = [
-        (chain, vec![start], dissecting(&chain_options, 250)),
-        (amplifier, analyses, dissecting(&options, 2)),
+    let analyses = vec![Analysis::OperatingPoint, start];
+    let cases = [157, 500].map(|interiors| {
         (
-            mesh,
-            vec![Analysis::OperatingPoint],
-            dissecting(&mesh_options, 500),
-        ),
-        (
-            latch(),
-            vec![Analysis::OperatingPoints(OperatingPoints {
-                max_solutions: 8,
-            })],
-            dissecting(&Options::default(), 2),
-        ),
-    ];
+            mesh.clone(),
+            analyses.clone(),
+            dissecting(&mesh_options, interiors),
+        )
+    });
     for (circuit, analyses, options) in &cases {
         let elaborated = shared(circuit);
         let run = || -> Vec<Bits> {
@@ -1345,14 +1353,16 @@ fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
     }
 }
 
-/// A dissected factorization orders its operations otherwise than the serial one, so a
-/// run's operating point differs from the serial run's in its last digits, by no more than
+/// A dissected factorization orders its operations otherwise than the minimum degree's, so
+/// a run's operating point differs from the undissected run's in its last digits, by no
+/// more than
 /// twice the tolerance Newton iteration stops within, the relative tolerance of each
 /// unknown plus its absolute tolerance, as each is within it of the exact solution.
 #[test]
 fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
-    for (name, interiors) in [("bjt_amp", 2), ("buck", 2), ("rc_mesh_100", 500)] {
+    for (name, interiors) in [("rc_mesh_100", 157), ("rc_mesh_100", 500)] {
         let (circuit, _, options) = benchmark(name);
+        let options = undissected(&options, &circuit);
         let elaborated = shared(&circuit);
         let point = |options: &Options| {
             let mut simulator =
@@ -1385,17 +1395,28 @@ fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
     }
 }
 
-/// A simulator that solved its operating point with the serial factorization solves it
-/// again for a dissected one, rather than read the one it remembers, so a run's numbers do
-/// not depend on what ran before it: they are those of a simulator made anew.
+/// `options` with no block of `circuit`'s matrix dissected, its interiors as large as the
+/// circuit.
+fn undissected(options: &Options, circuit: &Circuit) -> Options {
+    dissecting(options, shared(circuit).unknowns().len())
+}
+
+/// A simulator that ran the mesh's first tenth of a microsecond with the undissected
+/// factorization, from the operating point it remembers, solves it again for a dissected
+/// one, rather than read what it remembers, so a run's numbers do not depend on what ran
+/// before it: they are those of a simulator made anew. The mesh's operating point is zero,
+/// the same bits either way, but its transient's are not.
 #[test]
 fn a_dissected_run_solves_afresh_what_a_serial_one_left() {
-    let (circuit, _, options) = benchmark("bjt_amp");
+    let (circuit, _, options) = benchmark("rc_mesh_100");
+    let options = undissected(&options, &circuit);
     let elaborated = shared(&circuit);
-    let dissected = dissecting(&options, 2);
-    let point = |simulator: &mut Simulator, options: &Options| {
-        bits(&simulator.run(&Analysis::OperatingPoint, options))
-    };
+    let dissected = dissecting(&options, 500);
+    let start: Analysis =
+        serde_json::from_value(json!({"transient": {"stop": 1e-7, "method": "trapezoidal"}}))
+            .expect("a transient");
+    let point =
+        |simulator: &mut Simulator, options: &Options| bits(&simulator.run(&start, options));
     let mut fresh =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
     let alone = point(&mut fresh, &dissected);

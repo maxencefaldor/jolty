@@ -314,45 +314,49 @@ A circuit of a foundry's devices runs each run in ngspice instead, as many at on
 | `truncation_tolerance` | 7 | how much the time step's truncation error, as SPICE estimates it, may exceed the tolerances, as SPICE's `TRTOL` |
 | `max_memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
 | `profile` | off | whether a transient measures where its time goes, into its statistics' `profile`; the clock adds about a tenth to a small circuit's transient, and changes no other result |
-| `parallelism` | none | how a run spreads its own work across the engine's threads, a `Parallelism` of thresholds; no setting changes any result but `max_unknowns_per_interior`, in the last digits |
+| `parallelism` | every thread | how a run spreads its own work across the engine's threads, a `Parallelism`, each threshold at its break-even; no setting changes any result but `max_unknowns_per_interior`, in the last digits |
 
-A `Parallelism` spreads each kind of a run's work once its threshold is set, and none is by default, since waking threads costs more than a small run's work repays:
+A `Parallelism` spreads each kind of a run's work over the engine's threads in tasks of at least its threshold, its least size per task, once the work fills such a task for every thread the run may use, as its break-even was measured, and keeps it on the run's own thread for less, since waking threads costs more than a small run's work repays.
+Each threshold left out takes its break-even on the threads the run may use, below:
 
-| Threshold | What spreads |
-| --- | --- |
-| `min_solves_per_task` | the frequencies of a response, a noise or a stability analysis and the right-hand sides of sensitivities, in tasks of at least so many |
-| `min_instances_per_task` | the evaluation of the devices, in tasks of so many instances |
-| `min_unknowns_inside` | the work of the Newton iteration and of a transient's step control on each unknown and each stored entry of the matrix, once the circuit has so many, in chunks of 1,024 that the threads take as they free |
-| `max_unknowns_per_interior` | the factorization of the matrix: each block of more unknowns is ordered by nested dissection into interiors of at most so many, which factor at once, and the separators between them, each once the parts it separates are done |
+| Setting | Default | What it spreads |
+| --- | --- | --- |
+| `max_threads` | none | at most so many of the engine's threads, every one by default; 1 runs a run serially |
+| `min_solves_per_task` | its break-even | the frequencies of a response, a noise or a stability analysis and the right-hand sides of sensitivities, in tasks of at least so many |
+| `min_instances_per_task` | its break-even | the evaluation of the devices, each group of one model's instances in tasks of at least so many; a linear device, which is evaluated once a run, for its entries, counts none |
+| `min_unknowns_per_task` | its break-even | the work of the Newton iteration and of a transient's step control on each unknown and each stored entry of the matrix, in tasks of at least so many, in whole chunks of 1,024 that the threads take as they free |
+| `max_unknowns_per_interior` | its break-even | the factorization of the matrix: each block of more unknowns whose elimination nested dissection makes cheaper is ordered so, into interiors of at most so many, which factor at once, and the separators between them, each once the parts it separates are done |
 
 ```python
 from jolty.plan import Options, Parallelism
 
 options = Options(parallelism=Parallelism(min_solves_per_task=16))
+serial = Options(parallelism=Parallelism(max_threads=1))
 ```
 
-A batch runs each of its runs on one thread whenever it has a run for every thread, so the thresholds matter for one run, or for fewer runs than threads.
-The dissected factorization orders its operations otherwise than the one on a single thread, so a run with `max_unknowns_per_interior` set finds the same bits on any number of threads, but its results differ from those without it in their last digits, within the factorization's rounding.
+A batch runs each of its runs on one thread whenever it has a run for every thread, so the parallelism matters for one run, or for fewer runs than threads.
 `jolty simulate` takes each threshold too, as `--min-solves-per-task` and its kin, in place of the plan's.
 
-A threshold makes a run faster only from some size of circuit, below which waking the threads costs more than they save, and `scripts/bench --break-even` measures it.
-On an Apple M2 Max of 8 performance and 4 efficiency cores, with the engine of commit `6fe8824`, while other programs and the measurement's own threads kept the load average at 7 to 19 on its 12 cores, each threshold, set alone to spread a circuit's work over every thread, made a run of the benchmarks' plans faster from these sizes on, and was set there to its break-even, in brackets:
+Whether to dissect a block is decided by computing what each ordering costs, not by its size: the engine counts the multiply-adds of eliminating the block by the minimum degree ordering and by nested dissection, each on the symbolic factor of the block's pattern plus its transpose, and dissects the block only where nested dissection costs fewer.
+On a square grid, as of a mesh of resistors, nested dissection into interiors of at most 157 nodes costs 1.06 times the minimum degree's multiply-adds at 60 nodes a side and 0.96 times at 70, and 0.70 times at 300; on a path, as of a chain of inverters, which the minimum degree eliminates with no fill, 3.9 times at 5,000 nodes, so a chain is never dissected.
+The ordering depends on the circuit and on `max_unknowns_per_interior` alone, so a run finds the same bits on the same number of threads, and a dissected factorization orders its operations otherwise than the minimum degree's, so its results differ from those of one with no block dissected in their last digits, within the factorization's rounding.
+The default interiors are a break-even on the run's threads, so a circuit large enough to dissect finds other last digits on another number of threads: `rc_mesh_100`, whose mesh of 10,000 nodes the default orders by the minimum degree on one thread and dissects on two or more, finds the same 109 points in its 10 µs on 1, 2 and 4 threads of an Apple M2 Max, its voltages within 2.1e-15 V of one another's.
+A batch's runs take the minimum degree's ordering unless the options set the interiors, so that they find the same bits however many threads run them.
 
-| Threshold | Circuits | 2 threads | 4 threads | 8 threads | 12 threads |
-| --- | --- | --- | --- | --- | --- |
-| `min_instances_per_task` | chains of inverters of level 1 MOSFETs | 202 devices (101) | 402 devices (101) | 1,002 devices (126) | 2,002 devices (167) |
-| `min_instances_per_task` | meshes of resistors and capacitors | 29,901 devices (14,951) | 29,901 devices (7,476) | 29,901 devices (3,738) | 29,901 devices (2,492) |
-| `min_unknowns_inside` | chains of inverters | 35,004 unknowns | 21,004 unknowns | 35,004 unknowns | 35,004 unknowns |
-| `min_unknowns_inside` | meshes | none to 90,001 unknowns | none to 90,001 unknowns | none to 90,001 unknowns | none to 90,001 unknowns |
-| `max_unknowns_per_interior` | chains of inverters | none to 35,004 unknowns | none to 35,004 unknowns | none to 35,004 unknowns | none to 35,004 unknowns |
-| `max_unknowns_per_interior` | meshes | 4,901 unknowns (2,451) | 4,901 unknowns (1,226) | 4,901 unknowns (613) | 10,001 unknowns (834) |
-| `min_solves_per_task` | `bjt_amp`'s response, 22 unknowns | 360 solves (180) | 270 solves (67) | 360 solves (45) | 360 solves (30) |
+Each break-even is the least size of a task from which spreading a kind of work over every thread made a run faster than a serial one, measured by `scripts/bench --break-even` on `cedar`, an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads, on 16 November 2026, on circuits of the benchmarks' scripts at several sizes: `bjt_amp`'s response at 1 to 1,111 frequencies a decade for `min_solves_per_task`, chains of 1 to 1,000 inverters of level 1 MOSFETs for `min_instances_per_task`, chains of 100 to 2,000 inverters and meshes of resistors and capacitors of 10 to 300 nodes a side for `min_unknowns_per_task`, and meshes of 10 to 300 a side for `max_unknowns_per_interior`, while the load average, the measurement's own threads included, was 1.4 to 37 on the 64 threads; [the speed suite's page](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens) gives every size measured.
+A run takes the break-even measured on the most threads it may use or fewer, and spreads none of a kind of work whose break-even is none, as no size measured paid; `jolty.plan.BREAK_EVENS` holds them:
 
-The break-even is the circuit's unknowns for `min_unknowns_inside`, and for each other threshold the size of a piece of the work there: a task's devices or solves, or an interior's most unknowns.
-Set to it, a threshold spreads a circuit of that size over every thread in pieces as large, and a larger circuit in more pieces as large; it spreads a smaller one in fewer pieces than threads, which can make it slower.
-Spread over every thread, the smallest circuits measured ran up to 17 times as long as unset, a chain of one inverter on 12 threads.
-A chain's MOSFET costs far more to evaluate than a mesh's resistor or capacitor, so a task of fewer of them pays; a chain's factorization is cheap beside its devices, and a mesh's work on each unknown beside its factorization, so neither pays spread alone.
-On 8 and 12 threads the runs shared the cores with other programs, so a quiet machine's break-evens there are smaller.
+| Threshold | 2 threads | 4 threads | 8 threads | 64 threads |
+| --- | --- | --- | --- | --- |
+| `min_solves_per_task` | 4,999 | 11 | 11 | 4 |
+| `min_instances_per_task` | none | 250 | 125 | none |
+| `min_unknowns_per_task` | none | none | none | none |
+| `max_unknowns_per_interior` | 5,001 | 2,501 | 1,251 | 157 |
+
+Each break-even was measured with the other thresholds spreading none of the work, and the rounds of runs alternating their order, as [the speed suite's page](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens) says.
+A chain's devices spread paid in tasks of 250 MOSFETs on 4 threads and of 125 on 8, but on no chain up to 1,000 inverters on 2 threads, a task taking each group of MOSFETs whole, or on 64, in tasks of 31, so a run on 2 or 3 threads, or on 64 or more, evaluates its devices on its own thread.
+A mesh of 100 a side, dissected into interiors of a thread's unknowns, ran 21% faster on 2 threads, 29% on 4, 41% on 8 and 20% on 64, but 51% slower on 64 threads in interiors of 5,001, its break-even on 2, so `max_unknowns_per_interior` takes its break-even on the run's threads too, and a run on one thread orders by the minimum degree.
+The work on each unknown spread lost on every chain up to 2,000 inverters, by 8.0% to 39.9% at 2,000, and gained 0.7% to 1.2% on the mesh of 300 a side alone, so it spreads on no number of threads; on 2 threads, the amplifier's frequencies paid from 9,999 alone, as two tasks of 2,250 gained nothing where tasks of 900 had gained 22.6%.
 
 The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.
 An operating point and a transient record the instances rated for a current or a power, whose ratings the checks read, and what the plan's or the analysis's [record](results.md#what-a-result-records) names, so a transient of a large circuit holds about its unknowns alone unless asked for more; recording every instance multiplies what it holds by thirty or more, and reaches `max_memory` sooner.

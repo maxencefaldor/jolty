@@ -16,7 +16,7 @@ Usage::
 
     scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
     scripts/bench --scale             the large fixtures, each run once in Python
-    scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
+    scripts/bench --scale --largest   and the 50,000 inverters' chain on each too
     scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
     scripts/bench --xyce              Xyce on them, and how far it lies from jolty
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
@@ -31,10 +31,11 @@ Without ``--baseline``, the baseline is the newest ancestor of the checked-out c
 whose results ``benchmarks/speed/results`` holds. A working tree with changes to
 tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline.
 
-``--scale`` runs each large fixture serially, then spread over 1, 2, 4, 8 threads and
-every core, every threshold of ``Parallelism`` at its break-even, and prints the
-speed-ups and its results' fingerprint, which must be the same on every number of
-threads; it spreads the 50,000 inverters' chain only with ``--largest``.
+``--scale`` runs each large fixture serially, on one thread with no block of its matrix
+dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
+every threshold at its break-even, and prints the speed-ups and its results'
+fingerprint, which must be the same on every number of threads; it runs the 50,000
+inverters' chain so only with ``--largest``, and else once with the defaults.
 
 ``--xyce`` runs Xyce instead, serially at its own defaults, on each fixture's netlist in
 Xyce's dialect, each analysis in an Xyce of its own, and records its time end to end,
@@ -43,9 +44,10 @@ jolty's; with ``--scale``, Xyce's parallel build, ``--xyce-mpi``, runs each larg
 fixture on 1, 2, 4, 8 and 16 MPI ranks too.
 
 ``--break-even`` measures instead from which size of circuit setting one threshold of
-``Parallelism`` makes one run faster than leaving it unset, on 2, 4, 8 threads and every
-core: on circuits of the fixtures' scripts at several sizes, each run with the threshold
-unset and set, interleaved, and that size's value of the threshold, its break-even.
+``Parallelism`` makes one run faster than running it serially, on 2, 4, 8 threads and
+every core: on circuits of the fixtures' scripts at several sizes, each run serially and
+with the threshold set and the others spreading nothing, interleaved, and that size's
+value of the threshold, its break-even.
 ``benchmarks/speed/README.md`` says how it sets each threshold, and what it found.
 
 ``--robustness`` runs instead the corpus of hard circuits of ``benchmarks/robustness``,
@@ -105,7 +107,7 @@ from pydantic import Field
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from simulators import Jolty, Ngspice, Simulator, Xyce, command, netlist
 
-from jolty import circuit, cli, ir, results, simulate
+from jolty import circuit, cli, ir, plan, results, simulate
 from jolty.plan import Ac, MonteCarlo, Options, Parallelism, Plan
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice, xyce
@@ -147,35 +149,9 @@ THREADS: Final = (1, 2, 4, 8)
 """The threads ``--scale`` spreads a run of a large fixture on, as far as there are
 cores, and then every core, as the Monte Carlo fixture's batches run."""
 
-CHAINS: Final = Parallelism(
-    min_solves_per_task=180, min_instances_per_task=167, min_unknowns_inside=35_004
-)
-"""Each threshold at its break-even on the chains of inverters, ``min_solves_per_task``
-at the amplifier's: the largest of its break-evens on 2, 4, 8 and 12 threads that
-``benchmarks/speed/README.md`` reports, so that it pays wherever it spreads on any of
-them. A dissection paid on no chain measured, up to 35,004 unknowns, so it is left
-unset."""
-
-MESHES: Final = Parallelism(
-    min_solves_per_task=180,
-    min_instances_per_task=14_951,
-    max_unknowns_per_interior=2_451,
-)
-"""Each threshold at its break-even on the meshes, ``min_solves_per_task`` at the
-amplifier's, the largest on any number of threads, as for `CHAINS`. The work on each
-unknown paid spread on no mesh measured, up to 90,001 unknowns, so it is left unset."""
-
-SPREAD: Final = {
-    "inverter_chain_5000": CHAINS,
-    "inverter_chain_50000": CHAINS,
-    "rc_mesh_300": MESHES,
-}
-"""The thresholds ``--scale`` spreads a run of each large fixture with: their
-break-evens on the circuits of its script."""
-
 LONGEST: Final = "inverter_chain_50000"
-"""The fixture whose runs ``--scale`` spreads only with ``--largest``: each takes
-minutes."""
+"""The fixture ``--scale`` runs serially and on each number of threads only with
+``--largest``: each run takes minutes."""
 
 TIMEOUT: Final = ngspice.TIMEOUT
 """The seconds ``--robustness`` lets a run take by default: as long as the differential
@@ -208,7 +184,7 @@ class Threshold(StrEnum):
 
     MIN_SOLVES_PER_TASK = "min_solves_per_task"
     MIN_INSTANCES_PER_TASK = "min_instances_per_task"
-    MIN_UNKNOWNS_INSIDE = "min_unknowns_inside"
+    MIN_UNKNOWNS_PER_TASK = "min_unknowns_per_task"
     MAX_UNKNOWNS_PER_INTERIOR = "max_unknowns_per_interior"
 
 
@@ -220,7 +196,7 @@ SWEPT: Final[Mapping[Threshold, Mapping[str, tuple[int, ...]]]] = {
         "inverter_chain": (1, 2, 5, 10, 20, 50, 70, 100, 200, 300, 500, 700, 1000),
         "rc_mesh": (10, 20, 30, 40, 50, 70, 100, 300),
     },
-    Threshold.MIN_UNKNOWNS_INSIDE: {
+    Threshold.MIN_UNKNOWNS_PER_TASK: {
         "inverter_chain": (100, 500, 1000, 2000, 3000, 4000, 5000),
         "rc_mesh": (10, 20, 50, 100, 300),
     },
@@ -396,39 +372,51 @@ def python(
     return timings
 
 
+def serially(loaded: Loaded) -> Options:
+    """The fixture's options for a serial run.
+
+    Its run takes one thread, and no block of its matrix is dissected, its interiors as
+    large as its circuit.
+    """
+    unknowns = len(Simulation(loaded.circuit).unknowns)
+    spread = dataclasses.replace(
+        loaded.plan.options.parallelism,
+        max_threads=1,
+        max_unknowns_per_interior=unknowns,
+    )
+    return dataclasses.replace(loaded.plan.options, parallelism=spread)
+
+
 def scaling(
-    name: str, loaded: Loaded, parallelism: Parallelism, counts: Sequence[int]
+    name: str, loaded: Loaded, counts: Sequence[int]
 ) -> tuple[dict[str, Timing], dict[str, str]]:
     """One run of the fixture `name` serially, then one spread on each of `counts`.
 
-    The serial run leaves every threshold unset, as the fixture's plan does, and its
-    time is the fixture's own, as when it is not spread; each spread run sets the
-    thresholds of `parallelism`, on a pool of so many threads. Prints each run's time,
+    The serial run runs on one thread with no block of its matrix dissected, `serially`;
+    each spread run takes the fixture's options, which leave every setting of its
+    parallelism to its default, on a pool of so many threads. Prints each run's time,
     its speed-up against the serial run and against the spread run on one thread, and
     the fingerprint of its results; returns the times and the serial and spread
     runs' fingerprints.
 
     Raises:
-        SystemExit: When the spread runs find other bits on another number of
-            threads, or, but with a dissection, which orders the factorization
-            otherwise, other bits than the serial run.
+        SystemExit: When, but for a circuit large enough for a block to be dissected,
+            whose default interiors depend on the threads, a spread run finds other
+            bits than the serial run.
     """
     print(f"timing {name} in Python, serially and spread", flush=True)
-    options = dataclasses.replace(loaded.plan.options, parallelism=parallelism)
-    serial, alone = once(on(1, functools.partial(run, loaded)))
+    alone_options = serially(loaded)
+    serial, alone = once(on(1, functools.partial(run, loaded, alone_options)))
     timings = {f"python/{name}": serial}
     rows = [("serially", serial, alone)]
     print(f"{name}, serially: {duration(serial.seconds)}, load {serial.load:.2f}")
     for count in counts:
         label = f"{count} thread{'s' if count > 1 else ''}"
-        spread, found = once(on(count, functools.partial(run, loaded, options)))
+        spread, found = once(on(count, functools.partial(run, loaded)))
         timings[f"python/{name}/spread on {label}"] = spread
         rows.append((label, spread, found))
         print(f"{name}, spread on {label}: {duration(spread.seconds)}", flush=True)
-    settings = ", ".join(
-        f"{key} {value:,}" for key, value in parallelism.to_json().items()
-    )
-    print(f"\n{name}, serially and spread by {settings}:")
+    print(f"\n{name}, serially and spread by the default parallelism:")
     widths = (10, 10, 14, 16, 16, 0)
     heads = ("threads", "time", "against serial", "against 1 thread", "results", "load")
     print(table(heads, widths))
@@ -447,8 +435,10 @@ def scaling(
         )
         print(table(cells, widths))
     spread_prints = {found for label, _, found in rows if label != "serially"}
-    dissected = parallelism.max_unknowns_per_interior is not None
-    if len(spread_prints) > 1 or not (dissected or spread_prints <= {alone}):
+    unknowns = alone_options.parallelism.max_unknowns_per_interior or 0
+    interiors = plan.BREAK_EVENS["max_unknowns_per_interior"]
+    dissectable = unknowns > min(each for each in interiors if each is not None)
+    if not dissectable and spread_prints != {alone}:
         message = f"{name} found other bits spread: {', '.join(f for *_, f in rows)}"
         raise SystemExit(message)
     return timings, {"serial": alone, "spread": next(iter(spread_prints), alone)}
@@ -930,35 +920,35 @@ def sized(script: str, size: int) -> Sized:
     return Sized(size, loaded, devices(loaded.circuit), unknowns, solves)
 
 
+def counted(threshold: Threshold, at: Sized) -> int:
+    """What `threshold` counts of `at`: its solves, devices or unknowns."""
+    match threshold:
+        case Threshold.MIN_SOLVES_PER_TASK:
+            return at.solves
+        case Threshold.MIN_INSTANCES_PER_TASK:
+            return at.devices
+        case Threshold.MIN_UNKNOWNS_PER_TASK | Threshold.MAX_UNKNOWNS_PER_INTERIOR:
+            return at.unknowns
+
+
 def setting(threshold: Threshold, at: Sized, count: int) -> int:
     """The value of `threshold` that spreads `at`'s work over `count` threads.
 
-    Tasks of a `count`-th of its devices or of its solves, interiors of at most a
-    `count`-th of its unknowns, or the work on each unknown, however few.
+    Tasks of at least a `count`-th of its solves, devices or unknowns, rounded down, or
+    interiors of at most a `count`-th of its unknowns, rounded up.
     """
-    match threshold:
-        case Threshold.MIN_SOLVES_PER_TASK:
-            return max(1, at.solves // count)
-        case Threshold.MIN_INSTANCES_PER_TASK:
-            return -(-at.devices // count)
-        case Threshold.MIN_UNKNOWNS_INSIDE:
-            return 1
-        case Threshold.MAX_UNKNOWNS_PER_INTERIOR:
-            return -(-at.unknowns // count)
+    if threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR:
+        return -(-at.unknowns // count)
+    return max(1, counted(threshold, at) // count)
 
 
-def break_even(threshold: Threshold, at: Sized, count: int) -> int:
-    """`threshold`'s value at its break-even on `count` threads, at `at`.
+def spreading_none(at: Sized) -> dict[str, int]:
+    """Each threshold set to spread none of `at`'s work.
 
-    `at` is the smallest circuit setting it pays on. The value is the circuit's
-    unknowns for the work inside, which then spreads from `at`'s size on, and else the
-    `setting` there, a task's devices or solves or an interior's most unknowns, which
-    then spreads a circuit of `at`'s size over every thread in pieces as large as
-    there, and a larger one in more pieces as large.
+    Tasks of all of its solves, devices or unknowns, and interiors as large as the
+    circuit.
     """
-    if threshold is Threshold.MIN_UNKNOWNS_INSIDE:
-        return at.unknowns
-    return setting(threshold, at, count)
+    return {each.value: max(1, counted(each, at)) for each in Threshold}
 
 
 def on(
@@ -980,25 +970,31 @@ def interleaved(
 
     Each work runs once a round, one after another, so that each side of a comparison
     runs under the same load as the others, and what it found in the first round is
-    fingerprinted. The rounds go on until there are `FEWEST_ROUNDS` of them and they
-    have taken `FEWEST_SECONDS` for each work; none is warmed up, the median
-    discarding a first slow run.
+    fingerprinted. The rounds run the works in their order and in the reverse order by
+    turns, so that no work always follows the same one: on `cedar`, the median of a
+    serial run of a quarter of a second was 261 ms when it always followed one on 64
+    threads, and 225 ms when it followed one on 2. The rounds go on until there are
+    `FEWEST_ROUNDS` of them and they have taken `FEWEST_SECONDS` for each work; none is
+    warmed up, the median discarding a first slow run.
     """
     load = load_average()
     times: list[list[float]] = [[] for _ in works]
-    prints: list[str] = []
+    prints: list[str | None] = [None for _ in works]
     begun = time.perf_counter()
     while len(
         times[0]
     ) < FEWEST_ROUNDS or time.perf_counter() - begun < FEWEST_SECONDS * len(works):
-        for each, work in zip(times, works, strict=True):
+        order = list(range(len(works)))
+        if len(times[0]) % 2:
+            order.reverse()
+        for index in order:
             started = time.perf_counter()
-            found = work()
-            each.append(time.perf_counter() - started)
-            if len(prints) < len(works):
-                prints.append(fingerprint(found))
+            found = works[index]()
+            times[index].append(time.perf_counter() - started)
+            if prints[index] is None:
+                prints[index] = fingerprint(found)
     timings = [Timing(statistics.median(each), len(each), load) for each in times]
-    return timings, prints
+    return timings, [found or "" for found in prints]
 
 
 SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a decade"}
@@ -1026,22 +1022,23 @@ def pays_from(changes: Sequence[float]) -> int | None:
 def sweep(
     threshold: Threshold, script: str, sizes: Sequence[int], counts: Sequence[int]
 ) -> dict[str, Timing]:
-    """The times of `script`'s circuits at `sizes`, `threshold` unset and set.
+    """The times of `script`'s circuits at `sizes`, serially and `threshold` set.
 
-    Each circuit runs with `threshold` unset, which runs on one thread, and set to
-    spread it over each of `counts` threads, on so many, interleaved. The times are
-    printed as they are measured, and then the smallest size from which setting it
-    pays on each count, and its break-even there.
+    Each circuit runs serially, on one thread with no threshold spreading its work, and
+    with `threshold` set to spread it over each of `counts` threads, on so many, the
+    others `spreading_none`, interleaved. The times are printed as they are
+    measured, and then the smallest size from which setting it pays on each count, and
+    its break-even there.
 
     Raises:
-        SystemExit: When a run with `threshold` set finds other bits than the run
-            left unset, but for a dissection, whose interiors, a size for each number
-            of threads, order the factorization otherwise.
+        SystemExit: When a run with `threshold` set finds other bits than the serial
+            run, but for a dissection, whose interiors, a size for each number of
+            threads, order the factorization otherwise.
     """
     labels = [f"{count} thread{'s' if count > 1 else ''}" for count in counts]
-    heads = [SIZE[script], "devices", "unknowns", "solves", "unset"]
+    heads = [SIZE[script], "devices", "unknowns", "solves", "serially"]
     widths = [10, 9, 9, 7, 10, *(len(label) + 18 for label in labels), 0]
-    print(f"\n{threshold} on {script}'s circuits, unset and set, to the value in")
+    print(f"\n{threshold} on {script}'s circuits, serially and set, to the value in")
     print("brackets, to spread each circuit over each number of threads:")
     print(table([*heads, *labels, "load"], widths), flush=True)
     timings: dict[str, Timing] = {}
@@ -1049,14 +1046,18 @@ def sweep(
     for size in sizes:
         at = sized(script, size)
         values = [setting(threshold, at, count) for count in counts]
-        works = [on(1, functools.partial(run, at.loaded))]
+        none = spreading_none(at)
+        serial = dataclasses.replace(
+            at.loaded.plan.options, parallelism=Parallelism(**none)
+        )
+        works = [on(1, functools.partial(run, at.loaded, serial))]
         for count, value in zip(counts, values, strict=True):
-            spread = Parallelism(**{threshold.value: value})
+            spread = Parallelism(**none | {threshold.value: value})
             options = dataclasses.replace(at.loaded.plan.options, parallelism=spread)
             works.append(on(count, functools.partial(run, at.loaded, options)))
         found, prints = interleaved(works)
         # Interiors of other sizes order the factorization otherwise, so only the
-        # other thresholds, which change no result, must find the unset run's bits.
+        # other thresholds, which change no result, must find the serial run's bits.
         dissected = threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR
         if not dissected and len(set(prints)) != 1:
             message = (
@@ -1068,7 +1069,7 @@ def sweep(
         changes = [each.seconds / unset - 1 for each in found[1:]]
         measured.append((at, changes))
         key = f"python/break-even/{threshold}/{script}_{size}"
-        timings[f"{key}/unset"] = found[0]
+        timings[f"{key}/serially"] = found[0]
         for label, each in zip(labels, found[1:], strict=True):
             timings[f"{key}/{label}"] = each
         cells = [f"{each:,}" for each in (size, at.devices, at.unknowns, at.solves)]
@@ -1093,7 +1094,7 @@ def sweep(
         )
         print(
             f"on {label}: pays from {at.size:,}, {changes[first]:+.1%}{before}; "
-            f"break-even {break_even(threshold, at, counts[place]):,}"
+            f"break-even {setting(threshold, at, counts[place]):,}"
         )
     return timings
 
@@ -1119,15 +1120,15 @@ class Bench(cli.CommandLine):
         default=None,
         description=(
             "Measure this threshold's break-even instead: the circuits of the "
-            "fixtures' scripts it applies to, unset and set, from which size on "
+            "fixtures' scripts it applies to, serially and set, from which size on "
             "setting it pays."
         ),
     )
     largest: bool = Field(
         default=False,
         description=(
-            "With --scale, spread the 50,000 inverters' chain over threads too: 17 "
-            "minutes more on 12 cores."
+            "With --scale, run the 50,000 inverters' chain serially and on each "
+            "number of threads too: 17 minutes more on 12 cores."
         ),
     )
     sizes: list[int] = Field(
@@ -1331,7 +1332,7 @@ def measure(arguments: Bench) -> None:
     if instead(arguments):
         return
     if arguments.largest and not arguments.scale:
-        message = "--largest spreads a fixture of --scale; give --scale too"
+        message = "--largest runs a fixture of --scale; give --scale too"
         raise SystemExit(message)
     found = fixtures()
     names = arguments.fixtures or (SCALE if arguments.scale else SUITE)
@@ -1360,15 +1361,17 @@ def measure(arguments: Bench) -> None:
     else:
         timings = {} if arguments.scale else rust(names, found)
         spread = {
-            name: parallelism
-            for name, parallelism in SPREAD.items()
-            if arguments.scale and (name != LONGEST or arguments.largest)
+            name
+            for name in SCALE
+            if arguments.scale
+            and found[name].plan.monte_carlo is None
+            and (name != LONGEST or arguments.largest)
         }
         counts = arguments.threads or every(THREADS)
         for name in names:
             if name in spread:
                 measured, fingerprints[name] = scaling(
-                    name, load_fixture(found[name]), spread[name], counts
+                    name, load_fixture(found[name]), counts
                 )
                 timings |= measured
             else:

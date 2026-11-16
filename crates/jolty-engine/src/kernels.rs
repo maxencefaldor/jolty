@@ -386,11 +386,16 @@ fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate
     assert!(all.reads.0 > 1000, "{all:?}");
 }
 
+/// Tasks of at least `least` instances each, on `threads` threads.
+fn tasks(least: usize, threads: usize) -> Tasks {
+    Tasks {
+        least: least.try_into().expect("a task holds an instance"),
+        threads: threads.try_into().expect("a pool holds a thread"),
+    }
+}
+
 #[test]
 fn a_parallel_evaluation_is_the_serial_one_bit_for_bit() {
-    let tasks = |instances: usize| Tasks {
-        instances: instances.try_into().expect("a task holds an instance"),
-    };
     for (name, stop) in [("bjt_amp", 2e-5), ("buck", 2e-6)] {
         let (circuit, analyses, options) = fixture(name);
         let analyses = shortened(analyses, stop, 5);
@@ -400,7 +405,7 @@ fn a_parallel_evaluation_is_the_serial_one_bit_for_bit() {
                 .num_threads(threads)
                 .build()
                 .expect("a pool");
-            for split in [tasks(1), tasks(3), tasks(64)] {
+            for split in [tasks(1, threads), tasks(3, threads), tasks(64, threads)] {
                 let (parallel, _) = pool.install(|| {
                     outcomes(&circuit, &analyses, &options, |simulator| {
                         simulator.state.tasks = Some(split);
@@ -457,9 +462,7 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
             .build()
             .expect("a pool");
         for instances in [1, 7, 64, 1000] {
-            let split = Tasks {
-                instances: instances.try_into().expect("a task holds an instance"),
-            };
+            let split = tasks(instances, threads);
             let parallel = pool.install(|| evaluations(Some(split)));
             assert!(
                 parallel == serial,
@@ -555,9 +558,7 @@ fn a_parallel_evaluation_of_a_star_of_linear_arms_is_the_serial_one_bit_for_bit(
             .build()
             .expect("a pool");
         for instances in [1, 7, 64, 1000] {
-            let split = Tasks {
-                instances: instances.try_into().expect("a task holds an instance"),
-            };
+            let split = tasks(instances, threads);
             let parallel = pool.install(|| evaluations(Some(split)));
             assert!(
                 parallel == serial,

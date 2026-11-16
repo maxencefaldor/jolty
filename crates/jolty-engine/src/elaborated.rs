@@ -84,10 +84,10 @@ pub struct Elaborated {
     /// either is read, as a single run of a circuit from its JSON text reads neither: a
     /// function of the rest, which they never change.
     lookup: OnceLock<Lookup>,
-    /// The orderings of the pattern dissected into interiors of at most so many unknowns,
-    /// by that number, each made the first time a run factors with it: a function of the
-    /// pattern, which it never changes.
-    dissected: Mutex<BTreeMap<usize, Arc<Ordering>>>,
+    /// The orderings of the pattern as each [`Dissecting`] orders it, each made the first
+    /// time a run factors with it, the minimum degree's where it dissects no block: a
+    /// function of the pattern, which it never changes.
+    dissected: Mutex<BTreeMap<Dissecting, Arc<Ordering>>>,
 }
 
 /// The index of an elaborated circuit's devices and composite terminals by path and name,
@@ -524,19 +524,28 @@ impl Elaborated {
         (elaborated, bound.devices)
     }
 
-    /// The ordering a run's solver factors with: the minimum degree's, or, for `interiors`,
-    /// the one dissected into interiors of at most so many unknowns, made the first time a
-    /// run asks for it and shared by every run after. Two runs that ask at once may each
-    /// make it, which gives the same ordering, and the first kept is shared.
+    /// The positions of the largest diagonal block of the minimum degree's ordering.
+    pub(crate) fn largest_block(&self) -> usize {
+        self.ordering.largest_block()
+    }
+
+    /// The ordering a run's solver factors with, as `dissecting` orders the pattern: the
+    /// minimum degree's, shared by every run, without `dissecting` or where it dissects no
+    /// block, as where no block holds more unknowns than an interior, and else the one it
+    /// dissects, made the
+    /// first time a run asks for it and shared by every run after. Two runs that ask at
+    /// once may each make it, which gives the same ordering, and the first kept is shared.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::TooLarge`] when the ordering does not fit in memory.
     pub(crate) fn ordering(
         &self,
-        interiors: Option<usize>,
+        dissecting: Option<Dissecting>,
     ) -> Result<Arc<Ordering>, SimulationError> {
-        let Some(interiors) = interiors else {
+        let Some(dissecting) =
+            dissecting.filter(|each| self.ordering.largest_block() > each.interiors())
+        else {
             return Ok(Arc::clone(&self.ordering));
         };
         let kept = || {
@@ -544,15 +553,17 @@ impl Elaborated {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
         };
-        if let Some(ordering) = kept().get(&interiors) {
+        if let Some(ordering) = kept().get(&dissecting) {
             return Ok(Arc::clone(ordering));
         }
-        let dissecting = Dissecting::Every(interiors);
         let made = Ordering::condensed(Arc::clone(&self.condensation), Some(dissecting))
             .map_err(|_| SimulationError::TooLarge)?;
-        Ok(Arc::clone(
-            kept().entry(interiors).or_insert_with(|| Arc::new(made)),
-        ))
+        let made = if made.is_dissected() {
+            Arc::new(made)
+        } else {
+            Arc::clone(&self.ordering)
+        };
+        Ok(Arc::clone(kept().entry(dissecting).or_insert_with(|| made)))
     }
 
     /// The unknowns, in the order of every solution's values.

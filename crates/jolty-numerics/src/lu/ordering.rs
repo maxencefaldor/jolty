@@ -508,6 +508,22 @@ impl Ordering {
         self.above.entries.len()
     }
 
+    /// The positions of its largest diagonal block.
+    #[must_use]
+    pub fn largest_block(&self) -> usize {
+        self.blocks
+            .windows(2)
+            .map(|block| block[1] - block[0])
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether it orders any block by nested dissection.
+    #[must_use]
+    pub fn is_dissected(&self) -> bool {
+        !self.dissections.is_empty()
+    }
+
     /// The most positions of an interior of a dissected block, if the ordering was
     /// [dissected](Ordering::dissected) for any: its [`Dissecting::interiors`].
     #[must_use]

@@ -114,7 +114,7 @@ class Thresholds(BaseModel):
 
     min_solves_per_task: int | None = Field(default=None, ge=1)
     min_instances_per_task: int | None = Field(default=None, ge=1)
-    min_unknowns_inside: int | None = Field(default=None, ge=1)
+    min_unknowns_per_task: int | None = Field(default=None, ge=1)
     max_unknowns_per_interior: int | None = Field(default=None, ge=1)
 
 

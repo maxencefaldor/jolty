@@ -5,9 +5,9 @@ On the random circuits of `strategies`, an operating point, a frequency response
 noise at a net and the sensitivities at the operating point find the same bits on 1, 2,
 3 and 8 threads, as the engine spreads each analysis's frequencies, right-hand sides,
 device instances and unknowns over them, as on one thread unspread; and the same bits
-again on each, their factorizations dissected into interiors of one unknown, as on one
-thread dissected; so does ``ac_wide``'s response at 10,000 frequencies, run from
-Python. A Monte Carlo sample is
+again on each, their factorizations ordered for interiors of one unknown, which
+dissects each block whose elimination that makes cheaper, as on one thread; so does
+``ac_wide``'s response at 10,000 frequencies, run from Python. A Monte Carlo sample is
 a function of its seed, its index and the names of its parts alone, so it is the same
 drawn alone or among others, and a part added leaves every other part's draws alone.
 """
@@ -47,7 +47,7 @@ THREADS = (1, 2, 3, 8)
 
 SPREAD = Options(
     parallelism=Parallelism(
-        min_solves_per_task=1, min_instances_per_task=1, min_unknowns_inside=1
+        min_solves_per_task=1, min_instances_per_task=1, min_unknowns_per_task=1
     )
 )
 """Options that spread every kind of a run's work over its threads, however small."""
@@ -55,7 +55,8 @@ SPREAD = Options(
 DISSECTED = Options(
     parallelism=dataclasses.replace(SPREAD.parallelism, max_unknowns_per_interior=1)
 )
-"""The options of `SPREAD`, the factorization dissected as far as each block splits."""
+"""The options of `SPREAD`, the factorization dissected as far as each block splits,
+wherever that makes its elimination cheaper."""
 
 FIXTURES = Path(__file__).parent.parent / "benchmarks" / "speed" / "circuits"
 """The circuits of the benchmarks."""
@@ -135,7 +136,9 @@ def test_ac_wide_finds_the_same_bits_spread_over_threads() -> None:
 
 
 def test_a_threshold_is_a_count_of_one_or_more() -> None:
-    assert Parallelism(min_unknowns_inside=1).to_json() == {"min_unknowns_inside": 1}
+    assert Parallelism(min_unknowns_per_task=1).to_json() == {
+        "min_unknowns_per_task": 1
+    }
     assert Options().to_json() == {}
     with pytest.raises(ValueError, match="min_solves_per_task is 1 or more, not 0"):
         Parallelism(min_solves_per_task=0)

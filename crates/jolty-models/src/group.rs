@@ -951,6 +951,18 @@ impl Groups {
         self.kernels.is_empty()
     }
 
+    /// The instances each evaluation evaluates: those of the groups that are not linear,
+    /// as a linear group's are evaluated once a run, for their entries, and each
+    /// evaluation takes their residuals and charges from them.
+    #[must_use]
+    pub fn evaluated(&self) -> usize {
+        self.kernels
+            .iter()
+            .filter(|group| !group.linear)
+            .map(|group| group.members.len())
+            .sum()
+    }
+
     /// The devices of each group's instances, by index, group after group.
     pub fn members(&self) -> impl Iterator<Item = &[usize]> {
         self.kernels.iter().map(|group| group.members.as_slice())
@@ -999,12 +1011,31 @@ pub enum Changed {
     Parameters,
 }
 
-/// How a run of the groups splits its work among the threads of the current rayon pool:
-/// the instances of a group a task evaluates.
+/// How a run splits a kind of its work among the threads of the current rayon pool: into
+/// tasks of at least `least` items each, such as a group's instances, and at most one a
+/// thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
-    /// The instances a task evaluates.
-    pub instances: NonZeroUsize,
+    /// The fewest items a task takes.
+    pub least: NonZeroUsize,
+    /// The threads the tasks share.
+    pub threads: NonZeroUsize,
+}
+
+impl Tasks {
+    /// How many tasks `items` items split into: one a thread, each of at least
+    /// [`Tasks::least`] items, and one when they fill fewer than two.
+    #[must_use]
+    pub fn count(&self, items: usize) -> usize {
+        self.threads.get().min(items / self.least).max(1)
+    }
+
+    /// How many of `items` items each of their [`Tasks::count`] tasks takes, the last the
+    /// rest.
+    #[must_use]
+    pub fn size(&self, items: usize) -> usize {
+        items.div_ceil(self.count(items)).max(1)
+    }
 }
 
 /// The slab: each instance's block of residuals, scales and charges of its local unknowns,
@@ -1460,7 +1491,8 @@ impl Runs {
     /// Evaluates every instance of `groups` at `input` and assembles their contributions in
     /// `into`, whatever it held: serially without `tasks`, `into` zeroed, the base added to
     /// it and each instance's block added as soon as it is written, and else in parallel,
-    /// every group at once and each in the tasks of instances `tasks` sets, every block
+    /// every group at once, each that is not linear in the tasks of instances `tasks`
+    /// sets and each linear one in one, every block
     /// written first and then gathered into `into`, each value from zero, the base's first,
     /// as the threads take them. A linear instance's block keeps its entries, which the base
     /// sums, and its residuals, their scales and its charges come from them. Returns
@@ -1509,11 +1541,18 @@ impl Runs {
         // Each group writes blocks of its own, and says in a flag of its own whether it
         // limited, so the groups evaluate at once, as they would one after another.
         self.limited.resize(groups.kernels.len(), false);
-        let per_task = tasks.instances.get();
         rayon::scope(|scope| {
             for ((group, run), limited) in runs.zip(&mut self.limited) {
                 *limited = false;
                 if let Some(blocks) = blocks(group) {
+                    // A linear group's instances are not evaluated, so one task takes its
+                    // rows.
+                    let members = group.members.len();
+                    let per_task = if group.linear {
+                        members.max(1)
+                    } else {
+                        tasks.size(members)
+                    };
                     scope.spawn(move |_| {
                         *limited = run.evaluate(group, input, blocks, None, per_task);
                     });

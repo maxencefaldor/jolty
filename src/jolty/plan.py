@@ -363,37 +363,46 @@ type Analysis = (
 
 @dataclass(frozen=True, slots=True)
 class Parallelism:
-    """How a run spreads its own work across the engine's threads; none by default.
+    """How a run spreads its own work across the engine's threads.
 
-    Each kind of work spreads only once its threshold is set: the frequencies of a
-    run's small-signal analyses and the right-hand sides of its sensitivities, in tasks
-    of at least `min_solves_per_task` each; its device instances, in tasks of
-    `min_instances_per_task`; the work of its Newton iteration and its transient's
-    step control on each unknown, once the circuit has `min_unknowns_inside` unknowns,
-    in chunks of 1,024 its threads take as they free; and the factorization of its
-    matrix, each block of more than `max_unknowns_per_interior` unknowns ordered by
-    nested dissection into interiors of at most as many and the separators between
-    them. Spreading work costs the time of waking threads, which a small run's work
-    does not repay, so a run left to the defaults does all its work on its own thread.
-    A batch runs each run on one thread whenever it has a run for every thread. Every
-    result is the same bits however the work is split, and no setting but
-    `max_unknowns_per_interior` changes any: that one orders the factorization's
-    operations otherwise, so results agree with those of the serial factorization to
-    within its rounding. The threads are the engine's own, the setting `threads` or
-    [`threads`][jolty.simulate.threads].
+    Each kind of work spreads in tasks of at least its threshold, its least size per
+    task, once it fills such a task for every thread the run may use, and stays on the
+    run's own thread for less: the
+    frequencies of a run's small-signal analyses and the right-hand sides of its
+    sensitivities, in tasks of at least `min_solves_per_task`; each group of its device
+    instances, in tasks of at least `min_instances_per_task`, but a linear one's, which
+    are evaluated once a run, for their entries; and the work of its Newton
+    iteration and its transient's step control on each unknown and each stored entry of
+    its matrix, in tasks of at least `min_unknowns_per_task`, in whole chunks of 1,024
+    its threads take as they free. Each block of its matrix of more than
+    `max_unknowns_per_interior` unknowns is ordered by nested dissection into interiors
+    of at most as many and the separators between them, which factor at once, wherever
+    that costs its elimination fewer multiply-adds than the minimum degree ordering. A
+    run spreads over at most `max_threads` of the engine's threads, the setting
+    `threads` or [`threads`][jolty.simulate.threads], and over all of them by default; a
+    batch runs each run on one thread whenever it has a run for every thread. Each
+    setting left out but `max_threads` takes its break-even on the threads the run may
+    use, [`BREAK_EVENS`][jolty.plan.BREAK_EVENS]. Every result is the same bits however
+    the work is split, and no setting but `max_unknowns_per_interior` changes any: that
+    one orders the factorization's operations otherwise, so results agree with those of
+    another to within its rounding, as they do on another number of threads where its
+    default dissects a block.
 
     Examples:
         >>> Parallelism(min_solves_per_task=16).to_json()
         {'min_solves_per_task': 16}
+        >>> Parallelism(max_threads=1).to_json()
+        {'max_threads': 1}
     """
 
+    max_threads: int | None = None
     min_solves_per_task: int | None = None
     min_instances_per_task: int | None = None
-    min_unknowns_inside: int | None = None
+    min_unknowns_per_task: int | None = None
     max_unknowns_per_interior: int | None = None
 
     def __post_init__(self) -> None:
-        """Checks that each threshold given is a count of one or more.
+        """Checks that each setting given is a count of one or more.
 
         Raises:
             ValueError: When one is below one.
@@ -405,7 +414,7 @@ class Parallelism:
                 raise ValueError(message)
 
     def to_json(self) -> dict[str, JsonValue]:
-        """The thresholds in the engine's format, without those left to defaults."""
+        """The settings in the engine's format, without those left to defaults."""
         values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
 
@@ -418,11 +427,25 @@ DEFAULTS: Final[Mapping[str, float]] = MappingProxyType(
     }
 )
 """The engine's default of each numerical option of [`Options`][jolty.plan.Options], by
-name, SPICE's: what an option left unset takes, as the engine defines it.
+name, SPICE's: what an option left unset takes, as the engine defines it; those of its
+[`Parallelism`][jolty.plan.Parallelism] are [`BREAK_EVENS`][jolty.plan.BREAK_EVENS].
 
 Examples:
     >>> DEFAULTS["charge_tolerance"]
     1e-14
+"""
+
+BREAK_EVENS: Final[Mapping[str, tuple[int | None, ...]]] = MappingProxyType(
+    {name: tuple(values) for name, values in json.loads(_core.break_evens()).items()}
+)
+"""The break-evens each threshold of [`Parallelism`][jolty.plan.Parallelism] left unset
+takes, as the engine defines them: under ``"threads"``, the numbers of threads they were
+measured on, and under each threshold's name, its break-even on each, none where no size
+measured paid; a run takes the one measured on the most threads it may use or fewer.
+
+Examples:
+    >>> BREAK_EVENS["threads"]
+    (2, 4, 8, 64)
 """
 
 

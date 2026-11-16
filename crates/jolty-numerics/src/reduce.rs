@@ -20,10 +20,12 @@ pub fn sum(count: usize, term: impl Fn(usize) -> f64) -> f64 {
     (0..count.div_ceil(CHUNK)).fold(0.0, |total, chunk| total + chunk_sum(chunk, count, &term))
 }
 
-/// The sum [`sum`] gives, its chunks added on the threads of the current rayon pool.
-pub fn sum_in_parallel(count: usize, term: impl Fn(usize) -> f64 + Sync) -> f64 {
+/// The sum [`sum`] gives, its chunks added on the threads of the current rayon pool, at
+/// least `least` of them a task.
+pub fn sum_in_parallel(count: usize, term: impl Fn(usize) -> f64 + Sync, least: usize) -> f64 {
     let totals: Vec<f64> = (0..count.div_ceil(CHUNK))
         .into_par_iter()
+        .with_min_len(least.max(1))
         .map(|chunk| chunk_sum(chunk, count, &term))
         .collect();
     totals.into_iter().fold(0.0, |total, chunk| total + chunk)
@@ -102,18 +104,20 @@ mod tests {
     use super::*;
 
     proptest! {
-        /// Summed on 1 to 8 threads, the terms give the bits one thread gives.
+        /// Summed on 1 to 8 threads, in tasks of 1 to 3 chunks at least, the terms give the
+        /// bits one thread gives.
         #[test]
         fn a_sum_on_many_threads_is_the_sum_on_one_bit_for_bit(
             terms in proptest::collection::vec(-1e3..1e3f64, 0..5000),
             threads in 1..9usize,
+            least in 1..4usize,
         ) {
             let serial = sum(terms.len(), |index| terms[index]);
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .expect("a pool");
-            let parallel = pool.install(|| sum_in_parallel(terms.len(), |index| terms[index]));
+            let parallel = pool.install(|| sum_in_parallel(terms.len(), |index| terms[index], least));
             prop_assert_eq!(serial.to_bits(), parallel.to_bits());
         }
     }

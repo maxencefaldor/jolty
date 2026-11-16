@@ -173,9 +173,12 @@ impl Simulator {
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let checked = options.check().and_then(|()| {
-            let (interiors, threads) = options.parallelism.factorization();
-            let ordering = self.elaborated.ordering(interiors)?;
-            self.state.solver.order(&ordering, threads);
+            let parallelism = &options.parallelism;
+            let dissecting = parallelism.dissecting(self.elaborated.largest_block());
+            let ordering = self.elaborated.ordering(dissecting)?;
+            self.state
+                .solver
+                .order(&ordering, parallelism.factorization(&ordering));
             Ok(())
         });
         if checked.is_ok() {

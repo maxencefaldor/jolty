@@ -95,23 +95,28 @@ _TRACES_DESCRIPTION = (
 )
 _SOLVES_DESCRIPTION = (
     "The fewest frequencies or right-hand sides a task takes when a run spreads its "
-    "small-signal analyses and sensitivities across threads; replaces the plan's. "
-    "No result depends on it."
+    "small-signal analyses and sensitivities across threads, once they fill one for "
+    "every thread; "
+    "replaces the plan's. No result depends on it."
 )
 _INSTANCES_DESCRIPTION = (
-    "The device instances a task evaluates when a run spreads its devices' evaluation "
-    "across threads; replaces the plan's. No result depends on it."
+    "The fewest device instances of a group a task evaluates when a run spreads its "
+    "devices' evaluation across threads, once they fill one for every thread, a linear "
+    "device, "
+    "evaluated once a run, counting none; replaces the plan's. No result depends on it."
 )
-_INSIDE_DESCRIPTION = (
-    "The fewest unknowns a circuit has for a run to spread the work of its Newton "
-    "iteration and its step control on each unknown across threads; replaces the "
-    "plan's. No result depends on it."
+_UNKNOWNS_DESCRIPTION = (
+    "The fewest unknowns, or stored entries of the matrix, a task takes when a run "
+    "spreads the work of its Newton iteration and its step control on each across "
+    "threads, once they fill one for every thread; replaces the plan's. No result "
+    "depends on it."
 )
 _INTERIORS_DESCRIPTION = (
-    "The most unknowns of an interior when a run factors its matrix in parallel, each "
-    "large block ordered by nested dissection into interiors and the separators "
-    "between them; replaces the plan's. It orders the factorization's operations, so "
-    "results depend on it in their last digits, but not on the threads."
+    "The most unknowns of an interior when a run orders a block of its matrix by "
+    "nested dissection into interiors and the separators between them, which factor "
+    "in parallel, as it does each larger block whose elimination that makes cheaper; "
+    "replaces the plan's. It orders the factorization's operations, so results "
+    "depend on it in their last digits, but not on the threads."
 )
 _SAMPLES_DESCRIPTION = (
     "Run only the samples of the plan's Monte Carlo analysis from START up to STOP, "
@@ -320,8 +325,8 @@ class SimulateRequest(_Model):
     min_instances_per_task: int | None = Field(
         default=None, ge=1, description=_INSTANCES_DESCRIPTION
     )
-    min_unknowns_inside: int | None = Field(
-        default=None, ge=1, description=_INSIDE_DESCRIPTION
+    min_unknowns_per_task: int | None = Field(
+        default=None, ge=1, description=_UNKNOWNS_DESCRIPTION
     )
     max_unknowns_per_interior: int | None = Field(
         default=None, ge=1, description=_INTERIORS_DESCRIPTION
@@ -534,7 +539,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         parallelism=runner.Thresholds(
             min_solves_per_task=request.min_solves_per_task,
             min_instances_per_task=request.min_instances_per_task,
-            min_unknowns_inside=request.min_unknowns_inside,
+            min_unknowns_per_task=request.min_unknowns_per_task,
             max_unknowns_per_interior=request.max_unknowns_per_interior,
         ),
         samples=None if taken is None else (taken.start, taken.stop),

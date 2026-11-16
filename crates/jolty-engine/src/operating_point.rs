@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 use jolty_models::{Input, LogicLevel, Nature};
 use jolty_numerics::Complex64;
@@ -23,9 +24,7 @@ use crate::logic::{Events, ExcursionKind, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::solver::Solver;
 use crate::state::{Held, Warm};
-use crate::{
-    Options, Parallelism, ParameterId, RecordedValues, SimulationError, Simulator, Values,
-};
+use crate::{Options, ParameterId, RecordedValues, SimulationError, Simulator, Values};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_STEPPED: f64 = 1e-2;
@@ -116,24 +115,35 @@ impl Remembered {
         &self.point.values
     }
 
-    /// Whether it was solved with the sources `held` under `options`, so that solving
-    /// again would find it again.
-    fn solved_under(&self, held: &BTreeMap<Held, f64>, options: &Options) -> bool {
-        self.held == *held && self.options == read_at_dc(options)
+    /// Whether it was solved with the sources `held` under `options`, with the ordering
+    /// `solver` factors with, so that solving again would find it again.
+    fn solved_under(
+        &self,
+        (held, solver): (&BTreeMap<Held, f64>, &Solver<f64>),
+        options: &Options,
+    ) -> bool {
+        self.solves_alike((held, solver), options) && self.options == read_at_dc(options)
     }
 
-    /// Whether it solves the DC equations of the sources `held` and of `options`, which
-    /// may differ from those it was solved under only in where Newton iteration stops.
-    fn solves_alike(&self, held: &BTreeMap<Held, f64>, options: &Options) -> bool {
-        self.held == *held && read_by_equations(&self.options) == read_by_equations(options)
+    /// Whether it solves the DC equations of the sources `held` and of `options` with the
+    /// ordering `solver` factors with, whose operations order its rounding; `options` may
+    /// differ from those it was solved under only in where Newton iteration stops.
+    fn solves_alike(
+        &self,
+        (held, solver): (&BTreeMap<Held, f64>, &Solver<f64>),
+        options: &Options,
+    ) -> bool {
+        self.held == *held
+            && Arc::ptr_eq(self.solver.ordering(), solver.ordering())
+            && read_by_equations(&self.options) == read_by_equations(options)
     }
 }
 
 /// `options` as a DC solution reads them: those only a transient reads take their
 /// defaults, and so do what the results record, which is read of the devices evaluated at
-/// the solution, and the parallelism, but for the interiors its factorization is dissected
-/// into, which order its operations; so that options alike in every other find the same DC
-/// solution and the same operating point.
+/// the solution, and the parallelism, whose ordering, which orders the factorization's
+/// operations, is compared apart; so that options alike in every other, with the same
+/// ordering, find the same DC solution and the same operating point.
 fn read_at_dc(options: &Options) -> Options {
     let unread = Options::default();
     Options {
@@ -143,10 +153,7 @@ fn read_at_dc(options: &Options) -> Options {
         max_memory: unread.max_memory,
         record: unread.record,
         profile: unread.profile,
-        parallelism: Parallelism {
-            max_unknowns_per_interior: options.parallelism.max_unknowns_per_interior,
-            ..unread.parallelism
-        },
+        parallelism: unread.parallelism,
         ..options.clone()
     }
 }
@@ -242,7 +249,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<(Solved, OperatingPointResult), SimulationError> {
         if let Some(remembered) = &self.state.remembered
-            && remembered.solved_under(&self.state.held, options)
+            && remembered.solved_under((&self.state.held, &self.state.solver), options)
         {
             let (solved, mut point) = (remembered.solved.clone(), remembered.point.clone());
             self.restore(options);
@@ -302,9 +309,11 @@ impl Simulator {
             .state
             .remembered
             .as_ref()
-            .filter(|remembered| remembered.solves_alike(&self.state.held, options))
+            .filter(|remembered| {
+                remembered.solves_alike((&self.state.held, &self.state.solver), options)
+            })
             .map(|remembered| {
-                let same = remembered.solved_under(&self.state.held, options);
+                let same = remembered.solved_under((&self.state.held, &self.state.solver), options);
                 (same, remembered.solved.clone())
             });
         if let Some((true, solved)) = &start {
