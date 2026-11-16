@@ -1,0 +1,31 @@
+// jolty's junction diode at its defaults, its steps limited by the simulator's own
+// `"pnjlim"`, jolty's limiting of a junction, as the hand-written diode in
+// `crates/jolty-models/src/kernel/diode.rs` limits them: Copyright 1985 - 2018,
+// Regents of the University of California and others. Used under ngspice's Modified BSD license, which
+// the repository's `NOTICE` reproduces.
+
+`include "disciplines.vams"
+`include "constants.vams"
+
+module diode(anode, cathode);
+    inout anode, cathode;
+    electrical anode, cathode;
+
+    (* desc = "The saturation current", units = "A" *)
+    parameter real saturation_current = 1e-14 from (0:inf);
+
+    real slope, critical, vd, id, ratio;
+
+    analog begin
+        slope = $vt;
+        critical = slope * ln(slope / (`M_SQRT2 * saturation_current));
+        vd = $limit(V(anode, cathode), "pnjlim", slope, critical);
+        if (vd >= -(slope * 3))
+            id = saturation_current * (exp(vd / slope) - 1);
+        else begin
+            ratio = slope * 3 / (vd * `M_E);
+            id = -saturation_current * (ratio * ratio * ratio + 1);
+        end
+        I(anode, cathode) <+ id + $simparam("gmin") * vd;
+    end
+endmodule

@@ -11,14 +11,17 @@ use crate::Real;
 
 /// A value and its derivatives with respect to `N` variables.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Dual<R: Real, const N: usize> {
-    pub(crate) value: R,
-    pub(crate) gradient: [R; N],
+pub struct Dual<R: Real, const N: usize> {
+    /// The value.
+    pub value: R,
+    /// Its derivative with respect to each variable.
+    pub gradient: [R; N],
 }
 
 impl<R: Real, const N: usize> Dual<R, N> {
     /// A constant, whose derivatives are all zero.
-    pub(crate) fn constant(value: R) -> Self {
+    #[must_use]
+    pub fn constant(value: R) -> Self {
         Self {
             value,
             gradient: [R::constant(0.0); N],
@@ -26,12 +29,14 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// The constant `value`, a plain number.
-    pub(crate) fn number(value: f64) -> Self {
+    #[must_use]
+    pub fn number(value: f64) -> Self {
         Self::constant(R::constant(value))
     }
 
     /// The `N` variables at `values`, each the derivative of itself only.
-    pub(crate) fn variables(values: [f64; N]) -> [Self; N] {
+    #[must_use]
+    pub fn variables(values: [f64; N]) -> [Self; N] {
         let mut variables = values.map(|value| Self::constant(R::constant(value)));
         for (index, variable) in variables.iter_mut().enumerate() {
             if let Some(derivative) = variable.gradient.get_mut(index) {
@@ -42,7 +47,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// `f(self)`, given `f`'s value and derivative at `self`.
-    pub(crate) fn chain(self, (value, slope): (R, R)) -> Self {
+    #[must_use]
+    pub fn chain(self, (value, slope): (R, R)) -> Self {
         Self {
             value,
             gradient: self.gradient.map(|derivative| slope * derivative),
@@ -50,7 +56,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// `e` raised to the value.
-    pub(crate) fn exp(self) -> Self {
+    #[must_use]
+    pub fn exp(self) -> Self {
         let exponential = self.value.exp();
         self.chain((exponential, exponential))
     }
@@ -69,20 +76,23 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// The reciprocal.
-    pub(crate) fn recip(self) -> Self {
+    #[must_use]
+    pub fn recip(self) -> Self {
         let reciprocal = self.value.recip();
         self.chain((reciprocal, -(reciprocal * reciprocal)))
     }
 
     /// The square root.
-    pub(crate) fn sqrt(self) -> Self {
+    #[must_use]
+    pub fn sqrt(self) -> Self {
         let root = self.value.sqrt();
         self.chain((root, R::constant(0.5) / root))
     }
 
     /// The larger of `self` and the constant `floor`: the floor itself, with no
     /// derivatives, where `self` falls below it.
-    pub(crate) fn max(self, floor: f64) -> Self {
+    #[must_use]
+    pub fn max(self, floor: f64) -> Self {
         if self.value.value() < floor {
             Self::number(floor)
         } else {
@@ -91,7 +101,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// The product with `factor`, a number that the variables do not move.
-    pub(crate) fn scale(self, factor: R) -> Self {
+    #[must_use]
+    pub fn scale(self, factor: R) -> Self {
         Self {
             value: self.value * factor,
             gradient: self.gradient.map(|derivative| derivative * factor),
@@ -101,7 +112,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
     /// The quotient by `divisor`, a number that the variables do not move: the value
     /// divided, and the derivatives multiplied by the divisor's reciprocal, so that one
     /// division serves them all.
-    pub(crate) fn divide(self, divisor: R) -> Self {
+    #[must_use]
+    pub fn divide(self, divisor: R) -> Self {
         let reciprocal = divisor.recip();
         Self {
             value: self.value / divisor,
@@ -110,7 +122,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
     }
 
     /// The sum with `term`, a number that the variables do not move.
-    pub(crate) fn plus(self, term: R) -> Self {
+    #[must_use]
+    pub fn plus(self, term: R) -> Self {
         Self {
             value: self.value + term,
             ..self
@@ -119,7 +132,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
 
     /// The value moved by the derivatives along `step`: how a value evaluated at limited
     /// variables extends linearly to the applied ones.
-    pub(crate) fn extend(&self, step: [f64; N]) -> R {
+    #[must_use]
+    pub fn extend(&self, step: [f64; N]) -> R {
         self.value
             + self
                 .gradient

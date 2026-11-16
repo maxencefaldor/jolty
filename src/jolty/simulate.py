@@ -846,8 +846,8 @@ class Simulation:
         found = self._recordings.get((record, regions))
         if found is not None:
             return found
-        devices, composites = self._core.recording(record, regions)
-        thermal = {name for name, heat in composites if heat}
+        devices, summed_terminals = self._core.recording(record, regions)
+        thermal = {name for name, heat in summed_terminals if heat}
         recorded = []
         for (
             path,
@@ -877,7 +877,7 @@ class Simulation:
             )
         found = results.Recording(
             tuple(recorded),
-            tuple(name for name, _ in composites),
+            tuple(name for name, _ in summed_terminals),
             frozenset(thermal),
         )
         self._recordings[record, regions] = found

@@ -50,6 +50,10 @@ ngspice
 jolty's diode, Gummel-Poon bipolar transistor, VBIC 1.2 transistor, JFET, MOSFETs of levels 1
 and 3, VDMOS, and the junctions they share, in crates/jolty-models/src/kernel/, follow ngspice
 47's implementations of them: their equations, constants, temperature scaling and limiting.
+The Verilog-A diode in crates/jolty-veriloga/models/diode.va, and the limited diode in
+crates/jolty-veriloga/tests/fixtures/limited_diode.va, follow the same diode and junction,
+and so do the kernels compiled from them, in crates/jolty-veriloga/src/kernels/diode.rs and
+crates/jolty-veriloga/tests/fixtures/limited_diode.rs.
 
 Copyright 1985 - 2018, Regents of the University of California and others
 

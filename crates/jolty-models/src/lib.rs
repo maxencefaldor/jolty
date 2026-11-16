@@ -28,8 +28,8 @@ mod kernel;
 mod logic;
 mod noise;
 mod surroundings;
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod topology;
 pub mod waveform;
 
@@ -56,10 +56,14 @@ pub use kernel::controlled::{
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
 pub use kernel::diode::{Diode, DiodeParameters};
+pub use kernel::dual::Dual;
 pub use kernel::foundry::{FoundryMosfet, FoundryMosfetParameters};
 pub use kernel::heat::{Heating, Thermal};
 pub use kernel::jfet::{Channel, Jfet, JfetParameters};
-pub use kernel::junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use kernel::junction::{
+    BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, limit_gate, limit_junction,
+    thermal_voltage,
+};
 pub use kernel::memristor::{
     CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,
     VoltageControlledMemristor, VoltageControlledMemristorParameters,

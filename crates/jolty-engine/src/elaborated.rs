@@ -24,7 +24,7 @@ use jolty_models::{
 use jolty_numerics::{Condensation, Dissecting, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
-use crate::elaborate::{self, Composite, ElaborationError, ElaborationProblem, Location};
+use crate::elaborate::{self, ElaborationError, ElaborationProblem, Location, SummedTerminal};
 use crate::logic::LogicSystem;
 use crate::values::{ParameterId, Table, Values, each_number, each_number_mut};
 use crate::{SimulationError, Substitute};
@@ -79,7 +79,7 @@ pub struct Elaborated {
     pub(crate) temperature: f64,
     /// The terminals of component instances and logic devices, each the sum of device
     /// terminals.
-    pub(crate) composites: Vec<Composite>,
+    pub(crate) summed_terminals: Vec<SummedTerminal>,
     /// The index of the devices' paths and the table of their numbers, made the first time
     /// either is read, as a single run of a circuit from its JSON text reads neither: a
     /// function of the rest, which they never change.
@@ -90,7 +90,7 @@ pub struct Elaborated {
     dissected: Mutex<BTreeMap<Dissecting, Arc<Ordering>>>,
 }
 
-/// The index of an elaborated circuit's devices and composite terminals by path and name,
+/// The index of an elaborated circuit's devices and summed terminals by path and name,
 /// and the table of its devices' numbers in the order of their paths.
 #[derive(Debug, Clone)]
 struct Lookup {
@@ -99,9 +99,9 @@ struct Lookup {
 }
 
 impl Lookup {
-    /// The lookup of `devices` and `composites`.
-    fn new(devices: &[Placed], composites: &[Composite]) -> Self {
-        let index = Index::new(devices, composites);
+    /// The lookup of `devices` and `summed_terminals`.
+    fn new(devices: &[Placed], summed_terminals: &[SummedTerminal]) -> Self {
+        let index = Index::new(devices, summed_terminals);
         let parameters: Vec<Option<&Parameters>> = devices.iter().map(Placed::parameters).collect();
         let table = Table::new(&parameters, &index.devices);
         Self { index, table }
@@ -307,24 +307,25 @@ struct Layout {
     regions: Regions,
 }
 
-/// The devices and the composite terminals of a circuit, each by index, sorted by path and
+/// The devices and the summed terminals of a circuit, each by index, sorted by path and
 /// by name, to find one by either.
 #[derive(Debug, Clone)]
 struct Index {
     devices: Vec<usize>,
-    composites: Vec<usize>,
+    summed_terminals: Vec<usize>,
 }
 
 impl Index {
-    /// The index of `devices` and `composites`, whose paths and names are each unique.
-    fn new(devices: &[Placed], composites: &[Composite]) -> Self {
+    /// The index of `devices` and `summed_terminals`, whose paths and names are each
+    /// unique.
+    fn new(devices: &[Placed], summed_terminals: &[SummedTerminal]) -> Self {
         let mut by_path: Vec<usize> = (0..devices.len()).collect();
         by_path.sort_unstable_by(|&a, &b| devices[a].path().cmp(devices[b].path()));
-        let mut by_name: Vec<usize> = (0..composites.len()).collect();
-        by_name.sort_unstable_by(|&a, &b| composites[a].name.cmp(&composites[b].name));
+        let mut by_name: Vec<usize> = (0..summed_terminals.len()).collect();
+        by_name.sort_unstable_by(|&a, &b| summed_terminals[a].name.cmp(&summed_terminals[b].name));
         Self {
             devices: by_path,
-            composites: by_name,
+            summed_terminals: by_name,
         }
     }
 }
@@ -501,7 +502,7 @@ impl Elaborated {
     /// `temperature`.
     pub(crate) fn assemble(
         bound: Bound,
-        (logic, composites, reference): (LogicSystem, Vec<Composite>, Name),
+        (logic, summed_terminals, reference): (LogicSystem, Vec<SummedTerminal>, Name),
         temperature: f64,
     ) -> (Self, Devices) {
         let elaborated = Self {
@@ -517,7 +518,7 @@ impl Elaborated {
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature,
-            composites,
+            summed_terminals,
             lookup: OnceLock::new(),
             dissected: Mutex::new(BTreeMap::new()),
         };
@@ -749,7 +750,7 @@ impl Elaborated {
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature: self.temperature,
-            composites: self.composites.clone(),
+            summed_terminals: self.summed_terminals.clone(),
             lookup: self.lookup.clone(),
             dissected: Mutex::new(BTreeMap::new()),
         };
@@ -969,7 +970,7 @@ impl Elaborated {
     /// The index of the devices' paths and the table of their numbers.
     fn lookup(&self) -> &Lookup {
         self.lookup
-            .get_or_init(|| Lookup::new(&self.devices, &self.composites))
+            .get_or_init(|| Lookup::new(&self.devices, &self.summed_terminals))
     }
 
     /// Where the device at `path` is: its path and the script line that placed it.
@@ -1004,15 +1005,15 @@ impl Elaborated {
             ));
         }
         let name = format!("{instance}.{terminal}");
-        let composites = &self.composites;
+        let summed_terminals = &self.summed_terminals;
         let found = self
             .lookup()
             .index
-            .composites
-            .binary_search_by(|&composite| composites[composite].name.cmp(&name))
+            .summed_terminals
+            .binary_search_by(|&summed_terminal| summed_terminals[summed_terminal].name.cmp(&name))
             .ok()?;
-        let composite = &composites[self.lookup().index.composites[found]];
-        Some((composite.node, composite.thermal))
+        let summed_terminal = &summed_terminals[self.lookup().index.summed_terminals[found]];
+        Some((summed_terminal.node, summed_terminal.thermal))
     }
 }
 

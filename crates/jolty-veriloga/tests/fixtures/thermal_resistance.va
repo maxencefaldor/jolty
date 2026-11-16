@@ -1,0 +1,14 @@
+// jolty's thermal resistance in Verilog-A: a heat flow between two thermal nodes, in
+// proportion to the temperature between them.
+
+`include "disciplines.vams"
+
+module thermal_resistance(a, b);
+    inout a, b;
+    thermal a, b;
+
+    (* desc = "The resistance", units = "K/W" *)
+    parameter real resistance = 1 from (0:inf);
+
+    analog Pwr(a, b) <+ Temp(a, b) / resistance;
+endmodule

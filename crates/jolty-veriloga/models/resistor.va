@@ -1,0 +1,61 @@
+// The resistor of jolty's library, written in Verilog-A after its hand-written kernel in
+// `crates/jolty-models/src/passive.rs`, operation for operation: Ohm's law, its
+// resistance drifting with temperature and changing with its voltage, and its thermal
+// and flicker noise, as ngspice's resistor makes them.
+
+`include "disciplines.vams"
+`include "constants.vams"
+
+module resistor(a, b);
+    inout a, b;
+    electrical a, b;
+    // The branch whose current is an unknown of its own, below jolty's small resistance.
+    branch (a, b) current;
+
+    (* desc = "The resistance at the nominal temperature", units = "ohms" *)
+    parameter real resistance = 1 from (0:inf);
+    (* desc = "The linear temperature coefficient tc1", units = "1/K" *)
+    parameter real temperature_coefficient = 0;
+    (* desc = "The quadratic temperature coefficient tc2", units = "1/K^2" *)
+    parameter real quadratic_temperature_coefficient = 0;
+    (* desc = "The exponential temperature coefficient tce: given, the resistance is multiplied by 1.01^(tce dT) instead of the polynomial", units = "%/K" *)
+    parameter real exponential_temperature_coefficient = 0;
+    (* desc = "The temperature the resistance was measured at, 27 C by default", units = "K" *)
+    parameter real nominal_temperature = `P_CELSIUS0 + 27 from (0:inf);
+    (* desc = "The linear voltage coefficient vc1", units = "1/V" *)
+    parameter real voltage_coefficient = 0;
+    (* desc = "The quadratic voltage coefficient vc2", units = "1/V^2" *)
+    parameter real quadratic_voltage_coefficient = 0;
+    (* desc = "The flicker noise coefficient KF" *)
+    parameter real flicker_coefficient = 0 from [0:inf);
+    (* desc = "The power of the current in the flicker noise, AF" *)
+    parameter real flicker_exponent = 1 from (0:inf);
+
+    real difference, factor, r, v, f, i;
+
+    analog begin
+        difference = $temperature - nominal_temperature;
+        if ($param_given(exponential_temperature_coefficient)) begin
+            if (temperature_coefficient != 0 || quadratic_temperature_coefficient != 0)
+                $error("an exponential temperature coefficient excludes the linear and quadratic ones");
+            factor = pow(1.01, exponential_temperature_coefficient * difference);
+        end else
+            factor = (temperature_coefficient + quadratic_temperature_coefficient * difference) * difference + 1;
+        if (factor == 0)
+            $error("the temperature coefficients scale the resistance to zero at %g K", $temperature);
+        r = resistance * factor;
+        v = V(a, b);
+        f = voltage_coefficient * v + quadratic_voltage_coefficient * (v * v) + 1;
+        if (abs(r) < $simparam("small_resistance")) begin
+            V(current) <+ r * f * I(current);
+            V(current) <+ white_noise(4 * `P_K * $temperature * abs(r * f), "thermal");
+            i = I(current);
+        end else begin
+            I(a, b) <+ 1 / (r * f) * v;
+            I(a, b) <+ white_noise(4 * `P_K * $temperature * abs(1 / (r * f)), "thermal");
+            i = 1 / (r * f) * v;
+        end
+        if (flicker_coefficient > 0)
+            I(a, b) <+ flicker_noise(flicker_coefficient * pow(abs(i), flicker_exponent), 1, "flicker");
+    end
+endmodule

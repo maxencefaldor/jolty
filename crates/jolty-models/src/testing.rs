@@ -1,10 +1,27 @@
-//! A bench that binds one device to unknowns of its own and evaluates it, for tests.
+//! A bench that binds one device to unknowns of its own and evaluates it, for tests: this
+//! crate's, and, through the `testing` feature, those of crates whose kernels implement
+//! its own, such as the kernels compiled from Verilog-A.
+
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    reason = "a bench fails the test that uses it"
+)]
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "most of the bench serves this crate's own tests")
+)]
 
 use jolty_numerics::{Pattern, PatternBuilder};
 
+// The cases and the laws serve this crate's own tests, not the bench it shares.
+#[cfg(test)]
 mod cases;
+#[cfg(test)]
 mod laws;
 
+#[cfg(test)]
 pub(crate) use laws::assert_mirrors;
 
 use crate::{
@@ -16,7 +33,7 @@ use crate::{
 /// One device whose terminals each connect to an unknown of their own, its instance in a
 /// group of its own.
 #[derive(Debug)]
-pub(crate) struct Bench {
+pub struct Bench {
     groups: Groups,
     runs: Runs,
     pattern: Pattern,
@@ -30,14 +47,19 @@ pub(crate) struct Bench {
 }
 
 /// What one evaluation of a bench's device produced, with dense matrices.
-pub(crate) struct Evaluation {
-    pub(crate) residual: Vec<f64>,
+pub struct Evaluation {
+    /// The residual of each unknown's equation.
+    pub residual: Vec<f64>,
     /// The largest magnitude of a term of each residual.
-    pub(crate) scale: Vec<f64>,
-    pub(crate) charge: Vec<f64>,
-    pub(crate) conductance: Vec<Vec<f64>>,
-    pub(crate) capacitance: Vec<Vec<f64>>,
-    pub(crate) limited: bool,
+    pub scale: Vec<f64>,
+    /// The charge of each unknown's equation.
+    pub charge: Vec<f64>,
+    /// The conductances, by row and column.
+    pub conductance: Vec<Vec<f64>>,
+    /// The capacitances, by row and column.
+    pub capacitance: Vec<Vec<f64>>,
+    /// Whether the device limited a step.
+    pub limited: bool,
 }
 
 /// The groups of one device of `model` with `parameters` at `temperature`, each terminal
@@ -93,19 +115,26 @@ impl Bench {
     }
 
     /// A bench for an instance of `K` with `parameters` at `temperature`, in kelvins.
-    pub(crate) fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self {
+    #[must_use]
+    pub fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self {
         Self::try_at::<K>(parameters, temperature).expect("valid parameters")
     }
 
-    pub(crate) fn try_at<K: Kernel>(
-        parameters: &str,
-        temperature: f64,
-    ) -> Result<Self, ParameterError> {
+    /// A bench as [`Bench::at`] makes, or why the parameters are out of range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when a parameter is out of range.
+    pub fn try_at<K: Kernel>(parameters: &str, temperature: f64) -> Result<Self, ParameterError> {
         Self::from_model(&Differentiable::<K>::new(), parameters, temperature)
     }
 
     /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
-    pub(crate) fn from_model(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when a parameter is out of range.
+    pub fn from_model(
         model: &dyn Model,
         parameters: &str,
         temperature: f64,
@@ -132,7 +161,9 @@ impl Bench {
         self
     }
 
-    pub(crate) fn unknowns(&self) -> Vec<&str> {
+    /// The names of the unknowns: the terminals', then the device's own.
+    #[must_use]
+    pub fn unknowns(&self) -> Vec<&str> {
         self.unknowns
             .iter()
             .map(|unknown| unknown.name.as_str())
@@ -149,7 +180,8 @@ impl Bench {
         self.groups.pivoted()
     }
 
-    pub(crate) fn evaluate(&mut self, x: &[f64]) -> Evaluation {
+    /// Evaluates the device at `x`, from what it remembers.
+    pub fn evaluate(&mut self, x: &[f64]) -> Evaluation {
         let time = self.transient.then_some(0.0);
         self.evaluate_with(&Input::new(x, time, 0.0))
     }
@@ -160,7 +192,7 @@ impl Bench {
     /// # Panics
     ///
     /// Panics if limiting has not settled after a hundred evaluations.
-    pub(crate) fn settle(&mut self, x: &[f64]) -> Evaluation {
+    pub fn settle(&mut self, x: &[f64]) -> Evaluation {
         for _ in 0..100 {
             let evaluation = self.evaluate(x);
             if !evaluation.limited {
@@ -170,12 +202,11 @@ impl Bench {
         panic!("limiting has not settled at {x:?}");
     }
 
-    pub(crate) fn evaluate_with(&mut self, input: &Input<'_>) -> Evaluation {
+    /// Evaluates the device at `input`, from what it remembers.
+    pub fn evaluate_with(&mut self, input: &Input<'_>) -> Evaluation {
         let n = self.unknowns.len();
-        let mut contributions = Contributions::new(&self.pattern);
-        let limited = self
-            .runs
-            .evaluate(&self.groups, input, &mut contributions, None);
+        let mut contributions = self.contributions();
+        let limited = self.evaluate_into(input, &mut contributions);
         let Contributions {
             residual,
             scale,
@@ -200,13 +231,27 @@ impl Bench {
         }
     }
 
+    /// Room for the device's contributions, as [`Bench::evaluate_into`] writes them.
+    #[must_use]
+    pub fn contributions(&self) -> Contributions {
+        Contributions::new(&self.pattern)
+    }
+
+    /// Evaluates the device at `input`, from what it remembers, into `contributions`,
+    /// whatever they held, and returns whether it limited a step: the evaluation alone,
+    /// which allocates nothing of the bench's.
+    pub fn evaluate_into(&mut self, input: &Input<'_>, contributions: &mut Contributions) -> bool {
+        self.runs.evaluate(&self.groups, input, contributions, None)
+    }
+
     /// The names of the variables the device computes.
     pub(crate) const fn variable_names(&self) -> &'static [&'static str] {
         self.variables
     }
 
     /// The variables the device computed at its last evaluation.
-    pub(crate) fn variables(&self) -> Vec<f64> {
+    #[must_use]
+    pub fn variables(&self) -> Vec<f64> {
         let mut values = vec![0.0; self.variables.len()];
         self.runs.variables(&self.groups, 0, &mut values);
         values
@@ -254,7 +299,8 @@ impl Bench {
     }
 
     /// The device's noise sources at `x`.
-    pub(crate) fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
+    #[must_use]
+    pub fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
         let mut sources = Vec::new();
         self.runs
             .noise(&self.groups, 0, &Input::new(x, None, 0.0), &mut sources);
@@ -357,17 +403,19 @@ fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
 
 /// A device of a model made from parameters, each of its terminals on an unknown of its
 /// own, at 30 kelvins above the reference temperature.
-struct Rig<'m> {
-    model: &'m dyn Model,
+pub struct Rig<'m> {
+    /// The model of the devices.
+    pub model: &'m dyn Model,
 }
 
 impl Rig<'_> {
     /// The temperature the rig's devices are at.
-    const TEMPERATURE: f64 = REFERENCE_TEMPERATURE + 30.0;
+    pub const TEMPERATURE: f64 = REFERENCE_TEMPERATURE + 30.0;
 
     /// The residuals, charges and conductances at `x` of the device made with
     /// `parameters`, its steps not limited.
-    fn plain(
+    #[must_use]
+    pub fn plain(
         &self,
         parameters: &jolty_ir::Parameters,
         (x, time): (&[f64], Option<f64>),
@@ -388,7 +436,8 @@ impl Rig<'_> {
     /// The residuals, charges and conductances at `x`, with their gradients with respect
     /// to the number at `parameter`, of the twin of the instance made with `parameters`,
     /// in a group of its own.
-    fn exact(
+    #[must_use]
+    pub fn exact(
         &self,
         parameters: &jolty_ir::Parameters,
         parameter: &str,
@@ -450,7 +499,7 @@ pub(crate) fn excitation_and_derivative(
 }
 
 /// Every number within `value`, by the keys and indices that reach it.
-fn numbers(value: &serde_json::Value, path: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
+pub fn numbers(value: &serde_json::Value, path: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
     match value {
         serde_json::Value::Number(_) => found.push(path.clone()),
         serde_json::Value::Object(object) => {
@@ -634,6 +683,7 @@ pub(crate) fn assert_close(actual: &[f64], expected: &[f64]) {
     assert!(close, "{actual:?} differs from {expected:?}");
 }
 
+#[cfg(test)]
 mod tests {
     use super::{Bench, REFERENCE_TEMPERATURE, assert_bench_jacobians_match, cases};
     use crate::{Input, Library, REGION};

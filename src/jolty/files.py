@@ -19,9 +19,10 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 16 of the format, which holds that provenance, the regions of operation
-each recorded transistor's model distinguishes, and the Newton iterations that found
-each operating point; a file of another version is not read.
+in version 17 of the format, which holds that provenance, the regions of operation
+each recorded transistor's model distinguishes, the Newton iterations that found each
+operating point, and each recording's summed terminals as its ``summed_terminals``; a
+file of another version is not read.
 
 Examples:
     >>> import tempfile
@@ -217,7 +218,7 @@ class _Recording(_Model):
     """What results recorded, as a [`Recording`][jolty.results.Recording]."""
 
     devices: tuple[_Device, ...] = ()
-    composites: tuple[str, ...] = ()
+    summed_terminals: tuple[str, ...] = ()
     thermal: tuple[str, ...] = ()
 
     @classmethod
@@ -235,7 +236,7 @@ class _Recording(_Model):
                 )
                 for device in recording.devices
             ),
-            composites=recording.composites,
+            summed_terminals=recording.summed_terminals,
             thermal=tuple(sorted(recording.thermal)),
         )
 
@@ -253,7 +254,7 @@ class _Recording(_Model):
                 )
                 for device in self.devices
             ),
-            self.composites,
+            self.summed_terminals,
             frozenset(self.thermal),
         )
 
@@ -394,7 +395,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[16] = 16
+    version: Literal[17] = 17
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]

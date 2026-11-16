@@ -129,7 +129,7 @@ impl RecordedSeries {
 /// analysis run with it holds each value.
 ///
 /// An observation's currents and charges hold each terminal of each recorded device, in
-/// order, then each recorded composite terminal, the sum of the device terminals behind it.
+/// order, then each recorded summed terminal, the sum of the device terminals behind it.
 /// Its conductances and capacitances hold, for each recorded device, the derivative of each
 /// of its equations with respect to each of its unknowns, row by row: its terminals, each
 /// on a node of its own, then its [internal unknowns](crate::Placed::internals). Its variables
@@ -141,8 +141,8 @@ pub struct Recording {
     /// [`Simulator::devices`], in order.
     pub devices: Vec<usize>,
     /// The terminals of component instances and logic devices recorded, by index among
-    /// [`Simulator::composites`], in order.
-    pub composites: Vec<usize>,
+    /// [`Simulator::summed_terminals`], in order.
+    pub summed_terminals: Vec<usize>,
     /// The transistors whose region of operation and margins alone are recorded, by index
     /// among [`Simulator::devices`], in order: those whose models distinguish regions and
     /// that `devices` leaves out, when the options ask for [`regions`](Options::regions).
@@ -158,8 +158,8 @@ impl Recording {
             devices: (0..devices.len())
                 .filter(|&index| recorded(index))
                 .collect(),
-            composites: (0..system.composites.len())
-                .filter(|&index| record.names(&system.composites[index].owner))
+            summed_terminals: (0..system.summed_terminals.len())
+                .filter(|&index| record.names(&system.summed_terminals[index].owner))
                 .collect(),
             regions: (0..devices.len())
                 .filter(|&index| {
@@ -293,7 +293,7 @@ struct Selection {
     record: Record,
     /// Whether it was made to record the other transistors' regions.
     regions: bool,
-    /// The devices read at each point, those recorded and those behind a recorded composite
+    /// The devices read at each point, those recorded and those behind a recorded summed
     /// terminal, in order: each one's index among the circuit's devices, the index of its
     /// first terminal among the read devices' terminals, and its number of terminals.
     evaluated: Vec<(usize, usize, usize)>,
@@ -303,10 +303,10 @@ struct Selection {
     recorded: Vec<Slot>,
     /// The transistors whose region and margins alone are recorded, in order.
     transistors: Vec<RegionSlot>,
-    /// The terminals of each recorded composite terminal, by index among the read devices'
+    /// The terminals of each recorded summed terminal, by index among the read devices'
     /// terminals.
     sums: Vec<Vec<usize>>,
-    /// The terminals an observation holds: the recorded devices' and the composites'.
+    /// The terminals an observation holds: the recorded devices' and the summed terminals'.
     terminals: usize,
     /// The derivatives an observation holds.
     derivatives: usize,
@@ -316,7 +316,7 @@ struct Selection {
 
 impl Selection {
     /// The values of the read terminals' `tracked` that an observation holds: the recorded
-    /// devices' terminals, then each recorded composite's sum.
+    /// devices' terminals, then each recorded summed terminal's sum.
     fn gather<T: Copy + Default + Add<Output = T>>(&self, tracked: &[T]) -> Vec<T> {
         let mut found = Vec::with_capacity(self.terminals);
         for slot in &self.recorded {
@@ -392,8 +392,8 @@ impl Observer {
             kept[device] = true;
         }
         let mut needed = kept.clone();
-        for &composite in &recorded.composites {
-            for &(device, _) in &system.composites[composite].members {
+        for &summed_terminal in &recorded.summed_terminals {
+            for &(device, _) in &system.summed_terminals[summed_terminal].members {
                 needed[device] = true;
             }
         }
@@ -401,7 +401,7 @@ impl Observer {
         let mut evaluated = Vec::new();
         let mut slots = Vec::with_capacity(recorded.devices.len());
         let (mut tracked, mut derivatives, mut variables) = (0, 0, 0);
-        let mut terminals = recorded.composites.len();
+        let mut terminals = recorded.summed_terminals.len();
         for (index, device) in system.devices.iter().enumerate() {
             if !needed[index] {
                 continue;
@@ -441,10 +441,10 @@ impl Observer {
             })
             .collect();
         let sums = recorded
-            .composites
+            .summed_terminals
             .iter()
-            .map(|&composite| {
-                system.composites[composite]
+            .map(|&summed_terminal| {
+                system.summed_terminals[summed_terminal]
                     .members
                     .iter()
                     .map(|&(device, terminal)| firsts[device] + terminal)

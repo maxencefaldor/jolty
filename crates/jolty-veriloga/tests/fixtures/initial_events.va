@@ -1,0 +1,39 @@
+// A resistor of whole fingers, written to exercise the events and tasks of the CMC's
+// models: code under @(initial_step) that rounds with floor and ceil, $finish, $strobe
+// of a value no format takes, a $strobe of values that depend on the probes, and two
+// variables whose names meet in snake case.
+
+`include "disciplines.vams"
+
+module initial_events(a, b);
+    inout a, b;
+    electrical a, b;
+
+    (* desc = "The resistance of one finger", units = "Ohm" *)
+    parameter real r = 1e3 from (0:inf);
+    (* desc = "The fingers, rounded to the nearest whole and up" *)
+    parameter real fingers = 2.4 from (0:inf);
+    (* desc = "The largest voltage the device allows", units = "V" *)
+    parameter real vmax = 1.0 from (0:inf);
+    (* desc = "Whether the device refuses to be made" *)
+    parameter integer refuse = 0 from [0:1];
+
+    real g, Vab, vab;
+
+    analog begin
+        @(initial_step) begin
+            g = (floor(fingers + 0.5) + ceil(fingers)) / r;
+        end
+        if (fingers > 10)
+            $strobe("many fingers: ", fingers);
+        if (refuse) begin
+            $strobe("refused, as asked");
+            $finish(1);
+        end
+        Vab = V(a, b);
+        vab = Vab * g;
+        if (abs(Vab) > vmax)
+            $strobe("V(a,b) = %g exceeds %g by ", Vab, vmax, abs(Vab) - vmax);
+        I(a, b) <+ vab;
+    end
+endmodule
