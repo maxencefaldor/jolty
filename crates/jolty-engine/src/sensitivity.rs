@@ -83,7 +83,7 @@ pub enum Differentiated {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     /// The device's path, such as `X1/R1`.
-    pub device: String,
+    pub instance: String,
     /// The parameter's name, its keys joined by dots within an object and a list's
     /// entries keyed by their index from 0, such as `resistance`, `waveform.dc` or
     /// `waveform.piecewise.1.1`.
@@ -328,7 +328,7 @@ impl Simulator {
             };
             for (name, value) in numbers(&made.parameters) {
                 let parameter = Parameter {
-                    device: placed.path().to_owned(),
+                    instance: placed.path().to_owned(),
                     name,
                     value,
                 };

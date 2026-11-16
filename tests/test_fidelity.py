@@ -167,7 +167,7 @@ def test_outside_validity() -> None:
     watched = modeled["step"].excursions
     assert watched is not None
     (excursion,) = watched
-    assert (excursion.path, excursion.bound) == ("X1", "load")
+    assert (excursion.instance, excursion.bound) == ("X1", "load")
     assert excursion.value > excursion.high
     outside = fidelity.Outside(analysis="step", excursion=excursion)
     assert outside.describe().startswith("warn[outside-validity]: X1's load reads")
@@ -182,7 +182,7 @@ def test_a_result_states_its_own_excursions_whatever_runs_after_it() -> None:
     assert point.excursions == ()
     assert stepped.excursions is not None
     (excursion,) = stepped.excursions
-    assert (excursion.path, excursion.bound) == ("X1", "load")
+    assert (excursion.instance, excursion.bound) == ("X1", "load")
     assert not hasattr(simulation, "excursions")
     # A batch's runs are not watched.
     ran: list[Run] = []

@@ -84,7 +84,7 @@ impl NoiseResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseContribution {
     /// The path of the device, such as `X1/Q1`.
-    pub device: String,
+    pub instance: String,
     /// What makes the noise, such as `thermal` or `collector shot`.
     pub name: &'static str,
     /// What it adds to the output's density at each frequency.
@@ -106,7 +106,7 @@ impl Simulator {
             let groups = &self.elaborated.groups;
             self.state.runs.noise(groups, index, state, &mut sources);
             contributions.extend(sources[before..].iter().map(|source| NoiseContribution {
-                device: placed.location().path.clone(),
+                instance: placed.location().path.clone(),
                 name: source.name,
                 densities: Vec::with_capacity(frequencies),
             }));

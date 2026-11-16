@@ -810,7 +810,7 @@ class Outside(BaseModel):
         unit = _UNITS[found.bound]
         times = "once" if found.count == 1 else f"{found.count} times"
         return (
-            f"warn[outside-validity]: {found.path}'s {found.bound} reads "
+            f"warn[outside-validity]: {found.instance}'s {found.bound} reads "
             f"{format_si(found.value, unit)} in {self.analysis}, outside the "
             f"{format_si(found.low, unit)} to {format_si(found.high, unit)} its "
             f"model was characterized over; first at {format_si(found.time, 's')}, "

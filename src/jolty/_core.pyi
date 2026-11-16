@@ -185,7 +185,7 @@ class Diagnostic(TypedDict):
     nets: list[str]
 
 class Excursion(TypedDict):
-    path: str
+    instance: str
     bound: Literal["input transition", "load", "supply"]
     low: float
     high: float

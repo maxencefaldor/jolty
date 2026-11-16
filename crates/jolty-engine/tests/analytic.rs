@@ -390,7 +390,7 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
         found
             .parameters
             .iter()
-            .position(|parameter| parameter.device == device && parameter.name == name)
+            .position(|parameter| parameter.instance == device && parameter.name == name)
             .expect("a parameter")
     };
     let (upper, lower) = (name("R1", "resistance"), name("R2", "resistance"));

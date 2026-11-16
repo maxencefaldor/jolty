@@ -428,7 +428,7 @@ class Excursion(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    path: str = Field(description="The device's path.")
+    instance: str = Field(description="The device's path.")
     bound: Literal["input transition", "load", "supply"] = Field(
         description="What left the domain."
     )

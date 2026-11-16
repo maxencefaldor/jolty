@@ -76,7 +76,7 @@ among them."""
 
 
 EXCURSION = results.Excursion(
-    path="X2", bound="load", low=0.0, high=2e-14, value=5e-13, time=1e-9, count=3
+    instance="X2", bound="load", low=0.0, high=2e-14, value=5e-13, time=1e-9, count=3
 )
 """A logic cell's load outside the domain of its timing."""
 
@@ -311,7 +311,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 11
+    assert header["version"] == 12
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

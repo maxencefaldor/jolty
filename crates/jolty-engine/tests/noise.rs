@@ -71,7 +71,7 @@ fn share<'a>(spectrum: &'a NoiseResult, device: &str) -> &'a [f64] {
     let mut shares = spectrum
         .contributions
         .iter()
-        .filter(|contribution| contribution.device == device);
+        .filter(|contribution| contribution.instance == device);
     let found = shares.next().expect("a contribution");
     assert!(shares.next().is_none(), "one contribution of {device}");
     &found.densities

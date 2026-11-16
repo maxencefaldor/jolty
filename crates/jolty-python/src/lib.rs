@@ -483,7 +483,10 @@ impl Simulator {
         let found = PyList::empty(py);
         for excursion in simulator.excursions() {
             let item = PyDict::new(py);
-            item.set_item("path", simulator.logic_devices()[excursion.device].path())?;
+            item.set_item(
+                "instance",
+                simulator.logic_devices()[excursion.device].path(),
+            )?;
             item.set_item("bound", excursion.bound.name())?;
             item.set_item("low", excursion.range.0)?;
             item.set_item("high", excursion.range.1)?;
@@ -602,7 +605,7 @@ pub(crate) fn outcome_to_python(
             let (parameters, values): (Vec<(String, String)>, Vec<f64>) = sensitivities
                 .parameters
                 .into_iter()
-                .map(|parameter| ((parameter.device, parameter.name), parameter.value))
+                .map(|parameter| ((parameter.instance, parameter.name), parameter.value))
                 .unzip();
             result.set_item("parameters", parameters)?;
             result.set_item("values", PyArray1::from_vec(py, values))?;
@@ -677,7 +680,7 @@ fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseResult) -> PyResult<()> 
     let sources: Vec<(String, &str)> = spectrum
         .contributions
         .iter()
-        .map(|contribution| (contribution.device.clone(), contribution.name))
+        .map(|contribution| (contribution.instance.clone(), contribution.name))
         .collect();
     let rows = sources.len();
     let flat: Vec<f64> = spectrum

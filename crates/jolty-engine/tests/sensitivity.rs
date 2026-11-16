@@ -211,7 +211,7 @@ fn assert_matches(
     let found = complex(&sensitivities.derivatives);
     for (index, parameter) in sensitivities.parameters.iter().enumerate() {
         let step = 1e-4 * parameter.value;
-        let (device, name) = (&parameter.device, &parameter.name);
+        let (device, name) = (&parameter.instance, &parameter.name);
         let above = values(
             &mut moved(instances, device, name, parameter.value + step),
             of,
@@ -249,7 +249,7 @@ fn assert_matches(
     sensitivities
         .parameters
         .iter()
-        .map(|parameter| format!("{}.{}", parameter.device, parameter.name))
+        .map(|parameter| format!("{}.{}", parameter.instance, parameter.name))
         .collect()
 }
 
