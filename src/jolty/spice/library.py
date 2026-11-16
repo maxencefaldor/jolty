@@ -5,19 +5,27 @@ Each subcircuit becomes a component, and each of its elements a jolty device or 
 component. A subcircuit's pins become its ports, in order, and a subcircuit that reaches
 SPICE's global ground, node ``0``, gains a ground port named ``ground``. Each instance
 records the file and the line of the statement that placed it.
+
+A file read from disk includes others as ngspice does: ``.include`` the whole of a
+file, ``.lib`` a section of one, which only ``.lib`` and ``.endl`` around it define; its
+``.option scale`` scales its MOSFETs' sizes. A subcircuit's ``.if`` blocks hold the
+statements of the branch its parameters choose. Its statistical functions, ``agauss``
+and the others, take their nominal values, or draws of a Monte Carlo
+[`Sample`][jolty.spice.Sample] for each placement, and ``temper`` is the
+temperature the library reads at.
 """
 
 import itertools
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 from pydantic import JsonValue
 
-from jolty import ir
+from jolty import _core, ir
 from jolty.builder import Component
 from jolty.devices import device
 from jolty.errors import SpiceError
@@ -26,22 +34,101 @@ from jolty.spice import models
 from jolty.spice.expressions import (
     Binary,
     Call,
+    Conditional,
     Current,
+    Draw,
     Expression,
     Number,
+    Unary,
+    UndefinedError,
     Voltage,
     evaluate,
     names,
+    nominal,
     number,
     parse,
     translate,
 )
 from jolty.spice.models import ModelCard
 from jolty.spice.netlist import Statement, statements, tokens
-from jolty.units import celsius
+from jolty.units import ZERO_CELSIUS, celsius
 
 GROUND: Final = "ground"
 """The port through which a subcircuit reaches SPICE's global ground, node ``0``."""
+
+PARAMETERS: Final = frozenset({".param", ".params"})
+"""The statements that define parameters: ngspice reads ``.params`` as ``.param``."""
+
+OPTIONS: Final = frozenset({".option", ".options"})
+"""The statements that set options, such as ``scale``."""
+
+CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
+"""The statements of a subcircuit's ``.if`` blocks."""
+
+
+@dataclass(frozen=True, slots=True)
+class Use:
+    """An element of a subcircuit, the model it needs, and why jolty cannot read it."""
+
+    element: str
+    """Its path within the subcircuit, such as ``X1/Q1``; empty for the subcircuit's
+    own definitions."""
+    model: str
+    """The model it needs, such as ``BSIM4 4.5 (level 54)``, or the element's kind."""
+    problem: str | None = None
+    """Why jolty cannot translate it, if it cannot."""
+    undefined: str | None = None
+    """The parameter it reads that has no value, which an instance gives, if that is
+    why it cannot be translated."""
+
+
+@dataclass(frozen=True, slots=True)
+class Sample:
+    """A Monte Carlo sample, whose statistical functions draw from its seed and index.
+
+    A call draws the standard variate the engine's generator of Monte Carlo samples
+    draws for its seed, its index, the path of the placement whose definitions call it
+    and which call it is, a parameter's name and the call's place among those its
+    definition makes; so a sample draws the same alone or on any shard, and each
+    placement its own.
+    """
+
+    seed: int
+    index: int
+
+    def draw(self, scope: str, name: str) -> Draw:
+        """The draws of the statistical functions `name`'s definition calls in `scope`.
+
+        Each draws as ngspice defines it (numparam's ``xpressn.c``), of a standard
+        normal variate ``z`` or a uniform one ``u`` in ``[-1, 1)``: ``agauss(x, a, s)``
+        is ``x + a / s * z``, ``gauss(x, r, s)`` is ``x + x * r / s * z``, each ``x``
+        where ``a``, ``r`` or ``s`` is not positive, ``aunif(x, a)`` is ``x + a * u``,
+        ``unif(x, r)`` is ``x + x * r * u``, and ``limit(x, a)`` is ``x + a`` where
+        ``u`` is positive, ``x - a`` elsewhere.
+        """
+        calls = itertools.count()
+
+        def drawn(function: str, arguments: tuple[float, ...]) -> float:
+            call = f"{name}#{next(calls)}"
+            nominal_value, spread, *rest = arguments
+            if function in {"agauss", "gauss"}:
+                sigma = rest[0]
+                if spread <= 0 or sigma <= 0:
+                    return nominal_value
+                deviation = spread / sigma
+                if function == "gauss":
+                    deviation *= nominal_value
+                normal = _core.variate("normal", self.seed, self.index, scope, call)
+                return nominal_value + deviation * normal
+            uniform = _core.variate("uniform", self.seed, self.index, scope, call)
+            match function:
+                case "aunif":
+                    return nominal_value + spread * uniform
+                case "unif":
+                    return nominal_value + nominal_value * spread * uniform
+            return nominal_value + (spread if uniform > 0 else -spread)
+
+        return drawn
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,17 +157,30 @@ class Library:
         ['in', 'out', 'ground']
     """
 
-    def __init__(self) -> None:
-        """An empty library."""
+    def __init__(self, temperature: float = _core.REFERENCE_TEMPERATURE) -> None:
+        """An empty library, which reads ``temper`` at `temperature`, in kelvins."""
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
         self._parameters: list[tuple[str, Expression]] = []
         self._built: dict[str, Component] = {}
+        self.temperature = temperature
+        self.options: dict[str, float] = {}
+        """The options its files set, such as ``scale``, by case-folded name."""
+        self._uses: list[Use] | None = None
 
     @property
     def subcircuits(self) -> tuple[str, ...]:
         """The names of the subcircuits, in the order they are defined."""
         return tuple(subcircuit.name for subcircuit in self._subcircuits.values())
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """The names of the models defined outside subcircuits, in order.
+
+        A binned model is named once, without its bins' numbers.
+        """
+        named = (_BIN.sub("", card.name) for card in self._models.values())
+        return tuple(dict.fromkeys(named))
 
     def read(self, text: str, file: str) -> None:
         """Adds the definitions of `text`, the contents of `file`.
@@ -88,9 +188,27 @@ class Library:
         Raises:
             SpiceError: When a statement is not a definition jolty reads.
         """
+        self._read(statements(text, file))
+
+    def include(self, path: Path, section: str | None = None) -> None:
+        """Adds the definitions of the file at `path`, or of its section `section`.
+
+        Raises:
+            SpiceError: When a statement is not a definition jolty reads, a file is
+                missing, the section is not in the file, or files include one another
+                in a cycle.
+        """
+        self._read(_expanded(path, section, ()))
+
+    def _read(self, found: Sequence[Statement]) -> None:
+        """Adds the definitions of the statements `found`.
+
+        Raises:
+            SpiceError: When a statement is not a definition jolty reads.
+        """
         body: list[Statement] = []
         opened: Statement | None = None
-        for statement in statements(text, file):
+        for statement in found:
             keyword = statement.text.split()[0].casefold()
             if opened is not None:
                 if keyword == ".ends":
@@ -104,20 +222,35 @@ class Library:
                     body.append(statement)
             elif keyword == ".subckt":
                 opened = statement
-            elif keyword == ".model":
-                card = models.read(statement, self._models)
-                self._models[card.name.casefold()] = card
-            elif keyword == ".param":
-                self._parameters.extend(_assignments(statement))
-            elif keyword != ".end":
-                message = "a library defines subcircuits, models and parameters only"
-                raise statement.fail(message)
+            else:
+                self._global(statement, keyword)
         if opened is not None:
             message = "the subcircuit never ends"
             raise opened.fail(message)
 
-    def component(self, name: str, **parameters: float) -> Component:
-        """The subcircuit `name` as a component.
+    def _global(self, statement: Statement, keyword: str) -> None:
+        """Adds the model, parameters or options `statement`, of `keyword`, defines.
+
+        Raises:
+            SpiceError: When the statement defines none of them.
+        """
+        if keyword == ".model":
+            card = models.read(statement, self._models)
+            self._models[card.name.casefold()] = card
+        elif keyword in PARAMETERS:
+            self._parameters.extend(_assignments(statement))
+        elif keyword in OPTIONS:
+            self.options |= {
+                name: evaluate(value, {}) for name, value in _options(statement).items()
+            }
+        elif keyword != ".end":
+            message = (
+                "a library defines subcircuits, models, parameters and options only"
+            )
+            raise statement.fail(message)
+
+    def component(self, name: str, /, **parameters: float) -> Component:
+        """The subcircuit `name` as a component, its statistical functions nominal.
 
         The `parameters` given replace its parameters' defaults.
 
@@ -125,13 +258,76 @@ class Library:
             SpiceError: When no subcircuit is named `name`, or it holds what jolty
                 cannot read.
         """
+        return self._placed(name, _Drawing(None, ""), parameters)
+
+    def drawn(
+        self, name: str, sample: Sample, path: str, /, **parameters: float
+    ) -> Component:
+        """The subcircuit `name` as a component placed at `path`, in `sample`.
+
+        Its statistical functions draw from the sample for the placement at `path`, a
+        path of the circuit it is placed in, such as ``X1``; the library's own draw for
+        the path ``""``. The `parameters` given replace its parameters' defaults.
+
+        Raises:
+            SpiceError: When no subcircuit is named `name`, or it holds what jolty
+                cannot read.
+        """
+        return self._placed(name, _Drawing(sample, path), parameters)
+
+    def survey(self, name: str, /, **parameters: float) -> tuple[Use, ...]:
+        """Each element the subcircuit `name` holds, within those it places too.
+
+        It is read as [`component`][jolty.spice.Library.component] reads it, with the
+        `parameters` given, and each element states the model it needs and, where jolty
+        cannot translate it, why. A placed subcircuit needs no model of its own, and
+        states a problem of its placement, such as a parameter its subcircuit lacks; a
+        problem of the subcircuit's own definitions, such as a parameter it cannot
+        evaluate, is stated as a use of no element.
+        """
+        uses: list[Use] = []
+        built, self._built, self._uses = self._built, {}, uses
+        try:
+            self._placed(name, _Drawing(None, ""), parameters)
+        except SpiceError as error:
+            uses.append(Use("", "", str(error)))
+        finally:
+            self._built, self._uses = built, None
+        return tuple(uses)
+
+    def survey_model(self, name: str) -> Use:
+        """The use of the model `name`, or of its first bin, by a bare element.
+
+        The element gives no parameters of its own, and the use is stated as
+        [`survey`][jolty.spice.Library.survey] states an element's.
+
+        Raises:
+            SpiceError: When no model is named `name`.
+        """
+        card = self.card(name, {})
+        if card is None:
+            message = f"no model is named `{name}`"
+            raise SpiceError(message)
+        scope = self.values()
+        model = _described(card, scope)
+        try:
+            models.device(card, scope, {}, card.statement)
+        except UndefinedError as error:
+            return Use(card.name, model, str(error), error.name)
+        except SpiceError as error:
+            return Use(card.name, model, str(error))
+        return Use(card.name, model)
+
+    def _placed(
+        self, name: str, drawing: _Drawing, parameters: Mapping[str, float]
+    ) -> Component:
         subcircuit = self._subcircuits.get(name.casefold())
         if subcircuit is None:
             message = f"no subcircuit is named `{name}`"
             raise SpiceError(message)
-        scope = self._scope()
+        scope = self.values(drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
-        return self._component(subcircuit, scope, given)
+        return self._component(subcircuit, scope, given, drawing)
 
     def _define(self, opened: Statement, body: list[Statement]) -> None:
         words = tokens(opened.text)
@@ -140,35 +336,71 @@ class Library:
             raise opened.fail(message)
         name, rest = words[1], words[2:]
         pins, defaults = _pins_and_parameters(opened, rest)
+        # ngspice moves a subcircuit's parameters onto its line, so an instance may
+        # give any of them (`inp_reorder_params_subckt` in `inpcom.c`).
+        for statement in _unconditional(body):
+            if _keyword(statement) in PARAMETERS:
+                defaults |= dict(_assignments(statement))
         subcircuit = Subcircuit(name, tuple(pins), defaults, tuple(body), opened)
         self._subcircuits[name.casefold()] = subcircuit
 
-    def _scope(self) -> dict[str, float]:
-        """The global parameters' values."""
-        return _resolved(dict(self._parameters), {})
+    def values(self, sample: Sample | None = None) -> dict[str, float]:
+        """The values of the parameters defined outside subcircuits, by name.
+
+        Their names are case-folded, ``temper`` among them. Their statistical functions
+        draw in `sample`, at the path ``""``, or take their nominal values without one.
+
+        Raises:
+            SpiceError: When parameters read one another in a cycle, or an expression is
+                wrong.
+        """
+        celsius_temperature = self.temperature - ZERO_CELSIUS
+        return _resolved(
+            dict(self._parameters),
+            {"temper": celsius_temperature},
+            _Drawing(sample, "").draws,
+        )
 
     def _component(
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
+        drawing: _Drawing,
     ) -> Component:
-        """The component of `subcircuit` with the `given` parameters, in `scope`."""
+        """The component of `subcircuit` with the `given` parameters, in `scope`.
+
+        Its statistical functions draw as `drawing` does.
+        """
         unknown = sorted(set(given) - set(subcircuit.defaults))
         if unknown:
             message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
-            raise subcircuit.statement.fail(message)
+            error = subcircuit.statement.fail(message)
+            if not self.surveying:
+                raise error
+            # A survey states the placement's problem and reads on within it.
+            self.use(Use(drawing.path, "", str(error)))
+            given = {key: value for key, value in given.items() if key not in unknown}
         defaults = {
             parameter: default
             for parameter, default in subcircuit.defaults.items()
             if parameter not in given
         }
-        local = _resolved(defaults, {**scope, **given})
-        values = {parameter: local[parameter] for parameter in subcircuit.defaults}
+        local = _resolved(
+            defaults, {**scope, **given}, drawing.draws, partial=self.surveying
+        )
+        values = {
+            parameter: local[parameter]
+            for parameter in subcircuit.defaults
+            if parameter in local
+        }
         listed = ",".join(f"{key}={value!r}" for key, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
+        if drawing.sample is not None:
+            sample = drawing.sample
+            name = f"{name}@{drawing.path}#{sample.seed}:{sample.index}"
         if name not in self._built:
-            translation = _Translation(self, subcircuit, (scope, local))
+            translation = _Translation(self, subcircuit, (scope, local), drawing)
             self._built[name] = translation.component(name)
         return self._built[name]
 
@@ -176,6 +408,28 @@ class Library:
         """The model `name`, defined in a subcircuit's body or globally."""
         key = name.casefold()
         return local.get(key) or self._models.get(key)
+
+    def card(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
+        """The model `name`, or its first bin, defined locally or globally."""
+        found = self.model(name, local)
+        if found is not None:
+            return found
+        bins = _bins(name)
+        for cards in (local, self._models):
+            for key, card in cards.items():
+                if bins.fullmatch(key):
+                    return card
+        return None
+
+    @property
+    def surveying(self) -> bool:
+        """Whether a [`survey`][jolty.spice.Library.survey] is being made."""
+        return self._uses is not None
+
+    def use(self, use: Use) -> None:
+        """Records `use` of the survey being made."""
+        if self._uses is not None:
+            self._uses.append(use)
 
     def binned(
         self,
@@ -186,14 +440,14 @@ class Library:
     ) -> ModelCard | None:
         """The bin of the model `name` an `instance` takes, as ngspice selects it.
 
-        A bin is a BSIM3 card named `name` then a dot and a whole number whose
+        A bin is a MOSFET's card named `name` then a dot and a whole number whose
         ``LMIN`` to ``LMAX`` holds the instance's length and ``WMIN`` to ``WMAX`` its
         width, both given on its element, a bound counted in; the last defined is taken
         first, in a subcircuit's body, then globally.
         """
         if "l" not in instance or "w" not in instance:
             return None
-        bins = re.compile(rf"{re.escape(name.casefold())}\.\d+")
+        bins = _bins(name)
         for cards in (local, self._models):
             for key, card in reversed(list(cards.items())):
                 if bins.fullmatch(key) and models.holds(
@@ -211,30 +465,150 @@ class Library:
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
+        drawing: _Drawing,
     ) -> Component:
-        """The component a subcircuit instance with the `given` parameters places."""
-        return self._component(subcircuit, scope, given)
+        """The component a subcircuit instance with the `given` parameters places.
+
+        Its statistical functions draw as `drawing` does.
+        """
+        return self._component(subcircuit, scope, given, drawing)
 
 
 def load(*paths: Path | str) -> Library:
-    """The library of the SPICE files at `paths`.
+    """The library of the SPICE files at `paths`, with the files they include.
 
     Raises:
         SpiceError: When a file holds what jolty cannot read.
     """
     library = Library()
     for path in map(Path, paths):
-        library.read(path.read_text(encoding="utf-8", errors="replace"), path.name)
+        library.include(path)
     return library
 
 
+_INCLUDES: Final = frozenset({".include", ".inc"})
+"""The statements that include a file whole."""
+
+
+def _expanded(
+    path: Path, section: str | None, within: tuple[tuple[Path, str | None], ...]
+) -> list[Statement]:
+    """The statements of the file at `path`, or of its section `section`, expanded.
+
+    As ngspice reads them, each ``.include`` is replaced by its file's statements and
+    each ``.lib file section`` by that section's, a file's path read from the directory
+    of the file that names it; a file read whole holds its statements outside its
+    sections, which ``.lib name`` and ``.endl`` enclose. `within` lists the files and
+    sections being read already, which include this one.
+
+    Raises:
+        SpiceError: When the file is missing, has no such section, or files include one
+            another in a cycle.
+    """
+    reading = (path.resolve(), None if section is None else section.casefold())
+    if reading in within:
+        message = f"{path} includes itself, through {len(within)} files"
+        raise SpiceError(message)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        message = f"cannot read {path}: {error.strerror}"
+        raise SpiceError(message) from None
+    found: list[Statement] = []
+    opened: str | None = None
+    seen = False
+    for statement in statements(text, path.name):
+        words = [word.strip("'\"") for word in tokens(statement.text)]
+        keyword = words[0].casefold()
+        if keyword == ".lib" and len(words) == 2:  # noqa: PLR2004 - `.lib` and a name
+            if opened is not None:
+                message = f"a section opens within section `{opened}`"
+                raise statement.fail(message)
+            opened = words[1].casefold()
+            seen |= opened == reading[1]
+        elif keyword == ".endl":
+            opened = None
+        elif opened == reading[1]:
+            found.extend(_included(statement, words, path, (*within, reading)))
+    if section is not None and not seen:
+        message = f"{path} has no section `{section}`"
+        raise SpiceError(message)
+    return found
+
+
+def _included(
+    statement: Statement,
+    words: Sequence[str],
+    path: Path,
+    within: tuple[tuple[Path, str | None], ...],
+) -> list[Statement]:
+    """`statement` of the file at `path`, of `words`, or what it includes, expanded.
+
+    Raises:
+        SpiceError: When it includes a file amiss.
+    """
+    keyword = words[0].casefold()
+    if keyword == ".lib" and len(words) == 3:  # noqa: PLR2004 - a file and a section
+        return _expanded(path.parent / words[1], words[2], within)
+    if keyword in _INCLUDES and len(words) == 2:  # noqa: PLR2004 - and a file
+        return _expanded(path.parent / words[1], None, within)
+    if keyword in _INCLUDES or keyword == ".lib":
+        message = "a file is included by its path, a section by the file's and name"
+        raise statement.fail(message)
+    return [statement]
+
+
+def _options(statement: Statement) -> dict[str, Expression]:
+    """The options an ``.option`` statement sets to values, by case-folded name.
+
+    A flag it sets, a name without a value, changes nothing jolty reads.
+    """
+    words = tokens(statement.text)[1:]
+    assigned = [
+        position for position in range(len(words) - 2) if words[position + 1] == "="
+    ]
+    return models.assignments(
+        statement,
+        [word for position in assigned for word in words[position : position + 3]],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Drawing:
+    """How a placement's statistical functions draw.
+
+    They draw of `sample`, at `path`, or take their nominal values without a sample.
+    """
+
+    sample: Sample | None
+    path: str
+
+    def draws(self, name: str) -> Draw:
+        """The draws of the statistical functions of `name`'s definition."""
+        if self.sample is None:
+            return nominal
+        return self.sample.draw(self.path, name)
+
+    def within(self, instance: str) -> _Drawing:
+        """How the placement of `instance` within this one draws."""
+        path = f"{self.path}/{instance}" if self.path else instance
+        return _Drawing(self.sample, path)
+
+
 def _resolved(
-    definitions: Mapping[str, Expression], scope: Mapping[str, float]
+    definitions: Mapping[str, Expression],
+    scope: Mapping[str, float],
+    draws: Callable[[str], Draw],
+    *,
+    partial: bool = False,
 ) -> dict[str, float]:
     """`scope` with each parameter `definitions` defines, evaluated.
 
     Each parameter is evaluated once those it reads are, whatever the order of their
-    definitions, as ngspice sorts them.
+    definitions, as ngspice sorts them, its statistical functions drawn by `draws` of
+    its name. When `partial`, a parameter that reads a name nothing defines is left
+    out, as ngspice leaves a subcircuit's default unevaluated where its instance gives
+    the parameter.
 
     Raises:
         SpiceError: When parameters read one another in a cycle, or an expression is
@@ -252,13 +626,37 @@ def _resolved(
             message = f"parameters read one another in a cycle: {', '.join(pending)}"
             raise SpiceError(message)
         for name in ready:
-            values[name] = evaluate(pending.pop(name), values)
+            try:
+                values[name] = evaluate(pending.pop(name), values, draws(name))
+            except UndefinedError:
+                if not partial:
+                    raise
     return values
 
 
 def _assignments(statement: Statement) -> list[tuple[str, Expression]]:
-    """The parameters a ``.param`` statement assigns, in order."""
-    return list(models.assignments(statement, tokens(statement.text)[1:]).items())
+    """The parameters a ``.param`` statement assigns, in order.
+
+    As ngspice reads them, a value runs to the name of the next assignment, so it may
+    be an expression written with spaces, as in ``.param a = 1 + b c = 2``.
+
+    Raises:
+        SpiceError: When the words do not pair names with values.
+    """
+    words = tokens(statement.text)[1:]
+    signs = [position for position, word in enumerate(words) if word == "="]
+    if not signs or signs[0] != 1:
+        message = "a parameter is assigned a value, `name = value`"
+        raise statement.fail(message)
+    ends = [*(sign - 1 for sign in signs[1:]), len(words)]
+    found: list[tuple[str, Expression]] = []
+    for sign, end in zip(signs, ends, strict=True):
+        written = " ".join(words[sign + 1 : end])
+        if not written:
+            message = f"`{words[sign - 1]}` is not assigned a value"
+            raise statement.fail(message)
+        found.append((words[sign - 1].casefold(), models.value(written)))
+    return found
 
 
 def _pins_and_parameters(
@@ -313,10 +711,14 @@ class _Translation:
         library: Library,
         subcircuit: Subcircuit,
         scopes: tuple[Mapping[str, float], Mapping[str, float]],
+        drawing: _Drawing,
     ) -> None:
         self.library = library
         self.subcircuit = subcircuit
         self.globals, self.scope = scopes
+        self.drawing = drawing
+        self.draw: Draw = nominal
+        """The draws of the statistical functions of the element being translated."""
         self.parameters: dict[str, Expression] = {}
         self.models: dict[str, ModelCard] = {}
         self.nets: dict[str, str] = {}
@@ -332,14 +734,21 @@ class _Translation:
             self.net(pin)
 
     def component(self, name: str) -> Component:
-        """The component, named `name`."""
+        """The component, named `name`.
+
+        Its ``.if`` blocks choose by its parameters, those defined outside them.
+        """
+        body = self.subcircuit.body
+        unconditional = {id(statement) for statement in _unconditional(body)}
         elements: list[Statement] = []
-        for statement in self.subcircuit.body:
+        for statement in _chosen(body, self.scope):
+            if id(statement) in unconditional and _keyword(statement) in PARAMETERS:
+                continue
             if statement.text.startswith("."):
                 self._define(statement)
             else:
                 elements.append(statement)
-        self.scope = _resolved(self.parameters, self.scope)
+        self.scope = _resolved(self.parameters, self.scope, self.drawing.draws)
         for statement in elements:
             if _letter(statement) in _SENSED:
                 self._source(statement)
@@ -347,6 +756,7 @@ class _Translation:
             self._element(statement)
         self._couple()
         self._join_sensed()
+        self._heat()
         ports = [
             ir.Port(name=self.nets[pin.casefold()], role=Role.SIGNAL)
             for pin in self.subcircuit.pins
@@ -375,9 +785,14 @@ class _Translation:
         return self.nets.setdefault(key, node)
 
     def value(self, word: str) -> float:
-        """The value `word` writes: a number, or an expression of the parameters."""
+        """The value `word` writes: a number, or an expression of the parameters.
+
+        Its statistical functions draw as those of the element being translated.
+        """
         written = number(word)
-        return written if written is not None else evaluate(parse(word), self.scope)
+        if written is not None:
+            return written
+        return evaluate(parse(word), self.scope, self.draw)
 
     def add(
         self,
@@ -431,11 +846,11 @@ class _Translation:
         Raises:
             SpiceError: When the statement defines neither.
         """
-        keyword = statement.text.split()[0].casefold()
+        keyword = _keyword(statement)
         if keyword == ".model":
             card = models.read(statement, self.models)
             self.models[card.name.casefold()] = card
-        elif keyword == ".param":
+        elif keyword in PARAMETERS:
             self.parameters.update(_assignments(statement))
         else:
             message = "a subcircuit holds elements, models and parameters only"
@@ -465,6 +880,55 @@ class _Translation:
             )
             for line, instance in self.instances
         ]
+
+    def _heat(self) -> None:
+        """Makes each resistor and capacitor on a thermal node a thermal element.
+
+        ngspice's nodes have no nature: a device's thermal node holds a temperature
+        rise as its voltage and takes a power as its current, so a resistor or a
+        capacitor between such nodes, or one and the ground, is a thermal resistance in
+        kelvins per watt or a thermal capacitance in joules per kelvin, of its value. A
+        thermal node is one a heated device's `thermal` terminal joins, or a thermal
+        element's.
+
+        Raises:
+            SpiceError: When such an element joins an electrical node too, or drifts
+                with temperature or voltage.
+        """
+        elements = {ir.DeviceOf(model=model) for model, _ in _THERMAL_ELEMENTS.values()}
+        thermal = {
+            net
+            for _, instance in self.instances
+            for terminal, net in instance.terminals.items()
+            if instance.of in elements
+            or (instance.parameters.get("thermal") is True and terminal == "thermal")
+        }
+        heated: list[tuple[int, ir.Instance]] = []
+        for line, instance in self.instances:
+            made = _THERMAL_ELEMENTS.get(instance.of)
+            nets = set(instance.terminals.values())
+            if made is None or not nets & thermal:
+                heated.append((line, instance))
+                continue
+            model, parameter = made
+            location = instance.source_location
+            place = f"{location.file}:{location.line}: " if location else ""
+            if not nets <= thermal | {GROUND}:
+                message = f"{place}`{instance.name}` joins a thermal node to another"
+                raise SpiceError(message)
+            if set(instance.parameters) != {parameter}:
+                message = (
+                    f"{place}`{instance.name}`, on a thermal node, drifts with "
+                    "temperature or voltage, which no thermal element does"
+                )
+                raise SpiceError(message)
+            value = {parameter: instance.parameters[parameter]}
+            replaced = {
+                "of": ir.DeviceOf(model=model),
+                "parameters": device(model, value).parameters,
+            }
+            heated.append((line, instance.model_copy(update=replaced)))
+        self.instances = heated
 
     def _couple(self) -> None:
         """Joins the inductors that mutual inductances couple into coupled inductors.
@@ -510,12 +974,52 @@ class _Translation:
         self.senses[words[0].casefold()] = _Sense(words[0], self.net(words[1]))
 
     def _element(self, statement: Statement) -> None:
+        """Translates the element `statement`, or, in a survey, states its use.
+
+        Raises:
+            SpiceError: When jolty cannot translate it, outside a survey.
+        """
+        name = statement.text.split()[0]
+        self.draw = self.drawing.draws(name.casefold())
+        if not self.library.surveying:
+            self._translated(statement)
+            return
+        model = _needed(self, statement)
+        path = self.drawing.within(name).path
+        try:
+            self._translated(statement)
+        except UndefinedError as error:
+            self.library.use(Use(path, model, str(error), error.name))
+        except SpiceError as error:
+            self.library.use(Use(path, model, str(error)))
+        else:
+            if model:
+                self.library.use(Use(path, model))
+
+    def _translated(self, statement: Statement) -> None:
         letter = _letter(statement)
         translate = _ELEMENTS.get(letter)
         if translate is None:
             message = f"jolty has no element of letter `{letter.upper()}`"
             raise statement.fail(message)
         translate(self, statement)
+
+    def device(
+        self, card: ModelCard, instance: Mapping[str, float], statement: Statement
+    ) -> models.Made:
+        """The device `card` makes for an element of `instance` parameters.
+
+        Its statistical functions draw for each of the card's parameters, by the card's
+        name and the parameter's.
+        """
+        prefix = card.name.casefold()
+        return models.device(
+            card,
+            self.scope,
+            instance,
+            statement,
+            lambda name: self.drawing.draws(f"{prefix}.{name}"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -630,9 +1134,194 @@ def _mutual(translation: _Translation, statement: Statement) -> None:
     )
 
 
+VERILOG_A: Final = "Verilog-A"
+"""What a survey names the model of an ``N`` element by, before its module's name: a
+model ngspice loads compiled from Verilog-A, through OSDI."""
+
+_BIN: Final = re.compile(r"\.\d+$")
+"""A bin's number after its model's name, as in ``nmos_3p3.12``."""
+
+
+def _bins(name: str) -> re.Pattern[str]:
+    """The case-folded names of the bins of the model `name`: it, a dot and a number."""
+    return re.compile(rf"{re.escape(name.casefold())}{_BIN.pattern}")
+
+
+_FAMILIES: Final = {
+    "nmos": "MOSFET",
+    "pmos": "MOSFET",
+    "npn": "bipolar transistor",
+    "pnp": "bipolar transistor",
+    "d": "diode",
+    "njf": "JFET",
+    "pjf": "JFET",
+    "r": "resistor's model card",
+    "c": "capacitor's model card",
+    "l": "inductor's model card",
+}
+"""What a model card of each type models, by its type."""
+
+_LEVELS: Final = {
+    "MOSFET": {
+        level: name
+        for levels, name in (
+            (models.BSIM3_LEVELS, "BSIM3"),
+            (models.BSIM4_LEVELS, "BSIM4"),
+            (models.BSIM_SOI_LEVELS, "BSIM-SOI"),
+            (models.HISIM2_LEVELS, "HiSIM2"),
+            (models.HISIM_HV_LEVELS, "HiSIM_HV"),
+        )
+        for level in levels
+    },
+    "bipolar transistor": {
+        1: "Gummel-Poon",
+        **{int(level): "VBIC" for level in models.VBIC_LEVELS},
+    },
+}
+"""ngspice's models of a MOSFET and a bipolar transistor named apart, by their cards'
+levels, of which ngspice reads level 1 by default (``inpdomod.c``)."""
+
+_ELEMENT_KINDS: Final = {
+    "r": "resistor",
+    "c": "capacitor",
+    "l": "inductor",
+    "v": "voltage source",
+    "i": "current source",
+    "e": "controlled source",
+    "f": "controlled source",
+    "g": "controlled source",
+    "h": "controlled source",
+    "b": "behavioral source",
+    "k": "mutual inductance",
+}
+"""What an element of a letter is when it names no model card."""
+
+
+def _needed(translation: _Translation, statement: Statement) -> str:
+    """The model the element `statement` needs, as a reader states it.
+
+    A card's model is named by its type and level, and its version where it gives one,
+    such as ``BSIM4 4.5 (level 54)``; an ``N`` element's is the Verilog-A module its
+    card names; an element of no card is named by its kind, and a placed subcircuit
+    needs nothing of its own, its elements' models being stated apart.
+    """
+    letter = _letter(statement)
+    if letter == "x":
+        return ""
+    words = tokens(statement.text)[1:]
+    found = next(
+        (
+            card
+            for word in words
+            if word != "="
+            and (card := translation.library.card(word, translation.models)) is not None
+        ),
+        None,
+    )
+    if found is None:
+        kind = _ELEMENT_KINDS.get(letter, f"element `{letter.upper()}`")
+        reads = any("v(" in word.casefold() for word in words)
+        return f"{kind} whose value reads a voltage" if reads else kind
+    if letter == "n":
+        return f"{VERILOG_A} `{found.kind}`"
+    return _described(found, translation.scope)
+
+
+def _described(card: ModelCard, scope: Mapping[str, float]) -> str:
+    """The model `card` makes, by its type and level, and its version if it gives one.
+
+    A MOSFET, a bipolar transistor and a diode are named with their levels, such as
+    ``BSIM4 4.5 (level 54)``, the level evaluated in `scope`.
+    """
+    family = _FAMILIES.get(card.kind, f"`{card.kind}`")
+    if family not in {*_LEVELS, "diode"}:
+        return family
+    written = card.parameters.get("level")
+    level = 1.0 if written is None else evaluate(written, scope)
+    named = _LEVELS.get(family, {}).get(int(level), family)
+    version = None if card.version is None else number(card.version)
+    given = f" {version:g}" if version is not None else ""
+    return f"{named}{given} (level {level:g})"
+
+
 def _letter(statement: Statement) -> str:
     """The letter of an element's statement, which says what kind of element it is."""
     return statement.text[0].casefold()
+
+
+def _keyword(statement: Statement) -> str:
+    """A statement's first word, case-folded, such as ``.param``."""
+    return statement.text.split()[0].casefold()
+
+
+def _unconditional(body: Sequence[Statement]) -> list[Statement]:
+    """The statements of `body` outside its ``.if`` blocks."""
+    depth = 0
+    found: list[Statement] = []
+    for statement in body:
+        keyword = _keyword(statement)
+        if keyword == ".if":
+            depth += 1
+        elif keyword == ".endif":
+            depth -= 1
+        elif depth == 0 and keyword not in CONDITIONS:
+            found.append(statement)
+    return found
+
+
+@dataclass(slots=True)
+class _Block:
+    """An ``.if`` block being read: whether its branch is chosen, whether one was."""
+
+    chosen: bool
+    taken: bool
+
+
+def _chosen(body: Sequence[Statement], scope: Mapping[str, float]) -> list[Statement]:
+    """The statements of `body` its ``.if`` blocks choose, with `scope`'s values.
+
+    A block holds the statements of its first branch whose condition, an expression
+    in parentheses, is not zero, ``.if`` then each ``.elseif``, or else of its
+    ``.else``, if any; blocks nest.
+
+    Raises:
+        SpiceError: When a branch or an end opens no block, or a block never ends.
+    """
+    blocks: list[_Block] = []
+    found: list[Statement] = []
+    for statement in body:
+        keyword = _keyword(statement)
+        within = all(block.chosen for block in blocks)
+        if keyword in CONDITIONS - {".if"} and not blocks:
+            message = f"`{keyword}` within no `.if` block"
+            raise statement.fail(message)
+        match keyword:
+            case ".if":
+                held = within and _condition(statement, scope)
+                blocks.append(_Block(chosen=held, taken=held))
+            case ".elseif" | ".else":
+                block = blocks[-1]
+                outer = all(each.chosen for each in blocks[:-1])
+                held = (
+                    outer
+                    and not block.taken
+                    and (keyword == ".else" or _condition(statement, scope))
+                )
+                block.chosen, block.taken = held, block.taken or held
+            case ".endif":
+                blocks.pop()
+            case _ if within:
+                found.append(statement)
+    if blocks:
+        message = "an `.if` block never ends"
+        raise body[-1].fail(message)
+    return found
+
+
+def _condition(statement: Statement, scope: Mapping[str, float]) -> bool:
+    """Whether the condition of an ``.if`` or ``.elseif`` statement holds in `scope`."""
+    _, _, condition = statement.text.partition(" ")
+    return evaluate(parse(condition), scope) != 0
 
 
 def _keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
@@ -715,17 +1404,28 @@ def _passive(
         if len(values) != 1:
             message = f"a {model} has one value"
             raise statement.fail(message)
+        if _reads_unknowns(parse(values[0])):
+            message = (
+                f"jolty reads no {model} whose value reads a voltage or a current, "
+                "which ngspice makes a behavioral source"
+            )
+            raise statement.fail(message)
         value = translation.value(values[0])
         given: dict[str, float] = {}
         if card is not None:
+            drawing, prefix = translation.drawing, card.name.casefold()
             scale = card.parameters.get(letter, Number(1.0))
-            value *= evaluate(scale, translation.scope)
+            value *= evaluate(
+                scale, translation.scope, drawing.draws(f"{prefix}.{letter}")
+            )
             read = (
                 models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
             )
             _check_model(card, translation.scope, read | {letter}, statement)
             given = {
-                name: evaluate(expression, translation.scope)
+                name: evaluate(
+                    expression, translation.scope, drawing.draws(f"{prefix}.{name}")
+                )
                 for name, expression in card.parameters.items()
                 if name in read
             }
@@ -757,6 +1457,22 @@ def _passive(
         )
 
     return translated
+
+
+def _reads_unknowns(expression: Expression) -> bool:
+    """Whether `expression` reads a voltage or a current."""
+    match expression:
+        case Voltage() | Current():
+            return True
+        case Unary(_, operand):
+            return _reads_unknowns(operand)
+        case Binary(_, left, right):
+            return _reads_unknowns(left) or _reads_unknowns(right)
+        case Conditional(condition, then, otherwise):
+            return any(map(_reads_unknowns, (condition, then, otherwise)))
+        case Call(_, arguments):
+            return any(map(_reads_unknowns, arguments))
+    return False
 
 
 def _temperatures(given: Mapping[str, float]) -> dict[str, JsonValue]:
@@ -1031,6 +1747,12 @@ def _semiconductor(
             for key, values in assigned.items()
             if values
         }
+        if "nmos" in kinds:
+            scale = library.options.get("scale", 1.0)
+            instance = {
+                key: value * scale ** _SCALED.get(key, 0)
+                for key, value in instance.items()
+            }
         card = library.model(rest[0], cards)
         if card is None and "nmos" in kinds:
             card = library.binned(rest[0], cards, instance, translation.scope)
@@ -1044,7 +1766,7 @@ def _semiconductor(
         areas = [word for word in rest[1:] if word.casefold() not in {"off", "on"}]
         if areas:
             instance["area"] = translation.value(areas[0])
-        made = models.device(card, translation.scope, instance, statement)
+        made = translation.device(card, instance, statement)
         joined = {
             terminal: translation.net(node)
             for terminal, node in zip(terminals, nodes, strict=True)
@@ -1053,6 +1775,17 @@ def _semiconductor(
 
     return translated
 
+
+_THERMAL_ELEMENTS: Final = {
+    ir.DeviceOf(model="resistor"): ("thermal_resistance", "resistance"),
+    ir.DeviceOf(model="capacitor"): ("thermal_capacitance", "capacitance"),
+}
+"""The thermal element a resistor or a capacitor on a thermal node is, and the
+parameter of its value."""
+
+_SCALED: Final = {"w": 1, "l": 1, "pd": 1, "ps": 1, "ad": 2, "as": 2}
+"""The sizes of a MOSFET's element that ngspice's ``scale`` option scales, by the power
+of it each takes: a length's 1, an area's 2 (``mos1par.c``)."""
 
 _MOSFET: Final = _semiconductor(
     ("drain", "gate", "source", "bulk"), frozenset({"nmos", "pmos"})
@@ -1113,7 +1846,7 @@ def _transistor(translation: _Translation, statement: Statement) -> None:
     instance = {
         key: translation.value(values[0]) for key, values in assigned.items() if values
     }
-    made = models.device(card, translation.scope, instance, statement)
+    made = translation.device(card, instance, statement)
     joined = {
         terminal: translation.net(node)
         for terminal, node in zip(_VDMOS_TERMINALS, nodes, strict=False)
@@ -1166,7 +1899,7 @@ def _bipolar(translation: _Translation, statement: Statement) -> None:
     areas = [word for word in rest if word.casefold() not in {"off", "on"}]
     if areas:
         instance["area"] = translation.value(areas[0])
-    made = models.device(card, translation.scope, instance, statement)
+    made = translation.device(card, instance, statement)
     most = 5 if made.model == "vbic" else 4
     if len(nodes) > most:
         message = f"the transistor joins at most {most} nodes, then names its model"
@@ -1446,7 +2179,7 @@ def _switch(translation: _Translation, statement: Statement) -> None:
     if card is None:
         message = f"no model is named `{name}`"
         raise statement.fail(message)
-    made = models.device(card, translation.scope, {}, statement)
+    made = translation.device(card, {}, statement)
     translation.add(
         statement,
         made.model,
@@ -1477,7 +2210,7 @@ def _current_switch(translation: _Translation, statement: Statement) -> None:
     if card is None:
         message = f"no model is named `{name}`"
         raise statement.fail(message)
-    made = models.device(card, translation.scope, {}, statement)
+    made = translation.device(card, {}, statement)
     control_positive, control_negative = translation.sense(source, statement)
     translation.add(
         statement,
@@ -1494,18 +2227,13 @@ def _current_switch(translation: _Translation, statement: Statement) -> None:
 
 def _instance(translation: _Translation, statement: Statement) -> None:
     """An X instance of a subcircuit, with its parameters."""
-    words = tokens(statement.text)
-    split = next(
-        (
-            position
-            for position, word in enumerate(words)
-            if word.casefold() == "params:"
-            or (position + 1 < len(words) and words[position + 1] == "=")
-        ),
-        len(words),
-    )
-    positional = words[:split]
-    assigned = [word for word in words[split:] if word.casefold() != "params:"]
+    words = [word for word in tokens(statement.text) if word.casefold() != "params:"]
+    # Each parameter is `name = value`; the subcircuit's name is the last word besides,
+    # which HSPICE's netlists, such as SKY130's, may write after the parameters.
+    signs = {position for position, word in enumerate(words) if word == "="}
+    paired = {position + step for position in signs for step in (-1, 0, 1)}
+    positional = [word for place, word in enumerate(words) if place not in paired]
+    assigned = [word for place, word in enumerate(words) if place in paired]
     if len(positional) < 2:  # noqa: PLR2004 - a name and a subcircuit
         message = "an instance names its subcircuit"
         raise statement.fail(message)
@@ -1520,10 +2248,12 @@ def _instance(translation: _Translation, statement: Statement) -> None:
         )
         raise statement.fail(message)
     given = {
-        parameter: evaluate(expression, translation.scope)
+        parameter: evaluate(expression, translation.scope, translation.draw)
         for parameter, expression in models.assignments(statement, assigned).items()
     }
-    child = translation.library.place(subcircuit, translation.globals, given)
+    child = translation.library.place(
+        subcircuit, translation.globals, given, translation.drawing.within(name)
+    )
     ports = [port.name for port in child.definition.ports]
     terminals = {
         port: translation.net(node) for port, node in zip(ports, nodes, strict=False)

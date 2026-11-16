@@ -83,9 +83,9 @@ class Settings(BaseSettings):
     )
     pdk_root: Path | None = Field(
         default=None,
-        description="Directory that holds the SKY130 PDK as open_pdks installs it, "
-        "sky130A within it; by default, jolty's pinned release, fetched into the "
-        "cache.",
+        description="Directory that holds the process design kits as open_pdks "
+        "installs them, sky130A, gf180mcuD and ihp-sg13g2 within it; by default, "
+        "jolty's pinned releases, fetched into the cache.",
     )
     threads: int | None = Field(
         default=None,

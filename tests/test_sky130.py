@@ -35,7 +35,7 @@ from jolty.plan import (
     linear,
 )
 from jolty.settings import Settings
-from jolty.spice import export, sky130
+from jolty.spice import export, kits, sky130
 from jolty.units import Hz, MHz, V, celsius, kHz, kohm, ns, um
 from jolty.waveforms import Pulse
 
@@ -45,7 +45,7 @@ def kit(pytestconfig: pytest.Config) -> Settings:
     """Settings whose cache, pytest's, holds the kit's release."""
     assert pytestconfig.cache is not None
     settings = Settings(cache=pytestconfig.cache.mkdir("downloads"))
-    sky130.root(settings)
+    kits.root(sky130.KIT, settings)
     return settings
 
 
@@ -167,11 +167,11 @@ def test_a_netlist_keeps_a_kits_scale_from_a_native_mosfet() -> None:
 
 def test_a_pdk_root_holds_the_kits_library(tmp_path: Path) -> None:
     with pytest.raises(JoltyError, match=r"holds no sky130A/libs\.tech/ngspice"):
-        sky130.root(Settings(pdk_root=tmp_path))
+        kits.root(sky130.KIT, Settings(pdk_root=tmp_path))
     library = tmp_path / sky130.LIBRARY
     library.parent.mkdir(parents=True)
     library.write_text("* the library\n", encoding="utf-8")
-    assert sky130.root(Settings(pdk_root=tmp_path)) == tmp_path
+    assert kits.root(sky130.KIT, Settings(pdk_root=tmp_path)) == tmp_path
 
 
 @SKIP

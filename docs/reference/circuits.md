@@ -12,9 +12,15 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice
     options:
-      members: [load, Library, fetch, GROUND]
+      members: [load, Library, Sample, Use, fetch, GROUND]
+
+::: jolty.spice.kits
 
 ::: jolty.spice.sky130
+
+::: jolty.spice.gf180mcu
+
+::: jolty.spice.sg13g2
 
 ::: jolty.spice.export
     options:

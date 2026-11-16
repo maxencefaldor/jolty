@@ -4,11 +4,10 @@
 [`mosfet`][jolty.spice.sky130.mosfet] places a transistor of the process, a foundry's
 device, which the engine checks but does not solve: a plan of a circuit that holds one
 runs in ngspice, with the process design kit's models. jolty pins one release of the
-kit, as open_pdks builds it and ciel publishes it,
-[`VERSION`][jolty.spice.sky130.VERSION].
-[`root`][jolty.spice.sky130.root] fetches that release's ngspice models into the cache
-the first time, each archive checked against its SHA-256 digest, or finds the kit
-installed where the settings' ``pdk_root`` says.
+kit, as open_pdks builds it and ciel publishes it, [`KIT`][jolty.spice.sky130.KIT],
+which [`kits.root`][jolty.spice.kits.root] fetches into the cache the first time, each
+archive checked against its SHA-256 digest, or finds installed where the settings'
+``pdk_root`` says.
 
 Examples:
     >>> from jolty.units import um
@@ -16,19 +15,15 @@ Examples:
     'sky130_fd_pr__nfet_01v8'
 """
 
-import shutil
-import tarfile
-import tempfile
 from collections.abc import Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Final
 
 from pydantic import JsonValue
 
 from jolty.devices import Device, device
-from jolty.errors import JoltyError, SimulationError
-from jolty.settings import Settings
-from jolty.spice.download import fetch
+from jolty.errors import SimulationError
+from jolty.spice.kits import Corners, Fetched, Kit, root
 from jolty.spice.ngspice import Running
 from jolty.units import LENGTH, Quantity
 
@@ -47,65 +42,45 @@ CORNERS: Final = ("tt", "ff", "ss", "sf", "fs", "ll", "hh", "hl", "lh")
 first where they differ, and the corners of its resistors and capacitors, low and high,
 with the transistors at theirs."""
 
+MISMATCH: Final = "_mm"
+"""What a corner's name takes after it to name its section that draws each transistor's
+mismatch."""
+
 _RELEASES: Final = "https://github.com/fossi-foundation/ciel-releases/releases/download"
 """Where ciel publishes the releases of the kits it builds."""
 
-_ARCHIVES: Final = {
-    "common.tar.zst": (
-        "8094c39d69f79b16c301ce995d9a365f0163e9258984844ad29741652980daa7",
-        "sky130A/libs.tech/ngspice/",
+KIT: Final = Kit(
+    name="sky130",
+    version=VERSION,
+    files=(
+        Fetched(
+            f"{_RELEASES}/sky130-{VERSION}/common.tar.zst",
+            "8094c39d69f79b16c301ce995d9a365f0163e9258984844ad29741652980daa7",
+            PurePosixPath("sky130A/libs.tech/ngspice"),
+            archive=True,
+        ),
+        Fetched(
+            f"{_RELEASES}/sky130-{VERSION}/sky130_fd_pr.tar.zst",
+            "fb5cdee699e04c23623ad58d015e14fe6e577d63d6e49ac97ccbcb5723f13138",
+            PurePosixPath("sky130A/libs.ref/sky130_fd_pr/spice"),
+            archive=True,
+        ),
     ),
-    "sky130_fd_pr.tar.zst": (
-        "fb5cdee699e04c23623ad58d015e14fe6e577d63d6e49ac97ccbcb5723f13138",
-        "sky130A/libs.ref/sky130_fd_pr/spice/",
+    includes=(),
+    corners=(
+        Corners(
+            LIBRARY,
+            tuple(
+                f"{corner}{mismatch}"
+                for corner in CORNERS
+                for mismatch in ("", MISMATCH)
+            ),
+        ),
     ),
-}
-"""Each archive of the release jolty takes, its digest, and the directory it keeps:
-the model library, and the models of the primitive devices it includes."""
-
-
-def root(settings: Settings | None = None) -> Path:
-    """The directory that holds ``sky130A``: the settings' PDK root, or the release.
-
-    The pinned release's models are fetched into the settings' cache the first time,
-    and read from it after.
-
-    Raises:
-        DownloadError: When an archive cannot be downloaded, or its digest is wrong.
-        JoltyError: When the settings' PDK root holds no SKY130 model library, or the
-            settings are invalid.
-    """
-    chosen = Settings.load() if settings is None else settings
-    if chosen.pdk_root is not None:
-        if not (chosen.pdk_root / LIBRARY).is_file():
-            message = f"the PDK root {chosen.pdk_root} holds no {LIBRARY}"
-            raise JoltyError(message)
-        return chosen.pdk_root
-    kept = chosen.cache / "pdks" / f"sky130-{VERSION}"
-    if (kept / LIBRARY).is_file():
-        return kept
-    kept.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f"{kept.name}.", dir=kept.parent))
-    try:
-        for name, (digest, within) in _ARCHIVES.items():
-            url = f"{_RELEASES}/sky130-{VERSION}/{name}"
-            with tarfile.open(fetch(url, digest, chosen.cache), "r:zst") as packed:
-                members = [
-                    member
-                    for member in packed
-                    if member.name.startswith(within)
-                    and (member.isfile() or member.isdir())
-                ]
-                packed.extractall(staging, members=members, filter="data")
-        try:
-            staging.rename(kept)
-        except OSError:
-            # Another process fetching the release at the same time kept it first.
-            if not (kept / LIBRARY).is_file():
-                raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return kept
+)
+"""The release's archives, each with its digest and the directory it keeps: the model
+library, and the models of the primitive devices it includes; and the library's
+corners, each with its mismatch after it."""
 
 
 TRANSISTORS: Final = (
@@ -244,8 +219,8 @@ def running(process: str | None, *, mismatched: bool) -> Running:
     if corner not in CORNERS:
         message = f"SKY130 has no process corner {corner!r}: it has {CORNERS}"
         raise SimulationError(message)
-    section = f"{corner}_mm" if mismatched else corner
-    return {"sections": ((root() / LIBRARY, section),), "compatibility": "hsa"}
+    section = f"{corner}{MISMATCH}" if mismatched else corner
+    return {"sections": ((root(KIT) / LIBRARY, section),), "compatibility": "hsa"}
 
 
 def inner(element: str, model: str) -> str:

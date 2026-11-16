@@ -188,12 +188,43 @@ pub struct Toleranced {
     pub tolerance: Tolerance,
 }
 
-/// What a draw is drawn for: a part's own factor, or its lot's.
+/// What a draw is drawn for: a part's own factor, its lot's, or a variate of a process
+/// kit's statistical function.
 #[derive(Debug, Clone, Copy)]
 #[repr(u64)]
 enum Drawn {
     Part = 0,
     Lot = 1,
+    Kit = 2,
+}
+
+/// A standard variate, which a process kit's statistical function scales: SPICE's
+/// `agauss` and `gauss` a normal one, its `aunif`, `unif` and `limit` a uniform one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variate {
+    /// Normal, of mean 0 and standard deviation 1.
+    Normal,
+    /// Uniform within 1 of 0, in `[-1, 1)`.
+    Uniform,
+}
+
+/// The standard `variate` a process kit's statistical function draws in the sample `index`
+/// of a Monte Carlo analysis seeded with `seed`, at the call `call` within `scope`: the path
+/// of the instance whose definitions call it, empty for the kit's own, and which call it is
+/// there, such as a parameter's name and the call's place in its expression.
+///
+/// It is drawn from a `ChaCha20` generator seeded as a part's own factor is, of the seed, the
+/// sample's index and the FNV-1a hash of `scope` and `call`, the fourth word marking it a
+/// kit's, so a sample's draws are the same alone or in any batch, and an instance added
+/// leaves every other's as they were; each as numpy draws it from a uniform number in
+/// `[0, 1)` or a standard normal one.
+#[must_use]
+pub fn variate(variate: Variate, seed: u64, index: u64, scope: &str, call: &str) -> f64 {
+    let mut generator = generator(seed, index, key(scope, call), Drawn::Kit);
+    match variate {
+        Variate::Normal => normal(&mut generator, 0.0, 1.0),
+        Variate::Uniform => uniform(&mut generator, -1.0, 1.0),
+    }
 }
 
 impl Toleranced {
@@ -412,6 +443,18 @@ impl Variants for MonteCarlo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kits_variates_are_their_parts_draws_apart() {
+        let drawn = variate(Variate::Normal, 7, 3, "X1", "vth0#0");
+        assert_eq!(drawn, variate(Variate::Normal, 7, 3, "X1", "vth0#0"));
+        assert_ne!(drawn, variate(Variate::Normal, 7, 3, "X2", "vth0#0"));
+        assert_ne!(drawn, variate(Variate::Normal, 7, 4, "X1", "vth0#0"));
+        let mut part = generator(7, 3, key("X1", "vth0#0"), Drawn::Part);
+        assert_ne!(drawn, normal(&mut part, 0.0, 1.0));
+        let uniform = variate(Variate::Uniform, 7, 3, "X1", "vth0#0");
+        assert!((-1.0..1.0).contains(&uniform));
+    }
 
     #[test]
     fn keys_are_fnv_1a_of_the_names_joined() {
