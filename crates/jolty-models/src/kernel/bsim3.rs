@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! BSIM3v3.3, the Berkeley short-channel IGFET model of most CMOS processes from 0.8 µm to
 //! 0.13 µm, as ngspice 47 implements it in `src/spicelib/devices/bsim3/`, SPICE's level 8
 //! and 49 MOSFET.
@@ -32,11 +24,11 @@ use serde::{Deserialize, Serialize};
 pub use self::parameters::Bsim3Parameters;
 use self::prepare::PreparedBsim3;
 use self::prepare::{Junction, Junctions};
-use crate::dual::Dual;
-use crate::jfet::Channel;
-use crate::junction::{limit_channel, limit_junction};
+use crate::kernel::dual::Dual;
+use crate::kernel::jfet::Channel;
+use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Nodes, Oriented, Series};
-use crate::region::{OVERDRIVE, SATURATION_MARGIN};
+use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, REGION,
     Real, Regions, Stamp,

@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The MOSFET of levels 1 and 3, derived from ngspice 47's implementations of them in
 //! `src/spicelib/devices/mos1/` and `mos3/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -17,15 +9,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::semiempirical::Semiempirical;
-use crate::dual::Dual;
-use crate::jfet::Channel;
-use crate::junction::{
+use crate::kernel::dual::Dual;
+use crate::kernel::jfet::Channel;
+use crate::kernel::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_channel, limit_junction,
 };
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
+use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
-use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,

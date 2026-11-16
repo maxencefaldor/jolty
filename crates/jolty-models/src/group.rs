@@ -151,8 +151,8 @@ impl<'a> Instance<'a> {
 }
 
 /// What a group's instances are, as the groups evaluate them: a [`Kernel`]'s, or those of a
-/// kernel that heat, [`crate::heat::Heated`]. Its numbers are plain ones, whatever numbers
-/// the kernel computes with within.
+/// kernel that heat, [`crate::kernel::heat::HeatedKernel`]. Its numbers are plain ones,
+/// whatever numbers the kernel computes with within.
 pub(crate) trait Kind: Send + Sync + 'static {
     /// The model's name.
     const NAME: &'static str;

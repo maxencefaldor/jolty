@@ -14,6 +14,11 @@
 //! global matrix. The groups of the instances of a kernel ([`crate::Groups`]) evaluate it,
 //! serially or in parallel, each instance into a block of a slab of its own, which a gather
 //! in a fixed order assembles.
+//!
+//! Every kernel of the library is a module of this one, beside the numbers, junctions,
+//! regions and parts their equations are written with, so that clippy's `indexing_slicing`
+//! and `panic` lints, denied here once outside the tests, hold in each of them, and in a
+//! kernel added beside them.
 
 #![cfg_attr(
     not(test),
@@ -23,7 +28,30 @@
         reason = "a kernel never panics, and reads fixed arrays through `get`"
     )
 )]
+
+pub(crate) mod behavioral;
+pub(crate) mod bjt;
+pub(crate) mod bsim3;
+pub(crate) mod connect;
+pub(crate) mod controlled;
+pub(crate) mod diode;
+pub(crate) mod dual;
+pub(crate) mod foundry;
+pub(crate) mod heat;
+pub(crate) mod jfet;
+pub(crate) mod junction;
+pub(crate) mod memristor;
+pub(crate) mod mosfet;
 pub(crate) mod parts;
+pub(crate) mod passive;
+pub(crate) mod photocell;
+pub(crate) mod real;
+pub(crate) mod region;
+pub(crate) mod sources;
+pub(crate) mod switch;
+pub(crate) mod thermal;
+pub(crate) mod vbic;
+pub(crate) mod vdmos;
 
 use std::borrow::Cow;
 use std::fmt;

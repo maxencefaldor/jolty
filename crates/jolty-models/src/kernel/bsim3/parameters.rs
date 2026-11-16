@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{Charges, Mobility, NoiseModel, by_channel, fringe};
-use crate::jfet::Channel;
+use crate::kernel::jfet::Channel;
 use crate::{REFERENCE_TEMPERATURE, Real};
 
 /// The parameters of a [`Bsim3`](super::Bsim3): the instance's geometry, then the model's

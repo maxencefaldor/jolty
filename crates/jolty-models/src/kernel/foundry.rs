@@ -5,15 +5,6 @@
 //! names it. Its parameters name the process design kit and the kit's model, and give its
 //! size, which a netlist written for ngspice hands the kit's model.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

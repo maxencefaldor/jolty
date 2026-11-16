@@ -1,16 +1,7 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::junction::Temperatures;
+use crate::kernel::junction::Temperatures;
 use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{CurrentBranch, Pair};
 use crate::noise::Flicker;

@@ -5,7 +5,7 @@
 //! transistor adds at them.
 
 use super::{Layout, Local, Stamp};
-use crate::dual::Dual;
+use crate::kernel::dual::Dual;
 use crate::{Nature, NoiseSource, Real, UnknownIndex};
 
 /// The resistance below which a resistance carries its current as an unknown, in ohms.

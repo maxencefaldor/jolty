@@ -5,14 +5,6 @@
 //! respect to its voltages, for its Jacobian, also differentiates each of them with respect
 //! to a parameter when it computes with [`crate::Gradient`].
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use crate::Real;

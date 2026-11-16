@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The regions of operation a transistor's equations distinguish, which it reports among
 //! its variables, with its margins to their boundaries.
 

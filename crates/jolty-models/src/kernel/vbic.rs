@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The VBIC 1.2 bipolar transistor, derived from ngspice 47's implementation of it in
 //! `src/spicelib/devices/vbic/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -14,10 +6,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::dual::Dual;
-use crate::junction::{Temperatures, below_one, critical_voltage, limit_junction};
+use crate::kernel::dual::Dual;
+use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
 use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series};
-use crate::region::Bipolar;
+use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
@@ -2056,7 +2048,7 @@ mod tests {
 
     use super::*;
     use crate::ELEMENTARY_CHARGE;
-    use crate::region::{BASE_COLLECTOR, BASE_EMITTER};
+    use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
         assert_switches_where_margin_vanishes, source, thermal,

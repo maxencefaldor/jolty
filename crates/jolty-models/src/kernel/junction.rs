@@ -10,14 +10,6 @@
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
 //! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 use crate::{ParameterError, Real};
 
 /// The Boltzmann constant, in joules per kelvin.

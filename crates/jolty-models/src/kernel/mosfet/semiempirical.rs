@@ -7,7 +7,7 @@
 
 use super::{Conduction, Region};
 use crate::Real;
-use crate::dual::Dual;
+use crate::kernel::dual::Dual;
 
 /// The coefficients of the depletion's lateral reach into a short channel, in SPICE's
 /// polynomial of the depletion width over the junction depth.

@@ -1,12 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use jolty_ir::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

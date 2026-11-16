@@ -6,15 +6,6 @@
 //! initial conditions hold a node; in a transient, what drives it moves it, and its window
 //! slows it at either bound.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

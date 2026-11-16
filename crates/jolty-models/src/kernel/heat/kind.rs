@@ -6,15 +6,6 @@
 //! step and folded onto the heated instance's, and its power, the sum over its voltages of
 //! each times the current into the instance there, flows into the net as heat.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use std::fmt;
 use std::marker::PhantomData;
 

@@ -5,15 +5,6 @@
 //! capacitance stores it as a capacitor stores charge, and a heat source drives it as a
 //! current source drives current, so a network of them is solved as a circuit is.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

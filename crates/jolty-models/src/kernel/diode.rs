@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The diode, derived from ngspice 47's implementation of it in
 //! `src/spicelib/devices/dio/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -14,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::junction::{
+use crate::kernel::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };

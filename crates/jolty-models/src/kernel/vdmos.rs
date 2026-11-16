@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The VDMOS power MOSFET, derived from ngspice 47's implementation of it in
 //! `src/spicelib/devices/vdmos/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -16,14 +8,14 @@ use std::f64::consts::FRAC_PI_2;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::diode::{Breakdown, Junction};
-use crate::dual::Dual;
-use crate::jfet::Channel;
-use crate::junction::{Depletion, Temperatures, below_one, limit_channel};
+use crate::kernel::diode::{Breakdown, Junction};
+use crate::kernel::dual::Dual;
+use crate::kernel::jfet::Channel;
+use crate::kernel::junction::{Depletion, Temperatures, below_one, limit_channel};
+use crate::kernel::mosfet::{DEFAULT_OXIDE_THICKNESS, OXIDE_PERMITTIVITY};
 use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series, Varying};
-use crate::mosfet::{DEFAULT_OXIDE_THICKNESS, OXIDE_PERMITTIVITY};
+use crate::kernel::region::SATURATION_MARGIN;
 use crate::noise::Flicker;
-use crate::region::SATURATION_MARGIN;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,

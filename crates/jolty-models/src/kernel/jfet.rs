@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The JFET, derived from ngspice 47's implementation of it in
 //! `src/spicelib/devices/jfet/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -14,13 +6,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::junction::{
+use crate::kernel::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
 use crate::kernel::parts::{self, Bias, Nodes, Series, series_value};
+use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
-use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
@@ -533,7 +525,7 @@ impl<R: Real> JfetParameters<R> {
         ParameterError::non_negative("gate_drain_capacitance", gate_drain_capacitance)?;
         ParameterError::positive("junction_potential", junction_potential)?;
         ParameterError::positive("saturation_current", saturation_current)?;
-        crate::junction::below_one("depletion_coefficient", depletion_coefficient)?;
+        crate::kernel::junction::below_one("depletion_coefficient", depletion_coefficient)?;
         ParameterError::non_negative("energy_gap", energy_gap)?;
         // The doping tail's factor, `(1 − b) / (pb − vto)`, which vanishes at `b = 1`.
         let (tail_excess, gap) = (-(doping_tail - 1.0), junction_potential - threshold_voltage);

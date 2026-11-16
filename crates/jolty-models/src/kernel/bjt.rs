@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
 //! The Gummel-Poon bipolar transistor, derived from ngspice 47's implementation of it in
 //! `src/spicelib/devices/bjt/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
@@ -14,14 +6,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::junction::{
+use crate::kernel::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
 use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
+use crate::kernel::region::Bipolar;
 use crate::noise::Flicker;
-use crate::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, Real, Regions, Stamp, UnknownIndex,
@@ -70,10 +62,9 @@ pub enum Construction {
 /// and a diffusion charge set by its transit time; the forward transit time grows with
 /// the current and the base-collector voltage. Part of the base-collector depletion charge
 /// sits on the external base. A base, collector or emitter resistance adds an internal
-/// node, labelled `base`, `collector` or `emitter`; one below
-/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), the base's at its minimum, also carries
-/// its current as an unknown, labelled `base_current`, `collector_current` or
-/// `emitter_current`.
+/// node, labelled `base`, `collector` or `emitter`; one below [`SMALL_RESISTANCE`], the
+/// base's at its minimum, also carries its current as an unknown, labelled `base_current`,
+/// `collector_current` or `emitter_current`.
 ///
 /// A transistor with a substrate has a fourth terminal, `substrate`, joined by a junction
 /// to its internal collector if it is vertical or to its internal base if it is lateral.
@@ -1424,7 +1415,7 @@ mod tests {
 
     use super::*;
     use crate::Input;
-    use crate::region::{BASE_COLLECTOR, BASE_EMITTER};
+    use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
         assert_switches_where_margin_vanishes, source, thermal,

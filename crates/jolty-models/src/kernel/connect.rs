@@ -3,15 +3,6 @@
 //! an input reads, and a [`LogicDriver`] turns an output's level into a voltage between the
 //! device's supply and ground.
 
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "a kernel never panics, and reads fixed arrays through `get`"
-    )
-)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
