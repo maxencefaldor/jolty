@@ -14,14 +14,17 @@ mod measure;
 
 use std::sync::{Arc, Mutex};
 
+use std::collections::BTreeMap;
+
 use jolty_engine::{
-    Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, MismatchResult, NoiseResult,
-    OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
-    Statistics, Strategy, TransientResult,
+    Analysis, AnalysisResult, Cotangent, Cotangents, DcSweepResult, Derivatives, Differentiated,
+    Location, MismatchResult, NoiseResult, OperatingPointResult, Options, ParameterCotangents,
+    PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity, Statistics, Strategy,
+    TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
-use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
+use numpy::{Complex64, Element, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray2};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
@@ -189,6 +192,13 @@ struct Simulator {
     nets: Vec<String>,
     devices: usize,
     foundry_devices: Vec<String>,
+}
+
+/// A VJP's pullback, as the engine found it: what carries a cotangent on an analysis's
+/// outputs back to the parameters it names.
+#[pyclass(module = "jolty._core", frozen)]
+struct Pullback {
+    inner: jolty_engine::Pullback,
 }
 
 /// A device a recording keeps: its path, its terminals' names, whether each is thermal, the
@@ -530,6 +540,98 @@ impl Simulator {
         Ok(found)
     }
 
+    /// The JVP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
+    /// it, with the options whose JSON text is `options`, along each of `tangents`, a
+    /// number per parameter of `parameters`, each its instance's path and its name:
+    /// a dictionary of the analysis's `result`, the `tangents`, by point, unknown and
+    /// tangent, and an oscillator's `period`'s along each tangent, or `None`.
+    fn jvp<'py>(
+        &self,
+        py: Python<'py>,
+        analysis: &str,
+        parameters: Vec<(String, String)>,
+        tangents: Vec<Vec<f64>>,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (analysis, options) = differentiated(analysis, options)?;
+        let found = py.detach(move || {
+            let spreads = self.spreads_differentiating(&analysis, &options, pool);
+            pool.run((&options, spreads), |options| {
+                self.lock().jvp(&analysis, &parameters, &tangents, options)
+            })
+        });
+        let found = found.map_err(|error| SimulationError::new_err(error.to_string()))?;
+        let result = PyDict::new(py);
+        match &found.tangents {
+            Derivatives::Real(points) => result.set_item("tangents", cube(py, points)?)?,
+            Derivatives::Complex(points) => result.set_item("tangents", cube(py, points)?)?,
+        }
+        result.set_item(
+            "period",
+            found.period.map(|period| PyArray1::from_vec(py, period)),
+        )?;
+        result.set_item("result", outcome_to_python(py, found.result)?)?;
+        Ok(result)
+    }
+
+    /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
+    /// it, with the options whose JSON text is `options`, with respect to `parameters`,
+    /// each its instance's path and its name: the analysis's result, and its pullback.
+    fn vjp<'py>(
+        &self,
+        py: Python<'py>,
+        analysis: &str,
+        parameters: Vec<(String, String)>,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<(Bound<'py, PyDict>, Pullback)> {
+        let (analysis, options) = differentiated(analysis, options)?;
+        let found = py.detach(move || {
+            let spreads = self.spreads_differentiating(&analysis, &options, pool);
+            pool.run((&options, spreads), |options| {
+                self.lock().vjp(&analysis, &parameters, options)
+            })
+        });
+        let inner = found.map_err(|error| SimulationError::new_err(error.to_string()))?;
+        let result = outcome_to_python(py, inner.result.clone())?;
+        Ok((result, Pullback { inner }))
+    }
+
+    /// The value on each parameter of `pullback` of the cotangent `values`, on every
+    /// unknown at each point of its analysis, real or complex, by point then unknown, and
+    /// `period` on an oscillator's period, with the options whose JSON text is `options`.
+    fn pull_back<'py>(
+        &self,
+        py: Python<'py>,
+        pullback: &Pullback,
+        values: &Bound<'py, PyAny>,
+        period: f64,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
+        let cotangents = if let Ok(real) = values.extract::<PyReadonlyArray2<'py, f64>>() {
+            Cotangents::Real(vec![cotangent(&real, period)])
+        } else {
+            let phasors = values.extract::<PyReadonlyArray2<'py, Complex64>>()?;
+            Cotangents::Complex(vec![cotangent(&phasors, period)])
+        };
+        let found = py.detach(|| {
+            pool.run((&options, true), |options| {
+                self.lock().pull_back(&pullback.inner, &cotangents, options)
+            })
+        });
+        match found.map_err(|error| SimulationError::new_err(error.to_string()))? {
+            ParameterCotangents::Real(mut rows) => {
+                Ok(PyArray1::from_vec(py, rows.pop().unwrap_or_default()).into_any())
+            }
+            ParameterCotangents::Complex(mut rows) => {
+                Ok(PyArray1::from_vec(py, rows.pop().unwrap_or_default()).into_any())
+            }
+        }
+    }
+
     /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
     /// `options`, releasing the interpreter while it runs, inside `pool` when the options
     /// let it spread its work over threads.
@@ -558,12 +660,54 @@ impl Simulator {
 }
 
 impl Simulator {
+    /// Whether a derivative of `analysis` with `options` may spread its work over the
+    /// threads of `pool`, as a sensitivity of it may.
+    fn spreads_differentiating(
+        &self,
+        analysis: &Differentiated,
+        options: &Options,
+        pool: &Pool,
+    ) -> bool {
+        let sensitivity = Analysis::Sensitivity(Sensitivity {
+            outputs: Vec::new(),
+            of: analysis.clone(),
+        });
+        self.lock().spreads(&sensitivity, options, pool.threads())
+    }
+
     /// The engine's simulator, which an analysis on another thread may hold.
     fn lock(&self) -> std::sync::MutexGuard<'_, jolty_engine::Simulator> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// The analysis differentiated whose JSON text is `analysis`, and the options whose JSON
+/// text is `options`.
+fn differentiated(analysis: &str, options: &str) -> PyResult<(Differentiated, Options)> {
+    Ok((
+        serde_json::from_str(analysis).map_err(|error| unreadable(&error))?,
+        serde_json::from_str(options).map_err(|error| unreadable(&error))?,
+    ))
+}
+
+/// The cotangent of `values`, by point then unknown, each point's row left out where it is
+/// zero, and of `period` on an oscillator's period.
+fn cotangent<T: Element + Copy + Default + PartialEq>(
+    values: &PyReadonlyArray2<'_, T>,
+    period: f64,
+) -> Cotangent<T> {
+    let array = values.as_array();
+    let zero = T::default();
+    let points: BTreeMap<usize, Vec<T>> = array
+        .rows()
+        .into_iter()
+        .enumerate()
+        .filter(|(_, row)| row.iter().any(|value| *value != zero))
+        .map(|(point, row)| (point, row.to_vec()))
+        .collect();
+    Cotangent { points, period }
 }
 
 /// A `ValueError` for input the engine cannot read.
@@ -1250,6 +1394,7 @@ fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
 fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
+    module.add_class::<Pullback>()?;
     module.add_class::<Pool>()?;
     module.add_function(wrap_pyfunction!(sample, module)?)?;
     module.add_function(wrap_pyfunction!(toleranced, module)?)?;

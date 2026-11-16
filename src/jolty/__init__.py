@@ -44,7 +44,7 @@ from jolty.plan import (
     Transient,
     WorstCase,
 )
-from jolty.simulate import Simulation
+from jolty.simulate import Simulation, function, jvp, vjp
 from jolty.specs import Specs
 
 __version__ = version("jolty")
@@ -90,10 +90,13 @@ __all__ = [
     "component",
     "devices",
     "files",
+    "function",
+    "jvp",
     "parts",
     "plan",
     "specs",
     "spice",
     "units",
+    "vjp",
     "waveforms",
 ]

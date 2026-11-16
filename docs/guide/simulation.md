@@ -130,7 +130,63 @@ The result's `points` hold an operating point per solution, and `voltages(net)` 
 
 ## Sensitivities
 
-A sensitivity analysis differentiates unknowns, such as `out` or `V1:current`, with respect to every parameter of every device, at the operating point:
+Every analysis that solves for the unknowns, the operating point, a DC sweep, a small-signal response, a transient and a periodic steady state, is a function of the circuit's parameters, which jolty differentiates exactly.
+`jolty.function(circuit, analysis)` gives that function, `f(params)`, and `jolty.jvp` and `jolty.vjp` differentiate it as `jax.jvp` and `jax.vjp` differentiate a function.
+The parameters, `params`, are a nested dictionary of numbers of devices' parameters, by instance path, then by parameter path, in SI base units, as a simulation's overrides name them; those given are the ones differentiated, the circuit's others held.
+A parameter path names a number of a device's parameters by its keys, such as `resistance`, or `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
+The outputs are a dictionary of each unknown's values over the analysis's points, by the unknown's name, such as `out` or `V1:current`: one value at the operating point, one per level, frequency, time or point of the period otherwise, phasors over frequency; an oscillator's periodic steady state adds its period, in seconds, under `jolty.simulate.PERIOD`.
+
+`jvp(f, params, tangents)` returns the outputs and their derivatives along `tangents`, which moves some of the parameters given, by the same keys: the JVP, a Jacobian-vector product, by the direct method, one solve at each point of the analysis.
+`vjp(f, params)` returns the outputs and a pullback, which takes a cotangent on the outputs, by the same keys, those it leaves out zero, and gives its value on each parameter given: the VJP, a vector-Jacobian product, by the adjoint method, one transposed solve at each point however many the parameters.
+A scalar loss's derivatives with respect to the outputs are a cotangent, and its pullback is the loss's gradient, as here over a crossbar's weights:
+
+```python
+from jolty import Net, component, devices, function, vjp
+from jolty.units import V, kohm
+
+
+@component
+def crossbar(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    for row, level in enumerate((0.3 * V, -0.2 * V)):
+        source = c.place(devices.voltage_source(level), name=f"V{row}")
+        c.connect(source.positive, name=f"in{row}")
+        c.connect(source.negative, ground)
+    for column in range(2):
+        load = c.place(devices.resistor(1 * kohm), name=f"RL{column}")
+        c.connect(load.a, name=f"out{column}")
+        c.connect(load.b, ground)
+        for row in range(2):
+            weight = c.place(devices.resistor(1 * kohm), name=f"W{row}{column}")
+            c.connect(weight.a, Net(f"in{row}"))
+            c.connect(weight.b, Net(f"out{column}"))
+
+
+weights = {f"W{row}{column}": {"resistance": 1e3} for row in "01" for column in "01"}
+targets = {"out0": 0.05, "out1": -0.02}
+outputs, pullback = vjp(function(crossbar(), OperatingPoint()), weights)
+distances = {name: outputs[name] - target for name, target in targets.items()}
+gradient = pullback({name: 2 * distance for name, distance in distances.items()})
+```
+
+The loss here is the sum of the squares of each output's distance to its target, so its cotangent is twice each distance; `gradient["W00"]["resistance"]` is the loss's derivative with respect to that weight, per ohm, and every weight's together cost one transposed solve.
+Over frequency, cotangents and their values are complex, `vᵀ dx/dp`; a real loss of the phasors `a + jb` takes the real part of the pullback of `∂L/∂a − j ∂L/∂b`.
+
+The derivatives are exact, both directions of one computation.
+Each device's own derivative with respect to a parameter, `∂F/∂p`, comes from its twin: its instance prepared again computing with dual numbers that carry the derivative of each value with respect to the parameter through the same equations, temperature scaling included, evaluated where the instance is, so that a parameter costs what its device does.
+The solution then moves by the implicit function theorem, `dx/dp = −J⁻¹ ∂F/∂p` with `J = ∂F/∂x`, which the JVP evaluates from the right and the VJP from the left, one factorization at each point serving every tangent and cotangent; the two are transposes of one linear map, and the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` holds to 7.4·10⁻¹⁶ of its terms at every analysis (`crates/jolty-engine/tests/sensitivity.rs`).
+At a DC point, `J` is the DC Jacobian, and a number a DC sweep holds moves nothing at its levels.
+Over frequency, `G + jωC` moves with each parameter directly, exactly, and through the operating point; the second part is a central difference along each parameter's own derivative of the operating point, a microvolt either way, since devices give no second derivatives.
+Over time, the JVP carries each tangent's derivative of the solution from step to step through the same integration formula, each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985), and the VJP is its transpose step for step, the discrete adjoint, one backward pass through the steps the transient took for every cotangent at once; a derivative moves no step and no logic event.
+A transient's derivatives start from those of the state it starts from: the operating point's, its rows of the nets the initial conditions hold while it is solved replaced by theirs, which no parameter moves, or none for a transient from its initial conditions alone; an RC from `out` = 0 V meets the closed form `d out/dR = −(t/(R²C)) e^(−t/RC)` from either start.
+The VJP over time evaluates the circuit again at each point after the run, so it refuses circuits with logic, whose drivers it does not see as they were, and both refuse circuits with delay lines, whose past their derivatives would leave out.
+Over a [periodic steady state](#periodic-steady-state), the converged period's steps carry each tangent's derivatives, the start held, to its end, `∂φ/∂p`; the steady state moves so that it still repeats, `(Φ − I) dx₀/dp = −∂φ/∂p`, by the converged period's monodromy matrix, in shooting's units, a neutral direction left where it was, and an oscillator's period moves with it, by the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [dx₀/dp, dT/dp] = [−∂φ/∂p, 0]`, its start still orthogonal to the flow.
+A second pass through the same steps then carries each tangent's derivatives from `dx₀/dp`, each step's charge terms scaled by `−(dT/dp)/T` too, every step a fixed fraction of the period, so the derivatives along the period are at fixed fractions of it; the VJP takes the three steps backward, the transposed bordered system between its two passes.
+No singular value of the bordered system counts as zero but within its rounding.
+A tank whose conductance holds its radius through an impedance of its own scales with time, L and C alike, so `L ∂T/∂L + C ∂T/∂C = T`: the derivatives meet it as far as Newton's iterates meet each step's equations, to 256 ε at a relative tolerance of 10⁻¹⁰ and 7·10⁻¹⁰ at the default 10⁻³, and central differences of the period, each run settled and shot afresh, to 1.2·10⁻⁷, a square root's truncation for steps of 10⁻³ (`crates/jolty-engine/tests/periodic.rs`).
+A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
+
+A sensitivity analysis is the whole Jacobian of some outputs, each against every parameter of every device:
 
 ```python
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
@@ -142,16 +198,9 @@ Given another analysis, it differentiates the outputs at each of its points inst
 Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
 ```
 
-A parameter is a number of a device's parameters, named by the device's path and its keys, such as `R1` and `resistance`, or `V1` and `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
-At a DC point, the derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
-Over frequency, the adjoint at each frequency reads how the matrix `G + jωC` moves with each parameter, directly and through the operating point; the second part is a central difference along the operating point's own derivative, a microvolt either way, since devices give no second derivatives.
-Over time, the direct method carries each parameter's derivative of the solution from step to step through the same integration formula, starting from the operating point's, with each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985); a derivative moves no step and no logic event.
-Over a [periodic steady state](#periodic-steady-state), a period from the start `x₀` it repeats carries each parameter's derivatives the same way, the start held, to its end, `∂φ/∂p`; the steady state moves so that it still repeats, `(Φ − I) dx₀/dp = −∂φ/∂p`, by the converged period's monodromy matrix, in shooting's units, a neutral direction left where it was, and an oscillator's period moves with it, by the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [dx₀/dp, dT/dp] = [−∂φ/∂p, 0]`, its start still orthogonal to the flow.
-A second period from `x₀` then carries each parameter's derivatives from `dx₀/dp`, each step's charge terms scaled by `−(dT/dp)/T` too, every step a fixed fraction of the period, so the derivatives along the period are at fixed fractions of it.
-The three periods take the same steps, and no singular value of the bordered system counts as zero but within its rounding.
-A tank whose conductance holds its radius through an impedance of its own scales with time, L and C alike, so `L ∂T/∂L + C ∂T/∂C = T`: the derivatives meet it as far as Newton's iterates meet each step's equations, to 256 ε at a relative tolerance of 10⁻¹⁰ and 7·10⁻¹⁰ at the default 10⁻³, and central differences of the period, each run settled and shot afresh, to 1.2·10⁻⁷, a square root's truncation for steps of 10⁻³ (`crates/jolty-engine/tests/periodic.rs`).
-Each device's own derivative with respect to a parameter is exact: every device computes with dual numbers that carry the derivative of each value with respect to the parameter through the same equations, temperature scaling included.
-A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
+It takes the VJP of a cotangent on each output at each point, or the JVP along each parameter, whichever costs the fewer solves for the circuit at hand.
+At a DC point and over frequency, the `k` outputs cost `k` transposed solves a point and the `P` parameters `P` solves, so it takes the VJP unless there are fewer parameters than outputs.
+Over time a cotangent at a point pulls back over every step before it, so the outputs at `N + 1` points cost `k (N + 1)(N + 2) / 2` transposed solves against the JVP's `P (N + 1)`: it takes the JVP at once when that costs no more at the least number of points the transient can take, one per longest step, or for a circuit with logic, and otherwise records the steps and goes through them by the cheaper once the run has ended; along a period, likewise once shooting has converged.
 
 The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, a number at the operating point and an array over the points otherwise, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
 Its `result` holds the result of the analysis differentiated, whose levels, frequencies or times the derivatives follow, and for an oscillator's periodic steady state, `period_derivative(instance, parameter)` reads its period's derivative, in seconds per the parameter's unit, and `period_derivatives` all of them, in the order of `parameters`:

@@ -77,6 +77,7 @@ from jolty.plan import (
     TransferFunction,
     Transient,
     Variants,
+    differentiated,
 )
 from jolty.settings import Settings
 from jolty.units import (
@@ -242,6 +243,24 @@ def _elaborating() -> Generator[None]:
     except _core.ElaborationError as error:
         (found,) = error.args
         raise ElaborationError([checks.problem(each) for each in found]) from None
+
+
+def _swept_level(built: ir.Circuit, sweep: DcSweep) -> Dimension:
+    """The dimension of the level of the source `sweep` sweeps in `built`.
+
+    A parameter's levels are all of the dimension of the first.
+    """
+    if sweep.parameter is not None:
+        return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
+    match built.find(sweep.source):
+        case ir.Instance(of=ir.DeviceOf(model="current_source")):
+            return CURRENT
+        case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
+            return VOLTAGE
+    if not sweep.values:
+        return VOLTAGE
+    # Not an independent source: the engine reports it, whatever the levels.
+    return sweep.values[0].dimension
 
 
 class Elaborated:
@@ -906,21 +925,8 @@ class Simulation:
         return analysis.to_json()
 
     def _level(self, sweep: DcSweep) -> Dimension:
-        """The dimension of the swept source's level, so its levels are checked.
-
-        A parameter's levels are all of the dimension of the first.
-        """
-        if sweep.parameter is not None:
-            return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
-        match self.circuit.find(sweep.source):
-            case ir.Instance(of=ir.DeviceOf(model="current_source")):
-                return CURRENT
-            case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
-                return VOLTAGE
-        if not sweep.values:
-            return VOLTAGE
-        # Not an independent source: the engine reports it, whatever the levels.
-        return sweep.values[0].dimension
+        """The dimension of the swept source's level, so its levels are checked."""
+        return _swept_level(self.circuit, sweep)
 
     def _result(
         self, outcome: _core.AnalysisResult, recording: results.Recording
@@ -2236,3 +2242,282 @@ class Stressed:
             ),
             nets=(),
         )
+
+
+type Parameters = Mapping[str, Mapping[str, float]]
+"""Numbers of devices' parameters, by instance path, such as ``X1/R1``, then by
+parameter path, such as ``resistance`` or ``waveform.dc``, in SI base units, as a
+simulation's overrides name them."""
+
+type Outputs = dict[str, npt.NDArray[np.float64] | npt.NDArray[np.complex128] | float]
+"""What a [`Function`][jolty.simulate.Function] gives: each unknown's values at every
+point of its analysis, by the unknown's name, in SI base units, phasors over
+frequency; and an oscillator's period under [`PERIOD`][jolty.simulate.PERIOD]."""
+
+type Differentiable = OperatingPoint | DcSweep | Ac | Transient | PeriodicSteadyState
+"""An analysis a [`Function`][jolty.simulate.Function] runs."""
+
+type Gradient = dict[str, dict[str, float | complex]]
+"""Each parameter's value of a cotangent, by instance then parameter."""
+
+type Pullback = Callable[[Mapping[str, npt.ArrayLike]], Gradient]
+"""A function's pullback, as [`vjp`][jolty.simulate.vjp] gives it: each parameter's
+value of a cotangent on its outputs, by instance then parameter."""
+
+PERIOD: Final = "the period"
+"""The key of an oscillator's period among a function's outputs, in seconds: no
+unknown's name, as names hold no whitespace."""
+
+
+class Function:
+    """An analysis of a circuit as a function of its devices' parameters.
+
+    Called with parameters, ``f(params)``, it gives the analysis's outputs at them, each
+    unknown's values over the analysis's points, the circuit's other parameters as they
+    are; [`jvp`][jolty.simulate.jvp] and [`vjp`][jolty.simulate.vjp] differentiate it,
+    as ``jax.jvp`` and ``jax.vjp`` differentiate a function.
+    The circuit is elaborated once, and each call makes its devices again from the
+    parameters given, as a [`Simulation`][jolty.simulate.Simulation] with them as
+    overrides does.
+    """
+
+    elaborated: Elaborated
+    """The circuit, elaborated once."""
+
+    analysis: Differentiable
+    """The analysis it runs."""
+
+    options: Options
+    """The options the analysis runs with."""
+
+    def __init__(
+        self,
+        circuit_or_top: ir.Circuit | Component,
+        analysis: Differentiable,
+        options: Options | None = None,
+    ) -> None:
+        """The function that runs `analysis` on a circuit with `options`.
+
+        Raises:
+            ElaborationError: With every problem the engine finds in the circuit.
+        """
+        self.elaborated = Elaborated(circuit_or_top)
+        self.analysis = analysis
+        self.options = Options() if options is None else options
+
+    def __call__(self, params: Parameters) -> Outputs:
+        """The analysis's outputs with the parameters `params`.
+
+        Raises:
+            ElaborationError: With every number `params` names that the circuit's
+                devices do not write, and every device it puts out of range.
+            SimulationError: When the analysis fails.
+        """
+        core, outcome = self._run(
+            params,
+            lambda core, analysis, settings: core.run(analysis, settings, _engine()),
+        )
+        return self._outputs(core, outcome)
+
+    def _encoded(self) -> str:
+        """The analysis, differentiated, in the engine's format."""
+        of = None if isinstance(self.analysis, OperatingPoint) else self.analysis
+        level = (
+            _swept_level(self.elaborated.circuit, of)
+            if isinstance(of, DcSweep)
+            else VOLTAGE
+        )
+        return json.dumps(differentiated(of, level), allow_nan=False)
+
+    def _settings(self) -> str:
+        """The options in the engine's format."""
+        return json.dumps(self.options.to_json(), allow_nan=False)
+
+    def _outputs(self, core: _core.Simulator, outcome: _core.AnalysisResult) -> Outputs:
+        """The outputs of `outcome`, which `core` found.
+
+        Each unknown's values over its points, by name, and an oscillator's period.
+        """
+        rows, period = _values(outcome)
+        found: Outputs = {
+            name: rows[:, column] for column, (name, _) in enumerate(core.unknowns)
+        }
+        if period is not None and self._oscillates():
+            found[PERIOD] = float(period)
+        return found
+
+    def _oscillates(self) -> bool:
+        """Whether its analysis is an oscillator's periodic steady state."""
+        analysis = self.analysis
+        return isinstance(analysis, PeriodicSteadyState) and analysis.period is None
+
+    def _named(self, params: Parameters) -> list[tuple[str, str]]:
+        """The parameters `params` names, each its instance's path and its name."""
+        return [(path, name) for path, named in params.items() for name in named]
+
+    def _run[T](
+        self, params: Parameters, run: Callable[[_core.Simulator, str, str], T]
+    ) -> tuple[_core.Simulator, T]:
+        """The simulator at `params`, and what `run` finds of it.
+
+        `run` takes the simulator, and the analysis and the options in the engine's
+        format.
+
+        Raises:
+            ElaborationError: As calling the function raises it.
+            SimulationError: When the engine fails.
+        """
+        core = self.elaborated.simulator(params)
+        try:
+            return core, run(core, self._encoded(), self._settings())
+        except _core.SimulationError as error:
+            raise SimulationError(str(error)) from None
+
+    def pushed(
+        self, params: Parameters, tangents: Parameters
+    ) -> tuple[Outputs, Outputs]:
+        """As [`jvp`][jolty.simulate.jvp] finds it."""
+        names = self._named(params)
+        given = {(path, name) for path, named in tangents.items() for name in named}
+        if unknown := sorted(given - set(names)):
+            message = f"a tangent moves only the parameters given, not {unknown}"
+            raise ValueError(message)
+        tangent = [float(tangents.get(path, {}).get(name, 0.0)) for path, name in names]
+        core, found = self._run(
+            params,
+            lambda core, analysis, settings: core.jvp(
+                analysis, names, [tangent], settings, _engine()
+            ),
+        )
+        outputs = self._outputs(core, found["result"])
+        moved = found["tangents"][:, :, 0]
+        pushed: Outputs = {
+            name: moved[:, column] for column, (name, _) in enumerate(core.unknowns)
+        }
+        if (period := found["period"]) is not None and self._oscillates():
+            pushed[PERIOD] = float(period[0])
+        return outputs, pushed
+
+    def pulled(self, params: Parameters) -> tuple[Outputs, Pullback]:
+        """As [`vjp`][jolty.simulate.vjp] finds it."""
+        names = self._named(params)
+        core, (outcome, pullback) = self._run(
+            params,
+            lambda core, analysis, settings: core.vjp(
+                analysis, names, settings, _engine()
+            ),
+        )
+        outputs = self._outputs(core, outcome)
+        columns = {name: column for column, (name, _) in enumerate(core.unknowns)}
+        points = _values(outcome)[0].shape[0]
+        phasors = isinstance(self.analysis, Ac)
+        settings = self._settings()
+
+        def pull(
+            cotangent: Mapping[str, npt.ArrayLike],
+        ) -> Gradient:
+            """Each parameter's value of `cotangent`, by instance then parameter.
+
+            Raises:
+                ValueError: When the cotangent names an output the function does not
+                    give.
+                SimulationError: When the pullback fails.
+            """
+            shape = (points, len(columns))
+            values: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+                np.zeros(shape, dtype=np.complex128) if phasors else np.zeros(shape)
+            )
+            period = 0.0
+            for name, given in cotangent.items():
+                if name == PERIOD and self._oscillates():
+                    period = float(np.asarray(given))
+                elif name in columns:
+                    values[:, columns[name]] = given
+                else:
+                    message = f"the function gives no output `{name}`"
+                    raise ValueError(message)
+            try:
+                found = core.pull_back(pullback, values, period, settings, _engine())
+            except _core.SimulationError as error:
+                raise SimulationError(str(error)) from None
+            pulled: Gradient = {}
+            for (path, name), value in zip(names, found.tolist(), strict=True):
+                pulled.setdefault(path, {})[name] = value
+            return pulled
+
+        return outputs, pull
+
+
+def _values(
+    outcome: _core.AnalysisResult,
+) -> tuple[npt.NDArray[np.float64] | npt.NDArray[np.complex128], float | None]:
+    """The values of every unknown at each point of `outcome`, and its period.
+
+    The values are by point, then unknown; the period is a periodic steady state's.
+
+    Raises:
+        SimulationError: For an outcome of an analysis a function does not run.
+    """
+    match outcome["kind"]:
+        case "periodic_steady_state":
+            return np.atleast_2d(outcome["values"]), outcome["period"]
+        case "operating_point" | "dc_sweep" | "ac" | "transient":
+            return np.atleast_2d(outcome["values"]), None
+        case other:
+            message = f"a function runs no {other} analysis"
+            raise SimulationError(message)
+
+
+def function(
+    circuit_or_top: ir.Circuit | Component,
+    analysis: Differentiable,
+    options: Options | None = None,
+) -> Function:
+    """The analysis `analysis` of a circuit as a function of its parameters.
+
+    ``function(circuit, analysis)(params)`` runs it with `options` at the parameters
+    `params` and gives its outputs; see [`Function`][jolty.simulate.Function].
+
+    Raises:
+        ElaborationError: With every problem the engine finds in the circuit.
+    """
+    return Function(circuit_or_top, analysis, options)
+
+
+def jvp(
+    f: Function, params: Parameters, tangents: Parameters
+) -> tuple[Outputs, Outputs]:
+    """The outputs of `f` at `params`, and their derivative along `tangents`.
+
+    As ``jax.jvp(f, primals, tangents)``: the parameters `params` names are those
+    differentiated, and `tangents` moves some of them, in SI base units, the others
+    held. The derivatives, by output as the outputs are, are exact, by the direct
+    method: one solve at each point of the analysis.
+
+    Raises:
+        ValueError: When a tangent moves a parameter `params` does not give.
+        ElaborationError: As calling `f` raises it.
+        SimulationError: When the analysis or a Jacobian's solve fails.
+    """
+    return f.pushed(params, tangents)
+
+
+def vjp(f: Function, params: Parameters) -> tuple[Outputs, Pullback]:
+    """The outputs of `f` at `params`, and its pullback.
+
+    As ``jax.vjp(f, primals)``: the pullback takes a cotangent on the outputs, by
+    output as they are, each unknown's at every point, those it leaves out zero, and
+    gives its value on each parameter of `params`, by instance then parameter, by the
+    adjoint method: one transposed solve at each point of the analysis, however many
+    the parameters. A scalar loss's derivatives with respect to the outputs are its
+    cotangent, and the pullback gives its gradient. Over frequency, the cotangents and
+    their values are complex, `vᵀ dx/dp`: a real loss of the phasors `a + jb` has the
+    real part of the pullback of `∂L/∂a - j ∂L/∂b`.
+
+    Raises:
+        ElaborationError: As calling `f` raises it.
+        SimulationError: When the analysis fails, or over time on a circuit with delay
+            lines or logic, whose points the adjoint method cannot evaluate again as
+            they were.
+    """
+    return f.pulled(params)

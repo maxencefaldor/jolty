@@ -187,6 +187,14 @@ type AnalysisResult = (
     | TransferFunctionResult
 )
 
+class JvpResult(TypedDict):
+    tangents: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+    period: npt.NDArray[np.float64] | None
+    result: AnalysisResult
+
+@final
+class Pullback: ...
+
 class SourceLocation(TypedDict):
     file: str
     line: int
@@ -286,6 +294,29 @@ class Simulator:
     def check_operating_point(self, options: str, pool: Pool) -> list[Diagnostic]: ...
     def excursions(self) -> list[Excursion]: ...
     def run(self, analysis: str, options: str, pool: Pool) -> AnalysisResult: ...
+    def jvp(
+        self,
+        analysis: str,
+        parameters: list[tuple[str, str]],
+        tangents: list[list[float]],
+        options: str,
+        pool: Pool,
+    ) -> JvpResult: ...
+    def vjp(
+        self,
+        analysis: str,
+        parameters: list[tuple[str, str]],
+        options: str,
+        pool: Pool,
+    ) -> tuple[AnalysisResult, Pullback]: ...
+    def pull_back(
+        self,
+        pullback: Pullback,
+        values: Real | Complex,
+        period: float,
+        options: str,
+        pool: Pool,
+    ) -> Real | Complex: ...
     @property
     def elaborated(self) -> Elaborated: ...
     def batch(

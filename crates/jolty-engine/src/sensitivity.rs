@@ -24,7 +24,7 @@ use jolty_ir::numbers;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::derivative::{Cotangent, Forward, Saved, Start, Twin, units};
+use crate::derivative::{Cotangent, Forward, Saved, Start, Twin, points, units};
 use crate::elaborated::{Origin, Origins};
 use crate::{
     Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
@@ -207,13 +207,7 @@ impl Simulator {
             });
         }
         let (result, saved) = self.run_saving(of, options)?;
-        let points = match &result {
-            AnalysisResult::DcSweep(sweep) => sweep.values.len(),
-            AnalysisResult::Ac(response) => response.values.len(),
-            AnalysisResult::Transient(waveforms) => waveforms.values.len(),
-            AnalysisResult::PeriodicSteadyState(found) => found.waveforms.values.len(),
-            _ => 1,
-        };
+        let points = points(&result);
         if Self::cheaper_backward(of, kept.len(), parameters, points) {
             return self.by_rows(twins, (result, saved), (&kept, points), options);
         }

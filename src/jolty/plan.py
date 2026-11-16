@@ -276,10 +276,14 @@ type Differentiated = DcSweep | Ac | Transient | PeriodicSteadyState | None
 operating point."""
 
 
-def _differentiated(of: Differentiated, level: Dimension) -> JsonValue:
-    """The analysis `of` in the engine's format.
+def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
+    """The analysis `of`, differentiated, in the engine's format.
 
     The levels of a DC sweep are checked against `level`.
+
+    Examples:
+        >>> differentiated(None, VOLTAGE)
+        'operating_point'
     """
     match of:
         case None:
@@ -296,12 +300,13 @@ class Sensitivity:
 
     Each output is an unknown by name, a voltage such as ``out`` or a current such as
     ``V1:current``. The derivatives are taken at the operating point, or at each point
-    of the analysis `of`: each level of a DC sweep and each frequency of a small-signal
-    response, where one solve per output serves every parameter, however many, each
-    time of a transient, which carries each parameter's derivatives along its steps, and
-    each point of a periodic steady state's period, at its fraction of the period, the
-    state the period starts from moving so that it still repeats, and an oscillator's
-    period with it.
+    of the analysis `of`: each level of a DC sweep, each frequency of a small-signal
+    response, each time of a transient, and each point of a periodic steady state's
+    period, at its fraction of the period, the state the period starts from moving so
+    that it still repeats, and an oscillator's period with it. They are the analysis's
+    Jacobian, which [`jvp`][jolty.simulate.jvp] finds a parameter at a time and
+    [`vjp`][jolty.simulate.vjp] an output at a time; the analysis takes whichever costs
+    the fewer solves.
     """
 
     outputs: Sequence[str]
@@ -314,7 +319,7 @@ class Sensitivity:
         """
         outputs: list[JsonValue] = list(self.outputs)
         return {
-            "sensitivity": {"outputs": outputs, "of": _differentiated(self.of, level)}
+            "sensitivity": {"outputs": outputs, "of": differentiated(self.of, level)}
         }
 
 
@@ -353,7 +358,7 @@ class Mismatch:
         return {
             "mismatch": {
                 "outputs": outputs,
-                "of": _differentiated(self.of, level),
+                "of": differentiated(self.of, level),
                 "toleranced": list(toleranced),
                 "random_variables": given,
             }

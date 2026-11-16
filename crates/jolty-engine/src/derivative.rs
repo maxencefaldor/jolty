@@ -85,6 +85,10 @@ const OVER_TIME: &str = "derivative over time";
 /// Why a derivative over time takes no delay line.
 const LEFT_OUT_OVER_TIME: &str = "it leaves out those of the past its lines read";
 
+/// What a pullback says of cotangents of the wrong kind.
+const KINDS: &str =
+    "cotangents on a response's phasors are complex, and on any other analysis's values real";
+
 /// What [`Simulator::jvp`] finds: the analysis's result, and the derivative of every
 /// unknown at each of its points along each tangent.
 #[derive(Debug, Clone, PartialEq)]
@@ -372,10 +376,7 @@ impl Forward {
     /// The derivatives of the unknowns kept in `moved`, by direction then unknown, by
     /// unknown kept then direction.
     fn keep(&self, moved: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        self.kept
-            .iter()
-            .map(|&unknown| moved.iter().map(|shift| shift[unknown]).collect())
-            .collect()
+        kept_of(&self.kept, moved)
     }
 }
 
@@ -581,11 +582,7 @@ impl Simulator {
                     self.pull(&mut twins, (saved, result), cotangents, &mut fold, options)?;
                     Ok(ParameterCotangents::Real(found))
                 }
-                _ => Err(SimulationError::InvalidAnalysis(
-                    "cotangents on a response's phasors are complex, and on any other \
-                     analysis's values real"
-                        .to_owned(),
-                )),
+                _ => Err(SimulationError::InvalidAnalysis(KINDS.to_owned())),
             }
         })
     }
@@ -621,13 +618,7 @@ impl Simulator {
         result: &AnalysisResult,
         cotangents: &Cotangents,
     ) -> Result<(), SimulationError> {
-        let points = match result {
-            AnalysisResult::DcSweep(sweep) => sweep.values.len(),
-            AnalysisResult::Ac(response) => response.values.len(),
-            AnalysisResult::Transient(waveforms) => waveforms.values.len(),
-            AnalysisResult::PeriodicSteadyState(found) => found.waveforms.values.len(),
-            _ => 1,
-        };
+        let points = points(result);
         let unknowns = self.elaborated.unknowns.len();
         let fits = |at: usize, values: usize, finite: bool, period: f64| {
             at < points && values == unknowns && finite && period.is_finite()
@@ -868,11 +859,7 @@ impl Simulator {
             (Saved::Period(steps, system), AnalysisResult::PeriodicSteadyState(found)) => {
                 self.pull_period(twins, (found, steps, system), cotangents, fold, options)
             }
-            _ => Err(SimulationError::InvalidAnalysis(
-                "cotangents on a response's phasors are complex, and on any other analysis's \
-                 values real"
-                    .to_owned(),
-            )),
+            _ => Err(SimulationError::InvalidAnalysis(KINDS.to_owned())),
         }
     }
 
@@ -1649,6 +1636,18 @@ impl Simulator {
             .into_iter()
             .map(|period| (zeros.clone(), period))
             .collect())
+    }
+}
+
+/// The number of points of `result`: one at an operating point, and a level's,
+/// frequency's or time's each otherwise.
+pub(crate) fn points(result: &AnalysisResult) -> usize {
+    match result {
+        AnalysisResult::DcSweep(sweep) => sweep.values.len(),
+        AnalysisResult::Ac(response) => response.values.len(),
+        AnalysisResult::Transient(waveforms) => waveforms.values.len(),
+        AnalysisResult::PeriodicSteadyState(found) => found.waveforms.values.len(),
+        _ => 1,
     }
 }
 
