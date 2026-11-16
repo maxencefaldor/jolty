@@ -21,9 +21,9 @@ examples/*.png
 site/
 
 # What simulating the discoveries' designs writes
-discovery/*/*.jolty.json
-discovery/*/*.results.npz
-discovery/*/*.png
+docs/discovery/*/*.jolty.json
+docs/discovery/*/*.results.npz
+docs/discovery/*/*.png
 
 # The 3D viewers the commands write; the gallery's are pages of the docs
 examples/*.view.html

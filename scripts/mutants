@@ -5,7 +5,7 @@
 # code one mutant at a time, a `<` made `<=` or a function made to return a default, and
 # runs the tests of the crate it changed, which should then fail. A mutant they miss is
 # listed in mutants.out/missed.txt, and the run passes all the same; a run whose tests
-# fail before any mutant does not. .cargo/mutants.toml configures it.
+# fail before any mutant does not.
 #
 #   scripts/mutants                  the mutants of the change from main, committed or
 #                                    not, as CI runs them on each change
@@ -21,14 +21,19 @@ cd "$(dirname "$0")/.."
 PYO3_PYTHON="${PYO3_PYTHON:-$(uv python find)}"
 export PYO3_PYTHON
 
+# Each mutant is tested by its crate's own tests, built and run with the versions
+# Cargo.lock holds. The extension's code is tested by the Python tests, which
+# cargo-mutants cannot run, so every mutant of it would be missed: it is left out.
+mutants=(cargo mutants --cargo-arg=--locked --exclude 'crates/jolty-python/**')
+
 if [ "${1:-}" = --all ]; then
     shift
-    mutants=(cargo mutants "$@")
+    mutants+=("$@")
 else
     # From where the change left BASE, so that what BASE gained since is not in it.
     mkdir -p target
     git diff "$(git merge-base "${1:-main}" HEAD)" > target/mutants.diff
-    mutants=(cargo mutants --in-diff target/mutants.diff)
+    mutants+=(--in-diff target/mutants.diff)
 fi
 # cargo-mutants exits with 2 when the tests missed a mutant and 3 when one timed out:
 # both are what the run reports, so neither fails it.

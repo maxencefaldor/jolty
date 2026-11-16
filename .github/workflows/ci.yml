@@ -56,7 +56,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Long enough for macOS's three cores, where building the extension and running the
+    # tests took 21 minutes on 16 November, and short enough to stop a hung run.
+    timeout-minutes: 40
     env:
       # The differential tests fail, rather than skip, if ngspice is missing.
       JOLTY_REQUIRE_NGSPICE: "1"
@@ -82,7 +84,7 @@ jobs:
   free-threaded:
     name: Python tests on free-threaded Python, without the GIL
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3

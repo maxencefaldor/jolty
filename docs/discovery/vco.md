@@ -5,9 +5,9 @@ The best VCO found: an integrator and a Schmitt trigger, their delays cancelled.
 A MOSFET reverses the integrator's current, so its channel, a resistance, only scales the current.
 A 2.2 nF capacitor across the Schmitt trigger's 10 kΩ feedback hurries its regeneration, which cuts its delay from 6-9 µs to about 2 µs, and 2 kΩ in series with the 1 nF integrating capacitor steps the triangle towards the next threshold by twice its current times 2 kΩ at each reversal, the voltage it would have travelled in 2 µs: a time advance that cancels the delay at every frequency.
 Every frequency from 0.5 V to 5 V lies within 0.1 % of 996 Hz/V.
-Simulate it with `jolty simulate discovery/vco/design.py`.
+Simulate it with `jolty simulate docs/discovery/vco/design.py`.
 
-[Open in 3D](vco.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/vco){ .md-button }
+[Open in 3D](vco.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/docs/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery/vco){ .md-button }
 
 17 devices and 16 unknowns.
 

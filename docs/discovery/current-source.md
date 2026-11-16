@@ -5,9 +5,9 @@ The best two-terminal 1 mA source found: a limiter fed by a mirror of its curren
 Q1 passes the current, and Q2 steals Q1's base drive once the current holds a Vbe across Rs.
 A plain limiter feeds Q2 through a resistor from the line, so Q2's current, and its Vbe, follow the line: 17 % over 3 V to 24 V. Here a PNP mirror feeds Q2 a tenth of the source's own current instead, and the line regulation falls to 2.6 %, what the 2N3906's 18.7 V Early voltage leaves.
 The current is Vbe/Rs, so it still falls 0.3 %/K with temperature.
-Simulate it with `jolty simulate discovery/current_source/design.py`.
+Simulate it with `jolty simulate docs/discovery/current_source/design.py`.
 
-[Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
+[Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/docs/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery/current_source){ .md-button }
 
 9 devices and 15 unknowns.
 
@@ -31,7 +31,7 @@ No design of ten parts or fewer met both bounds; the best traded line regulation
 
 `candidates.py` writes each topology as a component with its resistors as arguments.
 `explore.py` tunes each to 1 mA at 12 V and 27 °C by bisection on its resistor, then measures the line regulation over a DC sweep from 3 V to 24 V and the drift at six temperatures, each from the exact terminal currents jolty reports.
-The final design runs through the command line, `jolty simulate discovery/current_source/design.py`, with its corners and the prompt's bound as specs.
+The final design runs through the command line, `jolty simulate docs/discovery/current_source/design.py`, with its corners and the prompt's bound as specs.
 
 ## Results
 

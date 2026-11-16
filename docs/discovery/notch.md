@@ -5,9 +5,9 @@ The best 50 Hz notch found: band-pass and inverted low-pass, summed through C an
 A Tow-Thomas biquad, Q = 1, gives a band-pass output and, two integrations on, an inverted low-pass output exactly 90° behind it at every frequency.
 Summed into a virtual ground through a capacitor and a resistor, which turn them 90° further apart, their currents cancel at the frequency where their magnitudes meet: the parts' values place the notch, but cannot make it shallow.
 Over 200 samples of 1 % resistors and 5 % capacitors, every one notches deeper than 65 dB between 45 Hz and 55 Hz.
-Simulate it with `jolty simulate discovery/notch/design.py`.
+Simulate it with `jolty simulate docs/discovery/notch/design.py`.
 
-[Open in 3D](notch.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/notch/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/notch){ .md-button }
+[Open in 3D](notch.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/docs/discovery/notch/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery/notch){ .md-button }
 
 18 devices and 18 unknowns.
 

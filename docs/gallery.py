@@ -60,7 +60,7 @@ from jolty.units import celsius
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 EXAMPLES: Final = ROOT / "examples"
-DISCOVERY: Final = ROOT / "discovery"
+DISCOVERY: Final = ROOT / "docs" / "discovery"
 DOCS: Final = ROOT / "docs"
 IMAGES: Final = DOCS / "images" / "gallery"
 REPOSITORY: Final = "https://github.com/maxencefaldor/jolty/blob/main"
@@ -873,7 +873,7 @@ def page(built: Built) -> str:
         f"[Script]({entry.source}){{ .md-button }}"
     )
     if entry.discovered:
-        folder = f"{REPOSITORY.replace('/blob/', '/tree/')}/discovery/{entry.name}"
+        folder = f"{REPOSITORY.replace('/blob/', '/tree/')}/docs/discovery/{entry.name}"
         buttons += f" [Every experiment]({folder}){{ .md-button }}"
     lines = [
         f"# {entry.title}",
@@ -1040,7 +1040,7 @@ def discoveries(built: Sequence[Built]) -> str:
         ),
         (
             "The prompts, candidates, experiments and designs are all in "
-            "[`discovery/`](https://github.com/maxencefaldor/jolty/tree/main/discovery)."
+            "[`docs/discovery/`](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery)."
         ),
         "",
         '<div class="grid cards" markdown>',

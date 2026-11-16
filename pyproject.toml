@@ -95,7 +95,7 @@ convention = "google"
 "docs/*.py" = ["INP001", "T201"]
 # Discoveries run as scripts, outside any package: their numbers are the circuit, and
 # their explorations print what they found.
-"discovery/**" = ["INP001", "PLR2004", "T201"]
+"docs/discovery/**" = ["INP001", "PLR2004", "T201"]
 # The agents' benchmark runs as scripts, outside any package, and prints what it found.
 "benchmarks/agents/**/*.py" = ["INP001", "T201"]
 # The other suites, their fixtures' scripts and their runners run as scripts, outside
@@ -120,7 +120,7 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples", "docs", "benchmarks", "discovery"]
+include = ["src", "tests", "examples", "docs", "benchmarks"]
 
 [tool.ty.environment]
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the
@@ -179,7 +179,48 @@ xfail_strict = true
 # Expected output in docstrings wraps at 88 columns like the code around it.
 doctest_optionflags = ["NORMALIZE_WHITESPACE"]
 
-# rumdl: its tables live in .rumdl.toml, because rumdl reads code-block-tools
-# only from its own file (rvben/rumdl#851) and uses the first config file it
-# finds, so a tool.rumdl table here would be dead while that file exists. When
-# the fix lands, move every table from .rumdl.toml under tool.rumdl, delete it.
+# Markdown lints and formats with rumdl, beside ruff for the code. jolty's docs are a
+# Zensical site, which reads MkDocs Markdown: admonitions, content tabs and grid cards,
+# built from <div> blocks.
+[tool.rumdl]
+flavor = "mkdocs"
+
+# Prose is one sentence per line and the renderer wraps: no width limit, and
+# the formatter joins a wrapped sentence and splits a line holding two.
+[tool.rumdl.MD013]
+line-length = 0
+reflow = true
+reflow-mode = "sentence-per-line"
+# A sentence may open with a lowercase name: ruff, uv, jax.
+require-sentence-capital = false
+
+[tool.rumdl.MD004]
+style = "dash"
+
+[tool.rumdl.MD025]
+front-matter-title = ""
+
+# Fenced blocks, never indented: only a fence can name its language, and the
+# code-block tools below key on that name.
+[tool.rumdl.MD046]
+style = "fenced"
+
+[tool.rumdl.MD029]
+style = "one"
+
+# Python examples in the markdown are held to the same ruff rules as the code,
+# except the rules a whole module answers to: an example is an excerpt, so its
+# names are defined, and its docstrings and copyright line written, in the
+# module it is lifted from.
+[tool.rumdl.code-block-tools]
+enabled = true
+
+[tool.rumdl.code-block-tools.tools.ruff-excerpt]
+command = ["ruff", "check", "--output-format=concise", "--ignore", "CPY001,D,F821", "-"]
+
+[tool.rumdl.code-block-tools.languages.python]
+lint = ["ruff-excerpt"]
+format = ["ruff:format"]
+
+[tool.rumdl.MD033]
+allowed-elements = ["div"]
