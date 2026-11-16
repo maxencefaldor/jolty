@@ -39,10 +39,11 @@ pub(super) struct Operating<R: Real> {
     pub(super) vbseff: D<R>,
     pub(super) n: D<R>,
     pub(super) abulk0: D<R>,
-    /// What the noise reads of one finger: the mobility, the effective gate-source and
-    /// drain-source voltages, `EsatL`, `Abulk` after and before `keta`, the oxide's
-    /// capacitance through the inversion layer, the source and drain resistance, the
-    /// current over `Vdseff` and `nstar`.
+    /// What the noise and the gate's intrinsic-input resistance read of one finger: the
+    /// mobility, the effective gate-source and drain-source voltages, `EsatL`, `Abulk`
+    /// after and before `keta`, the oxide's capacitance through the inversion layer, the
+    /// source and drain resistance, `β`, the current over `Vdseff` before the source
+    /// end's velocity limit and `nstar`.
     pub(super) ueff: D<R>,
     pub(super) vgsteff: D<R>,
     pub(super) vdseff: D<R>,
@@ -51,6 +52,7 @@ pub(super) struct Operating<R: Real> {
     pub(super) abulk_unscaled: D<R>,
     pub(super) coxeff: D<R>,
     pub(super) rds: D<R>,
+    pub(super) beta: D<R>,
     pub(super) ids_over_vds: D<R>,
     pub(super) nstar: D<R>,
 }
@@ -425,6 +427,7 @@ impl<R: Real> Core<R> {
             abulk_unscaled,
             coxeff,
             rds,
+            beta,
             ids_over_vds: ids,
             nstar: (xdep.recip() * EPSSI)
                 .plus(self.coxe + p.cit)

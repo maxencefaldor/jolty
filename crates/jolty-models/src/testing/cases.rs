@@ -72,6 +72,25 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[-1.8, -1.2, 0.0, 0.0],
     ),
     (
+        "bsim4",
+        r#"{"vth0": 0.5, "u0": 0.067, "eu": 1.67, "gate_resistance_model": 3, "rshg": 50,
+                "xgw": 7.7e-7, "ngcon": 2, "fingers": 2, "drain_source_resistance_model": 1,
+                "rsh": 1, "drain_squares": 70, "source_squares": 35,
+                "body_resistance_model": 1, "thermal_noise_model": 1}"#,
+        &[1.8, 1.2, 0.0, 0.0],
+    ),
+    (
+        "bsim4",
+        r#"{"channel": "p", "vth0": -0.5, "u0": 0.025, "eu": 1, "gate_resistance_model": 2,
+                "rshg": 50, "xgw": 7.7e-7}"#,
+        &[-1.8, -1.2, 0.0, 0.0],
+    ),
+    (
+        "bsim4",
+        r#"{"vth0": 0.5, "u0": 0.067, "eu": 1.67, "gate_resistance_model": 1}"#,
+        &[1.8, 1.2, 0.0, 0.0],
+    ),
+    (
         "bsim3",
         r#"{"channel": "p", "u0": 0.025, "rsh": 20, "source_squares": 0.02,
                 "capacitance_model": 0, "noise_model": 2, "thermal": true}"#,
