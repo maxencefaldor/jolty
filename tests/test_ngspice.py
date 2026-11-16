@@ -2415,18 +2415,18 @@ BSIM3_TRANSISTORS: Final = {
 """BSIM3 transistors of each channel, a short one and a long one, of each mobmod."""
 
 
-def bsim3_kelvins(temperature: Quantity) -> float:
-    """The temperature to run ngspice at so its BSIM3 runs at jolty's `temperature`.
+def bsim_kelvins(temperature: Quantity) -> float:
+    """The temperature to run ngspice at so its BSIM runs at jolty's `temperature`.
 
-    BSIM3 computes with constants of its own, Boltzmann's over the electron's charge
-    among them, so ngspice's BSIM3 matches jolty's at the same kelvins.
+    BSIM3 and BSIM4 compute with constants of their own, Boltzmann's over the electron's
+    charge among them, so ngspice's match jolty's at the same kelvins.
     """
     return ngspice.same_kelvins(temperature.value)
 
 
 @component
-def bsim3_curves(c: Builder, transistor: devices.Device) -> None:
-    """A BSIM3 transistor's curves: its gate at `V1`, its drain at `V2`.
+def bsim_curves(c: Builder, transistor: devices.Device) -> None:
+    """A BSIM3 or BSIM4 transistor's curves: its gate at `V1`, its drain at `V2`.
 
     Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
     """
@@ -2500,7 +2500,7 @@ def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> 
     c.connect(source.negative, supply.negative, n.source, n.bulk, load.b, ground)
 
 
-def _bsim3_sweep(
+def _bsim_sweep(
     simulation: Simulation, source: str, levels: list[Quantity], kelvins: float
 ) -> None:
     """Asserts a DC sweep of `source` over `levels` agrees with ngspice's."""
@@ -2535,10 +2535,66 @@ def test_bsim3_curves_agree(name: str, source: str, temperature: Quantity) -> No
     """
     transistor = BSIM3_TRANSISTORS[name]
     sign = 1 if name.endswith("-n") else -1
-    simulation = Simulation(bsim3_curves(transistor), temperature)
+    simulation = Simulation(bsim_curves(transistor), temperature)
     bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
-    _bsim3_sweep(simulation, source, levels, bsim3_kelvins(temperature))
+    _bsim_sweep(simulation, source, levels, bsim_kelvins(temperature))
+
+
+BSIM4_TRANSISTORS: Final = {
+    "short-n": devices.bsim4(
+        width=1 * um,
+        length=0.15 * um,
+        drain_squares=1,
+        body_resistance_model=1,
+        card={
+            "toxe": 4.1 * nm,
+            "vth0": 0.45 * V,
+            "k2": -0.02,
+            "ngate": 1e26 / m**3,
+            "rdsw": 200 * ohm,
+            "rsh": 10 * ohm,
+            "alpha0": 1e-6 * m / V,
+            "beta0": 20 * V,
+            "agidl": 1e-9 / ohm,
+            "lambda": 1e-10,
+            "vtl": 2e5 * m / s,
+            "jtss": 1e-7 * A / m**2,
+        },
+    ),
+    "long-p": devices.bsim4(
+        channel="p",
+        width=5 * um,
+        length=2 * um,
+        fingers=2,
+        card={"vth0": -0.5 * V, "ute": -1.3, "kt1": -0.2 * V, "tvoff": 1e-3 / K},
+    ),
+}
+"""BSIM4 transistors written for ngspice: a short n-channel with its drain's sheet
+resistance, its body's network, its substrate current and gate-induced leakage, its
+velocity overshoot, its source end's limit and its junctions' tunneling, and a long
+p-channel of two fingers whose temperature scales its mobility and threshold."""
+
+
+@pytest.mark.parametrize(
+    "temperature",
+    [celsius(27), *TEMPERATURES.values()],
+    ids=["nominal", *TEMPERATURES.keys()],
+)
+@pytest.mark.parametrize("name", BSIM4_TRANSISTORS)
+@pytest.mark.parametrize("source", ["V1", "V2"])
+def test_bsim4_curves_agree(name: str, source: str, temperature: Quantity) -> None:
+    """A BSIM4 transistor's output and transfer curves, in both modes, as ngspice's.
+
+    The drain sweeps from 1 V behind the source, the body's junction forward and the
+    channel reversed, to 1.8 V; the gate from below the threshold to 1.8 V.
+    """
+    transistor = BSIM4_TRANSISTORS[name]
+    sign = 1 if name.endswith("-n") else -1
+    simulation = Simulation(bsim_curves(transistor), temperature)
+    bounds = (-1.0, 1.8) if source == "V2" else (-0.5, 1.8)
+    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 57)
+    _bsim_sweep(simulation, source, levels, bsim_kelvins(temperature))
 
 
 _PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
@@ -2578,7 +2634,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
     Its transistor's charges follow each charge model and partition.
     """
     simulation = Simulation(bsim3_stage(_STAGES[name]))
-    kelvins = bsim3_kelvins(celsius(27))
+    kelvins = bsim_kelvins(celsius(27))
     point = simulation.run(OperatingPoint(), TIGHT)
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
@@ -2620,7 +2676,7 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
     )
     lines = netlist(simulation.circuit, excited="V1")
     command = "noise v(out) VV1 dec 5 1 100meg\nsetplot noise1"
-    raw = ngspice.run(lines, command, temperature=bsim3_kelvins(celsius(27)))
+    raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
     np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
     np.testing.assert_allclose(
         np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
@@ -2654,7 +2710,7 @@ def test_bsim3_transients_agree(
     raw = ngspice.run(
         netlist(simulation.circuit, transient=True),
         command,
-        temperature=bsim3_kelvins(celsius(27)),
+        temperature=bsim_kelvins(celsius(27)),
     )
     times = raw.real("time")
     for column, unknown in compared(simulation):
@@ -2799,7 +2855,7 @@ def test_published_bsim3_cards_sweep_as_in_ngspice(
         netlist(simulation.circuit),
         f"dc V{source} {first!r} {last!r} {step!r}",
         libraries=(berkeley_cards,),
-        temperature=bsim3_kelvins(temperature),
+        temperature=bsim_kelvins(temperature),
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
@@ -2862,7 +2918,7 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
         netlist(simulation.circuit),
         f"dc V{source} {first!r} {last!r} {step!r}",
         libraries=(binned_cards,),
-        temperature=bsim3_kelvins(celsius(27)),
+        temperature=bsim_kelvins(celsius(27)),
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))

@@ -118,6 +118,16 @@ class SensitivityResult(TypedDict):
     period_derivatives: npt.NDArray[np.float64] | None
     result: AnalysisResult
 
+class MismatchResult(TypedDict):
+    kind: Literal["mismatch"]
+    outputs: list[str]
+    random_variables: list[
+        tuple[str | None, str | None, str, float, float, dict[str, dict[str, float]]]
+    ]
+    derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+    period_derivatives: npt.NDArray[np.float64] | None
+    result: AnalysisResult
+
 class StabilityResult(TypedDict):
     kind: Literal["stability"]
     probe: str
@@ -169,6 +179,7 @@ type AnalysisResult = (
     | TransientResult
     | PeriodicSteadyStateResult
     | SensitivityResult
+    | MismatchResult
     | StabilityResult
     | NoiseResult
     | PoleZeroResult

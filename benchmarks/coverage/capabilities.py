@@ -211,7 +211,8 @@ XYCE_COMMANDS: Final = (
 
 JOLTY_ANALYSES: Final = (
     "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, "
-    "PeriodicSteadyState, Sensitivity, Stability, Noise, PoleZero, TransferFunction"
+    "PeriodicSteadyState, Sensitivity, Mismatch, Stability, Noise, PoleZero, "
+    "TransferFunction"
 )
 """jolty's analyses, as `jolty.plan.Analysis` lists them (`Analysis` is checked
 against this list by the tests)."""
@@ -1469,6 +1470,28 @@ def built_devices() -> list[Fixture]:
             temperature=ngspice.same_kelvins(ROOM),
         )
     )
+    bsim4 = devices.bsim4(channel="n", width=10e-6 * m_, length=1e-6 * m_)
+    rows.append(
+        built_fixture(
+            "bsim4",
+            "BSIM4 4.5",
+            forced(
+                "bsim4", bsim4, {"drain": 1.5, "gate": 1.2, "source": 0.0, "bulk": 0.0}
+            ),
+            ("i(vdrain)",),
+            Known(
+                source=(
+                    "ngspice 47's BSIM4v5, Berkeley's code, the model's defining "
+                    "implementation"
+                ),
+                reference=Simulator.NGSPICE_SPARSE,
+            ),
+            xyce=Documented(
+                "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 "
+                "and 4.8.2, not 4.5"
+            ),
+        )
+    )
     on, off = 100.0, 16e3
     for key, title, device in (
         (
@@ -1637,16 +1660,6 @@ def missing_devices() -> list[Fixture]:
             "M1 d g 0 0 mm W=10u L=2u",
             ".model mm NMOS(LEVEL=9 VTO=0.7 KP=1e-4)",
             Documented("Xyce Reference Guide 7.10: level 9 is BSIM3 in Xyce"),
-        ),
-        (
-            "bsim4",
-            "BSIM4 4.5",
-            "M1 d g 0 0 mm W=10u L=1u",
-            ".model mm NMOS(LEVEL=14 VERSION=4.5)",
-            Documented(
-                "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 "
-                "and 4.8.2, not 4.5"
-            ),
         ),
         (
             "bsimsoi",

@@ -16,14 +16,15 @@ from typing import Final
 import numpy as np
 import pytest
 
-from differential import SKIP, compare
+from differential import SKIP, closest, compare
 from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
-from jolty.plan import TIGHT, Ac, DcSweep, OperatingPoint, decade, linear
+from jolty.plan import TIGHT, Ac, DcSweep, OperatingPoint, Transient, decade, linear
 from jolty.settings import Settings
 from jolty.spice import gf180mcu, kits, ngspice, sg13g2, sky130
 from jolty.spice.expressions import STATISTICAL
 from jolty.spice.library import Library, Sample
-from jolty.units import GHz, MHz, V, celsius, kHz
+from jolty.units import GHz, MHz, V, celsius, fF, kHz, ns, ps
+from jolty.waveforms import Pulse
 
 KITS: Final = (sky130.KIT, gf180mcu.KIT, sg13g2.KIT)
 """The open process kits."""
@@ -380,6 +381,225 @@ def test_a_sky130_mim_capacitor_agrees_with_ngspice(
     )
 
 
+SKY130_MOSFET_CORNERS: Final = ("tt", "ff", "ss")
+"""SKY130's corners of its MOSFETs: typical, and fast and slow in both channels."""
+
+SKY130_SIZES: Final = tuple(
+    (width, length)
+    for width in (0.42, 0.55, 0.7, 1.0, 1.5, 2.5, 4.0, 6.0, 10.0)
+    for length in (0.15, 0.2, 0.3, 0.75, 1.5, 3.0, 6.0, 10.0, 50.0)
+)
+"""Widths and lengths, in micrometers as SKY130's netlists write them, one in each of
+the nine lengths' bins of `nfet_01v8` and `pfet_01v8` and in nine of their widths'."""
+
+SUPPLY: Final = 1.8
+"""The volts SKY130's 1.8 V transistors are biased up to."""
+
+
+@SKIP
+@pytest.mark.parametrize("corner", SKY130_MOSFET_CORNERS)
+@pytest.mark.parametrize("channel", ["n", "p"])
+def test_sky130_transistors_agree_with_ngspice_across_their_bins(
+    kept: Settings, corner: str, channel: str
+) -> None:
+    """SKY130's `nfet_01v8` and `pfet_01v8`, BSIM4 4.5 binned by size, read natively.
+
+    A transistor of each of `SKY130_SIZES` selects a bin of its own, its drain and gate
+    on two sources at the supply, its source and body grounded; the drain current of
+    each, sensed by a source of its own, swept by the drain at a gate at the supply and
+    by the gate at a drain at the supply, is compared with ngspice's, which reads the
+    same library at the same corner.
+    """
+    name = f"sky130_fd_pr__{channel}fet_01v8"
+    sign = 1.0 if channel == "n" else -1.0
+    library = kits.read(sky130.KIT, ((sky130.LIBRARY, corner),), settings=kept)
+
+    @component
+    def curves(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drain = c.place(devices.voltage_source(sign * SUPPLY * V), name="VD")
+        gate = c.place(devices.voltage_source(sign * SUPPLY * V), name="VG")
+        c.connect(drain.negative, gate.negative, ground)
+        for number, (width, length) in enumerate(SKY130_SIZES):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            placed = c.place(
+                library.component(name, w=width, l=length), name=f"X{number}"
+            )
+            c.connect(sense.positive, drain.positive)
+            c.connect(sense.negative, placed["d"], name=f"n{number}")
+            c.connect(placed["g"], gate.positive)
+            c.connect(placed["s"], placed["b"], ground)
+
+    simulation = Simulation(curves())
+    deck = [
+        f"* {name}",
+        f"VD drain 0 {sign * SUPPLY!r}",
+        f"VG gate 0 {sign * SUPPLY!r}",
+    ]
+    for number, (width, length) in enumerate(SKY130_SIZES):
+        deck.append(f"VA{number} drain n{number} 0")
+        deck.append(f"X{number} n{number} gate 0 0 {name} w={width!r} l={length!r}")
+    swept = linear(0 * V, sign * SUPPLY * V, 10)
+    sweeps = [simulation.run(DcSweep(source, swept), TIGHT) for source in ("VD", "VG")]
+    step = sign * SUPPLY / 9
+    raws = ngspice.runs(
+        deck,
+        tuple(f"dc {source} 0 {sign * SUPPLY!r} {step!r}" for source in ("VD", "VG")),
+        sections=((kits.root(sky130.KIT, kept) / sky130.LIBRARY, corner),),
+        compatibility=sky130.KIT.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for sweep, raw in zip(sweeps, raws, strict=True):
+        for number in range(len(SKY130_SIZES)):
+            unknown = results.Unknown(f"A{number}:current", "current")
+            spice = raw.real(f"i(va{number})")
+            found = sweep.values[:, simulation.unknowns.index(unknown)]
+            scale = float(np.abs(spice).max())
+            compare(found, spice, unknown, scale=scale, tolerance=AGREEMENT)
+
+
+@SKIP
+@pytest.mark.parametrize("channel", ["n", "p"])
+def test_sky130_transistors_admittances_agree_with_ngspice(
+    kept: Settings, channel: str
+) -> None:
+    """SKY130's `nfet_01v8` and `pfet_01v8`, read natively, from 1 MHz to 10 GHz.
+
+    A transistor 1 µm wide and 0.15 µm long, its gate and drain at half the supply and
+    its body at its source, is driven at its gate and at its drain in turn; the
+    currents of its drain, gate and body are compared with ngspice's, which reads the
+    same library at `tt`. ngspice's capacitances with respect to the body are not its
+    charges' derivatives (`AC_DEPARTED`), and the kit's 50 Ω body resistances let the
+    body's nodes follow the drive by `ωRC`, about 2π · 10 GHz · 50 Ω · 2 fF = 0.6% at
+    10 GHz: the departure, 1e-4 of those capacitances, then moves the currents by under
+    1e-6 of themselves, within `AGREEMENT`; at 100 GHz, by 2e-6.
+    """
+    name = f"sky130_fd_pr__{channel}fet_01v8"
+    sign = 1.0 if channel == "n" else -1.0
+    library = kits.read(sky130.KIT, settings=kept)
+    half = sign * SUPPLY / 2
+
+    @component
+    def biased(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drain = c.place(devices.voltage_source(half * V), name="VD")
+        gate = c.place(devices.voltage_source(half * V), name="VG")
+        body = c.place(devices.voltage_source(0 * V), name="VB")
+        placed = c.place(library.component(name, w=1, l=0.15), name="X1")
+        c.connect(drain.positive, placed["d"], name="drain")
+        c.connect(gate.positive, placed["g"], name="gate")
+        c.connect(body.positive, placed["b"], name="body")
+        c.connect(drain.negative, gate.negative, body.negative, placed["s"], ground)
+
+    simulation = Simulation(biased())
+    deck = [
+        "* admittances",
+        f"VD drain 0 {half!r}",
+        f"VG gate 0 {half!r}",
+        "VB body 0 0",
+        f"X1 drain gate 0 body {name} w=1 l=0.15",
+    ]
+    for driven in ("VD", "VG"):
+        response = simulation.run(Ac(driven, decade(1 * MHz, 10 * GHz, 2)), TIGHT)
+        excited = [
+            f"{line} ac 1" if line.startswith(f"{driven} ") else line for line in deck
+        ]
+        raw = ngspice.run(
+            excited,
+            "ac dec 2 1meg 10g",
+            sections=((kits.root(sky130.KIT, kept) / sky130.LIBRARY, "tt"),),
+            compatibility=sky130.KIT.compatibility,
+            temperature=ngspice.same_kelvins(celsius(27).value),
+        )
+        for source in ("VD", "VG", "VB"):
+            unknown = results.Unknown(f"{source}:current", "current")
+            spice = raw.vectors[f"i({source.lower()})"]
+            found = response.values[:, simulation.unknowns.index(unknown)]
+            scale = float(np.abs(spice).max())
+            compare(found, spice, unknown, scale=scale, tolerance=AGREEMENT)
+
+
+@SKIP
+@pytest.mark.parametrize("corner", SKY130_MOSFET_CORNERS)
+def test_a_sky130_inverter_switches_as_in_ngspice(kept: Settings, corner: str) -> None:
+    """An inverter of SKY130's `nfet_01v8` and `pfet_01v8`, read natively, and its load.
+
+    Its input pulses from 0 to the supply in 50 ps; its output, which the transistors'
+    charges and 5 fF load, is compared over two periods with ngspice's, which reads the
+    same library at the same corner, within the tolerance of the engine's transients
+    against ngspice's (`test_ngspice.test_transients_agree`).
+    """
+    library = kits.read(sky130.KIT, ((sky130.LIBRARY, corner),), settings=kept)
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=SUPPLY * V,
+        rise=50 * ps,
+        fall=50 * ps,
+        width=1 * ns,
+        delay=0.5 * ns,
+        period=2 * ns,
+    )
+
+    @component
+    def inverter(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+        drive = c.place(devices.voltage_source(pulse), name="VIN")
+        lower = c.place(
+            library.component("sky130_fd_pr__nfet_01v8", w=1, l=0.15), name="XN"
+        )
+        upper = c.place(
+            library.component("sky130_fd_pr__pfet_01v8", w=2, l=0.15), name="XP"
+        )
+        load = c.place(devices.capacitor(5 * fF), name="CL")
+        c.connect(supply.negative, drive.negative, lower["s"], lower["b"], ground)
+        c.connect(load.b, ground)
+        c.connect(supply.positive, upper["s"], upper["b"], name="vdd")
+        c.connect(drive.positive, lower["g"], upper["g"], name="in")
+        c.connect(lower["d"], upper["d"], load.a, name="out")
+
+    simulation = Simulation(inverter())
+    stop, step = 4 * ns, 5 * ps
+    waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
+    raw = ngspice.run(
+        [
+            "* inverter",
+            f"VDD vdd 0 {SUPPLY!r}",
+            f"VIN in 0 PULSE(0 {SUPPLY!r} 0.5n 50p 50p 1n 2n)",
+            "XN out in 0 0 sky130_fd_pr__nfet_01v8 w=1 l=0.15",
+            "XP out in vdd vdd sky130_fd_pr__pfet_01v8 w=2 l=0.15",
+            "CL out 0 5f",
+        ],
+        f"tran {step.value!r} {stop.value!r} 0 {step.value!r}",
+        sections=((kits.root(sky130.KIT, kept) / sky130.LIBRARY, corner),),
+        compatibility=sky130.KIT.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    unknown = results.Unknown("out", "voltage")
+    spice = raw.real("v(out)")
+    found = closest(
+        waveforms.times,
+        waveforms.values[:, simulation.unknowns.index(unknown)],
+        raw.real("time"),
+        spice,
+        step.value,
+    )
+    compare(found, spice, unknown, scale=SUPPLY, tolerance=1e-3)
+
+
+NOMINAL: Final = {gf180mcu.KIT.name: (".param sw_stat_global=0 sw_stat_mismatch=0",)}
+"""The parameters that turn each kit's statistical draws off in ngspice, where its files
+turn them on, so ngspice computes at the nominal values jolty reads without a sample:
+GF180MCU's `design.ngspice` sets both switches to 1, drawing each instance's mismatch
+and the process's spread."""
+
+AC_DEPARTED: Final = "BSIM4"
+"""The models whose frequency response departs from ngspice's: its BSIM4's capacitances
+with respect to the body are not the derivatives of its charges, as the guide's
+departures state, and a p-channel's drain at `DRIVE` biases its body forward, where
+they depart most. `test_sky130_transistors_admittances_agree_with_ngspice` compares
+BSIM4's with the body at the source."""
+
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
 `test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
@@ -400,14 +620,15 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     a source of no volts of each device's own, which senses its current, its other
     pins grounded; each device's current is compared at the operating point and from
     1 kHz to 100 GHz with ngspice's, which reads the same libraries and places the same
-    subcircuits, at the same kelvins.
+    subcircuits, at the same kelvins, but for the frequency response of a device of
+    `AC_DEPARTED`.
     """
     library = kits.read(kit, settings=kept)
-    native = [
-        device.name
+    native = {
+        device.name: device.models
         for device in kits.inventory(kit, settings=kept)
         if device.status == "native" and device.kind == "subcircuit"
-    ]
+    }
     driven = {
         name: part
         for name in native
@@ -433,7 +654,11 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     point = simulation.run(OperatingPoint(), TIGHT)
     response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
     root = kits.root(kit, kept)
-    deck = [f"* every native device of {kit.name}", f"V0 drive 0 {DRIVE!r} ac 1"]
+    deck = [
+        f"* every native device of {kit.name}",
+        *NOMINAL.get(kit.name, ()),
+        f"V0 drive 0 {DRIVE!r} ac 1",
+    ]
     for number, (name, part) in enumerate(driven.items()):
         pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
         deck.append(f"VA{number} drive n{number} 0")
@@ -446,12 +671,14 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         compatibility=kit.compatibility,
         temperature=ngspice.same_kelvins(celsius(27).value),
     )
-    for number in range(len(driven)):
+    for number, name in enumerate(driven):
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
         assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        if any(model.startswith(AC_DEPARTED) for model in native[name]):
+            continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(
             response.values[:, column],

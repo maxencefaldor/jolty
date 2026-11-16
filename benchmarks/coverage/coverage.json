@@ -1,7 +1,7 @@
 {
   "simulators": {
     "jolty": {
-      "commit": "009129f66abb625fd7d5f56b54cb9db46ffbe0a2-dirty",
+      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -16,11 +16,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "jolty 0.1.0",
-      "load": 6.205078125,
+      "load": 9.6064453125,
       "date": "2026-11-16"
     },
     "ngspice-sparse": {
-      "commit": "009129f66abb625fd7d5f56b54cb9db46ffbe0a2-dirty",
+      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -35,11 +35,11 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 6.205078125,
+      "load": 9.6064453125,
       "date": "2026-11-16"
     },
     "ngspice-klu": {
-      "commit": "009129f66abb625fd7d5f56b54cb9db46ffbe0a2-dirty",
+      "commit": "a3b233b0536be0574d38d20a2f276bb9d085b195-dirty",
       "machine": {
         "cpu": "Apple M2 Max",
         "cores": 12,
@@ -54,7 +54,7 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 6.205078125,
+      "load": 9.6064453125,
       "date": "2026-11-16"
     },
     "xyce-serial": {
@@ -2616,6 +2616,49 @@
         }
       }
     },
+    "bsim4": {
+      "category": "device",
+      "name": "BSIM4 4.5",
+      "source": "ngspice 47's BSIM4v5, Berkeley's code, the model's defining implementation",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 3.9e-07 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -0.0018763233225971014,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "reference",
+          "evidence": "",
+          "found": {
+            "i(vdrain)": [
+              -0.001876322586074208,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -0.001876322586074208,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 and 4.8.2, not 4.5",
+          "found": null
+        }
+      }
+    },
     "memristor-vteam": {
       "category": "device",
       "name": "Memristor, VTEAM",
@@ -2888,44 +2931,6 @@
         "xyce-serial": {
           "status": "documented",
           "evidence": "Xyce Reference Guide 7.10: level 9 is BSIM3 in Xyce",
-          "found": null
-        }
-      }
-    },
-    "bsim4": {
-      "category": "device",
-      "name": "BSIM4 4.5",
-      "source": "none yet: the model's QA reference results are to come",
-      "known": null,
-      "cells": {
-        "jolty": {
-          "status": "unsupported",
-          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 14; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=1u`",
-          "found": null
-        },
-        "ngspice-sparse": {
-          "status": "solved",
-          "evidence": "",
-          "found": {
-            "i(vd)": [
-              -0.004692756090415488,
-              0.0
-            ]
-          }
-        },
-        "ngspice-klu": {
-          "status": "solved",
-          "evidence": "",
-          "found": {
-            "i(vd)": [
-              -0.004692756090415489,
-              0.0
-            ]
-          }
-        },
-        "xyce-serial": {
-          "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 and 4.8.2, not 4.5",
           "found": null
         }
       }

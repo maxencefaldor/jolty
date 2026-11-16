@@ -8,7 +8,7 @@ jolty checks every device and connection, points each problem at the script line
 ## What it does
 
 - **Builds** circuits from reusable Python components, with units checked: a capacitance passed where a resistance belongs fails on that line.
-- **Simulates** operating points, DC sweeps, AC, transients, periodic steady states, noise, stability, pole-zero, transfer functions and sensitivities, beside event-driven logic.
+- **Simulates** operating points, DC sweeps, AC, transients, periodic steady states, noise, stability, pole-zero, transfer functions, sensitivities and mismatch, beside event-driven logic.
 - **Checks specs**: every simulation measures its results against the circuit's requirements, at each temperature and corner, over Monte Carlo samples and at worst-case extremes.
 - **Scales** across every core and across machines, with results the same bit for bit on any number of threads.
 - **Works with SPICE**: it reads vendors' SPICE models and agrees with ngspice, writes SPICE and KiCad netlists, and runs SKY130 transistors through ngspice with the foundry's models.

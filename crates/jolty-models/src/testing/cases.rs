@@ -42,6 +42,19 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     ),
     ("bsim3", r#"{"u0": 0.067}"#, &[3.0, 2.0, 0.0, 0.0]),
     (
+        "bsim4",
+        r#"{"vth0": 0.5, "u0": 0.067, "eu": 1.67, "agidl": 1e-9, "alpha0": 1e-6,
+                "beta0": 20, "drain_squares": 2, "rsh": 10}"#,
+        &[1.8, 1.2, 0.0, 0.0],
+    ),
+    (
+        "bsim4",
+        r#"{"channel": "p", "vth0": -0.5, "u0": 0.025, "eu": 1, "body_resistance_model": 1,
+                "ngate": 1e26, "lambda": 1e-10, "vtl": 2e5, "dvtp0": 1e-8, "dvtp1": 0.5,
+                "charge_partition": 0.5}"#,
+        &[-1.8, -1.2, 0.0, 0.0],
+    ),
+    (
         "bsim3",
         r#"{"channel": "p", "u0": 0.025, "rsh": 20, "source_squares": 0.02,
                 "capacitance_model": 0, "noise_model": 2, "thermal": true}"#,

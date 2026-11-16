@@ -658,7 +658,7 @@ class OutputSensitivity(_Model):
 type Differentiated = Literal[
     "operating_point", "dc_sweep", "ac", "transient", "periodic_steady_state"
 ]
-"""The analysis a sensitivity analysis differentiates."""
+"""The analysis a sensitivity or a mismatch analysis differentiates."""
 
 _ALONG: Final[dict[Differentiated, str]] = {
     "dc_sweep": "along a DC sweep at {points} levels",
@@ -756,6 +756,146 @@ class SensitivityReport(_Model):
             return repr(derivative.derivative)
         at = format_si(derivative.at, self.unit)
         return f"largest {derivative.derivative!r} at {at}"
+
+
+class MismatchContribution(_Model):
+    """What one random variable adds to an output's spread."""
+
+    instance: str | None = Field(
+        description="The path of the instance that draws it: the part whose tolerance "
+        "it is, or the placement whose kit's statistical function it is; null for a "
+        "lot's."
+    )
+    lot: str | None = Field(
+        description="The lot whose shared spread it is; null for none."
+    )
+    name: str = Field(
+        description="What it is within its instance or lot: the parameter a tolerance "
+        "spreads, or which call of a statistical function it is, such as vth0#0."
+    )
+    contribution: float = Field(
+        description="Its derivative times its standard deviation: how far the output "
+        "moves, to first order, as it moves one standard deviation up, in the "
+        "output's unit."
+    )
+    share: float = Field(description="Its fraction of the output's variance.")
+
+
+class OutputMismatch(_Model):
+    """How far an output, or a response's magnitude or phase, spreads, and why."""
+
+    output: str
+    nature: Nature
+    part: results.Part | None = Field(
+        default=None,
+        description="What of a response's phasor spreads, its magnitude or its phase; "
+        "null for real values.",
+    )
+    value: float | None = Field(
+        default=None,
+        description="Its value at the operating point, in volts or amperes; null "
+        "along another analysis.",
+    )
+    standard_deviation: float = Field(
+        description="Its standard deviation, to first order: at the operating point, "
+        "or the largest over the points, a phase's in degrees."
+    )
+    at: float | None = Field(
+        default=None,
+        description="The level, frequency or time it is largest at, in SI base units; "
+        "null at an operating point.",
+    )
+    contributions: tuple[MismatchContribution, ...] = Field(
+        description="The random variables that contribute most there, the largest "
+        "share first, a phase's contributions in degrees."
+    )
+
+
+class MismatchReport(_Model):
+    """How far outputs spread with the random variables, to first order, and why."""
+
+    kind: Literal["mismatch"] = "mismatch"
+    name: str
+    of: Differentiated = Field(description="The analysis differentiated.")
+    points: int = Field(description="The points the spreads are taken at.")
+    strategy: str | None = Field(
+        default=None,
+        description="How the engine found the operating point: direct, gmin_stepping, "
+        "junction_gmin_stepping, source_stepping or pseudo_transient; null along a "
+        "sweep or a transient.",
+    )
+    iterations: int | None = Field(default=None, description=_ITERATIONS)
+    unit: str = Field(
+        default="",
+        description="The unit of the points: V or A along a sweep, Hz, or s.",
+    )
+    random_variables: int = Field(
+        description="Random variables the outputs spread with."
+    )
+    outputs: tuple[OutputMismatch, ...]
+    period: float | None = Field(
+        default=None,
+        description="An oscillator's period, in seconds; null for any other analysis.",
+    )
+    period_standard_deviation: float | None = Field(
+        default=None,
+        description="The standard deviation of an oscillator's period, to first "
+        "order, in seconds; null for any other analysis.",
+    )
+    unlisted: int = Field(
+        description="Random variables left out of each output's list."
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        if self.of == "operating_point":
+            found = _found(self.strategy or "", self.iterations)
+            where = f"at the operating point, {found}"
+        else:
+            where = _ALONG[self.of].format(points=self.points)
+        head = (
+            f"{self.name}: standard deviations, to first order, with "
+            f"{self.random_variables} random variables {where}"
+        )
+        lines = [head]
+        for output in self.outputs:
+            lines.append(f"  {self._spread(output)}")
+            rows = [
+                [
+                    f"lot {each.lot}" if each.instance is None else each.instance,
+                    each.name,
+                    self._written(each.contribution, output),
+                    f"{each.share:.1%}",
+                ]
+                for each in output.contributions
+            ]
+            lines.extend(f"  {row}" for row in _table(rows))
+            if self.unlisted:
+                lines.append(f"      ... and {self.unlisted} more in the results file")
+        if self.period is not None and self.period_standard_deviation is not None:
+            period = format_si(self.period, "s")
+            deviation = format_si(self.period_standard_deviation, "s")
+            lines.append(f"  period = {period}, standard deviation {deviation}")
+        return "\n".join(lines)
+
+    def _spread(self, output: OutputMismatch) -> str:
+        """The line of `output`: what spreads, its value, and its standard deviation."""
+        named = (
+            output.output if output.part is None else f"{output.output}'s {output.part}"
+        )
+        deviation = self._written(output.standard_deviation, output)
+        if output.value is not None:
+            value = _shown(output.value, output.nature)
+            return f"{named} = {value}, standard deviation {deviation}"
+        at = "" if output.at is None else f" at {format_si(output.at, self.unit)}"
+        return f"{named}: standard deviation largest, {deviation},{at}"
+
+    @staticmethod
+    def _written(value: float, output: OutputMismatch) -> str:
+        """`value`, a spread of `output`, with its unit."""
+        if output.part == "phase":
+            return f"{value:.4g}°"
+        return _shown(value, output.nature)
 
 
 class FailureReport(_Model):
@@ -993,6 +1133,7 @@ type AnalysisReport = Annotated[
     | TransientReport
     | PeriodicSteadyStateReport
     | SensitivityReport
+    | MismatchReport
     | StabilityReport
     | NoiseReport
     | PoleZeroReport
@@ -1159,6 +1300,7 @@ def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
 def _linear(
     name: str,
     result: results.SensitivityResult
+    | results.MismatchResult
     | results.StabilityResult
     | results.NoiseResult
     | results.PoleZeroResult
@@ -1171,6 +1313,8 @@ def _linear(
             return _transfer(name, result)
         case results.SensitivityResult():
             return _sensitivities(name, result, max_unknowns)
+        case results.MismatchResult():
+            return _mismatch(name, result, max_unknowns)
         case results.StabilityResult():
             return _stability(name, result)
         case results.NoiseResult():
@@ -1319,20 +1463,7 @@ def _sensitivities(
 ) -> SensitivityReport:
     """The report of the sensitivity `name`, its first `max_unknowns` parameters."""
     listed_parameters = min(max_unknowns, len(result.parameters))
-    point = None
-    match result.result:
-        case results.OperatingPointResult() as point:
-            of, points, unit = "operating_point", 1, ""
-        case results.DcSweepResult() as sweep:
-            of, points = "dc_sweep", len(sweep.swept)
-            unit = "" if sweep.nature is None else _SYMBOLS[sweep.nature]
-        case results.AcResult() as response:
-            of, points, unit = "ac", len(response.frequencies), "Hz"
-            point = response.operating_point
-        case results.PeriodicSteadyStateResult() as waveforms:
-            of, points, unit = "periodic_steady_state", len(waveforms.times), "s"
-        case results.TransientResult() as waveforms:
-            of, points, unit = "transient", len(waveforms.times), "s"
+    of, points, unit, point = _differentiated(result.result)
     period = None
     period_derivatives: tuple[Derivative, ...] = ()
     if result.period_derivatives is not None and isinstance(
@@ -1415,6 +1546,115 @@ def _output(
     )
 
 
+def _differentiated(
+    result: results.OperatingPointResult
+    | results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult,
+) -> tuple[Differentiated, int, str, results.OperatingPointResult | None]:
+    """What a sensitivity or a mismatch analysis differentiated, as `result` says.
+
+    That is the analysis, its points, their unit, and its operating point, if it solved
+    one.
+    """
+    match result:
+        case results.OperatingPointResult():
+            return "operating_point", 1, "", result
+        case results.DcSweepResult():
+            unit = "" if result.nature is None else _SYMBOLS[result.nature]
+            return "dc_sweep", len(result.swept), unit, None
+        case results.AcResult():
+            return "ac", len(result.frequencies), "Hz", result.operating_point
+        case results.PeriodicSteadyStateResult():
+            return "periodic_steady_state", len(result.times), "s", None
+        case results.TransientResult():
+            return "transient", len(result.times), "s", None
+
+
+def _mismatch(
+    name: str, result: results.MismatchResult, max_unknowns: int
+) -> MismatchReport:
+    """The report of the mismatch analysis `name`.
+
+    It lists each output's `max_unknowns` largest contributions.
+    """
+    of, points, unit, point = _differentiated(result.result)
+    parts: tuple[results.Part | None, ...] = (
+        ("magnitude", "phase") if of == "ac" else (None,)
+    )
+    listed = min(max_unknowns, len(result.random_variables))
+    period, period_deviation = None, None
+    if result.period_derivatives is not None and isinstance(
+        result.result, results.PeriodicSteadyStateResult
+    ):
+        period = result.result.period
+        period_deviation = result.period_standard_deviation()
+    return MismatchReport(
+        name=name,
+        of=of,
+        points=points,
+        strategy=None if point is None else point.strategy,
+        iterations=None if point is None else point.iterations,
+        unit=unit,
+        random_variables=len(result.random_variables),
+        outputs=tuple(
+            _output_mismatch(result, output, part, listed)
+            for output in result.outputs
+            for part in parts
+        ),
+        period=period,
+        period_standard_deviation=period_deviation,
+        unlisted=len(result.random_variables) - listed,
+    )
+
+
+def _output_mismatch(
+    result: results.MismatchResult,
+    output: str,
+    part: results.Part | None,
+    listed: int,
+) -> OutputMismatch:
+    """How far `output`, or `part` of its phasor, spreads, and why.
+
+    It lists its `listed` largest contributions, where it spreads most along an analysis
+    other than the operating point.
+    """
+    column = results.column(result.unknowns, output)
+    nature = result.unknowns[column].nature
+    contributions = np.atleast_2d(result.contributions(output, part))
+    deviations = np.sqrt(np.sum(contributions**2, axis=-1))
+    largest = int(np.argmax(deviations))
+    if part == "phase":
+        contributions = np.degrees(contributions)
+        deviations = np.degrees(deviations)
+    shares = np.atleast_2d(result.shares(output, part))[largest]
+    order = np.argsort(-shares, kind="stable")[:listed]
+    value, at = None, None
+    match result.result:
+        case results.OperatingPointResult() as found:
+            value = float(found.values[column])
+        case results.DcSweepResult() | results.AcResult() | results.TransientResult():
+            at = float(_axis(result.result)[largest])
+    return OutputMismatch(
+        output=output,
+        nature=nature,
+        part=part,
+        value=value,
+        standard_deviation=float(deviations[largest]),
+        at=at,
+        contributions=tuple(
+            MismatchContribution(
+                instance=result.random_variables[index].instance,
+                lot=result.random_variables[index].lot,
+                name=result.random_variables[index].name,
+                contribution=float(contributions[largest, index]),
+                share=float(shares[index]),
+            )
+            for index in order
+        ),
+    )
+
+
 def _axis(
     result: results.DcSweepResult | results.AcResult | results.TransientResult,
 ) -> results.Real:
@@ -1434,6 +1674,7 @@ def _nets(result: results.AnalysisResult) -> tuple[str, ...]:
         result,
         results.AcResult
         | results.SensitivityResult
+        | results.MismatchResult
         | results.StabilityResult
         | results.NoiseResult
         | results.PoleZeroResult

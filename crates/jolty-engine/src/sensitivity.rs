@@ -136,12 +136,25 @@ pub struct SensitivityResult {
     pub result: Box<AnalysisResult>,
 }
 
+/// What [`Simulator::differentiate`] finds: the derivatives of the outputs with respect to
+/// the number of each twin, in the twins' order, and the result of the analysis
+/// differentiated.
+pub(crate) struct Differentiation {
+    /// The twins, each the number of one device's parameters, as they ended the analysis.
+    pub(crate) twins: Vec<Twin>,
+    pub(crate) derivatives: Derivatives,
+    /// For an oscillator's periodic steady state, its period's derivative with respect to
+    /// the number of each twin.
+    pub(crate) period_derivatives: Option<Vec<f64>>,
+    pub(crate) result: AnalysisResult,
+}
+
 /// A device's instance computing with the derivative of every number with respect to one
 /// number of its parameters.
-struct Twin {
+pub(crate) struct Twin {
     /// The index of the device it is made from.
     device: usize,
-    parameter: Parameter,
+    pub(crate) parameter: Parameter,
     made: jolty_models::Twin,
     /// Whether a sweep holds its number, which then moves nothing: the number swept, or
     /// any of a source the sweep holds at a level, which replaces its waveform.
@@ -265,75 +278,99 @@ impl Simulator {
     ) -> Result<SensitivityResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let outputs = sensitivity
-                .outputs
-                .iter()
-                .map(|name| {
-                    self.unknown(name)
-                        .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut twins = self.twins();
-            let mut period = None;
-            let (derivatives, result) = match &sensitivity.of {
-                Differentiated::OperatingPoint => {
-                    let point = self.operating_point(options)?;
-                    let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
-                    (
-                        Derivatives::Real(vec![found]),
-                        AnalysisResult::OperatingPoint(point),
-                    )
-                }
-                Differentiated::DcSweep(sweep) => {
-                    let result = self.dc_sweep(sweep, options)?;
-                    let swept = self.swept(sweep)?;
-                    let found =
-                        self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
-                    self.hold(swept, None)?;
-                    (Derivatives::Real(found?), AnalysisResult::DcSweep(result))
-                }
-                Differentiated::Ac(ac) => {
-                    self.undelayed(
-                        "sensitivity over frequency",
-                        "its derivatives leave out those of the terms its lines delay",
-                    )?;
-                    let response = self.ac(ac, options)?;
-                    let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
-                    (Derivatives::Complex(found), AnalysisResult::Ac(response))
-                }
-                Differentiated::Transient(transient) => {
-                    self.undelayed(
-                        "sensitivity over time",
-                        "its derivatives leave out those of the past its lines read",
-                    )?;
-                    let mut forward = Forward::new(outputs, twins);
-                    let carried = Carried::Forward(&mut forward);
-                    let waveforms = self.transient_with(transient, options, None, carried)?;
-                    twins = forward.twins;
-                    (
-                        Derivatives::Real(forward.found),
-                        AnalysisResult::Transient(waveforms),
-                    )
-                }
-                Differentiated::PeriodicSteadyState(analysis) => {
-                    let (found, shot) = self.shot_steady_state(analysis, options)?;
-                    let forward = Forward::new(outputs, twins);
-                    let forward = self.along_period((analysis, &found), shot, forward, options)?;
-                    twins = forward.twins;
-                    period = forward.stretch.map(|(_, derivatives)| derivatives);
-                    (
-                        Derivatives::Real(forward.found),
-                        AnalysisResult::PeriodicSteadyState(found),
-                    )
-                }
-            };
+            let twins = self.twins();
+            let found =
+                self.differentiate(&sensitivity.outputs, &sensitivity.of, twins, options)?;
             Ok(SensitivityResult {
                 outputs: sensitivity.outputs.clone(),
-                parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
-                derivatives,
-                period_derivatives: period,
-                result: Box::new(result),
+                parameters: found.twins.into_iter().map(|twin| twin.parameter).collect(),
+                derivatives: found.derivatives,
+                period_derivatives: found.period_derivatives,
+                result: Box::new(found.result),
             })
+        })
+    }
+
+    /// The derivative of each unknown of `outputs` with respect to the number of each of
+    /// `twins`, at each point of the analysis `of`, and that analysis's result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
+    /// [`SimulationError::Singular`] when a Jacobian is, and the errors of the analysis
+    /// differentiated.
+    pub(crate) fn differentiate(
+        &mut self,
+        outputs: &[String],
+        of: &Differentiated,
+        mut twins: Vec<Twin>,
+        options: &Options,
+    ) -> Result<Differentiation, SimulationError> {
+        let outputs = outputs
+            .iter()
+            .map(|name| {
+                self.unknown(name)
+                    .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut period_derivatives = None;
+        let (derivatives, result) = match of {
+            Differentiated::OperatingPoint => {
+                let point = self.operating_point(options)?;
+                let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
+                (
+                    Derivatives::Real(vec![found]),
+                    AnalysisResult::OperatingPoint(point),
+                )
+            }
+            Differentiated::DcSweep(sweep) => {
+                let result = self.dc_sweep(sweep, options)?;
+                let swept = self.swept(sweep)?;
+                let found =
+                    self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
+                self.hold(swept, None)?;
+                (Derivatives::Real(found?), AnalysisResult::DcSweep(result))
+            }
+            Differentiated::Ac(ac) => {
+                self.undelayed(
+                    "sensitivity over frequency",
+                    "its derivatives leave out those of the terms its lines delay",
+                )?;
+                let response = self.ac(ac, options)?;
+                let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
+                (Derivatives::Complex(found), AnalysisResult::Ac(response))
+            }
+            Differentiated::Transient(transient) => {
+                self.undelayed(
+                    "sensitivity over time",
+                    "its derivatives leave out those of the past its lines read",
+                )?;
+                let mut forward = Forward::new(outputs, twins);
+                let carried = Carried::Forward(&mut forward);
+                let waveforms = self.transient_with(transient, options, None, carried)?;
+                twins = forward.twins;
+                (
+                    Derivatives::Real(forward.found),
+                    AnalysisResult::Transient(waveforms),
+                )
+            }
+            Differentiated::PeriodicSteadyState(analysis) => {
+                let (found, shot) = self.shot_steady_state(analysis, options)?;
+                let forward = Forward::new(outputs, twins);
+                let forward = self.along_period((analysis, &found), shot, forward, options)?;
+                twins = forward.twins;
+                period_derivatives = forward.stretch.map(|(_, derivatives)| derivatives);
+                (
+                    Derivatives::Real(forward.found),
+                    AnalysisResult::PeriodicSteadyState(found),
+                )
+            }
+        };
+        Ok(Differentiation {
+            twins,
+            derivatives,
+            period_derivatives,
+            result,
         })
     }
 
@@ -395,6 +432,24 @@ impl Simulator {
             }
         }
         twins
+    }
+
+    /// The twin of the number `name` of the device at `path`, its value as the device is
+    /// made now; none when the circuit has no device there, or its model reads no real
+    /// number there.
+    pub(crate) fn twin_at(&self, path: &str, name: &str) -> Option<Twin> {
+        let index = self.elaborated.device(path)?;
+        let origins = self.origins();
+        let Origin::Model(made) = origins.of(index) else {
+            return None;
+        };
+        let value = jolty_ir::parameter(&made.parameters, name)?.as_f64()?;
+        let parameter = Parameter {
+            instance: path.to_owned(),
+            name: name.to_owned(),
+            value,
+        };
+        self.twin(index, parameter)
     }
 
     /// What the run's devices are made from.

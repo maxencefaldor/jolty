@@ -8,10 +8,11 @@ use std::path::Path;
 
 use jolty_engine::{
     Ac, AcResult, Analysis, AnalysisResult, Conditions, DcSweep, DcSweepResult, Differentiated,
-    Method, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options,
-    PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult, Record,
-    RecordedSeries, RecordedValues, Sensitivity, SensitivityResult, Simulator, StabilityResult,
-    TransferFunction, TransferFunctionResult, Transient, TransientResult, Work,
+    Method, Mismatch, MismatchResult, Noise, NoiseResult, OperatingPointResult, OperatingPoints,
+    Options, PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult,
+    RandomVariable, Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult,
+    Simulator, StabilityResult, TransferFunction, TransferFunctionResult, Transient,
+    TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -125,6 +126,10 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             result: Box::new(unrecorded(*found.result)),
             ..found
         }),
+        AnalysisResult::Mismatch(found) => AnalysisResult::Mismatch(MismatchResult {
+            result: Box::new(unrecorded(*found.result)),
+            ..found
+        }),
         AnalysisResult::Stability(gain) => AnalysisResult::Stability(StabilityResult {
             operating_point: point(gain.operating_point),
             ..gain
@@ -199,6 +204,25 @@ fn analyses() -> Vec<Analysis> {
         Analysis::Sensitivity(Sensitivity {
             outputs: vec!["out".to_owned()],
             of: Differentiated::Transient(transient),
+        }),
+        Analysis::Mismatch(Mismatch {
+            outputs: vec!["out".to_owned()],
+            of: Differentiated::Ac(Ac {
+                source: "V1".to_owned(),
+                frequencies: vec![1e3],
+            }),
+            toleranced: Vec::new(),
+            random_variables: vec![RandomVariable {
+                instance: Some("R1".to_owned()),
+                lot: None,
+                name: "resistance".to_owned(),
+                mean: 0.0,
+                standard_deviation: 0.01,
+                derivatives: BTreeMap::from([(
+                    "R1".to_owned(),
+                    BTreeMap::from([("resistance".to_owned(), 1e3)]),
+                )]),
+            }],
         }),
         Analysis::OperatingPoints(OperatingPoints { max_solutions: 2 }),
     ]

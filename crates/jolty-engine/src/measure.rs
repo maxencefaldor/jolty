@@ -356,7 +356,9 @@ impl<'a> AnalysisResult<'a> {
             crate::AnalysisResult::Ac(response) => response.into(),
             crate::AnalysisResult::Transient(waveforms) => waveforms.into(),
             crate::AnalysisResult::PeriodicSteadyState(found) => (&found.waveforms).into(),
-            crate::AnalysisResult::Sensitivity(_) | crate::AnalysisResult::TransferFunction(_) => {
+            crate::AnalysisResult::Sensitivity(_)
+            | crate::AnalysisResult::Mismatch(_)
+            | crate::AnalysisResult::TransferFunction(_) => {
                 return None;
             }
             crate::AnalysisResult::Stability(gain) => gain.into(),

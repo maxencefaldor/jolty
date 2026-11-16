@@ -35,6 +35,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Transient(stop, max_step=None, method="trapezoidal", breakpoints=(), initial_conditions={}, operating_point=True)` | the response over time, from the operating point, or from [initial conditions](#initial-conditions-and-nodesets), until `stop` |
 | `PeriodicSteadyState(period=None, max_step=None, method="trapezoidal", breakpoints=())` | one period of the [steady state](#periodic-steady-state) a circuit repeats: driven by sources of `period`, or an oscillator's, whose period it finds |
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters but a device's [own temperature](devices.md), at the operating point or at each point of the analysis `of` |
+| `Mismatch(outputs, of=None, random_variables=())` | each output's [standard deviation](#mismatch), to first order, with the circuit's tolerances and the random variables given, such as a process kit's, and which of them it comes from |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
 | `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |
@@ -294,6 +295,28 @@ A normal tolerance's extreme is its three standard deviations, and a logarithmic
 The runs of each circuit run as a [batch](#batches) of listed values, one for the moves and one for the extremes.
 The extremes follow each value's first-order slope, as PSpice's do, so a value that bends over a tolerance may be worse inside it; a Monte Carlo analysis samples the inside.
 The report states how many runs it took and each requirement's verdict, its worst over its bounds and conditions, and `jolty simulate` exits with 1 when one fails.
+
+## Mismatch
+
+A mismatch analysis states how far each output spreads, one standard deviation, and which random variables it spreads with, from one analysis rather than many samples, as Spectre's `dcmatch` and `acmatch` do:
+
+```python
+def plan() -> Plan:
+    return Plan({"spread": Mismatch(["out"])})
+```
+
+A random variable is a number a Monte Carlo sample draws at random, with its mean, its standard deviation and the derivative of each device's number it moves (`ir.RandomVariable`).
+Each toleranced parameter draws one for its own factor, `instance` its device's path and `name` the parameter's: of mean 0 and standard deviation the tolerance over √3 for a uniform one and over 3 for a normal one, its parameter moving by its value per unit; a logarithmic one draws the exponent of its factor, of standard deviation 1/√3 or 1/3, its parameter moving by its value times `ln(1 + relative)`.
+Each lot draws one per parameter, its `lot` the lot's name, which moves every part that names it alike.
+`random_variables` adds others, such as those of a process kit's statistical functions, which [`Library.random_variables`](foundry.md#the-open-process-kits) reads for a placement.
+An output's derivative with respect to a random variable is the [sensitivity analysis's](#sensitivities) derivative with respect to each number it moves, times the number's own derivative, summed, at the operating point or at each point of the analysis `of`, at the values the parameters take in the run, so that a corner or a variant spreads about its own values.
+The random variables are drawn apart from one another, so to first order the output spreads with the root of the sum of each random variable's contribution squared, its derivative times its standard deviation, and each random variable's share of the variance is its own term's.
+A response's phasor spreads in magnitude and in phase, each to first order of its phasor: the magnitude by the phasor's derivative along the phasor, the phase, in radians, across it.
+
+The result's `standard_deviation(output, part=None)` reads an output's standard deviation, a number at the operating point and an array over the points otherwise, `contributions(output, part=None)` each random variable's contribution and `shares(output, part=None)` its share, in the order of `random_variables`; a response takes `part`, `"magnitude"` or `"phase"`.
+For an oscillator's periodic steady state, `period_derivatives` holds its period's derivative with respect to each random variable, and `period_standard_deviation()` its period's standard deviation.
+The report states each output's standard deviation, at the operating point or where it is largest, and the random variables that contribute most there, the largest share first, a phase's in degrees, and an oscillator's period's standard deviation.
+First order is exact as the spreads go to zero; how far it lies from a Monte Carlo analysis on the same circuit is measured in `tests/test_mismatch.py`, where it agrees within the samples' own statistics.
 
 ## Variants
 

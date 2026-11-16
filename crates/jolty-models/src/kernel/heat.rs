@@ -152,6 +152,10 @@ impl<K: Kernel> Model for Thermal<K> {
     fn schema(&self) -> Schema {
         extended(schema::<K::Parameters<f64>>(), &schema::<Heats>())
     }
+
+    fn noise_modeled(&self) -> bool {
+        K::NOISE_MODELED
+    }
 }
 
 /// The parameters of an instance of `K`, read as the numbers it computes with: plain, or,

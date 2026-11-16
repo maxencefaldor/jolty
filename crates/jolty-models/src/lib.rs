@@ -47,6 +47,7 @@ pub use kernel::behavioral::{
 };
 pub use kernel::bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use kernel::bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
+pub use kernel::bsim4::{BodyResistance, Bsim4, Bsim4Parameters, Perimeter};
 pub use kernel::connect::{
     LogicDriver, LogicDriverParameters, Ramp, ThresholdDetector, ThresholdDetectorParameters,
 };
@@ -122,6 +123,7 @@ impl Library {
         library.add(Differentiable::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
         library.add(Thermal::<Bsim3>::new());
+        library.add(Differentiable::<Bsim4>::new());
         library.add(Thermal::<Resistor>::new());
         library.add(Differentiable::<Capacitor>::new());
         library.add(Differentiable::<Inductor>::new());
@@ -244,6 +246,12 @@ mod tests {
                 "bsim3",
                 json!({"channel": "p", "vth0": -0.6, "lvth0": 1e-8, "capacitance_model": 2,
                     "mobility_model": 3, "noise_model": 2, "check_parameters": true, "charge_partition": 0.5,
+                    "temperature": 350}),
+            ),
+            (
+                "bsim4",
+                json!({"channel": "p", "vth0": -0.5, "lvth0": 1e-8, "body_resistance_model": 1,
+                    "perimeter_model": 0, "check_parameters": false, "charge_partition": 0.4,
                     "temperature": 350}),
             ),
             (
@@ -480,6 +488,7 @@ mod tests {
                 "behavioral_voltage_source",
                 "bipolar_transistor",
                 "bsim3",
+                "bsim4",
                 "capacitor",
                 "coupled_inductors",
                 "current_controlled_current_source",

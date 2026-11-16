@@ -263,6 +263,65 @@ impl Toleranced {
     }
 }
 
+/// How a factor [`Toleranced::drawn`] draws spreads, to first order: the standard deviation
+/// of the number it draws, `d` or `u`, whose mean is 0, and the factor's derivative with
+/// respect to it there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spread {
+    /// The standard deviation of the number drawn.
+    pub standard_deviation: f64,
+    /// The factor's derivative with respect to the number drawn, at its mean.
+    pub slope: f64,
+}
+
+impl Spread {
+    /// How a factor drawn within `relative` as `distribution` takes it spreads: a linear
+    /// factor `1 + d`, its derivative 1, `d` uniform within the tolerance, of standard
+    /// deviation `relative / √3`, or normal with the tolerance three standard deviations; a
+    /// logarithmic one `(1 + relative)^u`, its derivative `ln(1 + relative)`, `u` uniform
+    /// within 1 of 0, of standard deviation `1 / √3`, or normal of standard deviation `1/3`.
+    #[must_use]
+    pub fn of(distribution: Distribution, relative: f64) -> Self {
+        let uniform = 3.0_f64.sqrt().recip();
+        let normal = 3.0_f64.recip();
+        match distribution {
+            Distribution::Uniform => Self {
+                standard_deviation: relative * uniform,
+                slope: 1.0,
+            },
+            Distribution::Normal => Self {
+                standard_deviation: relative * normal,
+                slope: 1.0,
+            },
+            Distribution::LogUniform => Self {
+                standard_deviation: uniform,
+                slope: relative.ln_1p(),
+            },
+            Distribution::LogNormal => Self {
+                standard_deviation: normal,
+                slope: relative.ln_1p(),
+            },
+        }
+    }
+}
+
+impl Toleranced {
+    /// The random variables its value is drawn from: its own factor's spread, and its lot's
+    /// name and spread if it is in one, each as [`Spread::of`] takes it.
+    #[must_use]
+    pub fn random_variables(&self) -> (Spread, Option<(&str, Spread)>) {
+        let tolerance = &self.tolerance;
+        let own = Spread::of(tolerance.distribution, tolerance.relative);
+        let lot = tolerance.lot.as_ref().map(|lot| {
+            (
+                lot.name.as_str(),
+                Spread::of(lot.distribution, lot.relative),
+            )
+        });
+        (own, lot)
+    }
+}
+
 /// The stable key of `first` and `second`, an instance's path and a number's, or a lot's
 /// name and a number's: the FNV-1a hash of the two joined by the byte 0xFF, which no UTF-8
 /// text holds, so that no two pairs join alike.

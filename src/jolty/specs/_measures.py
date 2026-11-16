@@ -125,6 +125,7 @@ def value(
             case (
                 results.AcResult()
                 | results.SensitivityResult()
+                | results.MismatchResult()
                 | results.StabilityResult()
                 | results.NoiseResult()
                 | results.PoleZeroResult()
@@ -1082,6 +1083,7 @@ _KINDS: Final[dict[type, str]] = {
     results.TransientResult: "a transient",
     results.PeriodicSteadyStateResult: "a periodic steady state",
     results.SensitivityResult: "sensitivities",
+    results.MismatchResult: "a mismatch",
     results.StabilityResult: "a loop gain",
     results.NoiseResult: "a noise spectrum",
     results.PoleZeroResult: "poles and zeros",

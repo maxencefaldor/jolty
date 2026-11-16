@@ -125,7 +125,8 @@ impl Simulator {
     /// the source is not an independent source, [`SimulationError::InvalidAnalysis`] for
     /// an output over itself, a current over a node, or no frequency or one not positive,
     /// [`SimulationError::Singular`] when the linearized circuit is singular at a
-    /// frequency, and the errors of [`Simulator::operating_point`].
+    /// frequency, [`SimulationError::NoiseUnmodeled`] when it holds a device whose noise
+    /// is not modeled, and the errors of [`Simulator::operating_point`].
     pub fn noise(
         &mut self,
         noise: &Noise,
@@ -133,6 +134,7 @@ impl Simulator {
     ) -> Result<NoiseResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
+            self.noise_modeled()?;
             let (output, reference, nature) =
                 self.measured(&noise.output, noise.reference.as_deref())?;
             let unknowns = self.elaborated.unknowns.len();

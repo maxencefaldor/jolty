@@ -816,6 +816,7 @@ def _plot(
             results.OperatingPointResult
             | results.OperatingPointsResult
             | results.SensitivityResult
+            | results.MismatchResult
             | results.TransferFunctionResult,
         ):
             if analyses:

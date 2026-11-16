@@ -3,10 +3,11 @@
 use serde::Deserialize;
 
 use crate::{
-    Ac, AcResult, DcSweep, DcSweepResult, Noise, NoiseResult, OperatingPointResult,
-    OperatingPoints, Options, PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero,
-    PoleZeroResult, Sensitivity, SensitivityResult, SimulationError, Simulator, Sizes, Stability,
-    StabilityResult, TransferFunction, TransferFunctionResult, Transient, TransientResult,
+    Ac, AcResult, DcSweep, DcSweepResult, Mismatch, MismatchResult, Noise, NoiseResult,
+    OperatingPointResult, OperatingPoints, Options, PeriodicSteadyState, PeriodicSteadyStateResult,
+    PoleZero, PoleZeroResult, Sensitivity, SensitivityResult, SimulationError, Simulator, Sizes,
+    Stability, StabilityResult, TransferFunction, TransferFunctionResult, Transient,
+    TransientResult,
 };
 
 /// An analysis to run.
@@ -28,6 +29,8 @@ pub enum Analysis {
     PeriodicSteadyState(PeriodicSteadyState),
     /// The DC sensitivities of some unknowns to every device parameter.
     Sensitivity(Sensitivity),
+    /// How far some unknowns spread with the numbers a sample draws at random.
+    Mismatch(Mismatch),
     /// The loop gain through a probe.
     Stability(Stability),
     /// The noise at an output.
@@ -55,6 +58,8 @@ pub enum AnalysisResult {
     PeriodicSteadyState(PeriodicSteadyStateResult),
     /// The DC sensitivities.
     Sensitivity(SensitivityResult),
+    /// The derivatives of a mismatch analysis.
+    Mismatch(MismatchResult),
     /// The loop gain.
     Stability(StabilityResult),
     /// The noise at an output.
@@ -82,7 +87,7 @@ impl Simulator {
             Analysis::Ac(ac) => ac.frequencies.len(),
             Analysis::Noise(noise) => noise.frequencies.len(),
             Analysis::Stability(stability) => stability.frequencies.len(),
-            Analysis::Sensitivity(_) => usize::MAX,
+            Analysis::Sensitivity(_) | Analysis::Mismatch(_) => usize::MAX,
             Analysis::OperatingPoint
             | Analysis::DcSweep(_)
             | Analysis::Transient(_)
@@ -133,6 +138,9 @@ impl Simulator {
             }
             Analysis::Sensitivity(sensitivity) => {
                 AnalysisResult::Sensitivity(self.sensitivity(sensitivity, options)?)
+            }
+            Analysis::Mismatch(mismatch) => {
+                AnalysisResult::Mismatch(self.mismatch(mismatch, options)?)
             }
             Analysis::Stability(stability) => {
                 AnalysisResult::Stability(self.stability(stability, options)?)
