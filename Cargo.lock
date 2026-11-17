@@ -749,6 +749,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolty-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "jolty-engine"
 version = "0.1.0"
 dependencies = [
@@ -790,6 +799,7 @@ dependencies = [
  "allocation-counter",
  "criterion",
  "gungraun",
+ "jolty-derive",
  "jolty-expressions",
  "jolty-ir",
  "jolty-models",

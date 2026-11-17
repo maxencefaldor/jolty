@@ -19,8 +19,8 @@ use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_va
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -218,7 +218,7 @@ const VARIABLES: [(usize, usize); 3] = [
 
 /// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
 /// are level 3's alone.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct MosfetParameters<R: Real = f64> {
     /// The model's level, 1 or 3; default 1.

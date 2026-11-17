@@ -11,8 +11,8 @@ use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_j
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
 use crate::kernel::region::Bipolar;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
 };
 
 /// VBIC's Boltzmann constant, in joules per kelvin: the one its definition's reference code
@@ -155,7 +155,7 @@ type Bias = parts::Bias<VARIABLE_COUNT>;
 /// The parameters of a [`Vbic`], with ngspice's defaults. A parameter ngspice treats as
 /// infinite at zero, such as an Early voltage, is infinite when left out; one whose
 /// defaults are not SI base units, such as `TNOM`, is converted.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct VbicParameters<R: Real = f64> {
     /// The doping order, `NPN` or `PNP`; default `npn`.

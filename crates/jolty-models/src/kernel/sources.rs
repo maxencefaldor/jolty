@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts::CurrentBranch;
 use crate::waveform::Waveform;
-use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use crate::{
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 
 /// The parameters of an independent source held at a constant `level`, in volts or
 /// amperes, whatever its waveform: those of a source whose waveform is that level. A DC
@@ -17,7 +19,7 @@ pub fn held_source(level: f64) -> Parameters {
 }
 
 /// The parameters of an independent source.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct SourceParameters<R: Real = f64> {
     /// The source's level over time, in volts or amperes.

@@ -18,7 +18,7 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 pub struct InitialEvents;
 
 /// The parameters of a [`InitialEvents`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct InitialEventsParameters<R: Real = f64> {
     /// The resistance of one finger, in Ohm; default 1000.

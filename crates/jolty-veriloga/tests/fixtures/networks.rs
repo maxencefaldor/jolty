@@ -19,7 +19,7 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError, Real, Stamp, UnknownIndex};
+use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError, Real, Stamp, UnknownIndex};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ const NOWHERE: usize = usize::MAX;
 pub struct Networks;
 
 /// The parameters of a [`Networks`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct NetworksParameters<R: Real = f64> {
     /// The resistance of each resistor, in Ohm; default 1000.

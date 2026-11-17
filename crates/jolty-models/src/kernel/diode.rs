@@ -14,7 +14,7 @@ use crate::kernel::junction::{
 use crate::kernel::parts::{Pair, Series};
 use crate::noise::Flicker;
 use crate::{
-    BOLTZMANN, Branch, BranchKind, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Local,
+    BOLTZMANN, Branch, BranchKind, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Lift, Local,
     NoiseSource, ParameterError, REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
@@ -268,7 +268,7 @@ impl From<DiodeCapacitanceTemperatureModel> for u8 {
 
 /// The parameters of a [`Diode`], with ngspice's defaults (`diosetup.c`, lines 36 to
 /// 307).
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in amperes; default 1e-14.

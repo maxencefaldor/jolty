@@ -14,14 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{Charges, Mobility, NoiseModel, by_channel, fringe};
 use crate::kernel::jfet::Channel;
-use crate::{REFERENCE_TEMPERATURE, Real};
+use crate::{Lift, REFERENCE_TEMPERATURE, Real};
 
 /// The parameters of a [`Bsim3`](super::Bsim3): the instance's geometry, then the model's
 /// card. Each parameter of the card keeps the name the BSIM3v3.3 manual gives it, and
 /// each one that bins has a length, a width and an area dependence, `l`, `w` and `p`
 /// before its name, in SI units: a dependence on the reciprocal of the effective length
 /// in meters, not micrometers.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct Bsim3Parameters<R: Real = f64> {
     /// The channel; default `n`.

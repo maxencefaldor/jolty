@@ -154,13 +154,13 @@ impl<K: Kernel> Model for Thermal<K> {
     }
 }
 
-/// The parameters of an instance of `K`, read as the numbers it computes with: plain, or,
-/// when it heats, with their derivatives with respect to its temperature beside them.
+/// The parameters of an instance of `K`, read as plain numbers, and whether it heats, which
+/// its kernel then computes with their derivatives with respect to its temperature.
 enum Warmed<K: Kernel> {
     /// An instance at the temperature of its surroundings.
     Cool(K::Parameters<f64>),
     /// An instance that heats.
-    Heated(K::Parameters<<f64 as Heating>::Warm>),
+    Heated(K::Parameters<f64>),
 }
 
 impl<K: Kernel> std::fmt::Debug for Warmed<K> {

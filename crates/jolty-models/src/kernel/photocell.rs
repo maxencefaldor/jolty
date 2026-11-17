@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, Real, Stamp, UnknownIndex,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to
@@ -62,7 +62,7 @@ pub struct PreparedPhotocell<R: Real> {
 const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
 /// The parameters of a [`Photocell`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.

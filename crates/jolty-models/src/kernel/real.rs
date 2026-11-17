@@ -7,12 +7,15 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::Lift;
+
 /// A real number a model computes with.
 ///
 /// `f64` is the number itself; [`Gradient`] carries its derivative with respect to one
 /// parameter alongside, by forward-mode automatic differentiation. Comparisons and
 /// branches read the value alone, so a model takes the same branch with either. A
-/// parameter file reads it, it writes as it reads, and a JSON schema describes it.
+/// parameter file reads it, it writes as it reads, a JSON schema describes it, and a twin
+/// makes it of a plain number by the path the number is written at.
 pub trait Real:
     Copy
     + fmt::Debug
@@ -34,6 +37,7 @@ pub trait Real:
     + for<'de> Deserialize<'de>
     + Serialize
     + JsonSchema
+    + Lift<Self, Plain = f64>
 {
     /// A number with no derivative.
     fn constant(value: f64) -> Self;

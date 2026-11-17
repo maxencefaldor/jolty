@@ -25,14 +25,14 @@ use std::f64::consts::TAU;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ParameterError, Real};
+use crate::{Lift, ParameterError, Real};
 
 /// The level of an independent source over time, in volts or amperes.
 ///
 /// Every analysis but a transient one reads the level at time zero. A waveform is checked as
 /// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
 /// carry their derivatives with respect to a parameter.
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema, Lift)]
 #[serde(try_from = "Shape<R>", bound = "")]
 pub struct Waveform<R: Real = f64>(Shape<R>);
 
@@ -44,7 +44,7 @@ impl<R: Real> Serialize for Waveform<R> {
 }
 
 /// A waveform's shape, an object with one key, as it is written.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
 enum Shape<R: Real> {
     /// A constant level.
@@ -62,7 +62,7 @@ enum Shape<R: Real> {
     Exponential(Exponential<R>),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Pulse<R: Real> {
     /// The level before the delay and between pulses.
@@ -84,7 +84,7 @@ struct Pulse<R: Real> {
     period: Option<R>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Sine<R: Real> {
     /// The level the sine swings about.
@@ -104,7 +104,7 @@ struct Sine<R: Real> {
     phase: R,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Exponential<R: Real> {
     /// The level before the rise delay.

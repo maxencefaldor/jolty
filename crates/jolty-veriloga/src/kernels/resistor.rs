@@ -18,7 +18,7 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError, Real, SMALL_RESISTANCE, Stamp, UnknownIndex};
+use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError, Real, SMALL_RESISTANCE, Stamp, UnknownIndex};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,7 @@ const NOWHERE: usize = usize::MAX;
 pub struct Resistor;
 
 /// The parameters of a [`Resistor`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance at the nominal temperature, in ohms; default 1.

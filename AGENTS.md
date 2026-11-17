@@ -44,6 +44,7 @@ PyO3 builds against the interpreter that `PYO3_PYTHON` names, so set it to `.ven
 The Rust workspace, in `crates/`, is ordered.
 Each crate depends only on the crates listed before it:
 
+1. `jolty-derive`: the derive macros: `Lift`, which makes a kernel's parameters of any kind of number from their plain form, field by field.
 1. `jolty-ir`: the circuit format, its names and its validation.
 1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, which factors a large block by the nested dissection of it on any number of threads, the gather that assembles a system's values in a fixed order, sums of many terms in one fixed order on any number of threads, and integration formulas.
 1. `jolty-expressions`: the expression language of behavioral sources, compiled and evaluated with its exact gradient.

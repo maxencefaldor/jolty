@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Branch, BranchKind, Delayed, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Delayed, Interface, Kernel, Layout, Lift, Local, ParameterError, Real,
+    Stamp,
 };
 
 /// The terminals of a transmission line: each port's pair, port 1's then port 2's.
@@ -51,7 +52,7 @@ pub struct TransmissionLineShape {
 }
 
 /// The parameters of a [`TransmissionLine`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct TransmissionLineParameters<R: Real = f64> {
     /// The characteristic impedance `Z₀`, in ohms, SPICE's `Z0`; positive.

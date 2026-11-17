@@ -14,6 +14,7 @@ categories = ["science", "simulation", "compilers"]
 
 [workspace.dependencies]
 jolty-checks = { path = "crates/jolty-checks", version = "0.1.0" }
+jolty-derive = { path = "crates/jolty-derive", version = "0.1.0" }
 jolty-engine = { path = "crates/jolty-engine", version = "0.1.0" }
 jolty-expressions = { path = "crates/jolty-expressions", version = "0.1.0" }
 jolty-ir = { path = "crates/jolty-ir", version = "0.1.0" }
@@ -28,8 +29,10 @@ gungraun = "0.20.0"
 mimalloc = { version = "0.1.52", default-features = false }
 num-complex = "0.4"
 numpy = "0.30"
+proc-macro2 = "1.0.107"
 proptest = "1.12"
 pyo3 = "0.30"
+quote = "1.0.47"
 rand = { version = "0.10", default-features = false }
 rand_chacha = { version = "0.10", default-features = false }
 rand_distr = { version = "0.6", default-features = false, features = ["std_math"] }
@@ -37,6 +40,7 @@ rayon = "1.12"
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+syn = "2.0.119"
 thiserror = "2.0.21"
 
 [workspace.lints.rust]

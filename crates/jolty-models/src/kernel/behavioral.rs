@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Branch, BranchKind, Choice, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Choice, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
 };
 
 /// An expression a behavioral source follows: an [expression](jolty_expressions) of the
@@ -120,7 +120,7 @@ impl Behavior {
 
 /// The parameters of a [`BehavioralVoltageSource`], a [`BehavioralCurrentSource`] or a
 /// [`BehavioralCapacitor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 pub struct BehavioralParameters {
     /// What the device's output follows, a capacitor's its charge: an expression of the

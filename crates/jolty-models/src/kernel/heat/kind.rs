@@ -12,8 +12,8 @@ use std::marker::PhantomData;
 use jolty_numerics::UNMAPPED;
 
 use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
-use crate::device::lift;
 use crate::group::Kind;
+use crate::lift::{constant, lift};
 use crate::{
     Choice, Delayed, Gradient, Hyper, Kernel, Layout, Local, LogicLevel, Nature, NoiseSource,
     ParameterError, Regions, Stamp,
@@ -378,7 +378,7 @@ fn evaluate<K: Kernel, R: Heating>(
 
 impl<K: Kernel> Kind for HeatedKernel<K> {
     const NAME: &'static str = K::NAME;
-    type Parameters = K::Parameters<<f64 as Heating>::Warm>;
+    type Parameters = K::Parameters<f64>;
     type Shape = HeatedShape<K::Shape>;
     type Prepared = HeatedPrepared<K, f64>;
     type Memory = HeatedMemory<K, f64>;
@@ -387,16 +387,16 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         parameters: &Self::Parameters,
         temperature: f64,
     ) -> Result<Self::Prepared, ParameterError> {
-        HeatedPrepared::new(parameters, temperature)
+        HeatedPrepared::new(&constant(parameters), temperature)
     }
 
     fn layout(
-        parameters: &Self::Parameters,
+        _: &Self::Parameters,
         prepared: &Self::Prepared,
         layout: &mut Layout,
     ) -> Result<Self::Shape, ParameterError> {
         let mut own = Layout::new(layout.terminals().saturating_sub(1));
-        let inner = K::layout(parameters, &prepared.at_ambient, &mut own)?;
+        let inner = K::layout(&prepared.parameters, &prepared.at_ambient, &mut own)?;
         Ok(heated_shape(inner, &own, layout))
     }
 
@@ -544,7 +544,13 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         parameter: &str,
         temperature: f64,
     ) -> Option<Self::Twin> {
-        let lifted: K::Parameters<Hyper> = lift(parameters, parameter).ok()?;
+        let seeded = |value| Hyper {
+            value,
+            first: 1.0,
+            second: 0.0,
+            both: 0.0,
+        };
+        let lifted: K::Parameters<Hyper> = lift(parameters, parameter, seeded).ok()?;
         let prepared = HeatedPrepared::<K, Gradient>::new(&lifted, temperature).ok()?;
         let memory = HeatedMemory::new(shape, &prepared);
         Some((prepared, memory))

@@ -17,7 +17,7 @@ use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series, Var
 use crate::kernel::region::SATURATION_MARGIN;
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
@@ -160,7 +160,7 @@ const INNER_SOURCE: usize = 2;
 const VARIABLES: [(usize, usize); 2] = [(INNER_GATE, INNER_SOURCE), (INNER_DRAIN, INNER_SOURCE)];
 
 /// The parameters of a [`Vdmos`], with ngspice's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct VdmosParameters<R: Real = f64> {
     /// The channel, `VDMOS` or `VDMOS pchan`; default `n`.

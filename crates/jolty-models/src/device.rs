@@ -145,29 +145,6 @@ pub(crate) fn written<P: Serialize>(parameters: &P) -> Result<Parameters, Parame
     }
 }
 
-/// The typed `parameters` read again as `Q`, whose devices compute with their derivatives
-/// with respect to the number at the path `parameter`: written as JSON, where that number
-/// becomes `{"value": v, "derivative": 1}`, and read back, which gives every other number
-/// exactly as it was.
-///
-/// # Errors
-///
-/// Returns [`ParameterError`] when no number is at `parameter`, or `Q` does not read one
-/// there as a real number, as when it reads it as a choice, such as a level.
-pub(crate) fn lift<P: Serialize, Q: DeserializeOwned>(
-    parameters: &P,
-    parameter: &str,
-) -> Result<Q, ParameterError> {
-    let mut written = written(parameters)?;
-    let leaf = jolty_ir::parameter_mut(&mut written, parameter)
-        .filter(|leaf| leaf.is_number())
-        .ok_or_else(|| ParameterError(format!("the parameters hold no number at `{parameter}`")))?;
-    let value = leaf.take();
-    *leaf = serde_json::json!({"value": value, "derivative": 1.0});
-    serde_json::from_value(Value::Object(written))
-        .map_err(|error| ParameterError(error.to_string()))
-}
-
 /// The JSON schema of the parameters `P`, every type within it written in place.
 pub(crate) fn schema<P: JsonSchema>() -> Schema {
     SchemaSettings::draft2020_12()

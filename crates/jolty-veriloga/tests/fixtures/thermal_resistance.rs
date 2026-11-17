@@ -16,7 +16,7 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in K/W; default 1.

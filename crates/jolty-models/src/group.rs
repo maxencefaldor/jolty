@@ -38,7 +38,7 @@ use jolty_numerics::reduce::CHUNK;
 use jolty_numerics::{Entry, Fold, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
-use crate::device::lift;
+use crate::lift::lift;
 use crate::surroundings::Own;
 use crate::{
     Binding, Choice, Contributions, Delayed, DelayedEntry, Gradient, Input, Kernel, Layout, Local,
@@ -375,7 +375,11 @@ impl<K: Kernel> Kind for K {
         parameter: &str,
         temperature: f64,
     ) -> Option<Self::Twin> {
-        let lifted: K::Parameters<Gradient> = lift(parameters, parameter).ok()?;
+        let seeded = |value| Gradient {
+            value,
+            derivative: 1.0,
+        };
+        let lifted: K::Parameters<Gradient> = lift(parameters, parameter, seeded).ok()?;
         let prepared = K::prepare(&lifted, Gradient::constant(temperature)).ok()?;
         let memory = K::memory(shape, &prepared);
         Some((prepared, memory))

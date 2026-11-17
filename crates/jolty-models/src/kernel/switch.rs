@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::dual::Dual;
 use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Stamp,
-    UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError, Real,
+    Stamp, UnknownIndex,
 };
 
 /// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
@@ -101,7 +101,7 @@ pub struct VoltageSwitchShape([[usize; 4]; 2]);
 
 /// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `VSWITCH`.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
@@ -252,7 +252,7 @@ pub struct CurrentSwitchShape {
 
 /// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `ISWITCH`.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on current, in ohms; default 1.

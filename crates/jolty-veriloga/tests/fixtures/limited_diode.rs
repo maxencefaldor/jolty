@@ -19,7 +19,7 @@
     )
 )]
 
-use jolty_models::{BOLTZMANN, Branch, BranchKind, Dual, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp, limit_junction};
+use jolty_models::{BOLTZMANN, Branch, BranchKind, Dual, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp, limit_junction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 pub struct Diode;
 
 /// The parameters of a [`Diode`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in A; default 0.00000000000001.

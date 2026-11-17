@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::dual::Dual;
 use crate::kernel::parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, Real, Stamp, UnknownIndex,
 };
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
@@ -329,7 +329,7 @@ fn a_hundredth<R: Real>() -> R {
 pub struct VoltageControlledMemristor;
 
 /// The parameters of a [`VoltageControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
@@ -470,7 +470,7 @@ fn at_least_one<R: Real>(parameter: &str, value: R) -> Result<R, ParameterError>
 pub struct CurrentControlledMemristor;
 
 /// The parameters of a [`CurrentControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.

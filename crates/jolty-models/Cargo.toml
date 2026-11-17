@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+jolty-derive.workspace = true
 jolty-expressions.workspace = true
 jolty-ir.workspace = true
 jolty-numerics.workspace = true

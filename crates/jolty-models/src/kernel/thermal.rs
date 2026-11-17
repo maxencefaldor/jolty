@@ -9,7 +9,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts::Pair;
-use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use crate::{
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 
 /// Where a thermal element's contributions go: across its terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +30,7 @@ impl ThermalShape {
 pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in kelvins per watt; positive.
@@ -85,7 +87,7 @@ impl Kernel for ThermalResistance {
 pub struct ThermalCapacitance;
 
 /// The parameters of a [`ThermalCapacitance`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ThermalCapacitanceParameters<R: Real = f64> {
     /// The heat capacity, in joules per kelvin; zero or positive.
@@ -142,7 +144,7 @@ impl Kernel for ThermalCapacitance {
 pub struct HeatSource;
 
 /// The parameters of a [`HeatSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct HeatSourceParameters<R: Real = f64> {
     /// The heat flow, in watts.

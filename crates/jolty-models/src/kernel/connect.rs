@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts as kernel_parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, LogicLevel, ParameterError, Real, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, LogicLevel, ParameterError, Real,
+    Stamp,
 };
 
 /// The parameters of a logic driver: none.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 pub struct LogicDriverParameters {}
 
@@ -151,7 +152,7 @@ impl Kernel for LogicDriver {
 }
 
 /// The parameters of a threshold detector.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdDetectorParameters {
     /// The fraction of the supply, from ground, at which the level switches.

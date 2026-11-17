@@ -2,7 +2,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts::CurrentBranch;
-use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use crate::{
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 
 /// The terminals of a controlled source: an output pair and a control pair.
 const CONTROLLED_TERMINALS: &[&str] = &[
@@ -38,7 +40,7 @@ pub struct VoltageControlledVoltageSourceShape {
 }
 
 /// The parameters of a [`VoltageControlledVoltageSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control voltage.
@@ -113,7 +115,7 @@ pub struct VoltageControlledCurrentSource;
 pub struct ControlledCurrentShape([usize; 4]);
 
 /// The parameters of a [`VoltageControlledCurrentSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control voltage, in siemens.
@@ -200,7 +202,7 @@ pub struct CurrentControlledCurrentSourceShape {
 }
 
 /// The parameters of a [`CurrentControlledCurrentSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control current.
@@ -291,7 +293,7 @@ pub struct SensedVoltageShape {
 }
 
 /// The parameters of a [`CurrentControlledVoltageSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control current, in ohms.

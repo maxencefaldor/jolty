@@ -15,7 +15,7 @@ use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_va
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
@@ -159,7 +159,7 @@ const CHANNEL: [usize; 2] = [VGS, VDS];
 type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct JfetParameters<R: Real = f64> {
     /// The channel; default `n`.

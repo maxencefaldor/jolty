@@ -8,14 +8,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use crate::{
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 
 /// A transistor of a foundry's process, between `drain`, `gate`, `source` and `bulk`.
 #[derive(Debug, Clone, Copy)]
 pub struct FoundryMosfet;
 
 /// The parameters of a [`FoundryMosfet`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct FoundryMosfetParameters<R: Real = f64> {
     /// The process design kit, such as `sky130`.

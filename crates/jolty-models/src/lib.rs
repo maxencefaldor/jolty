@@ -20,11 +20,15 @@
 //! as they read, with each one left out at its default, and a JSON schema describes them.
 //! A [`Library`] holds the models a circuit can use.
 
+// The derive of `Lift` names this crate by its name, here as in every crate that uses it.
+extern crate self as jolty_models;
+
 mod binding;
 mod device;
 mod evaluation;
 mod group;
 mod kernel;
+mod lift;
 mod logic;
 mod noise;
 mod past;
@@ -101,6 +105,7 @@ pub use kernel::transmission::{TransmissionLine, TransmissionLineParameters};
 pub use kernel::vbic::{BaseCharge, Vbic, VbicParameters};
 pub use kernel::vdmos::{Vdmos, VdmosParameters};
 pub use kernel::{Kernel, Layout, Local, Stamp};
+pub use lift::{Lift, ParameterPath};
 pub use logic::{
     Change, Domain, Electrical, ElectricalParameters, FixedTiming, Logic, LogicCell,
     LogicCellParameters, LogicLevel, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS,

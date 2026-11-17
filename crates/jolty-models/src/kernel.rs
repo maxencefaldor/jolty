@@ -63,7 +63,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    Choice, Delayed, Interface, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
+    Choice, Delayed, Interface, Lift, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
     Regions,
 };
 
@@ -81,10 +81,12 @@ pub trait Kernel: Send + Sync + 'static {
     const FOUNDRY: bool = false;
 
     /// The parameters an instance's parameter map deserializes into, each number an `R`,
-    /// which write as they read and which a JSON schema describes.
+    /// which write as they read and which a JSON schema describes, and which a twin makes
+    /// of the plain ones, `Parameters<f64>`.
     type Parameters<R: Real>: DeserializeOwned
         + Serialize
         + JsonSchema
+        + Lift<R, Plain = Self::Parameters<f64>>
         + Clone
         + fmt::Debug
         + Send

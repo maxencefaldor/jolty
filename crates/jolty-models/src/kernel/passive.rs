@@ -7,7 +7,7 @@ use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{CurrentBranch, Pair};
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
@@ -81,7 +81,7 @@ impl<R: Real> VoltageCoefficients<R> {
 }
 
 /// The parameters of a [`Resistor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance, in ohms, at the nominal temperature; positive.
@@ -304,7 +304,7 @@ pub struct PreparedCapacitor<R: Real> {
 }
 
 /// The parameters of a [`Capacitor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CapacitorParameters<R: Real = f64> {
     /// The capacitance, in farads, at the nominal temperature; zero or positive.
@@ -404,7 +404,7 @@ pub struct InductorShape {
 }
 
 /// The parameters of an [`Inductor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct InductorParameters<R: Real = f64> {
     /// The inductance, in henries, at the nominal temperature; positive.
@@ -505,7 +505,7 @@ pub struct CoupledInductorsShape {
 }
 
 /// The parameters of [`CoupledInductors`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CoupledInductorsParameters<R: Real = f64> {
     /// Each winding, as an inductor's parameters; at least two.
@@ -516,7 +516,7 @@ pub struct CoupledInductorsParameters<R: Real = f64> {
 }
 
 /// How closely two windings' fluxes link.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct Coupling<R: Real = f64> {
     /// The two windings, by their numbers from 1.

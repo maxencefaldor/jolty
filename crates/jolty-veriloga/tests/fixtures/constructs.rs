@@ -18,7 +18,7 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 pub struct Constructs;
 
 /// The parameters of a [`Constructs`], with its Verilog-A source's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct ConstructsParameters<R: Real = f64> {
     /// The conductance at zero volts, in S; default 0.001.
