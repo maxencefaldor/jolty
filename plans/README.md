@@ -17,7 +17,7 @@ A rule not yet adopted is proposed in a theme's "Open principles", and moves to 
 | `gpu.md` | What a GPU could do for jolty, and what it cannot |
 | `research/` | The research reports the theme documents are written from; a plan item's "Source: row N" is a row of its theme's report |
 | `derivatives.html` | How derivatives work in jolty, from a circuit's equations to the JVP and VJP, explained step by step |
-| `device-derivatives.html` | The audit of every device kernel's derivatives, and the design of all of a device's parameter derivatives in one evaluation |
+| `device-derivatives.md` | The implementation plan for each device's own derivatives: every kernel composed on dual numbers, every parameter derivative of a device in one evaluation, and the two deferred steps |
 
 Every theme document has the same sections: goal and metric, where we stand, gaps, plan, decided, open principles.
 Each plan item is a section of its own, `### <status> <number>. <title>`, saying what it is, why it matters, what "done" means, and its source.
@@ -54,7 +54,7 @@ Raw measurement logs are not kept in the repository: each document states the nu
 Each waits on the owner:
 
 - **The JAX bridge** (`agentic.md` 19): `jax.grad` through a circuit by registering jolty's VJP as JAX's backward rule; needs `jax` as an optional dependency.
-- **Device derivatives** (`device-derivatives.html`): the design of step 2 (every parameter derivative of a device in one evaluation) and the audit's two items (VBIC composed; Gummel-Poon and the JFET on dual numbers); and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
+- **Device derivatives** (`device-derivatives.md`): when to build steps 1 and 2; and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
 - **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables`.
 - **Newton's two cuts** (`accuracy.md` 6): measured to misjudge (91% of the buck's iterations they would cut converged within ten anyway); the recommendation is to leave them out.
 - **`ln1p` and `expm1` in jolty's Verilog-A:** outside the Verilog-AMS standard; reversible.

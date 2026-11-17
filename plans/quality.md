@@ -91,6 +91,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     The JFET's and the bipolar transistor's ports ran 7 to 18% slower and were stopped (kept in the scratchpad); hand-written derivatives also remain in the memristor, the passive voltage coefficients, the photocell, the switch and VDMOS's quasi-saturation.
     The Jacobian check's 1e-5 stays: BSIM3's charge rows cancel, so a bound at rounding needs the magnitude of the terms each charge sums, which kernels do not report.
     `departures.md:73` calls the bipolar base resistance's derivative automatic; it is hand-written.
+- **Plan:** `device-derivatives.md` step 1: VBIC composed (1.2), Gummel-Poon and the JFET on composed dual numbers measured against today's (1.3), the short laws when touched (1.4).
 - **Source:** row 4.
 
 ### 📋 7. Quantities everywhere

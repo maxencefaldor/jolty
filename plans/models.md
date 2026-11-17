@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/models.md`, kept whole.
 
-Plan: ✅ 8 done · 🚧 6 in progress · 📋 8 planned · ⏳ 1 waits for the owner · ⏸️ 1 parked (§4).
+Plan: ✅ 8 done · 🚧 6 in progress · 📋 7 planned · ⏳ 1 waits for the owner · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -69,20 +69,20 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Source:** row 13; `research/quality.md` rows 5 and 6.
     This item replaces `quality.md`'s items on one definition per model fact and a model descriptor; the contributors' guide to adding a model (`quality.md` 19) follows from it.
 
-### 📋 5. Exact derivatives at the cost of hand-written ones
+### ⏸️ 5. Exact derivatives at the cost of hand-written ones
 
 - **What:** derivatives computed by sparse forward differentiation at compile time, the way a compiler of Verilog-A would, instead of dual numbers carrying every partial at run time, where it pays.
-- **Why:** exactness costs about twice ngspice's time per MOSFET today; compact models have 12 to 15 nodes, where dual numbers carry many zeros.
+- **Why, corrected** (17 November): the MOSFET kernels already compose small dual numbers at the natural width of each law (three for the channel, one per junction), so the zeros this item was to remove are not there for them; whether a MOSFET's evaluation costs more than ngspice's, and why, is unmeasured.
     OpenVAF's compiled HICUM outran ngspice's in one of two benchmarks.
-- **Done when:** a MOSFET's evaluation costs no more than ngspice's per iteration, every derivative still exact.
-- **Lead.**
-    **Source:** row 12; with `speed.md` 5.
+- **Plan:** `device-derivatives.md` step 3, deferred until its measurement shows the derivatives' share of an evaluation worth the machinery.
+- **Source:** row 12; with `speed.md` 5.
 
 ### 📋 6. Second and higher derivatives in every kernel
 
 - **What:** each kernel's second derivatives, exact, as the first are.
 - **Why:** exact AC sensitivities, which use a central difference today; a distortion analysis for every model, where ngspice covers ten SPICE3 models; an exact Gummel symmetry test; later, harmonic balance's Jacobians.
 - **Done when:** AC sensitivities with no finite difference; a distortion analysis for every model.
+- **Elsewhere:** `device-derivatives.md` 2b makes AC's VJP exact with second derivatives along one direction only, without this item's full second derivatives.
 - **Lead.**
     **Source:** row 11.
 

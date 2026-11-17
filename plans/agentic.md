@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/agentic.md`, kept whole.
 
-Plan: ✅ 7 done · 📋 15 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 11 done · 📋 12 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -94,11 +94,12 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** the report states each image's cost.
     **Source:** row 18.
 
-### 📋 7. Sensitivities over parameters named by pattern
+### ✅ 7. Sensitivities over parameters named by pattern
 
 - **What:** `Sensitivity(…, parameters=["X1/R*"])` differentiates the outputs with respect to the parameters a pattern names, and only those.
 - **Done when:** that call differentiates only the matching parameters.
     **Source:** row 8.
+- **Result:** superseded by item 12b: the parameters a JVP or VJP is given are those differentiated, and only they get twins.
 
 ### 📋 8. Quality and cost beside pass or fail in item 8's report
 
@@ -129,19 +130,22 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead.**
     **Source:** row 11.
 
-### 📋 12. A scalar loss's gradient for one solve more
+### ✅ 12. A scalar loss's gradient for one solve more
 
 - **What:** one transposed solve per scalar loss at DC and over frequency, the adjoint method, giving its gradient with respect to every parameter at once.
 - **Done when:** a loss's gradient costs one solve more than the analysis.
     **Source:** row 12.
+- **Result:** item 12b's VJP: at a DC point, one transposed solve per loss whatever the number of parameters; over frequency, the term through the operating point is still a central difference per parameter (`device-derivatives.md` 2b).
 
-### 📋 13. A transient's gradient by the discrete adjoint
+### ✅ 13. A transient's gradient by the discrete adjoint
 
 - **What:** the adjoint through a transient, with binomial checkpointing to bound memory, so one objective's gradient costs the same whatever the number of parameters.
 - **Done when:** an integrated loss's gradient agrees with the direct method, at a cost independent of the parameters' number.
 - **Lead.**
     **Source:** row 13; `research/speed.md` row M4.
     This item replaces `speed.md`'s copy of it.
+- **Result** (`f0cefc5` to `29d0b63`, on `main`): the exact transpose of each accepted step, backward Euler, trapezoidal or Gear2, variable steps; 1.5 to 2.2 times the transient's own cost whatever the number of parameters, against 2 to 65 times for the direct method (a crossbar of 1 to 1,000 weights, machine C); under item 12b, the transient's VJP.
+    No checkpointing: the transient keeps its waveforms.
 
 ### ⏸️ 14. Item 8's paid run
 
@@ -174,7 +178,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** a script's write outside its directory fails, on macOS and Linux CI.
     **Source:** row 22.
 
-### 🚧 12b. One derivative path: a JVP and a VJP for every analysis
+### ✅ 12b. One derivative path: a JVP and a VJP for every analysis
 
 - **What:** every analysis (operating point, DC sweep, AC, transient, periodic steady state) gets exactly two derivative functions in the engine, a JVP (Jacobian-vector product: a parameter nudge pushed forward to every output) and a VJP (vector-Jacobian product: a loss's sensitivity to the outputs pulled back to every parameter), both built from the device kernels' dual numbers and implicit differentiation through the solve.
     `Sensitivity`, `Mismatch`, the period derivative and the transient adjoint (item 13) become thin users of them.
@@ -189,10 +193,18 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### 📋 19. Bridges to JAX and PyTorch
 
-- **What:** jolty's analyses as differentiable functions of those frameworks.
-- **Needs:** items 12 and 13.
-    **Done when:** `jax.grad` through an operating point and a transient agrees with them.
-- **Source:** row 14; the scaling blueprint, an archived note, not kept §4.
+- **What:** `jax.grad`, `jax.vjp`, `jax.vmap` and `jax.jit` through a circuit's analysis, as through any JAX function: jolty solves the circuit, JAX differentiates everything around it (a network, a loss, an optimizer).
+- **Why:** the owner's work trains analog circuits for transformer-like networks in a loop with JAX; today the loop passes through files, with no gradient into JAX.
+- **How:**
+    - `jolty.jax.function(circuit, analysis)` returns a JAX function of a nested dict of parameters, the same dict `jolty.function` takes, to a dict of outputs.
+    - Its forward calls jolty through `jax.pure_callback`, so it also runs inside `jit`, on the CPU, outside XLA's compiled code.
+    - Its backward rule, registered with `jax.custom_vjp`, is `jolty.vjp`'s pullback (item 12b): one transposed solve per backward pass whatever the number of parameters, AC excepted until `device-derivatives.md` 2b.
+    - Its batching rule maps `jax.vmap` over inputs to one jolty batch run across every core.
+    - A `custom_vjp` function refuses `jax.jvp`; forward mode is not built until a use appears (the owner agreed, 16 November).
+    - PyTorch, through `torch.autograd.Function` around the same pullback, once JAX's is done.
+- **Needs:** item 12b (on `main`); `jax` as an optional dependency, `jolty[jax]`, which needs the owner's yes.
+- **Done when:** `jax.grad` of a loss through an operating point, a DC sweep and a transient agrees with `jolty.vjp` bit for bit and with finite differences; under `jit`; and `vmap` over a batch of inputs agrees with a loop over them.
+- **Source:** row 14; the owner's direction, 16 and 17 November.
 
 ### 📋 20. Large regular circuits in a few lines
 
