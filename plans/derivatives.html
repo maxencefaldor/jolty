@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How derivatives work in jolty</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* An engineering notebook: a cool paper page, three symbol colours that mean the
+     same thing in every equation and diagram (unknowns, parameters, the loss). */
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5a6675;
+  --rule: #d5dce4;
+  --accent: #1f5fbf;      /* unknowns x: voltages and currents */
+  --param: #b26b00;       /* parameters p */
+  --loss: #a3266f;        /* the loss L, and anything JAX owns */
+  --quote-bg: #e9eef5;
+  --font-display: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --panel: #18202a; --ink: #e3e8ee; --muted: #9aa6b4; --rule: #2c3744;
+    --accent: #6fa3f2; --param: #e0a24a; --loss: #e07ab4; --quote-bg: #1c2633;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --panel: #18202a; --ink: #e3e8ee; --muted: #9aa6b4; --rule: #2c3744;
+  --accent: #6fa3f2; --param: #e0a24a; --loss: #e07ab4; --quote-bg: #1c2633;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 18px; line-height: 1.6;
+}
+main { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; display: grid; gap: 8px; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.2; text-wrap: balance; margin: 0; }
+h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.45rem; font-weight: 700; margin-top: 40px; padding-top: 18px; border-top: 2px solid var(--rule); }
+h3 { font-size: 1.12rem; font-weight: 600; margin-top: 22px; }
+p, ul, ol { margin: 8px 0; }
+li { margin: 4px 0; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+code, .m { font-family: var(--font-mono); font-size: 0.86em; }
+.x { color: var(--accent); font-weight: 500; }
+.p { color: var(--param); font-weight: 500; }
+.L { color: var(--loss); font-weight: 500; }
+blockquote {
+  margin: 18px 0 6px; padding: 12px 16px; background: var(--quote-bg);
+  border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0; font-style: italic;
+}
+blockquote::before {
+  content: "From the message"; display: block; font-style: normal; font-family: var(--font-display);
+  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  margin-bottom: 4px;
+}
+.eq {
+  font-family: var(--font-mono); font-size: 0.95rem; background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; margin: 10px 0;
+  overflow-x: auto; white-space: pre; line-height: 1.55;
+}
+pre {
+  font-family: var(--font-mono); font-size: 0.84rem; background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; overflow-x: auto; line-height: 1.5;
+}
+figure { margin: 14px 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; overflow-x: auto; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 8px; }
+svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+svg text { font-family: var(--font-display); fill: var(--ink); }
+svg .mono { font-family: var(--font-mono); }
+svg .muted { fill: var(--muted); }
+svg .wire { stroke: var(--ink); stroke-width: 2; fill: none; }
+svg .box { fill: var(--bg); stroke: var(--rule); stroke-width: 1.5; }
+svg .boxx { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg .boxp { fill: none; stroke: var(--param); stroke-width: 2; }
+svg .boxL { fill: none; stroke: var(--loss); stroke-width: 2; }
+svg .tx { fill: var(--accent); } svg .tp { fill: var(--param); } svg .tL { fill: var(--loss); }
+svg .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#head); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+.tablewrap { overflow-x: auto; margin: 10px 0; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-display); font-weight: 600; font-size: 0.85rem; color: var(--muted); }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
+.toc { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 18px; }
+.toc ol { margin: 4px 0; padding-left: 22px; }
+.toc a, a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note { font-size: 0.92rem; color: var(--muted); }
+.key { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.9rem; margin: 6px 0; }
+dl { margin: 8px 0; } dt { font-family: var(--font-display); font-weight: 600; margin-top: 10px; } dd { margin: 2px 0 0 0; }
+@media (max-width: 480px) { body { font-size: 17px; } h1 { font-size: 1.8rem; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>How derivatives work in jolty</h1>
+<p class="lede">One message, explained line by line: what a circuit's equations are, where every derivative in jolty comes from, why they are one process mathematically and several today in the API, and what would make them one in the API too.</p>
+<div class="key"><span><span class="x">x</span>: unknowns (voltages, currents)</span><span><span class="p">p</span>: parameters (a resistance, a weight)</span><span><span class="L">L</span>: a loss, and anything JAX owns</span></div>
+
+<nav class="toc" aria-label="Contents">
+<ol>
+<li><a href="#background">Background: voltage, current, devices, components</a></li>
+<li><a href="#equations">The circuit's equations, F(x, p) = 0</a></li>
+<li><a href="#newton">Solving them: Newton's method</a></li>
+<li><a href="#message">The message, quoted and explained</a></li>
+<li><a href="#glossary">Glossary</a></li>
+</ol>
+</nav>
+
+<h2 id="background">1. Background: voltage, current, devices, components</h2>
+
+<p><strong>Voltage</strong> is the electrical "height" of a point in a circuit, measured in volts (V) against a reference point called <em>ground</em>, which is 0 V. Every connection point, called a <strong>node</strong>, has one voltage.</p>
+<p><strong>Current</strong> is the flow of charge through a wire or a part, measured in amperes (A). It flows from higher voltage to lower voltage through a part that lets it.</p>
+<p>A <strong>device</strong> is one physical part with a law that ties the current through it to the voltages at its terminals. Three examples:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Device</th><th>Its law</th><th>Its parameters</th></tr></thead>
+<tbody>
+<tr><td>Voltage source</td><td>Holds its terminals <span class="p">V<sub>s</sub></span> volts apart, whatever current flows</td><td><span class="p">V<sub>s</sub></span></td></tr>
+<tr><td>Resistor</td><td>Current = (voltage across it) ÷ <span class="p">R</span>, Ohm's law; linear</td><td><span class="p">R</span>, in ohms (Ω)</td></tr>
+<tr><td>Diode</td><td>Current = <span class="p">I<sub>s</sub></span>·(e<sup>V/V<sub>t</sub></sup> − 1): almost nothing below about 0.6 V, then a steep rise; nonlinear</td><td><span class="p">I<sub>s</sub></span>, the saturation current; V<sub>t</sub> ≈ 0.02585 V is fixed by temperature</td></tr>
+</tbody></table></div>
+<p>A transistor is a device too, with more terminals and a far longer law (BSIM4 runs to thousands of lines), but the same idea: currents as a function of terminal voltages and parameters.</p>
+
+<p>A <strong>component</strong>, in jolty, is a Python function that places devices (or other components) and wires their terminals together. It is a recipe, not a new kind of physics:</p>
+<pre>@component
+def divider(c: Builder, upper: Quantity, lower: Quantity) -&gt; None:
+    top, tap = c.port("top"), c.port("tap")
+    ground = c.port("ground", Role.GROUND)
+    first = c.place(devices.resistor(upper), name="R1")
+    second = c.place(devices.resistor(lower), name="R2")
+    c.connect(top, first.a)
+    c.connect(first.b, second.a, tap)
+    c.connect(second.b, ground)</pre>
+<p>Before simulating, jolty <em>flattens</em> every component into the devices it contains. The engine only ever sees devices and the nodes that join them.</p>
+
+<h2 id="equations">2. The circuit's equations, F(x, p) = 0</h2>
+
+<p>Everything below uses one small circuit: a 1 V source drives a 1 kΩ resistor into a diode. The one node between them, call it <span class="x">x</span>, is the only voltage we do not know.</p>
+
+<figure>
+<svg viewBox="0 0 520 230" role="img" aria-label="A voltage source Vs connected through resistor R to node x, and a diode from node x to ground">
+  <defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <!-- source -->
+  <circle cx="80" cy="120" r="26" class="wire"/>
+  <text x="80" y="113" text-anchor="middle" font-size="16">+</text>
+  <text x="80" y="136" text-anchor="middle" font-size="16">−</text>
+  <text x="36" y="125" text-anchor="end" class="tp" font-size="15">V<tspan font-size="11" dy="4">s</tspan><tspan dy="-4"> = 1 V</tspan></text>
+  <!-- top wire to resistor -->
+  <path d="M80 94 V50 H170" class="wire"/>
+  <path d="M170 50 l8 -10 l12 20 l12 -20 l12 20 l12 -20 l12 20 l8 -10" class="wire"/>
+  <text x="216" y="30" text-anchor="middle" class="tp" font-size="15">R = 1 kΩ</text>
+  <path d="M262 50 H330" class="wire"/>
+  <!-- node x -->
+  <circle cx="330" cy="50" r="5" fill="var(--accent)"/>
+  <text x="342" y="40" class="tx" font-size="16" font-weight="600">node x</text>
+  <!-- diode down -->
+  <path d="M330 50 V95" class="wire"/>
+  <path d="M312 95 H348 L330 125 Z" class="wire"/>
+  <path d="M312 125 H348" class="wire"/>
+  <text x="360" y="115" class="tp" font-size="15">diode, I<tspan font-size="11" dy="4">s</tspan><tspan dy="-4"> = 10⁻¹⁴ A</tspan></text>
+  <path d="M330 125 V190 H80 V146" class="wire"/>
+  <!-- ground -->
+  <path d="M205 190 V200 M190 200 H220 M195 206 H215 M200 212 H210" class="wire"/>
+  <text x="230" y="208" class="muted" font-size="13">ground, 0 V</text>
+  <!-- currents -->
+  <path d="M190 68 H245" class="arrow"/>
+  <text x="217" y="86" text-anchor="middle" class="muted" font-size="13">current in R</text>
+  <path d="M300 70 V110" class="arrow"/>
+  <text x="292" y="150" text-anchor="end" class="muted" font-size="13">current in diode</text>
+</svg>
+<figcaption>Three devices, two of whose parameters we may want to change (<span class="p">R</span>, <span class="p">I<sub>s</sub></span>), and one unknown voltage, <span class="x">x</span>.</figcaption>
+</figure>
+
+<p><strong>Where the equation comes from.</strong> Charge does not pile up at a node, so whatever current flows into node <span class="x">x</span> must flow out (Kirchhoff's current law). Writing "current out through R plus current out through the diode = 0":</p>
+<div class="eq">F(<span class="x">x</span>, <span class="p">p</span>) = (<span class="x">x</span> − <span class="p">V<sub>s</sub></span>) / <span class="p">R</span>  +  <span class="p">I<sub>s</sub></span>·(e<sup><span class="x">x</span>/V<sub>t</sub></sup> − 1)  =  0</div>
+<p>That is all <strong>F</strong> is: the sum of <em>currents</em> (in amperes) leaving each node, which must be zero. It is never a sum of voltages. Each term is one device's current:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Term</th><th>Which current</th><th>Why it looks like that</th></tr></thead>
+<tbody>
+<tr><td><code>(x − Vs) / R</code></td><td>Through the resistor, from node x back towards the source</td><td>Ohm's law: the voltage across the resistor divided by its resistance. Its two ends sit at <span class="x">x</span> and at <span class="p">V<sub>s</sub></span> (the source holds that end at 1 V), so the voltage across it is <code>x − Vs</code>.</td></tr>
+<tr><td><code>Is·(e<sup>x/Vt</sup> − 1)</code></td><td>Through the diode, from node x down to ground</td><td>The diode's law, with the voltage across it <code>x − 0 = x</code>.</td></tr>
+</tbody></table></div>
+<p>The source adds no term of its own here because it does not touch node x: it only fixes the voltage at the resistor's far end, which is where <span class="p">V<sub>s</sub></span> enters. Adding <span class="p">V<sub>s</sub></span> itself as a term would add volts to amperes. (In the engine, the resistor's far end is a node of its own with its own equation, and the source adds one more unknown, the current it supplies, and one more equation, "this node is at V<sub>s</sub>". Here those two are solved by hand to keep one unknown.)</p>
+<p>Here:</p>
+<ul>
+<li><span class="x">x</span> = the unknowns: the voltage at node x (a bigger circuit has one per node, plus the current through each voltage source).</li>
+<li><span class="p">p</span> = the parameters: <span class="p">V<sub>s</sub></span>, <span class="p">R</span>, <span class="p">I<sub>s</sub></span>, and in your project, a crossbar's weights.</li>
+</ul>
+<p>A circuit of <em>n</em> unknowns has <em>n</em> such equations, one per node. jolty builds <strong>F</strong> by asking every device for its currents and adding each into the equation of the node it touches. In short: <code>F: (n unknowns, P parameters) → n currents</code>, and simulating means finding the <span class="x">x</span> that makes all <em>n</em> currents zero.</p>
+
+<h2 id="newton">3. Solving them: Newton's method</h2>
+
+<p>There is no formula for <span class="x">x</span> here: the diode's exponential makes the equation impossible to solve by algebra. So jolty guesses, then corrects. At each guess it asks two things: how far off is it, <code>F(x)</code>, and how fast does F change as x changes, the slope <code>∂F/∂x</code>. Then it jumps to where that slope says F would be zero:</p>
+<div class="eq">x<sub>next</sub> = x − F(x) / (∂F/∂x)</div>
+<div class="tablewrap"><table>
+<thead><tr><th>Step</th><th>Guess x (V)</th><th>F(x) (A), the error</th></tr></thead>
+<tbody>
+<tr><td class="num">0</td><td class="num">0.600000000</td><td class="num">−2.8 × 10⁻⁴</td></tr>
+<tr><td class="num">1</td><td class="num">0.649575873</td><td class="num">4.7 × 10⁻⁴</td></tr>
+<tr><td class="num">2</td><td class="num">0.635260598</td><td class="num">1.1 × 10⁻⁴</td></tr>
+<tr><td class="num">3</td><td class="num">0.629781105</td><td class="num">9.8 × 10⁻⁶</td></tr>
+<tr><td class="num">4</td><td class="num">0.629154084</td><td class="num">1.1 × 10⁻⁷</td></tr>
+<tr><td class="num">5</td><td class="num">0.629146860</td><td class="num">1.4 × 10⁻¹¹</td></tr>
+<tr><td class="num">6</td><td class="num">0.629146859</td><td class="num">≈ 0</td></tr>
+</tbody></table></div>
+<p>With <em>n</em> unknowns, the slope becomes an <em>n</em> × <em>n</em> table, the <strong>Jacobian</strong> <code>J = ∂F/∂x</code>: entry (i, j) says how much node i's current changes when node j's voltage moves. Each Newton step solves the linear system <code>J · Δx = −F</code> (jolty does that with a sparse LU factorization), then moves <code>x ← x + Δx</code>. At the answer, <code>J = 0.01535 A/V</code> here.</p>
+
+<h2 id="message">4. The message, quoted and explained</h2>
+
+<blockquote>Is there one coherent way derivatives work? Yes, in the maths. No, in the API. That's where the real debt is.</blockquote>
+<p>"The maths" is how jolty computes derivatives inside: one consistent method. "The API" is what you, the user, call to ask for a derivative. Today you call different things for different analyses, and none of them is the shape JAX asks for. So the inconsistency you sensed is real, but it lives in the user-facing layer, which can be refactored, not in the engine's foundations.</p>
+
+<blockquote>The maths has one source and three layers, each the chain rule applied to the same object: the circuit's equations F(x, p) = 0, where x are the node voltages and currents and p the parameters.</blockquote>
+<p>"One source" is <strong>F</strong> from section 2: every derivative jolty can give comes from differentiating that one function. The "three layers" are three places the chain rule is applied, from the smallest scale to the largest:</p>
+
+<figure>
+<svg viewBox="0 0 640 330" role="img" aria-label="Three nested layers: devices inside the solve, the solve inside the boundary with JAX">
+  <defs><marker id="head2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <rect x="10" y="10" width="620" height="310" rx="10" class="boxL"/>
+  <text x="26" y="36" font-size="15" font-weight="700" class="tL">3 · The boundary: JAX</text>
+  <text x="26" y="56" font-size="13" class="muted">your network, the loss L, the optimizer; JAX differentiates all of it</text>
+  <rect x="40" y="76" width="560" height="226" rx="10" class="boxx"/>
+  <text x="56" y="102" font-size="15" font-weight="700" class="tx">2 · The solve: x(p) such that F(x, p) = 0</text>
+  <text x="56" y="122" font-size="13" class="muted">Newton finds x; the implicit function theorem gives dx/dp</text>
+  <rect x="70" y="142" width="150" height="130" rx="8" class="boxp"/>
+  <rect x="245" y="142" width="150" height="130" rx="8" class="boxp"/>
+  <rect x="420" y="142" width="150" height="130" rx="8" class="boxp"/>
+  <text x="145" y="168" text-anchor="middle" font-size="14" font-weight="700" class="tp">1 · Resistor</text>
+  <text x="320" y="168" text-anchor="middle" font-size="14" font-weight="700" class="tp">1 · Diode</text>
+  <text x="495" y="168" text-anchor="middle" font-size="14" font-weight="700" class="tp">1 · Transistor …</text>
+  <text x="145" y="198" text-anchor="middle" font-size="12" class="mono">its currents</text>
+  <text x="145" y="218" text-anchor="middle" font-size="12" class="mono">∂/∂x  ∂/∂p</text>
+  <text x="320" y="198" text-anchor="middle" font-size="12" class="mono">its currents</text>
+  <text x="320" y="218" text-anchor="middle" font-size="12" class="mono">∂/∂x  ∂/∂p</text>
+  <text x="495" y="198" text-anchor="middle" font-size="12" class="mono">its currents</text>
+  <text x="495" y="218" text-anchor="middle" font-size="12" class="mono">∂/∂x  ∂/∂p</text>
+  <text x="320" y="258" text-anchor="middle" font-size="12" class="muted">each device alone, by dual numbers</text>
+</svg>
+<figcaption>Each layer only uses what the layer inside it gives. Layer 1 knows one device; layer 2 knows the whole circuit; layer 3 knows what you do with the circuit's outputs.</figcaption>
+</figure>
+
+<blockquote>Local, inside each device: every device kernel computes its equations on dual numbers.</blockquote>
+<p>A <strong>kernel</strong> is jolty's code for one device's law, for example the diode's <code>I = Is·(e<sup>V/Vt</sup> − 1)</code>. It is written once, in Rust.</p>
+<p>A <strong>dual number</strong> is a number that carries its own derivative along with it. Write it <code>a + b·ε</code>, where <code>a</code> is the value, <code>b</code> the derivative, and <code>ε</code> a symbol with one rule: <code>ε² = 0</code>. Arithmetic then does calculus by itself:</p>
+<div class="eq">(a + bε) · (c + dε) = ac + (ad + bc)ε + bd·ε²  =  ac + (ad + bc)ε      ← the product rule
+e<sup>a + bε</sup> = e<sup>a</sup> + e<sup>a</sup>·b·ε                                ← the derivative of exp</div>
+<p>So if you evaluate a function on <code>a + 1·ε</code>, the result is <code>f(a) + f′(a)·ε</code>: its value and its exact derivative, with no finite difference and no rounding beyond the arithmetic itself. In our circuit, evaluating the diode at <code>V = 0.629 + 1·ε</code> returns its current and the current's slope with respect to <code>V</code> in one pass.</p>
+<p>jolty's version, <code>Dual&lt;R, N&gt;</code>, carries <em>N</em> derivatives at once (a value plus a gradient array), one per input of the device: a transistor with four terminals gets four.</p>
+
+<blockquote>Seeded on the voltages, they give ∂F/∂x, which Newton uses.</blockquote>
+<p><strong>Seeding</strong> means choosing which derivative a dual number tracks, by setting its starting derivative to 1. Each terminal voltage <code>V<sub>i</sub></code> enters the kernel as <code>V<sub>i</sub> + 1·ε<sub>i</sub></code> (derivative 1 with respect to itself, 0 with respect to the others). Every current that comes out then carries <code>∂I/∂V<sub>i</sub></code> for each terminal.</p>
+<p>Those are exactly the device's entries in the Jacobian <code>J = ∂F/∂x</code> of section 3, because <span class="x">x</span> are the node voltages and F sums the devices' currents. Newton needs <code>J</code> at every step to know which way, and how far, to move. That is why every circuit simulator computes <code>∂F/∂x</code>; jolty computes it exactly, by dual numbers, instead of by hand-written formulas.</p>
+
+<blockquote>Seeded on a parameter, they give ∂F/∂p, which gradients use. It's one mechanism for both.</blockquote>
+<p>The same trick works for a parameter. Run the diode's kernel with <span class="p">I<sub>s</sub></span> entered as <code>Is + 1·ε</code>: the current comes out carrying <code>∂I/∂Is</code>. jolty does this with a second number type, <code>Gradient</code> (a value and its derivative with respect to one parameter), and calls the device run this way its <strong>twin</strong>.</p>
+<p>"One mechanism" because the kernel is written <em>once</em>, generic over the type of number it computes with. Plain numbers give currents; <code>Dual</code> numbers give the currents and <code>∂F/∂x</code>; <code>Gradient</code> numbers give <code>∂F/∂p</code>. Nobody writes a derivative by hand, and the two kinds of derivative cannot disagree with the law, or with each other.</p>
+<div class="eq">diode at the answer, x = 0.62915 V:
+  ∂F/∂<span class="x">x</span> = 1/R + (Is/Vt)·e<sup>x/Vt</sup>  = 0.015345 A/V      (seeded on the voltage)
+  ∂F/∂<span class="p">R</span> = −(x − Vs)/R²          = 3.7085 × 10⁻⁷ A/Ω  (seeded on R)</div>
+
+<blockquote>Global, through the solve: the solution x(p) is defined implicitly by F = 0, so dx/dp = −(∂F/∂x)⁻¹ ∂F/∂p.</blockquote>
+<p><strong>Why "implicitly".</strong> There is no formula <code>x = g(p)</code>: <span class="x">x</span> is whatever Newton lands on. But it is pinned down by one fact: for <em>any</em> parameter values, the answer satisfies <code>F(x(p), p) = 0</code>. If that holds for every p, it keeps holding as p moves, so its derivative with respect to p is zero too. By the chain rule:</p>
+<div class="eq">d/dp F(x(p), p) = ∂F/∂x · dx/dp + ∂F/∂p = 0
+⟹  dx/dp = −(∂F/∂x)⁻¹ · ∂F/∂p                       (the implicit function theorem)</div>
+<p>Both pieces come from layer 1. In our circuit:</p>
+<div class="eq">dx/dR = −(3.7085 × 10⁻⁷) / 0.015345 = −2.4167 × 10⁻⁵ V/Ω</div>
+<p>Raising R by 1 Ω lowers node x by 24 µV. Re-solving the circuit at R ± 1 mΩ and differencing gives −2.41673 × 10⁻⁵: the same to six digits. Note what was <em>not</em> needed: the six Newton steps. The derivative uses only the answer and one linear solve with the Jacobian Newton already had.</p>
+
+<blockquote>That one product can be evaluated in two orders.</blockquote>
+<p>With many unknowns and parameters, and a scalar loss <span class="L">L</span> that depends on the outputs, the full chain is a product of three matrices:</p>
+<figure>
+<svg viewBox="0 0 640 256" role="img" aria-label="The gradient as a product of a row vector, the inverse Jacobian and a wide matrix, evaluated left to right or right to left">
+  <defs><marker id="head3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <text x="20" y="92" font-size="18" class="mono">dL/dp =</text>
+  <text x="105" y="92" font-size="18" class="mono">−</text>
+  <rect x="125" y="78" width="120" height="16" rx="2" class="boxL"/>
+  <text x="185" y="68" text-anchor="middle" font-size="12" class="tL">∂L/∂x  (1 × n)</text>
+  <rect x="265" y="30" width="110" height="110" rx="2" class="boxx"/>
+  <text x="320" y="90" text-anchor="middle" font-size="14" class="mono tx">J⁻¹</text>
+  <text x="320" y="158" text-anchor="middle" font-size="12" class="tx">(n × n)</text>
+  <rect x="395" y="30" width="230" height="110" rx="2" class="boxp"/>
+  <text x="510" y="90" text-anchor="middle" font-size="14" class="mono tp">∂F/∂p</text>
+  <text x="510" y="158" text-anchor="middle" font-size="12" class="tp">(n × P)   P = number of parameters</text>
+  <path d="M610 182 H140" class="arrow" marker-end="url(#head3)"/>
+  <text x="380" y="200" text-anchor="middle" font-size="13">right to left (JVP): J⁻¹ times each of P columns = P solves</text>
+  <path d="M140 222 H610" class="arrow" marker-end="url(#head3)"/>
+  <text x="380" y="244" text-anchor="middle" font-size="13">left to right (VJP, adjoint): one solve with Jᵀ for the loss row, then P dot products</text>
+</svg>
+<figcaption>Right to left: solve with <code>J</code> once per parameter column. Left to right: solve with <code>Jᵀ</code> once for the loss row, then take P cheap dot products.</figcaption>
+</figure>
+
+<blockquote>Right to left: one solve per parameter. This is JAX's jvp, and today's transient Sensitivity.</blockquote>
+<p><strong>JVP</strong> stands for <strong>Jacobian-vector product</strong>, <code>J · v</code>. It answers "if I nudge the parameters in direction v, how does every output move?" Starting from the right means multiplying <code>J⁻¹</code> into each parameter's column of <code>∂F/∂p</code> separately: one linear solve per parameter. It is cheap with few parameters and many outputs. Today, jolty's <code>Sensitivity(of=Transient(...))</code> works this way: it carries every parameter's derivative forward along the time steps (the "direct method").</p>
+
+<blockquote>Left to right: one solve per loss. This is JAX's vjp, the adjoint: today's DC and AC sensitivities, mismatch, and the new transient adjoint.</blockquote>
+<p><strong>VJP</strong> stands for <strong>vector-Jacobian product</strong>, <code>v · J</code>. It answers the reverse question: "given how much the loss cares about each output, <code>∂L/∂x</code>, how much does it care about each parameter?" Starting from the left means one solve with the transposed Jacobian, <code>Jᵀ λ = (∂L/∂x)ᵀ</code>, then <code>dL/dp = −λᵀ · ∂F/∂p</code>, one dot product per parameter. In circuit simulation this is called the <strong>adjoint method</strong>; <code>λ</code> is the adjoint. Backpropagation in neural networks, and <code>jax.grad</code>, are the same thing: VJPs chained backwards.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>1,000 weights, one scalar loss</th><th>Right to left (JVP)</th><th>Left to right (VJP, adjoint)</th></tr></thead>
+<tbody>
+<tr><td>Linear solves for the gradient</td><td class="num">1,000</td><td class="num">1</td></tr>
+<tr><td>Measured through a transient, a resistor crossbar on machine C (16 Nov)</td><td class="num">364 ms</td><td class="num">12 ms</td></tr>
+</tbody></table></div>
+<p>Which jolty features use which order today: DC and AC sensitivities, and mismatch (each output's spread from the process's random variations), use the adjoint. The transient adjoint was built today on a branch, not yet on main: it runs the time steps backwards, one transposed solve per step, so its cost stays 1.5 to 2.2 times the simulation whatever the number of weights.</p>
+
+<blockquote>The boundary: everything outside the circuit, the loss and the network, is JAX's job. JAX asks jolty for exactly layer 2's vjp.</blockquote>
+<p>How <code>jax.grad</code> works: it runs your function forward, recording each operation. Then it walks backwards, and for each operation asks one question: "here is ∂L/∂(your output); give me ∂L/∂(your inputs)". That question is a VJP. JAX knows the answer for every <code>jnp</code> operation. It cannot look inside jolty's Rust solver, so jolty has to answer for its own operation, which is layer 2 run left to right.</p>
+
+<blockquote>custom_vjp is not a new process; it's the door to layer 2.</blockquote>
+<p><code>jax.custom_vjp</code> is how you hand JAX a function together with its backward rule. For jolty's solve, the function is "simulate" and the rule is the adjoint above. Nothing new is computed: it is the same layer-2 VJP, exposed through JAX's door.</p>
+<figure>
+<svg viewBox="0 0 640 200" role="img" aria-label="Forward pass from weights through jolty to outputs to the loss; backward pass from the loss through JAX into jolty's adjoint back to the weights">
+  <defs><marker id="head4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <rect x="10" y="40" width="120" height="50" rx="8" class="boxp"/>
+  <text x="70" y="70" text-anchor="middle" font-size="14" class="tp">weights p</text>
+  <rect x="220" y="40" width="190" height="50" rx="8" class="boxx"/>
+  <text x="315" y="62" text-anchor="middle" font-size="14" class="tx">jolty: solve</text>
+  <text x="315" y="80" text-anchor="middle" font-size="12" class="muted">Newton, F(x, p) = 0</text>
+  <rect x="500" y="40" width="130" height="50" rx="8" class="boxL"/>
+  <text x="565" y="62" text-anchor="middle" font-size="14" class="tL">JAX: loss L</text>
+  <text x="565" y="80" text-anchor="middle" font-size="12" class="muted">jnp code</text>
+  <path d="M130 58 H218" class="arrow" marker-end="url(#head4)"/>
+  <path d="M410 58 H498" class="arrow" marker-end="url(#head4)"/>
+  <text x="455" y="50" text-anchor="middle" font-size="12" class="tx">outputs x</text>
+  <text x="320" y="24" text-anchor="middle" font-size="13" class="muted">forward</text>
+  <path d="M565 92 V140 H412" class="arrow" marker-end="url(#head4)"/>
+  <text x="540" y="160" text-anchor="middle" font-size="12" class="tL">∂L/∂x (JAX)</text>
+  <rect x="220" y="118" width="190" height="50" rx="8" class="boxx"/>
+  <text x="315" y="140" text-anchor="middle" font-size="14" class="tx">jolty: adjoint</text>
+  <text x="315" y="158" text-anchor="middle" font-size="12" class="muted">one solve with Jᵀ</text>
+  <path d="M218 143 H70 V92" class="arrow" marker-end="url(#head4)"/>
+  <text x="150" y="160" text-anchor="middle" font-size="12" class="tp">∂L/∂p</text>
+  <text x="320" y="192" text-anchor="middle" font-size="13" class="muted">backward (what jax.grad runs)</text>
+</svg>
+<figcaption>JAX owns everything magenta; jolty owns the solve and its backward rule. The weights' gradient then flows on, through JAX, into whatever produced them.</figcaption>
+</figure>
+
+<blockquote>This is also how JAX libraries differentiate through solvers: by implicit differentiation, never by unrolling Newton. So the design isn't wrong at its root.</blockquote>
+<p>"Unrolling" would mean recording the six Newton steps of section 3 and differentiating through each one, as if the iteration were the function. That is the wrong object to differentiate:</p>
+<ul>
+<li>The answer does not depend on the path: start Newton from 0.5 V or 0.7 V and you land on the same x. The derivative of the answer should not depend on the path either, and the implicit formula's does not.</li>
+<li>Unrolling stores every iteration (thousands of them in a transient) and gives the derivative of the iteration, which equals the answer's derivative only once Newton has fully converged.</li>
+<li>The implicit formula needs only the answer and one solve with the Jacobian Newton already factored.</li>
+</ul>
+<p>JAX itself offers <code>jax.lax.custom_root</code> for exactly this: a root-finder differentiated through the implicit function theorem. jolty's layers 1 and 2 are that design, which is why the foundations do not need rewriting.</p>
+
+<blockquote>The debt is in the user-facing side. Each feature exposes the same maths through its own API, added one analysis at a time: Sensitivity returns Jacobians, Mismatch, the oscillator period's derivative, and now Objective. There's no shared jvp/vjp underneath.</blockquote>
+<div class="tablewrap"><table>
+<thead><tr><th>Feature today</th><th>What you get</th><th>Order inside</th></tr></thead>
+<tbody>
+<tr><td><code>Sensitivity(outputs)</code></td><td>A table: every listed output against every parameter of every device</td><td>VJP at DC and AC; JVP through a transient</td></tr>
+<tr><td><code>Mismatch(outputs)</code></td><td>Each output's standard deviation from the process's random variations</td><td>VJP</td></tr>
+<tr><td>Period derivative</td><td>How an oscillator's period moves with each parameter</td><td>JVP, through the periodic steady state</td></tr>
+<tr><td><code>Objective</code> (branch)</td><td>A transient loss's gradient</td><td>VJP, backwards through the steps</td></tr>
+</tbody></table></div>
+<p>Four features, four interfaces, each built on its own path through the engine when its analysis was added. None of them takes "∂L/∂outputs" and returns "∂L/∂parameters", the one shape JAX asks for. That is the debt.</p>
+
+<blockquote>The uniform fix, a refactor of that surface, not the maths: for every analysis (operating point, DC sweep, AC, transient, periodic steady state), the engine exposes exactly two derivative functions, jvp and vjp, both built from layers 1 and 2.</blockquote>
+<div class="eq">jvp(analysis, p, dp)  → dx   how the outputs move for a parameter nudge dp
+vjp(analysis, p, x̄)   → p̄    how a loss's sensitivity x̄ = ∂L/∂x reaches the parameters</div>
+<p>Every analysis gets the same two functions with the same meaning, so a user, or JAX, never needs to know which analysis is underneath.</p>
+
+<blockquote>Sensitivity, Mismatch, the period derivative, the transient adjoint and the JAX bridge all become thin users of those two.</blockquote>
+<div class="tablewrap"><table>
+<thead><tr><th>Feature</th><th>Becomes</th></tr></thead>
+<tbody>
+<tr><td><code>Sensitivity</code> table</td><td>One VJP per output, or one JVP per parameter, whichever is fewer</td></tr>
+<tr><td><code>Mismatch</code></td><td>One VJP per output; each random variable's share is its entry of the result</td></tr>
+<tr><td>Period derivative</td><td>The period is one more output of the periodic analysis's JVP and VJP</td></tr>
+<tr><td>Transient loss gradient</td><td>The transient's VJP</td></tr>
+<tr><td>JAX bridge</td><td><code>custom_vjp</code> wrapping VJP (and <code>custom_jvp</code> wrapping JVP)</td></tr>
+</tbody></table></div>
+
+<blockquote>Then there's one process everywhere: dual numbers in the devices, implicit differentiation through the solve, jvp/vjp at the edge.</blockquote>
+<p>Read from the inside out: every device's law is differentiated exactly by computing on dual numbers (layer 1); the whole circuit's answer is differentiated by the implicit function theorem, using that and one linear solve (layer 2); and the result leaves jolty in exactly two shapes, JVP and VJP, which JAX and every jolty feature use (layer 3). Nothing here differentiates the same thing twice, and nothing builds an autodiff system: each layer does the one job the layer around it cannot.</p>
+
+<h2 id="glossary">5. Glossary</h2>
+<dl>
+<dt>Node, voltage, current</dt><dd>A connection point; its electrical height against ground, in volts; the flow of charge through a part, in amperes.</dd>
+<dt>Device, kernel</dt><dd>A physical part and its law (current from voltages and parameters); jolty's code for one law, written once in Rust.</dd>
+<dt>Component</dt><dd>A Python recipe that places and wires devices; flattened into devices before simulating.</dd>
+<dt>F(x, p)</dt><dd>The current leaving each node, from all devices together; the circuit is solved when every entry is zero.</dd>
+<dt>Unknowns x, parameters p</dt><dd>What the simulation finds (node voltages, source currents); what you set (resistances, sizes, weights).</dd>
+<dt>Newton's method</dt><dd>Guess, measure the error F, correct along the slope J, repeat until F is zero.</dd>
+<dt>Jacobian J = ∂F/∂x</dt><dd>The table of how each node's current changes with each node's voltage; Newton solves with it each step.</dd>
+<dt>Dual number</dt><dd><code>a + bε</code> with <code>ε² = 0</code>: a value that carries its exact derivative through arithmetic.</dd>
+<dt>Seeding</dt><dd>Starting a dual number's derivative at 1 to choose what it is the derivative with respect to.</dd>
+<dt>Twin</dt><dd>A device run on <code>Gradient</code> numbers seeded on one of its parameters, giving ∂F/∂p.</dd>
+<dt>Implicit function theorem</dt><dd>If F(x(p), p) = 0 for all p, then dx/dp = −J⁻¹ ∂F/∂p.</dd>
+<dt>JVP</dt><dd>Jacobian-vector product, J·v: push a parameter nudge forward to the outputs; one solve per direction.</dd>
+<dt>VJP, adjoint</dt><dd>Vector-Jacobian product, v·J: pull a loss's sensitivity back to every parameter; one transposed solve per loss.</dd>
+<dt>custom_vjp</dt><dd>JAX's way to register a function with its own backward rule, so <code>jax.grad</code> can pass through code JAX cannot see.</dd>
+</dl>
+<p class="note">Numbers in sections 2 to 4 are computed for the circuit shown (Vs = 1 V, R = 1 kΩ, Is = 10⁻¹⁴ A, Vt = 0.025852 V). The crossbar timings are the transient adjoint agent's measurement on machine C, 16 November 2026.</p>
+
+</main>
+</body>
+</html>

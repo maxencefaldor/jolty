@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device derivatives: audit and design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* An engineering notebook: a cool paper page, three symbol colours that mean the
+     same thing in every equation and diagram (unknowns, parameters, the loss). */
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5a6675;
+  --rule: #d5dce4;
+  --accent: #1f5fbf;      /* unknowns x: voltages and currents */
+  --param: #b26b00;       /* parameters p */
+  --loss: #a3266f;        /* the loss L, and anything JAX owns */
+  --quote-bg: #e9eef5;
+  --font-display: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --panel: #18202a; --ink: #e3e8ee; --muted: #9aa6b4; --rule: #2c3744;
+    --accent: #6fa3f2; --param: #e0a24a; --loss: #e07ab4; --quote-bg: #1c2633;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --panel: #18202a; --ink: #e3e8ee; --muted: #9aa6b4; --rule: #2c3744;
+  --accent: #6fa3f2; --param: #e0a24a; --loss: #e07ab4; --quote-bg: #1c2633;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 18px; line-height: 1.6;
+}
+main { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; display: grid; gap: 8px; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.2; text-wrap: balance; margin: 0; }
+h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.45rem; font-weight: 700; margin-top: 40px; padding-top: 18px; border-top: 2px solid var(--rule); }
+h3 { font-size: 1.12rem; font-weight: 600; margin-top: 22px; }
+p, ul, ol { margin: 8px 0; }
+li { margin: 4px 0; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+code, .m { font-family: var(--font-mono); font-size: 0.86em; }
+.x { color: var(--accent); font-weight: 500; }
+.p { color: var(--param); font-weight: 500; }
+.L { color: var(--loss); font-weight: 500; }
+blockquote {
+  margin: 18px 0 6px; padding: 12px 16px; background: var(--quote-bg);
+  border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0; font-style: italic;
+}
+blockquote::before {
+  content: "From the message"; display: block; font-style: normal; font-family: var(--font-display);
+  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  margin-bottom: 4px;
+}
+.eq {
+  font-family: var(--font-mono); font-size: 0.95rem; background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; margin: 10px 0;
+  overflow-x: auto; white-space: pre; line-height: 1.55;
+}
+pre {
+  font-family: var(--font-mono); font-size: 0.84rem; background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; overflow-x: auto; line-height: 1.5;
+}
+figure { margin: 14px 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; overflow-x: auto; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 8px; }
+svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+svg text { font-family: var(--font-display); fill: var(--ink); }
+svg .mono { font-family: var(--font-mono); }
+svg .muted { fill: var(--muted); }
+svg .wire { stroke: var(--ink); stroke-width: 2; fill: none; }
+svg .box { fill: var(--bg); stroke: var(--rule); stroke-width: 1.5; }
+svg .boxx { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg .boxp { fill: none; stroke: var(--param); stroke-width: 2; }
+svg .boxL { fill: none; stroke: var(--loss); stroke-width: 2; }
+svg .tx { fill: var(--accent); } svg .tp { fill: var(--param); } svg .tL { fill: var(--loss); }
+svg .arrow { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#head); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+.tablewrap { overflow-x: auto; margin: 10px 0; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-display); font-weight: 600; font-size: 0.85rem; color: var(--muted); }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
+.toc { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 18px; }
+.toc ol { margin: 4px 0; padding-left: 22px; }
+.toc a, a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note { font-size: 0.92rem; color: var(--muted); }
+.key { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.9rem; margin: 6px 0; }
+dl { margin: 8px 0; } dt { font-family: var(--font-display); font-weight: 600; margin-top: 10px; } dd { margin: 2px 0 0 0; }
+@media (max-width: 480px) { body { font-size: 17px; } h1 { font-size: 1.8rem; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Device derivatives: audit and design</h1>
+<p class="lede">Layer 1 of the derivatives explainer: how each device computes its own derivatives. Step 1 audits every kernel against composition at natural widths. Step 2 designs all of a device's parameter derivatives in one evaluation, off Newton's path, feeding the new JVP and VJP. The measurement that would decide step 3 is planned here but not run.</p>
+<div class="key"><span><span class="x">x</span>: unknowns</span><span><span class="p">p</span>: parameters</span><span><span class="L">L</span>: a loss</span></div>
+
+<nav class="toc" aria-label="Contents">
+<ol>
+<li><a href="#today">How a kernel's derivatives work today</a></li>
+<li><a href="#audit">Step 1: the audit</a></li>
+<li><a href="#design">Step 2: every parameter derivative of a device in one evaluation</a></li>
+<li><a href="#ac">Step 2b: AC's gradient independent of the number of parameters</a></li>
+<li><a href="#plan">Staged plan and checks</a></li>
+<li><a href="#measure">The measurement, planned, not run</a></li>
+</ol>
+</nav>
+
+<h2 id="today">1. How a kernel's derivatives work today</h2>
+<p>Every kernel is a Rust function generic over a <em>scalar</em> type <code>R: Real</code>, and inside it uses <code>Dual&lt;R, N&gt;</code> for derivatives with respect to its voltages. Two things are differentiated, by two different mechanisms:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Derivative</th><th>Mechanism</th><th>Who uses it</th></tr></thead>
+<tbody>
+<tr><td><code>∂F/∂x</code>, for Newton</td><td><code>Dual&lt;R, N&gt;</code> slots seeded on the voltages a law reads (BSIM4's channel: vgs, vds, vbs), joined onto the terminals by the chain rule</td><td>Every Newton iteration, with <code>R = f64</code></td></tr>
+<tr><td><code>∂F/∂p</code>, for gradients</td><td>The scalar type itself: <code>R = Gradient</code> (a value and its derivative with respect to <em>one</em> parameter), the parameter seeded when the device's parameters are lifted, prepared again and evaluated again. That instance is a <strong>twin</strong></td><td>Sensitivity, mismatch, the JVP and VJP: one twin per (device, parameter)</td></tr>
+</tbody></table></div>
+<p>Because the dual slots carry <code>R</code>, a twin's stamps also hold <code>∂J/∂p</code> (each conductance's and capacitance's derivative), which AC and transient derivatives need. A self-heated device uses <code>Hyper</code> instead of <code>Gradient</code>: two first-order directions (its temperature, a parameter) and their mixed second derivative.</p>
+
+<h2 id="audit">2. Step 1: the audit</h2>
+<p>Each kernel read for how it differentiates and at what width, against the natural width of each of its laws (the inputs that law actually reads).</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Kernel</th><th>How it differentiates in x</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>BSIM4, BSIM3, MOSFET levels 1–3 and semi-empirical</td><td>Composed: <code>Dual&lt;R, 3&gt;</code> for the channel (vgs, vds, vbs), <code>Dual&lt;R, 1&gt;</code> per junction, chained onto the terminals</td><td><strong>Already right.</strong> Natural widths.</td></tr>
+<tr><td>VDMOS</td><td>Composed: <code>Dual&lt;R, 2&gt;</code></td><td><strong>Already right.</strong></td></tr>
+<tr><td>Diode, junctions</td><td>Composed: <code>Dual&lt;R, 1&gt;</code> per junction voltage</td><td><strong>Already right.</strong></td></tr>
+<tr><td>Verilog-A compiled kernels</td><td>The emitter gives each variable the derivatives of the probes it depends on and no others (<code>emit.rs</code>)</td><td><strong>Already right</strong>, and sparse by construction.</td></tr>
+<tr><td>Behavioral sources and capacitors</td><td><code>jolty-expressions</code>' tape: values forward, gradients backward</td><td><strong>Right for what it is:</strong> an expression of arbitrary inputs, where a reverse sweep is the efficient mode.</td></tr>
+<tr><td>Linear devices: resistors, capacitors, inductors, controlled sources, independent sources, lines</td><td>Their derivatives are their entries, stamped once a run</td><td><strong>Nothing to do.</strong></td></tr>
+<tr><td>VBIC</td><td>One <code>Dual&lt;R, 9&gt;</code> over all nine controlling voltages for every intermediate</td><td><strong>Compose.</strong> Its laws read one to three of the nine each (a junction current its own voltage; the transport current and <code>qb</code> two; the internal base and collector resistances two or three), so most of each nine-wide update multiplies zeros.</td></tr>
+<tr><td>Gummel-Poon (<code>bjt.rs</code>), JFET</td><td>Hand-written derivatives, ported from ngspice: <code>(value, slope)</code> tuples and hand-derived <code>gm</code>, <code>gds</code></td><td><strong>Rewrite on composed duals</strong> (Gummel-Poon: junctions width 1, transport and <code>qb</code> width 2; JFET width 2). For consistency by construction and one way to write a model, not speed: the law suite already checks them.</td></tr>
+<tr><td>Memristor, switch, photocell</td><td>Hand-written slopes of short laws</td><td><strong>Convert when next touched.</strong> Low value.</td></tr>
+</tbody></table></div>
+<p>So composition at natural widths is already the norm. Two real items come out of the audit: VBIC (for speed) and the hand-written ports (for one way of writing a model).</p>
+
+<h2 id="design">3. Step 2: every parameter derivative of a device in one evaluation</h2>
+
+<h3>The problem</h3>
+<p>A twin carries one parameter. A device with <em>k</em> named parameters needs <em>k</em> twins, each one a full <code>prepare</code> and <code>evaluate</code>, at every point a derivative needs (once at an operating point, once a step backward through a transient). Each twin recomputes the device's values, identical in all <em>k</em>, beside its one derivative. Training a circuit's transistor sizes (two per transistor), or a kit's mismatch (several random variables per device), pays that <em>k</em> times over.</p>
+
+<h3>The design</h3>
+<ol>
+<li><strong>One number type family:</strong> <code>Gradient&lt;const K: usize&gt;</code>, a value and its derivatives with respect to <em>K</em> parameters, implementing <code>Real</code> as <code>Gradient</code> does (its <code>chain</code> scales all <em>K</em> slots by the slope). Today's <code>Gradient</code> becomes <code>Gradient&lt;1&gt;</code>. Likewise <code>Hyper&lt;K&gt;</code> for heated devices: the temperature direction, <em>K</em> parameter directions, and <em>K</em> mixed terms. Kernels change not at all: they are already generic over <code>R</code>.</li>
+<li><strong>A twin carries a chunk of parameters:</strong> a device and up to <em>K</em> of its named parameters, slot <em>i</em> seeded on parameter <em>i</em>. One <code>prepare</code> and one <code>evaluate</code> give every stamp's derivative with respect to all <em>K</em>. A device with more named parameters than the largest <em>K</em> gets several chunks.</li>
+<li><strong>Chunk sizes:</strong> a small fixed set monomorphized, such as 1, 2, 4 and 8. Each chunk takes the smallest size that holds its parameters: a crossbar resistor's one weight takes 1, a transistor's width and length take 2. The largest size is a threshold like any other, set from measured break-even cost with the timing protocol before this lands, never picked.</li>
+<li><strong>The VJP:</strong> <code>pull_back</code> dots each chunk twin's <em>K</em> derivative columns with the adjoint <code>λ</code>, giving <em>K</em> parameter cotangents per evaluation. Its interface does not change: only the twins it loops over do.</li>
+<li><strong>The JVP needs no chunks at all:</strong> a tangent <code>t</code> on the parameters is one direction. Seed each parameter's slot with its component of <code>t</code> in a single <code>Gradient&lt;1&gt;</code> per device: one evaluation gives <code>(∂F/∂p)·t</code> for that device, whatever the number of its parameters. Today that sum comes from one twin per parameter.</li>
+<li><strong>Newton is never touched:</strong> it evaluates with <code>R = f64</code> and its own small dual widths. Twins are separate instances, built and evaluated only on a derivative path, so no Newton iteration ever carries a parameter slot.</li>
+<li><strong>A transient's backward pass recomputes, never stores:</strong> the refactor's VJP needs each step's <code>λ<sub>k</sub>ᵀ ∂F<sub>k</sub>/∂p</code>; a chunk twin evaluates at each recorded step as it is reached backward. The waveforms are kept anyway, so this costs no memory beyond the twins themselves.</li>
+</ol>
+
+<h3>What it changes, and where</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Place</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><code>jolty-models/src/kernel/real.rs</code></td><td><code>Gradient&lt;K&gt;</code> and <code>Hyper&lt;K&gt;</code>, their <code>Real</code> implementations, serialization of a constant as a plain number as today</td></tr>
+<tr><td><code>jolty-models/src/group.rs</code></td><td><code>GroupRun::twin</code> lifts <em>K</em> parameters at once; <code>Twin</code> stores <em>K</em>-slot residuals, charges and entries</td></tr>
+<tr><td><code>jolty-engine/src/derivative.rs</code></td><td><code>Twin</code> holds a device and its chunk; <code>residual_dot</code> and its kin return <em>K</em> numbers; twins are grouped per device; the JVP seeds a tangent in one twin per device</td></tr>
+<tr><td>Kernels</td><td>Nothing</td></tr>
+</tbody></table></div>
+
+<h2 id="ac">4. Step 2b: AC's gradient independent of the number of parameters</h2>
+<p>The refactor left one analysis whose VJP still costs a step per parameter: AC. Its matrix <code>G + jωC</code> moves with a parameter directly, and through the operating point: <code>(∂J/∂x)·(dx<sub>0</sub>/dp)</code>. That second term is a central difference per parameter today, because a kernel gives no second derivatives in x.</p>
+<p>The term can be moved to the adjoint side exactly:</p>
+<div class="eq">λᵀ (∂J/∂x · dx₀/dp) v  =  gᵀ dx₀/dp,     g = ∂/∂x (λᵀ J(x) v)       (one gradient in x)
+gᵀ dx₀/dp  =  −(J₀⁻ᵀ g)ᵀ ∂F₀/∂p                                           (one more transposed DC solve)</div>
+<p><code>g</code> is assembled device by device. Each device's share is the gradient of one scalar, <code>λᵀ J<sub>dev</sub>(x) v</code>, over its few local unknowns, so it needs second derivatives only at the device's own width. After that, one transposed solve at the operating point and the chunk twins' <code>∂F₀/∂p</code> give the term for every parameter at once.</p>
+<p><strong>The cost:</strong> kernels must read their voltages as <code>R</code> rather than <code>f64</code>, so that a twin can seed a voltage direction. <code>Local</code> would carry an optional tangent of the unknowns, and every kernel's voltage reads would go through it. That is an interface change across every kernel. It is the one real price in this design, which is why it is a stage of its own, done only if AC gradients over many parameters matter.</p>
+
+<h2 id="plan">5. Staged plan and checks</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Stage</th><th>What</th><th>Checked by</th></tr></thead>
+<tbody>
+<tr><td>S1</td><td><code>Gradient&lt;K&gt;</code>, <code>Hyper&lt;K&gt;</code>; nothing uses them yet</td><td>The law suite run on each <em>K</em>; every slot of <code>Gradient&lt;K&gt;</code> bit for bit equal to <code>Gradient&lt;1&gt;</code> seeded on that parameter (the same operations in the same order; Rust contracts nothing into fused multiply-adds unasked)</td></tr>
+<tr><td>S2</td><td>Chunk twins in <code>group.rs</code> and <code>derivative.rs</code>; the VJP over chunks</td><td>Every derivative test bit for bit unchanged; the refactor's dot-product test; finite differences</td></tr>
+<tr><td>S3</td><td>The JVP by one seeded twin per device</td><td>Equal to the sum over per-parameter twins to rounding; the dot-product test</td></tr>
+<tr><td>S4</td><td>The largest chunk size from measured break-even, with the timing protocol, on machine B</td><td>The protocol's intervals; the machine and load stated</td></tr>
+<tr><td>S5</td><td>VBIC composed at natural widths</td><td>Its tests against ngspice unchanged; the law suite</td></tr>
+<tr><td>S6</td><td>Gummel-Poon and JFET rewritten on composed duals</td><td>Their tests against ngspice unchanged; the law suite; their old hand-written derivatives kept in a test as a reference until the new ones agree everywhere</td></tr>
+<tr><td>S7 (optional)</td><td>Step 2b: kernels read voltages as <code>R</code>; AC's VJP exact and independent of the number of parameters</td><td>Against today's central difference within its error; the dot-product test over frequency</td></tr>
+</tbody></table></div>
+<p>S1 to S4 touch no kernel. S5 and S6 touch one kernel each and are independent of everything else. S7 touches every kernel and should wait for a need.</p>
+
+<h2 id="measure">6. The measurement, planned, not run</h2>
+<p>What would decide step 3 (a shared differentiation pass), if it is ever needed:</p>
+<ol>
+<li>BSIM4 at one card and bias, evaluated in a loop by jolty's kernel and by ngspice's <code>BSIM4v5load</code>, on machine B (machine A's clock distorts profiles), the load stated.</li>
+<li>The same loop for jolty with <code>R = f64</code> and the dual slots removed (values only), which isolates what the derivatives cost from what the model itself costs.</li>
+<li>A profile of jolty's evaluation by function: the dual arithmetic, the branches, the temperature-dependent numbers, the stamping.</li>
+</ol>
+<p>If the derivatives' share is small, step 3 is never needed, and the gap, if any, lies elsewhere.</p>
+
+<p class="note">Read from <code>crates/jolty-models/src/kernel/</code> (real.rs, dual.rs, kernel.rs, bsim4.rs, vbic.rs, bjt.rs, jfet.rs, and the rest), <code>crates/jolty-models/src/group.rs</code>, <code>crates/jolty-veriloga/src/emit.rs</code>, and the refactor branch's <code>crates/jolty-engine/src/derivative.rs</code>, 17 November 2026. No code was changed and nothing was measured.</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,277 @@
+# Models and coverage
+
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/models.md`, kept whole.
+
+Plan: ✅ 8 done · 🚧 6 in progress · 📋 8 planned · ⏳ 1 waits for the owner · ⏸️ 1 parked (§4).
+
+## 1. Goal and metric
+
+jolty runs every analysis and every device a designer needs, and every open process kit natively, with models more exact than the references'.
+Measured by the coverage matrix (`benchmarks.md` item 9), every cell a probe that ran.
+
+## 2. Where we stand
+
+- **27 analog models run natively:** resistors, capacitors and inductors with their coefficients and noise, coupled inductors, sources and their waveforms, controlled and behavioral sources, switches, diodes, the Gummel-Poon and VBIC 1.2 bipolar transistors, JFETs, MOSFETs of levels 1 to 3, VDMOS, BSIM3v3.3, memristors, a photocell, thermal elements and self-heating, and logic.
+- **Every model is a kernel:** a pure function of its parameters, memory and local unknowns, with exact derivatives with respect to its voltages and every parameter.
+    ngspice's sensitivities perturb each parameter by 1e-6; OSDI, ngspice's interface to compiled Verilog-A, passes no parameter derivatives at all.
+- **The coverage matrix's first run** (65 rows, 15 November): jolty agrees with the row's known answer on all 46 rows it offers and lacks 18 (MOSFET levels 2, 6 and 9, BSIM4, BSIM-SOI, HiSIM2, HICUM/L2, the MESFET, JFET level 2, three transmission lines, XSPICE's code models, OSDI, `.func`, `.lib`, `.include` and SPICE's raw output files); ngspice lacks every DC solution, loop gain, transient sensitivities, a driven circuit's periodic steady state, two memristor models, the photocell, thermal networks and PSpice's `AKO` cards.
+- **No foundry transistor runs natively.**
+    SKY130's BSIM4 4.5 cards go to ngspice, which then runs only five analyses; GF180MCU (BSIM4 4.5 too) and IHP SG13G2 (PSP 103.6 and VBIC) do not run at all.
+- **The references:** ngspice 47 has 57 device directories and loads any Verilog-A model through OSDI; Xyce has 25 Verilog-A models, which ADMS turned into 856,000 checked-in lines of C++ its team patches by hand.
+- **A model costs more than its equations:** beside its kernel, a large model takes 375–378 lines of `devices.py`, 218–287 of the SPICE reader and 63–108 of the exporter, and conflicts in four shared files; VBIC's commit touched 14 shared files.
+- **The ports carry their sources' notices** (`9545e08`): `NOTICE`, BSIM's copyright and terms, ngspice's BSD notice, each ported file's module documentation.
+
+## 3. Gaps
+
+- No foundry's kit runs natively (items 8–11, waiting for the owner).
+- No Verilog-A model runs: none of the CMC's standards, FinFETs and SiGe among them (items 12–15).
+- Models are checked one by one: no common law suite (item 3), no QA tests (item 15), no measured silicon (item 16).
+- Only first derivatives: AC sensitivities use a central difference, and distortion is not offered (item 6).
+- A model's facts are written in several files (item 4).
+
+## 4. Plan
+
+Each item says what it is, why it matters, and what "done" means; **Lead** marks an item where jolty would go beyond every reference.
+Its source is the research report's row, in `research/models.md` §4.
+
+Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for the owner · ⏸️ parked.
+
+### ✅ 1. VBIC 1.2
+
+- **What:** the vertical bipolar inter-company model, ported from ngspice 47's implementation, with self-heating through jolty's thermal network.
+- **Result** (`2017503`, on GitHub since `444535f`): every comparison with ngspice passes; the self-heated transistor's 29 K rise and its nets agree within 1e-6.
+
+### ✅ 2. The ports' notices
+
+- **What:** the copyright notices and terms of the software jolty's models derive from.
+- **Result** (`9545e08`, approved by the owner): `NOTICE` holds BSIM3's copyright and terms and ngspice's BSD notice; each ported model's module documentation states its source; the README and the devices page acknowledge them.
+- **Source:** row 14.
+
+### ✅ 3. One law suite for every kernel
+
+- **What:** physical laws every model must keep, tested over the whole library by enumeration: the charges summing to zero over the terminals; the n-channel and p-channel (npn and pnp) mirrors, bit for bit; the symmetry a model claims (Gummel's symmetry test to high order); current and its derivative continuous across region boundaries; finite values at any finite bias; beside the existing derivative checks.
+- **Why:** every model, hand-written or compiled, held to the same physics; Xyce's division by zero in differentiated smoothing macros is the kind of fault it finds.
+- **Done when:** every kernel passes, or each failure is stated as its source's, with evidence.
+- **Result** (`6a5a8c0`): `crates/jolty-models/src/testing/laws.rs` holds every case of `cases::CASES` to conservation (within n²·ε), mirrors bit for bit, the swap symmetry each transistor claims (within rounding), continuity across region boundaries, and finite values at any finite bias.
+    It found two faults, fixed: the photocell's smoothed light rounded to zero more than 67 lux below zero, giving NaN (`d5ade7d`); the Gummel-Poon and VBIC PNPs kept their excess phase in an NPN's sign, so they were not their NPNs' mirrors.
+    Left: BSIM3's swap at `vds = 0` differs by 1.4e-4 of its largest capacitance (1.5 times at `capmod` 1), and level 3's by 1.7e-9.
+    BSIM3's is ngspice 47's own at `capmod` 1 to 3 (16 November, a default level 8 card, W = 10 µm, L = 1 µm, `vgs` 1.2 V, an AC signal on the drain and then on the source, the gate's current read): at `capmod` 1 the gate answers the drain with 1.43e-14 F and the source with −8.71e-15 F; at `capmod` 2 and 3 the two differ by 6.9e-4 and 6.4e-4 of the larger.
+    At `capmod` 0 ngspice's are alike to its 7 printed digits, so jolty's `capmod` 0 and level 3's are not yet traced; Gummel's test at second order waits for second derivatives.
+- **Lead.**
+    **Source:** row 10; `research/quality.md` row 24.
+    This item replaces `quality.md`'s copy of it.
+
+### 📋 4. Each model fact declared once, beside its kernel
+
+- **What:** a model's parameters (each one's SPICE name, dimension and default), its terminals and their order, its SPICE letter, its node counts and its temperature convention, declared once as data beside its kernel; the Python constructor, the SPICE reader and writer, the reference pages and the guide's tables derived from it or tested against it; what the Python layer branches on by model name read from that declaration instead.
+- **Why:** today one parameter lives in six places in four files, and a large model costs 650–770 lines outside its kernel; `git grep '"vbic"'` finds VBIC's name spread through the Python layer.
+- **Done when:** adding a kernel touches its own file, its tests and its guide section alone; adding a parameter touches one file; `git grep '"vbic"'` finds VBIC only in its constructor and tests.
+- **Source:** row 13; `research/quality.md` rows 5 and 6.
+    This item replaces `quality.md`'s items on one definition per model fact and a model descriptor; the contributors' guide to adding a model (`quality.md` 19) follows from it.
+
+### 📋 5. Exact derivatives at the cost of hand-written ones
+
+- **What:** derivatives computed by sparse forward differentiation at compile time, the way a compiler of Verilog-A would, instead of dual numbers carrying every partial at run time, where it pays.
+- **Why:** exactness costs about twice ngspice's time per MOSFET today; compact models have 12 to 15 nodes, where dual numbers carry many zeros.
+    OpenVAF's compiled HICUM outran ngspice's in one of two benchmarks.
+- **Done when:** a MOSFET's evaluation costs no more than ngspice's per iteration, every derivative still exact.
+- **Lead.**
+    **Source:** row 12; with `speed.md` 5.
+
+### 📋 6. Second and higher derivatives in every kernel
+
+- **What:** each kernel's second derivatives, exact, as the first are.
+- **Why:** exact AC sensitivities, which use a central difference today; a distortion analysis for every model, where ngspice covers ten SPICE3 models; an exact Gummel symmetry test; later, harmonic balance's Jacobians.
+- **Done when:** AC sensitivities with no finite difference; a distortion analysis for every model.
+- **Lead.**
+    **Source:** row 11.
+
+### 📋 7. The vendors' model libraries measured
+
+- **What:** the share of a corpus of vendors' PSpice and LTspice models jolty's SPICE reader takes, and what blocks the rest.
+- **Why:** "every device a designer needs" measured at board level; four macromodels are compared today.
+- **Done when:** `benchmarks.md` holds the share and the features that block the rest.
+- **Source:** row 18.
+
+### ✅ 7b. Initial conditions, nodesets and the `EXP` waveform
+
+- **What:** `.ic` (a transient's initial node voltages), `.nodeset` (an operating point's starting guesses) and the `EXP` source waveform, in the plan and in the SPICE reader.
+- **Why:** four of CircuitSim90's decks need them (`arom`, `gm17`, `rich3`, `jge`), so the corpus counts them unsupported in jolty.
+- **Done when:** the corpus reads them, each agreeing with ngspice.
+- **Result** (`294189a` to `af5dc2d`, 16 November): `Transient(initial_conditions={net: V}, operating_point=True)`, `operating_point=False` being SPICE's `UIC`, and `Options(nodesets={net: V})`; an initial condition holds its net exactly, `v − v0 = 0`, while the starting point is solved, and one on a net a source fixes must agree with it or the analysis says both voltages, where ngspice pulls with 1e10 S; nodesets hold, then are released and the circuit solved again, as ngspice does.
+    `EXP` in the devices, reader and exporter, a zero delay or time constant refused, as ngspice reads it as the step (measured).
+    Against ngspice: `EXP` into an RC within 4.9e-9 of the swing; initial conditions on an RC and an RLC within 1e-3, from the operating point and with `UIC`; nodesets choose each of three solutions of `v = 2 tanh v` within 1e-6.
+    `arom`, `gm17`, `rich3` and `jge` now read, their operating points agreeing and their transients finishing in both; their waveforms lie up to 3.4% apart at `reltol` 1e-4, shrinking with the tolerance, step error at fast edges; jolty is slower on three (arom 1.34 s against 0.30 s).
+    Left: a device's own `IC=` under `UIC`, `.ic` inside subcircuits, coverage-matrix rows.
+- **Source:** the corpus's first run.
+
+### ✅ 7c. A level 3 MOSFET's `KAPPA=0` read as ngspice reads it
+
+- **What:** jolty refuses a level 3 card with `KAPPA=0`, the saturation field factor, which ngspice takes.
+- **Done when:** what ngspice does with it is read in its source, and jolty does the same or the guide states the departure.
+- **Result** (`fef4051`): in ngspice 47's `mos3load.c`, `KAPPA=0` makes the shortening `delxl` zero at every bias, its derivatives too, in each of its three branches; jolty now takes 0 and leaves the shortening out exactly there, as where `alpha` is zero.
+    Two DC sweeps of the level 3 curves at `KAPPA=0`, with and without velocity saturation, agree with ngspice.
+- **Source:** the coverage matrix's first run.
+
+**The list of what ngspice has** is open (the owner, 16 November): each item decided in its own entry above, taken in the order of `README.md`.
+
+### 🚧 8. BSIM4 4.0 to 4.5, as ngspice's `BSIM4v5` runs it
+
+- **The owner** (16 November): hand-ported, as no official Verilog-A BSIM4 exists; the only route to SKY130 and GF180MCU natively.
+- **What:** hand-ported, the modes SKY130's and GF180MCU's cards select first, any other mode refused by name; about twice BSIM3 (766 parameters against 437).
+- **Done when:** both kits' core transistors agree with ngspice across bins and corners, each departure stated.
+- **State** (branch `bsim4`, `4fc8aac`, 16 November): ngspice 47's BSIM4v5, version 4.5 cards, levels 14 and 54, every derivative exact: the drain and substrate currents, both gate-induced leakages, the junctions with trap-assisted tunneling, `capmod` 2 with charge thickness, the stress effect, fingers, the body network; `mobmod` 0, `diomod` 1, `rbodymod` 0 or 1, `permod` 0 or 1, every other mode and version refused by name; all 316 parameters and the binned ones' dependences.
+    Against ngspice reading the same kit at the same corner: SKY130's `nfet_01v8` across 30 sizes and three corners within 7e-9 of the largest current, `pfet_01v8` 3e-13, GF180MCU's `nmos_3p3` and `pmos_3p3` 1.3e-14 (ngspice's statistical switches off), an inverter's transient 5.8e-5 of the supply, admittances within 1e-8 to 10 GHz.
+    Natively now: SKY130 38 of 263 devices, GF180MCU 7 of 72.
+    A departure found: ngspice's `capmod` 2 body capacitances are not its own charges' derivatives, 1.2e-4 off with the body 0.2 V forward.
+    Noise (`3d3b0ae`): `tnoimod` 0 and 1, `fnoimod` 0 and 1 and the resistances' thermal noise, as `b4v5noi.c`, within 1.0e-7 to 3.5e-7 of ngspice on both kits' transistors, the Boltzmann constants' difference; ngspice's 1 mΩ added behind drain and source at `tnoimod` 1 in a noise deck alone is a departure stated.
+    `rdsmod` 1 (`b65b0ab`): the bias-dependent drain and source resistances behind nodes of their own, within 1e-6 of ngspice's curves at −40, 27 and 125 °C and 1e-5 of its noise; the kits' native counts unchanged, SKY130's 16 V devices now stopping on the level 3 diode beside them.
+    Gate resistances (`6531907`): `rgatemod` 1 to 3 as `b4v5temp.c` and `b4v5ld.c`, a second gate node at 3, their noise; all 74 SKY130 RF transistors native (SKY130 143 → 217 of 263), within 2e-6 of ngspice at their operating points, admittances to 10 GHz and noise; ngspice's RF p-channel output conductance lies 2.1e-4 from its own current's derivative, untraced.
+    Left: `igcmod` and `igbmod`, versions 4.0–4.4, and 4.6–4.62 (BSIM4v6: `ud`'s default 0, perimeters clamped, a version selector needed), self-heating, the reader's subcircuit multiplier `m` and w/nf binning.
+- **Source:** row 1.
+
+### 🚧 9. SKY130's other primitives
+
+- **What:** the diode's level 3 and the bipolar transistor's HSPICE temperature terms.
+- **Done when:** each agrees with ngspice.
+    **Source:** row 2.
+- **State** (16 November): both done on branches waiting to land behind a green CI: ngspice 47's whole diode, levels 1 and 3 with sidewalls, recombination, knees, `TLEV` and tunneling (`diode`, `b888055`), and the bipolar temperature terms (`leftovers`, `e20de6d`), each within the two engines' Boltzmann constants' bound of ngspice.
+
+### ✅ 10. A process kit reader
+
+- **What:** `.lib` sections, `.include`, `.option scale`, `temper` evaluated at each device's temperature, `agauss`, `gauss` and `aunif` drawn per instance from the sample's seed so that mismatch keeps jolty's determinism.
+- **Done when:** the three open kits read at every corner, a sample's mismatch the same bits on any shard.
+    **Source:** row 3.
+- **Result** (on `main`, `6301a42`, `54c94d1`, merged `126ef38`, 16 November): `jolty.spice.kits`, SKY130, GF180MCU and SG13G2 pinned by digest; the reader takes `.lib`, `.include`, `.option scale`, `.if` blocks, a subcircuit's own `.param`s as its instances' parameters, bins of any binned level, `temper` at the temperature the library is read at, and `agauss`, `gauss`, `aunif`, `unif` and `limit` by ngspice's formulas, drawn per placement by the engine's generator (`Drawn::Kit`), the same bits read twice as two shards would.
+    All 95 sections read, every parameter finite.
+    Natively today: SKY130 30 of 263 devices, GF180MCU 1 of 72, SG13G2 11 of 53 and 13 more through the Verilog-A compiler (PSP 103, R3_CMC; MOM capacitors wait for `localparam`); each native device agrees with ngspice reading the kit at the same corner within twice the tolerances.
+    BSIM4 blocks nearly every SKY130 and GF180MCU transistor (item 8); missing too: diode level 3, `ISR`/`IK`, HSPICE's bipolar temperature terms, semiconductor R and C cards, voltage-dependent R and C, BSIM3 3.2, the subcircuit multiplier `m`, `w/nf` binning.
+    A departure found: ngspice 47 maps a heated VBIC's parameters from the ambient temperature, VBIC 1.3's Verilog-A and jolty from `TNOM` (2.4% at 85 °C with 111 K of heating), in `departures.md`.
+    The lead's calls on its review points: draws one per scope, as no kit reads a statistical parameter twice in one; `temper` where the library is read; raw foundry files pinned rather than ciel's archives.
+
+### 🚧 11. SKY130 and GF180MCU natively
+
+- **What:** their devices as kernels, the ngspice path kept as an option.
+- **Done when:** a SKY130 circuit runs every analysis natively and agrees with the ngspice path.
+    **Source:** row 4.
+- **State** (`e307183` to `092fc92`, 16 November): the inventory reads each device at a size its bins hold; binning by a finger's width under HSPICE's mode or `wnflag`; a subcircuit's `m` multiplies its elements as ngspice's `inpcom.c` does; `.option scale` scales BSIM4's `sa`, `sb`, `sd`, `sc`; SPICE3's `r` and `c` cards sized by their geometry; resistors whose value reads a voltage as ngspice's behavioral current; `POW` of a negative base to a whole power keeps its sign.
+    Natively at the typical corner: SKY130 38 → 143 of 263, SG13G2 11 → 13 of 53, GF180MCU 7 of 72; the new devices within 1.3e-9 of ngspice at their operating points, the bare R and C cards to rounding up to 100 GHz.
+    First refusals left: SKY130's `rgatemod` 3 (74), the level 3 diode (31 + 13 + 11 across the kits) and the diode's `ISR`/`IK` (12), HSPICE's bipolar temperature terms (17), GF180MCU's 25 resistors needing an instance's size, BSIM4 4.6 (7), BSIM3 3.2 (5), voltage-dependent capacitors (13).
+    Departures stated: an element's own `m` multiplied by its subcircuit's in every mode; a quoted card value evaluated where ngspice 47 drops it.
+    Then (`e20de6d`): HSPICE's bipolar temperature terms (`TREF`, `TLEV` 0 and 1, `TLEVC` 0 and 1, the linear and quadratic coefficients, `NKF`) as `bjttemp.c`, within the Boltzmann constants' bound of ngspice at −40, 27 and 125 °C; GF180MCU's resistors read at their first placement's size or ngspice's default 10 µm square: SKY130 217 → 221, GF180MCU 7 → 33, SG13G2 13 → 14; `TLEV` 3 refused.
+    ngspice reads GF180MCU's poly resistors' `l=r_l` as the body's resistance (`inpcom.c` line 6841), a departure stated.
+    Left: voltage-dependent capacitors and `Q=` (13), the diode (in progress), BSIM4 4.6 and 4.62 (7), BSIM3 3.2 (5).
+
+### 🚧 12. A Verilog-A compiler of jolty's own
+
+- **What:** in safe Rust, reading the CMC's subset of Verilog-A, writing kernels generic over jolty's number types with exact sparse derivatives, from the CMC's sources unpatched; the generated kernels checked in, regenerated and never edited.
+- **The owner's order** (15 November): this compiler first, before any hand port of BSIM4 (item 8).
+- **State** (on `main`, `5b0063b`, squashed so no derived kernel is in its history): `crates/jolty-veriloga`, a hand-written lexer, preprocessor, parser, resolver and emitter, no new dependency; a resistor and the diode in Verilog-A compile to plain `Kernel` code, checked in, agreeing with their hand-written twins within 6.4 ε (1.4 million and 0.8 million corpus states within 3.1 ε), as fast (`0c55c87`: the compiler derives `Kernel::linear`, the linear resistor 1.005× its twin).
+    The CMC models' constructs compile, each tested: named blocks, analog functions inlined, the elementary functions, `$warning`, output variables, the thermal discipline, `pnjlim` and `fetlim`.
+    R3_CMC 1.1.2, public in IHP-Open-PDK under the ECL 2.0, compiles whole (`0701370`), fetched by digest at test time, and matches a resistor's closed form within 8 ε where it reduces to one; its QA files wait for the owner's download from Si2.
+    DIODE_CMC 2.0.0 (VA-Models), MOSVAR 1.3.0 and PSP 103.8.2 with JUNCAP 200.6.2 (IHP-Open-PDK) compile whole too (`21b21a0`), each within 4 ε of its closed forms; PSP's kernel takes 105 s of Rust release compile time, one very large function.
+    The diode's breakdown case is 1.08× its twin (`42cf3aa`: derivatives divided by a static number multiply a reciprocal prepared once), the rest from its depletion charge's power, whose general derivative divides; a rule fused to `x·pow(x, e)` was declined as fitted to one formula.
+    PSP's 122 s release build is its code's size, not one long function (a split slowed evaluation 1.4 to 1.6×, so it was left out): about 590 KB of its 1.54 MB is derived serialization, schema and `Debug` for its 887 parameters; a table-driven parameter struct would cut a third, a change of the generated kernels' form, for the owner.
+    **The owner's decision on landing** (16 November, option B): only jolty's own work is checked in, the compiler and the resistor's and the diode's Verilog-A and kernels, the diode under ngspice's existing `NOTICE` entry; the CMC models are fetched by digest, compiled and checked at test time, never stored, and come in with their full notices when they join the library after their QA tests; reversible by one command.
+    Done so: the four CMC kernels' tests run behind the crate's `fetched` feature from `tests/test_veriloga.py`, 5 closed-form tests in about 31 s; the diode's Verilog-A and kernels listed in `NOTICE` under ngspice's entry.
+    Next track: process kits (item 10).
+- **Its output is plain `Kernel` code** (the owner, 15 November): the same Rust a person writes, generic over jolty's number types, so a model has one form whether written or compiled, and a GPU later runs those same kernels (`gpu.md`).
+- **Done when:** R3_CMC, DIODE_CMC and MOSVAR, then PSP 103.6, pass their CMC QA tests and the kernel rules.
+- **Lead.**
+    **Source:** row 5.
+
+### 🚧 13. IHP SG13G2 natively
+
+- **What:** PSP 103.6, R3_CMC, MOSVAR and the MOM capacitors compiled; VBIC with its thermal node.
+- **Done when:** IHP's devices agree with ngspice and OpenVAF at every corner.
+    **Source:** row 6.
+- **State** (16 November): 14 of 53 devices native on `main`, its heated VBIC among them (item 10); PSP 103, R3_CMC and MOSVAR compile whole but are fetched at test time, not in the library (item 12), and the MOM capacitors wait for the compiler's `localparam`; 35 of 53 with the diode's branch.
+
+### 📋 14. The CMC's catalogue compiled
+
+- **What:** BSIM-CMG, BSIM-BULK, BSIM-SOI, HiSIM2, HiSIM_HV, HICUM, MEXTRAM, EKV, JUNCAP2, ASM-HEMT and more, about 42,000 lines of Verilog-A; HiSIM2 and HICUM/L2 are also native in ngspice, which the coverage matrix counts.
+- **Done when:** each passes all its QA tests, so it may carry its standard's name.
+    **Source:** row 7.
+
+### ⏳ 15. A CMC QA harness
+
+- **Waits for:** the owner's download of the CMC's QA files from Si2's form, which asks for his name and email.
+- **What:** each standard model's `qaSpec` read, its tests run in jolty, the outputs compared with the reference results shipped beside it.
+- **Done when:** every compiled model's QA runs in CI and passes.
+- **Lead.**
+    **Source:** row 8.
+
+### ⏸️ 16. Measured silicon as a reference
+
+- **The owner** (16 November): after the kits run natively.
+- **What:** a reader of MDM measurement files, and each kit's cards simulated against SkyWater's and IHP's measurements, the error per device and bias published.
+- **Done when:** `benchmarks.md` holds each kit's model-to-silicon error.
+- **Lead.**
+    **Source:** row 9.
+
+### ✅ 17. Mismatch from sensitivities
+
+- **The owner** (16 November): yes, beside Monte Carlo.
+- **What:** `dcmatch` and `acmatch`, offsets computed from the kit's mismatch parameters by the adjoint, exact to first order, beside Monte Carlo.
+- **Needs:** item 10.
+    **Done when:** its offsets match Monte Carlo's within their statistics.
+- **Result** (`010489c` to `608254d`, 16 November): `Mismatch(outputs, of=None, random_variables=())`, each output's standard deviation to first order and each random variable's share, largest first, at the operating point or along any analysis `Sensitivity` takes, an oscillator's period included, by the adjoint, one solve per output; a part's and a lot's tolerances become random variables of themselves, a kit's `agauss`, `gauss`, `aunif`, `unif` and `limit` by `Library.random_variables` per placement.
+    Against Monte Carlo, within its statistics: a level 1 pair's input offset 10.02 against 10.21 mV (4,000 samples, 1.8 standard errors), a mirror 6.53 against 6.66 µA, SG13G2's VBIC pair 24.6 against 24.9 mV (98% of it `is_mm`), its mirror 5.15 against 5.21 µA, SKY130's MIM capacitor's RC within 0.8 standard errors at every frequency.
+    Results files version 19.
+    Left: the kit's derivative is a central difference, exact to rounding for the kits' expressions of degree two or less, not by dual numbers; `MonteCarlo` drawing a kit's mismatch itself; `Library.drawn`'s 27 ms per call on SKY130 cached per sample; MOSFET mismatch waits for BSIM4.
+- **Lead.**
+    **Source:** row 20.
+
+### 📋 18. SPICE3's remaining compact models
+
+- **The owner** (16 November): all of them, for completeness.
+- **What:** the MESFET, MOSFET levels 2, 6 and 9, JFET level 2, BSIM3's non-quasi-static modes and versions before 3.3, BSIM-SOI.
+- **Done when:** each reads ngspice's cards and agrees with ngspice.
+    **Source:** row 15.
+
+### 🚧 19. Transmission lines and multiports
+
+- **The owner** (16 November): all of them, in that order: the lossless line first, then the lossy ones, Touchstone and IBIS.
+- **What:** the lossless line `T`, the lossy LTRA, the coupled CPL and TXL, the URC line, Touchstone blocks, IBIS buffers; the lossless line needs a bounded history of accepted steps in the engine.
+- **Done when:** closed forms (a matched line's delay, reflections, a quarter-wave inverter) and ngspice agree.
+    **Source:** row 16.
+- **State** (`a39a72f`, 16 November): the lossless line, SPICE's `T`, `devices.transmission_line(characteristic_impedance, delay)`, as ngspice 47's `tra/`: each port `v − Z₀ i` the other's wave a delay before, read from a bounded past of the accepted steps by interpolation of the method's order, never across a corner; every corner travels on as a breakpoint a delay later; at DC a short through, in AC `e^{−sτ}` on the delayed parts of `G`.
+    A matched line, an open end and a shorted end meet their closed forms to 3.4e-15 V, a quarter-wave inverter's input impedance within 1e-9; ngspice at its default steps lies 61 mV off on the open end, exact at 20 ps.
+    Pole-zero, growing modes, the periodic steady state and sensitivities refuse a delayed circuit by name.
+    Left: LTRA and the lossy lines, Touchstone, IBIS; the interpolation's error judged with the steps'.
+
+### 📋 20. A user's own Verilog-A at run time
+
+- **What:** without `unsafe`, through an interpreter like `jolty-expressions`' tape, which runs forward for values and backward for gradients.
+- **Done when:** a user's `.va` runs in every analysis, its derivatives checked.
+    **Source:** row 17.
+
+### 📋 21. XSPICE's code models and `A` elements
+
+- **The owner** (16 November): the standard library of code models read and mapped onto jolty's own devices (logic gates, drivers, threshold detectors, behavioural sources), the missing ones ported as kernels; a user's own C code models refused, as running foreign C would need `unsafe` code and Verilog-A is jolty's way for a user's model.
+
+- **Done when:** the code models ngspice's examples use run and agree.
+    **Source:** row 19.
+
+### ✅ 22. SPICE's `.func` and raw output files
+
+- **The owner** (16 November): both.
+- **What:** user-defined functions in a deck, and results written as SPICE's raw files, which other tools read.
+- **Done when:** the coverage matrix's rows for both agree.
+    **Source:** the coverage matrix's first run.
+- **Result** (`009129f`, `1bb8286`, 16 November): `.func` read outside subcircuits, each call written out, one function calling another allowed and recursion refused naming its cycle; `files.save_raw(path, results, binary=True)` writes operating points, sweeps, AC and transients in ngspice's raw format, ASCII or binary, with no date so the same results give the same bytes, and `ngspice.read` reads both; both coverage-matrix rows now agree exactly.
+    Left: `.func` inside subcircuits and model cards, a `load_raw`, raw files from the command line.
+
+**Not recommended:** OSDI through `unsafe` in one crate (row 21): breadth soon, but no parameter derivatives and native code jolty cannot hold to its kernel rules.
+**Out of scope:** CIDER's numerical devices and the control language; device bypass only as an approximation knob (`speed.md` 18).
+
+## 5. Decided
+
+- The list of what ngspice has that jolty does not is not work for now (owner, 14 November).
+- BSIM3 was ported before BSIM4; in hindsight BSIM4 serves more: SKY130's cards, the predictive ones and GF180MCU's.
+- Tests use transistors of their own rather than vendors' published cards, which are their makers' copyright.
+- VBIC's self-heating, read from a card's `RTH` and `CTH`, is checked against ngspice: the 29 K rise and the nets agree within 1e-6 (`test_a_heated_vbic_agrees`).
+
+## 6. Open principles
+
+None: the research's proposals were merged into the rules of `AGENTS.md` on 15 November (`444535f`).
