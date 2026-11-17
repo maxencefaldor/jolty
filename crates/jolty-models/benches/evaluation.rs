@@ -8,10 +8,15 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use jolty_models::testing::Bench;
-use jolty_models::{BipolarTransistor, Input, Jfet, Kernel, REFERENCE_TEMPERATURE, Vbic};
+use jolty_models::{
+    BipolarTransistor, Capacitor, CurrentControlledMemristor, CurrentControlledSwitch, Input, Jfet,
+    Kernel, Photocell, REFERENCE_TEMPERATURE, Resistor, Vbic, Vdmos, VoltageControlledMemristor,
+    VoltageControlledSwitch,
+};
 
 /// Times the evaluation of an instance of `K` with `parameters` as `name`, each of its
-/// unknowns at the voltage `bias` gives its name, the terminals named `n0`, `n1` and on.
+/// unknowns at the voltage `bias` gives its name: the terminals' `n0`, `n1` and on, and
+/// the device's own their labels, such as `collector`.
 fn evaluation<K: Kernel>(
     criterion: &mut Criterion,
     name: &str,
@@ -19,7 +24,11 @@ fn evaluation<K: Kernel>(
     bias: impl Fn(&str) -> f64,
 ) {
     let mut bench = Bench::at::<K>(parameters, REFERENCE_TEMPERATURE);
-    let x: Vec<f64> = bench.unknowns().into_iter().map(bias).collect();
+    let x: Vec<f64> = bench
+        .unknowns()
+        .into_iter()
+        .map(|unknown| bias(unknown.strip_prefix("device:").unwrap_or(unknown)))
+        .collect();
     let mut contributions = bench.contributions();
     let mut input = Input::new(&x, Some(1e-9), 1e-12);
     input.limiting = false;
@@ -136,7 +145,84 @@ const JFET_FULL: &str = r#"{"threshold_voltage": -1.8, "transconductance_paramet
 fn field_effect(criterion: &mut Criterion) {
     evaluation::<Jfet>(criterion, "jfet/defaults", "{}", saturated);
     evaluation::<Jfet>(criterion, "jfet/full", JFET_FULL, saturated);
+    let quasi = r#"{"threshold_voltage": 3, "transconductance_parameter": 10,
+        "drain_resistance": 2, "quasi_saturation_resistance": 5,
+        "quasi_saturation_voltage": 20}"#;
+    evaluation::<Vdmos>(criterion, "vdmos/quasi_saturated", quasi, quasi_saturated);
 }
 
-criterion_group!(benches, bipolar, field_effect);
+/// A power MOSFET's unknowns, its drain resistance quasi-saturated: its drain at 20 V, its
+/// gate at 8 V and its source grounded, each internal node a little inside the terminal it
+/// lies behind, and each current unknown a milliampere.
+fn quasi_saturated(name: &str) -> f64 {
+    match name {
+        "n0" => 20.0,
+        "drain" => 19.8,
+        "n1" | "gate" => 8.0,
+        _ => saturated(name),
+    }
+}
+
+/// A two-terminal device's unknowns, with what controls it: 1.5 V across it, 1.2 V or
+/// 1.2 mA or 50 lux on its control, its state at 0.3 and its lagging response at 0.5.
+fn controlled(name: &str) -> f64 {
+    match name {
+        "n0" => 1.5,
+        "n2" => 1.2,
+        "state" => 0.3,
+        "response" => 0.5,
+        "control" => 1.2e-3,
+        "n1" | "n3" => 0.0,
+        _ => 50.0,
+    }
+}
+
+fn short_laws(criterion: &mut Criterion) {
+    let coefficients = r#""voltage_coefficient": 0.01, "quadratic_voltage_coefficient": 0.002"#;
+    evaluation::<Resistor>(
+        criterion,
+        "resistor/coefficients",
+        &format!(r#"{{"resistance": 1000, {coefficients}}}"#),
+        controlled,
+    );
+    evaluation::<Capacitor>(
+        criterion,
+        "capacitor/coefficients",
+        &format!(r#"{{"capacitance": 1e-12, {coefficients}}}"#),
+        controlled,
+    );
+    evaluation::<VoltageControlledSwitch>(
+        criterion,
+        "voltage_controlled_switch/between",
+        r#"{"on_voltage": 1.5, "off_voltage": 1}"#,
+        controlled,
+    );
+    evaluation::<CurrentControlledSwitch>(
+        criterion,
+        "current_controlled_switch/between",
+        r#"{"on_current": 1.5e-3, "off_current": 1e-3}"#,
+        controlled,
+    );
+    evaluation::<VoltageControlledMemristor>(
+        criterion,
+        "voltage_controlled_memristor/driven",
+        r#"{"on_resistance": 100, "off_resistance": 1e4, "on_voltage": -1, "off_voltage": 1,
+        "on_rate": 1e3, "off_rate": 1e3}"#,
+        controlled,
+    );
+    evaluation::<CurrentControlledMemristor>(
+        criterion,
+        "current_controlled_memristor/driven",
+        r#"{"on_resistance": 100, "off_resistance": 1e4, "charge": 1e-6}"#,
+        controlled,
+    );
+    evaluation::<Photocell>(
+        criterion,
+        "photocell/lagging",
+        r#"{"resistance": 1e4, "response_time": 1e-3}"#,
+        controlled,
+    );
+}
+
+criterion_group!(benches, bipolar, field_effect, short_laws);
 criterion_main!(benches);
