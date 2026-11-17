@@ -499,19 +499,14 @@ struct Quasi<R: Real> {
 
 impl<R: Real> Quasi<R> {
     /// The drain resistance `drain`, raised at the drain-source voltage `vds` across the
-    /// terminals, oriented as an n-channel's, and its derivative with respect to `vds`.
-    /// Where the rise would make it no longer positive, far below the source, ngspice
-    /// takes the drain resistance alone.
-    fn resistance(&self, drain: R, vds: f64) -> (R, R) {
-        let denominator = self.voltage + vds;
-        let raised = drain + self.resistance * vds / denominator;
-        if raised.value() > 0.0 {
-            (
-                raised,
-                self.resistance * self.voltage / (denominator * denominator),
-            )
+    /// terminals, oriented as an n-channel's. Where the rise would make it no longer
+    /// positive, far below the source, ngspice takes the drain resistance alone.
+    fn resistance<const N: usize>(&self, drain: R, vds: Dual<R, N>) -> Dual<R, N> {
+        let raised = (vds.scale(self.resistance) / vds.plus(self.voltage)).plus(drain);
+        if raised.value.value() > 0.0 {
+            raised
         } else {
-            (drain, R::constant(0.0))
+            Dual::constant(drain)
         }
     }
 }
@@ -620,9 +615,10 @@ impl Kernel for Vdmos {
         let sign = prepared.sign;
         match (&shape.quasi, &prepared.quasi) {
             (Some(varying), Some(quasi)) if conduction.forward => {
-                let across = sign * (at.value(DRAIN) - at.value(SOURCE));
-                let (resistance, slope) = quasi.resistance(drain, across);
-                drain_series.add_varying((resistance, slope * sign), varying, at, stamp);
+                // A law of the voltage across the terminals, which orients it.
+                let across = Dual::variable(at.value(DRAIN) - at.value(SOURCE));
+                let resistance = quasi.resistance(drain, across * sign);
+                drain_series.add_varying(resistance, varying, at, stamp);
             }
             _ => drain_series.add(drain_series.value_of(drain), at, stamp),
         }
@@ -697,8 +693,8 @@ impl Kernel for Vdmos {
         let [drain, source, ..] = prepared.resistances;
         let drain = match (&shape.quasi, &prepared.quasi) {
             (Some(_), Some(quasi)) if conduction.forward => {
-                let across = sign * (at.value(DRAIN) - at.value(SOURCE));
-                quasi.resistance(drain, across).0
+                let across = Dual::<R, 0>::number(sign * (at.value(DRAIN) - at.value(SOURCE)));
+                quasi.resistance(drain, across).value
             }
             _ => drain,
         };

@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status: steps 1.2 and 1.3 done; 1.4 and step 2 planned, steps 3 and 4 deferred (17 November 2026).
+Status: step 1 done; step 2 planned, steps 3 and 4 deferred (17 November 2026).
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -24,7 +24,7 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 
 | Step | What | Status |
 | --- | --- | --- |
-| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | 1.2 and 1.3 done; 1.4 planned |
+| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | Done |
 | 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Planned |
 | 2b | AC's VJP exact, and independent of the number of parameters | Planned, conditional |
 | 3 | One shared compile-time differentiation pass for hand-written and compiled kernels | Deferred |
@@ -39,9 +39,9 @@ None of these effects is measured; each stage's "done when" measures its own wit
 
 | Work | Simulation | Gradients |
 | --- | --- | --- |
-| 1.2 VBIC composed | Measured: an evaluation 31 to 39% faster (below) | Likewise for its twins |
-| 1.3 Gummel-Poon, JFET | Measured: Gummel-Poon 2 to 7% faster at its defaults and up to 4% slower with every part of its model; the JFET 1 to 3% slower with every part, 7 to 8% slower at its defaults (below) | Likewise for their twins |
-| 1.4 Short laws | None | None |
+| 1.2 VBIC composed | Measured: an evaluation 23 to 29% fewer instructions, 18 to 46% less time (below) | Likewise for its twins |
+| 1.3 Gummel-Poon, JFET | Measured: an evaluation 1 to 5% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
+| 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
 | 2 Chunk twins | None, by design: Newton is never touched | A VJP evaluates each device once per chunk instead of once per parameter: unchanged for a crossbar's resistors (one weight each), half for a transistor's width and length, a sixth to an eighth for a kit's six to eight random variables; a JVP once per device whatever the number of parameters. The share of a gradient's time this saves depends on the twins' share beside the solves, largest in a transient, where twins run at every step |
 | 2b AC exact | None | AC's gradient from a central difference per parameter (two evaluations and a DC solve each) to one more transposed solve in all |
@@ -56,13 +56,13 @@ Read from `crates/jolty-models/src/kernel/` on 17 November 2026:
 | --- | --- | --- |
 | BSIM4, BSIM3, MOSFET levels 1 to 3, semi-empirical MOSFET | Composed: `Dual<R, 3>` for the channel (vgs, vds, vbs), `Dual<R, 1>` per junction | None |
 | Diode, junctions | Composed: `Dual<R, 1>` | None |
-| VDMOS | Composed `Dual<R, 2>`, but its quasi-saturation by hand | 1.4 |
+| VDMOS | Composed: `Dual<R, 2>` for the channel, `Dual<R, 1>` for its quasi-saturation (1.4) | None |
 | Verilog-A compiled kernels | Each variable carries the probes it depends on and no others (`crates/jolty-veriloga/src/emit.rs`) | None |
 | Behavioral sources and capacitors | `jolty-expressions`' tape: values forward, gradients backward, the right mode for an expression of many inputs | None |
 | Linear devices | Their entries, stamped once a run | None |
 | VBIC | Composed: `Dual<R, 1>` to `Dual<R, 3>` for each law (1.2) | None |
 | Gummel-Poon (`bjt.rs`), JFET (`jfet.rs`) | Composed: `Dual<R, 1>` per junction, `Dual<R, 2>` for the intrinsic transistor's laws and the JFET's channel, `Dual<R, 3>` for the base resistance's current (1.3) | None |
-| Memristor, switch, photocell, passive voltage coefficients | Hand-written slopes of short laws | 1.4 |
+| Memristor, switch, photocell, passive voltage coefficients | Composed: `Dual<R, 2>` of the voltage across and the control, each law of the control alone on `Dual<R, 1>` (1.4) | None |
 
 ### 1.2 VBIC composed
 
@@ -76,7 +76,8 @@ VBIC's equations take nine voltages (`VARIABLES`: base-emitter, extrinsic base-e
 
 **Result** (17 November): each law computes at its own width and joins the others through `Oriented::reading`, a law that reads some of a transistor's variables, and `Dual::embed`, a number of a few variables placed among more, both in `kernel/parts.rs` and `kernel/dual.rs` for the kernels that follow; the weak avalanche current is a current of its own.
 Over 1,200 evaluations, both polarities, both base charges, both smoothings, warm and at nominal temperature, with and without an excess phase, the residuals and conductances move by at most 0.9 ε of their row's largest and the charges and capacitances not at all; every VBIC test, the ngspice comparisons and the law suite pass unchanged.
-`crates/jolty-models/benches/evaluation.rs`, criterion against a saved baseline of `main`, one core of an AMD EPYC 7B12 at load 2 to 4 (machine B unreachable): 779 ns rather than 1.30 µs at its defaults (−39%), 930 ns rather than 1.42 µs with every part of its model (−32%), 887 ns rather than 1.49 µs with an excess phase (−38%).
+Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, through Valgrind 3.25.1's Callgrind), one evaluation, the bench's own work, the same in both builds, included, against `main` (`8fb1e4b`): 8,891 instructions rather than 12,586 at its defaults (−29.4%), 12,789 rather than 16,781 with every part of its model (−23.8%), 13,923 rather than 18,009 with an excess phase (−22.7%).
+Timed by `evaluation.rs`, criterion, the two builds' runs alternating twice on one pinned core of an AMD EPYC 7B12 at load 2 to 5 (machine B unreachable): 819 to 829 ns rather than 1.42 to 1.51 µs at its defaults, 1.02 to 1.26 µs rather than 1.53 to 1.63 µs with every part, 1.01 to 1.05 µs rather than 1.59 to 1.66 µs with an excess phase.
 
 ### 1.3 Gummel-Poon and the JFET on composed dual numbers
 
@@ -95,13 +96,18 @@ The JFET's variables are its two gate junctions, limited, then the drain-source 
 No derivative of either is written by hand, and the junction helpers that gave such kernels a value with its slope are gone.
 Each was compared once with the hand-written kernel it replaces, over 6,000 evaluations of Gummel-Poon (both polarities, each form of the base resistance and of the series resistances, a vertical and a lateral substrate or none, both high-injection branches, with and without an excess phase) and 504 of the JFET (both channels, three doping tails, with and without series resistances), across every region: the residuals, conductances and capacitances move by at most 3.5 ε of their row's largest, the charges not at all; every test, the ngspice comparisons and the law suite pass unchanged.
 That comparison stands for the reference test, which was not kept: the hand-written kernels would otherwise survive as a second way to compute the same numbers.
-`crates/jolty-models/benches/evaluation.rs`, criterion against a saved baseline of the hand-written kernels, four runs on one core of an AMD EPYC 7B12 at load 2 to 8 (machine B unreachable): Gummel-Poon 171 to 182 ns rather than 188 at its defaults (−2 to −7%), 371 to 377 ns rather than 365 with every part of its model (+2.5 to +3.5%), 401 to 417 ns rather than 400 with an excess phase (0 to +3%); the JFET 176 to 179 ns rather than 164 at its defaults (+7.5 to +8.4%), 265 to 269 ns rather than 265 with every part of its model (+1 to +3%).
-The JFET's loss at its defaults, about 13 ns an evaluation, is put to the owner: the consistency is kept unless the owner decides otherwise.
+Counted as VBIC was, against the hand-written kernels on `main`: Gummel-Poon 3,772 instructions rather than 3,605 at its defaults (+4.6%), 7,571 rather than 7,490 with every part of its model (+1.1%), 8,285 rather than 8,158 with an excess phase (+1.6%); the JFET 3,752 rather than 3,684 at its defaults (+1.8%), 5,415 rather than 5,343 with every part of its model (+1.3%).
+Their times, timed as VBIC's were, moved by −15 to +12%, within what a build's layout moves a kernel left unchanged: VDMOS's, its code the same in both builds, by +9 to +10%.
+The few instructions more are put to the owner: the consistency is kept unless the owner decides otherwise.
 
 ### 1.4 The short hand-written laws
 
 The memristor, the switch, the photocell, VDMOS's quasi-saturation and the passive voltage coefficients, each moved to dual numbers when next touched, under the same acceptance as 1.3.
 Small laws, little work, and little speed at stake, which the measurement confirms.
+
+**Result** (17 November): each is a law of the voltage across the device and of what controls it, the control voltage or current, the state or the light, on `Dual<R, 2>`; the conductance it sets, the window that slows the state and the drain resistance's rise are laws of the control alone, on one variable, joined by `Dual::apply`; a series resistance that varies, `Series::add_varying`, takes the resistance as a law of the voltage it follows; and the photocell's settled response keeps its own derivative rule, `γ · response / √(E² + d²)`, through `Dual::chain`, finite however dark, where the held light's own would divide by a light rounded to zero.
+Compared once with the hand-written kernels over 676 evaluations, DC and transient, across their regions and bounds, the residuals, charges and capacitances move not at all and the conductances by at most 2.9 ε of their row's largest; every test passes unchanged.
+Counted as VBIC was: from 1 more instruction an evaluation, the resistor's, to 25, the voltage-controlled memristor's, at most 0.6%.
 
 ## Step 2: every parameter derivative of a device in one evaluation
 
@@ -190,7 +196,7 @@ What decides step 3, run only when the owner says so:
 | --- | --- | --- |
 | 1.2 VBIC | Nothing | `vbic.rs` |
 | 1.3 Gummel-Poon, JFET | Nothing; the owner's call if it costs speed | `bjt.rs`, `jfet.rs` |
-| 1.4 Short laws | Nothing | Each kernel when touched |
+| 1.4 Short laws | Nothing | `memristor.rs`, `switch.rs`, `photocell.rs`, `vdmos.rs`, `passive.rs` |
 | 2.1 to 2.6 | The derivatives refactor (`agentic.md` 12b), on `main` | `real.rs`, `group.rs`, `derivative.rs`; no kernel |
 | 2b | Step 2; a need for AC gradients over many parameters | Every kernel's voltage reads, `Local` |
 | 3 | The measurement, after steps 1 and 2 | The Verilog-A emitter, a new crate |

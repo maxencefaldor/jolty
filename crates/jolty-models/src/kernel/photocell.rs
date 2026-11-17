@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     Real, Stamp, UnknownIndex,
@@ -96,23 +97,27 @@ fn a_million<R: Real>() -> R {
 }
 
 impl<R: Real> PreparedPhotocell<R> {
-    /// The response `(E/E₀)^γ` the light `light` settles the cell to, and its derivative
-    /// with respect to the light.
+    /// The response `(E/E₀)^γ` the light `light` settles the cell to.
     ///
     /// The light is held above zero as `(E + √(E² + d²)) / 2`, `d` the darkness, whose
     /// slope is itself over `√(E² + d²)`. Below zero it is written `d² / (2 · (√(E² + d²) −
     /// E))`, the same number without the cancellation that rounds it to zero past `d /
     /// √(2u)`, 67 lux below, `u` half of `f64::EPSILON`, where the response's slope would
     /// divide zero by zero.
-    fn settled(&self, light: f64) -> (R, R) {
-        let root = light.hypot(DARKNESS);
-        let lit = if light >= 0.0 {
-            f64::midpoint(light, root)
+    ///
+    /// The held light's slope, `lit / √(E² + d²)`, makes the response's
+    /// `γ · response / √(E² + d²)`, which [`Dual::chain`] takes as it stands: through the
+    /// held light it would divide by a light that rounds to zero far enough below.
+    fn settled<const N: usize>(&self, light: Dual<R, N>) -> Dual<R, N> {
+        let across = light.value.value();
+        let root = across.hypot(DARKNESS);
+        let lit = if across >= 0.0 {
+            f64::midpoint(across, root)
         } else {
-            DARKNESS * DARKNESS / (2.0 * (root - light))
+            DARKNESS * DARKNESS / (2.0 * (root - across))
         };
         let response = (R::constant(lit) / self.reference).pow(self.gamma);
-        (response, response * self.gamma / root)
+        light.chain((response, response * self.gamma / root))
     }
 }
 
@@ -176,23 +181,27 @@ impl Kernel for Photocell {
         stamp: &mut Stamp<'_, R>,
     ) {
         let [a, b, light_positive, light_negative] = TERMINALS;
-        let voltage = at.value(a) - at.value(b);
-        let light = at.value(light_positive) - at.value(light_negative);
-        let (settled, slope) = prepared.settled(light);
-        let response = shape
-            .lag
-            .as_ref()
-            .map_or(settled, |lag| R::constant(at.value(lag.response)));
-        let conductance = prepared.dark_conductance + prepared.conductance * response;
-        let current = conductance * voltage;
-        stamp.add_residual(a, current);
-        stamp.add_residual(b, -current);
-        // The current's derivatives with respect to a, b, and the light.
-        let light_slope = match &shape.lag {
-            Some(_) => R::constant(0.0),
-            None => prepared.conductance * slope * voltage,
+        // The voltage across the cell, the light, and the lagging response, if it has one.
+        let [voltage, light, lagging] = Dual::variables([
+            at.value(a) - at.value(b),
+            at.value(light_positive) - at.value(light_negative),
+            shape.lag.as_ref().map_or(0.0, |lag| at.value(lag.response)),
+        ]);
+        let settled = prepared.settled(light);
+        let response = if shape.lag.is_some() {
+            lagging
+        } else {
+            settled
         };
-        let derivatives = [conductance, -conductance, light_slope, -light_slope];
+        let conductance = response
+            .scale(prepared.conductance)
+            .plus(prepared.dark_conductance);
+        let current = conductance * voltage;
+        stamp.add_residual(a, current.value);
+        stamp.add_residual(b, -current.value);
+        // With respect to a, b, the light's terminals, and the lagging response.
+        let [by_voltage, by_light, by_response] = current.gradient;
+        let derivatives = [by_voltage, -by_voltage, by_light, -by_light];
         for (row, sign) in shape.entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
                 stamp.add_conductance(entry, derivative * sign);
@@ -201,15 +210,17 @@ impl Kernel for Photocell {
         if let Some(lag) = &shape.lag {
             let row = lag.response;
             for (&entry, sign) in lag.terminals.iter().zip([1.0, -1.0]) {
-                stamp.add_conductance(entry, prepared.conductance * voltage * sign);
+                stamp.add_conductance(entry, by_response * sign);
             }
             // τ · ds/dt + s − (E/E₀)^γ = 0.
-            stamp.add_residual(row, response - settled);
-            stamp.add_charge(row, prepared.time * response);
+            let lagged = response - settled;
+            let [_, by_light, by_response] = lagged.gradient;
+            stamp.add_residual(row, lagged.value);
+            stamp.add_charge(row, prepared.time * response.value);
             let [positive, negative, own] = lag.own;
-            stamp.add_conductance(positive, -slope);
-            stamp.add_conductance(negative, slope);
-            stamp.add_conductance(own, R::constant(1.0));
+            stamp.add_conductance(positive, by_light);
+            stamp.add_conductance(negative, -by_light);
+            stamp.add_conductance(own, by_response);
             stamp.add_capacitance(own, prepared.time);
         }
     }
@@ -224,9 +235,8 @@ impl Kernel for Photocell {
         let [a, b, light_positive, light_negative] = TERMINALS;
         let response = shape.lag.as_ref().map_or_else(
             || {
-                prepared
-                    .settled(at.value(light_positive) - at.value(light_negative))
-                    .0
+                let light = at.value(light_positive) - at.value(light_negative);
+                prepared.settled(Dual::<R, 0>::number(light)).value
             },
             |lag| R::constant(at.value(lag.response)),
         );

@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::parts::CurrentBranch;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Stamp,
@@ -53,20 +54,27 @@ impl<R: Real> Law<R> {
         })
     }
 
-    /// The conductance at `control`, and its derivative with respect to it.
-    fn conductance(&self, control: f64) -> (R, R) {
-        let fraction = -(self.off - control) / self.span;
-        if fraction.value() >= 1.0 {
-            return (self.on_conductance, R::constant(0.0));
+    /// The conductance at `control`.
+    fn conductance<const N: usize>(&self, control: Dual<R, N>) -> Dual<R, N> {
+        let fraction = control.plus(-self.off).divide(self.span);
+        if fraction.value.value() >= 1.0 {
+            return Dual::constant(self.on_conductance);
         }
-        if fraction.value() <= 0.0 {
-            return (self.off_conductance, R::constant(0.0));
+        if fraction.value.value() <= 0.0 {
+            return Dual::constant(self.off_conductance);
         }
         let m = fraction - 0.5;
-        let log_resistance = self.log_mean + self.log_ratio * m * -(m * 2.0 * m - 1.5);
-        let conductance = (-log_resistance).exp();
-        let slope = self.log_ratio * -(m * 6.0 * m - 1.5) / self.span;
-        (conductance, -conductance * slope)
+        let log_resistance = (m * -(m * m * 2.0 - 1.5))
+            .scale(self.log_ratio)
+            .plus(self.log_mean);
+        (-log_resistance).exp()
+    }
+
+    /// The current through the output at `voltage` across it, of `voltage` and
+    /// `control`, which sets its conductance, a law of the control alone.
+    fn current(&self, [voltage, control]: [f64; 2]) -> Dual<R, 2> {
+        let [voltage, control] = Dual::variables([voltage, control]);
+        control.apply(|control| self.conductance(control)) * voltage
     }
 }
 
@@ -184,12 +192,12 @@ impl Kernel for VoltageControlledSwitch {
         let [positive, negative, control_positive, control_negative] = TERMINALS;
         let voltage = at.value(positive) - at.value(negative);
         let control = at.value(control_positive) - at.value(control_negative);
-        let (conductance, slope) = prepared.law.conductance(control);
-        let current = conductance * voltage;
-        stamp.add_residual(positive, current);
-        stamp.add_residual(negative, -current);
+        let current = prepared.law.current([voltage, control]);
+        stamp.add_residual(positive, current.value);
+        stamp.add_residual(negative, -current.value);
         // With respect to positive, negative, control_positive and control_negative.
-        let derivatives = [conductance, -conductance, slope * voltage, -slope * voltage];
+        let [by_voltage, by_control] = current.gradient;
+        let derivatives = [by_voltage, -by_voltage, by_control, -by_control];
         for (row, sign) in entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
                 stamp.add_conductance(entry, derivative * sign);
@@ -206,7 +214,10 @@ impl Kernel for VoltageControlledSwitch {
     ) {
         let [positive, negative, control_positive, control_negative] = TERMINALS;
         let control = at.value(control_positive) - at.value(control_negative);
-        let (conductance, _) = prepared.law.conductance(control);
+        let conductance = prepared
+            .law
+            .conductance(Dual::<R, 0>::number(control))
+            .value;
         sources.push(NoiseSource::thermal(
             "thermal",
             [
@@ -329,12 +340,12 @@ impl Kernel for CurrentControlledSwitch {
         let control = sense.current(at);
         let [positive, negative, ..] = TERMINALS;
         let voltage = at.value(positive) - at.value(negative);
-        let (conductance, slope) = prepared.law.conductance(control);
-        let current = conductance * voltage;
-        stamp.add_residual(positive, current);
-        stamp.add_residual(negative, -current);
+        let current = prepared.law.current([voltage, control]);
+        stamp.add_residual(positive, current.value);
+        stamp.add_residual(negative, -current.value);
         // With respect to positive, negative and the control.
-        let derivatives = [conductance, -conductance, slope * voltage];
+        let [by_voltage, by_control] = current.gradient;
+        let derivatives = [by_voltage, -by_voltage, by_control];
         for (row, sign) in shape.entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
                 stamp.add_conductance(entry, derivative * sign);
@@ -349,7 +360,8 @@ impl Kernel for CurrentControlledSwitch {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let (conductance, _) = prepared.law.conductance(shape.sense.current(at));
+        let control = Dual::<R, 0>::number(shape.sense.current(at));
+        let conductance = prepared.law.conductance(control).value;
         let [positive, negative, ..] = TERMINALS;
         sources.push(NoiseSource::thermal(
             "thermal",

@@ -9,6 +9,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::parts;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
@@ -61,64 +62,48 @@ impl<R: Real> Memristance<R> {
         })
     }
 
-    /// The conductance at the state `state`, held within its bounds, and its derivative
-    /// with respect to the state.
-    fn conductance(&self, state: f64) -> (R, R) {
-        let held = state.clamp(0.0, 1.0);
-        let within = if (0.0..=1.0).contains(&state) {
-            1.0
+    /// The conductance at the state `state`, held within its bounds.
+    fn conductance<const N: usize>(&self, state: Dual<R, N>) -> Dual<R, N> {
+        let held = if (0.0..=1.0).contains(&state.value.value()) {
+            state
         } else {
-            0.0
+            Dual::number(state.value.value().clamp(0.0, 1.0))
         };
         match self.law {
             MemristorLaw::Linear => {
                 let span = self.off_resistance - self.on_resistance;
-                let conductance = (self.on_resistance + span * held).recip();
-                (conductance, -span * conductance * conductance * within)
+                held.scale(span).plus(self.on_resistance).recip()
             }
-            MemristorLaw::Exponential => {
-                let conductance = (-self.log_ratio * held).exp() / self.on_resistance;
-                (conductance, -self.log_ratio * conductance * within)
-            }
+            MemristorLaw::Exponential => (-held.scale(self.log_ratio))
+                .exp()
+                .divide(self.on_resistance),
         }
     }
 
     /// The rate at which the state moves, toward off when positive, given `drive`, the
-    /// rate with nothing slowing it, and its derivatives: the window slows a drive toward
+    /// rate with nothing slowing it, at the state `state`: the window slows a drive toward
     /// either bound as the state nears it, and none away from it.
     ///
     /// With `d` the distance to the bound the drive moves toward, in widths of the window,
     /// the drive is slowed by `1 − e^(−d)` short of the bound, which stops the state there,
     /// and turned by `d` past it, which returns it, the two meeting with the same slope.
-    fn rate(&self, state: f64, drive: Drive<R>) -> Drive<R> {
+    fn rate(&self, state: Dual<R, 2>, drive: Dual<R, 2>) -> Dual<R, 2> {
         let toward_off = drive.value.value() > 0.0;
-        let (distance, sign) = if toward_off {
-            (R::constant(1.0 - state) / self.window, -1.0)
-        } else {
-            (R::constant(state) / self.window, 1.0)
-        };
-        let (freedom, slope) = if distance.value() >= 0.0 {
-            let left = (-distance).exp();
-            (-left + 1.0, left)
-        } else {
-            (distance, R::constant(1.0))
-        };
-        Drive {
-            value: drive.value * freedom,
-            voltage: drive.voltage * freedom,
-            state: drive.state * freedom + drive.value * slope * sign / self.window,
-        }
+        // How free the state is to move is a law of the state alone.
+        let freedom = state.apply(|state| {
+            let distance = if toward_off {
+                (1.0 - state).divide(self.window)
+            } else {
+                state.divide(self.window)
+            };
+            if distance.value.value() >= 0.0 {
+                1.0 - (-distance).exp()
+            } else {
+                distance
+            }
+        });
+        drive * freedom
     }
-}
-
-/// A rate at which a memristor's state moves, toward off when positive, in full ranges
-/// per second, with its derivatives with respect to the voltage across the memristor and
-/// to its state.
-#[derive(Debug, Clone, Copy)]
-struct Drive<R: Real> {
-    value: R,
-    voltage: R,
-    state: R,
 }
 
 /// What moves a memristor's state.
@@ -141,9 +126,10 @@ enum Control<R: Real> {
 }
 
 impl<R: Real> Control<R> {
-    /// The drive at `voltage` across a memristor of conductance `conductance`, with its
-    /// derivative with respect to the state.
-    fn drive(&self, voltage: f64, (conductance, slope): (R, R)) -> Drive<R> {
+    /// The rate at which the state moves with nothing slowing it, toward off when positive,
+    /// at `voltage` across a memristor of conductance `conductance`, both numbers of the
+    /// voltage and the state.
+    fn drive(&self, voltage: Dual<R, 2>, conductance: Dual<R, 2>) -> Dual<R, 2> {
         match self {
             Self::Voltage {
                 on_voltage,
@@ -153,31 +139,18 @@ impl<R: Real> Control<R> {
                 on_exponent,
                 off_exponent,
             } => {
-                let (threshold, rate, exponent, sign) = if voltage > off_voltage.value() {
+                let across = voltage.value.value();
+                let (threshold, rate, exponent, sign) = if across > off_voltage.value() {
                     (*off_voltage, *off_rate, *off_exponent, 1.0)
-                } else if voltage < on_voltage.value() {
+                } else if across < on_voltage.value() {
                     (*on_voltage, *on_rate, *on_exponent, -1.0)
                 } else {
-                    let zero = R::constant(0.0);
-                    return Drive {
-                        value: zero,
-                        voltage: zero,
-                        state: zero,
-                    };
+                    return Dual::number(0.0);
                 };
-                let overdrive = R::constant(voltage) / threshold - 1.0;
-                let value = rate * overdrive.pow(exponent) * sign;
-                Drive {
-                    value,
-                    voltage: value * exponent / (overdrive * threshold),
-                    state: R::constant(0.0),
-                }
+                let overdrive = voltage.divide(threshold) - 1.0;
+                overdrive.pow(exponent).scale(rate) * sign
             }
-            Self::Current { charge } => Drive {
-                value: conductance * voltage / *charge,
-                voltage: conductance / *charge,
-                state: slope * voltage / *charge,
-            },
+            Self::Current { charge } => (conductance * voltage).divide(*charge),
         }
     }
 }
@@ -269,14 +242,18 @@ impl MemristorShape {
         stamp: &mut Stamp<'_, R>,
     ) {
         let [positive, negative] = POSITIVE_NEGATIVE;
-        let voltage = at.value(positive) - at.value(negative);
-        let state = at.value(self.state);
-        let conductance = prepared.memristance.conductance(state);
-        let current = conductance.0 * voltage;
-        stamp.add_residual(positive, current);
-        stamp.add_residual(negative, -current);
+        let [voltage, state] = Dual::variables([
+            at.value(positive) - at.value(negative),
+            at.value(self.state),
+        ]);
+        // The conductance is a law of the state alone.
+        let conductance = state.apply(|state| prepared.memristance.conductance(state));
+        let current = conductance * voltage;
+        stamp.add_residual(positive, current.value);
+        stamp.add_residual(negative, -current.value);
         // With respect to positive, negative and the state.
-        let derivatives = [conductance.0, -conductance.0, conductance.1 * voltage];
+        let [by_voltage, by_state] = current.gradient;
+        let derivatives = [by_voltage, -by_voltage, by_state];
         for (row, sign) in self.terminals.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
                 stamp.add_conductance(entry, derivative * sign);
@@ -285,20 +262,21 @@ impl MemristorShape {
         let rate = prepared
             .memristance
             .rate(state, prepared.control.drive(voltage, conductance));
-        memory.0 = [conductance.0.value().recip(), rate.value.value()];
+        memory.0 = [conductance.value.value().recip(), rate.value.value()];
         let row = self.state;
         let [on_positive, on_negative, own] = self.own;
         if at.transient {
             // dx/dt − rate = 0.
+            let [by_voltage, by_state] = rate.gradient;
             stamp.add_residual(row, -rate.value);
-            stamp.add_charge(row, R::constant(state));
-            stamp.add_conductance(on_positive, -rate.voltage);
-            stamp.add_conductance(on_negative, rate.voltage);
-            stamp.add_conductance(own, -rate.state);
+            stamp.add_charge(row, state.value);
+            stamp.add_conductance(on_positive, -by_voltage);
+            stamp.add_conductance(on_negative, by_voltage);
+            stamp.add_conductance(own, -by_state);
             stamp.add_capacitance(own, R::constant(1.0));
         } else {
             // x − x₀ = 0.
-            stamp.add_residual(row, -prepared.initial + state);
+            stamp.add_residual(row, -prepared.initial + state.value);
             stamp.add_conductance(own, R::constant(1.0));
         }
     }
@@ -310,7 +288,8 @@ impl MemristorShape {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let (conductance, _) = prepared.memristance.conductance(at.value(self.state));
+        let state = Dual::<R, 0>::number(at.value(self.state));
+        let conductance = prepared.memristance.conductance(state).value;
         let [positive, negative] = POSITIVE_NEGATIVE;
         sources.push(NoiseSource::thermal(
             "thermal",

@@ -362,12 +362,11 @@ impl Series {
         }
     }
 
-    /// Adds the current through `resistance`, in this one's form, with its derivatives,
-    /// the resistance moving by `slope` per volt of the voltage whose entries `varying`
-    /// claims.
+    /// Adds the current through `resistance`, in this one's form, with its derivatives:
+    /// the resistance is a law of the voltage whose entries `varying` claims.
     pub(crate) fn add_varying<R: Real>(
         &self,
-        (resistance, slope): (R, R),
+        resistance: Dual<R, 1>,
         varying: &Varying,
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
@@ -376,12 +375,12 @@ impl Series {
         match self {
             Self::None => {}
             Self::Conductance(pair) => {
-                let voltage = pair.voltage(at);
-                let conductance = resistance.recip();
-                pair.add_current(stamp, conductance * voltage);
+                // `v / r`, a law of the voltage across it, then of the one `r` follows.
+                let voltage = Dual::variable(pair.voltage(at)).embed([0]);
+                let current = voltage / resistance.embed([1]);
+                let [conductance, along] = current.gradient;
+                pair.add_current(stamp, current.value);
                 pair.add_conductance(stamp, conductance);
-                // i = v / r, so its derivative along the voltage r follows is −v · r′ / r².
-                let along = -(slope * voltage) * conductance * conductance;
                 stamp.add_conductance(first_plus, along);
                 stamp.add_conductance(first_minus, -along);
                 stamp.add_conductance(second_plus, -along);
@@ -389,10 +388,10 @@ impl Series {
             }
             Self::Current(branch, entry) => {
                 let current = branch.current(at);
-                let residual = R::constant(branch.voltage(at)) - resistance * current;
-                branch.add(at, stamp, residual);
-                stamp.add_conductance(*entry, -resistance);
-                let along = -slope * current;
+                let residual = (resistance * -current).plus(R::constant(branch.voltage(at)));
+                branch.add(at, stamp, residual.value);
+                stamp.add_conductance(*entry, -resistance.value);
+                let [along] = residual.gradient;
                 stamp.add_conductance(first_plus, along);
                 stamp.add_conductance(first_minus, -along);
             }

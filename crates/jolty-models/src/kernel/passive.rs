@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::junction::Temperatures;
 use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{CurrentBranch, Pair};
@@ -60,12 +61,9 @@ struct VoltageCoefficients<R: Real> {
 }
 
 impl<R: Real> VoltageCoefficients<R> {
-    /// The factor at `voltage`, and its derivative with respect to the voltage.
-    fn factor(self, voltage: f64) -> (R, R) {
-        (
-            self.linear * voltage + self.quadratic * (voltage * voltage) + 1.0,
-            self.linear + self.quadratic * (2.0 * voltage),
-        )
+    /// The factor at `voltage`.
+    fn factor<const N: usize>(self, voltage: Dual<R, N>) -> Dual<R, N> {
+        voltage.scale(self.linear) + (voltage * voltage).scale(self.quadratic) + 1.0
     }
 
     /// Whether the factor is 1 at every voltage: whether both coefficients are zero.
@@ -74,9 +72,11 @@ impl<R: Real> VoltageCoefficients<R> {
     }
 
     /// The integral of the factor from 0 to `voltage`.
-    fn integral(self, voltage: f64) -> R {
+    fn integral<const N: usize>(self, voltage: Dual<R, N>) -> Dual<R, N> {
         let squared = voltage * voltage;
-        self.linear * (squared / 2.0) + self.quadratic * (squared * voltage / 3.0) + voltage
+        (squared / 2.0).scale(self.linear)
+            + (squared * voltage / 3.0).scale(self.quadratic)
+            + voltage
     }
 }
 
@@ -213,21 +213,28 @@ impl Kernel for Resistor {
     ) {
         match &shape.0 {
             Form::Conductance(pair) => {
-                let voltage = pair.voltage(at);
-                let (factor, slope) = prepared.coefficients.factor(voltage);
-                // i = v / (r · f(v)), so di/dv = (f − v · f′) / (r · f²).
-                let conductance = (prepared.resistance * factor).recip();
-                pair.add_current(stamp, conductance * voltage);
-                pair.add_conductance(stamp, conductance * (factor - slope * voltage) / factor);
+                // i = v / (r · f(v)).
+                let voltage = Dual::variable(pair.voltage(at));
+                let resistance = prepared
+                    .coefficients
+                    .factor(voltage)
+                    .scale(prepared.resistance);
+                let current = resistance.recip() * voltage;
+                let [conductance] = current.gradient;
+                pair.add_current(stamp, current.value);
+                pair.add_conductance(stamp, conductance);
             }
             Form::Current(branch, entry) => {
-                let (voltage, current) = (branch.voltage(at), branch.current(at));
-                let (factor, slope) = prepared.coefficients.factor(voltage);
-                let resistance = prepared.resistance * factor;
-                let residual = R::constant(voltage) - resistance * current;
-                let along = R::constant(1.0) - prepared.resistance * slope * current;
-                branch.add_sloped(at, stamp, residual, along);
-                stamp.add_conductance(*entry, -resistance);
+                // v − r · f(v) · i = 0.
+                let voltage = Dual::variable(branch.voltage(at));
+                let resistance = prepared
+                    .coefficients
+                    .factor(voltage)
+                    .scale(prepared.resistance);
+                let residual = voltage - resistance * branch.current(at);
+                let [along] = residual.gradient;
+                branch.add_sloped(at, stamp, residual.value, along);
+                stamp.add_conductance(*entry, -resistance.value);
             }
         }
     }
@@ -245,16 +252,17 @@ impl Kernel for Resistor {
         let (thermal, current) = match &shape.0 {
             Form::Conductance(pair) => {
                 let voltage = pair.voltage(at);
-                let (factor, _) = prepared.coefficients.factor(voltage);
-                let conductance = (prepared.resistance * factor).value().recip();
+                let factor = prepared.coefficients.factor(Dual::<R, 0>::number(voltage));
+                let conductance = (prepared.resistance * factor.value).value().recip();
                 (
                     NoiseSource::thermal("thermal", pair.equations(), conductance, temperature),
                     conductance * voltage,
                 )
             }
             Form::Current(branch, _) => {
-                let (factor, _) = prepared.coefficients.factor(branch.voltage(at));
-                let resistance = (prepared.resistance * factor).value();
+                let voltage = Dual::<R, 0>::number(branch.voltage(at));
+                let factor = prepared.coefficients.factor(voltage);
+                let resistance = (prepared.resistance * factor.value).value();
                 (
                     NoiseSource::thermal_in_series(
                         "thermal",
@@ -369,13 +377,14 @@ impl Kernel for Capacitor {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let voltage = pair.voltage(at);
-        let (factor, _) = prepared.coefficients.factor(voltage);
-        pair.add_charge(
-            stamp,
-            prepared.capacitance * prepared.coefficients.integral(voltage),
-        );
-        pair.add_capacitance(stamp, prepared.capacitance * factor);
+        let voltage = Dual::variable(pair.voltage(at));
+        let charge = prepared
+            .coefficients
+            .integral(voltage)
+            .scale(prepared.capacitance);
+        let [capacitance] = charge.gradient;
+        pair.add_charge(stamp, charge.value);
+        pair.add_capacitance(stamp, capacitance);
     }
 }
 
