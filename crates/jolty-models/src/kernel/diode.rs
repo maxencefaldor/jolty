@@ -269,7 +269,8 @@ impl From<DiodeCapacitanceTemperatureModel> for u8 {
 /// The parameters of a [`Diode`], with ngspice's defaults (`diosetup.c`, lines 36 to
 /// 307).
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in amperes; default 1e-14.
     pub saturation_current: R,

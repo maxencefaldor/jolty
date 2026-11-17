@@ -330,7 +330,8 @@ pub struct VoltageControlledMemristor;
 
 /// The parameters of a [`VoltageControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
     pub on_resistance: R,
@@ -471,7 +472,8 @@ pub struct CurrentControlledMemristor;
 
 /// The parameters of a [`CurrentControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
     pub on_resistance: R,

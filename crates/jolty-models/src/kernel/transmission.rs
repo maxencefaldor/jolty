@@ -53,7 +53,8 @@ pub struct TransmissionLineShape {
 
 /// The parameters of a [`TransmissionLine`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct TransmissionLineParameters<R: Real = f64> {
     /// The characteristic impedance `Z₀`, in ohms, SPICE's `Z0`; positive.
     pub characteristic_impedance: R,

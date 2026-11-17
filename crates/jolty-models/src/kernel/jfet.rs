@@ -160,7 +160,8 @@ type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct JfetParameters<R: Real = f64> {
     /// The channel; default `n`.
     pub channel: Channel,

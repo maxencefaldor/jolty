@@ -82,7 +82,8 @@ impl<R: Real> VoltageCoefficients<R> {
 
 /// The parameters of a [`Resistor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance, in ohms, at the nominal temperature; positive.
     pub resistance: R,
@@ -305,7 +306,8 @@ pub struct PreparedCapacitor<R: Real> {
 
 /// The parameters of a [`Capacitor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CapacitorParameters<R: Real = f64> {
     /// The capacitance, in farads, at the nominal temperature; zero or positive.
     pub capacitance: R,
@@ -405,7 +407,8 @@ pub struct InductorShape {
 
 /// The parameters of an [`Inductor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct InductorParameters<R: Real = f64> {
     /// The inductance, in henries, at the nominal temperature; positive.
     pub inductance: R,
@@ -505,7 +508,8 @@ pub struct CoupledInductorsShape {
 
 /// The parameters of [`CoupledInductors`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CoupledInductorsParameters<R: Real = f64> {
     /// Each winding, as an inductor's parameters; at least two.
     pub windings: Vec<InductorParameters<R>>,
@@ -516,7 +520,8 @@ pub struct CoupledInductorsParameters<R: Real = f64> {
 
 /// How closely two windings' fluxes link.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct Coupling<R: Real = f64> {
     /// The two windings, by their numbers from 1.
     pub windings: [usize; 2],

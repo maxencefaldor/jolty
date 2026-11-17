@@ -161,7 +161,8 @@ const VARIABLES: [(usize, usize); 2] = [(INNER_GATE, INNER_SOURCE), (INNER_DRAIN
 
 /// The parameters of a [`Vdmos`], with ngspice's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VdmosParameters<R: Real = f64> {
     /// The channel, `VDMOS` or `VDMOS pchan`; default `n`.
     pub channel: Channel,

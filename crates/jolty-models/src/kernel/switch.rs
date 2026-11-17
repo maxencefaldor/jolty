@@ -102,7 +102,8 @@ pub struct VoltageSwitchShape([[usize; 4]; 2]);
 /// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `VSWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
     pub on_resistance: R,
@@ -253,7 +254,8 @@ pub struct CurrentSwitchShape {
 /// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `ISWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on current, in ohms; default 1.
     pub on_resistance: R,

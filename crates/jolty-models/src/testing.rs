@@ -13,7 +13,12 @@
     expect(dead_code, reason = "most of the bench serves this crate's own tests")
 )]
 
+use std::collections::BTreeMap;
+
 use jolty_numerics::{Pattern, PatternBuilder};
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 // The cases and the laws serve this crate's own tests, not the bench it shares.
 #[cfg(test)]
@@ -106,17 +111,26 @@ fn grouped(
 impl Bench {
     /// A bench for an instance of the kernel `K` with `parameters`, a JSON object, each of
     /// whose terminals connects to an unknown of its own.
-    pub(crate) fn new<K: Kernel>(parameters: &str) -> Self {
+    pub(crate) fn new<K: Kernel>(parameters: &str) -> Self
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         Self::at::<K>(parameters, REFERENCE_TEMPERATURE)
     }
 
-    pub(crate) fn try_new<K: Kernel>(parameters: &str) -> Result<Self, ParameterError> {
+    pub(crate) fn try_new<K: Kernel>(parameters: &str) -> Result<Self, ParameterError>
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         Self::try_at::<K>(parameters, REFERENCE_TEMPERATURE)
     }
 
     /// A bench for an instance of `K` with `parameters` at `temperature`, in kelvins.
     #[must_use]
-    pub fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self {
+    pub fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         Self::try_at::<K>(parameters, temperature).expect("valid parameters")
     }
 
@@ -125,7 +139,10 @@ impl Bench {
     /// # Errors
     ///
     /// Returns [`ParameterError`] when a parameter is out of range.
-    pub fn try_at<K: Kernel>(parameters: &str, temperature: f64) -> Result<Self, ParameterError> {
+    pub fn try_at<K: Kernel>(parameters: &str, temperature: f64) -> Result<Self, ParameterError>
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         Self::from_model(&Differentiable::<K>::new(), parameters, temperature)
     }
 
@@ -329,13 +346,19 @@ pub(crate) fn thermal(value: f64) -> f64 {
 
 /// Checks that an instance's conductances and capacitances are the derivatives of its
 /// residuals and charges at `x`, by central differences.
-pub(crate) fn assert_jacobians_match<K: Kernel>(parameters: &str, x: &[f64]) {
+pub(crate) fn assert_jacobians_match<K: Kernel>(parameters: &str, x: &[f64])
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     assert_bench_jacobians_match(&mut Bench::new::<K>(parameters), K::NAME, x);
 }
 
 /// As [`assert_jacobians_match`], with the instance evaluated as a transient analysis
 /// steps through time.
-pub(crate) fn assert_stepping_jacobians_match<K: Kernel>(parameters: &str, x: &[f64]) {
+pub(crate) fn assert_stepping_jacobians_match<K: Kernel>(parameters: &str, x: &[f64])
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let mut bench = Bench::new::<K>(parameters).stepping();
     assert_bench_jacobians_match(&mut bench, K::NAME, x);
 }
@@ -509,7 +532,10 @@ impl Rig<'_> {
 /// differentiated along `seeds`, in a group of its own, each of its terminals on an
 /// unknown of its own; none when its kernel reads no real number at a seed's path.
 #[must_use]
-pub fn twin<K: Kernel>(parameters: &str, temperature: f64, seeds: &Seeds) -> Option<Twin> {
+pub fn twin<K: Kernel>(parameters: &str, temperature: f64, seeds: &Seeds) -> Option<Twin>
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let model = Differentiable::<K>::new();
     let parameters = serde_json::from_str(parameters).ok()?;
     let (groups, runs, _, _) = grouped(&model, &parameters, temperature).ok()?;
@@ -580,16 +606,18 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
 /// respect to each number of `parameters`, a JSON object, match central differences of
 /// its instance prepared with the number a little above and below, and that their values
 /// are the instance's own.
-pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64]) {
+pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64])
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, None);
 }
 
 /// As [`assert_parameter_gradients_match`], in a transient analysis at `time`.
-pub(crate) fn assert_parameter_gradients_match_at<K: Kernel>(
-    parameters: &str,
-    x: &[f64],
-    time: f64,
-) {
+pub(crate) fn assert_parameter_gradients_match_at<K: Kernel>(parameters: &str, x: &[f64], time: f64)
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, Some(time));
 }
 
@@ -893,6 +921,329 @@ pub(crate) fn assert_switches_where_margin_vanishes(
         below.abs() < 1e-12 && above.abs() < 1e-12,
         "{margin} at the switch: {below}, {above}"
     );
+}
+
+/// Whether a JSON schema describes a real number (`"number"`) or an integer (`"integer"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberKind {
+    Real,
+    Integer,
+}
+
+/// Classifies a leaf JSON schema node as a real number or an integer, ignoring `null`.
+fn leaf_number_kind(node: &serde_json::Value) -> Option<NumberKind> {
+    if let Some(kind) = node.get("type") {
+        if let Some(name) = kind.as_str() {
+            return match name {
+                "number" => Some(NumberKind::Real),
+                "integer" => Some(NumberKind::Integer),
+                _ => None,
+            };
+        }
+        if let Some(names) = kind.as_array() {
+            let mut found = None;
+            for name in names.iter().filter_map(serde_json::Value::as_str) {
+                match name {
+                    "null" => {}
+                    "number" => found = Some(NumberKind::Real),
+                    "integer" => found = Some(NumberKind::Integer),
+                    _ => return None,
+                }
+            }
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    if let Some(constant) = node.get("const").and_then(serde_json::Value::as_number) {
+        return Some(if constant.is_i64() || constant.is_u64() {
+            NumberKind::Integer
+        } else {
+            NumberKind::Real
+        });
+    }
+    if let Some(values) = node.get("enum").and_then(serde_json::Value::as_array)
+        && !values.is_empty()
+        && values.iter().all(serde_json::Value::is_number)
+    {
+        return Some(
+            if values.iter().all(|value| value.is_i64() || value.is_u64()) {
+                NumberKind::Integer
+            } else {
+                NumberKind::Real
+            },
+        );
+    }
+    for combiner in ["oneOf", "anyOf", "allOf"] {
+        if let Some(branches) = node.get(combiner).and_then(serde_json::Value::as_array) {
+            let kinds: Vec<NumberKind> = branches.iter().filter_map(leaf_number_kind).collect();
+            if let Some(&first) = kinds.first()
+                && kinds.iter().all(|&kind| kind == first)
+            {
+                return Some(first);
+            }
+        }
+    }
+    None
+}
+
+/// Navigates `schema` along `path` to determine whether the JSON number written there is a
+/// real parameter (`"type": "number"`) or an integer/choice (`"type": "integer"`).
+fn schema_number_kind(schema: &serde_json::Value, path: &[String]) -> Option<NumberKind> {
+    let Some((step, rest)) = path.split_first() else {
+        return leaf_number_kind(schema);
+    };
+    if let Some(property) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|properties| properties.get(step.as_str()))
+    {
+        return schema_number_kind(property, rest);
+    }
+    if let Ok(index) = step.parse::<usize>() {
+        if let Some(item) = schema
+            .get("prefixItems")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| items.get(index))
+        {
+            return schema_number_kind(item, rest);
+        }
+        if let Some(items) = schema.get("items") {
+            if let Some(tuple) = items.as_array()
+                && let Some(item) = tuple.get(index)
+            {
+                return schema_number_kind(item, rest);
+            }
+            return schema_number_kind(items, rest);
+        }
+    }
+    for combiner in ["oneOf", "anyOf", "allOf"] {
+        if let Some(branches) = schema.get(combiner).and_then(serde_json::Value::as_array) {
+            let kinds: Vec<NumberKind> = branches
+                .iter()
+                .filter_map(|branch| schema_number_kind(branch, path))
+                .collect();
+            if let Some(&first) = kinds.first()
+                && kinds.iter().all(|&kind| kind == first)
+            {
+                return Some(first);
+            }
+        }
+    }
+    None
+}
+
+/// Replaces every `null` leaf in `value` whose schema accepts a real number with a distinct
+/// positive finite number, returning the number of optional real fields populated.
+fn populate_optional_reals(
+    schema: &serde_json::Value,
+    value: &mut serde_json::Value,
+    path: &mut Vec<String>,
+    counter: &mut u32,
+) -> usize {
+    match value {
+        serde_json::Value::Null => {
+            if schema_number_kind(schema, path) == Some(NumberKind::Real) {
+                *counter += 1;
+                let distinct = 1.0 + f64::from(*counter) * 0.125;
+                *value = serde_json::json!(distinct);
+                1
+            } else {
+                0
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let mut populated = 0;
+            for (key, inner) in object.iter_mut() {
+                path.push(key.clone());
+                populated += populate_optional_reals(schema, inner, path, counter);
+                path.pop();
+            }
+            populated
+        }
+        serde_json::Value::Array(items) => {
+            let mut populated = 0;
+            for (index, inner) in items.iter_mut().enumerate() {
+                path.push(index.to_string());
+                populated += populate_optional_reals(schema, inner, path, counter);
+                path.pop();
+            }
+            populated
+        }
+        _ => 0,
+    }
+}
+
+/// Checks `lifted` against `expected` and panics with a summary of missing, extra, or
+/// bit-mismatched paths when they differ.
+fn assert_lift_maps_equal(
+    model: &str,
+    parameters: &str,
+    lifted: &BTreeMap<String, u64>,
+    expected: &BTreeMap<String, u64>,
+) {
+    if lifted == expected {
+        return;
+    }
+    let missing: Vec<&str> = expected
+        .keys()
+        .filter(|path| !lifted.contains_key(*path))
+        .map(String::as_str)
+        .collect();
+    let extra: Vec<&str> = lifted
+        .keys()
+        .filter(|path| !expected.contains_key(*path))
+        .map(String::as_str)
+        .collect();
+    let mismatched: Vec<String> = expected
+        .iter()
+        .filter_map(|(path, expected_bits)| {
+            let lifted_bits = lifted.get(path)?;
+            (*lifted_bits != *expected_bits).then(|| {
+                format!(
+                    "{path}: lift={} (0x{lifted_bits:016x}) vs serde={} (0x{expected_bits:016x})",
+                    f64::from_bits(*lifted_bits),
+                    f64::from_bits(*expected_bits),
+                )
+            })
+        })
+        .collect();
+    panic!(
+        "{model}: Lift vs serde mismatch on {parameters}\n  missing from Lift: {missing:?}\n  extra in Lift: {extra:?}\n  value mismatches: {mismatched:?}",
+    );
+}
+
+/// Checks that [`crate::Lift`] visits the exact set of real parameter paths written by
+/// `serde` on `model` with `parameters`, with no duplicate paths and bit-for-bit identical
+/// values.
+///
+/// Every JSON number in `specification.parameters()` must be classified by `model.schema()`
+/// as either a real number (`"type": "number"`) or an integer (`"type": "integer"`). Any
+/// floating-point discrete mode selector stored as plain `f64` instead of `R` (such as
+/// BSIM's `charge_partition`) must be named explicitly in `selectors`, where it is asserted
+/// to exist in `parameters`, have `"type": "number"` in the schema, and NOT be visited by
+/// [`crate::Lift`]. Own-temperature keys (`temperature`, `temperature_offset`) handled
+/// outside [`crate::Lift`] by [`crate::Surrounded`] are excluded only when actually set on
+/// the instance.
+///
+/// # Panics
+///
+/// Panics if `parameters` cannot be read, if a JSON number cannot be classified by the
+/// schema, if a listed `selectors` entry is missing or invalid, if [`crate::Lift`] emits
+/// duplicate paths, or if the lifted `(path, bits)` map differs from the real numbers
+/// serialized by `serde`.
+pub fn assert_lift_matches_serde(model: &dyn Model, parameters: &str, selectors: &[&str]) {
+    let raw: jolty_ir::Parameters = serde_json::from_str(parameters).expect("a JSON object");
+    let specification = model
+        .read(&raw)
+        .unwrap_or_else(|error| panic!("{} failed to read {parameters}: {error}", model.name()));
+    let written =
+        serde_json::Value::Object(specification.parameters().unwrap_or_else(|error| {
+            panic!("{} failed to write {parameters}: {error}", model.name())
+        }));
+    let schema = model.schema().to_value();
+    let instance = specification.kernel();
+    let own_keys = instance.own_temperature_keys();
+
+    let mut lifted = BTreeMap::new();
+    for (path, value) in instance.lift_entries() {
+        let previous = lifted.insert(path.clone(), value.to_bits());
+        assert!(
+            previous.is_none(),
+            "{}: Lift visited duplicate path `{path}` on {parameters}",
+            model.name(),
+        );
+    }
+
+    let mut numeric_paths = Vec::new();
+    numbers(&written, &mut Vec::new(), &mut numeric_paths);
+    let mut expected = BTreeMap::new();
+    let mut seen_selectors = std::collections::BTreeSet::new();
+    for path in numeric_paths {
+        if path.len() == 1 && own_keys.contains(&path[0].as_str()) {
+            continue;
+        }
+        let joined = path.join(".");
+        let kind = schema_number_kind(&schema, &path).unwrap_or_else(|| {
+            panic!(
+                "{}: schema did not classify numeric path `{joined}` on {parameters}",
+                model.name(),
+            )
+        });
+        let leaf = path.iter().fold(&written, |inner, key| match inner {
+            serde_json::Value::Array(items) => {
+                &items[key.parse::<usize>().expect("an array index")]
+            }
+            _ => &inner[key.as_str()],
+        });
+        let value = leaf.as_f64().expect("a finite JSON number");
+        if selectors.contains(&joined.as_str()) {
+            assert_eq!(
+                kind,
+                NumberKind::Real,
+                "{}: selector `{joined}` is already an integer in schema and does not belong in selectors",
+                model.name(),
+            );
+            assert!(
+                !lifted.contains_key(&joined),
+                "{}: selector `{joined}` was lifted and does not belong in selectors",
+                model.name(),
+            );
+            seen_selectors.insert(joined);
+            continue;
+        }
+        match kind {
+            NumberKind::Real => {
+                let previous = expected.insert(joined.clone(), value.to_bits());
+                assert!(
+                    previous.is_none(),
+                    "{}: serde wrote duplicate path `{joined}` on {parameters}",
+                    model.name(),
+                );
+            }
+            NumberKind::Integer => {
+                assert!(
+                    !lifted.contains_key(&joined),
+                    "{}: Lift unexpectedly visited integer path `{joined}` on {parameters}",
+                    model.name(),
+                );
+            }
+        }
+    }
+    for &selector in selectors {
+        assert!(
+            seen_selectors.contains(selector),
+            "{}: listed selector `{selector}` was not present on {parameters}",
+            model.name(),
+        );
+    }
+
+    assert_lift_maps_equal(model.name(), parameters, &lifted, &expected);
+}
+
+/// Checks [`assert_lift_matches_serde`] on `parameters`, then populates every `null`
+/// `Option<R>` field in `model.defaulted(parameters)` with a distinct finite number and
+/// checks [`assert_lift_matches_serde`] again, returning the number of optional real
+/// fields populated.
+pub fn assert_lift_matches_serde_with_optionals(
+    model: &dyn Model,
+    parameters: &str,
+    selectors: &[&str],
+) -> usize {
+    assert_lift_matches_serde(model, parameters, selectors);
+    let raw: jolty_ir::Parameters = serde_json::from_str(parameters).expect("a JSON object");
+    let mut defaulted = serde_json::Value::Object(
+        model
+            .defaulted(&raw)
+            .unwrap_or_else(|error| panic!("{}: {error}", model.name())),
+    );
+    let schema = model.schema().to_value();
+    let mut counter = 0_u32;
+    let populated = populate_optional_reals(&schema, &mut defaulted, &mut Vec::new(), &mut counter);
+    if populated > 0 {
+        assert_lift_matches_serde(model, &defaulted.to_string(), selectors);
+    }
+    populated
 }
 
 /// Checks that `actual` and `expected` agree to within a relative 1e-12.

@@ -26,7 +26,8 @@ pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`], with its Verilog-A source's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in K/W; default 1.
     pub resistance: R,

@@ -583,7 +583,10 @@ mod tests {
         assert_continuous, assert_finite, assert_mirrors, assert_swaps, bench, cases, exactly,
         polarity, probes, within_junctions_reach,
     };
-    use crate::testing::assert_unknown_derivatives_match;
+    use crate::testing::{
+        assert_lift_matches_serde, assert_lift_matches_serde_with_optionals,
+        assert_unknown_derivatives_match,
+    };
 
     /// Every analog model of the library, by name.
     fn analog(library: &Library) -> Vec<&'static str> {
@@ -591,6 +594,114 @@ mod tests {
             .names()
             .filter(|name| library.get(name).is_some())
             .collect()
+    }
+
+    /// Discrete floating-point threshold selectors (`f64`, not `R`) whose JSON schema type
+    /// is `"number"` because SPICE decks write fractional values (`0.0`, `0.4`, `0.5`, `1.0`),
+    /// even though the model uses them as a piecewise-constant mode switch and intentionally
+    /// does not differentiate through them. Every entry is asserted to be present, non-integer
+    /// in the schema, and NOT visited by `Lift`.
+    const FLOAT_SELECTORS: &[(&str, &[&str])] = &[
+        ("bsim3", &["charge_partition"]),
+        ("bsim4", &["charge_partition"]),
+    ];
+
+    /// Every analog model's `Lift` visits the exact set of real parameter paths written by
+    /// `serde`, with bit-for-bit identical values and no duplicates: across every case in
+    /// `CASES`, across every model with all `Option<R>` fields populated as both `None` and
+    /// `Some(...)`, across every `Waveform` variant, multi-winding `coupled_inductors`,
+    /// self-heating (`thermal: true`), and device own-temperature overrides.
+    #[test]
+    fn every_models_lift_visits_the_exact_paths_serde_writes() {
+        let library = Library::standard();
+        let analog_names = analog(&library);
+        assert_eq!(
+            cases::covered(),
+            analog_names,
+            "a case of every analog model, and no more"
+        );
+        for &(model_name, _) in FLOAT_SELECTORS {
+            assert!(
+                analog_names.contains(&model_name),
+                "FLOAT_SELECTORS names unknown model `{model_name}`"
+            );
+        }
+        let selectors_for = |name: &str| -> &[&str] {
+            FLOAT_SELECTORS
+                .iter()
+                .find(|&&(model, _)| model == name)
+                .map_or(&[], |&(_, selectors)| selectors)
+        };
+        let mut total_optional_populated = 0_usize;
+        let mut checked_models = std::collections::BTreeSet::new();
+        for &(name, parameters, _) in cases::CASES {
+            let model = library.get(name).expect("a model of the library");
+            if checked_models.insert(name) {
+                total_optional_populated += assert_lift_matches_serde_with_optionals(
+                    &**model,
+                    parameters,
+                    selectors_for(name),
+                );
+            } else {
+                assert_lift_matches_serde(&**model, parameters, selectors_for(name));
+            }
+        }
+        assert!(
+            total_optional_populated > 100,
+            "expected optional real parameters across BSIM/BJT/diode models, got {total_optional_populated}"
+        );
+
+        let extra: &[(&str, &str)] = &[
+            // Every Waveform variant, including pulse with period None and Some.
+            ("voltage_source", r#"{"waveform": {"dc": 3.3}}"#),
+            (
+                "voltage_source",
+                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8, "rise": 1e-9, "fall": 2e-9, "width": 1e-6}}}"#,
+            ),
+            (
+                "voltage_source",
+                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8, "rise": 1e-9, "fall": 2e-9, "width": 1e-6, "period": 1e-5}}}"#,
+            ),
+            (
+                "voltage_source",
+                r#"{"waveform": {"sine": {"offset": 1.2, "amplitude": 0.5, "frequency": 1e6, "delay": 1e-7, "damping": 1e4, "phase": 0.25}}}"#,
+            ),
+            (
+                "voltage_source",
+                r#"{"waveform": {"piecewise": {"points": [[0, 0], [1e-6, 1.5], [2e-6, -0.5]]}}}"#,
+            ),
+            (
+                "voltage_source",
+                r#"{"waveform": {"exponential": {"initial": 0, "pulsed": 5, "rise_delay": 1e-9, "rise_time_constant": 1e-8, "fall_delay": 2e-7, "fall_time_constant": 3e-8}}}"#,
+            ),
+            // Multi-winding coupled inductors exercising Vec indices and integer winding pairs.
+            (
+                "coupled_inductors",
+                r#"{"windings": [{"inductance": 1e-3}, {"inductance": 2e-3}, {"inductance": 3e-3}],
+                    "couplings": [{"windings": [1, 2], "coefficient": 0.8}, {"windings": [2, 3], "coefficient": 0.6}]}"#,
+            ),
+            // Self-heating and Surrounded own-temperature overrides.
+            ("diode", r#"{"saturation_current": 2e-14, "thermal": true}"#),
+            (
+                "resistor",
+                r#"{"resistance": 1000, "thermal": true, "temperature": 350}"#,
+            ),
+            (
+                "mosfet",
+                r#"{"level": 3, "channel": "p", "thermal": true, "temperature_offset": 15}"#,
+            ),
+            (
+                "bipolar_transistor",
+                r#"{"polarity": "pnp", "thermal": true}"#,
+            ),
+            ("jfet", r#"{"channel": "p", "thermal": true}"#),
+            ("vbic", r#"{"polarity": "pnp", "thermal": true}"#),
+            ("bsim3", r#"{"channel": "p", "thermal": true}"#),
+        ];
+        for &(name, parameters) in extra {
+            let model = library.get(name).expect("a model of the library");
+            assert_lift_matches_serde(&**model, parameters, selectors_for(name));
+        }
     }
 
     #[test]

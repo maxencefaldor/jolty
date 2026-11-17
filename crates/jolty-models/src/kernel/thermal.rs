@@ -31,7 +31,8 @@ pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in kelvins per watt; positive.
     pub resistance: R,
@@ -88,7 +89,8 @@ pub struct ThermalCapacitance;
 
 /// The parameters of a [`ThermalCapacitance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalCapacitanceParameters<R: Real = f64> {
     /// The heat capacity, in joules per kelvin; zero or positive.
     pub capacitance: R,
@@ -145,7 +147,8 @@ pub struct HeatSource;
 
 /// The parameters of a [`HeatSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct HeatSourceParameters<R: Real = f64> {
     /// The heat flow, in watts.
     pub power: R,

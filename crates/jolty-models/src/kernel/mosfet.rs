@@ -219,7 +219,8 @@ const VARIABLES: [(usize, usize); 3] = [
 /// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
 /// are level 3's alone.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct MosfetParameters<R: Real = f64> {
     /// The model's level, 1 or 3; default 1.
     pub level: ModelLevel,

@@ -41,7 +41,8 @@ pub struct VoltageControlledVoltageSourceShape {
 
 /// The parameters of a [`VoltageControlledVoltageSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control voltage.
     pub gain: R,
@@ -116,7 +117,8 @@ pub struct ControlledCurrentShape([usize; 4]);
 
 /// The parameters of a [`VoltageControlledCurrentSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control voltage, in siemens.
     pub transconductance: R,
@@ -203,7 +205,8 @@ pub struct CurrentControlledCurrentSourceShape {
 
 /// The parameters of a [`CurrentControlledCurrentSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control current.
     pub gain: R,
@@ -294,7 +297,8 @@ pub struct SensedVoltageShape {
 
 /// The parameters of a [`CurrentControlledVoltageSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control current, in ohms.
     pub transresistance: R,

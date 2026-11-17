@@ -11,6 +11,9 @@ use jolty_models::{
     CurrentControlledSwitch, Diode, Input, Jfet, Kernel, Photocell, REFERENCE_TEMPERATURE,
     Resistor, Seeds, Twin, Vbic, Vdmos, VoltageControlledMemristor, VoltageControlledSwitch,
 };
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// One instance on the bench, its unknowns where it is evaluated, and the contributions
 /// it writes.
@@ -24,7 +27,10 @@ impl Case {
     /// An instance of `K` with `parameters`, each of its unknowns at the voltage `bias`
     /// gives its name: the terminals' `n0`, `n1` and on, and the device's own their
     /// labels, such as `collector`.
-    fn of<K: Kernel>(parameters: &str, bias: fn(&str) -> f64) -> Self {
+    fn of<K: Kernel>(parameters: &str, bias: fn(&str) -> f64) -> Self
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         let bench = Bench::at::<K>(parameters, REFERENCE_TEMPERATURE);
         let x = bench
             .unknowns()
@@ -72,7 +78,10 @@ impl TwinCase {
         (parameters, paths): (&str, &[&str]),
         seeds: usize,
         bias: fn(&str) -> f64,
-    ) -> Self {
+    ) -> Self
+    where
+        K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    {
         let Case { x, .. } = Case::of::<K>(parameters, bias);
         let seeds = Seeds::units(paths.get(..seeds).unwrap_or(paths));
         let twin = twin::<K>(parameters, REFERENCE_TEMPERATURE, &seeds)

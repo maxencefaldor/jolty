@@ -33,7 +33,8 @@ pub struct Networks;
 
 /// The parameters of a [`Networks`], with its Verilog-A source's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct NetworksParameters<R: Real = f64> {
     /// The resistance of each resistor, in Ohm; default 1000.
     pub r: R,

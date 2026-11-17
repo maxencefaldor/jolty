@@ -26,7 +26,8 @@ use crate::{Lift, REFERENCE_TEMPERATURE, Real};
 /// name, in SI units: a dependence on the reciprocal of the effective length in meters,
 /// not micrometers.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct Bsim4Parameters<R: Real = f64> {
     /// The channel; default `n`.
     pub channel: Channel,

@@ -33,10 +33,11 @@ use crate::{Lift, ParameterError, Real};
 /// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
 /// carry their derivatives with respect to a parameter.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema, Lift)]
-#[serde(try_from = "Shape<R>", bound = "")]
+#[serde(try_from = "Shape<R>")]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct Waveform<R: Real = f64>(Shape<R>);
 
-impl<R: Real> Serialize for Waveform<R> {
+impl<R: Real + Serialize> Serialize for Waveform<R> {
     /// The waveform as it is written: its shape.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
@@ -45,7 +46,8 @@ impl<R: Real> Serialize for Waveform<R> {
 
 /// A waveform's shape, an object with one key, as it is written.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 enum Shape<R: Real> {
     /// A constant level.
     Dc(R),
@@ -63,7 +65,8 @@ enum Shape<R: Real> {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 struct Pulse<R: Real> {
     /// The level before the delay and between pulses.
     initial: R,
@@ -85,7 +88,8 @@ struct Pulse<R: Real> {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 struct Sine<R: Real> {
     /// The level the sine swings about.
     offset: R,
@@ -105,7 +109,8 @@ struct Sine<R: Real> {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 struct Exponential<R: Real> {
     /// The level before the rise delay.
     initial: R,

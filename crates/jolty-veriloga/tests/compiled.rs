@@ -9,6 +9,9 @@ use jolty_models::testing::Bench;
 use jolty_models::{Input, Kernel, REFERENCE_TEMPERATURE};
 use jolty_veriloga::kernels::{diode, resistor};
 use jolty_veriloga::{MODELS, compile};
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Each kernel is what the compiler writes from its source, so none falls behind its
 /// source or the compiler, and none is edited by hand: `cargo run -p jolty-veriloga --bin
@@ -31,7 +34,10 @@ fn each_kernel_is_what_the_compiler_writes() {
 /// How many allocations the evaluations of an instance of `K` with `parameters` make at
 /// `x` and around it, limiting its steps and not, at an operating point and in a
 /// transient, after a first evaluation.
-fn allocations<K: Kernel>(parameters: &str, x: &[f64]) -> u64 {
+fn allocations<K: Kernel>(parameters: &str, x: &[f64]) -> u64
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let mut bench = Bench::at::<K>(parameters, REFERENCE_TEMPERATURE);
     let mut contributions = bench.contributions();
     let moved: Vec<f64> = x.iter().map(|value| value * 1.5 - 0.2).collect();

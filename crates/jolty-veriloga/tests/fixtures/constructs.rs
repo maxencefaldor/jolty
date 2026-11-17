@@ -28,7 +28,8 @@ pub struct Constructs;
 
 /// The parameters of a [`Constructs`], with its Verilog-A source's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ConstructsParameters<R: Real = f64> {
     /// The conductance at zero volts, in S; default 0.001.
     #[serde(alias = "g")]

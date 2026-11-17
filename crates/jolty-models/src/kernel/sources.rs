@@ -20,7 +20,8 @@ pub fn held_source(level: f64) -> Parameters {
 
 /// The parameters of an independent source.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct SourceParameters<R: Real = f64> {
     /// The source's level over time, in volts or amperes.
     pub waveform: Waveform<R>,

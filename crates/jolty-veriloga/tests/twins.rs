@@ -9,15 +9,25 @@ mod common;
 
 use common::Worst;
 use jolty_models::Gradient;
-use jolty_models::testing::{Bench, Rig, assert_unknown_derivatives_match, numbers};
+use jolty_models::testing::{
+    Bench, Rig, assert_lift_matches_serde, assert_lift_matches_serde_with_optionals,
+    assert_unknown_derivatives_match, numbers,
+};
 use jolty_models::{Differentiable, Input, Kernel, Layout, REFERENCE_TEMPERATURE, Thermal};
 use jolty_veriloga::kernels::{diode, resistor};
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Compares the twins `H` and `C` with `parameters`, a JSON object, at each point of
 /// `points`, the values of the hand-written kernel's unknowns: evaluated in order, so
 /// that each limits its step from the last, then settled, then each parameter's
 /// gradient and the noise.
-fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &mut Worst) {
+fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &mut Worst)
+where
+    H::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    C::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let mut hand = Bench::at::<H>(parameters, REFERENCE_TEMPERATURE);
     let mut compiled = Bench::at::<C>(parameters, REFERENCE_TEMPERATURE);
     assert_eq!(hand.unknowns(), compiled.unknowns(), "{parameters}");
@@ -258,7 +268,10 @@ fn out_of_range_parameters_are_refused_as_by_hand() {
 }
 
 /// Whether an instance of `K` with `parameters`, a JSON object, says it is linear.
-fn linear<K: Kernel>(parameters: &str) -> bool {
+fn linear<K: Kernel>(parameters: &str) -> bool
+where
+    K::Parameters<f64>: DeserializeOwned,
+{
     let parameters: K::Parameters<f64> = serde_json::from_str(parameters).expect("parameters");
     let prepared = K::prepare(&parameters, REFERENCE_TEMPERATURE).expect("valid parameters");
     let mut layout = Layout::new(K::interface(&parameters).terminals.len());
@@ -318,5 +331,39 @@ fn the_compiled_kernels_differentiate_by_their_unknowns() {
         &diode_model,
         r#"{"series_resistance": 0.5, "junction_capacitance": 2e-12}"#,
         &[-5.5, 0.0, -5.3, -0.02],
+    );
+}
+
+/// The compiled resistor and diode kernels' derived `Lift` visits the exact real parameter
+/// paths that `serde` writes, with optional parameters both absent and present, and skips
+/// integer selectors cleanly.
+#[test]
+fn the_compiled_kernels_lift_matches_serde() {
+    let resistor_model = Thermal::<resistor::Resistor>::new();
+    let resistor_optionals =
+        assert_lift_matches_serde_with_optionals(&resistor_model, r#"{"resistance": 1000}"#, &[]);
+    assert!(
+        resistor_optionals > 0,
+        "resistor exposes optional parameters"
+    );
+    assert_lift_matches_serde(
+        &resistor_model,
+        r#"{"resistance": 50, "exponential_temperature_coefficient": 0.4,
+            "voltage_coefficient": 0.02, "quadratic_voltage_coefficient": 0.003,
+            "thermal": true}"#,
+        &[],
+    );
+
+    let diode_model = Thermal::<diode::Diode>::new();
+    let diode_optionals = assert_lift_matches_serde_with_optionals(&diode_model, "{}", &[]);
+    assert!(diode_optionals > 0, "diode exposes optional parameters");
+    assert_lift_matches_serde(
+        &diode_model,
+        r#"{"series_resistance": 10, "sidewall_series_resistance": 40,
+            "forward_knee_current": 1e-3, "reverse_knee_current": 1e-9,
+            "sidewall_forward_knee_current": 2e-4, "breakdown_voltage": 5,
+            "temperature_model": 2, "capacitance_temperature_model": 1,
+            "thermal": true}"#,
+        &[],
     );
 }

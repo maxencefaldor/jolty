@@ -280,7 +280,8 @@ type Bias = parts::Bias<VARIABLE_COUNT>;
 /// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
 /// treats as infinite at zero, such as an Early voltage, is infinite when left out.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct BipolarTransistorParameters<R: Real = f64> {
     /// The doping order; default `npn`.
     pub polarity: Polarity,

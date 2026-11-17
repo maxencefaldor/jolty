@@ -63,7 +63,8 @@ const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
 /// The parameters of a [`Photocell`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
     pub resistance: R,

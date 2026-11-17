@@ -212,7 +212,6 @@ mod tests {
     /// number, a list of pairs, an enum renamed in snake case with each kind of variant,
     /// an untagged enum and a newtype.
     #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Lift)]
-    #[serde(bound = "")]
     struct Card<R: Real = f64> {
         #[serde(rename = "w")]
         width: R,
@@ -225,7 +224,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Lift)]
-    #[serde(rename_all = "snake_case", bound = "")]
+    #[serde(rename_all = "snake_case")]
     enum Shape<R: Real> {
         DirectCurrent(R),
         Sine { amplitude: R, phase: R },
@@ -234,14 +233,13 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Lift)]
-    #[serde(untagged, bound = "")]
+    #[serde(untagged)]
     enum Either<R: Real> {
         Number(R),
         Named { value: R },
     }
 
     #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Lift)]
-    #[serde(bound = "")]
     struct Wrapped<R: Real>(R);
 
     /// Cards whose shapes take each variant of `Shape` and `Either`.
@@ -275,11 +273,14 @@ mod tests {
     fn each_real_number_is_lifted_at_the_path_serde_writes_it_at() {
         for card in cards() {
             let mut lifted = Vec::new();
-            let constant: Card<Gradient> =
+            let round_tripped: Card<f64> =
                 Card::lift(&card, &ParameterPath::Root, &mut |path, value| {
                     lifted.push(path.to_string());
-                    Gradient::constant(value)
+                    value
                 });
+            assert_eq!(round_tripped, card);
+            let constant: Card<Gradient> = constant(&card);
+            assert_eq!(constant.width, Gradient::constant(card.width));
             let mut written = Vec::new();
             numbers(
                 &serde_json::to_value(&card).expect("JSON"),
@@ -294,8 +295,6 @@ mod tests {
             lifted.sort();
             written.sort();
             assert_eq!(lifted, written, "{card:?}");
-            let plain = serde_json::to_value(&card).expect("JSON");
-            assert_eq!(serde_json::to_value(&constant).expect("JSON"), plain);
         }
     }
 

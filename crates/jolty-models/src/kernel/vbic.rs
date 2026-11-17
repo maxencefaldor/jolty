@@ -156,7 +156,8 @@ type Bias = parts::Bias<VARIABLE_COUNT>;
 /// infinite at zero, such as an Early voltage, is infinite when left out; one whose
 /// defaults are not SI base units, such as `TNOM`, is converted.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VbicParameters<R: Real = f64> {
     /// The doping order, `NPN` or `PNP`; default `npn`.
     pub polarity: Polarity,

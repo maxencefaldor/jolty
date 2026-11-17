@@ -18,7 +18,8 @@ pub struct FoundryMosfet;
 
 /// The parameters of a [`FoundryMosfet`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(deny_unknown_fields, bound = "")]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct FoundryMosfetParameters<R: Real = f64> {
     /// The process design kit, such as `sky130`.
     pub pdk: String,

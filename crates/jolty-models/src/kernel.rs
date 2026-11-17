@@ -58,10 +58,6 @@ pub(crate) mod vdmos;
 use std::borrow::Cow;
 use std::fmt;
 
-use schemars::JsonSchema;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-
 use crate::{
     Choice, Delayed, Interface, Lift, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
     Regions,
@@ -80,13 +76,12 @@ pub trait Kernel: Send + Sync + 'static {
     /// models, as [`crate::Model::foundry`] says.
     const FOUNDRY: bool = false;
 
-    /// The parameters an instance's parameter map deserializes into, each number an `R`,
-    /// which write as they read and which a JSON schema describes, and which a twin makes
-    /// of the plain ones, `Parameters<f64>`.
-    type Parameters<R: Real>: DeserializeOwned
-        + Serialize
-        + JsonSchema
-        + Lift<R, Plain = Self::Parameters<f64>>
+    /// The parameters of an instance, each number an `R`. A twin lifts them from the
+    /// plain form `Parameters<f64>` field by field through [`Lift`]; JSON serialization,
+    /// deserialization and schema generation apply only to `Parameters<f64>`, where a
+    /// [`crate::Model`] adapter such as [`crate::Differentiable`] or [`crate::Thermal`]
+    /// requires them.
+    type Parameters<R: Real>: Lift<R, Plain = Self::Parameters<f64>>
         + Clone
         + fmt::Debug
         + Send

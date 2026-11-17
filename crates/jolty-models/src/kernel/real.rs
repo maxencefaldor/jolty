@@ -1,13 +1,8 @@
 //! The numbers a model computes with: plain floats, or floats carried with their exact
 //! derivatives with respect to some of its parameters, so the same equations give both.
 
-use std::borrow::Cow;
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
-
-use schemars::{JsonSchema, Schema, SchemaGenerator};
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Lift;
 
@@ -15,9 +10,9 @@ use crate::Lift;
 ///
 /// `f64` is the number itself; [`Gradient`] carries its derivatives with respect to some
 /// parameters alongside, by forward-mode automatic differentiation. Comparisons and
-/// branches read the value alone, so a model takes the same branch with either. A
-/// parameter file reads it, it writes as it reads, a JSON schema describes it, and a twin
-/// makes it of a plain number by the path the number is written at.
+/// branches read the value alone, so a model takes the same branch with either. Only plain
+/// `f64` parameters are read from or written to JSON; a twin lifts them into any `Real`
+/// field by field through [`Lift`].
 pub trait Real:
     Copy
     + fmt::Debug
@@ -36,9 +31,6 @@ pub trait Real:
     + Div<f64, Output = Self>
     + AddAssign
     + SubAssign
-    + for<'de> Deserialize<'de>
-    + Serialize
-    + JsonSchema
     + Lift<Self, Plain = f64>
 {
     /// How many first-order derivative slots the number carries: none for `f64`.
@@ -271,28 +263,14 @@ impl Real for f64 {
     }
 }
 
-/// A number and its exact derivatives with respect to `K` parameters, one by default.
-///
-/// In a parameter file, a number reads as a constant, and the object
-/// `{"value": v, "derivatives": [d₁, …, d_K]}` as a number moving with each parameter at
-/// those rates, as a twin seeds the parameters it differentiates against. It writes as it
-/// reads: a constant as a number, any other as that object.
+/// A number and its exact derivatives with respect to `K` parameters or seeded unknowns,
+/// one by default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gradient<const K: usize = 1> {
     /// The number.
     pub value: f64,
-    /// Its derivative with respect to each parameter.
+    /// Its derivative with respect to each seed.
     pub derivatives: [f64; K],
-}
-
-/// How a [`Gradient`] is written: a plain number, or a number and its derivatives.
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(untagged)]
-enum Written {
-    /// A constant.
-    Constant(f64),
-    /// A number and its derivative with respect to each parameter.
-    Seeded { value: f64, derivatives: Vec<f64> },
 }
 
 impl<const K: usize> Gradient<K> {
@@ -341,47 +319,6 @@ fn zip<const K: usize>(
 impl<const K: usize> Default for Gradient<K> {
     fn default() -> Self {
         Self::constant(0.0)
-    }
-}
-
-impl<const K: usize> Serialize for Gradient<K> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let written = if self.derivatives.iter().all(|&derivative| derivative == 0.0) {
-            Written::Constant(self.value)
-        } else {
-            Written::Seeded {
-                value: self.value,
-                derivatives: self.derivatives.to_vec(),
-            }
-        };
-        written.serialize(serializer)
-    }
-}
-
-impl<'de, const K: usize> Deserialize<'de> for Gradient<K> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Written::deserialize(deserializer)? {
-            Written::Constant(value) => Ok(Self::constant(value)),
-            Written::Seeded { value, derivatives } => {
-                let count = derivatives.len();
-                let derivatives = derivatives.try_into().map_err(|_| {
-                    D::Error::custom(format!(
-                        "a number of {K} parameters has {K} derivatives, not {count}"
-                    ))
-                })?;
-                Ok(Self { value, derivatives })
-            }
-        }
-    }
-}
-
-impl<const K: usize> JsonSchema for Gradient<K> {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("Gradient")
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        Written::json_schema(generator)
     }
 }
 
@@ -542,14 +479,10 @@ impl<const K: usize> SubAssign for Gradient<K> {
     }
 }
 
-/// A number, its derivatives with respect to `K` parameters and to a second variable, and
-/// its derivatives with respect to each parameter and that variable both: second-order
-/// forward-mode differentiation, as a device that heats computes when its derivatives with
-/// respect to its parameters are asked for, the second variable its temperature.
-///
-/// In a parameter file it reads as a [`Gradient`] does, its derivatives with respect to the
-/// parameters, and writes as one. No parameter has a derivative with respect to the second
-/// variable, so a number with one does not write.
+/// A number, its derivatives with respect to `K` parameters or seeded unknowns and to a
+/// second variable, and its mixed derivatives with respect to both: second-order
+/// forward-mode differentiation, as a device that heats computes when differentiated by a
+/// twin, the second variable its temperature.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hyper<const K: usize = 1> {
     /// The number.
@@ -622,34 +555,6 @@ impl<const K: usize> Hyper<K> {
 impl<const K: usize> Default for Hyper<K> {
     fn default() -> Self {
         Self::constant(0.0)
-    }
-}
-
-impl<const K: usize> Serialize for Hyper<K> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.second != 0.0 || self.both.iter().any(|&both| both != 0.0) {
-            return Err(serde::ser::Error::custom(
-                "a number with a derivative with respect to a second variable does not write",
-            ));
-        }
-        Gradient::new(self.value, self.first).serialize(serializer)
-    }
-}
-
-impl<'de, const K: usize> Deserialize<'de> for Hyper<K> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let Gradient { value, derivatives } = Gradient::<K>::deserialize(deserializer)?;
-        Ok(Self::new(value, derivatives))
-    }
-}
-
-impl<const K: usize> JsonSchema for Hyper<K> {
-    fn schema_name() -> Cow<'static, str> {
-        Gradient::<K>::schema_name()
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        Gradient::<K>::json_schema(generator)
     }
 }
 
@@ -904,48 +809,5 @@ mod tests {
         assert_eq!(hot.first[0].to_bits(), one.first[0].to_bits());
         assert_eq!(hot.both[0].to_bits(), one.both[0].to_bits());
         assert_eq!(hot.second.to_bits(), one.second.to_bits());
-    }
-
-    #[test]
-    fn a_seeded_number_reads_as_the_parameters_differentiated_against() {
-        let constant: Gradient = serde_json::from_str("2.5").unwrap();
-        assert_eq!(constant, Gradient::constant(2.5));
-        let seeded: Gradient =
-            serde_json::from_str(r#"{"value": 2.5, "derivatives": [1]}"#).unwrap();
-        assert_eq!(seeded, Gradient::new(2.5, [1.0]));
-        let chunk: Gradient<2> =
-            serde_json::from_str(r#"{"value": 2.5, "derivatives": [0, 3]}"#).unwrap();
-        assert_eq!(chunk, Gradient::new(2.5, [0.0, 3.0]));
-        let mismatched =
-            serde_json::from_str::<Gradient<2>>(r#"{"value": 2.5, "derivatives": [1]}"#);
-        assert!(mismatched.is_err());
-    }
-
-    #[test]
-    fn a_number_with_derivatives_writes_as_it_reads() {
-        let seeded = Gradient::new(2.5, [1.0, 0.0]);
-        let written = serde_json::to_value(seeded).unwrap();
-        assert_eq!(
-            written,
-            serde_json::json!({"value": 2.5, "derivatives": [1.0, 0.0]})
-        );
-        assert_eq!(
-            serde_json::from_value::<Gradient<2>>(written).unwrap(),
-            seeded
-        );
-        let constant = serde_json::to_value(Gradient::<2>::constant(-3.0)).unwrap();
-        assert_eq!(constant, serde_json::json!(-3.0));
-        assert_eq!(
-            serde_json::from_value::<Gradient<2>>(constant).unwrap(),
-            Gradient::constant(-3.0)
-        );
-        let hyper: Hyper = serde_json::from_str(r#"{"value": 2.5, "derivatives": [1]}"#).unwrap();
-        let written = serde_json::to_value(hyper).unwrap();
-        assert_eq!(serde_json::from_value::<Hyper>(written).unwrap(), hyper);
-        let warm = Hyper {
-            second: 1.0,
-            ..hyper
-        };
-        assert!(serde_json::to_value(warm).is_err());
     }
 }

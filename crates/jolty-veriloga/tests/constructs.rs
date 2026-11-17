@@ -34,7 +34,9 @@ mod networks;
 mod thermal_resistance;
 
 use common::Worst;
-use jolty_models::testing::{Bench, Rig};
+use jolty_models::testing::{
+    Bench, Rig, assert_lift_matches_serde, assert_lift_matches_serde_with_optionals,
+};
 use jolty_models::{
     Differentiable, Diode, Input, Kernel, REFERENCE_TEMPERATURE, ThermalResistance,
 };
@@ -349,6 +351,47 @@ fn a_noise_current_read_keeps_its_correlation() {
         .sum::<f64>()
         + excitation[0];
     assert_closed("a's noise", source.white * current * current, k * k * s);
+}
+
+/// Every compiled fixture kernel's derived `Lift` visits the exact real parameter paths
+/// that `serde` writes, including integer parameters and optional parameters.
+#[test]
+fn every_compiled_fixture_lift_matches_serde() {
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<constructs::Constructs>::new(),
+        "{}",
+        &[],
+    );
+    assert_lift_matches_serde(
+        &Differentiable::<constructs::Constructs>::new(),
+        r#"{"conductance": 3e-3, "saturation": 0.9, "bend": 0.1, "scale": 2.5}"#,
+        &[],
+    );
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<heated_resistor::HeatedResistor>::new(),
+        r#"{"resistance": 100, "temperature_coefficient": 1e-3}"#,
+        &[],
+    );
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<initial_events::InitialEvents>::new(),
+        r#"{"r": 1e3, "fingers": 2.4, "refuse": 0}"#,
+        &[],
+    );
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<limited_diode::Diode>::new(),
+        "{}",
+        &[],
+    );
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<networks::Networks>::new(),
+        r#"{"r": 1e3, "grounded": 1, "k": 0.2, "s": 4e-20}"#,
+        &[],
+    );
+    assert_lift_matches_serde_with_optionals(
+        &Differentiable::<thermal_resistance::ThermalResistance>::new(),
+        r#"{"resistance": 25}"#,
+        &[],
+    );
 }
 
 /// The solution of `matrix · x = right`, by Gaussian elimination with partial pivoting.

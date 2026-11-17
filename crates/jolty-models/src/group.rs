@@ -66,6 +66,9 @@ pub struct Instance<'a> {
     variables: fn() -> &'static [&'static str],
     /// The regions the kernel's equations distinguish.
     regions: fn() -> Regions,
+    /// Every `(path, value)` pair that [`crate::Lift`] visits on the instance's parameters.
+    #[cfg(any(test, feature = "testing"))]
+    lift_entries: fn(&Erased) -> Vec<(String, f64)>,
     own: Own,
 }
 
@@ -96,6 +99,8 @@ impl<'a> Instance<'a> {
             made: made::<K>,
             variables: K::variable_names,
             regions: K::regions,
+            #[cfg(any(test, feature = "testing"))]
+            lift_entries: lift_entries_of::<K>,
             own: Own::default(),
         }
     }
@@ -147,6 +152,21 @@ impl<'a> Instance<'a> {
     /// The parameters, if the instance is one of `K`.
     fn parameters<K: Kind>(&self) -> Option<&'a K::Parameters> {
         self.parameters.downcast_ref()
+    }
+
+    /// Every `(path, value)` pair that [`crate::Lift`] visits on the instance's parameters,
+    /// in visit order.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn lift_entries(&self) -> Vec<(String, f64)> {
+        (self.lift_entries)(self.parameters)
+    }
+
+    /// The own-temperature keys set on this instance, which [`crate::Surrounded`] handles
+    /// outside [`crate::Lift`].
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn own_temperature_keys(&self) -> Vec<&'static str> {
+        self.own.present()
     }
 }
 
@@ -265,6 +285,11 @@ pub(crate) trait Kind: Send + Sync + 'static {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     );
+
+    /// Every `(path, value)` pair that [`crate::Lift`] visits on `parameters`, in visit
+    /// order.
+    #[cfg(any(test, feature = "testing"))]
+    fn lift_entries(parameters: &Self::Parameters) -> Vec<(String, f64)>;
 }
 
 impl<K: Kernel> Kind for K {
@@ -389,6 +414,28 @@ impl<K: Kernel> Kind for K {
     ) {
         K::evaluate(shape, prepared, memory, at, stamp);
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    fn lift_entries(parameters: &K::Parameters<f64>) -> Vec<(String, f64)> {
+        let mut entries = Vec::new();
+        let _ = <K::Parameters<f64> as crate::Lift<f64>>::lift(
+            parameters,
+            &crate::ParameterPath::Root,
+            &mut |path, value| {
+                entries.push((path.to_string(), value));
+                value
+            },
+        );
+        entries
+    }
+}
+
+/// Every `(path, value)` pair that [`crate::Lift`] visits on `parameters`, an instance of `K`.
+#[cfg(any(test, feature = "testing"))]
+fn lift_entries_of<K: Kind>(parameters: &Erased) -> Vec<(String, f64)> {
+    parameters
+        .downcast_ref::<K::Parameters>()
+        .map_or_else(Vec::new, K::lift_entries)
 }
 
 /// An instance prepared and laid out, before it joins its group: its shape and its

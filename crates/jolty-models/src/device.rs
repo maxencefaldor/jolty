@@ -88,7 +88,10 @@ impl<K> fmt::Debug for Differentiable<K> {
     }
 }
 
-impl<K: Kernel> Model for Differentiable<K> {
+impl<K: Kernel> Model for Differentiable<K>
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     fn name(&self) -> &'static str {
         K::NAME
     }
@@ -115,7 +118,10 @@ impl<K: Kernel> fmt::Debug for Typed<K> {
     }
 }
 
-impl<K: Kernel> Specification for Typed<K> {
+impl<K: Kernel> Specification for Typed<K>
+where
+    K::Parameters<f64>: Serialize,
+{
     fn interface(&self) -> Interface {
         K::interface(&self.0)
     }

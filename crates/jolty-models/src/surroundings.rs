@@ -90,6 +90,16 @@ impl Own {
         Ok((own, Cow::Owned(others)))
     }
 
+    /// The own-temperature keys actually set on this instance, if any.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn present(self) -> Vec<&'static str> {
+        Self::NAMES
+            .into_iter()
+            .zip([self.temperature, self.temperature_offset])
+            .filter_map(|(name, value)| value.is_some().then_some(name))
+            .collect()
+    }
+
     /// The device's temperature, in kelvins, where the simulation's is `simulation`.
     ///
     /// # Errors

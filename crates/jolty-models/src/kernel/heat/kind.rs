@@ -555,4 +555,9 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
     ) {
         evaluate::<K, Gradient<SEEDS>>(shape, prepared, memory, at, stamp);
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    fn lift_entries(parameters: &Self::Parameters) -> Vec<(String, f64)> {
+        <K as Kind>::lift_entries(parameters)
+    }
 }

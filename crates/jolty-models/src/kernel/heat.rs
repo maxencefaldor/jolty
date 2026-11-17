@@ -17,6 +17,8 @@ use std::borrow::Cow;
 
 use jolty_ir::Parameters;
 use schemars::{JsonSchema, Schema};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::device::{extended, read, schema, written};
 use crate::{
@@ -126,7 +128,10 @@ impl Heats {
     }
 }
 
-impl<K: Kernel> Model for Thermal<K> {
+impl<K: Kernel> Model for Thermal<K>
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     fn name(&self) -> &'static str {
         K::NAME
     }
@@ -164,7 +169,10 @@ impl<K: Kernel> std::fmt::Debug for Warmed<K> {
     }
 }
 
-impl<K: Kernel> Specification for Warmed<K> {
+impl<K: Kernel> Specification for Warmed<K>
+where
+    K::Parameters<f64>: Serialize,
+{
     fn interface(&self) -> Interface {
         match self {
             Self::Cool(parameters) => K::interface(parameters),

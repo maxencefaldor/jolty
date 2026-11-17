@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::any::TypeId;
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -21,7 +21,9 @@ use jolty_models::{
     Resistor, Stamp, Thermal,
 };
 use jolty_veriloga::kernels::{diode, resistor};
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 /// A state a kernel was evaluated at: the kernel's name, its parameters as JSON, its
 /// temperature, its local unknowns' values, and the analysis's time, whether time passes,
@@ -44,7 +46,10 @@ static STATES: Mutex<Vec<State>> = Mutex::new(Vec::new());
 #[derive(Debug, Clone, Copy)]
 struct StateRecorder<K>(K);
 
-impl<K: Kernel> Kernel for StateRecorder<K> {
+impl<K: Kernel> Kernel for StateRecorder<K>
+where
+    K::Parameters<f64>: Serialize,
+{
     const NAME: &'static str = K::NAME;
     type Parameters<R: Real> = K::Parameters<R>;
     /// The kernel's shape and its number of local unknowns.
@@ -61,10 +66,12 @@ impl<K: Kernel> Kernel for StateRecorder<K> {
         parameters: &Self::Parameters<R>,
         temperature: R,
     ) -> Result<Self::Prepared<R>, ParameterError> {
-        let plain = (TypeId::of::<R>() == TypeId::of::<f64>()).then(|| {
-            let written = serde_json::to_string(parameters).expect("parameters write");
-            (written, temperature.value())
-        });
+        let plain = (parameters as &dyn Any)
+            .downcast_ref::<K::Parameters<f64>>()
+            .map(|plain| {
+                let written = serde_json::to_string(plain).expect("parameters write");
+                (written, temperature.value())
+            });
         Ok((K::prepare(parameters, temperature)?, plain))
     }
 
@@ -129,7 +136,11 @@ struct CorpusCircuit {
 /// Evaluates both twins, `H` by hand and `C` compiled, at each of `states`, all of one
 /// instance's parameters and temperature, its steps not limited, and compares them, and
 /// their noise at the first and the last.
-fn replay<H: Kernel, C: Kernel>(states: &[&State], worst: &mut Worst) {
+fn replay<H: Kernel, C: Kernel>(states: &[&State], worst: &mut Worst)
+where
+    H::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+    C::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let Some(first) = states.first() else { return };
     let mut hand = Bench::at::<H>(&first.parameters, first.temperature);
     let mut compiled = Bench::at::<C>(&first.parameters, first.temperature);

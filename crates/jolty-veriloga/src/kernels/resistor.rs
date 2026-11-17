@@ -32,7 +32,8 @@ pub struct Resistor;
 
 /// The parameters of a [`Resistor`], with its Verilog-A source's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[serde(default, deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance at the nominal temperature, in ohms; default 1.
     pub resistance: R,

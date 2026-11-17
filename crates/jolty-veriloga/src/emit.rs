@@ -930,7 +930,7 @@ impl<'m> Facts<'m> {
 
     fn parameters(&self, names: &Names) -> String {
         let mut out = vec![format!(
-            "/// The parameters of a [`{}`], with its Verilog-A source's defaults.\n#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]\n#[serde(default, deny_unknown_fields, bound = \"\")]\npub struct {}<R: Real = f64> {{\n",
+            "/// The parameters of a [`{}`], with its Verilog-A source's defaults.\n#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]\n#[serde(default, deny_unknown_fields)]\n#[schemars(bound = \"R: Serialize + JsonSchema\")]\npub struct {}<R: Real = f64> {{\n",
             names.kernel, names.parameters
         )];
         let mut defaults = Vec::new();

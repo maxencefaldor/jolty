@@ -9,10 +9,16 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use jolty_models::testing::Bench;
 use jolty_models::{Input, Kernel, REFERENCE_TEMPERATURE};
 use jolty_veriloga::kernels::{diode, resistor};
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Times the evaluation of an instance of `K` with `parameters` at `x`, at a step of a
 /// transient, as `name`.
-fn evaluation<K: Kernel>(criterion: &mut Criterion, name: &str, parameters: &str, x: &[f64]) {
+fn evaluation<K: Kernel>(criterion: &mut Criterion, name: &str, parameters: &str, x: &[f64])
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
     let mut bench = Bench::at::<K>(parameters, REFERENCE_TEMPERATURE);
     let mut contributions = bench.contributions();
     let mut input = Input::new(x, Some(1e-9), 1e-12);
