@@ -55,6 +55,20 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
+    /// `function(self)`, for a function of one variable, computed at the width of that one
+    /// alone and chained into the derivatives with respect to every variable: how a law
+    /// of one number, however long, joins a law of more at the cost of one derivative.
+    pub(crate) fn apply(self, function: impl FnOnce(Dual<R, 1>) -> Dual<R, 1>) -> Self {
+        let Dual {
+            value,
+            gradient: [slope],
+        } = function(Dual {
+            value: self.value,
+            gradient: [R::constant(1.0)],
+        });
+        self.chain((value, slope))
+    }
+
     /// `e` raised to the value.
     #[must_use]
     pub fn exp(self) -> Self {
@@ -97,6 +111,12 @@ impl<R: Real, const N: usize> Dual<R, N> {
     pub fn sqrt(self) -> Self {
         let root = self.value.sqrt();
         self.chain((root, R::constant(0.5) / root))
+    }
+
+    /// The tangent.
+    pub(crate) fn tan(self) -> Self {
+        let tangent = self.value.tan();
+        self.chain((tangent, tangent * tangent + 1.0))
     }
 
     /// The larger of `self` and the constant `floor`: the floor itself, with no
@@ -331,6 +351,18 @@ mod tests {
         assert!(floored.value == 0.0 && floored.gradient.iter().all(|slope| *slope == 0.0));
         let scaled = x.scale(2.0);
         assert!((scaled.value - 6.0).abs() < 1e-15 && (scaled.gradient[0] - 2.0).abs() < 1e-15);
+        let tangent = (x * y).tan();
+        let secant_squared = 1.0 / 6.0_f64.cos().powi(2);
+        assert!((tangent.value - 6.0_f64.tan()).abs() < 1e-15);
+        assert!((tangent.gradient[0] - 2.0 * secant_squared).abs() < 1e-14);
+        assert!((tangent.gradient[1] - 3.0 * secant_squared).abs() < 1e-14);
+        // A function of one variable applied at its own width is the function composed.
+        let product = x * y;
+        assert_eq!(
+            product.apply(|value| value * 2.0 + 1.0),
+            product * 2.0 + 1.0
+        );
+        assert_eq!(product.apply(Dual::tan), tangent);
     }
 
     #[test]

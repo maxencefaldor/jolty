@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status: step 1.2 done; the rest of steps 1 and 2 planned, steps 3 and 4 deferred (17 November 2026).
+Status: steps 1.2 and 1.3 done; 1.4 and step 2 planned, steps 3 and 4 deferred (17 November 2026).
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -24,7 +24,7 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 
 | Step | What | Status |
 | --- | --- | --- |
-| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | 1.2 done; 1.3 and 1.4 planned |
+| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | 1.2 and 1.3 done; 1.4 planned |
 | 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Planned |
 | 2b | AC's VJP exact, and independent of the number of parameters | Planned, conditional |
 | 3 | One shared compile-time differentiation pass for hand-written and compiled kernels | Deferred |
@@ -40,7 +40,7 @@ None of these effects is measured; each stage's "done when" measures its own wit
 | Work | Simulation | Gradients |
 | --- | --- | --- |
 | 1.2 VBIC composed | Measured: an evaluation 31 to 39% faster (below) | Likewise for its twins |
-| 1.3 Gummel-Poon, JFET | No gain expected, possibly a loss: the first port ran 7 to 18% slower | None |
+| 1.3 Gummel-Poon, JFET | Measured: Gummel-Poon 2 to 7% faster at its defaults and up to 4% slower with every part of its model; the JFET 1 to 3% slower with every part, 7 to 8% slower at its defaults (below) | Likewise for their twins |
 | 1.4 Short laws | None | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
 | 2 Chunk twins | None, by design: Newton is never touched | A VJP evaluates each device once per chunk instead of once per parameter: unchanged for a crossbar's resistors (one weight each), half for a transistor's width and length, a sixth to an eighth for a kit's six to eight random variables; a JVP once per device whatever the number of parameters. The share of a gradient's time this saves depends on the twins' share beside the solves, largest in a transient, where twins run at every step |
@@ -61,7 +61,7 @@ Read from `crates/jolty-models/src/kernel/` on 17 November 2026:
 | Behavioral sources and capacitors | `jolty-expressions`' tape: values forward, gradients backward, the right mode for an expression of many inputs | None |
 | Linear devices | Their entries, stamped once a run | None |
 | VBIC | Composed: `Dual<R, 1>` to `Dual<R, 3>` for each law (1.2) | None |
-| Gummel-Poon (`bjt.rs`), JFET (`jfet.rs`) | Hand-written: `(value, slope)` tuples, hand-derived `gm` and `gds` | 1.3 |
+| Gummel-Poon (`bjt.rs`), JFET (`jfet.rs`) | Composed: `Dual<R, 1>` per junction, `Dual<R, 2>` for the intrinsic transistor's laws and the JFET's channel, `Dual<R, 3>` for the base resistance's current (1.3) | None |
 | Memristor, switch, photocell, passive voltage coefficients | Hand-written slopes of short laws | 1.4 |
 
 ### 1.2 VBIC composed
@@ -88,6 +88,15 @@ A first port of both to dual numbers ran 7 to 18% slower and was stopped (`quali
 
 **Done when:** no hand-written derivative left in either; their tests against ngspice pass unchanged; the law suite's Jacobian check holds; and either the protocol shows no slowdown it can resolve, or the measured cost is put to the owner, who decides whether consistency is worth it.
 Until then the hand-written versions stay in a test as a reference the new ones must agree with everywhere.
+
+**Result** (17 November): each law computes at its own width through `Oriented::reading`, as VBIC's do.
+Gummel-Poon's variables are its two junctions, limited, then the drop across its base resistance and the external base-collector voltage, unlimited, so that the base resistance's current, `drop / r`, is a law of three variables and the external depletion a law of one; the base resistance's shape, a law of the base current alone, runs on one variable and joins the others by the chain rule (`Dual::apply`); the excess phase's filter and the base current's own equation add their derivatives through `Reading::add_conductances`.
+The JFET's variables are its two gate junctions, limited, then the drain-source voltage between them, which its channel reads with the gate-source voltage.
+No derivative of either is written by hand, and the junction helpers that gave such kernels a value with its slope are gone.
+Each was compared once with the hand-written kernel it replaces, over 6,000 evaluations of Gummel-Poon (both polarities, each form of the base resistance and of the series resistances, a vertical and a lateral substrate or none, both high-injection branches, with and without an excess phase) and 504 of the JFET (both channels, three doping tails, with and without series resistances), across every region: the residuals, conductances and capacitances move by at most 3.5 ε of their row's largest, the charges not at all; every test, the ngspice comparisons and the law suite pass unchanged.
+That comparison stands for the reference test, which was not kept: the hand-written kernels would otherwise survive as a second way to compute the same numbers.
+`crates/jolty-models/benches/evaluation.rs`, criterion against a saved baseline of the hand-written kernels, four runs on one core of an AMD EPYC 7B12 at load 2 to 8 (machine B unreachable): Gummel-Poon 171 to 182 ns rather than 188 at its defaults (−2 to −7%), 371 to 377 ns rather than 365 with every part of its model (+2.5 to +3.5%), 401 to 417 ns rather than 400 with an excess phase (0 to +3%); the JFET 176 to 179 ns rather than 164 at its defaults (+7.5 to +8.4%), 265 to 269 ns rather than 265 with every part of its model (+1 to +3%).
+The JFET's loss at its defaults, about 13 ns an evaluation, is put to the owner: the consistency is kept unless the owner decides otherwise.
 
 ### 1.4 The short hand-written laws
 

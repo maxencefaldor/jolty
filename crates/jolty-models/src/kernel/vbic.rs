@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Reading, Series};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
 use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
@@ -1810,37 +1810,36 @@ impl ExcessPhase {
     }
 
     /// Adds the network's equations, of `delay`, driven by the forward transport current
-    /// `itzf` of a transistor of polarity `sign`, a number of the intrinsic transistor's
-    /// law, which `intrinsic` adds through, and the delayed current from the intrinsic
-    /// collector to the intrinsic emitter.
+    /// `itzf` of the transistor `added` adds for, a number of the intrinsic transistor's
+    /// law, and the delayed current from the intrinsic collector to the intrinsic emitter.
     fn add<R: Real>(
         &self,
-        (stamp_nodes, intrinsic): (&Nodes<STAMPED>, &Reading<'_, STAMPED, VARIABLE_COUNT, 2>),
-        (itzf, delay, sign): (Dual<R, 2>, R, f64),
+        added: &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+        (itzf, delay): (Dual<R, 2>, R),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
+        let intrinsic = added.reading(INTRINSIC);
         let [first, second] = self.unknowns;
         let [filtered, delayed] = [first, second].map(|unknown| at.value(unknown));
         let [[first_first, first_second], [second_first, second_second]] = self.own;
         let one = R::constant(1.0);
-        stamp.add_residual(first, R::constant(delayed) - intrinsic.extend(itzf) * sign);
+        stamp.add_residual(
+            first,
+            R::constant(delayed) - intrinsic.extend(itzf) * added.sign,
+        );
         stamp.add_charge(first, delay * filtered);
         stamp.add_capacitance(first_first, delay);
         stamp.add_conductance(first_second, one);
-        let entry = |index: usize| self.driven.get(index).copied().unwrap_or(usize::MAX);
-        for ((plus, minus), derivative) in intrinsic.variables().into_iter().zip(itzf.gradient) {
-            stamp.add_conductance(entry(plus), -derivative);
-            stamp.add_conductance(entry(minus), derivative);
-        }
+        intrinsic.add_conductances(stamp, &self.driven, itzf.gradient.map(|slope| -slope));
         stamp.add_residual(second, R::constant(delayed - filtered));
         stamp.add_charge(second, delay * delayed / 3.0);
         stamp.add_conductance(second_second, one);
         stamp.add_conductance(second_first, -one);
         stamp.add_capacitance(second_second, delay / 3.0);
         let current = R::constant(delayed);
-        stamp.add_residual(stamp_nodes.node(CI), current);
-        stamp.add_residual(stamp_nodes.node(EI), -current);
+        stamp.add_residual(added.nodes.node(CI), current);
+        stamp.add_residual(added.nodes.node(EI), -current);
         let [at_collector, at_emitter] = self.delivered;
         stamp.add_conductance(at_collector, one);
         stamp.add_conductance(at_emitter, -one);
@@ -2007,12 +2006,7 @@ impl Kernel for Vbic {
         match &shape.excess {
             Some(excess) => {
                 intrinsic.add_current(stamp, sums, (CI, EI), -itzr);
-                excess.add(
-                    (&shape.stamp, &intrinsic),
-                    (itzf, prepared.delay, sign),
-                    at,
-                    stamp,
-                );
+                excess.add(&added, (itzf, prepared.delay), at, stamp);
             }
             None => intrinsic.add_current(stamp, sums, (CI, EI), itzf - itzr),
         }

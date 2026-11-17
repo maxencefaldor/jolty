@@ -6,12 +6,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
-    Depletion, Temperatures, below_one, critical_voltage, depletion_charge_with_capacitance,
-    junction_current_with_slope, limit_junction,
+    Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
+    limit_junction,
 };
 use crate::kernel::parts::SMALL_RESISTANCE;
-use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
+use crate::kernel::parts::{
+    self, CurrentBranch, Derivatives, Nodes, Oriented, Series, series_value,
+};
 use crate::kernel::region::Bipolar;
 use crate::noise::Flicker;
 use crate::{
@@ -178,7 +181,7 @@ pub struct BipolarTransistor;
 /// filter and its substrate junction, if it has them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BipolarTransistorShape {
-    stamp: Nodes<4>,
+    stamp: Nodes<STAMPED>,
     collector_series: Series,
     emitter_series: Series,
     base: Option<BaseForm>,
@@ -212,7 +215,7 @@ pub struct PreparedBipolarTransistor<R: Real> {
 pub struct BipolarTransistorMemory {
     /// The base-emitter and base-collector voltages of the last evaluation, from which the
     /// next steps are limited.
-    last: [f64; 2],
+    last: [f64; JUNCTIONS],
     /// The substrate junction's voltage of the last evaluation.
     substrate: f64,
     /// The values of [`Bipolar::VARIABLE_NAMES`] at the last evaluation.
@@ -229,6 +232,50 @@ const OUTER_BASE: usize = 0;
 const INNER_COLLECTOR: usize = 1;
 const INNER_BASE: usize = 2;
 const INNER_EMITTER: usize = 3;
+
+/// The number of stamped nodes.
+const STAMPED: usize = 4;
+
+/// The number of voltages the transistor's equations take as variables.
+const VARIABLE_COUNT: usize = 4;
+
+/// The number of those voltages, the first, across junctions, whose steps are limited.
+const JUNCTIONS: usize = 2;
+
+/// The pairs of stamped nodes across which the variables lie: the base-emitter and the
+/// base-collector junctions, the base resistance, and the external base-collector
+/// depletion, from the base terminal to the internal collector.
+const VARIABLES: [(usize, usize); VARIABLE_COUNT] = [
+    BASE_EMITTER,
+    BASE_COLLECTOR,
+    BASE_SERIES,
+    EXTERNAL_BASE_COLLECTOR,
+];
+const BASE_EMITTER: (usize, usize) = (INNER_BASE, INNER_EMITTER);
+const BASE_COLLECTOR: (usize, usize) = (INNER_BASE, INNER_COLLECTOR);
+const BASE_SERIES: (usize, usize) = (OUTER_BASE, INNER_BASE);
+const EXTERNAL_BASE_COLLECTOR: (usize, usize) = (OUTER_BASE, INNER_COLLECTOR);
+
+/// The variables' positions among [`VARIABLES`], by ngspice's names, and `Vrb` for the
+/// drop across the base resistance.
+const VBE: usize = 0;
+const VBC: usize = 1;
+const VRB: usize = 2;
+const VBX: usize = 3;
+
+/// The variables each law of the transistor's equations reads, by their positions among
+/// [`VARIABLES`], in the order its numbers carry their derivatives: each law computes at
+/// the width of those alone.
+///
+/// The transport currents, the base resistance and the base-emitter charge read both
+/// junctions.
+const INTRINSIC: [usize; 2] = [VBE, VBC];
+/// The base resistance's current, where it is a conductance, reads its own drop, then the
+/// junctions the resistance falls with.
+const BASE_RESISTANCE: [usize; 3] = [VRB, VBE, VBC];
+
+/// The variables of one evaluation.
+type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
 /// treats as infinite at zero, such as an Early voltage, is infinite when left out.
@@ -648,117 +695,85 @@ struct Junctions<R: Real> {
     high_injection_exponent: R,
 }
 
-/// The junctions' DC state at one bias: each value and its derivatives with respect to
-/// the base-emitter and the base-collector voltages.
+/// The junctions' DC state at one bias, each number with its derivatives with respect to
+/// the junction voltages it reads: its own junction's alone, or [`INTRINSIC`]'s.
 #[derive(Debug, Clone, Copy)]
 struct State<R: Real> {
-    /// The ideal base-emitter and base-collector currents, `Ibe` and `Ibc`, and their
-    /// derivatives with respect to their own junction's voltage.
-    ideal: [(R, R); 2],
-    /// The base current through each junction, to the emitter and to the collector, and
-    /// its derivative with respect to its junction's voltage.
-    base: [(R, R); 2],
-    /// The transport current from collector to emitter, and its derivatives.
-    transport: (R, [R; 2]),
-    /// Its forward part, `Ibe / qb`, which an excess phase delays, and its derivatives.
-    forward_transport: (R, [R; 2]),
-    /// Its reverse part, `Ibc / qb`, which it leaves, and its derivatives: computed apart,
-    /// not as the difference of the two above, which cancel.
-    reverse_transport: (R, [R; 2]),
-    /// The normalized base charge, `qb`, and its derivatives.
-    charge: (R, [R; 2]),
+    /// The ideal base-emitter and base-collector currents, `Ibe` and `Ibc`, each of its own
+    /// junction's voltage.
+    ideal: [Dual<R, 1>; 2],
+    /// The base current through each junction, to the emitter and to the collector, of its
+    /// own junction's voltage.
+    base: [Dual<R, 1>; 2],
+    /// The transport current from collector to emitter.
+    transport: Dual<R, 2>,
+    /// Its forward part, `Ibe / qb`, which an excess phase delays.
+    forward_transport: Dual<R, 2>,
+    /// Its reverse part, `Ibc / qb`, which it leaves: computed apart, not as the
+    /// difference of the two above, which cancel.
+    reverse_transport: Dual<R, 2>,
+    /// The normalized base charge, `qb`.
+    charge: Dual<R, 2>,
 }
 
 impl<R: Real> Junctions<R> {
-    fn evaluate(&self, vbe: f64, vbc: f64, gmin: f64) -> State<R> {
-        let zero = R::constant(0.0);
+    /// The junctions' state at the base-emitter and base-collector `voltages`, with the
+    /// minimum conductance `gmin` across each junction.
+    fn evaluate(&self, voltages: [f64; 2], gmin: f64) -> State<R> {
+        let [vbe, vbc] = voltages.map(Dual::<R, 1>::variable);
         let leakage = |voltage, current: R, slope| {
             if current.value() > 0.0 {
-                junction_current_with_slope(voltage, current, slope)
+                junction_current(voltage, current, slope)
             } else {
-                (zero, zero)
+                Dual::number(0.0)
             }
         };
-        let forward = junction_current_with_slope(vbe, self.saturation_current, self.forward_slope);
-        let reverse = junction_current_with_slope(vbc, self.saturation_current, self.reverse_slope);
+        let forward = junction_current(vbe, self.saturation_current, self.forward_slope);
+        let reverse = junction_current(vbc, self.saturation_current, self.reverse_slope);
         let emitter_leakage = leakage(vbe, self.emitter_leakage, self.emitter_leakage_slope);
         let collector_leakage = leakage(vbc, self.collector_leakage, self.collector_leakage_slope);
         let base = [
-            (
-                forward.0 / self.forward_beta + emitter_leakage.0 + gmin * vbe,
-                forward.1 / self.forward_beta + emitter_leakage.1 + gmin,
-            ),
-            (
-                reverse.0 / self.reverse_beta + collector_leakage.0 + gmin * vbc,
-                reverse.1 / self.reverse_beta + collector_leakage.1 + gmin,
-            ),
+            forward.divide(self.forward_beta) + emitter_leakage + vbe * gmin,
+            reverse.divide(self.reverse_beta) + collector_leakage + vbc * gmin,
         ];
 
-        // The base charge: the Early effect through q1, high injection through q2.
+        // The base charge: the Early effect through q1, high injection through q2. Within
+        // its law, `vbe` comes first and `vbc` second.
         let [early_forward, early_reverse] = self.inverse_early;
         let [knee_forward, knee_reverse] = self.inverse_knee;
-        let q1 = (-(early_forward * vbc - 1.0) - early_reverse * vbe).recip();
-        let (qb, dqb) = if knee_forward.value() == 0.0 && knee_reverse.value() == 0.0 {
-            (q1, [q1 * q1 * early_reverse, q1 * q1 * early_forward])
+        let q1 = (1.0 - vbc.scale(early_forward).embed([1]) - vbe.scale(early_reverse).embed([0]))
+            .recip();
+        let qb = if knee_forward.value() == 0.0 && knee_reverse.value() == 0.0 {
+            q1
         } else {
-            let q2 = knee_forward * forward.0 + knee_reverse * reverse.0;
-            let argument = (q2 * 4.0 + 1.0).max(zero);
+            let q2 =
+                forward.scale(knee_forward).embed([0]) + reverse.scale(knee_reverse).embed([1]);
+            let argument = (q2 * 4.0 + 1.0).max(0.0);
             let exponent = self.high_injection_exponent;
             // SPICE keeps the power at 1 where high injection would make it vanish, and
             // takes a square root where `NKF` is a half, its default (`bjtload.c`, lines
             // 571 to 586).
-            // `divisor` divides `d(q2)` in `d(power) / 2`.
             #[expect(
                 clippy::float_cmp,
                 reason = "ngspice takes a square root where `NKF` is its default, a half"
             )]
-            let (power, divisor) = if argument.value() == 0.0 {
-                (R::constant(1.0), R::constant(1.0))
+            let power = if argument.value.value() == 0.0 {
+                Dual::number(1.0)
             } else if exponent.value() == 0.5 {
-                let root = argument.sqrt();
-                (root, root)
+                argument.sqrt()
             } else {
-                let power = argument.pow(exponent);
-                (power, argument / (power * exponent * 2.0))
+                argument.pow(exponent)
             };
-            let qb = q1 * (power + 1.0) / 2.0;
-            (
-                qb,
-                [
-                    q1 * (qb * early_reverse + knee_forward * forward.1 / divisor),
-                    q1 * (qb * early_forward + knee_reverse * reverse.1 / divisor),
-                ],
-            )
+            q1 * (power + 1.0) / 2.0
         };
-        let net = forward.0 - reverse.0;
-        let transport = (
-            net / qb,
-            [
-                (forward.1 - net * dqb[0] / qb) / qb,
-                (-reverse.1 - net * dqb[1] / qb) / qb,
-            ],
-        );
-        let forward_transport = (
-            forward.0 / qb,
-            [
-                (forward.1 - forward.0 * dqb[0] / qb) / qb,
-                -forward.0 * dqb[1] / (qb * qb),
-            ],
-        );
-        let reverse_transport = (
-            reverse.0 / qb,
-            [
-                -reverse.0 * dqb[0] / (qb * qb),
-                (reverse.1 - reverse.0 * dqb[1] / qb) / qb,
-            ],
-        );
+        let [forward_current, reverse_current] = [forward.embed([0]), reverse.embed([1])];
         State {
             ideal: [forward, reverse],
             base,
-            transport,
-            forward_transport,
-            reverse_transport,
-            charge: (qb, dqb),
+            transport: (forward_current - reverse_current) / qb,
+            forward_transport: forward_current / qb,
+            reverse_transport: reverse_current / qb,
+            charge: qb,
         }
     }
 }
@@ -773,46 +788,84 @@ enum BaseForm {
     Current(BaseCurrent),
 }
 
-/// The base current as a local unknown of its own, and the local entries of its equation
-/// at itself and at the internal base, emitter and collector, on whose voltages the
-/// resistance depends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BaseCurrent {
-    branch: CurrentBranch,
-    entries: [usize; 4],
-}
-
-impl BaseCurrent {
-    /// The current from the `base` terminal to the internal one, labelled `base_current`,
-    /// across a resistance that depends on the voltages of the internal `emitter` and
-    /// `collector`.
-    fn new(layout: &mut Layout, base: [usize; 2], emitter: usize, collector: usize) -> Self {
-        let branch = CurrentBranch::new(layout, "base_current", base);
-        let row = branch.unknown();
-        let [_, inner] = base;
-        let entries = [row, inner, emitter, collector].map(|column| layout.entry(row, column));
-        Self { branch, entries }
-    }
-
-    /// Adds the current's equation for a `resistance` with derivatives `slopes` with respect
-    /// to the base-emitter and base-collector voltages of a transistor of polarity `sign`.
+impl BaseForm {
+    /// Adds the current through the base `resistance`, a number of the intrinsic
+    /// transistor's law, `drop / r`, or the equation of the base current that crosses it,
+    /// of the transistor `added` adds for, its derivatives among the stamped nodes summed
+    /// into `derivatives`.
     fn add<R: Real>(
         &self,
-        (resistance, slopes): (R, [R; 2]),
-        (bias, sign): (&Bias, f64),
+        resistance: Dual<R, 2>,
+        (added, derivatives): (
+            &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+            &mut Derivatives<R, STAMPED>,
+        ),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
+        match self {
+            Self::Current(current) => current.add(resistance, added, at, stamp),
+            Self::Conductance => {
+                // Within its law, the drop comes first, then the junctions.
+                let [_, _, drop, _] = added.bias.voltages;
+                let current = Dual::<R, 1>::variable(drop).embed([0]) / resistance.embed([1, 2]);
+                added.reading(BASE_RESISTANCE).add_current(
+                    stamp,
+                    derivatives,
+                    BASE_SERIES,
+                    current,
+                );
+            }
+        }
+    }
+}
+
+/// The base current as a local unknown of its own, and the local entries of its equation
+/// at itself and at each stamped node, as the resistance depends on the junction
+/// voltages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BaseCurrent {
+    branch: CurrentBranch,
+    own: usize,
+    driven: [usize; STAMPED],
+}
+
+impl BaseCurrent {
+    /// The current from the base terminal to the internal base, the `stamp`ed nodes'
+    /// first and third, labelled `base_current`.
+    fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
+        let branch = CurrentBranch::new(
+            layout,
+            "base_current",
+            [stamp.node(OUTER_BASE), stamp.node(INNER_BASE)],
+        );
+        let row = branch.unknown();
+        Self {
+            branch,
+            own: layout.entry(row, row),
+            driven: std::array::from_fn(|index| layout.entry(row, stamp.node(index))),
+        }
+    }
+
+    /// Adds the current's equation for `resistance`, a number of the intrinsic
+    /// transistor's law, of the transistor `added` adds for.
+    fn add<R: Real>(
+        &self,
+        resistance: Dual<R, 2>,
+        added: &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let intrinsic = added.reading(INTRINSIC);
         let current = self.branch.current(at);
         let drop = R::constant(self.branch.voltage(at));
-        let residual = drop - (resistance + bias.extend(slopes)) * current;
+        let residual = drop - intrinsic.extend(resistance) * current;
         self.branch.add(at, stamp, residual);
-        let [emitter, collector] = slopes.map(|slope| slope * (current * sign));
-        let [own, at_base, at_emitter, at_collector] = self.entries;
-        stamp.add_conductance(own, -resistance);
-        stamp.add_conductance(at_base, -(emitter + collector));
-        stamp.add_conductance(at_emitter, emitter);
-        stamp.add_conductance(at_collector, collector);
+        stamp.add_conductance(self.own, -resistance.value);
+        let gradient = resistance
+            .gradient
+            .map(|slope| slope * -(current * added.sign));
+        intrinsic.add_conductances(stamp, &self.driven, gradient);
     }
 }
 
@@ -827,53 +880,39 @@ struct BaseResistance<R: Real> {
 }
 
 impl<R: Real> BaseResistance<R> {
-    /// The resistance and its derivatives with respect to the junction voltages, at the
-    /// junctions' `state`.
-    fn evaluate(&self, state: &State<R>) -> (R, [R; 2]) {
+    /// The resistance at the junctions' `state`, a number of the intrinsic transistor's
+    /// law.
+    fn evaluate(&self, state: &State<R>) -> Dual<R, 2> {
         let excess = self.maximum - self.minimum;
         let Some(halfway) = self.halfway_current else {
-            let (qb, dqb) = state.charge;
-            let resistance = self.minimum + excess / qb;
-            let slope = -excess / (qb * qb);
-            return (resistance, [slope * dqb[0], slope * dqb[1]]);
+            return (Dual::constant(excess) / state.charge).plus(self.minimum);
         };
-        let [(base_emitter, gbe), (base_collector, gbc)] = state.base;
-        let ratio = (base_emitter + base_collector) / halfway;
-        if ratio.value() <= 1e-9 {
-            // SPICE floors the ratio here, where the resistance no longer changes.
-            let z = z_of(R::constant(1e-9)).0;
-            let zero = R::constant(0.0);
-            return (self.minimum + excess * 3.0 * shape(z).0, [zero, zero]);
-        }
-        let (z, dz) = z_of(ratio);
-        let (value, dvalue) = shape(z);
-        let slope = excess * 3.0 * dvalue * dz / halfway;
-        (
-            self.minimum + excess * 3.0 * value,
-            [slope * gbe, slope * gbc],
-        )
+        let [base_emitter, base_collector] = state.base;
+        // SPICE floors the ratio, below which the resistance no longer changes.
+        let ratio = (base_emitter.embed([0]) + base_collector.embed([1]))
+            .divide(halfway)
+            .max(1e-9);
+        ratio
+            .apply(|ratio| shape(z_of(ratio)))
+            .scale(excess * 3.0)
+            .plus(self.minimum)
     }
 }
 
-/// SPICE's `z` for a base current `ratio` of the halfway current, and its derivative:
+/// SPICE's `z` for a base current `ratio` of the halfway current:
 /// `z = (√(1 + 144 x / π²) − 1) / ((24 / π²) · √x)`.
-fn z_of<R: Real>(ratio: R) -> (R, R) {
+fn z_of<R: Real>(ratio: Dual<R, 1>) -> Dual<R, 1> {
     const A: f64 = 14.590_25;
     const B: f64 = 2.4317;
     let root = (ratio * A + 1.0).sqrt();
-    let sqrt_ratio = ratio.sqrt();
-    let z = (root - 1.0) / (sqrt_ratio * B);
-    let dz = (R::constant(A) / (root * 2.0) * B * sqrt_ratio
-        - (root - 1.0) * B / (sqrt_ratio * 2.0))
-        / (ratio * (B * B));
-    (z, dz)
+    (root - 1.0) / (ratio.sqrt() * B)
 }
 
-/// `(tan z − z) / (z · tan² z)`, and its derivative with respect to `z`.
+/// `(tan z − z) / (z · tan² z)`.
 ///
 /// Below `z = 0.25`, where the subtraction loses `3ε / z²` of the precision, a series in
 /// `z²` takes over, accurate to within a few ulps there.
-fn shape<R: Real>(z: R) -> (R, R) {
+fn shape<R: Real>(z: Dual<R, 1>) -> Dual<R, 1> {
     const SERIES: [f64; 7] = [
         1.0 / 3.0,
         -4.0 / 45.0,
@@ -883,35 +922,18 @@ fn shape<R: Real>(z: R) -> (R, R) {
         -5528.0 / 212_837_625.0,
         -8.0 / 2_606_175.0,
     ];
-    if z.value() < 0.25 {
-        // The value's series in `w = z²` by Horner's rule, and its derivative,
-        // `z · Σ 2k · c_k · w^(k−1)`.
+    if z.value.value() < 0.25 {
+        // The series in `w = z²` by Horner's rule.
         let square = z * z;
-        let value = SERIES
+        return SERIES
             .iter()
             .rev()
-            .fold(R::constant(0.0), |sum, coefficient| {
-                sum * square + *coefficient
+            .fold(Dual::number(0.0), |sum, &coefficient| {
+                sum * square + coefficient
             });
-        let orders = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0];
-        let slope = SERIES
-            .iter()
-            .zip(orders)
-            .skip(1)
-            .rev()
-            .fold(R::constant(0.0), |sum, (coefficient, order)| {
-                sum * square + order * coefficient
-            });
-        return (value, slope * z);
     }
     let tan = z.tan();
-    let sec2 = tan * tan + 1.0;
-    let (top, top_slope) = (tan - z, sec2 - 1.0);
-    let (bottom, bottom_slope) = (z * tan * tan, tan * tan + z * 2.0 * tan * sec2);
-    (
-        top / bottom,
-        (top_slope * bottom - top * bottom_slope) / (bottom * bottom),
-    )
+    (tan - z) / (z * tan * tan)
 }
 
 /// The forward transport current `u` delayed through the filter of an excess phase: the
@@ -926,15 +948,15 @@ struct ExcessPhase {
     unknowns: [usize; 2],
     /// The local entries of `x`'s equation at `x` and `y`, and of `y`'s at `x` and `y`.
     own: [[usize; 2]; 2],
-    /// The local entries of `y`'s equation at the internal base, emitter and collector.
-    driven: [usize; 3],
+    /// The local entries of `y`'s equation at each stamped node.
+    driven: [usize; STAMPED],
     /// The local entries of the internal collector's and emitter's equations at `x`.
     delivered: [usize; 2],
 }
 
 impl ExcessPhase {
-    /// The filter between the internal `nodes`: base, emitter and collector.
-    fn new(layout: &mut Layout, [base, emitter, collector]: [usize; 3]) -> Self {
+    /// The filter, driven by the transport current among the `stamp`ed nodes.
+    fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
         let unknowns = [
             layout.internal("delayed_transport", Nature::Current),
             layout.internal("delayed_transport_slope", Nature::Current),
@@ -943,30 +965,27 @@ impl ExcessPhase {
         Self {
             unknowns,
             own: [x, y].map(|row| [x, y].map(|column| layout.entry(row, column))),
-            driven: [base, emitter, collector].map(|column| layout.entry(y, column)),
-            delivered: [collector, emitter].map(|row| layout.entry(row, x)),
+            driven: std::array::from_fn(|index| layout.entry(y, stamp.node(index))),
+            delivered: [INNER_COLLECTOR, INNER_EMITTER]
+                .map(|index| layout.entry(stamp.node(index), x)),
         }
     }
 
-    /// The delayed forward transport current, `x`.
-    fn delayed(&self, at: &Local<'_>) -> f64 {
-        let [x, _] = self.unknowns;
-        at.value(x)
-    }
-
-    /// Adds the filter's two equations, of `delay`, for the forward transport current of
-    /// `state`, of a transistor of polarity `sign`.
+    /// Adds the filter's two equations, of `delay`, driven by the forward transport
+    /// current `forward` of the transistor `added` adds for, a number of the intrinsic
+    /// transistor's law, and the delayed current from the internal collector to the
+    /// internal emitter.
     fn add<R: Real>(
         &self,
-        (bias, state): (&Bias, &State<R>),
-        (delay, sign): (R, f64),
+        added: &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+        (forward, delay): (Dual<R, 2>, R),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
+        let intrinsic = added.reading(INTRINSIC);
         let [x, y] = self.unknowns;
         let [delayed, slope] = [x, y].map(|unknown| at.value(unknown));
-        let (forward, slopes) = state.forward_transport;
-        let driven = (forward + bias.extend(slopes)) * sign;
+        let driven = intrinsic.extend(forward) * added.sign;
         stamp.add_residual(x, R::constant(-slope));
         stamp.add_charge(x, delay * delayed);
         stamp.add_residual(y, (R::constant(delayed + slope) - driven) * 3.0);
@@ -977,11 +996,14 @@ impl ExcessPhase {
         stamp.add_conductance(y_x, R::constant(3.0));
         stamp.add_conductance(y_y, R::constant(3.0));
         stamp.add_capacitance(y_y, delay);
-        let [at_base, at_emitter, at_collector] = self.driven;
-        let [by_emitter, by_collector] = slopes;
-        stamp.add_conductance(at_base, -(by_emitter + by_collector) * 3.0);
-        stamp.add_conductance(at_emitter, by_emitter * 3.0);
-        stamp.add_conductance(at_collector, by_collector * 3.0);
+        let gradient = forward.gradient.map(|slope| slope * -3.0);
+        intrinsic.add_conductances(stamp, &self.driven, gradient);
+        let current = R::constant(delayed);
+        stamp.add_residual(added.nodes.node(INNER_COLLECTOR), current);
+        stamp.add_residual(added.nodes.node(INNER_EMITTER), -current);
+        let [at_collector, at_emitter] = self.delivered;
+        stamp.add_conductance(at_collector, R::constant(1.0));
+        stamp.add_conductance(at_emitter, R::constant(-1.0));
     }
 }
 
@@ -1001,49 +1023,67 @@ struct Charges<R: Real> {
 }
 
 impl<R: Real> Charges<R> {
-    /// The base-emitter charge, its capacitance and its derivative with respect to the
-    /// base-collector voltage, at the junctions' `state`.
-    fn base_emitter(&self, vbe: f64, vbc: f64, state: &State<R>) -> (R, R, R) {
-        let zero = R::constant(0.0);
-        let (mut current, mut conductance) = state.ideal[0];
-        let mut cross = zero;
-        let transit = self.forward_transit_time;
-        if transit.value() != 0.0 && vbe > 0.0 {
-            let (qb, dqb) = state.charge;
-            let (mut factor, mut growth, mut voltage_term) = (zero, zero, zero);
+    /// The charges at the junctions' `state`, at `voltages`, [`VARIABLES`]' values.
+    fn evaluate(&self, voltages: [f64; VARIABLE_COUNT], state: &State<R>) -> JunctionCharges<R> {
+        let [vbe, vbc, _, vbx] = voltages.map(Dual::<R, 1>::variable);
+        let [forward, reverse] = state.ideal;
+        // The forward diffusion charge grows with the current and with the base-collector
+        // voltage. Within its law, `vbe` comes first and `vbc` second.
+        let mut diffusion = forward.embed([0]);
+        if self.forward_transit_time.value() != 0.0 && vbe.value.value() > 0.0 {
+            let mut factor = Dual::number(0.0);
             if self.bias_coefficient.value() != 0.0 {
-                factor = self.bias_coefficient * (self.voltage_factor * vbc).exp();
-                growth = factor;
+                factor = vbc
+                    .scale(self.voltage_factor)
+                    .exp()
+                    .scale(self.bias_coefficient)
+                    .embed([1]);
                 if self.high_current.value() != 0.0 {
-                    let share = current / (current + self.high_current);
+                    let share = (forward / forward.plus(self.high_current)).embed([0]);
                     factor = factor * (share * share);
-                    growth = factor * -(share * 2.0 - 3.0);
                 }
-                voltage_term = current * factor * self.voltage_factor;
             }
-            let modulated = current * (factor + 1.0) / qb;
-            conductance = (conductance * (growth + 1.0) - modulated * dqb[0]) / qb;
-            cross = transit * (voltage_term - modulated * dqb[1]) / qb;
-            current = modulated;
+            diffusion = diffusion * (factor + 1.0) / state.charge;
         }
-        let (charge, capacitance) =
-            depletion_charge_with_capacitance(self.base_emitter.as_ref(), vbe);
-        (
-            transit * current + charge,
-            transit * conductance + capacitance,
-            cross,
-        )
+        let depletion = |depletion: &Option<Depletion<R>>, voltage| {
+            depletion_charge(depletion.as_ref(), voltage)
+        };
+        JunctionCharges {
+            qbe: diffusion.scale(self.forward_transit_time)
+                + depletion(&self.base_emitter, vbe).embed([0]),
+            qbc: reverse.scale(self.reverse_transit_time) + depletion(&self.base_collector, vbc),
+            qbx: depletion(&self.external_base_collector, vbx),
+        }
     }
+}
 
-    /// The internal base-collector charge and its capacitance.
-    fn base_collector(&self, vbc: f64, state: &State<R>) -> (R, R) {
-        let (current, conductance) = state.ideal[1];
-        let (charge, capacitance) =
-            depletion_charge_with_capacitance(self.base_collector.as_ref(), vbc);
-        (
-            self.reverse_transit_time * current + charge,
-            self.reverse_transit_time * conductance + capacitance,
-        )
+/// The charges on the base-emitter junction, of [`INTRINSIC`], on the base-collector
+/// junction, of `vbc`, and the external base-collector depletion, of `vbx`.
+struct JunctionCharges<R: Real> {
+    qbe: Dual<R, 2>,
+    qbc: Dual<R, 1>,
+    qbx: Dual<R, 1>,
+}
+
+impl<R: Real> JunctionCharges<R> {
+    /// Adds each charge through `added`, by the law it belongs to, its derivatives summed
+    /// into `derivatives`.
+    fn add(
+        self,
+        added: &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+        derivatives: &mut Derivatives<R, STAMPED>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let Self { qbe, qbc, qbx } = self;
+        added
+            .reading(INTRINSIC)
+            .add_charge(stamp, derivatives, BASE_EMITTER, qbe);
+        added
+            .reading([VBC])
+            .add_charge(stamp, derivatives, BASE_COLLECTOR, qbc);
+        added
+            .reading([VBX])
+            .add_charge(stamp, derivatives, EXTERNAL_BASE_COLLECTOR, qbx);
     }
 }
 
@@ -1077,20 +1117,20 @@ impl<R: Real> SubstrateJunction<R> {
         if limited.is_some() {
             stamp.mark_limited();
         }
-        let voltage = limited.unwrap_or(applied);
-        *last = voltage;
-        let beyond = applied - voltage;
-        let zero = R::constant(0.0);
-        let (current, conductance) = self.diode.map_or((zero, zero), |(saturation, slope)| {
-            junction_current_with_slope(voltage, saturation, slope)
-        });
-        let (current, conductance) = (current + at.gmin * voltage, conductance + at.gmin);
+        *last = limited.unwrap_or(applied);
+        let beyond = [applied - *last];
+        let voltage = Dual::<R, 1>::variable(*last);
+        let current = self.diode.map_or(Dual::number(0.0), |(saturation, slope)| {
+            junction_current(voltage, saturation, slope)
+        }) + voltage * at.gmin;
         let pair = (0, 1);
-        nodes.current(stamp, 0, 1, (current + conductance * beyond) * self.sign);
+        let [conductance] = current.gradient;
+        nodes.current(stamp, 0, 1, current.extend(beyond) * self.sign);
         nodes.conductance(stamp, pair, pair, conductance);
         if let Some(depletion) = &self.depletion {
-            let (charge, capacitance) = depletion_charge_with_capacitance(Some(depletion), voltage);
-            nodes.charge(stamp, 0, 1, (charge + capacitance * beyond) * self.sign);
+            let charge = depletion.evaluate(voltage);
+            let [capacitance] = charge.gradient;
+            nodes.charge(stamp, 0, 1, charge.extend(beyond) * self.sign);
             nodes.capacitance(stamp, pair, pair, capacitance);
         }
     }
@@ -1730,25 +1770,18 @@ impl Kernel for BipolarTransistor {
             };
             Nodes::new(layout, [3, joined])
         });
-        let base = base_resistance.map(|resistance| {
-            if resistance.minimum.value() < SMALL_RESISTANCE {
-                let nodes = [base_terminal, inner_base];
-                BaseForm::Current(BaseCurrent::new(
-                    layout,
-                    nodes,
-                    inner_emitter,
-                    inner_collector,
-                ))
-            } else {
-                BaseForm::Conductance
-            }
-        });
         let stamp = Nodes::new(
             layout,
             [base_terminal, inner_collector, inner_base, inner_emitter],
         );
-        let excess = (delay.value() > 0.0)
-            .then(|| ExcessPhase::new(layout, [inner_base, inner_emitter, inner_collector]));
+        let base = base_resistance.map(|resistance| {
+            if resistance.minimum.value() < SMALL_RESISTANCE {
+                BaseForm::Current(BaseCurrent::new(layout, &stamp))
+            } else {
+                BaseForm::Conductance
+            }
+        });
+        let excess = (delay.value() > 0.0).then(|| ExcessPhase::new(layout, &stamp));
         Ok(BipolarTransistorShape {
             stamp,
             collector_series,
@@ -1770,25 +1803,44 @@ impl Kernel for BipolarTransistor {
         shape.collector_series.add(collector_series, at, stamp);
         shape.emitter_series.add(emitter_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
-        let [vbe, vbc] = bias.voltages;
+        let [vbe, vbc, ..] = bias.voltages;
         memory.variables = Bipolar::variables(vbe, vbc);
-        let state = prepared.junctions.evaluate(vbe, vbc, at.gmin);
-        let added = Added {
-            shape,
-            prepared,
+        let state = prepared.junctions.evaluate([vbe, vbc], at.gmin);
+        let added = Oriented {
+            nodes: &shape.stamp,
+            sign: prepared.sign,
             bias: &bias,
-            state: &state,
+            variables: VARIABLES,
         };
-        added.currents(at, stamp);
-        if let Some(excess) = &shape.excess {
-            excess.add((&bias, &state), (prepared.delay, prepared.sign), at, stamp);
+        let intrinsic = added.reading(INTRINSIC);
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
+        let collector_emitter = (INNER_COLLECTOR, INNER_EMITTER);
+        match &shape.excess {
+            Some(excess) => {
+                let reverse = -state.reverse_transport;
+                intrinsic.add_current(stamp, sums, collector_emitter, reverse);
+                excess.add(&added, (state.forward_transport, prepared.delay), at, stamp);
+            }
+            None => intrinsic.add_current(stamp, sums, collector_emitter, state.transport),
         }
+        let [base_emitter, base_collector] = state.base;
+        added
+            .reading([VBE])
+            .add_current(stamp, sums, BASE_EMITTER, base_emitter);
+        added
+            .reading([VBC])
+            .add_current(stamp, sums, BASE_COLLECTOR, base_collector);
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
-            added.base_resistance((resistance, form), at, stamp);
+            form.add(resistance.evaluate(&state), (&added, &mut *sums), at, stamp);
         }
         if let Some(charges) = &prepared.charges {
-            added.charges(charges, at, stamp);
+            charges
+                .evaluate(bias.voltages, &state)
+                .add(&added, sums, stamp);
         }
+        derivatives.stamp(&shape.stamp, stamp);
         if let (Some(junction), Some(nodes)) = (&prepared.substrate, &shape.substrate) {
             junction.evaluate(nodes, &mut memory.substrate, at, stamp);
         }
@@ -1825,13 +1877,13 @@ impl Kernel for BipolarTransistor {
             .emitter_series
             .noise(emitter_series, ("emitter thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let base = nodes.voltage(at, INNER_BASE);
-        let vbe = prepared.sign * (base - nodes.voltage(at, INNER_EMITTER));
-        let vbc = prepared.sign * (base - nodes.voltage(at, INNER_COLLECTOR));
-        let state = prepared.junctions.evaluate(vbe, vbc, at.gmin);
+        let voltages = [BASE_EMITTER, BASE_COLLECTOR].map(|(plus, minus)| {
+            prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
+        });
+        let state = prepared.junctions.evaluate(voltages, at.gmin);
         let node = |index: usize| nodes.equation(index);
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
-            let resistance = resistance.evaluate(&state).0.value();
+            let resistance = resistance.evaluate(&state).value.value();
             sources.push(match form {
                 BaseForm::Conductance => NoiseSource::thermal(
                     "base thermal",
@@ -1847,8 +1899,8 @@ impl Kernel for BipolarTransistor {
                 ),
             });
         }
-        let [(base_emitter, _), (base_collector, _)] = state.base;
-        let collector = state.transport.0 - base_collector;
+        let [base_emitter, base_collector] = state.base.map(|current| current.value);
+        let collector = state.transport.value - base_collector;
         let base_current = (base_emitter + base_collector).value();
         sources.push(NoiseSource::shot(
             "collector shot",
@@ -1943,15 +1995,9 @@ impl<R: Real> BipolarTransistorParameters<R> {
     }
 }
 
-/// The base-emitter and base-collector voltages of one evaluation.
-type Bias = parts::Bias<2>;
-
-const BASE_EMITTER: (usize, usize) = (INNER_BASE, INNER_EMITTER);
-const BASE_COLLECTOR: (usize, usize) = (INNER_BASE, INNER_COLLECTOR);
-
 impl<R: Real> PreparedBipolarTransistor<R> {
-    /// The junction voltages at `at`, limited from the last evaluation's, which `memory`
-    /// keeps and takes the new ones.
+    /// The variables at `at`, the junction voltages limited from the last evaluation's,
+    /// which `memory` keeps and takes the new ones.
     fn bias(
         &self,
         shape: &BipolarTransistorShape,
@@ -1960,126 +2006,24 @@ impl<R: Real> PreparedBipolarTransistor<R> {
         stamp: &mut Stamp<'_, R>,
     ) -> Bias {
         let nodes = &shape.stamp;
-        let base = nodes.voltage(at, INNER_BASE);
-        let applied = [
-            self.sign * (base - nodes.voltage(at, INNER_EMITTER)),
-            self.sign * (base - nodes.voltage(at, INNER_COLLECTOR)),
-        ];
-        let limit = |applied: f64, last: f64| {
-            limit_junction(applied, last, self.thermal_voltage, self.critical_voltage)
-                .filter(|_| at.limiting)
-        };
-        let [
-            [applied_emitter, applied_collector],
-            [last_emitter, last_collector],
-        ] = [applied, memory.last];
-        let limits = [
-            limit(applied_emitter, last_emitter),
-            limit(applied_collector, last_collector),
-        ];
-        if limits.iter().any(Option::is_some) {
+        let applied = VARIABLES
+            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let mut voltages = applied;
+        let mut limited = false;
+        for (voltage, last) in voltages.iter_mut().zip(&mut memory.last) {
+            if at.limiting
+                && let Some(step) =
+                    limit_junction(*voltage, *last, self.thermal_voltage, self.critical_voltage)
+            {
+                *voltage = step;
+                limited = true;
+            }
+            *last = *voltage;
+        }
+        if limited {
             stamp.mark_limited();
         }
-        let [limit_emitter, limit_collector] = limits;
-        let voltages = [
-            limit_emitter.unwrap_or(applied_emitter),
-            limit_collector.unwrap_or(applied_collector),
-        ];
-        memory.last = voltages;
         Bias::new(applied, voltages)
-    }
-}
-
-/// How a transistor adds what it computes at one bias, the junctions' `state` there.
-struct Added<'a, R: Real> {
-    shape: &'a BipolarTransistorShape,
-    prepared: &'a PreparedBipolarTransistor<R>,
-    bias: &'a Bias,
-    state: &'a State<R>,
-}
-
-impl<R: Real> Added<'_, R> {
-    /// Adds the transport current and the base currents through each junction. With an
-    /// excess phase, the delayed forward transport current stands in for the forward one.
-    fn currents(&self, at: &Local<'_>, stamp: &mut Stamp<'_, R>) {
-        let (nodes, sign) = (&self.shape.stamp, self.prepared.sign);
-        let (bias, state) = (self.bias, self.state);
-        let (mut transport, mut slopes) = state.transport;
-        if let Some(excess) = &self.shape.excess {
-            let (reverse, reverse_slopes) = state.reverse_transport;
-            transport = R::constant(sign * excess.delayed(at)) - reverse;
-            slopes = reverse_slopes.map(|slope| -slope);
-            let [at_collector, at_emitter] = excess.delivered;
-            stamp.add_conductance(at_collector, R::constant(1.0));
-            stamp.add_conductance(at_emitter, R::constant(-1.0));
-        }
-        let collector_emitter = (INNER_COLLECTOR, INNER_EMITTER);
-        let current = (transport + bias.extend(slopes)) * sign;
-        nodes.current(stamp, INNER_COLLECTOR, INNER_EMITTER, current);
-        let [by_emitter, by_collector] = slopes;
-        nodes.conductance(stamp, collector_emitter, BASE_EMITTER, by_emitter);
-        nodes.conductance(stamp, collector_emitter, BASE_COLLECTOR, by_collector);
-        let junctions = [BASE_EMITTER, BASE_COLLECTOR].into_iter().zip(state.base);
-        for ((pair, (current, conductance)), beyond) in junctions.zip(bias.beyond) {
-            let current = (current + conductance * beyond) * sign;
-            nodes.current(stamp, pair.0, pair.1, current);
-            nodes.conductance(stamp, pair, pair, conductance);
-        }
-    }
-
-    /// Adds the current through the base resistance, `drop / r`, or the equation of the
-    /// base current that crosses it; either varies with the junction voltages the
-    /// resistance depends on.
-    fn base_resistance(
-        &self,
-        (resistance, form): (&BaseResistance<R>, &BaseForm),
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) {
-        let (value, slopes) = resistance.evaluate(self.state);
-        let sign = self.prepared.sign;
-        if let BaseForm::Current(current) = form {
-            current.add((value, slopes), (self.bias, sign), at, stamp);
-            return;
-        }
-        let nodes = &self.shape.stamp;
-        let drop = nodes.voltage(at, OUTER_BASE) - nodes.voltage(at, INNER_BASE);
-        let slopes = slopes.map(|slope| slope * -drop / (value * value));
-        let pair = (OUTER_BASE, INNER_BASE);
-        nodes.current(
-            stamp,
-            OUTER_BASE,
-            INNER_BASE,
-            R::constant(drop) / value + self.bias.extend(slopes),
-        );
-        nodes.conductance(stamp, pair, pair, value.recip());
-        let [by_emitter, by_collector] = slopes;
-        nodes.conductance(stamp, pair, BASE_EMITTER, by_emitter * sign);
-        nodes.conductance(stamp, pair, BASE_COLLECTOR, by_collector * sign);
-    }
-
-    /// Adds the charges of the junctions, and the external base-collector depletion,
-    /// whose voltage SPICE never limits.
-    fn charges(&self, charges: &Charges<R>, at: &Local<'_>, stamp: &mut Stamp<'_, R>) {
-        let (nodes, sign) = (&self.shape.stamp, self.prepared.sign);
-        let (bias, state) = (self.bias, self.state);
-        let [vbe, vbc] = bias.voltages;
-        let (charge, capacitance, cross) = charges.base_emitter(vbe, vbc, state);
-        let charge = (charge + bias.extend([capacitance, cross])) * sign;
-        nodes.charge(stamp, INNER_BASE, INNER_EMITTER, charge);
-        nodes.capacitance(stamp, BASE_EMITTER, BASE_EMITTER, capacitance);
-        nodes.capacitance(stamp, BASE_EMITTER, BASE_COLLECTOR, cross);
-        let (charge, capacitance) = charges.base_collector(vbc, state);
-        let [_, beyond_collector] = bias.beyond;
-        let charge = (charge + capacitance * beyond_collector) * sign;
-        nodes.charge(stamp, INNER_BASE, INNER_COLLECTOR, charge);
-        nodes.capacitance(stamp, BASE_COLLECTOR, BASE_COLLECTOR, capacitance);
-        let external = sign * (nodes.voltage(at, OUTER_BASE) - nodes.voltage(at, INNER_COLLECTOR));
-        let (charge, capacitance) =
-            depletion_charge_with_capacitance(charges.external_base_collector.as_ref(), external);
-        let pair = (OUTER_BASE, INNER_COLLECTOR);
-        nodes.charge(stamp, OUTER_BASE, INNER_COLLECTOR, charge * sign);
-        nodes.capacitance(stamp, pair, pair, capacitance);
     }
 }
 
@@ -2332,15 +2276,22 @@ mod tests {
 
     #[test]
     fn the_base_resistance_shape_is_continuous_where_its_series_hands_over() {
+        let shape_at = |z: f64| {
+            let Dual {
+                value,
+                gradient: [slope],
+            } = shape(Dual::<f64, 1>::variable(z));
+            (value, slope)
+        };
         let z = 0.25 - 1e-12;
-        let (below, below_slope) = shape(z);
+        let (below, below_slope) = shape_at(z);
         let tan = z.tan();
         let direct = (tan - z) / (z * tan * tan);
         assert!((below / direct - 1.0).abs() < 1e-14, "{below} vs {direct}");
-        let (above, above_slope) = shape(0.25 + 1e-12);
+        let (above, above_slope) = shape_at(0.25 + 1e-12);
         assert!((above / below - 1.0).abs() < 1e-11);
         assert!((above_slope / below_slope - 1.0).abs() < 1e-9);
-        assert!((shape(1e-9).0 - 1.0 / 3.0).abs() < 1e-17);
+        assert!((shape_at(1e-9).0 - 1.0 / 3.0).abs() < 1e-17);
     }
 
     #[test]
@@ -2587,8 +2538,14 @@ mod tests {
         let capacitance = 2e-12 * (1.0 + 1e-3 * difference);
         let potential = 0.75 - 2e-3 * difference;
         let grading = 0.33 * polynomial(1e-3, 1e-6);
-        let at =
-            |voltage| depletion_charge_with_capacitance(charges.base_emitter.as_ref(), voltage).1;
+        let at = |voltage| {
+            let charge = depletion_charge(
+                charges.base_emitter.as_ref(),
+                Dual::<f64, 1>::variable(voltage),
+            );
+            let [capacitance] = charge.gradient;
+            capacitance
+        };
         assert_close(
             &[at(0.0), at(0.1)],
             &[

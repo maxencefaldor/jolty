@@ -6,11 +6,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
-    Depletion, Temperatures, critical_voltage, depletion_charge_with_capacitance,
-    junction_current_with_slope, limit_gate, limit_junction,
+    Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
+    limit_junction,
 };
-use crate::kernel::parts::{self, Bias, Nodes, Series, series_value};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
@@ -64,7 +65,7 @@ pub struct Jfet;
 /// resistances, and among its gate and the drain and source behind them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JfetShape {
-    stamp: Nodes<3>,
+    stamp: Nodes<STAMPED>,
     drain_series: Series,
     source_series: Series,
 }
@@ -92,7 +93,7 @@ pub struct PreparedJfet<R: Real> {
 pub struct JfetMemory {
     /// The gate-source and gate-drain voltages of the last evaluation, from which the next
     /// steps are limited.
-    last: [f64; 2],
+    last: [f64; JUNCTIONS],
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
     variables: [f64; 3],
 }
@@ -126,6 +127,36 @@ const REGIONS: Regions = Regions {
 const GATE: usize = 0;
 const INNER_DRAIN: usize = 1;
 const INNER_SOURCE: usize = 2;
+
+/// The number of stamped nodes.
+const STAMPED: usize = 3;
+
+/// The number of voltages the transistor's equations take as variables.
+const VARIABLE_COUNT: usize = 3;
+
+/// The number of those voltages, the first, across the gate junctions, whose steps are
+/// limited.
+const JUNCTIONS: usize = 2;
+
+/// The pairs of stamped nodes across which the variables lie: the gate-source and the
+/// gate-drain junctions, and the channel, from the drain to the source.
+const VARIABLES: [(usize, usize); VARIABLE_COUNT] = [GATE_SOURCE, GATE_DRAIN, DRAIN_SOURCE];
+const GATE_SOURCE: (usize, usize) = (GATE, INNER_SOURCE);
+const GATE_DRAIN: (usize, usize) = (GATE, INNER_DRAIN);
+const DRAIN_SOURCE: (usize, usize) = (INNER_DRAIN, INNER_SOURCE);
+
+/// The variables' positions among [`VARIABLES`], by SPICE's names.
+const VGS: usize = 0;
+const VGD: usize = 1;
+const VDS: usize = 2;
+
+/// The variables the channel's law reads, by their positions among [`VARIABLES`], in the
+/// order its numbers carry their derivatives: the gate-source voltage, then the
+/// drain-source voltage.
+const CHANNEL: [usize; 2] = [VGS, VDS];
+
+/// The variables of one evaluation.
+type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -235,9 +266,9 @@ impl<R: Real> DrainCurrent<R> {
         (region, [vgst, across - vgst.max(0.0)])
     }
 
-    /// The current from drain to source, and its derivatives with respect to `vgs` at
-    /// constant `vds`, and to `vds` at constant `vgs`, in the channel's region there.
-    fn evaluate(&self, vgs: f64, vds: f64) -> (R, R, R) {
+    /// The current from drain to source, a number of the channel's law, at `vgs` and
+    /// `vds`, in the channel's region there.
+    fn evaluate(&self, vgs: Dual<R, 2>, vds: Dual<R, 2>) -> Dual<R, 2> {
         let Self {
             beta,
             threshold,
@@ -245,41 +276,30 @@ impl<R: Real> DrainCurrent<R> {
             tail,
             tail_factor,
         } = *self;
-        let zero = R::constant(0.0);
-        let (region, _) = self.region(vgs, vds);
+        let (region, _) = self.region(vgs.value.value(), vds.value.value());
         if region == Region::Off {
-            return (zero, zero, zero);
+            return Dual::number(0.0);
         }
-        if vds >= 0.0 {
-            let vgst = -(threshold - vgs);
-            let betap = beta * (lambda * vds + 1.0);
-            if region == Region::Linear {
-                let a = tail * 2.0 + tail_factor * 3.0 * (vgst - vds);
-                let c = ((tail_factor * vds - tail) * vds + vgst * a) * vds;
-                let gm = betap * vds * (a + tail_factor * 3.0 * vgst);
-                let gds = betap * (vgst - vds) * a + beta * lambda * c;
-                (betap * c, gm, gds)
+        if vds.value.value() >= 0.0 {
+            let vgst = vgs.plus(-threshold);
+            let betap = (vds.scale(lambda) + 1.0).scale(beta);
+            let c = if region == Region::Linear {
+                let a = (vgst - vds).scale(tail_factor * 3.0).plus(tail * 2.0);
+                (vds.scale(tail_factor).plus(-tail) * vds + vgst * a) * vds
             } else {
-                let factor = vgst * tail_factor;
-                let c = vgst * vgst * (tail + factor);
-                let gm = betap * vgst * (tail * 2.0 + factor * 3.0);
-                (betap * c, gm, lambda * beta * c)
-            }
+                vgst * vgst * vgst.scale(tail_factor).plus(tail)
+            };
+            betap * c
         } else {
             // The drain and the source swap: the gate-drain voltage controls the channel.
-            let vgdt = -(threshold - (vgs - vds));
-            let betap = beta * -(lambda * vds - 1.0);
+            let vgdt = (vgs - vds).plus(-threshold);
+            let betap = (1.0 - vds.scale(lambda)).scale(beta);
             if region == Region::Linear {
-                let a = tail * 2.0 + tail_factor * 3.0 * (vgdt + vds);
-                let c = ((-tail_factor * vds - tail) * -vds + vgdt * a) * vds;
-                let gm = betap * vds * (a + tail_factor * 3.0 * vgdt);
-                let gds = betap * (vgdt + vds) * a - beta * lambda * c - gm;
-                (betap * c, gm, gds)
+                let a = (vgdt + vds).scale(tail_factor * 3.0).plus(tail * 2.0);
+                let c = ((-vds.scale(tail_factor)).plus(-tail) * -vds + vgdt * a) * vds;
+                betap * c
             } else {
-                let factor = vgdt * tail_factor;
-                let c = vgdt * vgdt * (tail + factor);
-                let gm = -betap * vgdt * (tail * 2.0 + factor * 3.0);
-                (-betap * c, gm, lambda * beta * c - gm)
+                -(betap * (vgdt * vgdt * vgdt.scale(tail_factor).plus(tail)))
             }
         }
     }
@@ -368,79 +388,41 @@ impl Kernel for Jfet {
         let [drain_series, source_series] = prepared.series;
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
-        let nodes = &shape.stamp;
-
-        let sign = prepared.sign;
-        let gate = nodes.voltage(at, GATE);
-        let applied = [
-            sign * (gate - nodes.voltage(at, INNER_SOURCE)),
-            sign * (gate - nodes.voltage(at, INNER_DRAIN)),
-        ];
-        let limit = |new: f64, old: f64| {
-            let junction = limit_junction(
-                new,
-                old,
-                prepared.thermal_voltage.value(),
-                prepared.critical_voltage,
-            );
-            let limited = limit_gate(
-                junction.unwrap_or(new),
-                old,
-                prepared.channel.threshold.value(),
-            );
-            limited.or(junction).filter(|_| at.limiting)
+        let bias = prepared.bias(shape, memory, at, stamp);
+        let [vgs, vgd, vds] = bias.voltages;
+        let (region, [overdrive, margin]) = prepared.channel.region(vgs, vds);
+        memory.variables = [f64::from(region as u8), overdrive, margin];
+        let added = Oriented {
+            nodes: &shape.stamp,
+            sign: prepared.sign,
+            bias: &bias,
+            variables: VARIABLES,
         };
-        let [[applied_source, applied_drain], [last_source, last_drain]] = [applied, memory.last];
-        let limits = [
-            limit(applied_source, last_source),
-            limit(applied_drain, last_drain),
-        ];
-        if limits.iter().any(Option::is_some) {
-            stamp.mark_limited();
-        }
-        let [limit_source, limit_drain] = limits;
-        let limited = [
-            limit_source.unwrap_or(applied_source),
-            limit_drain.unwrap_or(applied_drain),
-        ];
-        memory.last = limited;
-        let Bias {
-            voltages: [vgs, vgd],
-            beyond: [beyond_source, beyond_drain],
-        } = Bias::new(applied, limited);
-
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
         // Each gate junction, evaluated at its limited voltage and extended linearly.
-        for (inner, voltage, delta, depletion) in [
-            (
-                INNER_SOURCE,
-                vgs,
-                beyond_source,
-                prepared.gate_source.as_ref(),
-            ),
-            (INNER_DRAIN, vgd, beyond_drain, prepared.gate_drain.as_ref()),
+        for (position, pair, voltage, depletion) in [
+            (VGS, GATE_SOURCE, vgs, prepared.gate_source.as_ref()),
+            (VGD, GATE_DRAIN, vgd, prepared.gate_drain.as_ref()),
         ] {
-            let (current, conductance) = junction_current_with_slope(
+            let voltage = Dual::<R, 1>::variable(voltage);
+            let current = junction_current(
                 voltage,
                 prepared.saturation_current,
                 prepared.thermal_voltage,
-            );
-            let conductance = conductance + at.gmin;
-            let current = current + at.gmin * voltage + conductance * delta;
-            nodes.current(stamp, GATE, inner, current * sign);
-            nodes.conductance(stamp, (GATE, inner), (GATE, inner), conductance);
-            let (charge, capacitance) = depletion_charge_with_capacitance(depletion, voltage);
-            nodes.charge(stamp, GATE, inner, (charge + capacitance * delta) * sign);
-            nodes.capacitance(stamp, (GATE, inner), (GATE, inner), capacitance);
+            ) + voltage * at.gmin;
+            let junction = added.reading([position]);
+            junction.add_current(stamp, sums, pair, current);
+            junction.add_charge(stamp, sums, pair, depletion_charge(depletion, voltage));
         }
-
-        let (region, [overdrive, margin]) = prepared.channel.region(vgs, vgs - vgd);
-        memory.variables = [f64::from(region as u8), overdrive, margin];
-        let (current, gm, gds) = prepared.channel.evaluate(vgs, vgs - vgd);
-        let current = current + gm * beyond_source + gds * (beyond_source - beyond_drain);
-        let channel = (INNER_DRAIN, INNER_SOURCE);
-        nodes.current(stamp, INNER_DRAIN, INNER_SOURCE, current * sign);
-        nodes.conductance(stamp, channel, (GATE, INNER_SOURCE), gm);
-        nodes.conductance(stamp, channel, channel, gds);
+        // Within the channel's law, `vgs` comes first and `vds` second.
+        let [vgs, vds] = Dual::variables([vgs, vds]);
+        let current = prepared.channel.evaluate(vgs, vds);
+        added
+            .reading(CHANNEL)
+            .add_current(stamp, sums, DRAIN_SOURCE, current);
+        derivatives.stamp(&shape.stamp, stamp);
     }
 
     fn variable_names() -> &'static [&'static str] {
@@ -472,10 +454,12 @@ impl Kernel for Jfet {
             .source_series
             .noise(source_series, ("source thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let gate = nodes.voltage(at, GATE);
-        let vgs = prepared.sign * (gate - nodes.voltage(at, INNER_SOURCE));
-        let vgd = prepared.sign * (gate - nodes.voltage(at, INNER_DRAIN));
-        let (current, gm, _) = prepared.channel.evaluate(vgs, vgs - vgd);
+        let voltages = [GATE_SOURCE, DRAIN_SOURCE].map(|(plus, minus)| {
+            prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
+        });
+        let [vgs, vds] = Dual::variables(voltages);
+        let current = prepared.channel.evaluate(vgs, vds);
+        let [gm, _] = current.gradient;
         let channel = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];
         let conductance = 2.0 / 3.0 * gm.value();
         sources.push(NoiseSource::thermal(
@@ -484,7 +468,53 @@ impl Kernel for Jfet {
             conductance,
             temperature,
         ));
-        prepared.flicker.add(channel, current.value(), sources);
+        prepared
+            .flicker
+            .add(channel, current.value.value(), sources);
+    }
+}
+
+impl<R: Real> PreparedJfet<R> {
+    /// The variables at `at`: the gate junctions' voltages, each step limited as a
+    /// junction's and then about the threshold from the last evaluation's, which `memory`
+    /// keeps and takes the new ones, and the drain-source voltage between them.
+    fn bias(
+        &self,
+        shape: &JfetShape,
+        memory: &mut JfetMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) -> Bias {
+        let nodes = &shape.stamp;
+        let applied = VARIABLES
+            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let mut voltages = applied;
+        let mut limited = false;
+        for (voltage, last) in voltages.iter_mut().zip(&mut memory.last) {
+            if at.limiting {
+                let junction = limit_junction(
+                    *voltage,
+                    *last,
+                    self.thermal_voltage.value(),
+                    self.critical_voltage,
+                );
+                let gate = limit_gate(
+                    junction.unwrap_or(*voltage),
+                    *last,
+                    self.channel.threshold.value(),
+                );
+                if let Some(step) = gate.or(junction) {
+                    *voltage = step;
+                    limited = true;
+                }
+            }
+            *last = *voltage;
+        }
+        if limited {
+            stamp.mark_limited();
+        }
+        let [vgs, vgd, _] = voltages;
+        Bias::new(applied, [vgs, vgd, vgs - vgd])
     }
 }
 

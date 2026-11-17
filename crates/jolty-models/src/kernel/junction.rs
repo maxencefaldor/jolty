@@ -200,22 +200,6 @@ pub(crate) fn junction_current<R: Real, const N: usize>(
     }
 }
 
-/// The current through a junction at `voltage` and its derivative, as [`junction_current`]
-/// computes them, for the kernels that still write their own derivatives by hand, the
-/// JFET's and the bipolar transistor's.
-pub(crate) fn junction_current_with_slope<R: Real>(
-    voltage: f64,
-    saturation: R,
-    slope: R,
-) -> (R, R) {
-    let [voltage] = Dual::variables([voltage]);
-    let Dual {
-        value,
-        gradient: [derivative],
-    } = junction_current(voltage, saturation, slope);
-    (value, derivative)
-}
-
 /// The voltage above which a junction's steps are limited: where its current's curvature
 /// takes over, `slope · ln(slope / (√2 · Is))`.
 pub(crate) fn critical_voltage(saturation: f64, slope: f64) -> f64 {
@@ -425,21 +409,6 @@ pub(crate) fn depletion_charge<R: Real, const N: usize>(
     voltage: Dual<R, N>,
 ) -> Dual<R, N> {
     depletion.map_or(Dual::number(0.0), |depletion| depletion.evaluate(voltage))
-}
-
-/// The charge of an optional depletion at `voltage` and its capacitance, as
-/// [`depletion_charge`] computes them, for the kernels that still write their own
-/// derivatives by hand, the JFET's and the bipolar transistor's.
-pub(crate) fn depletion_charge_with_capacitance<R: Real>(
-    depletion: Option<&Depletion<R>>,
-    voltage: f64,
-) -> (R, R) {
-    let [voltage] = Dual::variables([voltage]);
-    let Dual {
-        value,
-        gradient: [capacitance],
-    } = depletion_charge(depletion, voltage);
-    (value, capacitance)
 }
 
 #[cfg(test)]

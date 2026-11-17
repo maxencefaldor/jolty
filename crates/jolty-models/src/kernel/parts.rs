@@ -470,17 +470,6 @@ impl<const N: usize> Bias<N> {
         }
         Self { voltages, beyond }
     }
-
-    /// How far a value with derivatives `slopes` moves from the voltages evaluated at to
-    /// the applied ones.
-    pub(crate) fn extend<R: Real>(&self, slopes: [R; N]) -> R {
-        slopes
-            .into_iter()
-            .zip(self.beyond)
-            .fold(R::constant(0.0), |moved, (slope, beyond)| {
-                moved + slope * beyond
-            })
-    }
 }
 
 /// What a transistor adds at one bias: currents and charges between its stamped nodes,
@@ -585,6 +574,22 @@ impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
                 .unwrap_or(0.0)
         });
         value.extend(beyond)
+    }
+
+    /// Adds `gradient`, the derivatives of an equation of the instance's own, a law of
+    /// these variables, with respect to them, at `row`, that equation's local entries at
+    /// each stamped node.
+    pub(crate) fn add_conductances<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        row: &[usize; M],
+        gradient: [R; K],
+    ) {
+        let entry = |index: usize| row.get(index).copied().unwrap_or(NOWHERE);
+        for ((plus, minus), derivative) in self.variables().into_iter().zip(gradient) {
+            stamp.add_conductance(entry(plus), derivative);
+            stamp.add_conductance(entry(minus), -derivative);
+        }
     }
 
     /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
