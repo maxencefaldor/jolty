@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Reading, Series};
 use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
@@ -116,8 +116,38 @@ const VARIABLES: [(usize, usize); VARIABLE_COUNT] = [
     (BP, CX),
 ];
 
-/// A number with its derivatives with respect to the transistor's variables.
-type Voltage<R> = Dual<R, VARIABLE_COUNT>;
+/// The variables' positions among [`VARIABLES`], by ngspice's names.
+const VBEI: usize = 0;
+const VBEX: usize = 1;
+const VBCI: usize = 2;
+const VBCX: usize = 3;
+const VBEP: usize = 4;
+const VBCP: usize = 5;
+const VRCI: usize = 6;
+const VRBI: usize = 7;
+const VRBP: usize = 8;
+
+/// The variables each law of the transistor's equations reads, by their positions among
+/// [`VARIABLES`], in the order its numbers carry their derivatives: each law computes at
+/// the width of those alone.
+///
+/// The intrinsic transistor's transport currents, avalanche and base-emitter charge read
+/// its base-emitter and base-collector junctions.
+const INTRINSIC: [usize; 2] = [VBEI, VBCI];
+/// The intrinsic base resistance's current reads its own drop, then the intrinsic
+/// junctions its base charge reads.
+const INTRINSIC_BASE: [usize; 3] = [VRBI, VBEI, VBCI];
+/// The intrinsic collector resistance's current reads its own drop, then the junctions at
+/// either end of the epi layer.
+const INTRINSIC_COLLECTOR: [usize; 3] = [VRCI, VBCI, VBCX];
+/// The parasitic transistor's base-emitter charge reads its base-emitter junction and the
+/// intrinsic base-collector junction, which share its forward current.
+const PARASITIC_FORWARD: [usize; 2] = [VBEP, VBCI];
+/// Its transport current reads those, then its base-collector junction.
+const PARASITIC: [usize; 3] = [VBEP, VBCI, VBCP];
+/// The parasitic base resistance's current reads its own drop, then the junctions its
+/// transistor's base charge reads.
+const PARASITIC_BASE: [usize; 3] = [VRBP, VBEP, VBCI];
 
 /// The variables of one evaluation.
 type Bias = parts::Bias<VARIABLE_COUNT>;
@@ -792,54 +822,115 @@ struct Charges<R: Real> {
     fixed_substrate: R,
 }
 
-/// Every current and charge of one evaluation, oriented as an NPN's, each with its
-/// derivatives with respect to the variables.
+/// Every current and charge of one evaluation, oriented as an NPN's, each computed at the
+/// width of the law it belongs to, with its derivatives with respect to the variables that
+/// law reads, in its order.
 struct Branches<R: Real> {
-    /// The base-emitter currents at the intrinsic and at the extrinsic base.
-    ibe: Voltage<R>,
-    ibex: Voltage<R>,
-    /// The forward and the reverse transport currents.
-    itzf: Voltage<R>,
-    itzr: Voltage<R>,
-    /// The base-collector current, less the avalanche current.
-    ibc: Voltage<R>,
-    /// The parasitic transistor's base-emitter current.
-    ibep: Voltage<R>,
+    /// The base-emitter currents at the intrinsic and at the extrinsic base, of `Vbei` and
+    /// `Vbex`.
+    ibe: Dual<R, 1>,
+    ibex: Dual<R, 1>,
+    /// The forward and the reverse transport currents, of [`INTRINSIC`].
+    itzf: Dual<R, 2>,
+    itzr: Dual<R, 2>,
+    /// The base-collector junction's current, of `Vbci`.
+    ibc: Dual<R, 1>,
+    /// The weak avalanche current, from the intrinsic collector into the intrinsic base, of
+    /// [`INTRINSIC`], where the transistor has one.
+    avalanche: Option<Dual<R, 2>>,
+    /// The parasitic transistor's base-emitter current, of `Vbep`.
+    ibep: Dual<R, 1>,
     /// The currents through the intrinsic collector, intrinsic base and parasitic base
-    /// resistances.
-    irci: Voltage<R>,
-    irbi: Voltage<R>,
-    irbp: Voltage<R>,
-    /// The parasitic transistor's base-collector current and its transport current.
-    ibcp: Voltage<R>,
-    iccp: Voltage<R>,
-    qbe: Voltage<R>,
-    qbex: Voltage<R>,
-    qbc: Voltage<R>,
-    qbcx: Voltage<R>,
-    qbep: Voltage<R>,
-    qbcp: Voltage<R>,
+    /// resistances, of [`INTRINSIC_COLLECTOR`], [`INTRINSIC_BASE`] and
+    /// [`PARASITIC_BASE`].
+    irci: Dual<R, 3>,
+    irbi: Dual<R, 3>,
+    irbp: Dual<R, 3>,
+    /// The parasitic transistor's base-collector current, of `Vbcp`, and its transport
+    /// current, of [`PARASITIC`].
+    ibcp: Dual<R, 1>,
+    iccp: Dual<R, 3>,
+    charges: JunctionCharges<R>,
 }
 
-/// The intrinsic transistor's state at one bias.
+/// The charges on the intrinsic base-emitter junction, of [`INTRINSIC`], on the extrinsic
+/// base-emitter, intrinsic and extrinsic base-collector junctions, of `Vbex`, `Vbci` and
+/// `Vbcx`, on the parasitic transistor's base-emitter junction, of [`PARASITIC_FORWARD`],
+/// and on its base-collector junction, of `Vbcp`.
+struct JunctionCharges<R: Real> {
+    qbe: Dual<R, 2>,
+    qbex: Dual<R, 1>,
+    qbc: Dual<R, 1>,
+    qbcx: Dual<R, 1>,
+    qbep: Dual<R, 2>,
+    qbcp: Dual<R, 1>,
+}
+
+impl<R: Real> JunctionCharges<R> {
+    /// Adds each charge through `added`, by the law it belongs to, its derivatives summed
+    /// into `derivatives`.
+    fn add(
+        self,
+        added: &Oriented<'_, STAMPED, VARIABLE_COUNT>,
+        derivatives: &mut Derivatives<R, STAMPED>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let Self {
+            qbe,
+            qbex,
+            qbc,
+            qbcx,
+            qbep,
+            qbcp,
+        } = self;
+        let sums = derivatives;
+        added
+            .reading(INTRINSIC)
+            .add_charge(stamp, sums, (BI, EI), qbe);
+        added
+            .reading([VBEX])
+            .add_charge(stamp, sums, (BX, EI), qbex);
+        added.reading([VBCI]).add_charge(stamp, sums, (BI, CI), qbc);
+        added
+            .reading([VBCX])
+            .add_charge(stamp, sums, (BI, CX), qbcx);
+        added
+            .reading(PARASITIC_FORWARD)
+            .add_charge(stamp, sums, (BX, BP), qbep);
+        added
+            .reading([VBCP])
+            .add_charge(stamp, sums, (SI, BP), qbcp);
+    }
+}
+
+/// The intrinsic transistor's state at one bias: its forward current, of `Vbei`, its
+/// reverse current, of `Vbci`, and its normalized base charges, of [`INTRINSIC`].
 struct TransportState<R: Real> {
-    ifi: Voltage<R>,
-    iri: Voltage<R>,
-    q1: Voltage<R>,
-    qb: Voltage<R>,
+    ifi: Dual<R, 1>,
+    iri: Dual<R, 1>,
+    q1: Dual<R, 2>,
+    qb: Dual<R, 2>,
+}
+
+/// The parasitic transistor's state at one bias: its forward current and its normalized
+/// base charge, of [`PARASITIC_FORWARD`], and its transport current, of [`PARASITIC`].
+struct ParasiticState<R: Real> {
+    ifp: Dual<R, 2>,
+    qbp: Dual<R, 2>,
+    iccp: Dual<R, 3>,
 }
 
 impl<R: Real> Core<R> {
     /// `e^{v / (n · Vt)}`.
-    fn exponential(&self, voltage: Voltage<R>, emission: R) -> Voltage<R> {
+    fn exponential<const N: usize>(&self, voltage: Dual<R, N>, emission: R) -> Dual<R, N> {
         voltage.divide(emission * self.thermal_voltage).exp()
     }
 
     /// The sum of `diodes`' currents at `voltage`, `I · (e^{v / (n · Vt)} − 1)` each.
-    fn diodes(&self, voltage: Voltage<R>, diodes: [Diode<R>; 2]) -> Voltage<R> {
+    fn diodes<const N: usize>(&self, voltage: Dual<R, N>, diodes: [Diode<R>; 2]) -> Dual<R, N> {
         diodes
             .into_iter()
-            .fold(Voltage::number(0.0), |sum, (current, emission)| {
+            .fold(Dual::number(0.0), |sum, (current, emission)| {
                 sum + (self.exponential(voltage, emission) - 1.0).scale(current)
             })
     }
@@ -850,52 +941,52 @@ impl<R: Real> Core<R> {
         clippy::similar_names,
         reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
     )]
-    fn evaluate(&self, voltages: [Voltage<R>; VARIABLE_COUNT], gmin: f64) -> Branches<R> {
-        let [vbei, vbex, vbci, vbcx, vbep, vbcp, vrci, vrbi, vrbp] = voltages;
+    fn evaluate(&self, voltages: [f64; VARIABLE_COUNT], gmin: f64) -> Branches<R> {
+        let [vbei, vbex, vbci, vbcx, vbep, vbcp, vrci, vrbi, vrbp] =
+            voltages.map(Dual::<R, 1>::variable);
         let charges = &self.charges;
         let qdbe = charges.base_emitter.charge(vbei);
         let qdbc = charges.base_collector.charge(vbci);
         let state = self.transport([vbei, vbci], [qdbe, qdbc]);
-        let itzf = state.ifi / state.qb;
-        let itzr = state.iri / state.qb;
-        let (ifp, qbp, iccp) = self.parasitic([vbep, vbci, vbcp]);
+        // Within the intrinsic transistor's law, `Vbei` comes first and `Vbci` second.
+        let itzf = state.ifi.embed([0]) / state.qb;
+        let itzr = state.iri.embed([1]) / state.qb;
+        let parasitic = self.parasitic([vbep, vbci, vbcp]);
         let base = &self.base;
-        let breakdown = |voltage: Voltage<R>| {
-            base.breakdown.map_or(Voltage::number(0.0), |breakdown| {
+        let breakdown = |voltage: Dual<R, 1>| {
+            base.breakdown.map_or(Dual::number(0.0), |breakdown| {
                 -(((-voltage).plus(-breakdown.voltage))
                     .divide(breakdown.slope)
                     .exp()
-                    - Voltage::constant(breakdown.at_zero))
+                    - Dual::constant(breakdown.at_zero))
                 .scale(breakdown.current)
             })
         };
         let ibe = (self.diodes(vbei, base.emitter) + breakdown(vbei)).scale(base.fraction);
         let ibex =
             (self.diodes(vbex, base.emitter) + breakdown(vbex)).scale(-(base.fraction - 1.0));
-        let ibcj = self.diodes(vbci, base.collector);
-        let ibc = match &base.avalanche {
-            Some(avalanche) => {
-                let across = -(vbci.plus(-avalanche.potential));
-                let depleted = ((across * across + 0.01).sqrt() + across) * 0.5;
-                let factor = depleted.scale(avalanche.coefficient)
-                    * (-depleted
-                        .pow(avalanche.grading - 1.0)
-                        .scale(avalanche.exponent_coefficient))
-                    .exp();
-                ibcj - (itzf - itzr - ibcj) * factor
-            }
-            None => ibcj,
-        };
+        let ibc = self.diodes(vbci, base.collector);
+        let avalanche = base.avalanche.map(|avalanche| {
+            let across = -(vbci.plus(-avalanche.potential));
+            let depleted = ((across * across + 0.01).sqrt() + across) * 0.5;
+            let factor = depleted.scale(avalanche.coefficient)
+                * (-depleted
+                    .pow(avalanche.grading - 1.0)
+                    .scale(avalanche.exponent_coefficient))
+                .exp();
+            (itzf - itzr - ibc.embed([1])) * factor.embed([1])
+        });
         let ibep = self.diodes(vbep, base.parasitic_emitter);
         let (irci, kbci, kbcx) = self.collector([vrci, vbci, vbcx]);
-        let [intrinsic, parasitic] = self.base_resistances;
-        let irbi = (vrbi * state.qb).divide(intrinsic);
-        let irbp = (vrbp * qbp).divide(parasitic);
+        let [intrinsic, parasitic_resistance] = self.base_resistances;
+        // Within a base resistance's law, its own drop comes first, then its transistor's.
+        let irbi = (vrbi.embed([0]) * state.qb.embed([1, 2])).divide(intrinsic);
+        let irbp = (vrbp.embed([0]) * parasitic.qbp.embed([1, 2])).divide(parasitic_resistance);
         let ibcp = self.diodes(vbcp, base.parasitic_collector);
-        let [qbe, qbex, qbc, qbcx, qbep, qbcp] = self.charges(
+        let charges = self.charges(
             &state,
             ([qdbe, qdbc], [vbex, vbci, vbep, vbcp]),
-            (ifp, kbci, kbcx),
+            (parasitic.ifp, kbci, kbcx),
         );
         Branches {
             ibe: ibe + vbei * gmin,
@@ -903,18 +994,14 @@ impl<R: Real> Core<R> {
             itzf,
             itzr,
             ibc: ibc + vbci * gmin,
+            avalanche,
             ibep: ibep + vbep * gmin,
-            irci: irci + vrci * gmin + vbci * gmin + vbcx * gmin,
+            irci: irci + vrci.embed([0]) * gmin + vbci.embed([1]) * gmin + vbcx.embed([2]) * gmin,
             irbi,
             irbp,
             ibcp: ibcp + vbcp * gmin,
-            iccp,
-            qbe,
-            qbex,
-            qbc,
-            qbcx,
-            qbep,
-            qbcp,
+            iccp: parasitic.iccp,
+            charges,
         }
     }
 
@@ -927,8 +1014,8 @@ impl<R: Real> Core<R> {
     )]
     fn transport(
         &self,
-        [vbei, vbci]: [Voltage<R>; 2],
-        [qdbe, qdbc]: [Voltage<R>; 2],
+        [vbei, vbci]: [Dual<R, 1>; 2],
+        [qdbe, qdbc]: [Dual<R, 1>; 2],
     ) -> TransportState<R> {
         let transport = &self.transport;
         let [forward, reverse] = transport.emission;
@@ -936,12 +1023,13 @@ impl<R: Real> Core<R> {
         let iri = (self.exponential(vbci, reverse) - 1.0)
             .scale(transport.saturation_current * transport.reverse_ratio);
         let [inverse_forward, inverse_reverse] = transport.inverse_early;
-        let q1z = qdbe.scale(inverse_reverse) + qdbc.scale(inverse_forward) + 1.0;
+        let q1z =
+            qdbe.embed([0]).scale(inverse_reverse) + qdbc.embed([1]).scale(inverse_forward) + 1.0;
         // VBIC smooths q1 above zero so the base charge never vanishes.
         let shifted = q1z - 1e-4;
         let q1 = ((shifted * shifted + 1e-8).sqrt() + shifted) * 0.5 + 1e-4;
         let [knee_forward, knee_reverse] = transport.inverse_knee;
-        let q2 = ifi.scale(knee_forward) + iri.scale(knee_reverse);
+        let q2 = ifi.embed([0]).scale(knee_forward) + iri.embed([1]).scale(knee_reverse);
         let rolloff = transport.rolloff;
         let qb = match transport.form {
             BaseCharge::Vbic => (q1 + (q1.pow(rolloff.recip()) + q2 * 4.0).pow(rolloff)) * 0.5,
@@ -957,50 +1045,61 @@ impl<R: Real> Core<R> {
         clippy::similar_names,
         reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
     )]
-    fn parasitic(
-        &self,
-        [vbep, vbci, vbcp]: [Voltage<R>; 3],
-    ) -> (Voltage<R>, Voltage<R>, Voltage<R>) {
+    fn parasitic(&self, [vbep, vbci, vbcp]: [Dual<R, 1>; 3]) -> ParasiticState<R> {
         let Some(parasitic) = &self.parasitic else {
-            let zero = Voltage::number(0.0);
-            return (zero, Voltage::number(1.0), zero);
+            return ParasiticState {
+                ifp: Dual::number(0.0),
+                qbp: Dual::number(1.0),
+                iccp: Dual::number(0.0),
+            };
         };
         let emission = parasitic.emission;
-        let ifp = (self.exponential(vbep, emission).scale(parasitic.fraction)
+        // Within its forward current's law, `Vbep` comes first and `Vbci` second; its
+        // transport current's adds `Vbcp` third.
+        let ifp = (self
+            .exponential(vbep, emission)
+            .scale(parasitic.fraction)
+            .embed([0])
             + self
                 .exponential(vbci, emission)
                 .scale(-(parasitic.fraction - 1.0))
+                .embed([1])
             - 1.0)
             .scale(parasitic.saturation_current);
         let q2p = ifp.scale(parasitic.inverse_knee);
         let qbp = ((q2p * 4.0 + 1.0).sqrt() + 1.0) * 0.5;
         let irp = (self.exponential(vbcp, emission) - 1.0).scale(parasitic.saturation_current);
-        (ifp, qbp, (ifp - irp) / qbp)
+        let iccp = (ifp.embed([0, 1]) - irp.embed([2])) / qbp.embed([0, 1]);
+        ParasiticState { ifp, qbp, iccp }
     }
 
     /// The current through the intrinsic collector resistance, quasi-saturating by Kull's
     /// model with the epi layer's velocity saturation, at the voltages across it, across
     /// the intrinsic base-collector junction and from the intrinsic base to the collector
     /// behind its extrinsic resistance, with the epi layer's normalized charges at both
-    /// ends.
+    /// ends, each of its own junction's voltage.
     #[expect(
         clippy::similar_names,
         reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
     )]
     fn collector(
         &self,
-        [vrci, vbci, vbcx]: [Voltage<R>; 3],
-    ) -> (Voltage<R>, Voltage<R>, Voltage<R>) {
+        [vrci, vbci, vbcx]: [Dual<R, 1>; 3],
+    ) -> (Dual<R, 3>, Dual<R, 1>, Dual<R, 1>) {
         let collector = &self.collector;
         let one = R::constant(1.0);
         let kbci = (self.exponential(vbci, one).scale(collector.doping) + 1.0).sqrt();
         let kbcx = (self.exponential(vbcx, one).scale(collector.doping) + 1.0).sqrt();
-        let ratio = (kbci + 1.0) / (kbcx + 1.0);
-        let iohm = (vrci + (kbci - kbcx - ratio.ln()).scale(self.thermal_voltage))
-            .divide(collector.resistance);
+        // Within the law, the drop across the resistance comes first, then `Vbci` and
+        // `Vbcx`.
+        let ratio = (kbci + 1.0).embed([1]) / (kbcx + 1.0).embed([2]);
+        let across = vrci.embed([0]);
+        let iohm = (across
+            + (kbci.embed([1]) - kbcx.embed([2]) - ratio.ln()).scale(self.thermal_voltage))
+        .divide(collector.resistance);
         let velocity = collector.inverse_saturation;
         let derf = iohm.scale(velocity * collector.resistance)
-            / ((vrci * vrci + 0.01)
+            / ((across * across + 0.01)
                 .sqrt()
                 .scale(velocity * collector.inverse_factor * 0.5)
                 + 1.0);
@@ -1019,9 +1118,9 @@ impl<R: Real> Core<R> {
     fn charges(
         &self,
         state: &TransportState<R>,
-        ([qdbe, qdbc], [vbex, vbci, vbep, vbcp]): ([Voltage<R>; 2], [Voltage<R>; 4]),
-        (ifp, kbci, kbcx): (Voltage<R>, Voltage<R>, Voltage<R>),
-    ) -> [Voltage<R>; 6] {
+        ([qdbe, qdbc], [vbex, vbci, vbep, vbcp]): ([Dual<R, 1>; 2], [Dual<R, 1>; 4]),
+        (ifp, kbci, kbcx): (Dual<R, 2>, Dual<R, 1>, Dual<R, 1>),
+    ) -> JunctionCharges<R> {
         let charges = &self.charges;
         let fraction = self.base.fraction;
         let [emitter, collector, extrinsic, substrate] = charges.capacitances;
@@ -1037,32 +1136,39 @@ impl<R: Real> Core<R> {
             } else {
                 1.0
             };
+            // Within the intrinsic transistor's law, `Vbei` comes first and `Vbci` second.
             let growth = vbci
                 .scale(charges.voltage_factor)
                 .exp()
                 .scale(charges.bias_coefficient)
-                * (share * share + low);
+                .embed([1])
+                * (share * share + low).embed([0]);
             early * (growth + 1.0)
         } else {
             early
         };
         let qdbcp = charges
             .collector_substrate
-            .map_or(Voltage::number(0.0), |depletion| depletion.charge(vbcp));
-        [
-            qdbe.scale(emitter * fraction) + transit * ifi / qb,
-            charges
+            .map_or(Dual::number(0.0), |depletion| depletion.charge(vbcp));
+        JunctionCharges {
+            qbe: qdbe.scale(emitter * fraction).embed([0]) + transit * ifi.embed([0]) / qb,
+            qbex: charges
                 .base_emitter
                 .charge(vbex)
                 .scale(emitter * -(fraction - 1.0)),
-            qdbc.scale(collector)
+            qbc: qdbc.scale(collector)
                 + iri.scale(charges.reverse_transit_time)
                 + kbci.scale(charges.epi),
-            kbcx.scale(charges.epi),
-            charges.base_collector.charge(vbep).scale(extrinsic)
+            qbcx: kbcx.scale(charges.epi),
+            // Within the parasitic forward current's law, `Vbep` comes first.
+            qbep: charges
+                .base_collector
+                .charge(vbep)
+                .scale(extrinsic)
+                .embed([0])
                 + ifp.scale(charges.reverse_transit_time),
-            qdbcp.scale(substrate) + vbcp.scale(charges.fixed_substrate),
-        ]
+            qbcp: qdbcp.scale(substrate) + vbcp.scale(charges.fixed_substrate),
+        }
     }
 }
 
@@ -1704,12 +1810,13 @@ impl ExcessPhase {
     }
 
     /// Adds the network's equations, of `delay`, driven by the forward transport current
-    /// `itzf` of a transistor of polarity `sign`, and the delayed current from the
-    /// intrinsic collector to the intrinsic emitter.
+    /// `itzf` of a transistor of polarity `sign`, a number of the intrinsic transistor's
+    /// law, which `intrinsic` adds through, and the delayed current from the intrinsic
+    /// collector to the intrinsic emitter.
     fn add<R: Real>(
         &self,
-        (stamp_nodes, bias): (&Nodes<STAMPED>, &Bias),
-        (itzf, delay, sign): (Voltage<R>, R, f64),
+        (stamp_nodes, intrinsic): (&Nodes<STAMPED>, &Reading<'_, STAMPED, VARIABLE_COUNT, 2>),
+        (itzf, delay, sign): (Dual<R, 2>, R, f64),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
@@ -1717,15 +1824,12 @@ impl ExcessPhase {
         let [filtered, delayed] = [first, second].map(|unknown| at.value(unknown));
         let [[first_first, first_second], [second_first, second_second]] = self.own;
         let one = R::constant(1.0);
-        stamp.add_residual(
-            first,
-            R::constant(delayed) - itzf.extend(bias.beyond) * sign,
-        );
+        stamp.add_residual(first, R::constant(delayed) - intrinsic.extend(itzf) * sign);
         stamp.add_charge(first, delay * filtered);
         stamp.add_capacitance(first_first, delay);
         stamp.add_conductance(first_second, one);
         let entry = |index: usize| self.driven.get(index).copied().unwrap_or(usize::MAX);
-        for ((plus, minus), derivative) in VARIABLES.into_iter().zip(itzf.gradient) {
+        for ((plus, minus), derivative) in intrinsic.variables().into_iter().zip(itzf.gradient) {
             stamp.add_conductance(entry(plus), -derivative);
             stamp.add_conductance(entry(minus), derivative);
         }
@@ -1865,9 +1969,7 @@ impl Kernel for Vbic {
             }
         }
         let bias = prepared.bias(shape, memory, at, stamp);
-        let branches = prepared
-            .core
-            .evaluate(Dual::variables(bias.voltages), at.gmin);
+        let branches = prepared.core.evaluate(bias.voltages, at.gmin);
         let sign = prepared.sign;
         let [base_emitter, _, base_collector, ..] = bias.voltages;
         memory.variables = Bipolar::variables(base_emitter, base_collector);
@@ -1877,55 +1979,68 @@ impl Kernel for Vbic {
             bias: &bias,
             variables: VARIABLES,
         };
+        let intrinsic = added.reading(INTRINSIC);
         let Branches {
             ibe,
             ibex,
             itzf,
             itzr,
             ibc,
+            avalanche,
             ibep,
             irci,
             irbi,
             irbp,
             ibcp,
             iccp,
-            qbe,
-            qbex,
-            qbc,
-            qbcx,
-            qbep,
-            qbcp,
+            charges,
         } = branches;
         // Every derivative among the stamped nodes is summed here, and written once.
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
-        added.add_current(stamp, sums, (BI, EI), ibe);
-        added.add_current(stamp, sums, (BX, EI), ibex);
+        added
+            .reading([VBEI])
+            .add_current(stamp, sums, (BI, EI), ibe);
+        added
+            .reading([VBEX])
+            .add_current(stamp, sums, (BX, EI), ibex);
         match &shape.excess {
             Some(excess) => {
-                added.add_current(stamp, sums, (CI, EI), -itzr);
+                intrinsic.add_current(stamp, sums, (CI, EI), -itzr);
                 excess.add(
-                    (&shape.stamp, &bias),
+                    (&shape.stamp, &intrinsic),
                     (itzf, prepared.delay, sign),
                     at,
                     stamp,
                 );
             }
-            None => added.add_current(stamp, sums, (CI, EI), itzf - itzr),
+            None => intrinsic.add_current(stamp, sums, (CI, EI), itzf - itzr),
         }
-        added.add_current(stamp, sums, (BI, CI), ibc);
-        added.add_current(stamp, sums, (BX, BP), ibep);
-        added.add_current(stamp, sums, (CX, CI), irci);
-        added.add_current(stamp, sums, (BX, BI), irbi);
-        added.add_current(stamp, sums, (BP, CX), irbp);
-        added.add_current(stamp, sums, (SI, BP), ibcp);
-        added.add_current(stamp, sums, (BX, SI), iccp);
-        added.add_charge(stamp, sums, (BI, EI), qbe);
-        added.add_charge(stamp, sums, (BX, EI), qbex);
-        added.add_charge(stamp, sums, (BI, CI), qbc);
-        added.add_charge(stamp, sums, (BI, CX), qbcx);
-        added.add_charge(stamp, sums, (BX, BP), qbep);
-        added.add_charge(stamp, sums, (SI, BP), qbcp);
+        added
+            .reading([VBCI])
+            .add_current(stamp, sums, (BI, CI), ibc);
+        if let Some(avalanche) = avalanche {
+            intrinsic.add_current(stamp, sums, (CI, BI), avalanche);
+        }
+        added
+            .reading([VBEP])
+            .add_current(stamp, sums, (BX, BP), ibep);
+        added
+            .reading(INTRINSIC_COLLECTOR)
+            .add_current(stamp, sums, (CX, CI), irci);
+        added
+            .reading(INTRINSIC_BASE)
+            .add_current(stamp, sums, (BX, BI), irbi);
+        added
+            .reading(PARASITIC_BASE)
+            .add_current(stamp, sums, (BP, CX), irbp);
+        added
+            .reading([VBCP])
+            .add_current(stamp, sums, (SI, BP), ibcp);
+        added
+            .reading(PARASITIC)
+            .add_current(stamp, sums, (BX, SI), iccp);
+        charges.add(&added, sums, stamp);
         derivatives.stamp(&shape.stamp, stamp);
     }
 
@@ -1965,23 +2080,25 @@ impl Kernel for Vbic {
         let voltages = VARIABLES.map(|(plus, minus)| {
             prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
         });
-        let branches = prepared.core.evaluate(Dual::variables(voltages), at.gmin);
+        let branches = prepared.core.evaluate(voltages, at.gmin);
         let node = |index: usize| nodes.equation(index);
-        let slope = |current: &Voltage<R>, variable: usize| {
+        // Each intrinsic resistance's law reads its own drop first, its conductance at its
+        // slope.
+        let slope = |current: &Dual<R, 3>| {
             current
                 .gradient
-                .get(variable)
+                .first()
                 .map_or(0.0, |derivative| derivative.value())
         };
-        for (name, (plus, minus), current, variable) in [
-            ("intrinsic collector thermal", (CX, CI), &branches.irci, 6),
-            ("intrinsic base thermal", (BX, BI), &branches.irbi, 7),
-            ("parasitic base thermal", (BP, CX), &branches.irbp, 8),
+        for (name, (plus, minus), current) in [
+            ("intrinsic collector thermal", (CX, CI), &branches.irci),
+            ("intrinsic base thermal", (BX, BI), &branches.irbi),
+            ("parasitic base thermal", (BP, CX), &branches.irbp),
         ] {
             sources.push(NoiseSource::thermal(
                 name,
                 [node(plus), node(minus)],
-                slope(current, variable),
+                slope(current),
                 temperature,
             ));
         }

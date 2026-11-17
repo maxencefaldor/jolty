@@ -700,8 +700,10 @@ name = "jolty-models"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "criterion",
  "jolty-expressions",
  "jolty-ir",
+ "jolty-models",
  "jolty-numerics",
  "proptest",
  "rayon",

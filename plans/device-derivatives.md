@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status: steps 1 and 2 planned, steps 3 and 4 deferred; nothing built (17 November 2026).
+Status: step 1.2 done; the rest of steps 1 and 2 planned, steps 3 and 4 deferred (17 November 2026).
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -24,7 +24,7 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 
 | Step | What | Status |
 | --- | --- | --- |
-| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | Planned |
+| 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | 1.2 done; 1.3 and 1.4 planned |
 | 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Planned |
 | 2b | AC's VJP exact, and independent of the number of parameters | Planned, conditional |
 | 3 | One shared compile-time differentiation pass for hand-written and compiled kernels | Deferred |
@@ -39,7 +39,7 @@ None of these effects is measured; each stage's "done when" measures its own wit
 
 | Work | Simulation | Gradients |
 | --- | --- | --- |
-| 1.2 VBIC composed | Likely faster on circuits of VBIC transistors, such as SG13G2's bipolar ones: each law's arithmetic shrinks from nine derivative slots to one to three | Likewise for its twins |
+| 1.2 VBIC composed | Measured: an evaluation 31 to 39% faster (below) | Likewise for its twins |
 | 1.3 Gummel-Poon, JFET | No gain expected, possibly a loss: the first port ran 7 to 18% slower | None |
 | 1.4 Short laws | None | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
@@ -60,7 +60,7 @@ Read from `crates/jolty-models/src/kernel/` on 17 November 2026:
 | Verilog-A compiled kernels | Each variable carries the probes it depends on and no others (`crates/jolty-veriloga/src/emit.rs`) | None |
 | Behavioral sources and capacitors | `jolty-expressions`' tape: values forward, gradients backward, the right mode for an expression of many inputs | None |
 | Linear devices | Their entries, stamped once a run | None |
-| VBIC | One `Dual<R, 9>` (`vbic.rs`, `Voltage<R>`) for every intermediate | 1.2 |
+| VBIC | Composed: `Dual<R, 1>` to `Dual<R, 3>` for each law (1.2) | None |
 | Gummel-Poon (`bjt.rs`), JFET (`jfet.rs`) | Hand-written: `(value, slope)` tuples, hand-derived `gm` and `gds` | 1.3 |
 | Memristor, switch, photocell, passive voltage coefficients | Hand-written slopes of short laws | 1.4 |
 
@@ -73,6 +73,10 @@ VBIC's equations take nine voltages (`VARIABLES`: base-emitter, extrinsic base-e
 1. Chain each result onto the nine variables once, at the end, as BSIM4 does (`bsim4.rs`: `gradient: [gate, -(gate + drain + bulk), bulk]`); the self-heated variant keeps its temperature through `Heating`, unchanged.
 
 **Done when:** every derivative of VBIC agrees with today's nine-wide one to rounding (the operations' order changes, so not bit for bit); its tests against ngspice pass unchanged; the law suite holds; and the timing protocol (`scripts/bench --compare A,B`) shows the composed VBIC no slower than today's, on machine B.
+
+**Result** (17 November): each law computes at its own width and joins the others through `Oriented::reading`, a law that reads some of a transistor's variables, and `Dual::embed`, a number of a few variables placed among more, both in `kernel/parts.rs` and `kernel/dual.rs` for the kernels that follow; the weak avalanche current is a current of its own.
+Over 1,200 evaluations, both polarities, both base charges, both smoothings, warm and at nominal temperature, with and without an excess phase, the residuals and conductances move by at most 0.9 ε of their row's largest and the charges and capacitances not at all; every VBIC test, the ngspice comparisons and the law suite pass unchanged.
+`crates/jolty-models/benches/evaluation.rs`, criterion against a saved baseline of `main`, one core of an AMD EPYC 7B12 at load 2 to 4 (machine B unreachable): 779 ns rather than 1.30 µs at its defaults (−39%), 930 ns rather than 1.42 µs with every part of its model (−32%), 887 ns rather than 1.49 µs with an excess phase (−38%).
 
 ### 1.3 Gummel-Poon and the JFET on composed dual numbers
 

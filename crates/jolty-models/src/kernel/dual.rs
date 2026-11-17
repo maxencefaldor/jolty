@@ -153,6 +153,35 @@ impl<R: Real, const N: usize> Dual<R, N> {
                     sum + derivative * step
                 })
     }
+
+    /// The same number among `M` variables, each of its own `N` at its position among
+    /// them in `positions`, its derivative with respect to every other zero: how a law of
+    /// a few of a model's variables joins a law of more, so that each computes at the
+    /// width of the variables it reads. A position beyond the `M` variables is dropped.
+    #[must_use]
+    pub fn embed<const M: usize>(self, positions: [usize; N]) -> Dual<R, M> {
+        let mut gradient = [R::constant(0.0); M];
+        for (position, derivative) in positions.into_iter().zip(self.gradient) {
+            if let Some(slot) = gradient.get_mut(position) {
+                *slot = derivative;
+            }
+        }
+        Dual {
+            value: self.value,
+            gradient,
+        }
+    }
+}
+
+impl<R: Real> Dual<R, 1> {
+    /// The one variable at `value`, the derivative of itself.
+    #[must_use]
+    pub fn variable(value: f64) -> Self {
+        Self {
+            value: R::constant(value),
+            gradient: [R::constant(1.0)],
+        }
+    }
 }
 
 impl<R: Real, const N: usize> Add for Dual<R, N> {
@@ -302,5 +331,16 @@ mod tests {
         assert!(floored.value == 0.0 && floored.gradient.iter().all(|slope| *slope == 0.0));
         let scaled = x.scale(2.0);
         assert!((scaled.value - 6.0).abs() < 1e-15 && (scaled.gradient[0] - 2.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn a_number_of_a_few_variables_embeds_among_more() {
+        let [x, y] = Dual::<f64, 2>::variables([3.0, 2.0]);
+        let embedded: Dual<f64, 3> = (x * y).embed([2, 0]);
+        assert_eq!(embedded.value, 6.0);
+        assert_eq!(embedded.gradient, [3.0, 0.0, 2.0]);
+        let alone = Dual::<f64, 1>::variable(4.0);
+        assert_eq!(alone.embed::<2>([1]).gradient, [0.0, 1.0]);
+        assert_eq!(alone.embed::<2>([5]).gradient, [0.0, 0.0]);
     }
 }

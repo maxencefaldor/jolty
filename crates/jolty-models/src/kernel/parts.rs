@@ -495,6 +495,98 @@ pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
 }
 
 impl<const M: usize, const N: usize> Oriented<'_, M, N> {
+    /// What the transistor adds through a law of its equations that reads the variables
+    /// at `positions` alone, each a position among its variables: a current or a charge
+    /// of the law carries the derivatives with respect to those `K` variables only, in the
+    /// order of `positions`.
+    pub(crate) fn reading<const K: usize>(&self, positions: [usize; K]) -> Reading<'_, M, N, K> {
+        Reading {
+            oriented: self,
+            positions,
+        }
+    }
+
+    /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
+    /// and sums its derivatives into `derivatives`, which writes them to `stamp`.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined where its nodes are constants, its sums stay in registers"
+    )]
+    #[inline(always)]
+    pub(crate) fn add_current<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        derivatives: &mut Derivatives<R, M>,
+        between: (usize, usize),
+        current: Dual<R, N>,
+    ) {
+        self.reading(every())
+            .add_current(stamp, derivatives, between, current);
+    }
+
+    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
+    /// `against`, and sums its derivatives into `derivatives`, which writes them to
+    /// `stamp`.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined where its nodes are constants, its sums stay in registers"
+    )]
+    #[inline(always)]
+    pub(crate) fn add_charge<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        derivatives: &mut Derivatives<R, M>,
+        between: (usize, usize),
+        charge: Dual<R, N>,
+    ) {
+        self.reading(every())
+            .add_charge(stamp, derivatives, between, charge);
+    }
+}
+
+/// The position of each of `N` variables among themselves: those of a law that reads them
+/// all.
+fn every<const N: usize>() -> [usize; N] {
+    std::array::from_fn(|position| position)
+}
+
+/// What a transistor adds through one law of its equations, which reads `K` of its `N`
+/// variables, at their `positions` among them: each current and charge of the law carries
+/// its derivatives with respect to those alone, which the law computes at its own width,
+/// and joins the transistor's at their positions as it is added.
+pub(crate) struct Reading<'a, const M: usize, const N: usize, const K: usize> {
+    oriented: &'a Oriented<'a, M, N>,
+    positions: [usize; K],
+}
+
+impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
+    /// The pairs of stamped nodes across which the law's variables lie, in its order; a
+    /// position beyond the transistor's variables reads as no pair at all.
+    pub(crate) fn variables(&self) -> [(usize, usize); K] {
+        self.positions.map(|position| {
+            self.oriented
+                .variables
+                .get(position)
+                .copied()
+                .unwrap_or((NOWHERE, NOWHERE))
+        })
+    }
+
+    /// `value`, a number of the law with its derivatives with respect to the law's
+    /// variables, extended from the voltages it is evaluated at to the applied ones, in
+    /// the law's own orientation.
+    pub(crate) fn extend<R: Real>(&self, value: Dual<R, K>) -> R {
+        let beyond = self.positions.map(|position| {
+            self.oriented
+                .bias
+                .beyond
+                .get(position)
+                .copied()
+                .unwrap_or(0.0)
+        });
+        value.extend(beyond)
+    }
+
     /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
     /// and sums its derivatives into `derivatives`, which writes them to `stamp`.
     #[expect(
@@ -507,16 +599,14 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
         stamp: &mut Stamp<'_, R>,
         derivatives: &mut Derivatives<R, M>,
         (from, to): (usize, usize),
-        current: Dual<R, N>,
+        current: Dual<R, K>,
     ) {
-        self.nodes.current(
-            stamp,
-            from,
-            to,
-            current.extend(self.bias.beyond) * self.sign,
-        );
+        let oriented = self.oriented;
+        oriented
+            .nodes
+            .current(stamp, from, to, self.extend(current) * oriented.sign);
         let conductances = &mut derivatives.conductance;
-        for (variable, derivative) in self.variables.into_iter().zip(current.gradient) {
+        for (variable, derivative) in self.variables().into_iter().zip(current.gradient) {
             conductances.add((from, to), variable, derivative);
         }
     }
@@ -534,16 +624,14 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
         stamp: &mut Stamp<'_, R>,
         derivatives: &mut Derivatives<R, M>,
         (on, against): (usize, usize),
-        charge: Dual<R, N>,
+        charge: Dual<R, K>,
     ) {
-        self.nodes.charge(
-            stamp,
-            on,
-            against,
-            charge.extend(self.bias.beyond) * self.sign,
-        );
+        let oriented = self.oriented;
+        oriented
+            .nodes
+            .charge(stamp, on, against, self.extend(charge) * oriented.sign);
         let capacitances = &mut derivatives.capacitance;
-        for (variable, derivative) in self.variables.into_iter().zip(charge.gradient) {
+        for (variable, derivative) in self.variables().into_iter().zip(charge.gradient) {
             capacitances.add((on, against), variable, derivative);
         }
     }
@@ -696,6 +784,66 @@ mod tests {
                 derivatives.stamp(&nodes, stamp);
             });
             prop_assert_eq!(written, summed);
+        }
+
+        /// A law that reads some of a transistor's variables, in their order, adds what the
+        /// same numbers embedded among all its variables add, their other derivatives zero:
+        /// the same values, though a zero may differ in its sign. A law that reads them in
+        /// another order sums its derivatives in its own, and may round differently.
+        #[test]
+        fn a_law_of_some_variables_adds_what_it_does_embedded_among_all(
+            numbers in proptest::collection::vec(-1e3..1e3f64, 3 * 6),
+            beyond in proptest::array::uniform3(-1e-3..1e-3f64),
+            sign in proptest::bool::ANY,
+        ) {
+            let mut layout = Layout::new(4);
+            let nodes = Nodes::new(&mut layout, [1, 3, 0, 2]);
+            let bias = Bias { voltages: [0.0; 3], beyond };
+            let added = Oriented {
+                nodes: &nodes,
+                sign: if sign { 1.0 } else { -1.0 },
+                bias: &bias,
+                variables: [(0, 3), (2, 3), (1, 3)],
+            };
+            let law = [0, 2];
+            let pairs = [(2, 3), (1, 2), (0, 3), (0, 1), (1, 3), (2, 3)];
+            let terms: Vec<_> = numbers
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(pairs)
+                .enumerate()
+                .map(|(index, (&[value, first, second], pair))| {
+                    (index % 2 == 1, pair, Dual { value, gradient: [first, second] })
+                })
+                .collect();
+            let stamped_values = |add: &dyn Fn(&mut Stamp<'_, f64>)| {
+                stamped(add).map(|bits| bits.into_iter().map(f64::from_bits).collect::<Vec<_>>())
+            };
+            let read = stamped_values(&|stamp| {
+                let mut derivatives = Derivatives::new();
+                let reading = added.reading(law);
+                for &(charge, pair, term) in &terms {
+                    if charge {
+                        reading.add_charge(stamp, &mut derivatives, pair, term);
+                    } else {
+                        reading.add_current(stamp, &mut derivatives, pair, term);
+                    }
+                }
+                derivatives.stamp(&nodes, stamp);
+            });
+            let embedded = stamped_values(&|stamp| {
+                let mut derivatives = Derivatives::new();
+                for &(charge, pair, term) in &terms {
+                    if charge {
+                        added.add_charge(stamp, &mut derivatives, pair, term.embed(law));
+                    } else {
+                        added.add_current(stamp, &mut derivatives, pair, term.embed(law));
+                    }
+                }
+                derivatives.stamp(&nodes, stamp);
+            });
+            prop_assert_eq!(read, embedded);
         }
     }
 }
