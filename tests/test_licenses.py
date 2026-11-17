@@ -54,8 +54,8 @@ CLARIFIED: Final = {
     "sortedcontainers": "Apache-2.0",
     "ty": "MIT",
 }
-"""The licenses of the dependencies whose metadata states no SPDX expression, or one SPDX
-reads not.
+"""The licenses of the dependencies whose metadata states no SPDX expression, or one
+SPDX reads not.
 
 Each is read from the license file the dependency ships: cycler's, kiwisolver's and
 matplotlib's metadata holds the file's text, sortedcontainers' says "Apache 2.0", and
