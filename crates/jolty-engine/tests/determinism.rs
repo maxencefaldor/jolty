@@ -1309,48 +1309,53 @@ fn dissecting(options: &Options, interiors: usize) -> Options {
 /// pivots its interiors delay, and a row above a block that takes in more than a chunk of
 /// its columns, as a supply's joined to every node
 /// (`a_supplied_mesh_is_the_same_bits_on_any_number_of_threads`).
-#[test]
-fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
+/// Checks that a dissected factorization with interior size limit `interiors` finds the
+/// exact same bits on 1, 2, 3 and 8 threads across operating point and transient.
+fn assert_dissected_factorization_matches_across_threads(interiors: usize) {
     let (mesh, _, mesh_options) = benchmark("rc_mesh_100");
     let start: Analysis =
         serde_json::from_value(json!({"transient": {"stop": 1e-7, "method": "trapezoidal"}}))
             .expect("a transient");
-    let analyses = vec![Analysis::OperatingPoint, start];
-    let cases = [157, 500].map(|interiors| {
-        (
-            mesh.clone(),
-            analyses.clone(),
-            dissecting(&mesh_options, interiors),
-        )
-    });
-    for (circuit, analyses, options) in &cases {
-        let elaborated = shared(circuit);
-        let run = || -> Vec<Bits> {
-            let mut simulator =
-                Simulator::from_elaborated(Arc::clone(&elaborated), Values::default())
-                    .expect("a run");
-            analyses
-                .iter()
-                .map(|analysis| bits(&simulator.run(analysis, options)))
-                .collect()
-        };
-        let mut found = Vec::new();
-        for threads in THREADS {
-            let pool = ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .expect("a pool");
-            found.push(pool.install(run));
-        }
-        assert!(
-            found[0].iter().all(|(numbers, _)| !numbers.is_empty()),
-            "{:?}",
-            found[0]
-        );
-        for (threads, each) in THREADS.iter().zip(&found).skip(1) {
-            assert_eq!(each, &found[0], "on {threads} threads");
-        }
+    let analyses = [Analysis::OperatingPoint, start];
+    let options = dissecting(&mesh_options, interiors);
+    let elaborated = shared(&mesh);
+    let run = || -> Vec<Bits> {
+        let mut simulator =
+            Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
+        analyses
+            .iter()
+            .map(|analysis| bits(&simulator.run(analysis, &options)))
+            .collect()
+    };
+    let mut found = Vec::new();
+    for threads in THREADS {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("a pool");
+        found.push(pool.install(run));
     }
+    assert!(
+        found[0].iter().all(|(numbers, _)| !numbers.is_empty()),
+        "{:?}",
+        found[0]
+    );
+    for (threads, each) in THREADS.iter().zip(&found).skip(1) {
+        assert_eq!(
+            each, &found[0],
+            "interiors {interiors} on {threads} threads"
+        );
+    }
+}
+
+#[test]
+fn a_dissected_factorization_of_157_finds_the_same_on_any_number_of_threads() {
+    assert_dissected_factorization_matches_across_threads(157);
+}
+
+#[test]
+fn a_dissected_factorization_of_500_finds_the_same_on_any_number_of_threads() {
+    assert_dissected_factorization_matches_across_threads(500);
 }
 
 /// A dissected factorization orders its operations otherwise than the minimum degree's, so

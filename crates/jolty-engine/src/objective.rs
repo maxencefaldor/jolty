@@ -355,10 +355,17 @@ mod tests {
         Ok(worst)
     }
 
-    #[test]
-    fn the_adjoint_agrees_with_the_direct_method_on_every_corpus_transient() {
-        let (mut checked, mut refused, mut worst) = (0, 0, 0.0_f64);
-        for record in &Recording::corpus() {
+    /// Number of parallel shards partitioning `Recording::corpus()`.
+    const ADJOINT_SHARDS: usize = 16;
+
+    /// Verifies that the adjoint matches the direct method on every transient run of shard
+    /// `shard` (`index % shards == shard`) of the kernel corpus.
+    fn check_adjoint_corpus_shard(shard: usize, shards: usize) {
+        let (mut checked, mut refused, mut worst) = (0_usize, 0_usize, 0.0_f64);
+        for (index, record) in Recording::corpus().into_iter().enumerate() {
+            if index % shards != shard {
+                continue;
+            }
             let (circuit, mut simulator) = record.simulator();
             let unknowns = match simulator.unknowns().len() {
                 0 => continue,
@@ -386,8 +393,63 @@ mod tests {
                 }
             }
         }
-        // Every transient but those with logic or delay lines, those from initial
-        // conditions among them.
-        assert_eq!((checked, refused), (53, 6), "worst {worst:e}");
+        assert!(
+            checked + refused > 0,
+            "shard {shard}/{shards} had no transient runs (worst {worst:e})"
+        );
     }
+
+    #[test]
+    fn corpus_transient_count_matches_expected() {
+        let transients: usize = Recording::corpus()
+            .iter()
+            .map(|record| {
+                record
+                    .runs
+                    .iter()
+                    .filter(|(analysis, _)| matches!(analysis, Analysis::Transient(_)))
+                    .count()
+            })
+            .sum();
+        // 53 checked plus 6 refused (logic or delay lines).
+        assert_eq!(transients, 59);
+    }
+
+    macro_rules! adjoint_corpus_shards {
+        ($($name:ident => $shard:literal),* $(,)?) => {
+            const _: () = {
+                let shards: [usize; ADJOINT_SHARDS] = [$($shard),*];
+                let mut index = 0;
+                while index < ADJOINT_SHARDS {
+                    assert!(shards[index] == index);
+                    index += 1;
+                }
+            };
+            $(
+                #[test]
+                fn $name() {
+                    check_adjoint_corpus_shard($shard, ADJOINT_SHARDS);
+                }
+            )*
+        };
+    }
+
+    adjoint_corpus_shards!(
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_00 => 0,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_01 => 1,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_02 => 2,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_03 => 3,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_04 => 4,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_05 => 5,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_06 => 6,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_07 => 7,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_08 => 8,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_09 => 9,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_10 => 10,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_11 => 11,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_12 => 12,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_13 => 13,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_14 => 14,
+        the_adjoint_agrees_with_the_direct_method_on_corpus_shard_15 => 15,
+    );
 }

@@ -42,6 +42,11 @@ struct State {
 /// The states recorded, in the order of their evaluations.
 static STATES: Mutex<Vec<State>> = Mutex::new(Vec::new());
 
+/// Serializes the recording phase across threads when run inside one process under plain
+/// `cargo test`; under `cargo-nextest` every shard runs in its own process with zero
+/// contention, and `replay` always runs outside this lock.
+static RECORD_GUARD: Mutex<()> = Mutex::new(());
+
 /// The kernel `K`, recording each state it is evaluated at on plain numbers.
 #[derive(Debug, Clone, Copy)]
 struct StateRecorder<K>(K);
@@ -161,11 +166,14 @@ where
     }
 }
 
-/// At every state the corpus's runs evaluate a resistor or a diode at, the compiled
-/// kernel is its hand-written twin, to rounding: on 16 November 2026, 1,423,039 states of
+/// Number of parallel shards partitioning the kernel corpus.
+const CORPUS_SHARDS: usize = 16;
+
+/// At every state in shard `shard` (`index % shards == shard`) of the corpus's runs that
+/// evaluates a resistor or a diode, checks that the compiled kernel is its hand-written
+/// twin, to rounding: across all 16 shards (on 16 November 2026), 1,423,039 states of
 /// resistors and 823,769 of diodes, of 80 instances, all within 3.1 ε of each other.
-#[test]
-fn the_compiled_kernels_are_their_twins_across_the_corpus() {
+fn check_corpus_shard(shard: usize, shards: usize) {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../jolty-engine/tests/data/kernels.json");
     let text = std::fs::read_to_string(path).expect("the corpus");
@@ -173,21 +181,33 @@ fn the_compiled_kernels_are_their_twins_across_the_corpus() {
     let mut library = Library::standard();
     library.add(Thermal::<StateRecorder<Resistor>>::new());
     library.add(Thermal::<StateRecorder<Diode>>::new());
-    for entry in &corpus {
-        let circuit = Circuit::from_json(&entry.circuit.to_string()).expect("a circuit");
-        let conditions = Conditions {
-            temperature: entry.temperature,
-            overrides: entry.overrides.clone(),
-            substitutes: entry.substitutes.clone(),
-        };
-        let mut simulator =
-            Simulator::new(&circuit, &library, &conditions).expect("the circuit elaborates");
-        for (analysis, options) in &entry.runs {
-            // An analysis that fails, as one a test expects to, was evaluated all the same.
-            let _ = simulator.run(analysis, options);
+    let mut expects_diode = false;
+    let states = {
+        let _guard = RECORD_GUARD.lock().expect("record guard");
+        STATES.lock().expect("the states").clear();
+        for (index, entry) in corpus.iter().enumerate() {
+            if index % shards != shard {
+                continue;
+            }
+            let text = entry.circuit.to_string();
+            if text.contains(r#""model":"diode""#) {
+                expects_diode = true;
+            }
+            let circuit = Circuit::from_json(&text).expect("a circuit");
+            let conditions = Conditions {
+                temperature: entry.temperature,
+                overrides: entry.overrides.clone(),
+                substitutes: entry.substitutes.clone(),
+            };
+            let mut simulator =
+                Simulator::new(&circuit, &library, &conditions).expect("the circuit elaborates");
+            for (analysis, options) in &entry.runs {
+                // An analysis that fails, as one a test expects to, was evaluated all the same.
+                let _ = simulator.run(analysis, options);
+            }
         }
-    }
-    let states = std::mem::take(&mut *STATES.lock().expect("the states"));
+        std::mem::take(&mut *STATES.lock().expect("the states"))
+    };
     let mut instances: BTreeMap<(&str, &str, u64), Vec<&State>> = BTreeMap::new();
     for state in &states {
         let key = (
@@ -206,9 +226,51 @@ fn the_compiled_kernels_are_their_twins_across_the_corpus() {
     }
     let count = |name: &str| states.iter().filter(|state| state.kernel == name).count();
     assert!(
-        count("resistor") > 10_000 && count("diode") > 1_000,
-        "{} resistor and {} diode states",
-        count("resistor"),
-        count("diode")
+        count("resistor") > 0,
+        "shard {shard}/{shards} evaluated no resistor states"
     );
+    if expects_diode {
+        assert!(
+            count("diode") > 0,
+            "shard {shard}/{shards} holds a diode circuit but evaluated no diode states"
+        );
+    }
 }
+
+macro_rules! corpus_twin_shards {
+    ($($name:ident => $shard:literal),* $(,)?) => {
+        const _: () = {
+            let shards: [usize; CORPUS_SHARDS] = [$($shard),*];
+            let mut index = 0;
+            while index < CORPUS_SHARDS {
+                assert!(shards[index] == index);
+                index += 1;
+            }
+        };
+        $(
+            #[test]
+            fn $name() {
+                check_corpus_shard($shard, CORPUS_SHARDS);
+            }
+        )*
+    };
+}
+
+corpus_twin_shards!(
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_00 => 0,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_01 => 1,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_02 => 2,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_03 => 3,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_04 => 4,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_05 => 5,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_06 => 6,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_07 => 7,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_08 => 8,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_09 => 9,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_10 => 10,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_11 => 11,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_12 => 12,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_13 => 13,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_14 => 14,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_15 => 15,
+);

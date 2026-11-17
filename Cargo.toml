@@ -64,6 +64,13 @@ unimplemented = "warn"
 unreachable = "warn"
 unwrap_used = "warn"
 
+# Optimize jolty-numerics in dev and test builds while keeping debug assertions and
+# overflow checks enabled: sparse LU proptests drop 11x under load (151 s -> 13.5 s,
+# 8.8 s isolated), cutting full workspace nextest from 192 s to 111 s without rebuilding
+# on jolty-models edits.
+[profile.dev.package.jolty-numerics]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

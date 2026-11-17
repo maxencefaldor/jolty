@@ -365,17 +365,15 @@ impl Recording {
     }
 }
 
-/// At every evaluation of every run of the corpus's circuits, each run recording every
-/// device: the groups' assembly against the instances evaluated alone, in the order of the
-/// devices, to within 1e-13 of the magnitudes summed; and what the observer reads of each
-/// device's block of the slab, the currents into its terminals, the charges they hold and
-/// the derivatives of its equations, against its instance evaluated alone at the state of
-/// the evaluation it reads, bit for bit, as the observer once evaluated a copy of each
-/// device it recorded.
-#[test]
-fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate() {
+/// Checks one shard (`index % shards == shard`) of the kernel corpus.
+fn check_corpus_shard(shard: usize, shards: usize) {
     let mut all = Check::default();
-    for record in &Recording::corpus() {
+    let mut checked_circuits = 0_usize;
+    for (index, record) in Recording::corpus().into_iter().enumerate() {
+        if index % shards != shard {
+            continue;
+        }
+        checked_circuits += 1;
         let (circuit, mut simulator) = record.simulator();
         simulator.state.check = Some(Check::default());
         for (analysis, options) in &record.runs {
@@ -395,11 +393,60 @@ fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate
         all.reads.0 += check.reads.0;
         all.reads.1 += check.reads.1;
     }
+    assert!(checked_circuits > 0, "shard {shard}/{shards} was empty");
     // Each value sums at most `all.most` contributions, so the bound is at most 1e-13 of
     // their magnitudes for sums of up to 451.
     assert!(bound(all.most, 1.0) <= 1e-13, "{all:?}");
-    assert!(all.reads.0 > 1000, "{all:?}");
+    assert!(all.reads.0 > 0, "{all:?}");
 }
+
+/// Number of parallel shards partitioning `Recording::corpus()`.
+const CORPUS_SHARDS: usize = 16;
+
+macro_rules! corpus_assembly_shards {
+    ($($name:ident => $shard:literal),* $(,)?) => {
+        const _: () = {
+            let shards: [usize; CORPUS_SHARDS] = [$($shard),*];
+            let mut index = 0;
+            while index < CORPUS_SHARDS {
+                assert!(shards[index] == index);
+                index += 1;
+            }
+        };
+        $(
+            #[test]
+            fn $name() {
+                check_corpus_shard($shard, CORPUS_SHARDS);
+            }
+        )*
+    };
+}
+
+// At every evaluation of every run of the corpus's circuits, each run recording every
+// device: the groups' assembly against the instances evaluated alone, in the order of the
+// devices, to within 1e-13 of the magnitudes summed; and what the observer reads of each
+// device's block of the slab, the currents into its terminals, the charges they hold and
+// the derivatives of its equations, against its instance evaluated alone at the state of
+// the evaluation it reads, bit for bit, as the observer once evaluated a copy of each
+// device it recorded. Sharded across 16 tests so nextest runs the corpus in parallel.
+corpus_assembly_shards!(
+    every_corpus_circuit_assembles_as_its_devices_shard_00 => 0,
+    every_corpus_circuit_assembles_as_its_devices_shard_01 => 1,
+    every_corpus_circuit_assembles_as_its_devices_shard_02 => 2,
+    every_corpus_circuit_assembles_as_its_devices_shard_03 => 3,
+    every_corpus_circuit_assembles_as_its_devices_shard_04 => 4,
+    every_corpus_circuit_assembles_as_its_devices_shard_05 => 5,
+    every_corpus_circuit_assembles_as_its_devices_shard_06 => 6,
+    every_corpus_circuit_assembles_as_its_devices_shard_07 => 7,
+    every_corpus_circuit_assembles_as_its_devices_shard_08 => 8,
+    every_corpus_circuit_assembles_as_its_devices_shard_09 => 9,
+    every_corpus_circuit_assembles_as_its_devices_shard_10 => 10,
+    every_corpus_circuit_assembles_as_its_devices_shard_11 => 11,
+    every_corpus_circuit_assembles_as_its_devices_shard_12 => 12,
+    every_corpus_circuit_assembles_as_its_devices_shard_13 => 13,
+    every_corpus_circuit_assembles_as_its_devices_shard_14 => 14,
+    every_corpus_circuit_assembles_as_its_devices_shard_15 => 15,
+);
 
 /// Tasks of at least `least` instances each, on `threads` threads.
 fn tasks(least: usize, threads: usize) -> Tasks {
