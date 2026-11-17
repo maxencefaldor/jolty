@@ -39,8 +39,8 @@ None of these effects is measured; each stage's "done when" measures its own wit
 
 | Work | Simulation | Gradients |
 | --- | --- | --- |
-| 1.2 VBIC composed | Measured: an evaluation 23 to 29% fewer instructions, 18 to 46% less time (below) | Likewise for its twins |
-| 1.3 Gummel-Poon, JFET | Measured: an evaluation 1 to 5% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
+| 1.2 VBIC composed | Measured: an evaluation 31 to 34% fewer instructions, 18 to 46% less time (below) | Likewise for its twins |
+| 1.3 Gummel-Poon, JFET | Measured: an evaluation 2 to 8% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
 | 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
 | 2 Chunk twins | None, by design: Newton is never touched | A VJP evaluates each device once per chunk instead of once per parameter: unchanged for a crossbar's resistors (one weight each), half for a transistor's width and length, a sixth to an eighth for a kit's six to eight random variables; a JVP once per device whatever the number of parameters. The share of a gradient's time this saves depends on the twins' share beside the solves, largest in a transient, where twins run at every step |
@@ -76,7 +76,7 @@ VBIC's equations take nine voltages (`VARIABLES`: base-emitter, extrinsic base-e
 
 **Result** (17 November): each law computes at its own width and joins the others through `Oriented::reading`, a law that reads some of a transistor's variables, and `Dual::embed`, a number of a few variables placed among more, both in `kernel/parts.rs` and `kernel/dual.rs` for the kernels that follow; the weak avalanche current is a current of its own.
 Over 1,200 evaluations, both polarities, both base charges, both smoothings, warm and at nominal temperature, with and without an excess phase, the residuals and conductances move by at most 0.9 ε of their row's largest and the charges and capacitances not at all; every VBIC test, the ngspice comparisons and the law suite pass unchanged.
-Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, through Valgrind 3.25.1's Callgrind), one evaluation, the bench's own work, the same in both builds, included, against `main` (`8fb1e4b`): 8,891 instructions rather than 12,586 at its defaults (−29.4%), 12,789 rather than 16,781 with every part of its model (−23.8%), 13,923 rather than 18,009 with an excess phase (−22.7%).
+Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, through Valgrind 3.25.1's Callgrind), one evaluation, the bench's own work, the same in both builds, included and the case's preparation and drop left out, against `main` (`8fb1e4b`): 7,184 instructions rather than 10,879 at its defaults (−34.0%), 8,838 rather than 12,830 with every part of its model (−31.1%), 9,290 rather than 13,376 with an excess phase (−30.5%).
 Timed by `evaluation.rs`, criterion, the two builds' runs alternating twice on one pinned core of an AMD EPYC 7B12 at load 2 to 5 (machine B unreachable): 819 to 829 ns rather than 1.42 to 1.51 µs at its defaults, 1.02 to 1.26 µs rather than 1.53 to 1.63 µs with every part, 1.01 to 1.05 µs rather than 1.59 to 1.66 µs with an excess phase.
 
 ### 1.3 Gummel-Poon and the JFET on composed dual numbers
@@ -96,7 +96,7 @@ The JFET's variables are its two gate junctions, limited, then the drain-source 
 No derivative of either is written by hand, and the junction helpers that gave such kernels a value with its slope are gone.
 Each was compared once with the hand-written kernel it replaces, over 6,000 evaluations of Gummel-Poon (both polarities, each form of the base resistance and of the series resistances, a vertical and a lateral substrate or none, both high-injection branches, with and without an excess phase) and 504 of the JFET (both channels, three doping tails, with and without series resistances), across every region: the residuals, conductances and capacitances move by at most 3.5 ε of their row's largest, the charges not at all; every test, the ngspice comparisons and the law suite pass unchanged.
 That comparison stands for the reference test, which was not kept: the hand-written kernels would otherwise survive as a second way to compute the same numbers.
-Counted as VBIC was, against the hand-written kernels on `main`: Gummel-Poon 3,772 instructions rather than 3,605 at its defaults (+4.6%), 7,571 rather than 7,490 with every part of its model (+1.1%), 8,285 rather than 8,158 with an excess phase (+1.6%); the JFET 3,752 rather than 3,684 at its defaults (+1.8%), 5,415 rather than 5,343 with every part of its model (+1.3%).
+Counted as VBIC was, against the hand-written kernels on `main`: Gummel-Poon 2,370 instructions rather than 2,203 at its defaults (+7.6%), 4,581 rather than 4,500 with every part of its model (+1.8%), 5,053 rather than 4,926 with an excess phase (+2.6%); the JFET 2,477 rather than 2,409 at its defaults (+2.8%), 3,237 rather than 3,165 with every part of its model (+2.3%).
 Their times, timed as VBIC's were, moved by −15 to +12%, within what a build's layout moves a kernel left unchanged: VDMOS's, its code the same in both builds, by +9 to +10%.
 The few instructions more are put to the owner: the consistency is kept unless the owner decides otherwise.
 
@@ -107,7 +107,7 @@ Small laws, little work, and little speed at stake, which the measurement confir
 
 **Result** (17 November): each is a law of the voltage across the device and of what controls it, the control voltage or current, the state or the light, on `Dual<R, 2>`; the conductance it sets, the window that slows the state and the drain resistance's rise are laws of the control alone, on one variable, joined by `Dual::apply`; a series resistance that varies, `Series::add_varying`, takes the resistance as a law of the voltage it follows; and the photocell's settled response keeps its own derivative rule, `γ · response / √(E² + d²)`, through `Dual::chain`, finite however dark, where the held light's own would divide by a light rounded to zero.
 Compared once with the hand-written kernels over 676 evaluations, DC and transient, across their regions and bounds, the residuals, charges and capacitances move not at all and the conductances by at most 2.9 ε of their row's largest; every test passes unchanged.
-Counted as VBIC was: from 1 more instruction an evaluation, the resistor's, to 25, the voltage-controlled memristor's, at most 0.6%.
+Counted as VBIC was: from 1 more instruction an evaluation, the resistor's, to 25, the voltage-controlled memristor's, at most 1.3%.
 
 ## Step 2: every parameter derivative of a device in one evaluation
 

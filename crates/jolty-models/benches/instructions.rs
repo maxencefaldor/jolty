@@ -1,6 +1,6 @@
 //! The instructions one evaluation of a device's kernel executes, in each of the cases of
-//! `cases/`, counted by Valgrind's Callgrind through gungraun, the case's making left
-//! out: deterministic, so two builds compare to the instruction whatever the machine's
+//! `cases/`, counted by Valgrind's Callgrind through gungraun, the case's making and
+//! dropping left out, the case returned to the harness: deterministic, so two builds compare to the instruction whatever the machine's
 //! load, where `evaluation.rs`'s times cannot. It needs Valgrind and the gungraun-runner
 //! of gungraun's version, `cargo install gungraun-runner --version 0.20.0 --locked`; run
 //! it as `cargo bench -p jolty-models --bench instructions`, which compares each count
@@ -36,8 +36,9 @@ use gungraun::{library_benchmark, library_benchmark_group, main};
 #[bench::voltage_controlled_memristor_driven(setup = cases::voltage_controlled_memristor_driven)]
 #[bench::current_controlled_memristor_driven(setup = cases::current_controlled_memristor_driven)]
 #[bench::photocell_lagging(setup = cases::photocell_lagging)]
-fn evaluation(mut case: cases::Case) -> bool {
-    black_box(case.evaluate())
+fn evaluation(mut case: cases::Case) -> cases::Case {
+    black_box(case.evaluate());
+    case
 }
 
 library_benchmark_group!(name = kernels, benchmarks = [evaluation]);
