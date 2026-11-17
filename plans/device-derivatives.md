@@ -33,6 +33,19 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 Dual numbers stay throughout: they are steps 1 and 2, and the reference every other method is tested against.
 Steps 3 and 4 would replace them only where a measurement shows they cost too much, or once Rust can differentiate a program itself.
 
+## What it should change, unmeasured
+
+None of these effects is measured; each stage's "done when" measures its own with the timing protocol before it lands.
+
+| Work | Simulation | Gradients |
+| --- | --- | --- |
+| 1.2 VBIC composed | Likely faster on circuits of VBIC transistors, such as SG13G2's bipolar ones: each law's arithmetic shrinks from nine derivative slots to one to three | Likewise for its twins |
+| 1.3 Gummel-Poon, JFET | No gain expected, possibly a loss: the first port ran 7 to 18% slower | None |
+| 1.4 Short laws | None | None |
+| MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
+| 2 Chunk twins | None, by design: Newton is never touched | A VJP evaluates each device once per chunk instead of once per parameter: unchanged for a crossbar's resistors (one weight each), half for a transistor's width and length, a sixth to an eighth for a kit's six to eight random variables; a JVP once per device whatever the number of parameters. The share of a gradient's time this saves depends on the twins' share beside the solves, largest in a transient, where twins run at every step |
+| 2b AC exact | None | AC's gradient from a central difference per parameter (two evaluations and a DC solve each) to one more transposed solve in all |
+
 ## Step 1: every kernel composed on dual numbers
 
 ### 1.1 Where each kernel stands
@@ -75,7 +88,7 @@ Until then the hand-written versions stay in a test as a reference the new ones 
 ### 1.4 The short hand-written laws
 
 The memristor, the switch, the photocell, VDMOS's quasi-saturation and the passive voltage coefficients, each moved to dual numbers when next touched, under the same acceptance as 1.3.
-Small laws, little work, and no speed at stake.
+Small laws, little work, and little speed at stake, which the measurement confirms.
 
 ## Step 2: every parameter derivative of a device in one evaluation
 
@@ -133,7 +146,7 @@ gᵀ dx₀/dp  =  −(J₀⁻ᵀ g)ᵀ ∂F₀/∂p
 Its price: kernels must read their voltages as `R` rather than `f64`, so that a twin can seed a direction of the voltages; `Local` carries an optional tangent of the unknowns, and every kernel's voltage reads go through it.
 That interface change across every kernel is why 2b is conditional: done only once AC gradients over many parameters matter.
 
-**Done when:** AC's VJP has no finite difference and costs one more transposed solve whatever the number of parameters; it agrees with today's within the central difference's error; the dot-product test over frequency holds.
+**Done when:** AC's VJP has no finite difference and costs one more transposed solve whatever the number of parameters, which the timing protocol shows over 1 to 1,000 parameters; it agrees with today's within the central difference's error; the dot-product test over frequency holds.
 
 ## Step 3, deferred: one shared compile-time differentiation pass
 
