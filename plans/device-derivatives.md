@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status: step 1 done; step 2 planned, steps 3 and 4 deferred (17 November 2026).
+Status: steps 1 and 2 done; step 2b in progress; steps 3 and 4 deferred (17 November 2026).
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -25,7 +25,7 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 | Step | What | Status |
 | --- | --- | --- |
 | 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | Done |
-| 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Planned |
+| 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Done |
 | 2b | AC's VJP exact, and independent of the number of parameters | Planned, conditional |
 | 3 | One shared compile-time differentiation pass for hand-written and compiled kernels | Deferred |
 | 4 | Compiler-level automatic differentiation | Deferred |
@@ -43,7 +43,7 @@ None of these effects is measured; each stage's "done when" measures its own wit
 | 1.3 Gummel-Poon, JFET | Measured: an evaluation 2 to 8% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
 | 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
-| 2 Chunk twins | None, by design: Newton is never touched | A VJP evaluates each device once per chunk instead of once per parameter: unchanged for a crossbar's resistors (one weight each), half for a transistor's width and length, a sixth to an eighth for a kit's six to eight random variables; a JVP once per device whatever the number of parameters. The share of a gradient's time this saves depends on the twins' share beside the solves, largest in a transient, where twins run at every step |
+| 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from how the build laid out its code | Measured: a twin of eight evaluates in 2.2 (BSIM4) to 3.9 (the diode) times fewer instructions than eight twins of one, of two in 1.5 to 1.6 times fewer than two (below); a JVP evaluates each device once per tangent whatever the number of its parameters |
 | 2b AC exact | None | AC's gradient from a central difference per parameter (two evaluations and a DC solve each) to one more transposed solve in all |
 
 ## Step 1: every kernel composed on dual numbers
@@ -128,15 +128,35 @@ Counted as VBIC was: from 1 more instruction an evaluation, the resistor's, to 2
     Its interface (`Simulator::jvp`, `vjp`, `pull_back`) does not change.
 - A device with more named parameters than the largest chunk gets several.
 
+**Result** (17 November): `Gradient<K>` and `Hyper<K>` carry `K` derivatives, `Gradient<1>` and `Hyper<1>` the former ones; `Seeds` says each seed's rate on each number, `Seeds::units` a unit seed on each; `GroupRun::twin` lifts a device's parameters with a chunk's seeds at the smallest width of 1, 2, 4 or 8 that holds them, and its `Twin` gives each residual, charge, conductance and capacitance with its derivative along each seed.
+The engine's `Twins` (`crates/jolty-engine/src/twins.rs`) hold a derivative's columns, a column a direction of one device's parameters, each device's columns up to eight to a twin, and every pass of `derivative.rs`, the sensitivity, mismatch and objective analyses read them, so no pass sees a twin of one parameter alone.
+A twin's parameters are lifted from its instance's plain ones by `Lift` (`crates/jolty-models/src/lift.rs`), derived for every type of parameters by `jolty-derive`, rather than written as JSON and read back, which compiled serde's reader of every type of parameters again at each width: jolty-models' code generation at `opt-level = 1` took 689 s with the widths through JSON, and takes 159 s through `Lift`.
+
 ### 2.3 Chunk sizes
 
 A small set monomorphized, 1, 2, 4 and 8; each chunk takes the smallest that holds its parameters: a crossbar resistor's weight takes 1, a transistor's width and length take 2.
 The largest is a threshold like every other: set from a measured break-even with the timing protocol, on machine B, its machine and load stated, before this lands; never picked.
 
+**Result** (17 November): counted by `instructions.rs` as step 1's kernels were, one evaluation of a twin at each width, along that many of eight numbers given, the instructions of BSIM4's, the diode's and the resistor's twins:
+
+| Twin | 1 | 2 | 4 | 8 | 8 against eight of 1 |
+| --- | --- | --- | --- | --- | --- |
+| BSIM4 | 24,015 | 32,769 | 50,217 | 88,422 | 2.2 times fewer |
+| Diode | 1,136 | 1,404 | 1,665 | 2,334 | 3.9 times fewer |
+| Resistor, with voltage coefficients | 395 | 542 | 713 | 1,095 | 2.9 times fewer |
+
+A twin's evaluation costs a part paid once, its values and its control, and a part paid per seed, about 9,200 instructions of BSIM4's, 170 of the diode's and 100 of the resistor's.
+So every width is cheaper than as many twins of one, from two on: chunks always pay.
+Past eight, the line through these counts gives each seed from 8% (BSIM4) to 21% (the diode) less at sixteen, while a twin's numbers grow with its width; eight holds the six to eight numbers a kit's mismatch moves on a device, and stays the largest.
+Padding costs where the part per seed is large: five of BSIM4's parameters cost 88,422 instructions in a twin of eight against 74,232 in a twin of four and one of one, where the diode's cost 2,334 against 2,801; the rule stays the smallest width that holds a chunk, one twin per chunk, until a measurement of whole gradients asks for more.
+Instruction counts are deterministic, the machine's load none of their concern; the times, through `evaluation.rs`, wait for machine B.
+
 ### 2.4 The JVP without chunks
 
 A tangent on the parameters is one direction.
 Seeding each parameter's single slot with its component of the tangent gives `(∂F/∂p)·t` for a device in one evaluation of a `Gradient<1>` twin, however many of its parameters the tangent moves; today that sum takes one twin per parameter.
+
+**Result** (17 November): `Simulator::jvp` makes a column of each tangent on each device it moves, the tangent's components on that device's parameters its one seed (`Simulator::tangent_twins`), so several tangents share a device's twins, eight to a twin, and a tangent costs a device one seed however many of its parameters it moves.
 
 ### 2.5 Newton and memory
 
@@ -149,6 +169,9 @@ Seeding each parameter's single slot with its component of the tangent gives `(�
 - Every derivative test passes bit for bit unchanged; the refactor's dot-product test holds; finite differences agree.
 - The JVP's one twin per device agrees with the sum over per-parameter twins to rounding.
 - The timing protocol shows a VJP over a device's `n` parameters costing one evaluation per chunk instead of `n`.
+
+**Result** (17 November): every kernel's gradient test checks that a twin along several of its real parameters at once finds along each, bit for bit, what a twin along that parameter alone does, in chunks of eight and of three, which pad to four (`testing.rs`, `assert_chunks_match_seeds_alone`), the heated kernels' included; a VJP along ten parameters of one diode, two chunks, pulls a cotangent back to each bit for bit as a VJP along that parameter alone does, at an operating point and at every step of a transient (`a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone`); the JVP along a tangent agrees with its columns combined within the dot-product test's bound at every analysis (`the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis`); every derivative test passes unchanged.
+Each chunk is one evaluation, its count of instructions in 2.3; the times wait for machine B, as every time of this plan does.
 
 ## Step 2b: AC's VJP exact and independent of the number of parameters
 

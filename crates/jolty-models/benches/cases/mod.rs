@@ -1,13 +1,15 @@
 //! The cases both kernel benchmarks measure, `evaluation.rs` by time and
 //! `instructions.rs` by instructions: one instance of a device on the shared bench,
 //! evaluated at a step of a transient in one of the shapes its parameters give it, each
-//! made by the function named after its model and its case.
+//! made by the function named after its model and its case; and a twin of an instance,
+//! differentiated along 1, 2, 4 or 8 of its parameters at once, made by the function named
+//! after its model and `twin`.
 
-use jolty_models::testing::Bench;
+use jolty_models::testing::{Bench, twin};
 use jolty_models::{
-    BipolarTransistor, Capacitor, Contributions, CurrentControlledMemristor,
-    CurrentControlledSwitch, Input, Jfet, Kernel, Photocell, REFERENCE_TEMPERATURE, Resistor, Vbic,
-    Vdmos, VoltageControlledMemristor, VoltageControlledSwitch,
+    BipolarTransistor, Bsim4, Capacitor, Contributions, CurrentControlledMemristor,
+    CurrentControlledSwitch, Diode, Input, Jfet, Kernel, Photocell, REFERENCE_TEMPERATURE,
+    Resistor, Seeds, Twin, Vbic, Vdmos, VoltageControlledMemristor, VoltageControlledSwitch,
 };
 
 /// One instance on the bench, its unknowns where it is evaluated, and the contributions
@@ -40,9 +42,47 @@ impl Case {
     /// Evaluates the instance once, at a step of a transient, its steps unlimited:
     /// whether it limited one.
     pub(crate) fn evaluate(&mut self) -> bool {
-        let mut input = Input::new(&self.x, Some(1e-9), 1e-12);
-        input.limiting = false;
-        self.bench.evaluate_into(&input, &mut self.contributions)
+        self.bench
+            .evaluate_into(&stepping(&self.x), &mut self.contributions)
+    }
+}
+
+/// The input of a step of a transient at `x`, its steps unlimited.
+fn stepping(x: &[f64]) -> Input<'_> {
+    let mut input = Input::new(x, Some(1e-9), 1e-12);
+    input.limiting = false;
+    input
+}
+
+/// A twin of one instance, and the unknowns where it is evaluated.
+pub(crate) struct TwinCase {
+    twin: Twin,
+    x: Vec<f64>,
+}
+
+impl TwinCase {
+    /// The twin of an instance of `K` with `parameters`, differentiated along the first
+    /// `seeds` of the numbers at `paths`, each alone, its unknowns where [`Case::of`] puts
+    /// them by `bias`.
+    #[expect(
+        clippy::panic,
+        reason = "a case's parameters are the bench's own, each read as a real number"
+    )]
+    fn of<K: Kernel>(
+        (parameters, paths): (&str, &[&str]),
+        seeds: usize,
+        bias: fn(&str) -> f64,
+    ) -> Self {
+        let Case { x, .. } = Case::of::<K>(parameters, bias);
+        let seeds = Seeds::units(paths.get(..seeds).unwrap_or(paths));
+        let twin = twin::<K>(parameters, REFERENCE_TEMPERATURE, &seeds)
+            .unwrap_or_else(|| panic!("{parameters} reads a real number at each of {paths:?}"));
+        Self { twin, x }
+    }
+
+    /// Evaluates the twin once, at a step of a transient.
+    pub(crate) fn evaluate(&mut self) {
+        self.twin.evaluate(&stepping(&self.x));
     }
 }
 
@@ -251,4 +291,90 @@ pub(crate) fn current_controlled_memristor_driven() -> Case {
 pub(crate) fn photocell_lagging() -> Case {
     let parameters = r#"{"resistance": 1e4, "response_time": 1e-3}"#;
     Case::of::<Photocell>(parameters, controlled)
+}
+
+/// A BSIM4 n-channel with eight of its numbers given, and their paths, in the order its
+/// twins seed them.
+const BSIM4_GIVEN: (&str, &[&str]) = (
+    r#"{"width": 2e-6, "length": 1.5e-7, "toxe": 3e-9, "vth0": 0.4, "k1": 0.5, "u0": 0.03,
+    "vsat": 8e4, "rdsw": 200}"#,
+    &[
+        "width", "length", "toxe", "vth0", "k1", "u0", "vsat", "rdsw",
+    ],
+);
+
+/// A BSIM4 n-channel's unknowns, saturated: its drain at 1.5 V, its gate at 1.8 V, its
+/// source grounded and its body at −0.5 V, each internal node at the terminal it lies
+/// behind, and each current unknown a milliampere.
+fn bsim4_saturated(name: &str) -> f64 {
+    match name {
+        "n0" | "drain" => 1.5,
+        "n1" | "gate" => 1.8,
+        "n3" | "body" => -0.5,
+        "n2" | "source" => 0.0,
+        _ => 1e-3,
+    }
+}
+
+/// A twin of a BSIM4 n-channel along `seeds` of its numbers, saturated.
+pub(crate) fn bsim4_twin(seeds: usize) -> TwinCase {
+    TwinCase::of::<Bsim4>(BSIM4_GIVEN, seeds, bsim4_saturated)
+}
+
+/// A diode with eight of its numbers given, and their paths, in the order its twins seed
+/// them.
+const DIODE_GIVEN: (&str, &[&str]) = (
+    r#"{"saturation_current": 2e-14, "emission_coefficient": 1.05,
+    "series_resistance": 5, "junction_capacitance": 2e-12, "junction_potential": 0.8,
+    "grading_coefficient": 0.4, "depletion_coefficient": 0.45, "transit_time": 1e-9}"#,
+    &[
+        "saturation_current",
+        "emission_coefficient",
+        "series_resistance",
+        "junction_capacitance",
+        "junction_potential",
+        "grading_coefficient",
+        "depletion_coefficient",
+        "transit_time",
+    ],
+);
+
+/// A diode's unknowns, forward: 0.7 V across it, its internal node 0.69 V above its
+/// cathode, and each current unknown a milliampere.
+fn forward(name: &str) -> f64 {
+    match name {
+        "n0" => 0.7,
+        "anode" => 0.69,
+        "n1" => 0.0,
+        _ => 1e-3,
+    }
+}
+
+/// A twin of a diode along `seeds` of its numbers, forward.
+pub(crate) fn diode_twin(seeds: usize) -> TwinCase {
+    TwinCase::of::<Diode>(DIODE_GIVEN, seeds, forward)
+}
+
+/// A resistor with eight of its numbers given, and their paths, in the order its twins seed
+/// them.
+const RESISTOR_GIVEN: (&str, &[&str]) = (
+    r#"{"resistance": 1000, "temperature_coefficient": 1e-3,
+    "quadratic_temperature_coefficient": 1e-6, "nominal_temperature": 290,
+    "voltage_coefficient": 0.01, "quadratic_voltage_coefficient": 0.002,
+    "flicker_coefficient": 1e-20, "flicker_exponent": 1.5}"#,
+    &[
+        "resistance",
+        "temperature_coefficient",
+        "quadratic_temperature_coefficient",
+        "nominal_temperature",
+        "voltage_coefficient",
+        "quadratic_voltage_coefficient",
+        "flicker_coefficient",
+        "flicker_exponent",
+    ],
+);
+
+/// A twin of a resistor with voltage coefficients along `seeds` of its numbers.
+pub(crate) fn resistor_twin(seeds: usize) -> TwinCase {
+    TwinCase::of::<Resistor>(RESISTOR_GIVEN, seeds, controlled)
 }

@@ -108,7 +108,7 @@ fn tanh_and_atan_differentiate_by_their_parameters_exactly() {
         let (above, below) = (shifted(step), shifted(-step));
         for (kind, index) in [(0, 0), (2, 0)] {
             let numeric = (above[kind][index] - below[kind][index]) / (2.0 * step);
-            let derivative = exact[kind][index].derivative;
+            let [derivative] = exact[kind][index].derivatives;
             assert!(
                 (numeric - derivative).abs() <= 1e-7 * derivative.abs(),
                 "{parameter}: {derivative:e} exact, {numeric:e} by differences"
@@ -244,7 +244,7 @@ fn initial_code_rounds_the_fingers() {
         model: &Differentiable::<initial_events::InitialEvents>::default(),
     };
     let [residual, _, _] = rig.exact(&read, "fingers", (&x, None)).expect("a number");
-    assert_eq!(residual[0].derivative, 0.0);
+    assert_eq!(residual[0].derivatives, [0.0]);
 }
 
 /// `$finish` refuses the instance, after the `$strobe` before it, and a value no format of

@@ -114,7 +114,7 @@ macro_rules! numbers {
     )*};
 }
 
-numbers!(f64; Gradient; Hyper);
+numbers!(f64; Gradient<K>, const K; Hyper<K>, const K);
 
 impl<R, T: Lift<R>> Lift<R> for Option<T> {
     type Plain = Option<T::Plain>;
@@ -166,33 +166,38 @@ pub(crate) fn constant<P: Lift<R>, R: Real>(parameters: &P::Plain) -> P {
     })
 }
 
-/// The parameters `P` of a twin made of the plain `parameters`, the number at the path
-/// `parameter` made by `seeded` of its value, and every other number constant.
+/// The parameters `P` of a twin made of the plain `parameters`, each number at the path of
+/// one of `seeds` made by `seeded` of its value and its rate along each seed, and every
+/// other number constant.
 ///
 /// # Errors
 ///
-/// Returns [`ParameterError`] when no real number is at `parameter`, as when the number
+/// Returns [`ParameterError`] when no real number is at a seed's path, as when the number
 /// there is read as a choice, such as a level.
-pub(crate) fn lift<P: Lift<R>, R: Real>(
+pub(crate) fn lift<P: Lift<R>, R: Real, const K: usize>(
     parameters: &P::Plain,
-    parameter: &str,
-    seeded: impl Fn(f64) -> R,
+    seeds: &[(&str, [f64; K])],
+    seeded: impl Fn(f64, [f64; K]) -> R,
 ) -> Result<P, ParameterError> {
-    let mut read = false;
+    let mut read = vec![false; seeds.len()];
     let lifted = P::lift(parameters, &ParameterPath::Root, &mut |path, value| {
-        if path.is(parameter) {
-            read = true;
-            seeded(value)
-        } else {
-            R::constant(value)
+        let found = seeds
+            .iter()
+            .zip(&mut read)
+            .find(|((seed, _), _)| path.is(seed));
+        match found {
+            Some(((_, rates), read)) => {
+                *read = true;
+                seeded(value, *rates)
+            }
+            None => R::constant(value),
         }
     });
-    if read {
-        Ok(lifted)
-    } else {
-        Err(ParameterError(format!(
-            "the parameters hold no real number at `{parameter}`"
-        )))
+    match seeds.iter().zip(&read).find(|(_, read)| !**read) {
+        Some(((path, _), _)) => Err(ParameterError(format!(
+            "the parameters hold no real number at `{path}`"
+        ))),
+        None => Ok(lifted),
     }
 }
 
@@ -297,14 +302,15 @@ mod tests {
     #[test]
     fn a_seed_moves_the_number_at_its_path_and_no_other() {
         let card = cards().swap_remove(0);
-        let seeded = |value| Gradient {
-            value,
-            derivative: 1.0,
-        };
-        let lifted: Card<Gradient> = lift(&card, "points.1.0", seeded).expect("a real number");
-        assert_eq!(lifted.points[1].0, seeded(2.0));
+        let lifted: Card<Gradient<2>> = lift(
+            &card,
+            &[("points.1.0", [1.0, 0.0]), ("w", [0.0, 2.0])],
+            Gradient::new,
+        )
+        .expect("real numbers");
+        assert_eq!(lifted.points[1].0, Gradient::new(2.0, [1.0, 0.0]));
+        assert_eq!(lifted.width, Gradient::new(8.0, [0.0, 2.0]));
         assert_eq!(lifted.points[1].1, Gradient::constant(3.0));
-        assert_eq!(lifted.width, Gradient::constant(8.0));
         assert_eq!(lifted.period, Some(Gradient::constant(9.0)));
     }
 
@@ -312,7 +318,7 @@ mod tests {
     fn a_seed_at_no_real_number_fails() {
         let card = cards().swap_remove(0);
         for path in ["level", "width", "points.2.0", "shape.sine.amplitude"] {
-            let lifted = lift::<Card<Gradient>, _>(&card, path, Gradient::constant);
+            let lifted = lift::<Card<Gradient>, _, 1>(&card, &[(path, [1.0])], Gradient::new);
             assert!(lifted.is_err(), "{path}");
         }
     }

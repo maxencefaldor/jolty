@@ -89,7 +89,7 @@ fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &
                     .fold(0.0_f64, |most, value| most.max(value.value.abs()));
                 let derivatives = a
                     .iter()
-                    .fold(0.0_f64, |most, value| most.max(value.derivative.abs()));
+                    .fold(0.0_f64, |most, value| most.max(value.derivatives[0].abs()));
                 for (index, (a, b)) in a.iter().zip(b).enumerate() {
                     worst.close(&format!("{what}: {kind} {index}"), a.value, b.value, values);
                     // A derivative sums terms of the size of the change a relative step of
@@ -101,8 +101,8 @@ fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &
                     };
                     worst.close(
                         &format!("{what}: ∂{kind} {index}"),
-                        a.derivative,
-                        b.derivative,
+                        a.derivatives[0],
+                        b.derivatives[0],
                         terms,
                     );
                 }

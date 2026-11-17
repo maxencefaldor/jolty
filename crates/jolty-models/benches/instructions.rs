@@ -1,7 +1,8 @@
-//! The instructions one evaluation of a device's kernel executes, in each of the cases of
-//! `cases/`, counted by Valgrind's Callgrind through gungraun, the case's making and
-//! dropping left out, the case returned to the harness: deterministic, so two builds compare to the instruction whatever the machine's
-//! load, where `evaluation.rs`'s times cannot. It needs Valgrind and the gungraun-runner
+//! The instructions one evaluation of a device's kernel, or of a twin of it, executes, in
+//! each of the cases of `cases/`, counted by Valgrind's Callgrind through gungraun, the
+//! case's making and dropping left out, the case returned to the harness: deterministic,
+//! so two builds compare to the instruction whatever the machine's load, where
+//! `evaluation.rs`'s times cannot. It needs Valgrind and the gungraun-runner
 //! of gungraun's version, `cargo install gungraun-runner --version 0.20.0 --locked`; run
 //! it as `cargo bench -p jolty-models --bench instructions`, which compares each count
 //! with the last run's, or name a baseline with `-- --save-baseline=NAME` and
@@ -41,6 +42,15 @@ fn evaluation(mut case: cases::Case) -> cases::Case {
     case
 }
 
-library_benchmark_group!(name = kernels, benchmarks = [evaluation]);
+#[library_benchmark]
+#[benches::bsim4(args = [1, 2, 4, 8], setup = cases::bsim4_twin)]
+#[benches::diode(args = [1, 2, 4, 8], setup = cases::diode_twin)]
+#[benches::resistor(args = [1, 2, 4, 8], setup = cases::resistor_twin)]
+fn twin(mut case: cases::TwinCase) -> cases::TwinCase {
+    case.evaluate();
+    case
+}
+
+library_benchmark_group!(name = kernels, benchmarks = [evaluation, twin]);
 
 main!(library_benchmark_groups = kernels);

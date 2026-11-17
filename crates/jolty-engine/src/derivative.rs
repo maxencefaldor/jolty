@@ -58,15 +58,15 @@
 
 use std::collections::BTreeMap;
 
-use jolty_models::{Gradient, Input, UnknownIndex};
+use jolty_models::UnknownIndex;
 use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, solve_each_in_range};
 
 use crate::ac::over_frequencies;
 use crate::newton::{add_product, force_row, step_matrix};
 use crate::sensitivity::{Derivatives, Differentiated, Parameter};
-use crate::state::Held;
 use crate::transient::{Carried, Tangent};
+use crate::twins::{Part, Twins};
 use crate::{
     AcResult, AnalysisResult, DcSweep, DcSweepResult, Options, PeriodicSteadyStateResult,
     SimulationError, Simulator, Transient, TransientResult,
@@ -186,109 +186,6 @@ pub(crate) enum Start {
     Held(Option<Vec<Vec<f64>>>),
 }
 
-/// A device's instance computing with the derivative of every number with respect to one
-/// number of its parameters.
-pub(crate) struct Twin {
-    /// The index of the device it is made from.
-    pub(crate) device: usize,
-    pub(crate) parameter: Parameter,
-    pub(crate) made: jolty_models::Twin,
-    /// Whether a sweep holds its number, which then moves nothing: the number swept, or
-    /// any of a source the sweep holds at a level, which replaces its waveform.
-    pub(crate) fixed: bool,
-}
-
-impl Twin {
-    /// Evaluates the twin where the device is: at the solution `x`, at `time` in a
-    /// transient analysis or, with `None`, at an operating point or about one.
-    pub(crate) fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
-        let mut input = Input::new(x, time, gmin);
-        input.limiting = false;
-        self.made.evaluate(&input);
-    }
-
-    /// `aᵀ ∂f/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
-    /// terms alone.
-    pub(crate) fn residual_dot(&self, a: &[f64]) -> f64 {
-        self.made
-            .residual()
-            .map(|(unknown, residual)| a[unknown] * residual.derivative)
-            .sum()
-    }
-
-    /// `aᵀ ∂q/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
-    /// terms alone.
-    pub(crate) fn charge_dot(&self, a: &[f64]) -> f64 {
-        self.made
-            .charge()
-            .map(|(unknown, charge)| a[unknown] * charge.derivative)
-            .sum()
-    }
-
-    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` at `(ω, x)`, for the vector `a` of the equations, as last
-    /// evaluated: the instance's own entries alone, each at its row and column of
-    /// `positions`.
-    fn product(
-        &self,
-        positions: &[(usize, usize)],
-        a: &[Complex64],
-        (omega, x): (f64, &[Complex64]),
-    ) -> Complex64 {
-        self.made
-            .entries()
-            .map(|(slot, conductance, capacitance)| {
-                let (row, column) = positions[slot];
-                let derivative =
-                    Complex64::new(conductance.derivative, omega * capacitance.derivative);
-                a[row] * derivative * x[column]
-            })
-            .sum()
-    }
-
-    /// Adds `scale (∂G/∂p + jω ∂C/∂p) x` at `(ω, x)` to `into`, as last evaluated.
-    fn add_product(
-        &self,
-        positions: &[(usize, usize)],
-        scale: f64,
-        (omega, x): (f64, &[Complex64]),
-        into: &mut [Complex64],
-    ) {
-        for (slot, conductance, capacitance) in self.made.entries() {
-            let (row, column) = positions[slot];
-            let derivative = Complex64::new(conductance.derivative, omega * capacitance.derivative);
-            into[row] += derivative * x[column] * scale;
-        }
-    }
-}
-
-/// Which of a twin's derivatives a direction combines.
-#[derive(Clone, Copy)]
-enum Part {
-    /// `∂f/∂p`.
-    Residual,
-    /// `∂q/∂p`.
-    Charge,
-}
-
-/// `Σ t_j ∂f/∂p_j` or `Σ t_j ∂q/∂p_j` along `direction`, a number per twin, by unknown,
-/// among `dimension`, as the twins were last evaluated; a twin a sweep holds moves nothing.
-fn combined(twins: &[Twin], direction: &[f64], dimension: usize, part: Part) -> Vec<f64> {
-    let mut values = vec![0.0; dimension];
-    for (twin, &along) in twins.iter().zip(direction) {
-        if along == 0.0 || twin.fixed {
-            continue;
-        }
-        let derivatives: Box<dyn Iterator<Item = (usize, Gradient)>> = match part {
-            Part::Residual => Box::new(twin.made.residual()),
-            Part::Charge => Box::new(twin.made.charge()),
-        };
-        for (unknown, value) in derivatives {
-            values[unknown] += along * value.derivative;
-        }
-    }
-    values
-}
-
 /// The unit directions, one along each of `count` parameters.
 pub(crate) fn units(count: usize) -> Vec<Vec<f64>> {
     (0..count)
@@ -331,7 +228,7 @@ fn transposed<T: Copy>(rows: Vec<Vec<T>>, columns: usize) -> Vec<Vec<T>> {
 /// The direct method's state along a transient: each direction's derivatives of the
 /// charges, and those of the unknowns kept at every accepted point.
 pub(crate) struct Forward {
-    pub(crate) twins: Vec<Twin>,
+    pub(crate) twins: Twins,
     /// The directions, by direction then twin.
     directions: Vec<Vec<f64>>,
     /// The unknowns whose derivatives it keeps, by index.
@@ -355,7 +252,7 @@ impl Forward {
     /// The direct method along `directions` of `twins`, keeping the derivatives of the
     /// unknowns `kept`, from `start`.
     pub(crate) fn new(
-        twins: Vec<Twin>,
+        twins: Twins,
         directions: Vec<Vec<f64>>,
         kept: Vec<usize>,
         start: Start,
@@ -384,7 +281,7 @@ impl Forward {
 /// unknowns kept, by point, then unknown kept, then direction, an oscillator's period's
 /// along each direction, and the analysis's result.
 pub(crate) struct Pushed {
-    pub(crate) twins: Vec<Twin>,
+    pub(crate) twins: Twins,
     pub(crate) tangents: Derivatives,
     pub(crate) period: Option<Vec<f64>>,
     pub(crate) result: AnalysisResult,
@@ -485,7 +382,7 @@ impl Simulator {
     ) -> Result<Jvp, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let twins = self.named_twins(parameters)?;
+            let named = self.named_parameters(parameters)?;
             if let Some(tangent) = tangents.iter().find(|tangent| {
                 tangent.len() != parameters.len() || !tangent.iter().all(|value| value.is_finite())
             }) {
@@ -494,14 +391,13 @@ impl Simulator {
                     parameters.len()
                 )));
             }
+            let (twins, directions) = self
+                .tangent_twins(named, tangents)
+                .map_err(|unread| SimulationError::UnknownParameters(named_of(unread)))?;
             let kept: Vec<usize> = (0..self.elaborated.unknowns.len()).collect();
-            let pushed = self.push_forward(analysis, twins, tangents.to_vec(), &kept, options)?;
+            let pushed = self.push_forward(analysis, twins, directions, &kept, options)?;
             Ok(Jvp {
-                parameters: pushed
-                    .twins
-                    .into_iter()
-                    .map(|twin| twin.parameter)
-                    .collect(),
+                parameters: pushed.twins.parameters,
                 tangents: pushed.tangents,
                 period: pushed.period,
                 result: pushed.result,
@@ -534,7 +430,7 @@ impl Simulator {
             let twins = self.named_twins(parameters)?;
             let (result, saved) = self.run_saving(analysis, options)?;
             Ok(Pullback {
-                parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
+                parameters: twins.parameters,
                 result,
                 saved,
             })
@@ -587,7 +483,8 @@ impl Simulator {
         })
     }
 
-    /// The twins of `parameters`, each by its device's path and its name, in their order.
+    /// The twins of `parameters`, each by its device's path and its name, a column each,
+    /// in their order.
     ///
     /// # Errors
     ///
@@ -596,17 +493,36 @@ impl Simulator {
     pub(crate) fn named_twins(
         &self,
         parameters: &[(String, String)],
-    ) -> Result<Vec<Twin>, SimulationError> {
-        let mut twins = Vec::with_capacity(parameters.len());
+    ) -> Result<Twins, SimulationError> {
+        let (twins, unread) = self.unit_twins(self.named_parameters(parameters)?);
+        if unread.is_empty() {
+            Ok(twins)
+        } else {
+            Err(SimulationError::UnknownParameters(named_of(unread)))
+        }
+    }
+
+    /// Each of `parameters`, by its device's path and its name, its device's index and its
+    /// value as the device is made now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::UnknownParameters`] naming every one no device holds as
+    /// a number.
+    pub(crate) fn named_parameters(
+        &self,
+        parameters: &[(String, String)],
+    ) -> Result<Vec<(usize, Parameter)>, SimulationError> {
+        let mut found = Vec::with_capacity(parameters.len());
         let mut missing = Vec::new();
         for (path, name) in parameters {
-            match self.twin_at(path, name) {
-                Some(twin) => twins.push(twin),
+            match self.parameter_at(path, name) {
+                Some(parameter) => found.push(parameter),
                 None => missing.push((path.clone(), name.clone())),
             }
         }
         if missing.is_empty() {
-            Ok(twins)
+            Ok(found)
         } else {
             Err(SimulationError::UnknownParameters(missing))
         }
@@ -656,7 +572,7 @@ impl Simulator {
     pub(crate) fn push_forward(
         &mut self,
         analysis: &Differentiated,
-        mut twins: Vec<Twin>,
+        mut twins: Twins,
         directions: Vec<Vec<f64>>,
         kept: &[usize],
         options: &Options,
@@ -813,7 +729,7 @@ impl Simulator {
     /// its index, to `fold`.
     pub(crate) fn pull(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         (saved, result): (&Saved, &AnalysisResult),
         cotangents: &[Cotangent<f64>],
         fold: Fold<'_>,
@@ -868,7 +784,7 @@ impl Simulator {
     /// `v − v₀ = 0`, which no parameter moves; the twins left evaluated at `x`.
     fn dc_shifts(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         x: &[f64],
         directions: &[Vec<f64>],
         forced: &[UnknownIndex],
@@ -889,11 +805,7 @@ impl Simulator {
         let factors = self.state.solver.factor(matrix)?;
         let shared = factors.shared();
         let parallelism = &options.parallelism;
-        parallelism.spread(
-            twins,
-            || (),
-            |(), twin| twin.evaluate(x, None, options.gmin),
-        );
+        twins.evaluate(x, None, options.gmin, parallelism);
         let dimension = x.len();
         let twins = &*twins;
         let mut directions: Vec<&Vec<f64>> = directions.iter().collect();
@@ -901,7 +813,8 @@ impl Simulator {
             &mut directions,
             || shared.workspace(),
             |workspace, direction| {
-                let mut moved: Vec<f64> = combined(twins, direction, dimension, Part::Residual)
+                let mut moved: Vec<f64> = twins
+                    .combined(direction, dimension, Part::Residual)
                     .iter()
                     .map(|value| -value)
                     .collect();
@@ -919,7 +832,7 @@ impl Simulator {
     /// the DC solution `x`: `−λᵀ ∂F/∂p` for each twin, where `Jᵀ λ = v`, to `fold`.
     fn dc_cotangents(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         x: &[f64],
         at: &[(usize, &[f64])],
         fold: Fold<'_>,
@@ -948,20 +861,8 @@ impl Simulator {
         let adjoints = adjoints
             .into_iter()
             .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
-        let by_twin = parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                if twin.fixed {
-                    return vec![0.0; adjoints.len()];
-                }
-                twin.evaluate(x, None, options.gmin);
-                adjoints
-                    .iter()
-                    .map(|adjoint| -twin.residual_dot(adjoint))
-                    .collect::<Vec<f64>>()
-            },
-        );
+        twins.evaluate(x, None, options.gmin, parallelism);
+        let by_twin = twins.dots((Part::Residual, -1.0), &adjoints, parallelism);
         for (&(index, _), terms) in at.iter().zip(transposed(by_twin, at.len())) {
             fold(index, &terms);
         }
@@ -975,25 +876,15 @@ impl Simulator {
         &mut self,
         sweep: &DcSweep,
         result: &DcSweepResult,
-        twins: &mut [Twin],
-        mut each: impl FnMut(&mut Self, &mut [Twin], &[f64]) -> Result<R, SimulationError>,
+        twins: &mut Twins,
+        mut each: impl FnMut(&mut Self, &mut Twins, &[f64]) -> Result<R, SimulationError>,
     ) -> Result<Vec<R>, SimulationError> {
         let swept = self.swept(sweep)?;
         let mut found = Vec::with_capacity(result.swept.len());
         let mut run = || {
             for (&level, x) in result.swept.iter().zip(&result.values) {
                 self.hold(swept, Some(level))?;
-                for twin in twins.iter_mut().filter(|twin| twin.device == swept.device) {
-                    twin.fixed = match swept.held {
-                        Held::Level(_) => true,
-                        Held::Number(_) => sweep.parameter.as_ref() == Some(&twin.parameter.name),
-                    };
-                    if !twin.fixed
-                        && let Some(made) = self.twin(swept.device, twin.parameter.clone())
-                    {
-                        *twin = made;
-                    }
-                }
+                twins.hold(self, &swept, sweep.parameter.as_deref());
                 found.push(each(self, twins, x)?);
             }
             Ok(())
@@ -1009,7 +900,7 @@ impl Simulator {
     /// twins too.
     fn biases(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         x: &[f64],
         options: &Options,
     ) -> Result<Vec<Bias>, SimulationError> {
@@ -1071,7 +962,7 @@ impl Simulator {
     /// `directions`, by frequency, then unknown kept, then direction.
     fn frequency_tangents(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         response: &AcResult,
         directions: &[Vec<f64>],
         kept: &[usize],
@@ -1092,11 +983,11 @@ impl Simulator {
                 let mut at = Vec::with_capacity(directions.len());
                 for direction in directions {
                     let mut moved = vec![Complex64::default(); dimension];
-                    for ((twin, bias), &along) in twins.iter().zip(&biases).zip(direction) {
+                    for (column, (bias, &along)) in biases.iter().zip(direction).enumerate() {
                         if along == 0.0 {
                             continue;
                         }
-                        twin.add_product(&positions, along, (omega, phasors), &mut moved);
+                        twins.add_product(column, &positions, along, (omega, phasors), &mut moved);
                         if let Some((conductance, capacitance)) = bias {
                             let entries = positions.iter().zip(conductance.iter().zip(capacitance));
                             for (&(row, column), (g, c)) in entries {
@@ -1120,7 +1011,7 @@ impl Simulator {
     /// cotangent then twin, summed over the frequencies in order.
     pub(crate) fn pull_frequencies(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         response: &AcResult,
         cotangents: &[Cotangent<Complex64>],
         options: &Options,
@@ -1144,8 +1035,9 @@ impl Simulator {
                     let mut adjoint = values.clone();
                     factors.solve_transpose(&mut adjoint)?;
                     let mut by_twin = Vec::with_capacity(twins.len());
-                    for (twin, moving) in twins.iter().zip(&biases) {
-                        let mut total = twin.product(&positions, &adjoint, (omega, phasors));
+                    for (column, moving) in biases.iter().enumerate() {
+                        let mut total =
+                            twins.product(column, &positions, &adjoint, (omega, phasors));
                         if let Some((conductance, capacitance)) = moving {
                             let entries = positions.iter().zip(conductance.iter().zip(capacitance));
                             total += entries
@@ -1245,7 +1137,7 @@ impl Simulator {
     /// the adjoint over the period again from its end.
     fn pull_period(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         (found, steps, system): Period<'_>,
         cotangents: &[Cotangent<f64>],
         fold: Fold<'_>,
@@ -1321,11 +1213,11 @@ impl Simulator {
             .map(|_| Tangent::new(self.state.workspace.contributions.charge.clone()));
         forward.tangents.clear();
         let inside = options.parallelism.inside(x.len());
-        for twin in &mut forward.twins {
-            twin.evaluate(x, Some(0.0), options.gmin);
-        }
+        forward
+            .twins
+            .evaluate(x, Some(0.0), options.gmin, &options.parallelism);
         for (direction, moved) in forward.directions.iter().zip(&shifts) {
-            let mut charge = combined(&forward.twins, direction, x.len(), Part::Charge);
+            let mut charge = forward.twins.combined(direction, x.len(), Part::Charge);
             let capacitances = &self.state.workspace.contributions.capacitance;
             add_product(
                 &self.elaborated.pattern,
@@ -1369,9 +1261,9 @@ impl Simulator {
             }
             _ => None,
         };
-        for twin in &mut forward.twins {
-            twin.evaluate(x, Some(time), options.gmin);
-        }
+        forward
+            .twins
+            .evaluate(x, Some(time), options.gmin, &options.parallelism);
         let mut solutions = Vec::with_capacity(forward.directions.len());
         for (index, (direction, tangent)) in forward
             .directions
@@ -1379,8 +1271,8 @@ impl Simulator {
             .zip(&mut forward.tangents)
             .enumerate()
         {
-            let residual = combined(&forward.twins, direction, x.len(), Part::Residual);
-            let partial_charge = combined(&forward.twins, direction, x.len(), Part::Charge);
+            let residual = forward.twins.combined(direction, x.len(), Part::Residual);
+            let partial_charge = forward.twins.combined(direction, x.len(), Part::Charge);
             let mut history = tangent.history(formula);
             if let Some((divided, period, derivatives)) = &stretched {
                 let by = derivatives[index] / *period;
@@ -1445,7 +1337,7 @@ impl Simulator {
     /// read as `λ_q` and `λ_q'` are.
     pub(crate) fn backward(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         (result, steps): (&TransientResult, &[(Formula, bool)]),
         seeds: &[&BTreeMap<usize, Vec<f64>>],
         (start, stretch): (&Start, Option<f64>),
@@ -1512,25 +1404,18 @@ impl Simulator {
                 let stepped = (formula, restarted, charge.as_slice());
                 shifted.push(adjoints[index].step_back((held, onward, solution), stepped, stretch));
             }
-            let terms = options.parallelism.spread(
-                twins,
-                || (),
-                |(), twin| {
-                    twin.evaluate(x, Some(time), gmin);
-                    shifted
-                        .iter()
-                        .zip(&solved)
-                        .map(|(moved, (_, _, solution))| {
-                            (twin.charge_dot(moved), -twin.residual_dot(solution))
-                        })
-                        .collect::<Vec<(f64, f64)>>()
-                },
-            );
-            for (column, &index) in active.iter().enumerate() {
-                let (charged, resistive): (Vec<f64>, Vec<f64>) =
-                    terms.iter().map(|by_active| by_active[column]).unzip();
-                fold(index, &charged);
-                fold(index, &resistive);
+            let solutions: Vec<Vec<f64>> = solved
+                .into_iter()
+                .map(|(_, _, solution)| solution)
+                .collect();
+            twins.evaluate(x, Some(time), gmin, &options.parallelism);
+            let charged = twins.dots((Part::Charge, 1.0), &shifted, &options.parallelism);
+            let charged = transposed(charged, active.len());
+            let resistive = twins.dots((Part::Residual, -1.0), &solutions, &options.parallelism);
+            let resistive = transposed(resistive, active.len());
+            for ((&index, charged), resistive) in active.iter().zip(&charged).zip(&resistive) {
+                fold(index, charged);
+                fold(index, resistive);
             }
         }
         self.backward_start(
@@ -1554,7 +1439,7 @@ impl Simulator {
     )]
     fn backward_start(
         &mut self,
-        twins: &mut [Twin],
+        twins: &mut Twins,
         result: &TransientResult,
         seeds: &[&BTreeMap<usize, Vec<f64>>],
         adjoints: Vec<Adjoint>,
@@ -1588,17 +1473,8 @@ impl Simulator {
             solutions.push(solution);
             periods.push(period);
         }
-        let charged = options.parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                twin.evaluate(x, Some(0.0), gmin);
-                held_all
-                    .iter()
-                    .map(|held| twin.charge_dot(held))
-                    .collect::<Vec<f64>>()
-            },
-        );
+        twins.evaluate(x, Some(0.0), gmin, &options.parallelism);
+        let charged = twins.dots((Part::Charge, 1.0), &held_all, &options.parallelism);
         for (index, terms) in transposed(charged, seeds.len()).iter().enumerate() {
             fold(index, terms);
         }
@@ -1617,17 +1493,8 @@ impl Simulator {
                 solution[unknown.index()] = 0.0;
             }
         }
-        let resistive = options.parallelism.spread(
-            twins,
-            || (),
-            |(), twin| {
-                twin.evaluate(x, None, gmin);
-                solutions
-                    .iter()
-                    .map(|solution| -twin.residual_dot(solution))
-                    .collect::<Vec<f64>>()
-            },
-        );
+        twins.evaluate(x, None, gmin, &options.parallelism);
+        let resistive = twins.dots((Part::Residual, -1.0), &solutions, &options.parallelism);
         for (index, terms) in transposed(resistive, seeds.len()).iter().enumerate() {
             fold(index, terms);
         }
@@ -1656,5 +1523,13 @@ pub(crate) fn points(result: &AnalysisResult) -> usize {
 fn kept_of(kept: &[usize], moved: &[Vec<f64>]) -> Vec<Vec<f64>> {
     kept.iter()
         .map(|&unknown| moved.iter().map(|shift| shift[unknown]).collect())
+        .collect()
+}
+
+/// The paths and names of `parameters`, as an error names them.
+fn named_of(parameters: Vec<Parameter>) -> Vec<(String, String)> {
+    parameters
+        .into_iter()
+        .map(|parameter| (parameter.instance, parameter.name))
         .collect()
 }

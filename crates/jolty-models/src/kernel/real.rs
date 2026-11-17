@@ -1,18 +1,20 @@
 //! The numbers a model computes with: plain floats, or floats carried with their exact
-//! derivative with respect to one parameter, so the same equations give both.
+//! derivatives with respect to some of its parameters, so the same equations give both.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, Serializer};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Lift;
 
 /// A real number a model computes with.
 ///
-/// `f64` is the number itself; [`Gradient`] carries its derivative with respect to one
-/// parameter alongside, by forward-mode automatic differentiation. Comparisons and
+/// `f64` is the number itself; [`Gradient`] carries its derivatives with respect to some
+/// parameters alongside, by forward-mode automatic differentiation. Comparisons and
 /// branches read the value alone, so a model takes the same branch with either. A
 /// parameter file reads it, it writes as it reads, a JSON schema describes it, and a twin
 /// makes it of a plain number by the path the number is written at.
@@ -231,55 +233,125 @@ impl Real for f64 {
     }
 }
 
-/// A number and its exact derivative with respect to one parameter.
+/// A number and its exact derivatives with respect to `K` parameters, one by default.
 ///
 /// In a parameter file, a number reads as a constant, and the object
-/// `{"value": v, "derivative": 1}` as the parameter differentiated against. It writes as it
+/// `{"value": v, "derivatives": [d₁, …, d_K]}` as a number moving with each parameter at
+/// those rates, as a twin seeds the parameters it differentiates against. It writes as it
 /// reads: a constant as a number, any other as that object.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
-#[serde(from = "Written", into = "Written")]
-pub struct Gradient {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gradient<const K: usize = 1> {
     /// The number.
     pub value: f64,
-    /// Its derivative with respect to the parameter.
-    pub derivative: f64,
+    /// Its derivative with respect to each parameter.
+    pub derivatives: [f64; K],
 }
 
-/// How a [`Gradient`] is written: a plain number, or a number and its derivative.
+/// How a [`Gradient`] is written: a plain number, or a number and its derivatives.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 enum Written {
     /// A constant.
     Constant(f64),
-    /// A number and its derivative.
-    Seeded { value: f64, derivative: f64 },
+    /// A number and its derivative with respect to each parameter.
+    Seeded { value: f64, derivatives: Vec<f64> },
 }
 
-impl From<Gradient> for Written {
-    fn from(gradient: Gradient) -> Self {
-        let Gradient { value, derivative } = gradient;
-        if derivative == 0.0 {
-            Self::Constant(value)
+impl<const K: usize> Gradient<K> {
+    /// The number `value` moving at the rates `derivatives`.
+    #[must_use]
+    pub const fn new(value: f64, derivatives: [f64; K]) -> Self {
+        Self { value, derivatives }
+    }
+
+    /// Each derivative, as `combine` makes it of the same derivative of `self` and of
+    /// `other`.
+    fn zip(self, other: Self, combine: impl Fn(f64, f64) -> f64) -> [f64; K] {
+        zip(self.derivatives, other.derivatives, combine)
+    }
+
+    /// Each derivative, as `map` makes it of the same derivative of `self`.
+    fn map(self, map: impl Fn(f64) -> f64) -> [f64; K] {
+        self.derivatives.map(map)
+    }
+
+    /// The derivatives of `self · other`, by the product rule.
+    fn product(self, other: Self) -> [f64; K] {
+        self.zip(other, |own, others| own * other.value + self.value * others)
+    }
+
+    /// The derivatives of `self / other`, whose value is `value`, by the quotient rule.
+    fn quotient(self, other: Self, value: f64) -> [f64; K] {
+        self.zip(other, |own, others| (own - value * others) / other.value)
+    }
+}
+
+/// Each element of `own`, as `combine` makes it of that element and the same one of
+/// `others`.
+fn zip<const K: usize>(
+    own: [f64; K],
+    others: [f64; K],
+    combine: impl Fn(f64, f64) -> f64,
+) -> [f64; K] {
+    let mut combined = own;
+    for (element, other) in combined.iter_mut().zip(others) {
+        *element = combine(*element, other);
+    }
+    combined
+}
+
+impl<const K: usize> Default for Gradient<K> {
+    fn default() -> Self {
+        Self::constant(0.0)
+    }
+}
+
+impl<const K: usize> Serialize for Gradient<K> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let written = if self.derivatives.iter().all(|&derivative| derivative == 0.0) {
+            Written::Constant(self.value)
         } else {
-            Self::Seeded { value, derivative }
+            Written::Seeded {
+                value: self.value,
+                derivatives: self.derivatives.to_vec(),
+            }
+        };
+        written.serialize(serializer)
+    }
+}
+
+impl<'de, const K: usize> Deserialize<'de> for Gradient<K> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Written::deserialize(deserializer)? {
+            Written::Constant(value) => Ok(Self::constant(value)),
+            Written::Seeded { value, derivatives } => {
+                let count = derivatives.len();
+                let derivatives = derivatives.try_into().map_err(|_| {
+                    D::Error::custom(format!(
+                        "a number of {K} parameters has {K} derivatives, not {count}"
+                    ))
+                })?;
+                Ok(Self { value, derivatives })
+            }
         }
     }
 }
 
-impl From<Written> for Gradient {
-    fn from(written: Written) -> Self {
-        match written {
-            Written::Constant(value) => Self::constant(value),
-            Written::Seeded { value, derivative } => Self { value, derivative },
-        }
+impl<const K: usize> JsonSchema for Gradient<K> {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("Gradient")
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Written::json_schema(generator)
     }
 }
 
-impl Real for Gradient {
+impl<const K: usize> Real for Gradient<K> {
     fn constant(value: f64) -> Self {
         Self {
             value,
-            derivative: 0.0,
+            derivatives: [0.0; K],
         }
     }
 
@@ -290,176 +362,241 @@ impl Real for Gradient {
     fn chain(self, value: f64, slope: f64, _: f64) -> Self {
         Self {
             value,
-            derivative: slope * self.derivative,
+            derivatives: self.map(|derivative| slope * derivative),
         }
     }
 }
 
-impl Add for Gradient {
+impl<const K: usize> Add for Gradient<K> {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
         Self {
             value: self.value + other.value,
-            derivative: self.derivative + other.derivative,
+            derivatives: self.zip(other, |own, others| own + others),
         }
     }
 }
 
-impl Sub for Gradient {
+impl<const K: usize> Sub for Gradient<K> {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
         Self {
             value: self.value - other.value,
-            derivative: self.derivative - other.derivative,
+            derivatives: self.zip(other, |own, others| own - others),
         }
     }
 }
 
-impl Mul for Gradient {
+impl<const K: usize> Mul for Gradient<K> {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self {
         Self {
             value: self.value * other.value,
-            derivative: self.derivative * other.value + self.value * other.derivative,
+            derivatives: self.product(other),
         }
     }
 }
 
-impl Div for Gradient {
+impl<const K: usize> Div for Gradient<K> {
     type Output = Self;
 
     fn div(self, other: Self) -> Self {
         let value = self.value / other.value;
         Self {
             value,
-            derivative: (self.derivative - value * other.derivative) / other.value,
+            derivatives: self.quotient(other, value),
         }
     }
 }
 
-impl Neg for Gradient {
+impl<const K: usize> Neg for Gradient<K> {
     type Output = Self;
 
     fn neg(self) -> Self {
         Self {
             value: -self.value,
-            derivative: -self.derivative,
+            derivatives: self.map(|derivative| -derivative),
         }
     }
 }
 
-impl Add<f64> for Gradient {
+impl<const K: usize> Add<f64> for Gradient<K> {
     type Output = Self;
 
     fn add(self, other: f64) -> Self {
         Self {
             value: self.value + other,
-            derivative: self.derivative,
+            derivatives: self.derivatives,
         }
     }
 }
 
-impl Sub<f64> for Gradient {
+impl<const K: usize> Sub<f64> for Gradient<K> {
     type Output = Self;
 
     fn sub(self, other: f64) -> Self {
         Self {
             value: self.value - other,
-            derivative: self.derivative,
+            derivatives: self.derivatives,
         }
     }
 }
 
-impl Mul<f64> for Gradient {
+impl<const K: usize> Mul<f64> for Gradient<K> {
     type Output = Self;
 
     fn mul(self, other: f64) -> Self {
         Self {
             value: self.value * other,
-            derivative: self.derivative * other,
+            derivatives: self.map(|derivative| derivative * other),
         }
     }
 }
 
-impl Div<f64> for Gradient {
+impl<const K: usize> Div<f64> for Gradient<K> {
     type Output = Self;
 
     fn div(self, other: f64) -> Self {
         Self {
             value: self.value / other,
-            derivative: self.derivative / other,
+            derivatives: self.map(|derivative| derivative / other),
         }
     }
 }
 
-impl AddAssign for Gradient {
+impl<const K: usize> AddAssign for Gradient<K> {
     fn add_assign(&mut self, other: Self) {
         *self = *self + other;
     }
 }
 
-impl SubAssign for Gradient {
+impl<const K: usize> SubAssign for Gradient<K> {
     fn sub_assign(&mut self, other: Self) {
         *self = *self - other;
     }
 }
 
-/// A number, its derivatives with respect to two variables, and its derivative with
-/// respect to both: second-order forward-mode differentiation, as a device that heats
-/// computes when its derivatives with respect to a parameter are asked for, the second
-/// variable its temperature.
+/// A number, its derivatives with respect to `K` parameters and to a second variable, and
+/// its derivatives with respect to each parameter and that variable both: second-order
+/// forward-mode differentiation, as a device that heats computes when its derivatives with
+/// respect to its parameters are asked for, the second variable its temperature.
 ///
-/// In a parameter file it reads as a [`Gradient`] does, the derivative with respect to the
-/// first variable, and writes as one. No parameter has a derivative with respect to the
-/// second variable, so a number with one does not write.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
-#[serde(from = "Written")]
-pub struct Hyper {
+/// In a parameter file it reads as a [`Gradient`] does, its derivatives with respect to the
+/// parameters, and writes as one. No parameter has a derivative with respect to the second
+/// variable, so a number with one does not write.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hyper<const K: usize = 1> {
     /// The number.
     pub value: f64,
-    /// Its derivative with respect to the first variable.
-    pub first: f64,
+    /// Its derivative with respect to each parameter.
+    pub first: [f64; K],
     /// Its derivative with respect to the second variable.
     pub second: f64,
-    /// Its derivative with respect to both.
-    pub both: f64,
+    /// Its derivative with respect to each parameter and the second variable.
+    pub both: [f64; K],
 }
 
-impl Serialize for Hyper {
+impl<const K: usize> Hyper<K> {
+    /// The number `value` moving at the rates `first` along the parameters, and not with
+    /// the second variable.
+    #[must_use]
+    pub const fn new(value: f64, first: [f64; K]) -> Self {
+        Self {
+            value,
+            first,
+            second: 0.0,
+            both: [0.0; K],
+        }
+    }
+
+    /// `self · other`, each derivative by the product rule.
+    fn product(self, other: Self) -> Self {
+        let first = zip(self.first, other.first, |own, others| {
+            own * other.value + self.value * others
+        });
+        let mut both = self.both;
+        let firsts = self.first.into_iter().zip(other.first);
+        for ((both, (own, others)), other_both) in both.iter_mut().zip(firsts).zip(other.both) {
+            *both = *both * other.value
+                + own * other.second
+                + self.second * others
+                + self.value * other_both;
+        }
+        Self {
+            value: self.value * other.value,
+            first,
+            second: self.second * other.value + self.value * other.second,
+            both,
+        }
+    }
+
+    /// `self / other`, its derivatives those of `self = q · other` solved for `q`'s.
+    fn quotient(self, other: Self) -> Self {
+        let value = self.value / other.value;
+        let first = zip(self.first, other.first, |own, others| {
+            (own - value * others) / other.value
+        });
+        let second = (self.second - value * other.second) / other.value;
+        let mut both = self.both;
+        let firsts = first.into_iter().zip(other.first);
+        for ((both, (quotient, others)), other_both) in both.iter_mut().zip(firsts).zip(other.both)
+        {
+            *both = (*both - quotient * other.second - second * others - value * other_both)
+                / other.value;
+        }
+        Self {
+            value,
+            first,
+            second,
+            both,
+        }
+    }
+}
+
+impl<const K: usize> Default for Hyper<K> {
+    fn default() -> Self {
+        Self::constant(0.0)
+    }
+}
+
+impl<const K: usize> Serialize for Hyper<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.second != 0.0 || self.both != 0.0 {
+        if self.second != 0.0 || self.both.iter().any(|&both| both != 0.0) {
             return Err(serde::ser::Error::custom(
                 "a number with a derivative with respect to a second variable does not write",
             ));
         }
-        let gradient = Gradient {
-            value: self.value,
-            derivative: self.first,
-        };
-        gradient.serialize(serializer)
+        Gradient::new(self.value, self.first).serialize(serializer)
     }
 }
 
-impl From<Written> for Hyper {
-    fn from(written: Written) -> Self {
-        let Gradient { value, derivative } = Gradient::from(written);
-        Self {
-            value,
-            first: derivative,
-            second: 0.0,
-            both: 0.0,
-        }
+impl<'de, const K: usize> Deserialize<'de> for Hyper<K> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let Gradient { value, derivatives } = Gradient::<K>::deserialize(deserializer)?;
+        Ok(Self::new(value, derivatives))
     }
 }
 
-impl Real for Hyper {
+impl<const K: usize> JsonSchema for Hyper<K> {
+    fn schema_name() -> Cow<'static, str> {
+        Gradient::<K>::schema_name()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Gradient::<K>::json_schema(generator)
+    }
+}
+
+impl<const K: usize> Real for Hyper<K> {
     fn constant(value: f64) -> Self {
         Self {
             value,
-            ..Self::default()
+            first: [0.0; K],
+            second: 0.0,
+            both: [0.0; K],
         }
     }
 
@@ -470,27 +607,29 @@ impl Real for Hyper {
     fn chain(self, value: f64, slope: f64, curvature: f64) -> Self {
         Self {
             value,
-            first: slope * self.first,
+            first: self.first.map(|first| slope * first),
             second: slope * self.second,
-            both: slope * self.both + curvature * self.first * self.second,
+            both: zip(self.both, self.first, |both, first| {
+                slope * both + curvature * first * self.second
+            }),
         }
     }
 }
 
-impl Add for Hyper {
+impl<const K: usize> Add for Hyper<K> {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
         Self {
             value: self.value + other.value,
-            first: self.first + other.first,
+            first: zip(self.first, other.first, |own, others| own + others),
             second: self.second + other.second,
-            both: self.both + other.both,
+            both: zip(self.both, other.both, |own, others| own + others),
         }
     }
 }
 
-impl Sub for Hyper {
+impl<const K: usize> Sub for Hyper<K> {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
@@ -498,54 +637,36 @@ impl Sub for Hyper {
     }
 }
 
-impl Mul for Hyper {
+impl<const K: usize> Mul for Hyper<K> {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self {
-        Self {
-            value: self.value * other.value,
-            first: self.first * other.value + self.value * other.first,
-            second: self.second * other.value + self.value * other.second,
-            both: self.both * other.value
-                + self.first * other.second
-                + self.second * other.first
-                + self.value * other.both,
-        }
+        self.product(other)
     }
 }
 
-impl Div for Hyper {
+impl<const K: usize> Div for Hyper<K> {
     type Output = Self;
 
-    /// The quotient `q = a / b`, its derivatives those of `a = q · b` solved for `q`'s.
     fn div(self, other: Self) -> Self {
-        let value = self.value / other.value;
-        let first = (self.first - value * other.first) / other.value;
-        let second = (self.second - value * other.second) / other.value;
-        Self {
-            value,
-            first,
-            second,
-            both: (self.both - first * other.second - second * other.first - value * other.both)
-                / other.value,
-        }
+        self.quotient(other)
     }
 }
 
-impl Neg for Hyper {
+impl<const K: usize> Neg for Hyper<K> {
     type Output = Self;
 
     fn neg(self) -> Self {
         Self {
             value: -self.value,
-            first: -self.first,
+            first: self.first.map(|first| -first),
             second: -self.second,
-            both: -self.both,
+            both: self.both.map(|both| -both),
         }
     }
 }
 
-impl Add<f64> for Hyper {
+impl<const K: usize> Add<f64> for Hyper<K> {
     type Output = Self;
 
     fn add(self, other: f64) -> Self {
@@ -556,7 +677,7 @@ impl Add<f64> for Hyper {
     }
 }
 
-impl Sub<f64> for Hyper {
+impl<const K: usize> Sub<f64> for Hyper<K> {
     type Output = Self;
 
     fn sub(self, other: f64) -> Self {
@@ -567,39 +688,39 @@ impl Sub<f64> for Hyper {
     }
 }
 
-impl Mul<f64> for Hyper {
+impl<const K: usize> Mul<f64> for Hyper<K> {
     type Output = Self;
 
     fn mul(self, other: f64) -> Self {
         Self {
             value: self.value * other,
-            first: self.first * other,
+            first: self.first.map(|first| first * other),
             second: self.second * other,
-            both: self.both * other,
+            both: self.both.map(|both| both * other),
         }
     }
 }
 
-impl Div<f64> for Hyper {
+impl<const K: usize> Div<f64> for Hyper<K> {
     type Output = Self;
 
     fn div(self, other: f64) -> Self {
         Self {
             value: self.value / other,
-            first: self.first / other,
+            first: self.first.map(|first| first / other),
             second: self.second / other,
-            both: self.both / other,
+            both: self.both.map(|both| both / other),
         }
     }
 }
 
-impl AddAssign for Hyper {
+impl<const K: usize> AddAssign for Hyper<K> {
     fn add_assign(&mut self, other: Self) {
         *self = *self + other;
     }
 }
 
-impl SubAssign for Hyper {
+impl<const K: usize> SubAssign for Hyper<K> {
     fn sub_assign(&mut self, other: Self) {
         *self = *self - other;
     }
@@ -619,12 +740,10 @@ mod tests {
     /// difference at 0.7.
     fn check(exact: impl Fn(Gradient) -> Gradient, plain: impl Fn(f64) -> f64) {
         let x = 0.7;
-        let found = exact(Gradient {
-            value: x,
-            derivative: 1.0,
-        });
+        let found = exact(Gradient::new(x, [1.0]));
+        let [derivative] = found.derivatives;
         assert!((found.value - plain(x)).abs() < 1e-12);
-        assert!((found.derivative - central(&plain, x)).abs() < 1e-6);
+        assert!((derivative - central(&plain, x)).abs() < 1e-6);
     }
 
     #[test]
@@ -652,39 +771,87 @@ mod tests {
         );
     }
 
+    /// A function of two numbers, each seeded on a parameter of its own, that exercises
+    /// every operation a number has.
+    fn exercise<R: Real>(x: R, y: R) -> R {
+        let z = (x * y + x * 3.0) / (y - 2.0) - (x / y).exp().ln_1p().sqrt();
+        (z.powf(1.5).recip() + z.pow(y) * 0.5 - x.abs().max(y).min(z)) / 4.0 + z.sin().tan()
+    }
+
     #[test]
-    fn a_seeded_number_reads_as_the_parameter_differentiated_against() {
+    fn each_slot_of_a_chunk_is_the_number_of_one_parameter_bit_for_bit() {
+        let (x, y) = (0.7, 2.6);
+        let chunk = exercise(
+            Gradient::new(x, [1.0, 0.0, 0.0]),
+            Gradient::new(y, [0.0, 1.0, 0.0]),
+        );
+        let alone = [
+            exercise(Gradient::new(x, [1.0]), Gradient::constant(y)),
+            exercise(Gradient::constant(x), Gradient::new(y, [1.0])),
+        ];
+        assert_eq!(chunk.value.to_bits(), alone[0].value.to_bits());
+        for (slot, one) in alone.iter().enumerate() {
+            assert_eq!(
+                chunk.derivatives[slot].to_bits(),
+                one.derivatives[0].to_bits()
+            );
+        }
+        assert_eq!(chunk.derivatives[2].to_bits(), 0.0_f64.to_bits());
+        let warm = |first: [f64; 2], second: f64| Hyper {
+            value: x,
+            first,
+            second,
+            both: [0.0; 2],
+        };
+        let hot = exercise(warm([1.0, 0.0], 1.0), Hyper::constant(y));
+        let one = exercise(
+            Hyper {
+                value: x,
+                first: [1.0],
+                second: 1.0,
+                both: [0.0],
+            },
+            Hyper::constant(y),
+        );
+        assert_eq!(hot.first[0].to_bits(), one.first[0].to_bits());
+        assert_eq!(hot.both[0].to_bits(), one.both[0].to_bits());
+        assert_eq!(hot.second.to_bits(), one.second.to_bits());
+    }
+
+    #[test]
+    fn a_seeded_number_reads_as_the_parameters_differentiated_against() {
         let constant: Gradient = serde_json::from_str("2.5").unwrap();
         assert_eq!(constant, Gradient::constant(2.5));
-        let seeded: Gradient = serde_json::from_str(r#"{"value": 2.5, "derivative": 1}"#).unwrap();
-        assert_eq!(
-            seeded,
-            Gradient {
-                value: 2.5,
-                derivative: 1.0
-            }
-        );
+        let seeded: Gradient =
+            serde_json::from_str(r#"{"value": 2.5, "derivatives": [1]}"#).unwrap();
+        assert_eq!(seeded, Gradient::new(2.5, [1.0]));
+        let chunk: Gradient<2> =
+            serde_json::from_str(r#"{"value": 2.5, "derivatives": [0, 3]}"#).unwrap();
+        assert_eq!(chunk, Gradient::new(2.5, [0.0, 3.0]));
+        let mismatched =
+            serde_json::from_str::<Gradient<2>>(r#"{"value": 2.5, "derivatives": [1]}"#);
+        assert!(mismatched.is_err());
     }
 
     #[test]
     fn a_number_with_derivatives_writes_as_it_reads() {
-        let seeded = Gradient {
-            value: 2.5,
-            derivative: 1.0,
-        };
+        let seeded = Gradient::new(2.5, [1.0, 0.0]);
         let written = serde_json::to_value(seeded).unwrap();
         assert_eq!(
             written,
-            serde_json::json!({"value": 2.5, "derivative": 1.0})
+            serde_json::json!({"value": 2.5, "derivatives": [1.0, 0.0]})
         );
-        assert_eq!(serde_json::from_value::<Gradient>(written).unwrap(), seeded);
-        let constant = serde_json::to_value(Gradient::constant(-3.0)).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Gradient<2>>(written).unwrap(),
+            seeded
+        );
+        let constant = serde_json::to_value(Gradient::<2>::constant(-3.0)).unwrap();
         assert_eq!(constant, serde_json::json!(-3.0));
         assert_eq!(
-            serde_json::from_value::<Gradient>(constant).unwrap(),
+            serde_json::from_value::<Gradient<2>>(constant).unwrap(),
             Gradient::constant(-3.0)
         );
-        let hyper: Hyper = serde_json::from_str(r#"{"value": 2.5, "derivative": 1}"#).unwrap();
+        let hyper: Hyper = serde_json::from_str(r#"{"value": 2.5, "derivatives": [1]}"#).unwrap();
         let written = serde_json::to_value(hyper).unwrap();
         assert_eq!(serde_json::from_value::<Hyper>(written).unwrap(), hyper);
         let warm = Hyper {

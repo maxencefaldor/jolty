@@ -1,4 +1,5 @@
-//! The time of one evaluation of a device's kernel, in each of the cases of `cases/`.
+//! The time of one evaluation of a device's kernel, or of a twin of it, in each of the
+//! cases of `cases/`.
 //! Name one after `--` to run it alone, as
 //! `cargo bench -p jolty-models --bench evaluation -- vbic/`; save one build's times with
 //! `--save-baseline NAME` and compare another's with `--baseline NAME`. Times move with
@@ -52,10 +53,27 @@ const CASES: [Named; 16] = [
     ("photocell/lagging", cases::photocell_lagging),
 ];
 
+/// A twin's case's name, and what makes it for a count of seeds.
+type Twinned = (&'static str, fn(usize) -> cases::TwinCase);
+
+/// Every twin's case, by its model's name, made for each count of seeds.
+const TWINS: [Twinned; 3] = [
+    ("bsim4", cases::bsim4_twin),
+    ("diode", cases::diode_twin),
+    ("resistor", cases::resistor_twin),
+];
+
 fn evaluation(criterion: &mut Criterion) {
     for (name, case) in CASES {
         let mut case = case();
         criterion.bench_function(name, |bencher| bencher.iter(|| black_box(case.evaluate())));
+    }
+    for (name, case) in TWINS {
+        for seeds in [1, 2, 4, 8] {
+            let mut case = case(seeds);
+            let name = format!("{name}/twin_of_{seeds}");
+            criterion.bench_function(&name, |bencher| bencher.iter(|| case.evaluate()));
+        }
     }
 }
 

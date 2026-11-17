@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::derivative::Twin;
 use crate::measure::{interpolated, trapezoid};
 use crate::sensitivity::Parameter;
 use crate::transient::Carried;
+use crate::twins::Twins;
 use crate::{Options, SimulationError, Simulator, Transient, TransientResult};
 
 /// An objective: a scalar of a transient's waveforms, and its derivative with respect to
@@ -124,7 +124,7 @@ impl Simulator {
         })?;
         Ok(ObjectiveResult {
             value,
-            parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
+            parameters: twins.parameters,
             derivatives,
             result,
         })
@@ -143,7 +143,7 @@ impl Simulator {
         objective: &Objective,
         options: &Options,
         fold: Fold<'_>,
-    ) -> Result<(f64, Vec<Twin>, TransientResult), SimulationError> {
+    ) -> Result<(f64, Twins, TransientResult), SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let functional = &objective.functional;
@@ -162,7 +162,7 @@ impl Simulator {
                     transient.stop
                 )));
             }
-            let mut twins = self.twins();
+            let mut twins = self.every_twin();
             let reading = self.read_meter(options.profile);
             let start = self.start_of(transient)?;
             let mut steps = Vec::new();
@@ -337,12 +337,11 @@ mod tests {
                     }
                 })?;
             assert_eq!(result.times, integrated.times, "the same steps");
-            for (index, twin) in twins.iter().enumerate() {
+            for (index, parameter) in twins.parameters.iter().enumerate() {
                 let (adjoint, direct) = (sums[index], integrated.derivatives[unknown][index]);
                 let gap = (adjoint - direct).abs();
                 let scale = magnitudes[index] + integrated.anywhere[index];
                 let relative = if gap == 0.0 { 0.0 } else { gap / scale };
-                let parameter = &twin.parameter;
                 assert!(
                     relative <= TOLERANCE,
                     "d∫{name}/d{}.{}: adjoint {adjoint:e}, direct {direct:e}, terms of \

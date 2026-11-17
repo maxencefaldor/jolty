@@ -241,29 +241,29 @@ pub(crate) trait Kind: Send + Sync + 'static {
     /// As [`Kernel::sense`].
     fn sense(shape: &Self::Shape, prepared: &Self::Prepared, at: &Local<'_>) -> Option<(f64, f64)>;
 
-    /// An instance's numbers computing with the derivative of every number with respect
-    /// to one of its parameters, and what it remembers then.
-    type Twin: fmt::Debug + Send + Sync;
+    /// An instance's numbers computing with the derivatives of every number along `SEEDS`
+    /// directions of its parameters, and what it remembers then.
+    type Twin<const SEEDS: usize>: fmt::Debug + Send + Sync;
 
     /// The twin of an instance of `shape` with `parameters` at `temperature`, in kelvins,
-    /// differentiated against its number at the path `parameter` among them, as
-    /// [`jolty_ir::numbers`] names it, from its initial memory: `None` when the kernel
-    /// reads no real number there, as when it reads it as a choice, such as a level, or a
-    /// parameter is out of range.
-    fn twin(
+    /// differentiated along `seeds`, each a number's path among them, as
+    /// [`jolty_ir::numbers`] names it, and its rate along each direction, from its initial
+    /// memory: `None` when the kernel reads no real number at a path, as when it reads it
+    /// as a choice, such as a level, or a parameter is out of range.
+    fn twin<const SEEDS: usize>(
         shape: &Self::Shape,
         parameters: &Self::Parameters,
-        parameter: &str,
+        seeds: &[(&str, [f64; SEEDS])],
         temperature: f64,
-    ) -> Option<Self::Twin>;
+    ) -> Option<Self::Twin<SEEDS>>;
 
     /// Evaluates the twin of an instance of `shape` at `at`, from what it remembers, which
     /// it updates, into `stamp`.
-    fn evaluate_twin(
+    fn evaluate_twin<const SEEDS: usize>(
         shape: &Self::Shape,
-        twin: &mut Self::Twin,
+        twin: &mut Self::Twin<SEEDS>,
         at: &Local<'_>,
-        stamp: &mut Stamp<'_, Gradient>,
+        stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     );
 }
 
@@ -367,29 +367,25 @@ impl<K: Kernel> Kind for K {
         K::sense(shape, prepared, at)
     }
 
-    type Twin = (K::Prepared<Gradient>, K::Memory);
+    type Twin<const SEEDS: usize> = (K::Prepared<Gradient<SEEDS>>, K::Memory);
 
-    fn twin(
+    fn twin<const SEEDS: usize>(
         shape: &K::Shape,
         parameters: &K::Parameters<f64>,
-        parameter: &str,
+        seeds: &[(&str, [f64; SEEDS])],
         temperature: f64,
-    ) -> Option<Self::Twin> {
-        let seeded = |value| Gradient {
-            value,
-            derivative: 1.0,
-        };
-        let lifted: K::Parameters<Gradient> = lift(parameters, parameter, seeded).ok()?;
+    ) -> Option<Self::Twin<SEEDS>> {
+        let lifted: K::Parameters<Gradient<SEEDS>> = lift(parameters, seeds, Gradient::new).ok()?;
         let prepared = K::prepare(&lifted, Gradient::constant(temperature)).ok()?;
         let memory = K::memory(shape, &prepared);
         Some((prepared, memory))
     }
 
-    fn evaluate_twin(
+    fn evaluate_twin<const SEEDS: usize>(
         shape: &K::Shape,
-        (prepared, memory): &mut Self::Twin,
+        (prepared, memory): &mut Self::Twin<SEEDS>,
         at: &Local<'_>,
-        stamp: &mut Stamp<'_, Gradient>,
+        stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     ) {
         K::evaluate(shape, prepared, memory, at, stamp);
     }
@@ -1169,32 +1165,25 @@ impl Runs {
 
     /// The twin of the instance the device `device` is, the `instance` of its parameters
     /// as the run now makes it, at the temperature `temperature` of its surroundings,
-    /// differentiated against its number at the path `parameter`, as
-    /// [`jolty_ir::numbers`] names it, from its initial memory; `None` when its kernel
-    /// reads no real number there, as when it reads it as a choice, such as a level, or a
-    /// parameter is out of range.
+    /// differentiated along `seeds`, from its initial memory; `None` when its kernel reads
+    /// no real number at a seed's path, as when it reads it as a choice, such as a level,
+    /// or a parameter is out of range.
     #[must_use]
     pub fn twin(
         &self,
         groups: &Groups,
         device: usize,
         (instance, temperature): (&Instance<'_>, f64),
-        parameter: &str,
+        seeds: &Seeds,
     ) -> Option<Twin> {
         let (group, member) = groups.place(device)?;
         let (of, run) = (groups.kernels.get(group)?, self.groups.get(group)?);
-        let evaluated = run.twin(instance, parameter, temperature)?;
-        let (unknowns, stride) = (of.unknowns(), of.stride());
-        let zero = || vec![Gradient::default(); unknowns];
+        let sizes = (of.unknowns(), of.stride());
         Some(Twin {
-            evaluated,
+            evaluated: run.twin((instance, temperature), seeds, sizes)?,
             nodes: of.map_of(member)?.to_vec(),
             slots: of.slots_of(member)?.to_vec(),
-            rows: [zero(), zero(), zero()],
-            entries: [
-                vec![Gradient::default(); stride],
-                vec![Gradient::default(); stride],
-            ],
+            seeds: seeds.count(),
         })
     }
 
@@ -1761,13 +1750,14 @@ trait GroupRun: fmt::Debug + Send {
     ) -> bool;
 
     /// The twin of an instance of the group, the `instance` of its device, at the
-    /// temperature `temperature` of its surroundings, differentiated against its number
-    /// at the path `parameter`; `None` when its kernel reads no real number there.
+    /// temperature `temperature` of its surroundings, differentiated along `seeds`, with
+    /// room for the group's `sizes`, its local unknowns and its local entries; `None` when
+    /// its kernel reads no real number at a seed's path.
     fn twin(
         &self,
-        instance: &Instance<'_>,
-        parameter: &str,
-        temperature: f64,
+        instance: (&Instance<'_>, f64),
+        seeds: &Seeds,
+        sizes: (usize, usize),
     ) -> Option<Box<dyn Twinned>>;
 
     /// Prepares the instance `member` of the group, the `instance` of its device, at the
@@ -2023,17 +2013,21 @@ impl<K: Kind> GroupRun for KernelRun<K> {
 
     fn twin(
         &self,
-        instance: &Instance<'_>,
-        parameter: &str,
-        temperature: f64,
+        (instance, temperature): (&Instance<'_>, f64),
+        seeds: &Seeds,
+        sizes: (usize, usize),
     ) -> Option<Box<dyn Twinned>> {
         let parameters = instance.parameters::<K>()?;
         let temperature = instance.own.temperature(temperature).ok()?;
-        let twin = K::twin(&self.shape, parameters, parameter, temperature)?;
-        Some(Box::new(KernelTwin::<K> {
-            shape: self.shape.clone(),
-            twin,
-        }))
+        let made = (&self.shape, parameters, temperature);
+        // The seeds' count rounded up to one of the widths the twins are compiled for.
+        match seeds.count() {
+            1 => KernelTwin::<K, 1>::made(made, seeds, sizes),
+            2 => KernelTwin::<K, 2>::made(made, seeds, sizes),
+            3 | 4 => KernelTwin::<K, 4>::made(made, seeds, sizes),
+            5..=Seeds::MOST => KernelTwin::<K, { Seeds::MOST }>::made(made, seeds, sizes),
+            _ => None,
+        }
     }
 
     fn prepare(
@@ -2202,37 +2196,154 @@ impl<K: Kind> GroupRun for KernelRun<K> {
     }
 }
 
+/// The directions a [`Twin`] differentiates along, its seeds: numbers of an instance's
+/// parameters, each at its path among them, as [`jolty_ir::numbers`] names it, with its
+/// rate along each seed. A seed that moves one number at rate 1 differentiates against
+/// that number alone; one that moves several, along that tangent of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Seeds {
+    /// Each number's path, and its rate along each seed.
+    numbers: Vec<(String, Vec<f64>)>,
+    count: usize,
+}
+
+impl Seeds {
+    /// The most seeds one twin carries: twins are compiled for 1, 2, 4 and this many, a
+    /// twin of another count taking the next of them up.
+    pub const MOST: usize = 8;
+
+    /// A seed for each of the numbers at `paths`, which moves that number alone.
+    #[must_use]
+    pub fn units(paths: &[&str]) -> Self {
+        let count = paths.len();
+        let numbers = paths
+            .iter()
+            .enumerate()
+            .map(|(seed, &path)| {
+                let mut rates = vec![0.0; count];
+                if let Some(rate) = rates.get_mut(seed) {
+                    *rate = 1.0;
+                }
+                (path.to_owned(), rates)
+            })
+            .collect();
+        Self { numbers, count }
+    }
+
+    /// `count` seeds, along which each number of `numbers`, at its path, moves at its
+    /// rates, one per seed; `None` when a number has another count of rates.
+    #[must_use]
+    pub fn new(numbers: Vec<(String, Vec<f64>)>, count: usize) -> Option<Self> {
+        numbers
+            .iter()
+            .all(|(_, rates)| rates.len() == count)
+            .then_some(Self { numbers, count })
+    }
+
+    /// How many seeds there are.
+    #[must_use]
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Each number's path and its rates, padded with zeros to `SEEDS` seeds.
+    fn padded<const SEEDS: usize>(&self) -> Vec<(&str, [f64; SEEDS])> {
+        self.numbers
+            .iter()
+            .map(|(path, rates)| {
+                let padded = std::array::from_fn(|seed| rates.get(seed).copied().unwrap_or(0.0));
+                (path.as_str(), padded)
+            })
+            .collect()
+    }
+}
+
+/// What an instance's twin adds to the circuit's equations, by kind.
+#[derive(Debug, Clone, Copy)]
+enum Contribution {
+    Residual,
+    Charge,
+    Conductance,
+    Capacitance,
+}
+
 /// An instance's twin, typed, apart from its group.
 trait Twinned: fmt::Debug + Send + Sync {
-    /// Evaluates the twin at `at` into `stamp`.
-    fn evaluate(&mut self, at: &Local<'_>, stamp: &mut Stamp<'_, Gradient>);
+    /// Evaluates the twin at `at` into its own block.
+    fn evaluate(&mut self, at: &Local<'_>);
+
+    /// The `contribution` it adds at the local unknown or local entry `index`, as last
+    /// evaluated: its value, and its derivative along each seed.
+    fn number(&self, contribution: Contribution, index: usize) -> Option<(f64, &[f64])>;
 }
 
-/// The twin of an instance of the kind `K`, and its shape.
-struct KernelTwin<K: Kind> {
+/// The twin of an instance of the kind `K`, its derivatives along `SEEDS` directions, its
+/// shape, and its block: the residuals, scales and charges of its local unknowns and the
+/// conductances and capacitances of its local entries, as last evaluated.
+struct KernelTwin<K: Kind, const SEEDS: usize> {
     shape: K::Shape,
-    twin: K::Twin,
+    twin: K::Twin<SEEDS>,
+    rows: [Vec<Gradient<SEEDS>>; 3],
+    entries: [Vec<Gradient<SEEDS>>; 2],
+    /// How many of the `SEEDS` directions the twin was seeded along, the rest left zero.
+    seeds: usize,
 }
 
-impl<K: Kind> fmt::Debug for KernelTwin<K> {
+impl<K: Kind, const SEEDS: usize> KernelTwin<K, SEEDS> {
+    /// The twin of an instance of `shape` with `parameters` at `temperature` along `seeds`,
+    /// with room for `sizes`, its local unknowns and its local entries.
+    fn made(
+        (shape, parameters, temperature): (&K::Shape, &K::Parameters, f64),
+        seeds: &Seeds,
+        (unknowns, stride): (usize, usize),
+    ) -> Option<Box<dyn Twinned>> {
+        let twin = K::twin(shape, parameters, &seeds.padded::<SEEDS>(), temperature)?;
+        let zero = |size| vec![Gradient::default(); size];
+        Some(Box::new(Self {
+            shape: shape.clone(),
+            twin,
+            rows: [zero(unknowns), zero(unknowns), zero(unknowns)],
+            entries: [zero(stride), zero(stride)],
+            seeds: seeds.count(),
+        }))
+    }
+}
+
+impl<K: Kind, const SEEDS: usize> fmt::Debug for KernelTwin<K, SEEDS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct(K::NAME)
             .field("shape", &self.shape)
             .field("twin", &self.twin)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
-impl<K: Kind> Twinned for KernelTwin<K> {
-    fn evaluate(&mut self, at: &Local<'_>, stamp: &mut Stamp<'_, Gradient>) {
-        K::evaluate_twin(&self.shape, &mut self.twin, at, stamp);
+impl<K: Kind, const SEEDS: usize> Twinned for KernelTwin<K, SEEDS> {
+    fn evaluate(&mut self, at: &Local<'_>) {
+        let [residual, scale, charge] = &mut self.rows;
+        let [conductance, capacitance] = &mut self.entries;
+        let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+        K::evaluate_twin(&self.shape, &mut self.twin, at, &mut stamp);
+    }
+
+    fn number(&self, contribution: Contribution, index: usize) -> Option<(f64, &[f64])> {
+        let [residual, _, charge] = &self.rows;
+        let [conductance, capacitance] = &self.entries;
+        let values = match contribution {
+            Contribution::Residual => residual,
+            Contribution::Charge => charge,
+            Contribution::Conductance => conductance,
+            Contribution::Capacitance => capacitance,
+        };
+        let number = values.get(index)?;
+        Some((number.value, number.derivatives.get(..self.seeds)?))
     }
 }
 
-/// A device's instance computing with the derivative of every number with respect to one
-/// number of its parameters: how the contributions it adds to the circuit's equations
-/// move with that number, which its own block holds, local to the instance, and the map
-/// of its group places among the circuit's.
+/// A device's instance computing with the derivatives of every number along some
+/// directions of its parameters, its seeds: how the contributions it adds to the circuit's
+/// equations move along each, which its own block holds, local to the instance, and the
+/// map of its group places among the circuit's.
 #[derive(Debug)]
 pub struct Twin {
     evaluated: Box<dyn Twinned>,
@@ -2241,59 +2352,67 @@ pub struct Twin {
     nodes: Vec<u32>,
     /// The stored position of each local entry, or [`UNMAPPED`] for none.
     slots: Vec<u32>,
-    /// The residuals, scales and charges of the local unknowns, as last evaluated.
-    rows: [Vec<Gradient>; 3],
-    /// The conductances and capacitances of the local entries, as last evaluated.
-    entries: [Vec<Gradient>; 2],
+    seeds: usize,
 }
+
+/// A contribution of a twin as last evaluated: its value, and its derivative along each of
+/// the twin's seeds.
+pub type Moving<'a> = (f64, &'a [f64]);
 
 impl Twin {
+    /// How many seeds the twin differentiates along.
+    #[must_use]
+    pub const fn seeds(&self) -> usize {
+        self.seeds
+    }
+
     /// Evaluates the twin at `input`.
     pub fn evaluate(&mut self, input: &Input<'_>) {
-        let [residual, scale, charge] = &mut self.rows;
-        let [conductance, capacitance] = &mut self.entries;
-        let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
-        self.evaluated
-            .evaluate(&input.local(&self.nodes), &mut stamp);
+        self.evaluated.evaluate(&input.local(&self.nodes));
     }
 
-    /// Each residual the instance adds, with its derivative, by the circuit's unknown whose
-    /// equation it enters, in the order of its local unknowns, those on the reference left
-    /// out: `f` and `∂f/∂p`, as last evaluated.
-    pub fn residual(&self) -> impl Iterator<Item = (usize, Gradient)> + '_ {
-        by_unknown(&self.nodes, &self.rows[0])
+    /// Each residual the instance adds, by the circuit's unknown whose equation it enters,
+    /// in the order of its local unknowns, those on the reference left out: `f`, and
+    /// `∂f/∂p · s` along each seed `s`, as last evaluated.
+    pub fn residual(&self) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+        self.by_unknown(Contribution::Residual)
     }
 
-    /// Each charge the instance adds, with its derivative, as [`Twin::residual`] gives the
-    /// residuals: `q` and `∂q/∂p`, as last evaluated.
-    pub fn charge(&self) -> impl Iterator<Item = (usize, Gradient)> + '_ {
-        by_unknown(&self.nodes, &self.rows[2])
+    /// Each charge the instance adds, as [`Twin::residual`] gives the residuals: `q`, and
+    /// `∂q/∂p · s` along each seed, as last evaluated.
+    pub fn charge(&self) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+        self.by_unknown(Contribution::Charge)
     }
 
-    /// Each conductance and capacitance the instance adds, with its derivative, by the
-    /// stored position it adds to, in the order of its local entries, those on the
-    /// reference left out: `G`, `∂G/∂p`, `C` and `∂C/∂p`, as last evaluated.
-    pub fn entries(&self) -> impl Iterator<Item = (usize, Gradient, Gradient)> + '_ {
-        let [conductance, capacitance] = &self.entries;
+    /// Each conductance and capacitance the instance adds, by the stored position it adds
+    /// to, in the order of its local entries, those on the reference left out: `G` and `C`,
+    /// and their derivatives along each seed, as last evaluated.
+    pub fn entries(&self) -> impl Iterator<Item = (usize, Moving<'_>, Moving<'_>)> + '_ {
         self.slots
             .iter()
-            .zip(conductance.iter().zip(capacitance))
-            .filter(|(slot, _)| **slot != UNMAPPED)
-            .map(|(&slot, (&conductance, &capacitance))| (slot as usize, conductance, capacitance))
+            .enumerate()
+            .filter(|(_, slot)| **slot != UNMAPPED)
+            .filter_map(|(entry, &slot)| {
+                let conductance = self.evaluated.number(Contribution::Conductance, entry)?;
+                let capacitance = self.evaluated.number(Contribution::Capacitance, entry)?;
+                Some((slot as usize, conductance, capacitance))
+            })
     }
-}
 
-/// Each of `values`, by the circuit's unknown of `nodes` at its index, those on the
-/// reference left out.
-fn by_unknown<'a>(
-    nodes: &'a [u32],
-    values: &'a [Gradient],
-) -> impl Iterator<Item = (usize, Gradient)> + 'a {
-    nodes
-        .iter()
-        .zip(values)
-        .filter(|(node, _)| **node != UNMAPPED)
-        .map(|(&node, &value)| (node as usize, value))
+    /// Each `contribution` at a local unknown, by the circuit's unknown of the local
+    /// unknown, those on the reference left out.
+    fn by_unknown(
+        &self,
+        contribution: Contribution,
+    ) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| **node != UNMAPPED)
+            .filter_map(move |(local, &node)| {
+                Some((node as usize, self.evaluated.number(contribution, local)?))
+            })
+    }
 }
 
 /// The instances of a chunk of a group: their blocks, their memory and their prepared

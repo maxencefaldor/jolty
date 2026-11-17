@@ -40,39 +40,31 @@ impl Heating for f64 {
     type Warm = Gradient;
 
     fn seed(kelvins: f64) -> Gradient {
-        Gradient {
-            value: kelvins,
-            derivative: 1.0,
-        }
+        Gradient::new(kelvins, [1.0])
     }
 
     fn split(warm: Gradient) -> (Self, Self) {
-        (warm.value, warm.derivative)
+        let [derivative] = warm.derivatives;
+        (warm.value, derivative)
     }
 }
 
-impl Heating for Gradient {
-    type Warm = Hyper;
+impl<const K: usize> Heating for Gradient<K> {
+    type Warm = Hyper<K>;
 
-    fn seed(kelvins: f64) -> Hyper {
+    fn seed(kelvins: f64) -> Hyper<K> {
         Hyper {
             value: kelvins,
-            first: 0.0,
+            first: [0.0; K],
             second: 1.0,
-            both: 0.0,
+            both: [0.0; K],
         }
     }
 
-    fn split(warm: Hyper) -> (Self, Self) {
+    fn split(warm: Hyper<K>) -> (Self, Self) {
         (
-            Self {
-                value: warm.value,
-                derivative: warm.first,
-            },
-            Self {
-                value: warm.second,
-                derivative: warm.both,
-            },
+            Self::new(warm.value, warm.first),
+            Self::new(warm.second, warm.both),
         )
     }
 }

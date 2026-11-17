@@ -536,32 +536,29 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         K::sense(&shape.inner, &prepared.at_ambient, &at.remapped(&map))
     }
 
-    type Twin = (HeatedPrepared<K, Gradient>, HeatedMemory<K, Gradient>);
+    type Twin<const SEEDS: usize> = (
+        HeatedPrepared<K, Gradient<SEEDS>>,
+        HeatedMemory<K, Gradient<SEEDS>>,
+    );
 
-    fn twin(
+    fn twin<const SEEDS: usize>(
         shape: &Self::Shape,
         parameters: &Self::Parameters,
-        parameter: &str,
+        seeds: &[(&str, [f64; SEEDS])],
         temperature: f64,
-    ) -> Option<Self::Twin> {
-        let seeded = |value| Hyper {
-            value,
-            first: 1.0,
-            second: 0.0,
-            both: 0.0,
-        };
-        let lifted: K::Parameters<Hyper> = lift(parameters, parameter, seeded).ok()?;
-        let prepared = HeatedPrepared::<K, Gradient>::new(&lifted, temperature).ok()?;
+    ) -> Option<Self::Twin<SEEDS>> {
+        let lifted: K::Parameters<Hyper<SEEDS>> = lift(parameters, seeds, Hyper::new).ok()?;
+        let prepared = HeatedPrepared::<K, Gradient<SEEDS>>::new(&lifted, temperature).ok()?;
         let memory = HeatedMemory::new(shape, &prepared);
         Some((prepared, memory))
     }
 
-    fn evaluate_twin(
+    fn evaluate_twin<const SEEDS: usize>(
         shape: &Self::Shape,
-        (prepared, memory): &mut Self::Twin,
+        (prepared, memory): &mut Self::Twin<SEEDS>,
         at: &Local<'_>,
-        stamp: &mut Stamp<'_, Gradient>,
+        stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     ) {
-        evaluate::<K, Gradient>(shape, prepared, memory, at, stamp);
+        evaluate::<K, Gradient<SEEDS>>(shape, prepared, memory, at, stamp);
     }
 }

@@ -24,8 +24,9 @@ use jolty_ir::numbers;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::derivative::{Cotangent, Forward, Saved, Start, Twin, points, units};
+use crate::derivative::{Cotangent, Forward, Saved, Start, points, units};
 use crate::elaborated::{Origin, Origins};
+use crate::twins::Twins;
 use crate::{
     Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
     SimulationError, Simulator, Transient,
@@ -107,11 +108,11 @@ pub struct SensitivityResult {
 }
 
 /// What [`Simulator::differentiate`] finds: the derivatives of the outputs with respect to
-/// the number of each twin, in the twins' order, and the result of the analysis
-/// differentiated.
+/// the parameter of each column of the twins, in their order, and the result of the
+/// analysis differentiated.
 pub(crate) struct Differentiation {
-    /// The twins, each the number of one device's parameters, as they ended the analysis.
-    pub(crate) twins: Vec<Twin>,
+    /// The twins, a column for each parameter, as they ended the analysis.
+    pub(crate) twins: Twins,
     pub(crate) derivatives: Derivatives,
     /// For an oscillator's periodic steady state, its period's derivative with respect to
     /// the number of each twin.
@@ -139,12 +140,12 @@ impl Simulator {
     ) -> Result<SensitivityResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let twins = self.twins();
+            let twins = self.every_twin();
             let found =
                 self.differentiate(&sensitivity.outputs, &sensitivity.of, twins, options)?;
             Ok(SensitivityResult {
                 outputs: sensitivity.outputs.clone(),
-                parameters: found.twins.into_iter().map(|twin| twin.parameter).collect(),
+                parameters: found.twins.parameters,
                 derivatives: found.derivatives,
                 period_derivatives: found.period_derivatives,
                 result: Box::new(found.result),
@@ -152,8 +153,8 @@ impl Simulator {
         })
     }
 
-    /// The derivative of each unknown of `outputs` with respect to the number of each of
-    /// `twins`, at each point of the analysis `of`, and that analysis's result.
+    /// The derivative of each unknown of `outputs` with respect to the parameter of each
+    /// column of `twins`, at each point of the analysis `of`, and that analysis's result.
     ///
     /// # Errors
     ///
@@ -164,7 +165,7 @@ impl Simulator {
         &mut self,
         outputs: &[String],
         of: &Differentiated,
-        twins: Vec<Twin>,
+        twins: Twins,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
         let kept = outputs
@@ -258,12 +259,13 @@ impl Simulator {
     }
 
     /// The derivatives of the unknowns `kept` at each of the `points` of the result
-    /// `result`, which left `saved`, with respect to each of `twins`' parameters, a row at
+    /// `result`, which left `saved`, with respect to the parameter of each column of
+    /// `twins`, a row at
     /// a time: the VJP of a cotangent on each unknown kept at each point, and for an
     /// oscillator's period one more.
     fn by_rows(
         &mut self,
-        mut twins: Vec<Twin>,
+        mut twins: Twins,
         (result, saved): (AnalysisResult, Saved),
         (kept, points): (&[usize], usize),
         options: &Options,
@@ -348,10 +350,10 @@ impl Simulator {
         })
     }
 
-    /// A twin of every device, for each number of its parameters its model reads as a
-    /// real number, in the devices' order then the numbers'.
-    pub(crate) fn twins(&self) -> Vec<Twin> {
-        let mut twins = Vec::new();
+    /// The twins of every number of every device's parameters its model reads as a real
+    /// number, a column each, in the devices' order then the numbers'.
+    pub(crate) fn every_twin(&self) -> Twins {
+        let mut parameters = Vec::new();
         let origins = self.origins();
         for (index, placed) in self.elaborated.devices.iter().enumerate() {
             let Origin::Model(made) = origins.of(index) else {
@@ -363,18 +365,15 @@ impl Simulator {
                     name,
                     value,
                 };
-                if let Some(twin) = self.twin(index, parameter) {
-                    twins.push(twin);
-                }
+                parameters.push((index, parameter));
             }
         }
-        twins
+        self.unit_twins(parameters).0
     }
 
-    /// The twin of the number `name` of the device at `path`, its value as the device is
-    /// made now; none when the circuit has no device there, or its model reads no real
-    /// number there.
-    pub(crate) fn twin_at(&self, path: &str, name: &str) -> Option<Twin> {
+    /// The number `name` of the device at `path`, and the device's index, its value as the
+    /// device is made now; none when the circuit has no device there, or no number there.
+    pub(crate) fn parameter_at(&self, path: &str, name: &str) -> Option<(usize, Parameter)> {
         let index = self.elaborated.device(path)?;
         let origins = self.origins();
         let Origin::Model(made) = origins.of(index) else {
@@ -386,39 +385,17 @@ impl Simulator {
             name: name.to_owned(),
             value,
         };
-        self.twin(index, parameter)
+        Some((index, parameter))
     }
 
     /// What the run's devices are made from.
-    fn origins(&self) -> Origins<'_> {
+    pub(crate) fn origins(&self) -> Origins<'_> {
         Origins {
             elaborated: &self.elaborated,
             patched: &self.state.patched,
             swept: &self.state.swept,
             temperature: self.state.temperature,
         }
-    }
-
-    /// The twin of the device at `index` that differentiates against its number
-    /// `parameter`, made from what the device is made from now; none when its model reads
-    /// no real number there.
-    pub(crate) fn twin(&self, index: usize, parameter: Parameter) -> Option<Twin> {
-        let origins = self.origins();
-        let origin = origins.of(index);
-        if !matches!(origin, Origin::Model(_)) {
-            return None;
-        }
-        let instance = (&origin.kernel(), origins.temperature);
-        let made =
-            self.state
-                .runs
-                .twin(&self.elaborated.groups, index, instance, &parameter.name)?;
-        Some(Twin {
-            device: index,
-            parameter,
-            made,
-            fixed: false,
-        })
     }
 }
 

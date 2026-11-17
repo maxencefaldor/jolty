@@ -26,8 +26,8 @@ pub(crate) use laws::assert_mirrors;
 
 use crate::{
     BOLTZMANN, Binding, Contributions, Differentiable, Gradient, Groups, Input, Kernel, Model,
-    Nature, Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs,
-    Unknown, UnknownIndex,
+    Moving, Nature, Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions,
+    Runs, Seeds, Twin, Unknown, UnknownIndex,
 };
 
 /// One device whose terminals each connect to an unknown of their own, its instance in a
@@ -402,6 +402,9 @@ fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
     }
 }
 
+/// A contribution of a twin, owned: its value, and its derivative along each seed.
+pub type Moved = (f64, Vec<f64>);
+
 /// A device of a model made from parameters, each of its terminals on an unknown of its
 /// own, at 30 kelvins above the reference temperature.
 pub struct Rig<'m> {
@@ -444,27 +447,51 @@ impl Rig<'_> {
         parameter: &str,
         (x, time): (&[f64], Option<f64>),
     ) -> Option<[Vec<Gradient>; 3]> {
+        let found = self.along(parameters, &[parameter], (x, time))?;
+        Some(found.map(|numbers| {
+            numbers
+                .into_iter()
+                .map(|(value, derivatives)| {
+                    Gradient::new(value, [derivatives.first().copied().unwrap_or(0.0)])
+                })
+                .collect()
+        }))
+    }
+
+    /// As [`Rig::exact`], along each of `paths` at once: the residuals, charges and
+    /// conductances at `x`, each with its derivative along each path's unit seed, of one
+    /// twin differentiating along all of them.
+    #[must_use]
+    pub fn along(
+        &self,
+        parameters: &jolty_ir::Parameters,
+        paths: &[&str],
+        (x, time): (&[f64], Option<f64>),
+    ) -> Option<[Vec<Moved>; 3]> {
         let (groups, runs, pattern, _) =
             grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
         let specification = self.model.read(parameters).expect("valid");
         let instance = (&specification.kernel(), Self::TEMPERATURE);
-        let mut twin = runs.twin(&groups, 0, instance, parameter)?;
+        let mut twin = runs.twin(&groups, 0, instance, &Seeds::units(paths))?;
         let mut input = Input::new(x, time, 1e-12);
         input.limiting = false;
         twin.evaluate(&input);
-        let mut found = [
-            vec![Gradient::default(); x.len()],
-            vec![Gradient::default(); x.len()],
-            vec![Gradient::default(); pattern.len()],
-        ];
+        let zero = (0.0, vec![0.0; paths.len()]);
+        let mut found = [x.len(), x.len(), pattern.len()].map(|length| vec![zero.clone(); length]);
+        let add = |(sum, sums): &mut Moved, (value, derivatives): Moving<'_>| {
+            *sum += value;
+            for (sum, derivative) in sums.iter_mut().zip(derivatives) {
+                *sum += derivative;
+            }
+        };
         for (unknown, residual) in twin.residual() {
-            found[0][unknown] += residual;
+            add(&mut found[0][unknown], residual);
         }
         for (unknown, charge) in twin.charge() {
-            found[1][unknown] += charge;
+            add(&mut found[1][unknown], charge);
         }
         for (slot, conductance, _) in twin.entries() {
-            found[2][slot] += conductance;
+            add(&mut found[2][slot], conductance);
         }
         Some(found)
     }
@@ -476,6 +503,18 @@ impl Rig<'_> {
         let (_, _, pattern, _) = grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
         pattern.positions().collect()
     }
+}
+
+/// The twin of an instance of `K` with `parameters`, a JSON object, at `temperature`,
+/// differentiated along `seeds`, in a group of its own, each of its terminals on an
+/// unknown of its own; none when its kernel reads no real number at a seed's path.
+#[must_use]
+pub fn twin<K: Kernel>(parameters: &str, temperature: f64, seeds: &Seeds) -> Option<Twin> {
+    let model = Differentiable::<K>::new();
+    let parameters = serde_json::from_str(parameters).ok()?;
+    let (groups, runs, _, _) = grouped(&model, &parameters, temperature).ok()?;
+    let specification = model.read(&parameters).ok()?;
+    runs.twin(&groups, 0, (&specification.kernel(), temperature), seeds)
 }
 
 /// The excitation of an independent source of `model` with `parameters`, each terminal on
@@ -497,12 +536,12 @@ pub(crate) fn excitation_and_derivative(
     let specification = model.read(&held).expect("valid");
     let instance = (&specification.kernel(), REFERENCE_TEMPERATURE);
     let mut twin = runs
-        .twin(&groups, 0, instance, "waveform.dc")
+        .twin(&groups, 0, instance, &Seeds::units(&["waveform.dc"]))
         .expect("a real level");
     twin.evaluate(&Input::new(x, None, 0.0));
     let mut derivative = vec![0.0; x.len()];
-    for (unknown, residual) in twin.residual() {
-        derivative[unknown] += residual.derivative;
+    for (unknown, (_, derivatives)) in twin.residual() {
+        derivative[unknown] += derivatives.first().copied().unwrap_or(0.0);
     }
     (excitation, derivative)
 }
@@ -571,6 +610,7 @@ pub(crate) fn assert_model_parameter_gradients_match(
     let plain = rig.plain(&object(&parameters), (x, time));
     let mut paths = Vec::new();
     numbers(&parameters, &mut Vec::new(), &mut paths);
+    let mut real = Vec::new();
     for path in paths {
         let name = path.join(".");
         let mut changed = parameters.clone();
@@ -607,15 +647,15 @@ pub(crate) fn assert_model_parameter_gradients_match(
             .enumerate()
         {
             for (row, exact) in exact[kind].iter().enumerate() {
+                let [derivative] = exact.derivatives;
                 let (wide, narrow, plain) = (&wide[kind], &narrow[kind], &plain[kind]);
                 let numeric = (4.0 * narrow[row].0 - wide[row].0) / 3.0;
                 let rounding = 64.0 * f64::EPSILON * wide[row].1 / step;
-                let tolerance = 1e-6 * exact.derivative.abs().max(numeric.abs()) + rounding;
+                let tolerance = 1e-6 * derivative.abs().max(numeric.abs()) + rounding;
                 assert!(
-                    (exact.derivative - numeric).abs() <= tolerance + 1e-30,
-                    "{} d{name_of}[{row}]/d{name} at {x:?}: exact {}, numeric {numeric}",
+                    (derivative - numeric).abs() <= tolerance + 1e-30,
+                    "{} d{name_of}[{row}]/d{name} at {x:?}: exact {derivative}, numeric {numeric}",
                     model.name(),
-                    exact.derivative
                 );
                 assert!(
                     (exact.value - plain[row]).abs() <= 1e-12 * plain[row].abs(),
@@ -623,6 +663,43 @@ pub(crate) fn assert_model_parameter_gradients_match(
                     exact.value,
                     plain[row]
                 );
+            }
+        }
+        real.push((name, exact));
+    }
+    assert_chunks_match_seeds_alone(&rig, &object(&parameters), &real, (x, time));
+}
+
+/// Checks that a twin differentiating along several of a device's real parameters at once
+/// finds, along each, bit for bit what a twin along that parameter alone does: in chunks
+/// as wide as a twin goes, and of three, which a twin pads to its width of four.
+fn assert_chunks_match_seeds_alone(
+    rig: &Rig<'_>,
+    parameters: &jolty_ir::Parameters,
+    real: &[(String, [Vec<Gradient>; 3])],
+    (x, time): (&[f64], Option<f64>),
+) {
+    for width in [Seeds::MOST, 3] {
+        for chunk in real.chunks(width) {
+            let paths: Vec<&str> = chunk.iter().map(|(name, _)| name.as_str()).collect();
+            let along = rig
+                .along(parameters, &paths, (x, time))
+                .expect("real parameters");
+            for (seed, (name, alone)) in chunk.iter().enumerate() {
+                for (kind, name_of) in ["residual", "charge", "conductance"].iter().enumerate() {
+                    for (row, (together, alone)) in along[kind].iter().zip(&alone[kind]).enumerate()
+                    {
+                        let [derivative] = alone.derivatives;
+                        assert!(
+                            together.0.to_bits() == alone.value.to_bits()
+                                && together.1[seed].to_bits() == derivative.to_bits(),
+                            "{} {name_of}[{row}] along {name}, seed {seed} of {}: {together:?} \
+                             in the chunk, {alone:?} alone",
+                            rig.model.name(),
+                            paths.len(),
+                        );
+                    }
+                }
             }
         }
     }

@@ -11,7 +11,8 @@
 //! nothing and never panics. [`Groups`] evaluate the instances of one kernel and one shape
 //! together, on one thread or across a rayon pool's, each into its own block of a slab that
 //! a gather adds to the circuit's equations in a fixed order; a [`Twin`] evaluates one
-//! instance with the derivative of every number with respect to one of its parameters.
+//! instance with the derivatives of every number along some directions of its parameters,
+//! its [`Seeds`], all at once.
 //!
 //! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
 //! [`Specification`], which names the device's terminals and gives the instance of its
@@ -44,7 +45,9 @@ use std::sync::Arc;
 pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
 pub use device::{Differentiable, Model, ParameterError, Specification};
 pub use evaluation::{Contributions, Input};
-pub use group::{Alone, Block, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
+pub use group::{
+    Alone, Block, Changed, Groups, Instance, Moving, Runs, Seeds, Tasks, TooLarge, Twin,
+};
 pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{
     Behavior, BehavioralCapacitor, BehavioralCurrentSource, BehavioralParameters,

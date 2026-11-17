@@ -638,6 +638,82 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
     assert!(worst <= TRANSPOSED, "worst {worst:e}");
 }
 
+/// A VJP along more of one device's parameters than a twin carries, which it evaluates in
+/// chunks, pulls a cotangent back to each parameter bit for bit as a VJP along that
+/// parameter alone does, at an operating point and at every step of a transient.
+#[test]
+fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
+    let mut instances = rectifier();
+    instances[2]["parameters"] = json!({
+        "saturation_current": 1e-14, "emission_coefficient": 1.05, "series_resistance": 10.0,
+        "junction_capacitance": 2e-12, "junction_potential": 0.8, "grading_coefficient": 0.4,
+        "depletion_coefficient": 0.45, "transit_time": 1e-9,
+        "sidewall_saturation_current": 1e-16, "nominal_temperature": 300.15
+    });
+    let names: Vec<(String, String)> = instances[2]["parameters"]
+        .as_object()
+        .expect("the diode's parameters")
+        .keys()
+        .map(|name| ("D1".to_owned(), name.clone()))
+        .chain([
+            ("R1".to_owned(), "resistance".to_owned()),
+            ("C1".to_owned(), "capacitance".to_owned()),
+        ])
+        .collect();
+    let circuit = circuit_of(&instances);
+    let transient = Differentiated::Transient(Transient {
+        stop: 2e-6,
+        max_step: Some(1e-8),
+        method: Method::Trapezoidal,
+        breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
+    });
+    for (of, points) in [
+        (Differentiated::OperatingPoint, vec![0]),
+        (transient, vec![0, 50, 150]),
+    ] {
+        let options = options(&of);
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("an elaborated circuit");
+        let unknowns = simulator.unknowns().len();
+        let cotangents = Cotangents::Real(vec![Cotangent {
+            points: points
+                .iter()
+                .map(|&point| {
+                    let values = (0..unknowns)
+                        .map(|unknown| picked(point * unknowns + unknown + 1))
+                        .collect();
+                    (point, values)
+                })
+                .collect(),
+            period: 0.0,
+        }]);
+        let mut pulled = |names: &[(String, String)]| -> Vec<f64> {
+            let pullback = simulator.vjp(&of, names, &options).expect("a VJP");
+            let pulled = simulator
+                .pull_back(&pullback, &cotangents, &options)
+                .expect("a pullback");
+            let ParameterCotangents::Real(rows) = pulled else {
+                panic!("real cotangents");
+            };
+            rows[0].clone()
+        };
+        let together = pulled(&names);
+        for (index, name) in names.iter().enumerate() {
+            let [alone] = pulled(std::slice::from_ref(name))[..] else {
+                panic!("one cotangent");
+            };
+            assert_eq!(
+                together[index].to_bits(),
+                alone.to_bits(),
+                "{name:?}: {} among all, {alone} alone",
+                together[index]
+            );
+        }
+    }
+}
+
 /// A 1 V source through 1 kΩ into 1 nF: an RC of time constant 1 µs.
 fn rc() -> Value {
     json!([

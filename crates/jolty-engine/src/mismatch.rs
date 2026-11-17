@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::derivative::Twin;
+use crate::sensitivity::Parameter;
 use crate::variants::Toleranced;
 use crate::{AnalysisResult, Derivatives, Differentiated, Options, SimulationError, Simulator};
 
@@ -117,6 +117,12 @@ impl Simulator {
                     }
                 }
             }
+            let (twins, unread) = self.unit_twins(moved.parameters);
+            moved.missing.extend(
+                unread
+                    .into_iter()
+                    .map(|parameter| (parameter.instance, parameter.name)),
+            );
             if !moved.missing.is_empty() {
                 return Err(SimulationError::UnknownParameters(moved.missing));
             }
@@ -134,8 +140,7 @@ impl Simulator {
                         .collect()
                 })
                 .collect();
-            let found =
-                self.differentiate(&mismatch.outputs, &mismatch.of, moved.twins, options)?;
+            let found = self.differentiate(&mismatch.outputs, &mismatch.of, twins, options)?;
             let derivatives = match found.derivatives {
                 Derivatives::Real(points) => Derivatives::Real(combined(&points, &weights)),
                 Derivatives::Complex(points) => Derivatives::Complex(combined(&points, &weights)),
@@ -163,7 +168,7 @@ impl Simulator {
 
     /// The random variables of the toleranced numbers `toleranced`, each part's own then each
     /// lot's, a lot's shared by the parts that name it, with the derivatives of the numbers
-    /// at their values in the run; their twins added to `moved`.
+    /// at their values in the run; the numbers added to `moved`.
     fn toleranced(
         &self,
         toleranced: &[Toleranced],
@@ -175,7 +180,7 @@ impl Simulator {
             let Some(at) = moved.column(self, &number.instance, &number.parameter) else {
                 continue;
             };
-            let value = moved.twins[at].parameter.value;
+            let value = moved.parameters[at].1.value;
             let (spread, shared) = number.random_variables();
             own.push(RandomVariable {
                 instance: Some(number.instance.clone()),
@@ -225,34 +230,33 @@ fn moving(path: &str, name: &str, derivative: f64) -> BTreeMap<String, BTreeMap<
     )])
 }
 
-/// The twins of the numbers random variables move, each once, and the numbers no device
-/// holds as a real number.
+/// The numbers random variables move, each once with its device's index, and the numbers
+/// no device holds.
 #[derive(Default)]
 struct Moved {
-    twins: Vec<Twin>,
-    /// The place of each number's twin, by the device's path and the number's.
+    parameters: Vec<(usize, Parameter)>,
+    /// The place of each number among them, by the device's path and the number's.
     columns: BTreeMap<(String, String), usize>,
     missing: Vec<(String, String)>,
 }
 
 impl Moved {
-    /// The place of the twin of the number `name` of the device at `path`, made the first
-    /// time it is asked for; none, the number noted missing, when no device holds it as a
-    /// real number.
+    /// The place of the number `name` of the device at `path`, added the first time it is
+    /// asked for; none, the number noted missing, when no device holds it.
     fn column(&mut self, simulator: &Simulator, path: &str, name: &str) -> Option<usize> {
         let key = (path.to_owned(), name.to_owned());
         if let Some(&at) = self.columns.get(&key) {
             return Some(at);
         }
-        let Some(twin) = simulator.twin_at(path, name) else {
+        let Some(parameter) = simulator.parameter_at(path, name) else {
             if !self.missing.contains(&key) {
                 self.missing.push(key);
             }
             return None;
         };
-        self.columns.insert(key, self.twins.len());
-        self.twins.push(twin);
-        Some(self.twins.len() - 1)
+        self.columns.insert(key, self.parameters.len());
+        self.parameters.push(parameter);
+        Some(self.parameters.len() - 1)
     }
 }
 
