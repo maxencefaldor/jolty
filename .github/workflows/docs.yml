@@ -1,8 +1,9 @@
 name: Docs
 
 on:
+  # Every branch pushed is built and checked; main's alone is published.
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -31,7 +32,7 @@ jobs:
       - name: Check the reference pages and build the site
         run: scripts/check docs
       - name: Keep the site for Pages
-        if: github.event_name != 'pull_request' && github.event.repository.has_pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -40,7 +41,7 @@ jobs:
     name: Publish to GitHub Pages
     # A repository publishes once GitHub Pages is enabled for it, with GitHub Actions as
     # its source; until then the site is built and checked, and not published.
-    if: github.event_name != 'pull_request' && github.event.repository.has_pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10

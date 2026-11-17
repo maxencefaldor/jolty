@@ -33,7 +33,7 @@ cargo nextest run --workspace  # Rust tests, each in a process of its own
 cargo test --workspace --doc   # Rust doctests, which nextest does not run
 ```
 
-A change is done when `scripts/check` passes; CI runs the same script, one group per job, the Rust and Python groups on Linux and on macOS and the docs group on Linux.
+A change is done when `scripts/check` passes; CI runs the same script, one group per job, the Rust and Python groups on Linux and on macOS and the docs group on Linux, on every branch pushed, so a branch lands on main only once its run is green.
 CI also runs `scripts/coverage`, and `scripts/mutants` on each change, which report what they measure and never fail on it.
 Enable the pre-push hook once per clone, `git config core.hooksPath .githooks`, so no push reaches CI without passing it.
 `uv sync` rebuilds the engine whenever a Rust source, or the Markdown a crate includes, changes.

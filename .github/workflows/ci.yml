@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Every branch pushed, so that a branch is checked as main will be before it lands.
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
   # Weekly on main as well, so that an advisory published against a locked dependency
   # fails a run though nothing was pushed.
@@ -157,7 +158,12 @@ jobs:
           tool: cargo-mutants
       - name: Mutate
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # A pull request's change is from its base, a branch's from main, and main's
+          # from the commit before the push.
+          BASE: >-
+            ${{ github.event.pull_request.base.sha
+            || (github.ref != 'refs/heads/main' && 'origin/main')
+            || github.event.before }}
         # A change of many mutants outlasts the job, which would end the run cancelled:
         # stopped 15 minutes short of the job's limit, cargo-mutants keeps the outcomes it
         # has, and the report says which mutants it reached.
