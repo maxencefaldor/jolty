@@ -24,6 +24,7 @@ allocation-counter = "0.8.1"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 dyn-stack = "0.13"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
+gungraun = "0.20.0"
 mimalloc = { version = "0.1.52", default-features = false }
 num-complex = "0.4"
 numpy = "0.30"

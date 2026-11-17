@@ -28,12 +28,17 @@ testing = []
 [dev-dependencies]
 allocation-counter.workspace = true
 criterion.workspace = true
+gungraun.workspace = true
 # The crate itself with its bench, for its benchmarks.
 jolty-models = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 
 [[bench]]
 name = "evaluation"
+harness = false
+
+[[bench]]
+name = "instructions"
 harness = false
 
 [lints]
