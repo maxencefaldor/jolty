@@ -18,13 +18,14 @@
 //! At the operating point and at each level of a DC sweep, `F` is the DC equations; a
 //! number the sweep holds moves nothing there. Over frequency, the response to an
 //! excitation `b` solves `(G + jωC) x = b`, so it moves by `−(G + jωC)⁻¹ (dG + jω dC) x`,
-//! where `G` and `C` move with each parameter directly, exactly, and through the operating
-//! point, which moves by `s = −G⁻¹ ∂F/∂p`: a central difference of the devices' `G` and `C`
-//! along each parameter's own `s`, its largest voltage a microvolt either way, since the
-//! devices give their derivatives with respect to their voltages, not their second
-//! derivatives; the JVP and the VJP read the same difference, so they stay each other's
-//! transposes. A phasor's cotangent pulls back to a complex number, `vᵀ dx/dp`, bilinear;
-//! a real loss of the phasors `x = a + jb` takes the real part, with `v = ∂L/∂a − j ∂L/∂b`.
+//! where `G` and `C` move with each parameter directly and through the operating point,
+//! both exactly: the JVP pushes each tangent's operating-point shift `s = −G⁻¹ ∂F/∂p t`
+//! through twins of the nonlinear devices that seed the unknowns along `s`, and the VJP
+//! contracts the frequency adjoints and phasors with unknown-seeded twins of those devices
+//! into `g = ∂/∂x Σ_k λ_kᵀ (G + jω_k C) x_k`, then solves `Gᵀ μ = g` once at the operating
+//! point whatever the number of parameters. A phasor's cotangent pulls back to a complex
+//! number, `vᵀ dx/dp`, bilinear; a real loss of the phasors `x = a + jb` takes the real
+//! part, with `v = ∂L/∂a − j ∂L/∂b`.
 //!
 //! Over time, each step solves `f(x) + α q(x) + h = 0`, where the integration formula's
 //! `α` and history `h` stand for the charges' derivative. The JVP is the direct method: it
@@ -71,10 +72,6 @@ use crate::{
     AcResult, AnalysisResult, DcSweep, DcSweepResult, Options, PeriodicSteadyStateResult,
     SimulationError, Simulator, Transient, TransientResult,
 };
-
-/// How far the operating point moves, along its derivative, in the central difference
-/// of `G` and `C`: its largest voltage moves this many volts either way.
-const BIAS_STEP: f64 = 1e-6;
 
 /// A derivative over frequency, as a delay line's refusal names it.
 const OVER_FREQUENCY: &str = "derivative over frequency";
@@ -171,10 +168,6 @@ pub(crate) type Period<'a> = (
     &'a [(Formula, bool)],
     &'a System,
 );
-
-/// How `G` and `C` move, by stored position, as the operating point moves along one
-/// parameter's derivative of it; none when no voltage moves.
-type Bias = Option<(Vec<f64>, Vec<f64>)>;
 
 /// Where a transient's derivatives start.
 #[derive(Debug, Clone, PartialEq)]
@@ -362,10 +355,7 @@ impl Simulator {
     /// `tangents`, each a number per parameter of `parameters`, every parameter by its
     /// device's path and its name, such as `R1` and `resistance` or `V1` and
     /// `waveform.dc`: the JVP of the analysis, by the direct method, one solve per tangent
-    /// at each point.
-    ///
-    /// The derivatives are exact, but for a response's through its operating point, a
-    /// central difference along each parameter's own derivative of the operating point.
+    /// at each point, exact.
     ///
     /// # Errors
     ///
@@ -894,70 +884,6 @@ impl Simulator {
         ran.map(|()| found)
     }
 
-    /// Each twin's derivative of the operating point `x` and of `G` and `C` along it, by
-    /// stored position, a central difference whose largest voltage moves [`BIAS_STEP`]
-    /// either way, none when no voltage moves; the devices left evaluated at `x`, and the
-    /// twins too.
-    fn biases(
-        &mut self,
-        twins: &mut Twins,
-        x: &[f64],
-        options: &Options,
-    ) -> Result<Vec<Bias>, SimulationError> {
-        let units = units(twins.len());
-        let moved = self.dc_shifts(twins, x, &units, &[], options)?;
-        let mut biases = Vec::with_capacity(twins.len());
-        for shift in &moved {
-            biases.push(self.bias_derivative(x, shift, options));
-        }
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        Ok(biases)
-    }
-
-    /// The derivatives of `G` and `C`, by stored position, as the operating point `x` moves
-    /// along `shift`: a central difference whose largest voltage moves [`BIAS_STEP`] either
-    /// way. `None` when no voltage moves.
-    fn bias_derivative(
-        &mut self,
-        x: &[f64],
-        shift: &[f64],
-        options: &Options,
-    ) -> Option<(Vec<f64>, Vec<f64>)> {
-        let largest = self
-            .elaborated
-            .unknowns
-            .iter()
-            .zip(shift)
-            .filter(|(unknown, _)| !unknown.nature.is_current())
-            .fold(0.0_f64, |most, (_, value)| most.max(value.abs()));
-        if largest == 0.0 || !largest.is_finite() {
-            return None;
-        }
-        let step = BIAS_STEP / largest;
-        let mut ends = [(); 2].map(|()| (Vec::new(), Vec::new()));
-        for (end, sign) in ends.iter_mut().zip([1.0, -1.0]) {
-            let moved: Vec<f64> = x
-                .iter()
-                .zip(shift)
-                .map(|(value, along)| value + sign * step * along)
-                .collect();
-            self.evaluate(&moved, None, (1.0, options.gmin), false);
-            let contributions = &self.state.workspace.contributions;
-            *end = (
-                contributions.conductance.clone(),
-                contributions.capacitance.clone(),
-            );
-        }
-        let [(g_up, c_up), (g_down, c_down)] = ends;
-        let difference = |up: &[f64], down: &[f64]| -> Vec<f64> {
-            up.iter()
-                .zip(down)
-                .map(|(above, below)| (above - below) / (2.0 * step))
-                .collect()
-        };
-        Some((difference(&g_up, &g_down), difference(&c_up, &c_down)))
-    }
-
     /// The derivatives of the phasors of the unknowns `kept` in `response` along each of
     /// `directions`, by frequency, then unknown kept, then direction.
     fn frequency_tangents(
@@ -968,7 +894,22 @@ impl Simulator {
         kept: &[usize],
         options: &Options,
     ) -> Result<Vec<Vec<Vec<Complex64>>>, SimulationError> {
-        let biases = self.biases(twins, &response.operating_point.values, options)?;
+        let operating = &response.operating_point.values;
+        let nonlinear = self.nonlinear_devices();
+        let biases = if nonlinear.is_empty() {
+            self.evaluate(operating, None, (1.0, options.gmin), false);
+            twins.evaluate(operating, None, options.gmin, &options.parallelism);
+            vec![Vec::new(); directions.len()]
+        } else {
+            let shifts = self.dc_shifts(twins, operating, directions, &[], options)?;
+            self.entries_along(
+                &nonlinear,
+                operating,
+                &shifts,
+                options.gmin,
+                &options.parallelism,
+            )
+        };
         let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
         let twins = &*twins;
         let dimension = self.elaborated.unknowns.len();
@@ -981,20 +922,23 @@ impl Simulator {
                 let phasors = &response.values[index];
                 let omega = std::f64::consts::TAU * frequency;
                 let mut at = Vec::with_capacity(directions.len());
-                for direction in directions {
+                for (direction, entries) in directions.iter().zip(&biases) {
                     let mut moved = vec![Complex64::default(); dimension];
-                    for (column, (bias, &along)) in biases.iter().zip(direction).enumerate() {
-                        if along == 0.0 {
-                            continue;
+                    for (column, &along) in direction.iter().enumerate() {
+                        if along != 0.0 {
+                            twins.add_product(
+                                column,
+                                &positions,
+                                along,
+                                (omega, phasors),
+                                &mut moved,
+                            );
                         }
-                        twins.add_product(column, &positions, along, (omega, phasors), &mut moved);
-                        if let Some((conductance, capacitance)) = bias {
-                            let entries = positions.iter().zip(conductance.iter().zip(capacitance));
-                            for (&(row, column), (g, c)) in entries {
-                                moved[row] +=
-                                    Complex64::new(*g, omega * c) * phasors[column] * along;
-                            }
-                        }
+                    }
+                    for &(slot, conductance_rate, capacitance_rate) in entries {
+                        let (row, column) = positions[slot];
+                        moved[row] += Complex64::new(conductance_rate, omega * capacitance_rate)
+                            * phasors[column];
                     }
                     for value in &mut moved {
                         *value = -*value;
@@ -1008,7 +952,8 @@ impl Simulator {
     }
 
     /// The values of `cotangents` on the phasors of `response` on every twin, by
-    /// cotangent then twin, summed over the frequencies in order.
+    /// cotangent then twin, summed over the frequencies in order and through the
+    /// operating point by one transposed DC solve.
     pub(crate) fn pull_frequencies(
         &mut self,
         twins: &mut Twins,
@@ -1016,50 +961,153 @@ impl Simulator {
         cotangents: &[Cotangent<Complex64>],
         options: &Options,
     ) -> Result<Vec<Vec<Complex64>>, SimulationError> {
-        let biases = self.biases(twins, &response.operating_point.values, options)?;
+        if twins.len() == 0 {
+            return Ok(vec![Vec::new(); cotangents.len()]);
+        }
+        let operating = &response.operating_point.values;
+        let parallelism = &options.parallelism;
+        self.evaluate(operating, None, (1.0, options.gmin), false);
+        twins.evaluate(operating, None, options.gmin, parallelism);
         let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
-        let twins = &*twins;
-        let found = over_frequencies(
-            self.linearization(),
-            &self.state.workspace.contributions,
-            &response.frequencies,
-            &options.parallelism,
-            &|factors, index, frequency| {
-                let phasors = &response.values[index];
-                let omega = std::f64::consts::TAU * frequency;
-                let mut at = Vec::new();
-                for (cotangent, given) in cotangents.iter().enumerate() {
-                    let Some(values) = given.points.get(&index) else {
-                        continue;
-                    };
-                    let mut adjoint = values.clone();
-                    factors.solve_transpose(&mut adjoint)?;
-                    let mut by_twin = Vec::with_capacity(twins.len());
-                    for (column, moving) in biases.iter().enumerate() {
-                        let mut total =
-                            twins.product(column, &positions, &adjoint, (omega, phasors));
-                        if let Some((conductance, capacitance)) = moving {
-                            let entries = positions.iter().zip(conductance.iter().zip(capacitance));
-                            total += entries
-                                .map(|(&(row, column), (g, c))| {
-                                    adjoint[row] * Complex64::new(*g, omega * c) * phasors[column]
-                                })
-                                .sum::<Complex64>();
-                        }
-                        by_twin.push(-total);
+        let found = {
+            let twins = &*twins;
+            over_frequencies(
+                self.linearization(),
+                &self.state.workspace.contributions,
+                &response.frequencies,
+                parallelism,
+                &|factors, index, frequency| {
+                    let phasors = &response.values[index];
+                    let omega = std::f64::consts::TAU * frequency;
+                    let mut at = Vec::new();
+                    for (cotangent, given) in cotangents.iter().enumerate() {
+                        let Some(values) = given.points.get(&index) else {
+                            continue;
+                        };
+                        let mut adjoint = values.clone();
+                        factors.solve_transpose(&mut adjoint)?;
+                        let by_twin: Vec<Complex64> = (0..twins.len())
+                            .map(|column| {
+                                -twins.product(column, &positions, &adjoint, (omega, phasors))
+                            })
+                            .collect();
+                        at.push((cotangent, omega, adjoint, by_twin));
                     }
-                    at.push((cotangent, by_twin));
-                }
-                Ok(at)
-            },
-        )?;
+                    Ok(at)
+                },
+            )?
+        };
+        let nonlinear = self.nonlinear_devices();
+        let (mut unknown_twins, nonlinear_slots) = if nonlinear.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            self.unknown_twins(&nonlinear)
+        };
         let mut sums = vec![vec![Complex64::default(); twins.len()]; cotangents.len()];
-        for (cotangent, terms) in found.into_iter().flatten() {
-            for (total, term) in sums[cotangent].iter_mut().zip(terms) {
-                *total += term;
+        let mut weights: Vec<Option<(Vec<Complex64>, Vec<Complex64>)>> =
+            vec![None; cotangents.len()];
+        for (index, entries) in found.into_iter().enumerate() {
+            let phasors = &response.values[index];
+            for (cotangent, omega, adjoint, terms) in entries {
+                for (total, term) in sums[cotangent].iter_mut().zip(terms) {
+                    *total += term;
+                }
+                if nonlinear_slots.is_empty() {
+                    continue;
+                }
+                let (weight_conductance, weight_capacitance) = weights[cotangent]
+                    .get_or_insert_with(|| {
+                        (
+                            vec![Complex64::default(); nonlinear_slots.len()],
+                            vec![Complex64::default(); nonlinear_slots.len()],
+                        )
+                    });
+                for (packed, &slot) in nonlinear_slots.iter().enumerate() {
+                    let (row, column) = positions[slot];
+                    let product = adjoint[row] * phasors[column];
+                    weight_conductance[packed] += product;
+                    weight_capacitance[packed] +=
+                        Complex64::new(-omega * product.im, omega * product.re);
+                }
             }
         }
+        if !nonlinear_slots.is_empty() {
+            self.add_operating_point_cotangents(
+                twins,
+                (&mut unknown_twins, &nonlinear_slots),
+                operating,
+                &weights,
+                &mut sums,
+                options,
+            )?;
+        }
         Ok(sums)
+    }
+
+    /// Adds to `sums` the operating-point share `+(J₀⁻ᵀ g)ᵀ ∂F₀/∂p` of each active
+    /// cotangent's `weights`, indexed by `nonlinear_slots`, in
+    /// [`Simulator::pull_frequencies`].
+    fn add_operating_point_cotangents(
+        &mut self,
+        twins: &mut Twins,
+        (unknown_twins, nonlinear_slots): (&mut [jolty_models::Twin], &[usize]),
+        operating: &[f64],
+        weights: &[Option<(Vec<Complex64>, Vec<Complex64>)>],
+        sums: &mut [Vec<Complex64>],
+        options: &Options,
+    ) -> Result<(), SimulationError> {
+        let parallelism = &options.parallelism;
+        let gradients = self.entries_cotangents(
+            unknown_twins,
+            nonlinear_slots,
+            operating,
+            weights,
+            options.gmin,
+            parallelism,
+        );
+        let active: Vec<(usize, &Vec<Complex64>)> = gradients
+            .iter()
+            .enumerate()
+            .filter_map(|(cotangent, gradient)| {
+                let gradient = gradient.as_ref()?;
+                gradient
+                    .iter()
+                    .any(|value| *value != Complex64::default())
+                    .then_some((cotangent, gradient))
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(());
+        }
+        let factors = self
+            .state
+            .solver
+            .factor(&self.state.workspace.contributions.conductance)?;
+        let shared = factors.shared();
+        let mut sides: Vec<Vec<f64>> = Vec::with_capacity(active.len() * 2);
+        for &(_, gradient) in &active {
+            sides.push(gradient.iter().map(|value| value.re).collect());
+            sides.push(gradient.iter().map(|value| value.im).collect());
+        }
+        let solved = parallelism.spread(
+            &mut sides,
+            || shared.workspace(),
+            |workspace, side| {
+                shared.solve_transpose(side, workspace)?;
+                Ok(())
+            },
+        );
+        solved
+            .into_iter()
+            .collect::<Result<Vec<()>, SimulationError>>()?;
+        let by_column = twins.dots((Part::Residual, 1.0), &sides, parallelism);
+        for (column, dots) in by_column.into_iter().enumerate() {
+            for (&[real, imaginary], &(cotangent, _)) in dots.as_chunks::<2>().0.iter().zip(&active)
+            {
+                sums[cotangent][column] += Complex64::new(real, imaginary);
+            }
+        }
+        Ok(())
     }
 
     /// Each direction's derivatives along the period `found`, which took `steps`, whose

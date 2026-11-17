@@ -122,13 +122,9 @@ impl Kernel for LogicDriver {
     ) {
         // The output held at its fraction of the supply's swing above the ground.
         let fraction = ramp.fraction(at.time);
-        let swing = at.value(SUPPLY) - at.value(GROUND);
+        let swing = at.unknown::<R>(SUPPLY) - at.unknown::<R>(GROUND);
         let branch = &shape.branch;
-        branch.add(
-            at,
-            stamp,
-            R::constant(branch.voltage(at) - fraction * swing),
-        );
+        branch.add(at, stamp, branch.voltage::<R>(at) - swing * fraction);
         let [current_ground, current_supply] = shape.entries;
         stamp.add_conductance(current_ground, R::constant(fraction));
         stamp.add_conductance(current_supply, R::constant(-fraction));
@@ -214,7 +210,7 @@ impl Kernel for ThresholdDetector {
         stamp: &mut Stamp<'_, R>,
     ) {
         let capacitance = parameters.capacitance;
-        pair.add_charge(stamp, R::constant(capacitance * pair.voltage(at)));
+        pair.add_charge(stamp, pair.moving::<R>(at, pair.voltage(at)) * capacitance);
         pair.add_capacitance(stamp, R::constant(capacitance));
     }
 

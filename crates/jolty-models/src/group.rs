@@ -765,8 +765,8 @@ impl Groups {
     }
 
     /// Whether the instance the device `device` is, if it is a kernel's, is linear.
-    #[cfg(test)]
-    pub(crate) fn is_linear(&self, device: usize) -> bool {
+    #[must_use]
+    pub fn is_linear(&self, device: usize) -> bool {
         self.place(device)
             .and_then(|(group, _)| self.kernels.get(group))
             .is_some_and(|group| group.linear)
@@ -1179,12 +1179,45 @@ impl Runs {
         let (group, member) = groups.place(device)?;
         let (of, run) = (groups.kernels.get(group)?, self.groups.get(group)?);
         let sizes = (of.unknowns(), of.stride());
+        let nodes = of.map_of(member)?.to_vec();
         Some(Twin {
             evaluated: run.twin((instance, temperature), seeds, sizes)?,
-            nodes: of.map_of(member)?.to_vec(),
             slots: of.slots_of(member)?.to_vec(),
+            nodes,
+            seeded: seeds.seeded.clone(),
             seeds: seeds.count(),
         })
+    }
+
+    /// Twins of the instance the device `device` is, at `temperature`, whose seeds move
+    /// each of the circuit's unknowns its local unknowns map to, once, up to
+    /// [`Seeds::MOST`] unknowns to a twin, its parameters constant.
+    #[must_use]
+    pub fn unknown_twins(
+        &self,
+        groups: &Groups,
+        device: usize,
+        instance: (&Instance<'_>, f64),
+    ) -> Vec<Twin> {
+        let Some((group, member)) = groups.place(device) else {
+            return Vec::new();
+        };
+        let Some(nodes) = groups.kernels.get(group).and_then(|of| of.map_of(member)) else {
+            return Vec::new();
+        };
+        let mut unique = Vec::with_capacity(nodes.len());
+        for &unknown in nodes {
+            if unknown != UNMAPPED && !unique.contains(&unknown) {
+                unique.push(unknown);
+            }
+        }
+        unique
+            .chunks(Seeds::MOST)
+            .filter_map(|chunk| {
+                let seeds = Seeds::unknowns(chunk.to_vec())?;
+                self.twin(groups, device, instance, &seeds)
+            })
+            .collect()
     }
 
     /// The instance the device `device` is, if it is a kernel's, and its group's run.
@@ -2198,13 +2231,17 @@ impl<K: Kind> GroupRun for KernelRun<K> {
 
 /// The directions a [`Twin`] differentiates along, its seeds: numbers of an instance's
 /// parameters, each at its path among them, as [`jolty_ir::numbers`] names it, with its
-/// rate along each seed. A seed that moves one number at rate 1 differentiates against
-/// that number alone; one that moves several, along that tangent of them.
+/// rate along each seed, or the circuit's unknowns. A seed that moves one number at rate 1
+/// differentiates against that number alone; one that moves several, along that tangent of
+/// them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seeds {
     /// Each number's path, and its rate along each seed.
     numbers: Vec<(String, Vec<f64>)>,
     count: usize,
+    /// The circuit's unknowns the seeds move at rate one, in their order, when seeding unit
+    /// unknowns.
+    seeded: Vec<u32>,
 }
 
 impl Seeds {
@@ -2227,7 +2264,40 @@ impl Seeds {
                 (path.to_owned(), rates)
             })
             .collect();
-        Self { numbers, count }
+        Self {
+            numbers,
+            count,
+            seeded: Vec::new(),
+        }
+    }
+
+    /// A seed for each of the circuit's `unknowns`, at most [`Seeds::MOST`], its parameters
+    /// constant: the derivatives of what an instance adds with respect to those unknowns,
+    /// the second derivatives of its equations among them.
+    #[must_use]
+    pub fn unknowns(unknowns: Vec<u32>) -> Option<Self> {
+        let count = unknowns.len();
+        (1..=Self::MOST).contains(&count).then_some(Self {
+            numbers: Vec::new(),
+            count,
+            seeded: unknowns,
+        })
+    }
+
+    /// `count` seeds, at most [`Seeds::MOST`], its parameters constant, for
+    /// [`Twin::evaluate_along`] to move the circuit's unknowns along `count` tangent
+    /// vectors.
+    #[must_use]
+    pub const fn tangents(count: usize) -> Option<Self> {
+        if count >= 1 && count <= Self::MOST {
+            Some(Self {
+                numbers: Vec::new(),
+                count,
+                seeded: Vec::new(),
+            })
+        } else {
+            None
+        }
     }
 
     /// `count` seeds, along which each number of `numbers`, at its path, moves at its
@@ -2237,7 +2307,11 @@ impl Seeds {
         numbers
             .iter()
             .all(|(_, rates)| rates.len() == count)
-            .then_some(Self { numbers, count })
+            .then_some(Self {
+                numbers,
+                count,
+                seeded: Vec::new(),
+            })
     }
 
     /// How many seeds there are.
@@ -2352,6 +2426,9 @@ pub struct Twin {
     nodes: Vec<u32>,
     /// The stored position of each local entry, or [`UNMAPPED`] for none.
     slots: Vec<u32>,
+    /// The circuit's unknown each seed moves, in their order, or [`UNMAPPED`] for a local
+    /// unknown on the reference; none when the seeds are directions of the parameters.
+    seeded: Vec<u32>,
     seeds: usize,
 }
 
@@ -2368,7 +2445,22 @@ impl Twin {
 
     /// Evaluates the twin at `input`.
     pub fn evaluate(&mut self, input: &Input<'_>) {
-        self.evaluated.evaluate(&input.local(&self.nodes));
+        let local = input.local(&self.nodes).seeding(&self.seeded);
+        self.evaluated.evaluate(&local);
+    }
+
+    /// Evaluates the twin at `input`, moving the circuit's unknowns along each of
+    /// `tangents`, one seed per tangent.
+    pub fn evaluate_along(&mut self, input: &Input<'_>, tangents: &[Vec<f64>]) {
+        let local = input.local(&self.nodes).along(tangents);
+        self.evaluated.evaluate(&local);
+    }
+
+    /// The circuit's unknown each seed moves, by seed, when the seeds are local unknowns:
+    /// [`UNMAPPED`] for one on the reference, which moves nothing.
+    #[must_use]
+    pub fn seeded(&self) -> &[u32] {
+        &self.seeded
     }
 
     /// Each residual the instance adds, by the circuit's unknown whose equation it enters,

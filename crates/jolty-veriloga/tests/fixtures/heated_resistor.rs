@@ -127,8 +127,8 @@ impl Kernel for HeatedResistor {
             a_b_flow: Dual<R, 2>,
         }
         let mut v = Locals { current: Dual::number(0.0), voltage_a_b: Dual::number(0.0), voltage_t_ground: Dual::number(0.0), heat_flow: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: R::constant(at.value(0) - at.value(1)), gradient: [R::constant(1.0)] };
-        v.voltage_t_ground = Dual { value: R::constant(at.value(2) - at.value(NOWHERE)), gradient: [R::constant(1.0)] };
+        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        v.voltage_t_ground = Dual { value: at.unknown::<R>(2) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
         let [t0000] = v.voltage_a_b.gradient;
         let t0001 = Dual { value: v.voltage_a_b.value, gradient: [t0000, R::constant(0.0)] };
         let t0002 = (v.voltage_t_ground.scale(prepared.temperature_coefficient) + 1.0).scale(prepared.resistance);

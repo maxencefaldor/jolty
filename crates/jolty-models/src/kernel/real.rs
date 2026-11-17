@@ -41,11 +41,31 @@ pub trait Real:
     + JsonSchema
     + Lift<Self, Plain = f64>
 {
+    /// How many first-order derivative slots the number carries: none for `f64`.
+    const SEEDS: usize;
+
     /// A number with no derivative.
     fn constant(value: f64) -> Self;
 
+    /// The number `value` moving at rate one along the seed `slot`, and along no other: a
+    /// constant when the number carries fewer seeds, as `f64` carries none.
+    fn unit(value: f64, slot: usize) -> Self;
+
+    /// The number `value` moving at `rates` along each seed, padded with zeros or truncated
+    /// to [`Real::SEEDS`].
+    fn moving(value: f64, rates: &[f64]) -> Self;
+
     /// The number's value.
     fn value(self) -> f64;
+
+    /// The number's first-order derivative along the seed `slot`, or zero when it carries
+    /// fewer seeds.
+    fn derivative(self, slot: usize) -> f64;
+
+    /// The number `value`, moving as this one does: its derivatives with another value,
+    /// such as a voltage's limited value, which moves as the voltage applied.
+    #[must_use]
+    fn with_value(self, value: f64) -> Self;
 
     /// `f(self)`, given `f`'s value, slope and curvature at `self`: a number carrying
     /// derivatives of the second order, such as [`Hyper`], reads the curvature.
@@ -172,12 +192,30 @@ pub trait Real:
 }
 
 impl Real for f64 {
+    const SEEDS: usize = 0;
+
     fn constant(value: f64) -> Self {
+        value
+    }
+
+    fn unit(value: f64, _: usize) -> Self {
+        value
+    }
+
+    fn moving(value: f64, _: &[f64]) -> Self {
         value
     }
 
     fn value(self) -> f64 {
         self
+    }
+
+    fn derivative(self, _: usize) -> f64 {
+        0.0
+    }
+
+    fn with_value(self, value: f64) -> Self {
+        value
     }
 
     fn chain(self, value: f64, _: f64, _: f64) -> Self {
@@ -348,6 +386,8 @@ impl<const K: usize> JsonSchema for Gradient<K> {
 }
 
 impl<const K: usize> Real for Gradient<K> {
+    const SEEDS: usize = K;
+
     fn constant(value: f64) -> Self {
         Self {
             value,
@@ -355,8 +395,31 @@ impl<const K: usize> Real for Gradient<K> {
         }
     }
 
+    fn unit(value: f64, slot: usize) -> Self {
+        let mut unit = Self::constant(value);
+        if let Some(derivative) = unit.derivatives.get_mut(slot) {
+            *derivative = 1.0;
+        }
+        unit
+    }
+
+    fn moving(value: f64, rates: &[f64]) -> Self {
+        Self {
+            value,
+            derivatives: std::array::from_fn(|slot| rates.get(slot).copied().unwrap_or(0.0)),
+        }
+    }
+
     fn value(self) -> f64 {
         self.value
+    }
+
+    fn derivative(self, slot: usize) -> f64 {
+        self.derivatives.get(slot).copied().unwrap_or(0.0)
+    }
+
+    fn with_value(self, value: f64) -> Self {
+        Self { value, ..self }
     }
 
     fn chain(self, value: f64, slope: f64, _: f64) -> Self {
@@ -591,6 +654,8 @@ impl<const K: usize> JsonSchema for Hyper<K> {
 }
 
 impl<const K: usize> Real for Hyper<K> {
+    const SEEDS: usize = K;
+
     fn constant(value: f64) -> Self {
         Self {
             value,
@@ -600,8 +665,31 @@ impl<const K: usize> Real for Hyper<K> {
         }
     }
 
+    fn unit(value: f64, slot: usize) -> Self {
+        let mut unit = Self::constant(value);
+        if let Some(first) = unit.first.get_mut(slot) {
+            *first = 1.0;
+        }
+        unit
+    }
+
+    fn moving(value: f64, rates: &[f64]) -> Self {
+        Self::new(
+            value,
+            std::array::from_fn(|slot| rates.get(slot).copied().unwrap_or(0.0)),
+        )
+    }
+
     fn value(self) -> f64 {
         self.value
+    }
+
+    fn derivative(self, slot: usize) -> f64 {
+        self.first.get(slot).copied().unwrap_or(0.0)
+    }
+
+    fn with_value(self, value: f64) -> Self {
+        Self { value, ..self }
     }
 
     fn chain(self, value: f64, slope: f64, curvature: f64) -> Self {

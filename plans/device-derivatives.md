@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status: steps 1 and 2 done; step 2b in progress; steps 3 and 4 deferred (17 November 2026).
+Status: steps 1, 2 and 2b done; steps 3 and 4 deferred (17 November 2026).
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -26,7 +26,7 @@ The goal: every device's law written once, as plain maths; each quantity carryin
 | --- | --- | --- |
 | 1 | Every kernel on dual numbers composed at the natural width of each law, joined onto its terminals by the chain rule | Done |
 | 2 | Parameter derivatives in chunks: one evaluation gives a device's derivatives with respect to several parameters; the JVP by one evaluation per device; Newton untouched | Done |
-| 2b | AC's VJP exact, and independent of the number of parameters | Planned, conditional |
+| 2b | AC's VJP exact, and independent of the number of parameters | Done |
 | 3 | One shared compile-time differentiation pass for hand-written and compiled kernels | Deferred |
 | 4 | Compiler-level automatic differentiation | Deferred |
 
@@ -44,7 +44,7 @@ None of these effects is measured; each stage's "done when" measures its own wit
 | 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
 | 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from how the build laid out its code | Measured: a twin of eight evaluates in 2.2 (BSIM4) to 3.9 (the diode) times fewer instructions than eight twins of one, of two in 1.5 to 1.6 times fewer than two (below); a JVP evaluates each device once per tangent whatever the number of its parameters |
-| 2b AC exact | None | AC's gradient from a central difference per parameter (two evaluations and a DC solve each) to one more transposed solve in all |
+| 2b AC exact | At most +2 instructions (+0.07%) on Newton's `f64` kernels, −4 on VBIC and −10 on the photocell (`instructions.rs`, below) | Measured: AC VJP pullback 54.6× faster at 1,000 parameters (116.7 to 2.1 ms, total `vjp` + `pull_back` 29.7× faster, 118.9 to 4.0 ms); exact against 61fa6e8's central difference within 9.57e-10; AC dot-product residual 7.2e-17 |
 
 ## Step 1: every kernel composed on dual numbers
 
@@ -189,6 +189,26 @@ Its price: kernels must read their voltages as `R` rather than `f64`, so that a 
 That interface change across every kernel is why 2b is conditional: done only once AC gradients over many parameters matter.
 
 **Done when:** AC's VJP has no finite difference and costs one more transposed solve whatever the number of parameters, which the timing protocol shows over 1 to 1,000 parameters; it agrees with today's within the central difference's error; the dot-product test over frequency holds.
+
+**Result** (17 November): every kernel reads its unknowns through `Local::unknown<R>` (and `Local::delayed_unknown<R>`), compiled Verilog-A kernels regenerated with the same reads, and `jolty-expressions` differentiates compiled expressions and gradients to second order without allocation (`Expression::along`, `Unary::curvature`, `Binary::curvatures`, `Points::interpolate`).
+`Real` carries `SEEDS`, `unit`, `moving`, `derivative` and `with_value`; when `R::SEEDS == 0` (plain `f64` Newton runs) the unknown-seeding helpers fold away at compile time.
+Self-heated kernels (`HeatedKernel`) propagate second derivatives through temperature (`Hyper<K>`) and now re-prepare whenever a twin seeds unknowns (fixing a latent bug where ambient `ΔT = 0` skipped preparation and yielded zero thermal derivatives); `bsim4/charges.rs` now preserves `vdseff_cv`'s drain derivative at `vds == 0` via `.with_value(0.0)` instead of zeroing the dual number, and `photocell::settled` keeps the chain rule through `illuminance`.
+In `jolty-engine`, `BIAS_STEP`, `Bias`, `biases` and `bias_derivative` are deleted; `Simulator::frequency_tangents` uses sparse `entries_along` (exact directional `(∂G/∂x · s, ∂C/∂x · s)` summed in deterministic device order) and `Simulator::pull_frequencies` computes the operating-point share via `entries_cotangents` over the sorted unique matrix slots touched by nonlinear devices and one transposed DC solve per active cotangent (linear circuits skip DC factorization, solves and weighting entirely).
+
+Every model in `Library::standard()` passes `every_kernel_differentiates_its_conductances_with_respect_to_its_unknowns` against Richardson-extrapolated central differences, and zero allocations remain on Newton's path (`a_kernels_evaluation_allocates_nothing`); compiled Verilog-A kernels pass the same check (`tests/twins.rs`).
+On `loaded_amplifier` over four frequencies, exact AC VJP matches `61fa6e8`'s 1 µV central difference within a worst relative gap of `9.57e-10` (at `VDD.waveform.dc`, the central difference's error) and `0` on `RG`, `CL`, and `CG`.
+The AC dot-product test holds to `7.15e-17` (`0.32 ε`), and the worst residual across all analyses stays `7.38e-16` (`crates/jolty-engine/tests/sensitivity.rs`), with new tests covering self-heated AC (hot and cooled to exact ambient `ΔT = 0`), nonlinear behavioral AC, linear AC, bit-for-bit determinism across 1, 2 and 4 threads, and a 504-parameter nonlinear amplifier plus resistive ladder.
+
+Measured in release mode (`lto = "thin"`, `codegen-units = 1`) on one pinned core (`taskset -c 0`) of an AMD EPYC 7B12 (load 4.5 to 7.5), three alternating rounds of 11 repetitions each, on a fixed 500-rung resistive ladder driven by `loaded_amplifier` over 5 frequencies with 1 cotangent, comparing `61fa6e8` against Step 2b:
+
+| Parameters `P` | `61fa6e8` pullback median (range) | Step 2b pullback median (range) | Pullback speedup | Total (`vjp` + `pull_back`) median |
+| --- | --- | --- | --- | --- |
+| 1 | 0.376 ms (0.366–0.389) | 0.283 ms (0.277–0.356) | 1.3× | 0.658 → 0.585 ms (1.1×) |
+| 10 | 0.987 ms (0.920–1.000) | 0.302 ms (0.297–0.356) | 3.3× | 1.324 → 0.613 ms (2.2×) |
+| 100 | 12.829 ms (10.916–13.927) | 0.478 ms (0.440–0.533) | 26.8× | 13.584 → 0.933 ms (14.6×) |
+| 1,000 | 116.733 ms (115.393–119.041) | 2.137 ms (2.098–2.396) | 54.6× | 118.896 → 4.002 ms (29.7×) |
+
+Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, Callgrind) against `61fa6e8`: every Newton `f64` kernel moves by at most `+2` instructions (`+0.07%`), with VBIC down by `1` to `4` instructions and the photocell down by `10` (`−0.49%`); parameter twins move by `+0.18%` to `+0.77%` on BSIM4 (`24,177` / `32,827` / `50,546` / `89,099`), `+4.0%` to `+4.7%` on the diode (`1,185` / `1,465` / `1,731` / `2,444`), and `+0.4%` to `+15.1%` (`+4` to `+82` instructions) on the resistor (`423` / `624` / `759` / `1,099`).
 
 ## Step 3, deferred: one shared compile-time differentiation pass
 

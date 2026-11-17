@@ -457,6 +457,18 @@ pub struct Local<'a> {
     /// Whether the instance limits each voltage's step from its last evaluation's.
     pub limiting: bool,
     past: Option<&'a Past>,
+    unknowns: UnknownSeeds<'a>,
+}
+
+/// How a twin seeds the circuit's unknowns in [`Local`].
+#[derive(Debug, Clone, Copy)]
+enum UnknownSeeds<'a> {
+    /// No unknown moves: plain evaluation, or a twin seeding parameters alone.
+    None,
+    /// Each seed moves one of the circuit's unknowns at rate one, in their order.
+    Units(&'a [u32]),
+    /// Each seed moves every unknown of the circuit along its tangent vector.
+    Tangents(&'a [Vec<f64>]),
 }
 
 impl<'a> Local<'a> {
@@ -474,6 +486,70 @@ impl<'a> Local<'a> {
             gmin: like.gmin,
             limiting: like.limiting,
             past: like.past,
+            unknowns: UnknownSeeds::None,
+        }
+    }
+
+    /// The same state, the circuit's unknowns `seeded` each moving along a seed of its own,
+    /// in their order, as a twin seeding its instance's unknowns reads them.
+    #[must_use]
+    pub(crate) const fn seeding(self, seeded: &'a [u32]) -> Self {
+        let unknowns = if seeded.is_empty() {
+            UnknownSeeds::None
+        } else {
+            UnknownSeeds::Units(seeded)
+        };
+        Self { unknowns, ..self }
+    }
+
+    /// The same state, the circuit's unknowns moving along each of `tangents`, one seed per
+    /// tangent.
+    #[must_use]
+    pub(crate) const fn along(self, tangents: &'a [Vec<f64>]) -> Self {
+        let unknowns = if tangents.is_empty() {
+            UnknownSeeds::None
+        } else {
+            UnknownSeeds::Tangents(tangents)
+        };
+        Self { unknowns, ..self }
+    }
+
+    /// Whether a twin seeds the circuit's unknowns in this evaluation.
+    #[must_use]
+    pub(crate) const fn seeds_unknowns(&self) -> bool {
+        !matches!(self.unknowns, UnknownSeeds::None)
+    }
+
+    /// The local unknown at `local` as a number of `R`: its value, moving along each seed
+    /// when a twin seeds the unknowns, and constant otherwise.
+    #[inline]
+    #[must_use]
+    pub fn unknown<R: Real>(&self, local: usize) -> R {
+        let value = self.value(local);
+        if R::SEEDS == 0 || !self.seeds_unknowns() {
+            return R::constant(value);
+        }
+        let Some(&unknown) = self
+            .map
+            .get(local)
+            .filter(|&&unknown| unknown != jolty_numerics::UNMAPPED)
+        else {
+            return R::constant(value);
+        };
+        match self.unknowns {
+            UnknownSeeds::None => R::constant(value),
+            UnknownSeeds::Units(seeded) => seeded
+                .iter()
+                .position(|&each| each == unknown)
+                .map_or_else(|| R::constant(value), |slot| R::unit(value, slot)),
+            UnknownSeeds::Tangents(tangents) => {
+                let index = unknown as usize;
+                let mut rates = [0.0; crate::Seeds::MOST];
+                for (rate, tangent) in rates.iter_mut().zip(tangents) {
+                    *rate = tangent.get(index).copied().unwrap_or(0.0);
+                }
+                R::moving(value, &rates)
+            }
         }
     }
 
@@ -509,6 +585,7 @@ impl<'a> Local<'a> {
             gmin: self.gmin,
             limiting: self.limiting,
             past: self.past,
+            unknowns: self.unknowns,
         }
     }
 
@@ -532,6 +609,19 @@ impl<'a> Local<'a> {
         self.past
             .and_then(|past| past.at(unknown as usize, self.time - delay, (self.time, present)))
             .unwrap_or((present, 1.0))
+    }
+
+    /// The value the local unknown at `local` took `delay` seconds before the time, as
+    /// [`Local::delayed`] gives it, as a number of `R`, which moves as its derivative with
+    /// respect to the unknown's present value says when a twin seeds the unknown.
+    #[inline]
+    #[must_use]
+    pub fn delayed_unknown<R: Real>(&self, local: usize, delay: f64) -> R {
+        let (value, weight) = self.delayed(local, delay);
+        if R::SEEDS == 0 || !self.seeds_unknowns() {
+            return R::constant(value);
+        }
+        (self.unknown::<R>(local) * weight).with_value(value)
     }
 }
 

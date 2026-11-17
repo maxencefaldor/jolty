@@ -284,10 +284,10 @@ impl<R: Real> Core<R> {
             vdsat * (1.0 - t4)
         };
         if vds.value.value() == 0.0 {
-            let [_, drain, _] = vdseff.gradient;
+            let [gate, drain, bulk] = vdseff.gradient;
             vdseff = D {
-                value: R::constant(0.0),
-                gradient: [R::constant(0.0), drain, R::constant(0.0)],
+                value: vdseff.value.with_value(0.0),
+                gradient: [gate.with_value(0.0), drain, bulk.with_value(0.0)],
             };
         }
         if vdseff.value.value() > vds.value.value() {

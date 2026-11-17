@@ -199,6 +199,7 @@ mod tests {
     use super::*;
     use crate::testing::{
         Bench, assert_close, assert_model_jacobians_match, assert_model_parameter_gradients_match,
+        assert_unknown_derivatives_match,
     };
     use crate::{Diode, REFERENCE_TEMPERATURE};
 
@@ -228,9 +229,14 @@ mod tests {
     #[test]
     fn a_heated_diodes_derivatives_are_exact() {
         let model = Thermal::<Diode>::new();
-        for x in [[0.72, 0.0, 15.0, 0.7], [-3.0, 0.0, 60.0, -2.9]] {
+        for x in [
+            [0.72, 0.0, 0.0, 0.7],
+            [0.72, 0.0, 15.0, 0.7],
+            [-3.0, 0.0, 60.0, -2.9],
+        ] {
             assert_model_jacobians_match(&model, DIODE, &x);
             assert_model_parameter_gradients_match(&model, DIODE, &x, None);
+            assert_unknown_derivatives_match(&model, DIODE, &x);
         }
     }
 

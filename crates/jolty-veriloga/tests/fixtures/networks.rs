@@ -205,13 +205,13 @@ impl Kernel for Networks {
             source_ground_flow: Dual<R, 1>,
         }
         let mut v = Locals { shorted: Dual::number(0.0), voltage_a_upper: Dual::number(0.0), voltage_inner_b: Dual::number(0.0), voltage_joined_b: Dual::number(0.0), voltage_lower_ground: Dual::number(0.0), voltage_noise_ground: Dual::number(0.0), voltage_source_ground: Dual::number(0.0), current_short: Dual::number(0.0), short_potential: R::constant(0.0), source_flow: Dual::number(0.0), load_flow: Dual::number(0.0), inner_b_flow: Dual::number(0.0), joined_b_flow: Dual::number(0.0), lower_ground_flow: Dual::number(0.0), a_upper_flow: Dual::number(0.0), a_b_flow: Dual::number(0.0), source_ground_flow: Dual::number(0.0) };
-        v.voltage_a_upper = Dual { value: R::constant(at.value(0) - at.value(shape.upper)), gradient: [R::constant(1.0)] };
-        v.voltage_inner_b = Dual { value: R::constant(at.value(shape.inner) - at.value(1)), gradient: [R::constant(1.0)] };
-        v.voltage_joined_b = Dual { value: R::constant(at.value(shape.joined) - at.value(1)), gradient: [R::constant(1.0)] };
-        v.voltage_lower_ground = Dual { value: R::constant(at.value(shape.lower) - at.value(NOWHERE)), gradient: [R::constant(1.0)] };
-        v.voltage_noise_ground = Dual { value: R::constant(at.value(shape.noise) - at.value(NOWHERE)), gradient: [R::constant(1.0)] };
-        v.voltage_source_ground = Dual { value: R::constant(at.value(shape.source) - at.value(NOWHERE)), gradient: [R::constant(1.0)] };
-        v.current_short = Dual { value: R::constant(at.value(shape.short)), gradient: [R::constant(1.0)] };
+        v.voltage_a_upper = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(shape.upper), gradient: [R::constant(1.0)] };
+        v.voltage_inner_b = Dual { value: at.unknown::<R>(shape.inner) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        v.voltage_joined_b = Dual { value: at.unknown::<R>(shape.joined) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        v.voltage_lower_ground = Dual { value: at.unknown::<R>(shape.lower) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
+        v.voltage_noise_ground = Dual { value: at.unknown::<R>(shape.noise) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
+        v.voltage_source_ground = Dual { value: at.unknown::<R>(shape.source) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
+        v.current_short = Dual { value: at.unknown::<R>(shape.short), gradient: [R::constant(1.0)] };
         v.short_potential += R::constant(0.0);
         v.inner_b_flow = v.inner_b_flow + v.voltage_inner_b.chain((v.voltage_inner_b.value / prepared.r, prepared.h1));
         v.joined_b_flow = v.joined_b_flow + v.voltage_joined_b.chain((v.voltage_joined_b.value / prepared.r, prepared.h1));
@@ -225,12 +225,12 @@ impl Kernel for Networks {
         v.a_b_flow = v.a_b_flow + v.voltage_source_ground.scale(prepared.k);
         v.source_flow = v.source_flow + v.voltage_source_ground;
         v.source_ground_flow = v.source_ground_flow + v.voltage_source_ground;
-        let current = at.value(shape.short);
-        stamp.add_residual(0, R::constant(current));
-        stamp.add_residual(shape.inner, R::constant(-current));
+        let current = at.unknown::<R>(shape.short);
+        stamp.add_residual(0, current);
+        stamp.add_residual(shape.inner, -current);
         stamp.add_conductance(shape.a_by_short, R::constant(1.0));
         stamp.add_conductance(shape.inner_by_short, R::constant(-1.0));
-        stamp.add_residual(shape.short, R::constant(at.value(0) - at.value(shape.inner)) - v.short_potential);
+        stamp.add_residual(shape.short, at.unknown::<R>(0) - at.unknown::<R>(shape.inner) - v.short_potential);
         stamp.add_conductance(shape.short_by_a, R::constant(1.0));
         stamp.add_conductance(shape.short_by_inner, R::constant(-1.0));
         let t0000 = v.source_flow.value;

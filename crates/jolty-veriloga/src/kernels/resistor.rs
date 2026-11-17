@@ -178,8 +178,8 @@ impl Kernel for Resistor {
             a_b_flow: Dual<R, 1>,
         }
         let mut v = Locals { v: Dual::number(0.0), f: Dual::number(0.0), voltage_a_b: Dual::number(0.0), current_current: Dual::number(0.0), current_potential: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: R::constant(at.value(0) - at.value(1)), gradient: [R::constant(1.0)] };
-        v.current_current = Dual { value: R::constant(at.value(shape.current)), gradient: [R::constant(1.0)] };
+        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        v.current_current = Dual { value: at.unknown::<R>(shape.current), gradient: [R::constant(1.0)] };
         v.v = v.voltage_a_b;
         v.f = v.v.scale(prepared.voltage_coefficient) + (v.v * v.v).scale(prepared.quadratic_voltage_coefficient) + 1.0;
         if shape.conditions[0] {
@@ -193,12 +193,12 @@ impl Kernel for Resistor {
             v.a_b_flow = v.a_b_flow + Dual::number(1.0) / v.f.scale(prepared.r) * v.v;
         }
         if shape.active[0] {
-            let current = at.value(shape.current);
-            stamp.add_residual(0, R::constant(current));
-            stamp.add_residual(1, R::constant(-current));
+            let current = at.unknown::<R>(shape.current);
+            stamp.add_residual(0, current);
+            stamp.add_residual(1, -current);
             stamp.add_conductance(shape.a_by_current, R::constant(1.0));
             stamp.add_conductance(shape.b_by_current, R::constant(-1.0));
-            stamp.add_residual(shape.current, R::constant(at.value(0) - at.value(1)) - v.current_potential.value);
+            stamp.add_residual(shape.current, at.unknown::<R>(0) - at.unknown::<R>(1) - v.current_potential.value);
             stamp.add_conductance(shape.current_by_a, R::constant(1.0));
             stamp.add_conductance(shape.current_by_b, R::constant(-1.0));
             let [t0005, t0006] = v.current_potential.gradient;

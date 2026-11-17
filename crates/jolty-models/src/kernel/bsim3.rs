@@ -396,10 +396,10 @@ impl<R: Real> PreparedBsim3<R> {
         clippy::similar_names,
         reason = "the voltages' and overlaps' names in BSIM3"
     )]
-    fn terminals(&self, voltages: [f64; 3], gmin: f64) -> Terminals<R> {
+    fn terminals(&self, voltages: [R; 3], gmin: f64) -> Terminals<R> {
         let [vgs, vds, vbs] = Dual::variables(voltages);
         let [gate, drain, bulk] = voltages;
-        let forward = drain >= 0.0;
+        let forward = drain.value() >= 0.0;
         let frame = if forward {
             voltages
         } else {
@@ -565,9 +565,10 @@ impl Kernel for Bsim3 {
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
-        let terminals = prepared.terminals(bias.voltages, at.gmin);
-        memory.threshold = Some(terminals.threshold);
         let sign = prepared.core.sign;
+        let moving = bias.moving(&shape.stamp, at, (sign, VARIABLES));
+        let terminals = prepared.terminals(moving, at.gmin);
+        memory.threshold = Some(terminals.threshold);
         let [overdrive, margin] = terminals.margins;
         memory.variables = [
             sign * terminals.threshold,
@@ -665,7 +666,7 @@ impl<R: Real> PreparedBsim3<R> {
             [gate - drain, -drain, bulk - drain]
         };
         let core = &self.core;
-        let variables = Dual::variables(frame);
+        let variables = Dual::variables(frame.map(R::constant));
         let operating = core.evaluate(variables);
         let [_, mode_ds, mode_bs] = variables;
         let copies = self.multiplier.value();

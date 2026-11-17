@@ -34,10 +34,11 @@ impl<R: Real, const N: usize> Dual<R, N> {
         Self::constant(R::constant(value))
     }
 
-    /// The `N` variables at `values`, each the derivative of itself only.
+    /// The `N` variables at `values`, each the derivative of itself only, and each moving
+    /// as its value does when a twin seeds the unknowns it reads.
     #[must_use]
-    pub fn variables(values: [f64; N]) -> [Self; N] {
-        let mut variables = values.map(|value| Self::constant(R::constant(value)));
+    pub fn variables(values: [R; N]) -> [Self; N] {
+        let mut variables = values.map(Self::constant);
         for (index, variable) in variables.iter_mut().enumerate() {
             if let Some(derivative) = variable.gradient.get_mut(index) {
                 *derivative = R::constant(1.0);
@@ -196,9 +197,9 @@ impl<R: Real, const N: usize> Dual<R, N> {
 impl<R: Real> Dual<R, 1> {
     /// The one variable at `value`, the derivative of itself.
     #[must_use]
-    pub fn variable(value: f64) -> Self {
+    pub fn variable(value: R) -> Self {
         Self {
-            value: R::constant(value),
+            value,
             gradient: [R::constant(1.0)],
         }
     }

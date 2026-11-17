@@ -153,14 +153,19 @@ impl<R: Real> Core<R> {
         let vdsat_cv = vg_dp / abulk_cv;
         let t0 = vdsat_cv - vds - DELTA;
         let t1 = (t0 * t0 + vdsat_cv * (4.0 * DELTA)).sqrt();
-        let vdseff_cv = if vds.value.value() == 0.0 {
-            D::number(0.0)
-        } else if t0.value.value() >= 0.0 {
+        let mut vdseff_cv = if t0.value.value() >= 0.0 {
             vdsat_cv - (t0 + t1) * 0.5
         } else {
             let t3 = (t1 - t0).recip() * (DELTA + DELTA);
             vdsat_cv * (1.0 - t3)
         };
+        if vds.value.value() == 0.0 {
+            let [gate, drain, bulk] = vdseff_cv.gradient;
+            vdseff_cv = D {
+                value: vdseff_cv.value.with_value(0.0),
+                gradient: [gate.with_value(0.0), drain, bulk.with_value(0.0)],
+            };
+        }
         let t0 = abulk_cv * vdseff_cv;
         let t1 = vg_dp;
         let t2 = (t1 - t0 * 0.5 + 1.0e-20) * 12.0;

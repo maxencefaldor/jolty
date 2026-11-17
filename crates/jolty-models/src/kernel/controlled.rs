@@ -93,8 +93,8 @@ impl Kernel for VoltageControlledVoltageSource {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let control = at.value(CONTROL_POSITIVE) - at.value(CONTROL_NEGATIVE);
-        let voltage = shape.branch.voltage(at);
+        let control = at.unknown::<R>(CONTROL_POSITIVE) - at.unknown::<R>(CONTROL_NEGATIVE);
+        let voltage = shape.branch.voltage::<R>(at);
         shape.branch.add(at, stamp, -(gain * control - voltage));
         let [current_control_positive, current_control_negative] = shape.entries;
         stamp.add_conductance(current_control_positive, -gain);
@@ -173,7 +173,7 @@ impl Kernel for VoltageControlledCurrentSource {
             negative_control_positive,
             negative_control_negative,
         ] = *entries;
-        let control = at.value(CONTROL_POSITIVE) - at.value(CONTROL_NEGATIVE);
+        let control = at.unknown::<R>(CONTROL_POSITIVE) - at.unknown::<R>(CONTROL_NEGATIVE);
         stamp.add_residual(POSITIVE, transconductance * control);
         stamp.add_residual(NEGATIVE, -transconductance * control);
         stamp.add_conductance(positive_control_positive, transconductance);
@@ -210,8 +210,8 @@ pub struct CurrentControlledCurrentSourceParameters<R: Real = f64> {
 }
 
 /// Adds a sensing port, a short circuit, and returns the current through it.
-fn add_sense<R: Real>(sense: &CurrentBranch, at: &Local<'_>, stamp: &mut Stamp<'_, R>) -> f64 {
-    sense.add(at, stamp, R::constant(sense.voltage(at)));
+fn add_sense<R: Real>(sense: &CurrentBranch, at: &Local<'_>, stamp: &mut Stamp<'_, R>) -> R {
+    sense.add(at, stamp, sense.voltage(at));
     sense.current(at)
 }
 
@@ -351,7 +351,7 @@ impl Kernel for CurrentControlledVoltageSource {
         stamp: &mut Stamp<'_, R>,
     ) {
         let control = add_sense(&shape.sense, at, stamp);
-        let voltage = shape.branch.voltage(at);
+        let voltage = shape.branch.voltage::<R>(at);
         shape
             .branch
             .add(at, stamp, -(transresistance * control - voltage));

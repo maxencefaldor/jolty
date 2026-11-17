@@ -115,6 +115,33 @@ impl Expression {
         tape::evaluate(&self.tape, variables, workspace, gradient)
     }
 
+    /// The directional derivatives of the expression's value and gradient along `tangent`,
+    /// one rate per variable in the order of [`Expression::variables`], at the point
+    /// [`Expression::evaluate`] last evaluated in `workspace`: the gradient's directional
+    /// derivative written into `gradient_tangent`, and the value's returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tangent` or `gradient_tangent` does not hold one value per variable, or
+    /// if `workspace` was made for another expression.
+    pub fn along(
+        &self,
+        tangent: &[f64],
+        workspace: &mut Workspace,
+        gradient_tangent: &mut [f64],
+    ) -> f64 {
+        assert!(
+            tangent.len() == self.variables.len() && gradient_tangent.len() == self.variables.len(),
+            "one rate and one derivative per variable"
+        );
+        assert_eq!(
+            workspace.values.len(),
+            self.tape.len(),
+            "a workspace made for this expression"
+        );
+        tape::along(&self.tape, tangent, workspace, gradient_tangent)
+    }
+
     /// The expression as a tree of terms, its constant parts folded: what another
     /// simulator's language needs to write it in its own.
     #[must_use]
@@ -253,6 +280,12 @@ pub struct Workspace {
     inputs: Vec<Option<f64>>,
     /// Each table's slope at the input it was evaluated at.
     slopes: Vec<f64>,
+    /// Each table's second derivative at the input it was evaluated at.
+    curvatures: Vec<f64>,
+    /// Each instruction's directional derivative, in [`Expression::along`].
+    tangents: Vec<f64>,
+    /// Each instruction's adjoint's directional derivative, in [`Expression::along`].
+    adjoint_tangents: Vec<f64>,
     limited: bool,
 }
 
@@ -266,6 +299,9 @@ impl Workspace {
             adjoints: vec![0.0; length],
             inputs: vec![None; length],
             slopes: vec![0.0; length],
+            curvatures: vec![0.0; length],
+            tangents: vec![0.0; length],
+            adjoint_tangents: vec![0.0; length],
             limited: false,
         }
     }
@@ -536,6 +572,74 @@ mod tests {
                 let numeric = (high - low) / (2.0 * step);
                 prop_assert!((numeric - derivative).abs() < 1e-5 * derivative.abs().max(1.0),
                     "variable {index}: analytic {derivative}, numeric {numeric}");
+            }
+        }
+
+        /// The directional derivatives of the value and gradient match central differences
+        /// of the value and gradient, wherever the expression's gradient is smooth.
+        #[test]
+        fn second_derivatives_match_finite_differences(
+            x in -0.8..0.8f64,
+            y in 1.2..2.8f64,
+            z in -0.8..0.8f64,
+            dx in -1.0..1.0f64,
+            dy in -1.0..1.0f64,
+            dz in -1.0..1.0f64,
+        ) {
+            let text = "v(x) * exp(v(y) / 4) - sin(v(z)) / v(y) + cos(v(x)) * tan(v(z) / 2) \
+                        + v(y) ^ v(x) + asin(v(x) / 2) + acos(v(z) / 2) + atan(v(x) * v(z)) \
+                        + sinh(v(x)) + cosh(v(z)) + sqrt(v(y)) * tanh(v(z)) \
+                        + asinh(v(x)) + acosh(v(y)) + atanh(v(z) / 2) \
+                        + ln(v(y)) * v(x) ^ 2 + log10(v(y)) * v(z) \
+                        + (v(y) > 0 ? v(x) * v(z) : 1 / v(x)) \
+                        + rounded_table(v(z), 0.2, -0.5, 1, 0, 0, 0.5, 2)";
+            let expression: Expression = text.parse().expect("a valid expression");
+            let mut workspace = Workspace::new(&expression);
+            let values = [x, y, z];
+            let tangent = [dx, dy, dz];
+            let mut gradient = [0.0; 3];
+            let value = expression.evaluate(&values, &mut workspace, &mut gradient);
+            let mut gradient_tangent = [0.0; 3];
+            let value_tangent = expression.along(&tangent, &mut workspace, &mut gradient_tangent);
+            let expected_value_tangent: f64 = gradient
+                .iter()
+                .zip(&tangent)
+                .map(|(slope, rate)| slope * rate)
+                .sum();
+            prop_assert!(
+                (value_tangent - expected_value_tangent).abs()
+                    < 1e-12 * expected_value_tangent.abs().max(1.0)
+            );
+            let step = 1e-6;
+            let shifted = |sign: f64| {
+                let point = [
+                    values[0] + sign * step * tangent[0],
+                    values[1] + sign * step * tangent[1],
+                    values[2] + sign * step * tangent[2],
+                ];
+                let mut moved_gradient = [0.0; 3];
+                let mut side = Workspace::new(&expression);
+                let moved_value = expression.evaluate(&point, &mut side, &mut moved_gradient);
+                (moved_value, moved_gradient)
+            };
+            let (_, high) = shifted(1.0);
+            let (_, low) = shifted(-1.0);
+            let _ = value;
+            for index in 0..3 {
+                let (forward, backward) = (
+                    (high[index] - gradient[index]) / step,
+                    (gradient[index] - low[index]) / step,
+                );
+                if (forward - backward).abs() > 1e-2 * gradient_tangent[index].abs().max(1.0) {
+                    continue;
+                }
+                let numeric = (high[index] - low[index]) / (2.0 * step);
+                prop_assert!(
+                    (numeric - gradient_tangent[index]).abs()
+                        < 1e-5 * gradient_tangent[index].abs().max(numeric.abs()).max(1.0),
+                    "gradient[{index}]: exact {}, numeric {numeric}",
+                    gradient_tangent[index]
+                );
             }
         }
     }

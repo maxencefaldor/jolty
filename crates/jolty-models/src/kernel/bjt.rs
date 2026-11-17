@@ -719,7 +719,7 @@ struct State<R: Real> {
 impl<R: Real> Junctions<R> {
     /// The junctions' state at the base-emitter and base-collector `voltages`, with the
     /// minimum conductance `gmin` across each junction.
-    fn evaluate(&self, voltages: [f64; 2], gmin: f64) -> State<R> {
+    fn evaluate(&self, voltages: [R; 2], gmin: f64) -> State<R> {
         let [vbe, vbc] = voltages.map(Dual::<R, 1>::variable);
         let leakage = |voltage, current: R, slope| {
             if current.value() > 0.0 {
@@ -807,7 +807,7 @@ impl BaseForm {
             Self::Current(current) => current.add(resistance, added, at, stamp),
             Self::Conductance => {
                 // Within its law, the drop comes first, then the junctions.
-                let [_, _, drop, _] = added.bias.voltages;
+                let [_, _, drop, _] = added.moving(at);
                 let current = Dual::<R, 1>::variable(drop).embed([0]) / resistance.embed([1, 2]);
                 added.reading(BASE_RESISTANCE).add_current(
                     stamp,
@@ -857,8 +857,8 @@ impl BaseCurrent {
         stamp: &mut Stamp<'_, R>,
     ) {
         let intrinsic = added.reading(INTRINSIC);
-        let current = self.branch.current(at);
-        let drop = R::constant(self.branch.voltage(at));
+        let current = self.branch.current::<R>(at);
+        let drop = self.branch.voltage::<R>(at);
         let residual = drop - intrinsic.extend(resistance) * current;
         self.branch.add(at, stamp, residual);
         stamp.add_conductance(self.own, -resistance.value);
@@ -984,11 +984,11 @@ impl ExcessPhase {
     ) {
         let intrinsic = added.reading(INTRINSIC);
         let [x, y] = self.unknowns;
-        let [delayed, slope] = [x, y].map(|unknown| at.value(unknown));
+        let [delayed, slope] = [x, y].map(|unknown| at.unknown::<R>(unknown));
         let driven = intrinsic.extend(forward) * added.sign;
-        stamp.add_residual(x, R::constant(-slope));
+        stamp.add_residual(x, -slope);
         stamp.add_charge(x, delay * delayed);
-        stamp.add_residual(y, (R::constant(delayed + slope) - driven) * 3.0);
+        stamp.add_residual(y, (delayed + slope - driven) * 3.0);
         stamp.add_charge(y, delay * slope);
         let [[x_x, x_y], [y_x, y_y]] = self.own;
         stamp.add_conductance(x_y, R::constant(-1.0));
@@ -998,9 +998,8 @@ impl ExcessPhase {
         stamp.add_capacitance(y_y, delay);
         let gradient = forward.gradient.map(|slope| slope * -3.0);
         intrinsic.add_conductances(stamp, &self.driven, gradient);
-        let current = R::constant(delayed);
-        stamp.add_residual(added.nodes.node(INNER_COLLECTOR), current);
-        stamp.add_residual(added.nodes.node(INNER_EMITTER), -current);
+        stamp.add_residual(added.nodes.node(INNER_COLLECTOR), delayed);
+        stamp.add_residual(added.nodes.node(INNER_EMITTER), -delayed);
         let [at_collector, at_emitter] = self.delivered;
         stamp.add_conductance(at_collector, R::constant(1.0));
         stamp.add_conductance(at_emitter, R::constant(-1.0));
@@ -1024,7 +1023,7 @@ struct Charges<R: Real> {
 
 impl<R: Real> Charges<R> {
     /// The charges at the junctions' `state`, at `voltages`, [`VARIABLES`]' values.
-    fn evaluate(&self, voltages: [f64; VARIABLE_COUNT], state: &State<R>) -> JunctionCharges<R> {
+    fn evaluate(&self, voltages: [R; VARIABLE_COUNT], state: &State<R>) -> JunctionCharges<R> {
         let [vbe, vbc, _, vbx] = voltages.map(Dual::<R, 1>::variable);
         let [forward, reverse] = state.ideal;
         // The forward diffusion charge grows with the current and with the base-collector
@@ -1119,7 +1118,7 @@ impl<R: Real> SubstrateJunction<R> {
         }
         *last = limited.unwrap_or(applied);
         let beyond = [applied - *last];
-        let voltage = Dual::<R, 1>::variable(*last);
+        let voltage = Dual::<R, 1>::variable(nodes.across(at, (0, 1), (self.sign, *last)));
         let current = self.diode.map_or(Dual::number(0.0), |(saturation, slope)| {
             junction_current(voltage, saturation, slope)
         }) + voltage * at.gmin;
@@ -1805,13 +1804,15 @@ impl Kernel for BipolarTransistor {
         let bias = prepared.bias(shape, memory, at, stamp);
         let [vbe, vbc, ..] = bias.voltages;
         memory.variables = Bipolar::variables(vbe, vbc);
-        let state = prepared.junctions.evaluate([vbe, vbc], at.gmin);
         let added = Oriented {
             nodes: &shape.stamp,
             sign: prepared.sign,
             bias: &bias,
             variables: VARIABLES,
         };
+        let moving = added.moving(at);
+        let [vbe, vbc, ..] = moving;
+        let state = prepared.junctions.evaluate([vbe, vbc], at.gmin);
         let intrinsic = added.reading(INTRINSIC);
         // Every derivative among the stamped nodes is summed here, and written once.
         let mut derivatives = Derivatives::new();
@@ -1836,9 +1837,7 @@ impl Kernel for BipolarTransistor {
             form.add(resistance.evaluate(&state), (&added, &mut *sums), at, stamp);
         }
         if let Some(charges) = &prepared.charges {
-            charges
-                .evaluate(bias.voltages, &state)
-                .add(&added, sums, stamp);
+            charges.evaluate(moving, &state).add(&added, sums, stamp);
         }
         derivatives.stamp(&shape.stamp, stamp);
         if let (Some(junction), Some(nodes)) = (&prepared.substrate, &shape.substrate) {
@@ -1880,7 +1879,9 @@ impl Kernel for BipolarTransistor {
         let voltages = [BASE_EMITTER, BASE_COLLECTOR].map(|(plus, minus)| {
             prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
         });
-        let state = prepared.junctions.evaluate(voltages, at.gmin);
+        let state = prepared
+            .junctions
+            .evaluate(voltages.map(R::constant), at.gmin);
         let node = |index: usize| nodes.equation(index);
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
             let resistance = resistance.evaluate(&state).value.value();

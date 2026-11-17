@@ -519,7 +519,7 @@ fn add_body_network<R: Real>(
     stamp: &mut Stamp<'_, R>,
 ) {
     for ((plus, minus), conductance) in BODY_RESISTANCES.into_iter().zip(conductances) {
-        let voltage = nodes.voltage(at, plus) - nodes.voltage(at, minus);
+        let voltage = nodes.moving::<R>(at, plus) - nodes.moving::<R>(at, minus);
         nodes.current(stamp, plus, minus, conductance * voltage);
         nodes.conductance(stamp, (plus, minus), (plus, minus), conductance);
     }
@@ -628,14 +628,14 @@ impl<R: Real> External<R> {
             let applied = variables
                 .map(|(plus, minus)| sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
             let bias = parts::Bias::new(applied, applied);
-            let [vg, vb, across] = Dual::variables(applied);
-            let current = (self.conductance(side, [vg, vb]) * across).scale(multiplier);
             let oriented = Oriented {
                 nodes,
                 sign,
                 bias: &bias,
                 variables,
             };
+            let [vg, vb, across] = Dual::variables(oriented.moving(at));
+            let current = (self.conductance(side, [vg, vb]) * across).scale(multiplier);
             oriented.add_current(stamp, &mut derivatives, variables[2], current);
         }
         derivatives.stamp(nodes, stamp);
@@ -677,7 +677,7 @@ impl<R: Real> Gate<R> {
     ) {
         if matches!(self.model, GateResistance::One | GateResistance::Three) {
             let electrode = self.electrode * multiplier;
-            let voltage = nodes.voltage(at, GATE) - nodes.voltage(at, MIDDLE_GATE);
+            let voltage = nodes.moving::<R>(at, GATE) - nodes.moving::<R>(at, MIDDLE_GATE);
             nodes.current(stamp, GATE, MIDDLE_GATE, electrode * voltage);
             nodes.conductance(stamp, (GATE, MIDDLE_GATE), (GATE, MIDDLE_GATE), electrode);
         }
@@ -698,16 +698,8 @@ impl<R: Real> Gate<R> {
             voltages: [gate, drain, bulk, across],
             beyond: [gate_beyond, drain_beyond, bulk_beyond, 0.0],
         };
-        let [by_gate, by_drain, by_bulk] = conductance.gradient;
-        let current = Dual {
-            value: conductance.value * across,
-            gradient: [
-                by_gate * across,
-                by_drain * across,
-                by_bulk * across,
-                conductance.value,
-            ],
-        };
+        let across = Dual::variable(nodes.across::<R>(at, (from, INNER_GATE), (sign, across)));
+        let current = conductance.embed([0, 1, 2]) * across.embed([3]);
         let [gate_source, drain_source, body_source] = VARIABLES;
         let oriented = Oriented {
             nodes,
@@ -728,15 +720,9 @@ impl<R: Real> PreparedBsim4<R> {
         clippy::similar_names,
         reason = "the voltages' and overlaps' names in BSIM4"
     )]
-    fn terminals(
-        &self,
-        voltages: [f64; 3],
-        middle: f64,
-        junctions: [f64; 2],
-        gmin: f64,
-    ) -> Terminals<R> {
+    fn terminals(&self, voltages: [R; 3], middle: R, junctions: [R; 2], gmin: f64) -> Terminals<R> {
         let [gate, drain, bulk] = voltages;
-        let forward = drain >= 0.0;
+        let forward = drain.value() >= 0.0;
         let frame = if forward {
             voltages
         } else {
@@ -1009,14 +995,6 @@ impl Kernel for Bsim4 {
         let source_junction = junction_bias(vsbs, sbs_beyond);
         let sign = prepared.core.sign;
         let middle = sign * (nodes.voltage(at, MIDDLE_GATE) - nodes.voltage(at, INNER_GATE));
-        let terminals = prepared.terminals(
-            channel_bias.voltages,
-            middle,
-            [drain_junction.voltages[0], source_junction.voltages[0]],
-            at.gmin,
-        );
-        memory.threshold = Some(terminals.threshold);
-        memory.variables = terminals.variables(sign);
         let channel = Oriented {
             nodes,
             sign,
@@ -1046,6 +1024,16 @@ impl Kernel for Bsim4 {
             bias: &source_junction,
             variables: [(SOURCE_BODY, INNER_SOURCE)],
         };
+        let [drain_junction, source_junction] =
+            [&drain_side, &source_side].map(|side| side.moving(at)[0]);
+        let terminals = prepared.terminals(
+            channel.moving(at),
+            nodes.across(at, (MIDDLE_GATE, INNER_GATE), (sign, middle)),
+            [drain_junction, source_junction],
+            at.gmin,
+        );
+        memory.threshold = Some(terminals.threshold);
+        memory.variables = terminals.variables(sign);
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
         // `b4v5ld.c` multiplies every current of one copy, `gmin`'s too, by `m`.
@@ -1239,7 +1227,7 @@ impl<R: Real> PreparedBsim4<R> {
             [gate - drain, -drain, bulk - drain]
         };
         let vds = frame[1];
-        let operating = self.core.evaluate(Dual::variables(frame));
+        let operating = self.core.evaluate(Dual::variables(frame.map(R::constant)));
         let (thermal, source_side) = self.thermal_noise(&operating, vds);
         let flicker = self.flicker_noise(&operating, vds);
         ChannelNoise {
@@ -1375,7 +1363,8 @@ mod tests {
     use crate::Differentiable;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes,
+        assert_unknown_derivatives_match, source,
     };
 
     /// A short n-channel with every effect of the drain current and the charges switched
@@ -1695,6 +1684,59 @@ mod tests {
         ];
         for (from, to, margin) in switches {
             assert_switches_where_margin_vanishes(&mut n, (&from, &to), margin);
+        }
+    }
+
+    /// At `vds == 0`, `vdseff_cv` vanishes, yet its derivative with respect to `vds` does
+    /// not (`vdsat_cv / (vdsat_cv + DELTA)`): clamping only its value keeps every
+    /// terminal's drain capacitance equal to its right-sided charge slope `(q(h) - q(0)) / h`.
+    #[test]
+    fn capacitances_at_zero_drain_voltage_keep_drain_derivative() {
+        let mut bench = Bench::new::<Bsim4>(SHORT);
+        let at_zero = [0.0, 1.2, 0.0, -0.3];
+        let step = 1e-7;
+        let shifted = [step, 1.2, 0.0, -0.3];
+        let base = bench.settle(&at_zero);
+        let forward = bench.settle(&shifted);
+        let largest = base
+            .capacitance
+            .iter()
+            .map(|row| row[0].abs())
+            .fold(0.0_f64, f64::max);
+        assert!(largest > 1e-17, "expected nonzero drain capacitances");
+        for row in 0..4 {
+            let slope = (forward.charge[row] - base.charge[row]) / step;
+            let analytic = base.capacitance[row][0];
+            assert!(
+                (analytic - slope).abs() <= 1e-4 * largest,
+                "row {row} at vds=0: analytic {analytic:e} against right difference {slope:e}"
+            );
+        }
+    }
+
+    /// Second derivatives in the unknowns match finite differences across BSIM4's external
+    /// drain/source, gate, and body resistance networks.
+    #[test]
+    fn unknown_derivatives_match_across_resistance_models() {
+        let model = Differentiable::<Bsim4>::new();
+        for (gate_model, body_model, external_model, x) in [
+            (
+                2,
+                1,
+                1,
+                vec![1.2, 1.0, 0.0, -0.4, 1.08, 0.06, 0.92, -0.36, -0.38, -0.42],
+            ),
+            (3, 0, 0, vec![1.2, 1.0, 0.0, -0.4, 1.05, 0.04, 0.88, 0.94]),
+        ] {
+            let extra = format!(
+                r#""gate_resistance_model": {gate_model}, "body_resistance_model": {body_model},
+                    "drain_source_resistance_model": {external_model}, "rdw": 150, "rsw": 120,
+                    "rdwmin": 10, "rswmin": 8, "rsh": 5, "drain_squares": 2,
+                    "source_squares": 1.5, "rshg": 20, "xgw": 1e-7, "ngcon": 2,
+                    "xrcrg1": 10, "xrcrg2": 2"#
+            );
+            let parameters = with(SHORT, &extra).replace(r#""alpha0": 1e-6, "#, "");
+            assert_unknown_derivatives_match(&model, &parameters, &x);
         }
     }
 }

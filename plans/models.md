@@ -26,7 +26,7 @@ Measured by the coverage matrix (`benchmarks.md` item 9), every cell a probe tha
 - No foundry's kit runs natively (items 8–11, waiting for the owner).
 - No Verilog-A model runs: none of the CMC's standards, FinFETs and SiGe among them (items 12–15).
 - Models are checked one by one: no common law suite (item 3), no QA tests (item 15), no measured silicon (item 16).
-- Only first derivatives: AC sensitivities use a central difference, and distortion is not offered (item 6).
+- Only directional second derivatives in kernels: AC sensitivities are exact (`device-derivatives.md` 2b), while distortion and higher-order analyses wait for full second and higher derivatives (item 6).
 - A model's facts are written in several files (item 4).
 
 ## 4. Plan
@@ -80,9 +80,9 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### 📋 6. Second and higher derivatives in every kernel
 
 - **What:** each kernel's second derivatives, exact, as the first are.
-- **Why:** exact AC sensitivities, which use a central difference today; a distortion analysis for every model, where ngspice covers ten SPICE3 models; an exact Gummel symmetry test; later, harmonic balance's Jacobians.
-- **Done when:** AC sensitivities with no finite difference; a distortion analysis for every model.
-- **Elsewhere:** `device-derivatives.md` 2b makes AC's VJP exact with second derivatives along one direction only, without this item's full second derivatives.
+- **Why:** a distortion analysis for every model, where ngspice covers ten SPICE3 models; an exact Gummel symmetry test to higher order; later, harmonic balance's Jacobians (exact AC sensitivities landed via directional second derivatives in `device-derivatives.md` 2b).
+- **Done when:** a distortion analysis and full second/higher derivatives for every model.
+- **Elsewhere:** `device-derivatives.md` 2b (done) makes AC's JVP and VJP exact with directional second derivatives along up to eight directions at once, without this item's full higher-order tensors.
 - **Lead.**
     **Source:** row 11.
 

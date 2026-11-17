@@ -697,10 +697,10 @@ impl Kernel for Diode {
             limited1: f64,
         }
         let mut v = Locals { vd: Dual::number(0.0), vs: Dual::number(0.0), vr: Dual::number(0.0), id: Dual::number(0.0), isw: Dual::number(0.0), cube: Dual::number(0.0), remaining: Dual::number(0.0), qd: Dual::number(0.0), qs: Dual::number(0.0), voltage_anode_junction: Dual::number(0.0), voltage_anode_sidewall: Dual::number(0.0), current_junction_current: Dual::number(0.0), current_sidewall_current: Dual::number(0.0), junction_current_potential: Dual::number(0.0), sidewall_current_potential: Dual::number(0.0), anode_junction_flow: Dual::number(0.0), junction_cathode_flow: Dual::number(0.0), junction_cathode_charge: Dual::number(0.0), sidewall_cathode_flow: Dual::number(0.0), sidewall_cathode_charge: Dual::number(0.0), anode_sidewall_flow: Dual::number(0.0), applied0: 0.0, limited0: 0.0, applied1: 0.0, limited1: 0.0 };
-        v.voltage_anode_junction = Dual { value: R::constant(at.value(0) - at.value(shape.junction)), gradient: [R::constant(1.0)] };
-        v.voltage_anode_sidewall = Dual { value: R::constant(at.value(0) - at.value(shape.sidewall)), gradient: [R::constant(1.0)] };
-        v.current_junction_current = Dual { value: R::constant(at.value(shape.junction_current)), gradient: [R::constant(1.0)] };
-        v.current_sidewall_current = Dual { value: R::constant(at.value(shape.sidewall_current)), gradient: [R::constant(1.0)] };
+        v.voltage_anode_junction = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(shape.junction), gradient: [R::constant(1.0)] };
+        v.voltage_anode_sidewall = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(shape.sidewall), gradient: [R::constant(1.0)] };
+        v.current_junction_current = Dual { value: at.unknown::<R>(shape.junction_current), gradient: [R::constant(1.0)] };
+        v.current_sidewall_current = Dual { value: at.unknown::<R>(shape.sidewall_current), gradient: [R::constant(1.0)] };
         if shape.conditions[0] {
         } else if shape.conditions[1] {
             v.junction_current_potential = v.junction_current_potential + v.current_junction_current.scale(prepared.resistance);
@@ -715,7 +715,7 @@ impl Kernel for Diode {
         memory.limited0 = limited0;
         v.applied0 = applied0;
         v.limited0 = limited0;
-        let [t0000] = Dual::<R, 1>::variables([limited0]);
+        let [t0000] = Dual::<R, 1>::variables([(at.unknown::<R>(shape.junction) - at.unknown::<R>(1)).with_value(limited0)]);
         v.vd = t0000;
         if prepared.h7 && v.vd.value.value() < prepared.h8.value() && v.vd.value.value() < prepared.h9.value() {
             let t0001 = -v.vd.plus(prepared.matched);
@@ -789,7 +789,7 @@ impl Kernel for Diode {
             memory.limited1 = limited1;
             v.applied1 = applied1;
             v.limited1 = limited1;
-            let [t0030] = Dual::<R, 1>::variables([limited1]);
+            let [t0030] = Dual::<R, 1>::variables([(at.unknown::<R>(shape.sidewall) - at.unknown::<R>(1)).with_value(limited1)]);
             let [t0031] = t0030.gradient;
             let t0032 = Dual { value: t0030.value, gradient: [R::constant(0.0), t0031] };
             v.vs = t0032;
@@ -858,24 +858,24 @@ impl Kernel for Diode {
             v.junction_cathode_charge = v.junction_cathode_charge + (t0054 + v.qs + (v.id + v.isw).scale(prepared.h75));
         }
         if shape.active[0] {
-            let current = at.value(shape.junction_current);
-            stamp.add_residual(0, R::constant(current));
-            stamp.add_residual(shape.junction, R::constant(-current));
+            let current = at.unknown::<R>(shape.junction_current);
+            stamp.add_residual(0, current);
+            stamp.add_residual(shape.junction, -current);
             stamp.add_conductance(shape.anode_by_junction_current, R::constant(1.0));
             stamp.add_conductance(shape.junction_by_junction_current, R::constant(-1.0));
-            stamp.add_residual(shape.junction_current, R::constant(at.value(0) - at.value(shape.junction)) - v.junction_current_potential.value);
+            stamp.add_residual(shape.junction_current, at.unknown::<R>(0) - at.unknown::<R>(shape.junction) - v.junction_current_potential.value);
             stamp.add_conductance(shape.junction_current_by_anode, R::constant(1.0));
             stamp.add_conductance(shape.junction_current_by_junction, R::constant(-1.0));
             let [t0055] = v.junction_current_potential.gradient;
             stamp.add_conductance(shape.junction_current_by_junction_current, -t0055);
         }
         if shape.active[1] {
-            let current = at.value(shape.sidewall_current);
-            stamp.add_residual(0, R::constant(current));
-            stamp.add_residual(shape.sidewall, R::constant(-current));
+            let current = at.unknown::<R>(shape.sidewall_current);
+            stamp.add_residual(0, current);
+            stamp.add_residual(shape.sidewall, -current);
             stamp.add_conductance(shape.anode_by_sidewall_current, R::constant(1.0));
             stamp.add_conductance(shape.sidewall_by_sidewall_current, R::constant(-1.0));
-            stamp.add_residual(shape.sidewall_current, R::constant(at.value(0) - at.value(shape.sidewall)) - v.sidewall_current_potential.value);
+            stamp.add_residual(shape.sidewall_current, at.unknown::<R>(0) - at.unknown::<R>(shape.sidewall) - v.sidewall_current_potential.value);
             stamp.add_conductance(shape.sidewall_current_by_anode, R::constant(1.0));
             stamp.add_conductance(shape.sidewall_current_by_sidewall, R::constant(-1.0));
             let [t0056] = v.sidewall_current_potential.gradient;

@@ -583,6 +583,7 @@ mod tests {
         assert_continuous, assert_finite, assert_mirrors, assert_swaps, bench, cases, exactly,
         polarity, probes, within_junctions_reach,
     };
+    use crate::testing::assert_unknown_derivatives_match;
 
     /// Every analog model of the library, by name.
     fn analog(library: &Library) -> Vec<&'static str> {
@@ -602,6 +603,39 @@ mod tests {
                 if within_junctions_reach(&point, &natures) {
                     assert_conserves(name, &mut bench, &point);
                 }
+            }
+        }
+    }
+
+    /// Every kernel reads its unknowns as numbers of its kind, so that a twin seeding them
+    /// finds the second derivatives of its equations exactly, as an AC analysis's
+    /// derivatives through its operating point need them: at its case, its internal
+    /// unknowns spread apart rather than tied at one voltage, and with each of its
+    /// unknowns shifted either side of it, away from the points where its terminals meet,
+    /// where laws switch and their curvatures jump.
+    #[test]
+    fn every_kernel_differentiates_its_conductances_with_respect_to_its_unknowns() {
+        let library = Library::standard();
+        for &(name, parameters, given) in cases::CASES {
+            let model = library.get(name).expect("a model of the library");
+            let natures = bench(name, parameters).natures();
+            let mut x = given.to_vec();
+            for offset in 0..natures.len().saturating_sub(given.len()) {
+                let step = u32::try_from(offset + 1).expect("few internal unknowns");
+                x.push(cases::REST * f64::from(step));
+            }
+            let mut points = vec![x.clone()];
+            for (index, nature) in natures.iter().enumerate() {
+                if *nature != Nature::Temperature {
+                    for step in [0.07, -0.07] {
+                        let mut point = x.clone();
+                        point[index] += step;
+                        points.push(point);
+                    }
+                }
+            }
+            for point in points {
+                assert_unknown_derivatives_match(&**model, parameters, &point);
             }
         }
     }

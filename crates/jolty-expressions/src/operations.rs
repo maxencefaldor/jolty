@@ -156,6 +156,33 @@ impl Unary {
             Self::Ramp => truth(x > 0.0),
         }
     }
+
+    /// The operation's second derivative at `x`, where its value is `value` and its first
+    /// derivative is `slope`.
+    pub(crate) fn curvature(self, x: f64, value: f64, slope: f64) -> f64 {
+        match self {
+            Self::Negate
+            | Self::Not
+            | Self::Abs
+            | Self::Floor
+            | Self::Ceil
+            | Self::Sign
+            | Self::Step
+            | Self::Ramp => 0.0,
+            Self::Sqrt => -0.5 * slope / x,
+            Self::Exp | Self::Sinh | Self::Cosh => value,
+            Self::Ln => -slope * slope,
+            Self::Log10 => -slope / x,
+            Self::Sin | Self::Cos => -value,
+            Self::Tan => 2.0 * value * slope,
+            Self::Asin | Self::Acos => slope * x / (1.0 - x * x),
+            Self::Atan => -2.0 * x * slope * slope,
+            Self::Tanh => -2.0 * value * slope,
+            Self::Asinh => -slope * x / (x * x + 1.0),
+            Self::Acosh => -slope * x / (x * x - 1.0),
+            Self::Atanh => 2.0 * x * slope * slope,
+        }
+    }
 }
 
 /// An operation of two operands.
@@ -296,6 +323,45 @@ impl Binary {
             | Self::NotEqual
             | Self::And
             | Self::Or => (0.0, 0.0),
+        }
+    }
+
+    /// The operation's second partial derivatives `(∂²f/∂a², ∂²f/∂a∂b, ∂²f/∂b²)` at `a` and
+    /// `b`, where its first partial derivatives are `(slope_a, slope_b)`.
+    pub(crate) fn curvatures(self, a: f64, b: f64, (slope_a, slope_b): (f64, f64)) -> [f64; 3] {
+        match self {
+            Self::Add
+            | Self::Subtract
+            | Self::Min
+            | Self::Max
+            | Self::Less
+            | Self::LessEqual
+            | Self::Greater
+            | Self::GreaterEqual
+            | Self::Equal
+            | Self::NotEqual
+            | Self::And
+            | Self::Or => [0.0, 0.0, 0.0],
+            Self::Multiply => [0.0, 1.0, 0.0],
+            Self::Divide => [0.0, -1.0 / (b * b), -2.0 * slope_b / b],
+            Self::Power => {
+                let factor = b * (b - 1.0);
+                let by_base = if a == 0.0 && factor == 0.0 {
+                    0.0
+                } else {
+                    factor * a.powf(b - 2.0)
+                };
+                if a > 0.0 {
+                    let logarithm = a.ln();
+                    [
+                        by_base,
+                        a.powf(b - 1.0) + slope_a * logarithm,
+                        slope_b * logarithm,
+                    ]
+                } else {
+                    [by_base, 0.0, 0.0]
+                }
+            }
         }
     }
 }

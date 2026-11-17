@@ -150,7 +150,7 @@ impl Kernel for Constructs {
             a_b_flow: Dual<R, 1>,
         }
         let mut v = Locals { current: Dual::number(0.0), small_signal: R::constant(0.0), v: Dual::number(0.0), bent: Dual::number(0.0), saturated1_v: Dual::number(0.0), saturated1_saturated: Dual::number(0.0), voltage_a_b: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: R::constant(at.value(0) - at.value(1)), gradient: [R::constant(1.0)] };
+        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
         v.v = v.voltage_a_b;
         let t0000 = v.v.chain((v.v.value / prepared.saturation, prepared.h2));
         let t0001 = t0000.value.value();

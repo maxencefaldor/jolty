@@ -243,8 +243,8 @@ impl MemristorShape {
     ) {
         let [positive, negative] = POSITIVE_NEGATIVE;
         let [voltage, state] = Dual::variables([
-            at.value(positive) - at.value(negative),
-            at.value(self.state),
+            at.unknown::<R>(positive) - at.unknown::<R>(negative),
+            at.unknown(self.state),
         ]);
         // The conductance is a law of the state alone.
         let conductance = state.apply(|state| prepared.memristance.conductance(state));

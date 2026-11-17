@@ -80,7 +80,7 @@ impl Kernel for VoltageSource {
         stamp: &mut Stamp<'_, R>,
     ) {
         let level = waveform.value(at.time) * at.source_scale;
-        let voltage = branch.voltage(at);
+        let voltage = branch.voltage::<R>(at);
         branch.add(at, stamp, -(level - voltage));
     }
 

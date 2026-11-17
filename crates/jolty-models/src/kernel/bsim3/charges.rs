@@ -454,10 +454,10 @@ struct Cv<'a, R: Real> {
 /// Sets an effective drain-source voltage of the charges at zero drain-source voltage to
 /// zero, with no derivative with respect to the gate and the bulk, as `b3ld.c` does.
 fn zero_at_zero_drain<R: Real>(vdseff: &mut D<R>) {
-    vdseff.value = R::constant(0.0);
+    vdseff.value = vdseff.value.with_value(0.0);
     let [gate, _, bulk] = &mut vdseff.gradient;
-    *gate = R::constant(0.0);
-    *bulk = R::constant(0.0);
+    *gate = gate.with_value(0.0);
+    *bulk = bulk.with_value(0.0);
 }
 
 impl<R: Real> Overlaps<R> {

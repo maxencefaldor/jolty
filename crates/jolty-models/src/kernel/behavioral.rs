@@ -169,6 +169,9 @@ struct Room {
     choosing: Workspace,
     values: Vec<f64>,
     gradient: Vec<f64>,
+    tangent: Vec<f64>,
+    gradient_tangent: Vec<f64>,
+    gradient_derivatives: Vec<[f64; crate::Seeds::MOST]>,
 }
 
 impl BehavioralShape {
@@ -243,27 +246,102 @@ impl BehavioralShape {
         if room.workspace.limited() {
             stamp.mark_limited();
         }
-        for &(row, factor) in &self.rows {
-            let value = R::constant(factor * value);
-            if self.stored {
-                stamp.add_charge(row, value);
-            } else {
-                stamp.add_residual(row, value);
-            }
-        }
-        for (entries, derivative) in self.entries.iter().zip(&room.gradient) {
-            for &(entry, factor) in entries {
-                let derivative = R::constant(factor * derivative);
+        if R::SEEDS == 0 || !at.seeds_unknowns() {
+            for &(row, factor) in &self.rows {
+                let contribution = R::constant(factor * value);
                 if self.stored {
-                    stamp.add_capacitance(entry, derivative);
+                    stamp.add_charge(row, contribution);
                 } else {
-                    stamp.add_conductance(entry, derivative);
+                    stamp.add_residual(row, contribution);
+                }
+            }
+            for (entries, derivative) in self.entries.iter().zip(&room.gradient) {
+                for &(entry, factor) in entries {
+                    let contribution = R::constant(factor * derivative);
+                    if self.stored {
+                        stamp.add_capacitance(entry, contribution);
+                    } else {
+                        stamp.add_conductance(entry, contribution);
+                    }
+                }
+            }
+        } else {
+            let mut value_derivatives = [0.0; crate::Seeds::MOST];
+            for slot in 0..R::SEEDS.min(crate::Seeds::MOST) {
+                self.read_tangent::<R>(at, slot, &mut room.tangent);
+                if room.tangent.iter().all(|&rate| rate == 0.0) {
+                    if let Some(target) = value_derivatives.get_mut(slot) {
+                        *target = 0.0;
+                    }
+                    for rates in &mut room.gradient_derivatives {
+                        if let Some(target) = rates.get_mut(slot) {
+                            *target = 0.0;
+                        }
+                    }
+                } else {
+                    let moved = expression.along(
+                        &room.tangent,
+                        &mut room.workspace,
+                        &mut room.gradient_tangent,
+                    );
+                    if let Some(target) = value_derivatives.get_mut(slot) {
+                        *target = moved;
+                    }
+                    for (rates, &moved_gradient) in room
+                        .gradient_derivatives
+                        .iter_mut()
+                        .zip(&room.gradient_tangent)
+                    {
+                        if let Some(target) = rates.get_mut(slot) {
+                            *target = moved_gradient;
+                        }
+                    }
+                }
+            }
+            for &(row, factor) in &self.rows {
+                let scaled = value_derivatives.map(|rate| factor * rate);
+                let contribution = R::moving(factor * value, &scaled);
+                if self.stored {
+                    stamp.add_charge(row, contribution);
+                } else {
+                    stamp.add_residual(row, contribution);
+                }
+            }
+            for ((entries, &derivative), rates) in self
+                .entries
+                .iter()
+                .zip(&room.gradient)
+                .zip(&room.gradient_derivatives)
+            {
+                for &(entry, factor) in entries {
+                    let scaled = rates.map(|rate| factor * rate);
+                    let contribution = R::moving(factor * derivative, &scaled);
+                    if self.stored {
+                        stamp.add_capacitance(entry, contribution);
+                    } else {
+                        stamp.add_conductance(entry, contribution);
+                    }
                 }
             }
         }
         for port in &self.ports {
             // A short circuit: no voltage across it.
-            port.add(at, stamp, R::constant(port.voltage(at)));
+            port.add(at, stamp, port.voltage(at));
+        }
+    }
+
+    /// Reads the expression's variables' derivatives along `slot` at `at` into `tangent`.
+    fn read_tangent<R: Real>(&self, at: &Local<'_>, slot: usize, tangent: &mut [f64]) {
+        for (rate, read) in tangent.iter_mut().zip(&self.reads) {
+            *rate = match *read {
+                Read::Voltage(positive, negative) => {
+                    let across = at.unknown::<R>(positive)
+                        - negative.map_or_else(|| R::constant(0.0), |node| at.unknown::<R>(node));
+                    across.derivative(slot)
+                }
+                Read::Current(current) => at.unknown::<R>(current).derivative(slot),
+                Read::Time => 0.0,
+            };
         }
     }
 
@@ -305,6 +383,9 @@ impl BehavioralShape {
             choosing: Workspace::new(expression),
             values: vec![0.0; count],
             gradient: vec![0.0; count],
+            tangent: vec![0.0; count],
+            gradient_tangent: vec![0.0; count],
+            gradient_derivatives: vec![[0.0; crate::Seeds::MOST]; count],
         }))
     }
 }
@@ -429,8 +510,7 @@ impl Kernel for BehavioralVoltageSource {
     ) {
         // The branch's voltage, less the expression's value, which the shape adds itself.
         if let Some(branch) = &shape.branch {
-            let voltage = branch.voltage(at);
-            branch.add(at, stamp, R::constant(voltage));
+            branch.add(at, stamp, branch.voltage(at));
         }
         shape.add(expression, memory, at, stamp);
     }

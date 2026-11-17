@@ -276,10 +276,10 @@ impl<R: Real> Core<R> {
         let mut vdseff = vdsat - (t1 + t2) * 0.5;
         if vds.value.value() == 0.0 {
             // As `b3ld.c` does, with none of the rounding the smoothing leaves at zero.
-            vdseff.value = R::constant(0.0);
+            vdseff.value = vdseff.value.with_value(0.0);
             let [gate, _, bulk] = &mut vdseff.gradient;
-            *gate = R::constant(0.0);
-            *bulk = R::constant(0.0);
+            *gate = gate.with_value(0.0);
+            *bulk = bulk.with_value(0.0);
         }
 
         // The saturation's Early voltage.

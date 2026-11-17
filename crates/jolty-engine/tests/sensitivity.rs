@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 
 use jolty_engine::{
     Ac, Conditions, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, Method, Options,
-    ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator, Transient,
+    Parallelism, ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator,
+    Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use jolty_numerics::Complex64;
+use rayon::ThreadPoolBuilder;
 use serde_json::{Value, json};
 
 /// A circuit whose top component has a ground port `0` and places `instances`.
@@ -830,5 +832,350 @@ fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
                 );
             }
         }
+    }
+}
+
+/// A self-heated diode biased through a resistor, coupled to a thermal RC network whose
+/// thermal resistance sets how much its junction warms above ambient.
+fn heated_diode(supply: f64, thermal_resistance: f64) -> Value {
+    json!([
+        {"name": "V1", "of": {"model": "voltage_source"},
+         "parameters": {"waveform": {"dc": supply}},
+         "terminals": {"positive": "in", "negative": "0"}},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
+         "terminals": {"a": "in", "b": "anode"}},
+        {"name": "D1", "of": {"model": "diode"},
+         "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
+                        "series_resistance": 4.0, "junction_capacitance": 2e-9,
+                        "transit_time": 1e-9, "thermal": true},
+         "terminals": {"anode": "anode", "cathode": "0", "thermal": "temp"}},
+        {"name": "RTH", "of": {"model": "thermal_resistance"},
+         "parameters": {"resistance": thermal_resistance},
+         "terminals": {"a": "temp", "b": "0"}},
+        {"name": "CTH", "of": {"model": "thermal_capacitance"},
+         "parameters": {"capacitance": 1e-8},
+         "terminals": {"a": "temp", "b": "0"}}
+    ])
+}
+
+#[test]
+fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
+    // Frequencies spanning both the thermal pole (~80 kHz) and electrical pole (~2 MHz)
+    // so central differences with relative step 1e-4 stay well above f64 rounding.
+    let ac = Differentiated::Ac(Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e5, 1e6, 1e7],
+    });
+    let parameters = [
+        ("V1", "waveform.dc"),
+        ("R1", "resistance"),
+        ("D1", "saturation_current"),
+        ("D1", "emission_coefficient"),
+        ("D1", "series_resistance"),
+        ("D1", "junction_capacitance"),
+        ("RTH", "resistance"),
+        ("CTH", "capacitance"),
+    ];
+    // Hot case: substantial self-heating shifts both electrical and thermal Jacobians.
+    let hot = heated_diode(2.0, 200.0);
+    assert_matches(&hot, &["anode", "temp"], &ac, 1e-5);
+    assert_transposes(&hot, &parameters, &ac);
+    // Exact dot-product test also holds across six decades including low frequency.
+    let wide_ac = Differentiated::Ac(Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e2, 1e5, 1e8],
+    });
+    assert_transposes(&hot, &parameters, &wide_ac);
+    // Exact ambient case (`ΔT == 0` bit-for-bit while forward-biased and conducting):
+    // measure the diode's ambient power first, then sink that exact power with a
+    // `heat_source` so `temp == 0.0` at DC while remaining a live AC thermal unknown.
+    let mut reference = Simulator::new(
+        &circuit_of(&json!([
+            {"name": "V1", "of": {"model": "voltage_source"},
+             "parameters": {"waveform": {"dc": 2.0}},
+             "terminals": {"positive": "in", "negative": "0"}},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
+             "terminals": {"a": "in", "b": "anode"}},
+            {"name": "D1", "of": {"model": "diode"},
+             "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
+                            "series_resistance": 4.0, "junction_capacitance": 2e-9,
+                            "transit_time": 1e-9},
+             "terminals": {"anode": "anode", "cathode": "0"}}
+        ])),
+        &Library::standard(),
+        &Conditions::default(),
+    )
+    .expect("reference");
+    let operating = reference.operating_point(&tight()).expect("dc");
+    let anode = operating.values[reference.unknown("anode").expect("anode").index()];
+    let current = -operating.values[reference.unknown("V1:current").expect("i").index()];
+    let ambient_power = anode * current;
+    let mut cooled = heated_diode(2.0, 200.0);
+    cooled.as_array_mut().expect("instances").push(json!({
+        "name": "Q1", "of": {"model": "heat_source"},
+        "parameters": {"power": ambient_power},
+        "terminals": {"a": "temp", "b": "0"}
+    }));
+    assert_matches(&cooled, &["anode", "temp"], &ac, 1e-5);
+    let cooled_parameters = [
+        ("V1", "waveform.dc"),
+        ("R1", "resistance"),
+        ("D1", "saturation_current"),
+        ("D1", "emission_coefficient"),
+        ("D1", "series_resistance"),
+        ("D1", "junction_capacitance"),
+        ("RTH", "resistance"),
+        ("CTH", "capacitance"),
+        ("Q1", "power"),
+    ];
+    assert_transposes(&cooled, &cooled_parameters, &ac);
+}
+
+#[test]
+fn sensitivities_over_frequency_of_a_behavioral_circuit_match_finite_differences() {
+    let instances = json!([
+        {"name": "V1", "of": {"model": "voltage_source"},
+         "parameters": {"waveform": {"dc": 1.2}},
+         "terminals": {"positive": "in", "negative": "0"}},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
+         "terminals": {"a": "in", "b": "out"}},
+        {"name": "B1", "of": {"model": "behavioral_current_source"},
+         "parameters": {"expression": "2e-3 * tanh(3.0 * v(x)) + 1e-4 * (v(x) ^ 3)"},
+         "terminals": {"positive": "out", "negative": "0", "x": "out"}},
+        {"name": "BC1", "of": {"model": "behavioral_capacitor"},
+         "parameters": {"expression": "1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"},
+         "terminals": {"positive": "out", "negative": "0", "x": "out"}},
+        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 2e3},
+         "terminals": {"a": "out", "b": "0"}}
+    ]);
+    let ac = Differentiated::Ac(Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e3, 1e7, 1e9],
+    });
+    assert_matches(&instances, &["out"], &ac, 1e-5);
+    assert_transposes(
+        &instances,
+        &[
+            ("V1", "waveform.dc"),
+            ("R1", "resistance"),
+            ("R2", "resistance"),
+        ],
+        &ac,
+    );
+}
+
+#[test]
+fn sensitivities_over_frequency_of_a_linear_circuit_match_finite_differences() {
+    let ac = Differentiated::Ac(Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e2, 1e5, 1e7],
+    });
+    assert_matches(&rc(), &["out"], &ac, 1e-5);
+    assert_transposes(
+        &rc(),
+        &[
+            ("V1", "waveform.dc"),
+            ("R1", "resistance"),
+            ("C1", "capacitance"),
+        ],
+        &ac,
+    );
+}
+
+#[test]
+fn ac_derivatives_are_deterministic_across_thread_counts() {
+    let mut instances = loaded_amplifier();
+    let placed = instances.as_array_mut().expect("instances");
+    placed.push(json!({"name": "D1", "of": {"model": "diode"},
+        "parameters": {"saturation_current": 1e-14, "series_resistance": 5.0,
+                       "junction_capacitance": 1e-12, "thermal": true},
+        "terminals": {"anode": "drain", "cathode": "0", "thermal": "temp"}}));
+    placed.push(json!({"name": "RTH", "of": {"model": "thermal_resistance"},
+        "parameters": {"resistance": 150.0},
+        "terminals": {"a": "temp", "b": "0"}}));
+    let circuit = circuit_of(&instances);
+    let ac = Differentiated::Ac(Ac {
+        source: "VG".to_owned(),
+        frequencies: vec![1e2, 1e4, 1e6, 1e7, 1e8, 1e9],
+    });
+    let names: Vec<(String, String)> = [
+        ("RD", "resistance"),
+        ("RG", "resistance"),
+        ("CL", "capacitance"),
+        ("CG", "capacitance"),
+        ("M1", "width"),
+        ("M1", "threshold_voltage"),
+        ("M1", "transconductance_parameter"),
+        ("D1", "saturation_current"),
+        ("D1", "series_resistance"),
+        ("RTH", "resistance"),
+    ]
+    .into_iter()
+    .map(|(device, name)| (device.to_owned(), name.to_owned()))
+    .collect();
+    let tangent: Vec<f64> = (0..names.len()).map(picked).collect();
+    let run = |threads: usize| -> (Vec<u64>, Vec<u64>) {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool");
+        pool.install(|| {
+            let options = Options {
+                parallelism: Parallelism {
+                    max_threads: Some(threads),
+                    min_solves_per_task: Some(1),
+                    ..Parallelism::default()
+                },
+                ..tight()
+            };
+            let mut simulator =
+                Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                    .expect("simulator");
+            let jvp = simulator
+                .jvp(&ac, &names, std::slice::from_ref(&tangent), &options)
+                .expect("jvp");
+            let Derivatives::Complex(points) = jvp.tangents else {
+                panic!("complex tangents");
+            };
+            let forward_bits: Vec<u64> = points
+                .iter()
+                .flat_map(|rows| rows.iter().flat_map(|row| row.iter()))
+                .flat_map(|value| [value.re.to_bits(), value.im.to_bits()])
+                .collect();
+            let cotangents = picked_cotangent((6, simulator.unknowns().len()), false, None);
+            let pullback = simulator.vjp(&ac, &names, &options).expect("vjp");
+            let ParameterCotangents::Complex(rows) = simulator
+                .pull_back(&pullback, &cotangents, &options)
+                .expect("pullback")
+            else {
+                panic!("complex cotangents");
+            };
+            let backward_bits: Vec<u64> = rows[0]
+                .iter()
+                .flat_map(|value| [value.re.to_bits(), value.im.to_bits()])
+                .collect();
+            (forward_bits, backward_bits)
+        })
+    };
+    let baseline = run(1);
+    for threads in [2, 4] {
+        assert_eq!(run(threads), baseline, "threads={threads}");
+    }
+}
+
+/// The common-source stage driving a `rungs`-section resistive ladder, returning its
+/// instances and every parameter name with its nominal value.
+fn amplifier_with_ladder(rungs: usize) -> (Value, Vec<(String, String)>, Vec<f64>) {
+    let mut instances = loaded_amplifier();
+    let placed = instances.as_array_mut().expect("instances");
+    let mut previous = "drain".to_owned();
+    let mut names = vec![
+        ("RD".to_owned(), "resistance".to_owned()),
+        ("M1".to_owned(), "width".to_owned()),
+        ("M1".to_owned(), "threshold_voltage".to_owned()),
+        ("CL".to_owned(), "capacitance".to_owned()),
+    ];
+    let mut nominal = vec![1e4, 2e-6, 0.7, 1e-12];
+    for rung in 0..rungs {
+        let next = format!("tap{rung}");
+        let series = format!("RS{rung}");
+        let shunt = format!("RP{rung}");
+        placed.push(json!({"name": series, "of": {"model": "resistor"},
+            "parameters": {"resistance": 100.0},
+            "terminals": {"a": previous, "b": next}}));
+        placed.push(json!({"name": shunt, "of": {"model": "resistor"},
+            "parameters": {"resistance": 1e5},
+            "terminals": {"a": next, "b": "0"}}));
+        names.push((series, "resistance".to_owned()));
+        names.push((shunt, "resistance".to_owned()));
+        nominal.extend([100.0, 1e5]);
+        previous = next;
+    }
+    (instances, names, nominal)
+}
+
+#[test]
+fn ac_vjp_matches_jvp_and_finite_differences_with_many_parameters() {
+    let (instances, names, nominal) = amplifier_with_ladder(250);
+    let circuit = circuit_of(&instances);
+    let ac_analysis = Ac {
+        source: "VG".to_owned(),
+        frequencies: vec![1e3, 1e6, 1e8],
+    };
+    let ac = Differentiated::Ac(ac_analysis.clone());
+    let options = tight();
+    let mut simulator =
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("simulator");
+    let tangent: Vec<f64> = nominal
+        .iter()
+        .enumerate()
+        .map(|(index, &scale)| picked(index) * scale)
+        .collect();
+    let jvp = simulator
+        .jvp(&ac, &names, std::slice::from_ref(&tangent), &options)
+        .expect("jvp");
+    let Derivatives::Complex(pushed) = jvp.tangents else {
+        panic!("complex tangents");
+    };
+    let cotangents = picked_cotangent((3, simulator.unknowns().len()), false, None);
+    let pullback = simulator.vjp(&ac, &names, &options).expect("vjp");
+    let ParameterCotangents::Complex(pulled) = simulator
+        .pull_back(&pullback, &cotangents, &options)
+        .expect("pullback")
+    else {
+        panic!("complex cotangents");
+    };
+    let Cotangents::Complex(weights) = &cotangents else {
+        panic!("complex weights");
+    };
+    let (mut forward, mut magnitude) = (Complex64::default(), 0.0);
+    for (point, rows) in pushed.iter().enumerate() {
+        for (unknown, row) in rows.iter().enumerate() {
+            let weight = weights[0].points[&point][unknown];
+            forward += weight * row[0];
+            magnitude += weight.norm() * row[0].norm();
+        }
+    }
+    let backward: Complex64 = pulled[0].iter().zip(&tangent).map(|(p, t)| p * t).sum();
+    let backward_magnitude: f64 = pulled[0]
+        .iter()
+        .zip(&tangent)
+        .map(|(p, t)| (p * t).norm())
+        .sum();
+    let gap = (forward - backward).norm();
+    assert!(
+        gap <= TRANSPOSED * magnitude.max(backward_magnitude),
+        "504-parameter AC dot-product test failed: forward={forward}, backward={backward}, \
+         gap={gap:e}"
+    );
+    // Verify sampled VJP entries directly against central finite differences.
+    for (sample_index, (device, parameter, base)) in [
+        (0, ("RD", "resistance", 1e4)),
+        (1, ("M1", "width", 2e-6)),
+        (4, ("RS0", "resistance", 100.0)),
+        (503, ("RP249", "resistance", 1e5)),
+    ] {
+        let step = 1e-4 * base;
+        let run_objective = |value: f64| -> Complex64 {
+            let mut moved_simulator = moved(&instances, device, parameter, value);
+            let response = moved_simulator.ac(&ac_analysis, &options).expect("ac");
+            response
+                .values
+                .iter()
+                .enumerate()
+                .flat_map(|(point, row)| {
+                    row.iter()
+                        .enumerate()
+                        .map(move |(unknown, &phasor)| weights[0].points[&point][unknown] * phasor)
+                })
+                .sum()
+        };
+        let finite = (run_objective(base + step) - run_objective(base - step)) / (2.0 * step);
+        let exact = pulled[0][sample_index];
+        let scale = exact.norm().max(finite.norm()).max(1e-12);
+        assert!(
+            (exact - finite).norm() <= 1e-5 * scale,
+            "504-parameter AC VJP for {device}.{parameter}: exact {exact}, finite {finite}"
+        );
     }
 }

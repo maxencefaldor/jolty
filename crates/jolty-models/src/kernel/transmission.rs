@@ -139,12 +139,15 @@ impl Kernel for TransmissionLine {
         for (own, other, [positive, negative], entries) in ports {
             let [current, other_positive, other_negative, other_current] = entries;
             let delay = prepared.delay;
-            let (positive, positive_weight) = at.delayed(positive, delay);
-            let (negative, negative_weight) = at.delayed(negative, delay);
-            let (arriving, current_weight) = at.delayed(other.unknown(), delay);
+            let (_, positive_weight) = at.delayed(positive, delay);
+            let (_, negative_weight) = at.delayed(negative, delay);
+            let (_, current_weight) = at.delayed(other.unknown(), delay);
+            let [positive, negative, arriving] = [positive, negative, other.unknown()]
+                .map(|local| at.delayed_unknown::<R>(local, delay));
             // The wave that left the other port a delay before.
             let wave = prepared.impedance * arriving + (positive - negative);
-            let residual = -(prepared.impedance * own.current(at)) - wave + own.voltage(at);
+            let residual =
+                -(prepared.impedance * own.current::<R>(at)) - wave + own.voltage::<R>(at);
             own.add(at, stamp, residual);
             stamp.add_conductance(current, -prepared.impedance);
             stamp.add_conductance(other_positive, R::constant(-positive_weight));

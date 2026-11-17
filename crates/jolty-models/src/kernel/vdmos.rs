@@ -610,13 +610,13 @@ impl Kernel for Vdmos {
             series.add(series.value_of(resistance), at, stamp);
         }
         let bias = prepared.bias(shape, memory, at, stamp);
-        let [vgs, vds] = Dual::variables(bias.voltages);
-        let conduction = prepared.channel.evaluate([vgs, vds]);
         let sign = prepared.sign;
+        let [vgs, vds] = Dual::variables(bias.moving(&shape.stamp, at, (sign, VARIABLES)));
+        let conduction = prepared.channel.evaluate([vgs, vds]);
         match (&shape.quasi, &prepared.quasi) {
             (Some(varying), Some(quasi)) if conduction.forward => {
                 // A law of the voltage across the terminals, which orients it.
-                let across = Dual::variable(at.value(DRAIN) - at.value(SOURCE));
+                let across = Dual::variable(at.unknown::<R>(DRAIN) - at.unknown::<R>(SOURCE));
                 let resistance = quasi.resistance(drain, across * sign);
                 drain_series.add_varying(resistance, varying, at, stamp);
             }
@@ -645,9 +645,10 @@ impl Kernel for Vdmos {
             at,
             stamp,
         );
-        shape
-            .shunt
-            .add_current(stamp, prepared.shunt * shape.shunt.voltage(at));
+        shape.shunt.add_current(
+            stamp,
+            prepared.shunt * shape.shunt.moving::<R>(at, shape.shunt.voltage(at)),
+        );
         shape.shunt.add_conductance(stamp, prepared.shunt);
         let [by_gate, _] = gate_drain.gradient;
         memory.variables = [
@@ -688,7 +689,9 @@ impl Kernel for Vdmos {
         let sign = prepared.sign;
         let voltages = VARIABLES
             .map(|(plus, minus)| sign * (stamp.voltage(at, plus) - stamp.voltage(at, minus)));
-        let conduction = prepared.channel.evaluate(Dual::variables(voltages));
+        let conduction = prepared
+            .channel
+            .evaluate(Dual::variables(voltages.map(R::constant)));
         let [drain_series, source_series, ..] = &shape.series;
         let [drain, source, ..] = prepared.resistances;
         let drain = match (&shape.quasi, &prepared.quasi) {

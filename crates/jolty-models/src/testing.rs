@@ -705,6 +705,142 @@ fn assert_chunks_match_seeds_alone(
     }
 }
 
+/// Checks that the derivatives of a device's residuals, conductances and capacitances at
+/// `x` with respect to each of its unknowns, as twins seeding its unknowns eight at a time
+/// find them, are its conductances, and match central differences of its conductances and
+/// capacitances, its steps unlimited: its equations' second derivatives, exact.
+///
+/// # Panics
+///
+/// Panics if any of those fails.
+pub fn assert_unknown_derivatives_match(model: &dyn Model, parameters: &str, x: &[f64]) {
+    let mut bench = Bench::from_model(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
+    assert_eq!(bench.unknowns.len(), x.len(), "one value per unknown");
+    let plain = |bench: &mut Bench, x: &[f64]| {
+        let mut input = Input::new(x, None, 1e-12);
+        input.limiting = false;
+        bench.evaluate_with(&input)
+    };
+    let exact = plain(&mut bench, x);
+    let read: jolty_ir::Parameters = serde_json::from_str(parameters).expect("a JSON object");
+    let specification = model.read(&read).expect("valid");
+    let instance = (&specification.kernel(), REFERENCE_TEMPERATURE);
+    let positions: Vec<(usize, usize)> = bench.pattern.positions().collect();
+    let twins = bench.runs.unknown_twins(&bench.groups, 0, instance);
+    assert!(!twins.is_empty(), "a twin seeding the unknowns");
+    for mut twin in twins {
+        let mut input = Input::new(x, None, 1e-12);
+        input.limiting = false;
+        twin.evaluate(&input);
+        let seeded: Vec<(usize, usize)> = twin
+            .seeded()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &unknown)| unknown != jolty_numerics::UNMAPPED)
+            .map(|(seed, &unknown)| (seed, unknown as usize))
+            .collect();
+        for (row, (value, derivatives)) in twin.residual() {
+            // Sums of terms that cancel leave a rounding of the row's largest.
+            let largest = exact.conductance[row]
+                .iter()
+                .fold(0.0_f64, |largest, conductance| {
+                    largest.max(conductance.abs())
+                });
+            for &(seed, column) in &seeded {
+                let (derivative, conductance) = (derivatives[seed], exact.conductance[row][column]);
+                assert!(
+                    (derivative - conductance).abs() <= 1e-12 * largest + 1e-20,
+                    "{} residual[{row}] along {column}: {derivative}, its conductance \
+                     {conductance}, at {value}",
+                    model.name(),
+                );
+            }
+        }
+        for &(seed, column) in &seeded {
+            assert_entries_match_along(
+                (model.name(), &mut bench, &twin),
+                (&positions, x),
+                (seed, column),
+            );
+        }
+    }
+}
+
+/// Checks that the derivatives of `twin`'s conductances and capacitances along `seed`,
+/// which moves the unknown `column`, match extrapolated central differences of `bench` at
+/// `x`.
+fn assert_entries_match_along(
+    (model, bench, twin): (&str, &mut Bench, &Twin),
+    (positions, x): (&[(usize, usize)], &[f64]),
+    (seed, column): (usize, usize),
+) {
+    let step = 1e-5 * x[column].abs().max(1.0);
+    let mut evaluated_at = |offset: f64| {
+        let mut shifted = x.to_vec();
+        shifted[column] = x[column] + offset;
+        let mut input = Input::new(&shifted, None, 1e-12);
+        input.limiting = false;
+        bench.evaluate_with(&input)
+    };
+    let (wide_above, wide_below) = (evaluated_at(step), evaluated_at(-step));
+    let half = step / 2.0;
+    let (above, below) = (evaluated_at(half), evaluated_at(-half));
+    // A sum of terms that cancel leaves a rounding of the row's largest.
+    let mut largest = vec![[0.0_f64; 2]; x.len()];
+    for (slot, (_, conductance), (_, capacitance)) in twin.entries() {
+        let row = &mut largest[positions[slot].0];
+        row[0] = row[0].max(conductance[seed].abs());
+        row[1] = row[1].max(capacitance[seed].abs());
+    }
+    for (slot, conductance, capacitance) in twin.entries() {
+        let (row, entry_column) = positions[slot];
+        let pairs = [
+            (
+                "conductance",
+                conductance,
+                (&wide_above.conductance, &wide_below.conductance),
+                (&above.conductance, &below.conductance),
+            ),
+            (
+                "capacitance",
+                capacitance,
+                (&wide_above.capacitance, &wide_below.capacitance),
+                (&above.capacitance, &below.capacitance),
+            ),
+        ];
+        for ((kind, (at, derivatives), (wide_up, wide_down), (up, down)), largest) in
+            pairs.into_iter().zip(largest[row])
+        {
+            let analytic = derivatives[seed];
+            let wide = (wide_up[row][entry_column] - wide_down[row][entry_column]) / (2.0 * step);
+            let narrow = (up[row][entry_column] - down[row][entry_column]) / step;
+            let numeric = (4.0 * narrow - wide) / 3.0;
+            let magnitude = up[row][entry_column]
+                .abs()
+                .max(down[row][entry_column].abs());
+            let rounding = 128.0 * f64::EPSILON * magnitude / half;
+            let tolerance =
+                1e-6 * analytic.abs().max(numeric.abs()) + rounding + 1e-12 * largest + 1e-20;
+            // Within a step of a point where a model changes regions, the second
+            // derivative lies between the one-sided differences on each side.
+            let sides = [
+                (at - down[row][entry_column]) / half,
+                (up[row][entry_column] - at) / half,
+            ];
+            let side_tolerance =
+                1e-4 * analytic.abs().max(narrow.abs()) + rounding + 1e-12 * largest + 1e-20;
+            let between = (sides[0].min(sides[1]) - side_tolerance
+                ..=sides[0].max(sides[1]) + side_tolerance)
+                .contains(&analytic);
+            assert!(
+                (analytic - numeric).abs() <= tolerance || between,
+                "{model} d{kind}[{row}][{entry_column}]/dx[{column}] at {x:?}: exact \
+                 {analytic}, numeric {numeric}"
+            );
+        }
+    }
+}
+
 /// Checks that the region of `bench`'s device differs at `from` and `to`, values of its
 /// local unknowns, and that on the segment between them it switches where its margin
 /// `margin` changes sign.

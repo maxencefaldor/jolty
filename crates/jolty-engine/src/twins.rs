@@ -435,4 +435,188 @@ impl Simulator {
             .runs
             .twin(&self.elaborated.groups, index, instance, seeds)
     }
+
+    /// The indices of the devices whose kernels are not linear, in their order.
+    pub(crate) fn nonlinear_devices(&self) -> Vec<usize> {
+        (0..self.elaborated.devices.len())
+            .filter(|&device| !self.elaborated.groups.is_linear(device))
+            .collect()
+    }
+
+    /// The unknown-seeded twins of every nonlinear device in `nonlinear`, and the sorted,
+    /// deduplicated matrix slots those twins write to.
+    pub(crate) fn unknown_twins(&self, nonlinear: &[usize]) -> (Vec<Twin>, Vec<usize>) {
+        let origins = self.origins();
+        let twins: Vec<Twin> = nonlinear
+            .iter()
+            .flat_map(|&device| {
+                let origin = origins.of(device);
+                let instance = (&origin.kernel(), origins.temperature);
+                self.state
+                    .runs
+                    .unknown_twins(&self.elaborated.groups, device, instance)
+            })
+            .collect();
+        let mut slots: Vec<usize> = twins
+            .iter()
+            .flat_map(|twin| twin.entries().map(|(slot, _, _)| slot))
+            .collect();
+        slots.sort_unstable();
+        slots.dedup();
+        (twins, slots)
+    }
+
+    /// How `G` and `C` move, by `(stored position, ∂G/∂x · s, ∂C/∂x · s)` in increasing
+    /// slot order, as the unknowns at `x` move along each vector of `shifts`, summed over
+    /// the nonlinear devices in `nonlinear` in their order.
+    pub(crate) fn entries_along(
+        &self,
+        nonlinear: &[usize],
+        x: &[f64],
+        shifts: &[Vec<f64>],
+        gmin: f64,
+        parallelism: &Parallelism,
+    ) -> Vec<Vec<(usize, f64, f64)>> {
+        let mut moved: Vec<Vec<(usize, f64, f64)>> = vec![Vec::new(); shifts.len()];
+        if shifts.is_empty() || nonlinear.is_empty() {
+            return moved;
+        }
+        let origins = self.origins();
+        let mut tasks = Vec::new();
+        for &device in nonlinear {
+            let origin = origins.of(device);
+            let instance = (&origin.kernel(), origins.temperature);
+            for (chunk_index, chunk) in shifts.chunks(Seeds::MOST).enumerate() {
+                if let Some(seeds) = Seeds::tangents(chunk.len())
+                    && let Some(twin) =
+                        self.state
+                            .runs
+                            .twin(&self.elaborated.groups, device, instance, &seeds)
+                {
+                    tasks.push((chunk_index * Seeds::MOST, chunk, twin));
+                }
+            }
+        }
+        let input = unlimited(x, None, gmin);
+        let evaluated = parallelism.spread(
+            &mut tasks,
+            || (),
+            |(), (first, chunk, twin)| {
+                twin.evaluate_along(&input, chunk);
+                twin.entries()
+                    .map(|(slot, (_, conductance), (_, capacitance))| {
+                        (*first, slot, conductance.to_vec(), capacitance.to_vec())
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
+        for (first, slot, conductances, capacitances) in evaluated.into_iter().flatten() {
+            for (offset, (&conductance_rate, &capacitance_rate)) in
+                conductances.iter().zip(&capacitances).enumerate()
+            {
+                if conductance_rate != 0.0 || capacitance_rate != 0.0 {
+                    moved[first + offset].push((slot, conductance_rate, capacitance_rate));
+                }
+            }
+        }
+        for entries in &mut moved {
+            // Stable sort preserves device summation order for entries sharing one slot.
+            entries.sort_by_key(|&(slot, _, _)| slot);
+            let mut write = 0;
+            for read in 0..entries.len() {
+                let (slot, conductance_rate, capacitance_rate) = entries[read];
+                if write > 0 && entries[write - 1].0 == slot {
+                    entries[write - 1].1 += conductance_rate;
+                    entries[write - 1].2 += capacitance_rate;
+                } else {
+                    entries[write] = (slot, conductance_rate, capacitance_rate);
+                    write += 1;
+                }
+            }
+            entries.truncate(write);
+            entries.retain(|&(_, conductance_rate, capacitance_rate)| {
+                conductance_rate != 0.0 || capacitance_rate != 0.0
+            });
+        }
+        moved
+    }
+
+    /// For each active `(W_G, W_C)` of `weights`, indexed by `slots`, the gradient at `x`
+    /// with respect to the unknowns of `Σ_s (W_G[s] G[s](x) + W_C[s] C[s](x))`, summed
+    /// over `twins` in their order.
+    pub(crate) fn entries_cotangents(
+        &self,
+        twins: &mut [Twin],
+        slots: &[usize],
+        x: &[f64],
+        weights: &[Option<(Vec<Complex64>, Vec<Complex64>)>],
+        gmin: f64,
+        parallelism: &Parallelism,
+    ) -> Vec<Option<Vec<Complex64>>> {
+        let dimension = self.elaborated.unknowns.len();
+        let mut gradients: Vec<Option<Vec<Complex64>>> = weights
+            .iter()
+            .map(|weight| {
+                weight
+                    .as_ref()
+                    .map(|_| vec![Complex64::default(); dimension])
+            })
+            .collect();
+        if slots.is_empty() || gradients.iter().all(Option::is_none) {
+            return gradients;
+        }
+        let input = unlimited(x, None, gmin);
+        let by_twin = parallelism.spread(
+            twins,
+            || (),
+            |(), twin| {
+                twin.evaluate(&input);
+                let seeded = twin.seeded();
+                let mut local = vec![vec![Complex64::default(); seeded.len()]; weights.len()];
+                for (slot, (_, conductance), (_, capacitance)) in twin.entries() {
+                    let Ok(packed) = slots.binary_search(&slot) else {
+                        continue;
+                    };
+                    for (cotangent, weight) in weights.iter().enumerate() {
+                        let Some((weight_conductance, weight_capacitance)) = weight else {
+                            continue;
+                        };
+                        let (by_conductance, by_capacitance) =
+                            (weight_conductance[packed], weight_capacitance[packed]);
+                        if by_conductance == Complex64::default()
+                            && by_capacitance == Complex64::default()
+                        {
+                            continue;
+                        }
+                        for (sum, (&conductance_rate, &capacitance_rate)) in local[cotangent]
+                            .iter_mut()
+                            .zip(conductance.iter().zip(capacitance))
+                        {
+                            *sum += by_conductance * conductance_rate
+                                + by_capacitance * capacitance_rate;
+                        }
+                    }
+                }
+                let mut twin_terms = vec![Vec::new(); weights.len()];
+                for (cotangent, sums) in local.into_iter().enumerate() {
+                    for (&unknown, sum) in seeded.iter().zip(sums) {
+                        if sum != Complex64::default() {
+                            twin_terms[cotangent].push((unknown as usize, sum));
+                        }
+                    }
+                }
+                twin_terms
+            },
+        );
+        for twin_terms in by_twin {
+            for (gradient, terms) in gradients.iter_mut().zip(twin_terms) {
+                if let Some(gradient) = gradient {
+                    for (unknown, term) in terms {
+                        gradient[unknown] += term;
+                    }
+                }
+            }
+        }
+        gradients
+    }
 }

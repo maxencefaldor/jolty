@@ -124,9 +124,8 @@ impl Simulator {
     /// The derivative of each unknown of `sensitivity` with respect to every number of every
     /// device's parameters, at each point of the analysis it differentiates.
     ///
-    /// The derivatives are exact, but for a response's through its operating point, a
-    /// central difference along the operating point's own derivative. A number the device's
-    /// model reads as a choice, such as a MOSFET's level, is no real parameter and has none.
+    /// Every derivative is exact. A number the device's model reads as a choice, such as a
+    /// MOSFET's level, is no real parameter and has none.
     ///
     /// # Errors
     ///

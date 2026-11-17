@@ -109,14 +109,17 @@ impl<R: Real> PreparedPhotocell<R> {
     /// `γ · response / √(E² + d²)`, which [`Dual::chain`] takes as it stands: through the
     /// held light it would divide by a light that rounds to zero far enough below.
     fn settled<const N: usize>(&self, light: Dual<R, N>) -> Dual<R, N> {
-        let across = light.value.value();
-        let root = across.hypot(DARKNESS);
+        let illuminance = light.value;
+        let across = illuminance.value();
+        let root_value = across.hypot(DARKNESS);
+        let ratio = DARKNESS / root_value;
+        let root = illuminance.chain(root_value, across / root_value, ratio * ratio / root_value);
         let lit = if across >= 0.0 {
-            f64::midpoint(across, root)
+            (illuminance + root) * 0.5
         } else {
-            DARKNESS * DARKNESS / (2.0 * (root - across))
+            (root - illuminance).recip() * (0.5 * DARKNESS * DARKNESS)
         };
-        let response = (R::constant(lit) / self.reference).pow(self.gamma);
+        let response = (lit / self.reference).pow(self.gamma);
         light.chain((response, response * self.gamma / root))
     }
 }
@@ -183,9 +186,12 @@ impl Kernel for Photocell {
         let [a, b, light_positive, light_negative] = TERMINALS;
         // The voltage across the cell, the light, and the lagging response, if it has one.
         let [voltage, light, lagging] = Dual::variables([
-            at.value(a) - at.value(b),
-            at.value(light_positive) - at.value(light_negative),
-            shape.lag.as_ref().map_or(0.0, |lag| at.value(lag.response)),
+            at.unknown::<R>(a) - at.unknown::<R>(b),
+            at.unknown::<R>(light_positive) - at.unknown::<R>(light_negative),
+            shape
+                .lag
+                .as_ref()
+                .map_or_else(|| R::constant(0.0), |lag| at.unknown(lag.response)),
         ]);
         let settled = prepared.settled(light);
         let response = if shape.lag.is_some() {

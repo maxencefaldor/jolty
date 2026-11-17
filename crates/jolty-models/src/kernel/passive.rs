@@ -214,7 +214,7 @@ impl Kernel for Resistor {
         match &shape.0 {
             Form::Conductance(pair) => {
                 // i = v / (r · f(v)).
-                let voltage = Dual::variable(pair.voltage(at));
+                let voltage = Dual::variable(pair.moving(at, pair.voltage(at)));
                 let resistance = prepared
                     .coefficients
                     .factor(voltage)
@@ -231,7 +231,7 @@ impl Kernel for Resistor {
                     .coefficients
                     .factor(voltage)
                     .scale(prepared.resistance);
-                let residual = voltage - resistance * branch.current(at);
+                let residual = voltage - resistance.scale(branch.current(at));
                 let [along] = residual.gradient;
                 branch.add_sloped(at, stamp, residual.value, along);
                 stamp.add_conductance(*entry, -resistance.value);
@@ -377,7 +377,7 @@ impl Kernel for Capacitor {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let voltage = Dual::variable(pair.voltage(at));
+        let voltage = Dual::variable(pair.moving(at, pair.voltage(at)));
         let charge = prepared
             .coefficients
             .integral(voltage)
@@ -477,9 +477,8 @@ impl Kernel for Inductor {
     ) {
         // v = L di/dt: the voltage, and the flux `L i` as the equation's charge, negated.
         let branch = &shape.branch;
-        let voltage = branch.voltage(at);
-        branch.add(at, stamp, R::constant(voltage));
-        stamp.add_charge(branch.unknown(), -inductance * branch.current(at));
+        branch.add(at, stamp, branch.voltage(at));
+        stamp.add_charge(branch.unknown(), -inductance * branch.current::<R>(at));
         stamp.add_capacitance(shape.entry, -inductance);
     }
 }
@@ -642,13 +641,12 @@ impl Kernel for CoupledInductors {
         // charge, negated.
         let count = shape.branches.len();
         for (row, branch) in shape.branches.iter().enumerate() {
-            let voltage = branch.voltage(at);
-            branch.add(at, stamp, R::constant(voltage));
+            branch.add(at, stamp, branch.voltage(at));
             let mut flux = R::constant(0.0);
             for (column, other) in shape.branches.iter().enumerate() {
                 let index = row * count + column;
                 let inductance = inductances.get(index).copied().unwrap_or_default();
-                flux += inductance * other.current(at);
+                flux += inductance * other.current::<R>(at);
                 let entry = shape.entries.get(index).copied().unwrap_or(usize::MAX);
                 stamp.add_capacitance(entry, -inductance);
             }

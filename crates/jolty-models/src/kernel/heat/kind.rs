@@ -110,10 +110,10 @@ pub(crate) struct HeatedMemory<K: Kernel, R: Heating> {
     prepared: Option<K::Prepared<R::Warm>>,
     inner: K::Memory,
     last: f64,
+    /// Whether `prepared` was last prepared with the thermal net seeded by a twin.
+    seeded: bool,
     /// The circuit's unknown of each of the kernel's instance's local unknowns.
     map: Vec<u32>,
-    /// Their values at the last evaluation.
-    values: Vec<f64>,
     /// The kernel's instance's block: its residuals, scales and charges, then its
     /// conductances and capacitances.
     block: Vec<R::Warm>,
@@ -127,8 +127,8 @@ impl<K: Kernel, R: Heating> Default for HeatedMemory<K, R> {
             prepared: None,
             inner: K::Memory::default(),
             last: 0.0,
+            seeded: false,
             map: Vec::new(),
-            values: Vec::new(),
             block: Vec::new(),
             slopes: Vec::new(),
         }
@@ -141,8 +141,8 @@ impl<K: Kernel, R: Heating> Clone for HeatedMemory<K, R> {
             prepared: self.prepared.clone(),
             inner: self.inner.clone(),
             last: self.last,
+            seeded: self.seeded,
             map: self.map.clone(),
-            values: self.values.clone(),
             block: self.block.clone(),
             slopes: self.slopes.clone(),
         }
@@ -168,24 +168,21 @@ impl<K: Kernel, R: Heating> HeatedMemory<K, R> {
             inner: K::memory(&shape.inner, &prepared.at_ambient),
             prepared: Some(prepared.at_ambient.clone()),
             last: prepared.ambient,
+            seeded: false,
             map: vec![UNMAPPED; unknowns],
-            values: vec![0.0; unknowns],
             block: vec![R::Warm::default(); 3 * unknowns + 2 * stored],
             slopes: vec![R::default(); unknowns],
         }
     }
 
-    /// Reads where the kernel's instance of `shape` lies at `at`: the circuit's unknown and
-    /// the value of each of its local unknowns.
+    /// Reads where the kernel's instance of `shape` lies at `at`: the circuit's unknown of
+    /// each of its local unknowns.
     fn read(&mut self, shape: &HeatedShape<K::Shape>, at: &Local<'_>) {
         let map = at.map();
         let unknowns = shape.unknowns();
         self.map.resize(unknowns, UNMAPPED);
-        self.values.resize(unknowns, 0.0);
-        for (local, (unknown, value)) in self.map.iter_mut().zip(&mut self.values).enumerate() {
-            let outer = shape.outer(local);
-            *unknown = map.get(outer).copied().unwrap_or(UNMAPPED);
-            *value = at.value(outer);
+        for (local, unknown) in self.map.iter_mut().enumerate() {
+            *unknown = map.get(shape.outer(local)).copied().unwrap_or(UNMAPPED);
         }
     }
 }
@@ -266,11 +263,16 @@ fn heat<K: Kernel, R: Heating>(
         applied
     };
     let temperature = stepped.max(LOWEST_TEMPERATURE);
-    if temperature.to_bits() != memory.last.to_bits() {
-        if let Ok(heated) = K::prepare(&prepared.parameters, R::seed(temperature)) {
+    let seeding = R::SEEDS > 0 && at.seeds_unknowns();
+    if temperature.to_bits() != memory.last.to_bits() || seeding || memory.seeded {
+        // The temperature moves with the thermal net when a twin seeds it.
+        let net = shape.terminals;
+        let moving = R::seed(temperature) + (at.unknown::<R::Warm>(net) - at.value(net));
+        if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
             memory.prepared = Some(heated);
             K::reheat(&mut memory.inner);
             memory.last = temperature;
+            memory.seeded = seeding;
         } else {
             // A parameter out of range here: the step went too far, and the last
             // temperature's numbers stand, the solution not yet converged.
@@ -303,7 +305,6 @@ fn evaluate<K: Kernel, R: Heating>(
         prepared: Some(heated),
         inner,
         map,
-        values,
         block,
         slopes,
         ..
@@ -344,11 +345,8 @@ fn evaluate<K: Kernel, R: Heating>(
         let column = shape.column.get(local).copied().unwrap_or(usize::MAX);
         stamp.add_conductance(column, hotter);
         stamp.add_capacitance(column, hotter_held);
-        if let (Some(true), Some(&value), Some(slope)) = (
-            shape.voltages.get(local),
-            values.get(local),
-            slopes.get_mut(local),
-        ) {
+        if let (Some(true), Some(slope)) = (shape.voltages.get(local), slopes.get_mut(local)) {
+            let value = at.unknown::<R>(outer);
             power += current * value;
             hotter_power += hotter * value;
             *slope += current;
@@ -361,12 +359,8 @@ fn evaluate<K: Kernel, R: Heating>(
         let (slope, _) = R::split(slope);
         stamp.add_conductance(entry, slope);
         stamp.add_capacitance(entry, R::split(held).0);
-        if let (Some(true), Some(&value), Some(sum)) = (
-            shape.voltages.get(row),
-            values.get(row),
-            slopes.get_mut(column),
-        ) {
-            *sum += slope * value;
+        if let (Some(true), Some(sum)) = (shape.voltages.get(row), slopes.get_mut(column)) {
+            *sum += slope * at.unknown::<R>(shape.outer(row));
         }
     }
     stamp.add_residual(thermal, -power);

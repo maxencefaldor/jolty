@@ -132,7 +132,7 @@ impl Kernel for Diode {
         memory.limited0 = limited0;
         v.applied0 = applied0;
         v.limited0 = limited0;
-        let [t0000] = Dual::<R, 1>::variables([limited0]);
+        let [t0000] = Dual::<R, 1>::variables([(at.unknown::<R>(0) - at.unknown::<R>(1)).with_value(limited0)]);
         v.vd = t0000;
         if v.vd.value.value() >= prepared.h2.value() {
             v.id = (v.vd.chain((v.vd.value / prepared.slope, prepared.h4)).exp() - 1.0).scale(prepared.saturation_current);

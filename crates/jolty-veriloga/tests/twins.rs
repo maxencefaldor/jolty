@@ -9,8 +9,8 @@ mod common;
 
 use common::Worst;
 use jolty_models::Gradient;
-use jolty_models::testing::{Bench, Rig, numbers};
-use jolty_models::{Differentiable, Input, Kernel, Layout, REFERENCE_TEMPERATURE};
+use jolty_models::testing::{Bench, Rig, assert_unknown_derivatives_match, numbers};
+use jolty_models::{Differentiable, Input, Kernel, Layout, REFERENCE_TEMPERATURE, Thermal};
 use jolty_veriloga::kernels::{diode, resistor};
 
 /// Compares the twins `H` and `C` with `parameters`, a JSON object, at each point of
@@ -289,4 +289,34 @@ fn the_compiled_kernels_are_linear_where_their_twins_are() {
         assert!(!linear::<jolty_models::Diode>(parameters));
         assert!(!linear::<diode::Diode>(parameters));
     }
+}
+
+/// The compiled kernels differentiate their conductances and capacitances with respect to
+/// their unknowns, including when self-heated or behind small series resistances.
+#[test]
+fn the_compiled_kernels_differentiate_by_their_unknowns() {
+    let resistor_model = Thermal::<resistor::Resistor>::new();
+    assert_unknown_derivatives_match(
+        &resistor_model,
+        r#"{"resistance": 50, "voltage_coefficient": 0.02, "quadratic_voltage_coefficient": 0.003,
+            "temperature_coefficient": 3e-3, "thermal": true}"#,
+        &[2.0, 0.5, 4.0],
+    );
+    assert_unknown_derivatives_match(
+        &resistor_model,
+        r#"{"resistance": 0.25, "voltage_coefficient": 0.1}"#,
+        &[0.8, 0.1, 2.5],
+    );
+    let diode_model = Thermal::<diode::Diode>::new();
+    assert_unknown_derivatives_match(
+        &diode_model,
+        r#"{"series_resistance": 10, "junction_capacitance": 2e-12, "transit_time": 1e-9,
+            "breakdown_voltage": 5, "thermal": true}"#,
+        &[0.72, 0.0, 3.0, 0.68],
+    );
+    assert_unknown_derivatives_match(
+        &diode_model,
+        r#"{"series_resistance": 0.5, "junction_capacitance": 2e-12}"#,
+        &[-5.5, 0.0, -5.3, -0.02],
+    );
 }

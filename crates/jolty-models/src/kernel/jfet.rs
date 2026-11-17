@@ -389,8 +389,9 @@ impl Kernel for Jfet {
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
-        let [vgs, vgd, vds] = bias.voltages;
+        let [vgs, _, vds] = bias.voltages;
         let (region, [overdrive, margin]) = prepared.channel.region(vgs, vds);
+        let [vgs, vgd, vds] = bias.moving(&shape.stamp, at, (prepared.sign, VARIABLES));
         memory.variables = [f64::from(region as u8), overdrive, margin];
         let added = Oriented {
             nodes: &shape.stamp,
@@ -457,7 +458,7 @@ impl Kernel for Jfet {
         let voltages = [GATE_SOURCE, DRAIN_SOURCE].map(|(plus, minus)| {
             prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
         });
-        let [vgs, vds] = Dual::variables(voltages);
+        let [vgs, vds] = Dual::variables(voltages.map(R::constant));
         let current = prepared.channel.evaluate(vgs, vds);
         let [gm, _] = current.gradient;
         let channel = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];

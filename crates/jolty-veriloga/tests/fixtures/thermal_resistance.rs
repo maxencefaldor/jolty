@@ -103,7 +103,7 @@ impl Kernel for ThermalResistance {
             a_b_flow: Dual<R, 1>,
         }
         let mut v = Locals { voltage_a_b: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: R::constant(at.value(0) - at.value(1)), gradient: [R::constant(1.0)] };
+        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
         v.a_b_flow = v.a_b_flow + v.voltage_a_b.chain((v.voltage_a_b.value / prepared.resistance, prepared.h1));
         let t0000 = v.a_b_flow.value;
         stamp.add_residual(0, t0000);

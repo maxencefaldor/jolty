@@ -57,7 +57,9 @@ pub(crate) fn evaluate(
         adjoints,
         inputs,
         slopes,
+        curvatures,
         limited,
+        ..
     } = workspace;
     *limited = false;
     for (index, instruction) in tape.iter().enumerate() {
@@ -76,18 +78,19 @@ pub(crate) fn evaluate(
             }
             Instruction::Table(x, points) => {
                 let applied = values[*x];
-                let used = if points.limits {
+                let (used, stepped) = if points.limits {
                     let step = inputs[index].and_then(|last| points.limit(applied, last));
                     *limited |= step.is_some();
                     let used = step.unwrap_or(applied);
                     inputs[index] = Some(used);
-                    used
+                    (used, step.is_some())
                 } else {
-                    applied
+                    (applied, false)
                 };
                 // Evaluated at the limited input, and extended linearly to the applied.
-                let (value, slope) = points.interpolate(used);
+                let (value, slope, curvature) = points.interpolate(used);
                 slopes[index] = slope;
+                curvatures[index] = if stepped { 0.0 } else { curvature };
                 value + slope * (applied - used)
             }
         };
@@ -130,6 +133,96 @@ pub(crate) fn evaluate(
         }
     }
     values[root]
+}
+
+/// Differentiates the value and gradient that [`evaluate`] last left in `workspace` along
+/// `tangent`, one rate per variable: forward for each instruction's tangent, then backward
+/// for each adjoint's tangent, writing the gradient's directional derivative into
+/// `gradient_tangent` and returning the root's.
+pub(crate) fn along(
+    tape: &[Instruction],
+    tangent: &[f64],
+    workspace: &mut Workspace,
+    gradient_tangent: &mut [f64],
+) -> f64 {
+    let Workspace {
+        values,
+        adjoints,
+        slopes,
+        curvatures,
+        tangents,
+        adjoint_tangents,
+        ..
+    } = workspace;
+    for (index, instruction) in tape.iter().enumerate() {
+        tangents[index] = match instruction {
+            Instruction::Constant(_) => 0.0,
+            Instruction::Variable(variable) => tangent[*variable],
+            Instruction::Unary(operation, x) => {
+                operation.slope(values[*x], values[index]) * tangents[*x]
+            }
+            Instruction::Binary(operation, a, b) => {
+                let (slope_a, slope_b) = operation.slopes(values[*a], values[*b], values[index]);
+                slope_a * tangents[*a] + slope_b * tangents[*b]
+            }
+            Instruction::Limit([x, a, b]) => {
+                let chosen = limit(values[*x], values[*a], values[*b]).1;
+                tangents[[*x, *a, *b][chosen]]
+            }
+            Instruction::Conditional([condition, then, otherwise]) => {
+                tangents[if values[*condition] == 0.0 {
+                    *otherwise
+                } else {
+                    *then
+                }]
+            }
+            Instruction::Table(x, _) => slopes[index] * tangents[*x],
+        };
+    }
+    gradient_tangent.fill(0.0);
+    adjoint_tangents.fill(0.0);
+    for (index, instruction) in tape.iter().enumerate().rev() {
+        let (adjoint, adjoint_tangent) = (adjoints[index], adjoint_tangents[index]);
+        if adjoint == 0.0 && adjoint_tangent == 0.0 {
+            continue;
+        }
+        match instruction {
+            Instruction::Constant(_) => {}
+            Instruction::Variable(variable) => gradient_tangent[*variable] += adjoint_tangent,
+            Instruction::Unary(operation, x) => {
+                let slope = operation.slope(values[*x], values[index]);
+                let curvature = operation.curvature(values[*x], values[index], slope);
+                adjoint_tangents[*x] +=
+                    adjoint_tangent * slope + adjoint * curvature * tangents[*x];
+            }
+            Instruction::Binary(operation, a, b) => {
+                let (slope_a, slope_b) = operation.slopes(values[*a], values[*b], values[index]);
+                let [by_a, mixed, by_b] =
+                    operation.curvatures(values[*a], values[*b], (slope_a, slope_b));
+                adjoint_tangents[*a] += adjoint_tangent * slope_a
+                    + adjoint * (by_a * tangents[*a] + mixed * tangents[*b]);
+                adjoint_tangents[*b] += adjoint_tangent * slope_b
+                    + adjoint * (mixed * tangents[*a] + by_b * tangents[*b]);
+            }
+            Instruction::Limit([x, a, b]) => {
+                let chosen = limit(values[*x], values[*a], values[*b]).1;
+                adjoint_tangents[[*x, *a, *b][chosen]] += adjoint_tangent;
+            }
+            Instruction::Conditional([condition, then, otherwise]) => {
+                let chosen = if values[*condition] == 0.0 {
+                    *otherwise
+                } else {
+                    *then
+                };
+                adjoint_tangents[chosen] += adjoint_tangent;
+            }
+            Instruction::Table(x, _) => {
+                adjoint_tangents[*x] +=
+                    adjoint_tangent * slopes[index] + adjoint * curvatures[index] * tangents[*x];
+            }
+        }
+    }
+    tangents[tape.len() - 1]
 }
 
 /// How a choice's value turns on its input.
@@ -328,13 +421,13 @@ impl Points {
         }
     }
 
-    /// The interpolation at `x`, and its slope there.
-    pub(crate) fn interpolate(&self, x: f64) -> (f64, f64) {
+    /// The interpolation at `x`, its slope there, and its second derivative there.
+    pub(crate) fn interpolate(&self, x: f64) -> (f64, f64, f64) {
         let (xs, ys) = (&self.abscissae, &self.ordinates);
         let last = xs.len() - 1;
         let line = |anchor: usize, from: usize, to: usize| {
             let slope = (ys[to] - ys[from]) / (xs[to] - xs[from]);
-            (ys[anchor] + (x - xs[anchor]) * slope, slope)
+            (ys[anchor] + (x - xs[anchor]) * slope, slope, 0.0)
         };
         if x <= f64::midpoint(xs[0], xs[1]) {
             return line(0, 0, 1);
@@ -365,6 +458,7 @@ impl Points {
         (
             curvature * x * x + linear * x + constant,
             2.0 * curvature * x + linear,
+            2.0 * curvature,
         )
     }
 }
@@ -389,16 +483,16 @@ mod tests {
             Points::new(&points, Beyond::Extend, 0.0),
         );
         for (x, held, extended) in [
-            (-1.0, (1.0, 0.0), (-1.0, 2.0)),
-            (0.5, (2.0, 2.0), (2.0, 2.0)),
-            (2.0, (3.5, 0.5), (3.5, 0.5)),
-            (9.0, (4.0, 0.0), (7.0, 0.5)),
+            (-1.0, (1.0, 0.0, 0.0), (-1.0, 2.0, 0.0)),
+            (0.5, (2.0, 2.0, 0.0), (2.0, 2.0, 0.0)),
+            (2.0, (3.5, 0.5, 0.0), (3.5, 0.5, 0.0)),
+            (9.0, (4.0, 0.0, 0.0), (7.0, 0.5, 0.0)),
         ] {
             assert!(table.interpolate(x) == held, "table at {x}");
             assert!(pwl.interpolate(x) == extended, "pwl at {x}");
         }
         let single = Points::new(&[(1.0, 7.0)], Beyond::Extend, 0.0);
-        assert_eq!(single.interpolate(0.0), (7.0, 0.0));
+        assert_eq!(single.interpolate(0.0), (7.0, 0.0, 0.0));
     }
 
     #[test]
@@ -406,14 +500,18 @@ mod tests {
         let points = Points::new(&[(0.0, 0.0), (1.0, 1.0), (3.0, 1.0)], Beyond::Hold, 0.1);
         // The corner at 1 is rounded over 0.1, a tenth of the shorter segment beside it.
         for x in [0.9, 1.1] {
-            let (rounded, slope) = points.interpolate(x);
-            let (sharp, sharp_slope) =
+            let (rounded, slope, _) = points.interpolate(x);
+            let (sharp, sharp_slope, _) =
                 Points::new(&[(0.0, 0.0), (1.0, 1.0), (3.0, 1.0)], Beyond::Hold, 0.0)
                     .interpolate(x);
             assert!((rounded - sharp).abs() < 1e-15 && (slope - sharp_slope).abs() < 1e-12);
         }
-        let (value, slope) = points.interpolate(1.0);
-        assert!((value - (1.0 - 0.1 / 4.0)).abs() < 1e-15 && (slope - 0.5).abs() < 1e-12);
+        let (value, slope, curvature) = points.interpolate(1.0);
+        assert!(
+            (value - (1.0 - 0.1 / 4.0)).abs() < 1e-15
+                && (slope - 0.5).abs() < 1e-12
+                && (curvature - -5.0).abs() < 1e-12
+        );
         // The ends are corners too, held beyond: the first rounded over a tenth of 1.
         assert!(points.interpolate(-0.05).0 > 0.0 && points.interpolate(-0.2).0 == 0.0);
     }

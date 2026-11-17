@@ -75,7 +75,7 @@ impl Kernel for ThermalResistance {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let difference = pair.voltage(at);
+        let difference = pair.moving::<R>(at, pair.voltage(at));
         pair.add_current(stamp, conductance * difference);
         pair.add_conductance(stamp, conductance);
     }
@@ -132,7 +132,7 @@ impl Kernel for ThermalCapacitance {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let difference = pair.voltage(at);
+        let difference = pair.moving::<R>(at, pair.voltage(at));
         pair.add_charge(stamp, capacitance * difference);
         pair.add_capacitance(stamp, capacitance);
     }

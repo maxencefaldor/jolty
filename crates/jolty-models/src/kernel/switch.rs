@@ -72,7 +72,7 @@ impl<R: Real> Law<R> {
 
     /// The current through the output at `voltage` across it, of `voltage` and
     /// `control`, which sets its conductance, a law of the control alone.
-    fn current(&self, [voltage, control]: [f64; 2]) -> Dual<R, 2> {
+    fn current(&self, [voltage, control]: [R; 2]) -> Dual<R, 2> {
         let [voltage, control] = Dual::variables([voltage, control]);
         control.apply(|control| self.conductance(control)) * voltage
     }
@@ -190,8 +190,8 @@ impl Kernel for VoltageControlledSwitch {
         stamp: &mut Stamp<'_, R>,
     ) {
         let [positive, negative, control_positive, control_negative] = TERMINALS;
-        let voltage = at.value(positive) - at.value(negative);
-        let control = at.value(control_positive) - at.value(control_negative);
+        let voltage = at.unknown::<R>(positive) - at.unknown::<R>(negative);
+        let control = at.unknown::<R>(control_positive) - at.unknown::<R>(control_negative);
         let current = prepared.law.current([voltage, control]);
         stamp.add_residual(positive, current.value);
         stamp.add_residual(negative, -current.value);
@@ -336,10 +336,10 @@ impl Kernel for CurrentControlledSwitch {
     ) {
         // The port is a short circuit, its current the control.
         let sense = &shape.sense;
-        sense.add(at, stamp, R::constant(sense.voltage(at)));
+        sense.add(at, stamp, sense.voltage(at));
         let control = sense.current(at);
         let [positive, negative, ..] = TERMINALS;
-        let voltage = at.value(positive) - at.value(negative);
+        let voltage = at.unknown::<R>(positive) - at.unknown::<R>(negative);
         let current = prepared.law.current([voltage, control]);
         stamp.add_residual(positive, current.value);
         stamp.add_residual(negative, -current.value);

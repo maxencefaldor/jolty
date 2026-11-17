@@ -758,12 +758,12 @@ impl Displacement {
         (oxide, capacitance): (R, R),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
-    ) -> f64 {
+    ) -> R {
         let row = self.unknown;
         let [own, gate, node, from_gate, from_node] = self.entries;
-        let displacement = at.value(row);
-        let voltage = nodes.voltage(at, GATE) - nodes.voltage(at, index);
-        stamp.add_residual(row, R::constant(displacement));
+        let displacement = at.unknown::<R>(row);
+        let voltage = nodes.moving::<R>(at, GATE) - nodes.moving::<R>(at, index);
+        stamp.add_residual(row, displacement);
         stamp.add_charge(row, -oxide * voltage);
         stamp.add_conductance(own, R::constant(1.0));
         stamp.add_capacitance(gate, -oxide);
@@ -929,11 +929,11 @@ impl Kernel for Mosfet {
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
-        let [vgs, vds, vbs] = Dual::variables(bias.voltages);
+        let sign = prepared.sign;
+        let [vgs, vds, vbs] = Dual::variables(bias.moving(&shape.stamp, at, (sign, VARIABLES)));
         let conduction = prepared.channel.evaluate([vgs, vds, vbs]);
         let threshold = conduction.threshold.value.value();
         memory.threshold = Some(threshold);
-        let sign = prepared.sign;
         let [overdrive, margin] = conduction.margins;
         memory.variables = [
             sign * threshold,
@@ -967,7 +967,7 @@ impl Kernel for Mosfet {
                 bias: &across,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.voltages);
+            let [voltage] = Dual::variables(across.moving(&shape.stamp, at, (sign, [pair])));
             let (current, charge) = junction.evaluate(voltage, at.gmin);
             added.add_current(stamp, sums, pair, current);
             added.add_charge(stamp, sums, pair, charge);
@@ -985,7 +985,7 @@ impl Kernel for Mosfet {
                 bias: &across,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.voltages);
+            let [voltage] = Dual::variables(across.moving(&shape.stamp, at, (sign, [pair])));
             added.add_charge(stamp, sums, pair, voltage.scale(overlap));
         }
 
@@ -1005,7 +1005,7 @@ impl Kernel for Mosfet {
             for ((displacement, node), capacitance) in towards {
                 let current =
                     displacement.add((&shape.stamp, node), (whole, capacitance.value), at, stamp);
-                let meyer = capacitance.scale(R::constant(sign * current) / whole);
+                let meyer = capacitance.scale(current * sign / whole);
                 added.add_current(stamp, sums, (GATE, node), meyer);
             }
         }
@@ -1052,7 +1052,10 @@ impl Kernel for Mosfet {
         let voltages = VARIABLES.map(|(plus, minus)| {
             prepared.sign * (stamp.voltage(at, plus) - stamp.voltage(at, minus))
         });
-        let current = prepared.channel.evaluate(Dual::variables(voltages)).current;
+        let current = prepared
+            .channel
+            .evaluate(Dual::variables(voltages.map(R::constant)))
+            .current;
         let channel = [stamp.equation(INNER_DRAIN), stamp.equation(INNER_SOURCE)];
         let [transconductance, _, _] = current.gradient;
         let conductance = 2.0 / 3.0 * transconductance.value();

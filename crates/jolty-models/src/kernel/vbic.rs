@@ -941,7 +941,7 @@ impl<R: Real> Core<R> {
         clippy::similar_names,
         reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
     )]
-    fn evaluate(&self, voltages: [f64; VARIABLE_COUNT], gmin: f64) -> Branches<R> {
+    fn evaluate(&self, voltages: [R; VARIABLE_COUNT], gmin: f64) -> Branches<R> {
         let [vbei, vbex, vbci, vbcx, vbep, vbcp, vrci, vrbi, vrbp] =
             voltages.map(Dual::<R, 1>::variable);
         let charges = &self.charges;
@@ -1821,25 +1821,21 @@ impl ExcessPhase {
     ) {
         let intrinsic = added.reading(INTRINSIC);
         let [first, second] = self.unknowns;
-        let [filtered, delayed] = [first, second].map(|unknown| at.value(unknown));
+        let [filtered, delayed] = [first, second].map(|unknown| at.unknown::<R>(unknown));
         let [[first_first, first_second], [second_first, second_second]] = self.own;
         let one = R::constant(1.0);
-        stamp.add_residual(
-            first,
-            R::constant(delayed) - intrinsic.extend(itzf) * added.sign,
-        );
+        stamp.add_residual(first, delayed - intrinsic.extend(itzf) * added.sign);
         stamp.add_charge(first, delay * filtered);
         stamp.add_capacitance(first_first, delay);
         stamp.add_conductance(first_second, one);
         intrinsic.add_conductances(stamp, &self.driven, itzf.gradient.map(|slope| -slope));
-        stamp.add_residual(second, R::constant(delayed - filtered));
+        stamp.add_residual(second, delayed - filtered);
         stamp.add_charge(second, delay * delayed / 3.0);
         stamp.add_conductance(second_second, one);
         stamp.add_conductance(second_first, -one);
         stamp.add_capacitance(second_second, delay / 3.0);
-        let current = R::constant(delayed);
-        stamp.add_residual(added.nodes.node(CI), current);
-        stamp.add_residual(added.nodes.node(EI), -current);
+        stamp.add_residual(added.nodes.node(CI), delayed);
+        stamp.add_residual(added.nodes.node(EI), -delayed);
         let [at_collector, at_emitter] = self.delivered;
         stamp.add_conductance(at_collector, one);
         stamp.add_conductance(at_emitter, -one);
@@ -1963,12 +1959,11 @@ impl Kernel for Vbic {
         }
         for (pair, capacitance) in shape.overlap.iter().zip(prepared.overlap) {
             if let Some(pair) = pair {
-                pair.add_charge(stamp, capacitance * pair.voltage(at));
+                pair.add_charge(stamp, capacitance * pair.moving::<R>(at, pair.voltage(at)));
                 pair.add_capacitance(stamp, capacitance);
             }
         }
         let bias = prepared.bias(shape, memory, at, stamp);
-        let branches = prepared.core.evaluate(bias.voltages, at.gmin);
         let sign = prepared.sign;
         let [base_emitter, _, base_collector, ..] = bias.voltages;
         memory.variables = Bipolar::variables(base_emitter, base_collector);
@@ -1978,6 +1973,7 @@ impl Kernel for Vbic {
             bias: &bias,
             variables: VARIABLES,
         };
+        let branches = prepared.core.evaluate(added.moving(at), at.gmin);
         let intrinsic = added.reading(INTRINSIC);
         let Branches {
             ibe,
@@ -2074,7 +2070,7 @@ impl Kernel for Vbic {
         let voltages = VARIABLES.map(|(plus, minus)| {
             prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
         });
-        let branches = prepared.core.evaluate(voltages, at.gmin);
+        let branches = prepared.core.evaluate(voltages.map(R::constant), at.gmin);
         let node = |index: usize| nodes.equation(index);
         // Each intrinsic resistance's law reads its own drop first, its conductance at its
         // slope.

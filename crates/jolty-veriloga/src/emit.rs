@@ -3058,14 +3058,14 @@ impl Emitter<'_, '_> {
     fn probe(&mut self, probe: Probe, out: &mut Vec<Rust>) -> Result<Operand, Error> {
         let module = self.facts.module;
         let name = |node: usize| module.node_name(node).to_owned();
-        let voltage = |emitter: &mut Self, plus: usize, minus: usize| {
+        let voltage = |emitter: &mut Self, plus: usize, minus: usize, read: &str| {
             for node in [plus, minus] {
                 if module.is_internal(node) {
                     emitter.shape.insert(module.nodes[node].clone());
                 }
             }
             format!(
-                "at.value({}) - at.value({})",
+                "at.{read}({}) - at.{read}({})",
                 emitter.facts.node(plus, "shape."),
                 emitter.facts.node(minus, "shape.")
             )
@@ -3078,7 +3078,7 @@ impl Emitter<'_, '_> {
         match probe {
             Probe::Voltage(plus, minus) => {
                 self.probes.insert(probe);
-                let _ = voltage(self, plus, minus);
+                let _ = voltage(self, plus, minus, "value");
                 Ok(Operand::new(
                     format!("v.voltage_{}_{}", name(plus), name(minus)),
                     ATOM,
@@ -3096,7 +3096,7 @@ impl Emitter<'_, '_> {
             }
             Probe::Limited(index) => {
                 let limit = module.limits[index].clone();
-                let applied = voltage(self, limit.plus, limit.minus);
+                let applied = voltage(self, limit.plus, limit.minus, "value");
                 if self.mode == Mode::Noise {
                     let name = self.temporary();
                     out.push(Rust::Line(format!("let {name} = R::constant({applied});")));
@@ -3145,8 +3145,9 @@ impl Emitter<'_, '_> {
                     out.push(Rust::Line(format!("v.limited{index} = limited{index};")));
                 }
                 let name = self.temporary();
+                let moving = voltage(self, limit.plus, limit.minus, "unknown::<R>");
                 out.push(Rust::Line(format!(
-                    "let [{name}] = Dual::<R, 1>::variables([limited{index}]);"
+                    "let [{name}] = Dual::<R, 1>::variables([({moving}).with_value(limited{index})]);"
                 )));
                 Ok(Operand::new(name, ATOM, kind))
             }
@@ -3932,14 +3933,10 @@ impl Emitter<'_, '_> {
         let own = Place::Current(index);
         let c = self.index(own);
         let ground = Place::Node(GROUND);
-        lines.push(Rust::Line(format!("let current = at.value({c});")));
-        lines.push(Rust::Line(format!(
-            "stamp.add_residual({p}, R::constant(current));"
-        )));
+        lines.push(Rust::Line(format!("let current = at.unknown::<R>({c});")));
+        lines.push(Rust::Line(format!("stamp.add_residual({p}, current);")));
         if minus != ground {
-            lines.push(Rust::Line(format!(
-                "stamp.add_residual({n}, R::constant(-current));"
-            )));
+            lines.push(Rust::Line(format!("stamp.add_residual({n}, -current);")));
         }
         for (row, value) in [(plus, "R::constant(1.0)"), (minus, "R::constant(-1.0)")] {
             if row == ground {
@@ -3960,7 +3957,7 @@ impl Emitter<'_, '_> {
             |kind| Self::total(&self.accumulator(index, Site::Potential, false), kind),
         );
         lines.push(Rust::Line(format!(
-            "stamp.add_residual({c}, R::constant(at.value({p}) - at.value({n})) - {total});"
+            "stamp.add_residual({c}, at.unknown::<R>({p}) - at.unknown::<R>({n}) - {total});"
         )));
         for (column, value) in [(plus, "R::constant(1.0)"), (minus, "R::constant(-1.0)")] {
             if column == ground {
@@ -4187,6 +4184,11 @@ impl Emitter<'_, '_> {
     /// The lines that bind each probe the body reads.
     fn probe_lines(&self) -> Vec<String> {
         let module = self.facts.module;
+        let read = if self.mode == Mode::Evaluate {
+            "unknown::<R>"
+        } else {
+            "value"
+        };
         let mut lines = Vec::new();
         for probe in &self.probes {
             let (name, value) = match *probe {
@@ -4197,19 +4199,19 @@ impl Emitter<'_, '_> {
                         module.node_name(minus)
                     ),
                     format!(
-                        "at.value({}) - at.value({})",
+                        "at.{read}({}) - at.{read}({})",
                         self.facts.node(plus, "shape."),
                         self.facts.node(minus, "shape.")
                     ),
                 ),
                 Probe::Current(branch) => (
                     format!("current_{}", module.branches[branch].name),
-                    format!("at.value(shape.{})", module.branches[branch].name),
+                    format!("at.{read}(shape.{})", module.branches[branch].name),
                 ),
                 Probe::Limited(_) => continue,
             };
             lines.push(if self.mode == Mode::Evaluate {
-                format!("v.{name} = Dual {{ value: R::constant({value}), gradient: [R::constant(1.0)] }};")
+                format!("v.{name} = Dual {{ value: {value}, gradient: [R::constant(1.0)] }};")
             } else {
                 format!("v.{name} = R::constant({value});")
             });

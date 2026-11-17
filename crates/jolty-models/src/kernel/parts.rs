@@ -65,6 +65,28 @@ impl<const N: usize> Nodes<N> {
         at.value(self.node(index))
     }
 
+    /// The voltage of the node at `index`, as a number of `R`, which moves as the node's
+    /// unknown does when a twin seeds it.
+    pub(crate) fn moving<R: Real>(&self, at: &Local<'_>, index: usize) -> R {
+        at.unknown(self.node(index))
+    }
+
+    /// The voltage `value` across the pair of nodes at `(plus, minus)`, turned by `sign`,
+    /// as a number of `R`: `value` itself, as limited, moving as the voltage across them
+    /// does when a twin seeds their unknowns.
+    #[inline]
+    pub(crate) fn across<R: Real>(
+        &self,
+        at: &Local<'_>,
+        (plus, minus): (usize, usize),
+        (sign, value): (f64, f64),
+    ) -> R {
+        if R::SEEDS == 0 || !at.seeds_unknowns() {
+            return R::constant(value);
+        }
+        ((self.moving::<R>(at, plus) - self.moving::<R>(at, minus)) * sign).with_value(value)
+    }
+
     /// Adds `current`, flowing through the instance from the node at `from` to the one at
     /// `to`.
     pub(crate) fn current<R: Real>(
@@ -145,6 +167,12 @@ impl Pair {
         self.0.voltage(at, POSITIVE) - self.0.voltage(at, NEGATIVE)
     }
 
+    /// The voltage `value` across the element, as limited, as a number of `R` that moves
+    /// as the voltage across it does when a twin seeds its unknowns.
+    pub(crate) fn moving<R: Real>(&self, at: &Local<'_>, value: f64) -> R {
+        self.0.across(at, (POSITIVE, NEGATIVE), (1.0, value))
+    }
+
     /// The positive and the negative local unknown, as a noise source's equations name
     /// them.
     pub(crate) fn equations(&self) -> [Option<UnknownIndex>; 2] {
@@ -210,15 +238,17 @@ impl CurrentBranch {
         self.current
     }
 
-    /// The current through the branch.
-    pub(crate) fn current(&self, at: &Local<'_>) -> f64 {
-        at.value(self.current)
+    /// The current through the branch, as a number of `R` that moves as its unknown does
+    /// when a twin seeds it.
+    pub(crate) fn current<R: Real>(&self, at: &Local<'_>) -> R {
+        at.unknown(self.current)
     }
 
-    /// The branch's voltage, its positive node's over its negative node's.
-    pub(crate) fn voltage(&self, at: &Local<'_>) -> f64 {
+    /// The branch's voltage, its positive node's over its negative node's, as a number of
+    /// `R` that moves as theirs do when a twin seeds them.
+    pub(crate) fn voltage<R: Real>(&self, at: &Local<'_>) -> R {
         let [positive, negative] = self.nodes;
-        at.value(positive) - at.value(negative)
+        at.unknown::<R>(positive) - at.unknown::<R>(negative)
     }
 
     /// Adds the branch's current to its nodes' equations, and `residual` to its own
@@ -245,9 +275,9 @@ impl CurrentBranch {
             current_positive,
             current_negative,
         ] = self.entries;
-        let (one, current) = (R::constant(1.0), self.current(at));
-        stamp.add_residual(positive, R::constant(current));
-        stamp.add_residual(negative, R::constant(-current));
+        let (one, current) = (R::constant(1.0), self.current::<R>(at));
+        stamp.add_residual(positive, current);
+        stamp.add_residual(negative, -current);
         stamp.add_conductance(positive_current, one);
         stamp.add_conductance(negative_current, -one);
         stamp.add_residual(self.current, residual);
@@ -314,12 +344,12 @@ impl Series {
         match self {
             Self::None => {}
             Self::Conductance(pair) => {
-                pair.add_current(stamp, value * pair.voltage(at));
+                pair.add_current(stamp, value * pair.moving::<R>(at, pair.voltage(at)));
                 pair.add_conductance(stamp, value);
             }
             Self::Current(branch, entry) => {
-                let current = branch.current(at);
-                let residual = R::constant(branch.voltage(at)) - value * current;
+                let current = branch.current::<R>(at);
+                let residual = branch.voltage::<R>(at) - value * current;
                 branch.add(at, stamp, residual);
                 stamp.add_conductance(*entry, -value);
             }
@@ -376,7 +406,7 @@ impl Series {
             Self::None => {}
             Self::Conductance(pair) => {
                 // `v / r`, a law of the voltage across it, then of the one `r` follows.
-                let voltage = Dual::variable(pair.voltage(at)).embed([0]);
+                let voltage = Dual::variable(pair.moving(at, pair.voltage(at))).embed([0]);
                 let current = voltage / resistance.embed([1]);
                 let [conductance, along] = current.gradient;
                 pair.add_current(stamp, current.value);
@@ -387,8 +417,8 @@ impl Series {
                 stamp.add_conductance(second_minus, along);
             }
             Self::Current(branch, entry) => {
-                let current = branch.current(at);
-                let residual = (resistance * -current).plus(R::constant(branch.voltage(at)));
+                let current = branch.current::<R>(at);
+                let residual = resistance.scale(-current).plus(branch.voltage(at));
                 branch.add(at, stamp, residual.value);
                 stamp.add_conductance(*entry, -resistance.value);
                 let [along] = residual.gradient;
@@ -469,6 +499,23 @@ impl<const N: usize> Bias<N> {
         }
         Self { voltages, beyond }
     }
+
+    /// The voltages evaluated at, each across its pair of `nodes` of `pairs`, turned by
+    /// `sign`, as numbers of `R` that move as the voltages across them do when a twin
+    /// seeds their unknowns.
+    #[inline]
+    pub(crate) fn moving<R: Real, const M: usize>(
+        &self,
+        nodes: &Nodes<M>,
+        at: &Local<'_>,
+        (sign, pairs): (f64, [(usize, usize); N]),
+    ) -> [R; N] {
+        if R::SEEDS == 0 || !at.seeds_unknowns() {
+            return self.voltages.map(R::constant);
+        }
+        let mut values = self.voltages.into_iter();
+        pairs.map(|pair| nodes.across(at, pair, (sign, values.next().unwrap_or(0.0))))
+    }
 }
 
 /// What a transistor adds at one bias: currents and charges between its stamped nodes,
@@ -492,6 +539,13 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
             oriented: self,
             positions,
         }
+    }
+
+    /// The voltages its variables are evaluated at, as numbers of `R` that move as the
+    /// voltages across their pairs of stamped nodes do when a twin seeds their unknowns.
+    pub(crate) fn moving<R: Real>(&self, at: &Local<'_>) -> [R; N] {
+        self.bias
+            .moving(self.nodes, at, (self.sign, self.variables))
     }
 
     /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
