@@ -11,7 +11,8 @@ use super::prepare::Core;
 use crate::Real;
 use crate::kernel::bsim3::{
     EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, Q, above_half, above_tenth,
-    factor_above_tenth, reciprocal_above_tenth,
+    factor_above_tenth, non_saturation_excess, reciprocal_above_tenth, saturation_voltage,
+    smooth_positive,
 };
 
 /// The exponent of `b4v5ld.c`'s smoothing of the source end's velocity limit, `2 · MM`
@@ -82,8 +83,7 @@ impl<R: Real> Core<R> {
             let t2 = t8 * 2.0 / (t4 + 1.0);
             let t3 = (t2 * t2 * 0.5).divide(t1);
             let t7 = 1.12 - t3 - 0.05;
-            let t6 = (t7 * t7 + 0.224).sqrt();
-            let t5 = 1.12 - (t7 + t6) * 0.5;
+            let t5 = 1.12 - smooth_positive(t7, D::number(0.224));
             vgs - t5
         } else {
             vgs
@@ -105,17 +105,10 @@ impl<R: Real> Core<R> {
 
         // The body's effective voltage, kept below 0.95 φ.
         let t0 = (vbs - c(self.vbsc)) - 0.001;
-        let t1 = (t0 * t0 - c(self.vbsc) * 0.004).sqrt();
-        let vbseff = if t0.value.value() >= 0.0 {
-            (t0 + t1) * 0.5 + c(self.vbsc)
-        } else {
-            let t2 = (t1 - t0).recip() * -0.002;
-            (t2 + 1.0).scale(self.vbsc)
-        };
+        let vbseff = smooth_positive(t0, c(self.vbsc * -0.004)) + c(self.vbsc);
         let t9 = self.phi * 0.95;
         let t0 = c(t9) - vbseff - 0.001;
-        let t1 = (t0 * t0 + c(t9 * 0.004)).sqrt();
-        let vbseff = c(t9) - (t0 + t1) * 0.5;
+        let vbseff = c(t9) - smooth_positive(t0, c(t9 * 0.004));
         let phis = c(self.phi) - vbseff;
         let sqrt_phis = phis.sqrt();
         let xdep = sqrt_phis.scale(self.xdep0 / self.sqrt_phi);
@@ -205,8 +198,9 @@ impl<R: Real> Core<R> {
         };
         let t0 = vgsteff.scale(p.prwg) + 1.0;
         let t2 = t0.recip() + t9.scale(p.prwb);
-        let t3 = t2 + (t2 * t2 + 0.01).sqrt();
-        let rds = t3.scale(self.rds0 * 0.5).plus(self.rdswmin);
+        let rds = smooth_positive(t2, D::number(0.01))
+            .scale(self.rds0)
+            .plus(self.rdswmin);
 
         // The bulk charge effect.
         let t9 = (sqrt_phis.recip() * 0.5).scale(self.k1ox * lpe_vb);
@@ -241,37 +235,9 @@ impl<R: Real> Core<R> {
         let wv_cox_rds = wv_cox * rds;
         let esat = ueff.recip().scale(self.vsattemp * 2.0);
         let mut esat_l = esat.scale(leff);
-        let a1 = p.a1.value();
-        let lambda = if a1 == 0.0 {
-            c(p.a2)
-        } else if a1 > 0.0 {
-            let t0 = -p.a2 + 1.0;
-            let t1 = c(t0) - vgsteff.scale(p.a1) - 0.0001;
-            let t2 = (t1 * t1 + c(t0 * 0.0004)).sqrt();
-            c(p.a2 + t0) - (t1 + t2) * 0.5
-        } else {
-            let t1 = vgsteff.scale(p.a1).plus(p.a2) - 0.0001;
-            let t2 = (t1 * t1 + c(p.a2 * 0.0004)).sqrt();
-            (t1 + t2) * 0.5
-        };
+        let excess = non_saturation_excess(p.a1, p.a2, vgsteff);
         let vgst2vtm = vgsteff.plus(vtm * 2.0);
-        #[expect(
-            clippy::float_cmp,
-            reason = "b4v5ld.c takes the simpler root at exactly no resistance and λ = 1"
-        )]
-        let simple = rds.value.value() == 0.0 && lambda.value.value() == 1.0;
-        let vdsat = if simple {
-            esat_l * vgst2vtm / (abulk * esat_l + vgst2vtm)
-        } else {
-            let t9 = abulk * wv_cox_rds;
-            let t7 = vgst2vtm * t9;
-            let t6 = vgst2vtm * wv_cox_rds;
-            let t0 = abulk * (t9 - 1.0 + lambda.recip()) * 2.0;
-            let t1 = vgst2vtm * (lambda.recip() * 2.0 - 1.0) + abulk * esat_l + t7 * 3.0;
-            let t2 = vgst2vtm * (esat_l + t6 * 2.0);
-            let t3 = (t1 * t1 - t0 * t2 * 2.0).sqrt();
-            (t1 - t3) / t0
-        };
+        let vdsat = saturation_voltage(vgst2vtm, esat_l, abulk, wv_cox_rds, excess);
 
         // The effective drain-source voltage.
         let delta = p.delta;
@@ -310,7 +276,7 @@ impl<R: Real> Core<R> {
         let tmp4 = 1.0 - (abulk * vdsat / vgst2vtm) * 0.5;
         let t9 = wv_cox_rds * vgsteff;
         let t0 = esat_l + vdsat + t9 * tmp4 * 2.0;
-        let t1 = lambda.recip() * 2.0 - 1.0 + wv_cox_rds * abulk;
+        let t1 = excess * 2.0 + 1.0 + wv_cox_rds * abulk;
         let vasat = t0 / t1;
 
         // The linear current, with the inversion layer's thickness.

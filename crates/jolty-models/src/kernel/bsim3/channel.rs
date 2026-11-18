@@ -85,6 +85,58 @@ pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
+/// `(x + √(x² + spread)) / 2`, the positive branch of a smooth clamp: written as
+/// `(spread / 2) / (√(x² + spread) − x)` where `x < 0` so `x` and its root never cancel.
+pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
+    let root = (x * x + spread).sqrt();
+    if x.value.value() >= 0.0 {
+        (x + root) * 0.5
+    } else {
+        (spread * 0.5) / (root - x)
+    }
+}
+
+/// `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` written in its
+/// excess over unity so `1 − λ` and `1 / λ − 1` never cancel as `λ → 1`.
+pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R> {
+    let slope = a1.value();
+    if slope == 0.0 {
+        D::constant((-a2 + 1.0) / a2)
+    } else if slope > 0.0 {
+        let margin = -a2 + 1.0;
+        let shifted = (-vgsteff.scale(a1)).plus(margin - 0.0001);
+        let gap = smooth_positive(shifted, D::constant(margin * 0.0004));
+        gap / (1.0 - gap)
+    } else {
+        let shifted = vgsteff.scale(a1).plus(a2 - 0.0001);
+        let lambda = smooth_positive(shifted, D::constant(a2 * 0.0004));
+        (1.0 - lambda) / lambda
+    }
+}
+
+/// The saturation voltage `Vdsat` of `b3ld.c` and `b4v5ld.c`, rationalized to
+/// `2 · c / (b + √(b² − 2·a·c))` where `b ≥ 0` so `b` and its root never cancel when `a`
+/// is small (as with `rds = 0` and `λ → 1`), and continuous through `a = 0` without a
+/// special branch.
+pub(crate) fn saturation_voltage<R: Real>(
+    vgst2vtm: D<R>,
+    esat_l: D<R>,
+    abulk: D<R>,
+    wv_cox_rds: D<R>,
+    excess: D<R>,
+) -> D<R> {
+    let scaled_rds = abulk * wv_cox_rds;
+    let leading = abulk * (scaled_rds + excess) * 2.0;
+    let linear = vgst2vtm * (excess * 2.0 + 1.0) + abulk * esat_l + (vgst2vtm * scaled_rds) * 3.0;
+    let constant = vgst2vtm * (esat_l + (vgst2vtm * wv_cox_rds) * 2.0);
+    let root = (linear * linear - leading * constant * 2.0).sqrt();
+    if linear.value.value() >= 0.0 {
+        (constant * 2.0) / (linear + root)
+    } else {
+        (linear - root) / leading
+    }
+}
+
 /// `t · (1 + 2t)` at `t = e^x`, with `e^x` at its floor below `−EXP_THRESHOLD`.
 fn falloff<R: Real>(x: D<R>) -> D<R> {
     let t = if x.value.value() > -EXP_THRESHOLD {
@@ -108,8 +160,7 @@ impl<R: Real> Core<R> {
         let leff = self.leff;
         // The effective bulk-source voltage, bounded below by `vbsc`.
         let t0 = (vbs - 0.001).plus(-self.vbsc);
-        let t1 = (t0 * t0 - D::constant(self.vbsc * 0.004)).sqrt();
-        let mut vbseff = ((t0 + t1) * 0.5).plus(self.vbsc);
+        let mut vbseff = smooth_positive(t0, D::constant(self.vbsc * -0.004)).plus(self.vbsc);
         if vbseff.value.value() < vbs.value.value() {
             vbseff = vbs;
         }
@@ -164,8 +215,7 @@ impl<R: Real> Core<R> {
             let t2 = (t4 - 1.0).scale(t1);
             let t3 = (t2 * t2 * 0.5).divide(t1);
             let t7 = -t3 + (1.12 - 0.05);
-            let t6 = (t7 * t7 + 0.224).sqrt();
-            let t5 = -((t7 + t6) * 0.5) + 1.12;
+            let t5 = -smooth_positive(t7, D::number(0.224)) + 1.12;
             vgs - t5
         } else {
             vgs
@@ -240,40 +290,20 @@ impl<R: Real> Core<R> {
         let wv_cox = weff.scale(self.vsattemp * self.cox);
         let wv_cox_rds = wv_cox * rds;
         let esat_l = ueff.recip().scale(self.vsattemp * 2.0 * leff);
-        let a1 = p.a1.value();
-        let lambda = if a1 == 0.0 {
-            D::constant(p.a2)
-        } else if a1 > 0.0 {
-            let t0 = -p.a2 + 1.0;
-            let t1 = (-vgsteff.scale(p.a1)).plus(t0 - 0.0001);
-            let t2 = (t1 * t1).plus(t0 * 0.0004).sqrt();
-            (-((t1 + t2) * 0.5)).plus(p.a2 + t0)
-        } else {
-            let t1 = vgsteff.scale(p.a1).plus(p.a2 - 0.0001);
-            let t2 = (t1 * t1).plus(p.a2 * 0.0004).sqrt();
-            (t1 + t2) * 0.5
-        };
+        let excess = non_saturation_excess(p.a1, p.a2, vgsteff);
         let vgst2vtm = vgsteff.plus(vtm * 2.0);
-        #[expect(clippy::float_cmp, reason = "b3ld.c's own test of the exact default")]
-        let unclamped = rds.value.value() == 0.0 && lambda.value.value() == 1.0;
-        let vdsat = if unclamped {
-            esat_l * vgst2vtm / (abulk * esat_l + vgst2vtm)
-        } else {
-            let t9 = abulk * wv_cox_rds;
-            let t7 = vgst2vtm * t9;
-            let t6 = vgst2vtm * wv_cox_rds;
-            let t0 = abulk * (t9 - 1.0 + lambda.recip()) * 2.0;
-            let t1 = vgst2vtm * (lambda.recip() * 2.0 - 1.0) + abulk * esat_l + t7 * 3.0;
-            let t2 = vgst2vtm * (esat_l + t6 * 2.0);
-            let t3 = (t1 * t1 - t0 * t2 * 2.0).sqrt();
-            (t1 - t3) / t0
-        };
+        let vdsat = saturation_voltage(vgst2vtm, esat_l, abulk, wv_cox_rds, excess);
 
         // The effective drain-source voltage, smooth through saturation.
         let delta = p.delta;
         let t1 = vdsat - vds - D::constant(delta);
         let t2 = (t1 * t1 + vdsat.scale(delta * 4.0)).sqrt();
-        let mut vdseff = vdsat - (t1 + t2) * 0.5;
+        let mut vdseff = if t1.value.value() >= 0.0 {
+            vdsat - (t1 + t2) * 0.5
+        } else {
+            let t4 = D::constant(delta * 2.0) / (t2 - t1);
+            vdsat * (1.0 - t4)
+        };
         if vds.value.value() == 0.0 {
             // As `b3ld.c` does, with none of the rounding the smoothing leaves at zero.
             vdseff.value = vdseff.value.with_value(0.0);
@@ -285,7 +315,7 @@ impl<R: Real> Core<R> {
         // The saturation's Early voltage.
         let tmp4 = -(abulk * vdsat / vgst2vtm * 0.5) + 1.0;
         let t0 = esat_l + vdsat + wv_cox_rds * vgsteff * tmp4 * 2.0;
-        let t1 = lambda.recip() * 2.0 - 1.0 + wv_cox_rds * abulk;
+        let t1 = excess * 2.0 + 1.0 + wv_cox_rds * abulk;
         let vasat = t0 / t1;
         if vdseff.value.value() > vds.value.value() {
             vdseff.value = vds.value;

@@ -1714,6 +1714,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn saturation_voltage_and_gate_resistance_stay_smooth_as_lambda_nears_one() {
+        // At rdsmod 1 (channel rds = 0) and high reverse overdrive (`vgs' ~ 3.37 V`),
+        // `1 - lambda ~ 5e-5`, so the un-rationalized `(t1 - t3) / t0` loses ~15 bits and
+        // quantizes `vdsat` into `~6e-12 V` steps, throwing off `rgatemod` 2 and 3 central
+        // differences by `> 1e-5`.
+        let drain = -1.973_028_885_834_237_5;
+        let gate = 1.720_767_144_942_445_3;
+        let reverse = -0.010_324_050_866_162_261;
+        let bulk = drain - reverse;
+        for resistive in [2u8, 3] {
+            let models = format!(
+                r#""charge_partition": 0.0, "body_resistance_model": 0,
+                    "drain_source_resistance_model": 1, "rdw": 150, "rsw": 120,
+                    "prwg": 0.2, "prwb": -0.1, "rdwmin": 10, "rswmin": 8, "rsh": 5,
+                    "drain_squares": 2, "source_squares": 1.5,
+                    "gate_resistance_model": {resistive}, "rshg": 20, "xgw": 1e-7,
+                    "ngcon": 2, "xrcrg1": 10, "xrcrg2": 2"#
+            );
+            let parameters = with(SHORT, &models).replace(r#""alpha0": 1e-6, "#, "");
+            let mut x = vec![
+                drain,
+                gate,
+                0.0,
+                bulk,
+                0.95 * drain,
+                0.01,
+                0.9 * gate - 0.05,
+            ];
+            if resistive == 3 {
+                x.push(0.95 * gate - 0.02);
+            }
+            assert_jacobians_match::<Bsim4>(&parameters, &x);
+
+            // Check `vdsat` directly across tiny `1e-8 V` source steps for smooth slopes
+            // (with `(t1 - t3) / t0`, a single ULP jump in `t3` makes adjacent slopes swing
+            // between `1.9e-4` and `1.1e-3`).
+            let mut bench = Bench::new::<Bsim4>(&parameters);
+            let step = 1e-8;
+            let mut values = Vec::new();
+            for offset in -2..=2 {
+                let mut shifted = x.clone();
+                shifted[5] = 0.01 + f64::from(offset) * step;
+                bench.settle(&shifted);
+                values.push(bench.variable("saturation_voltage"));
+            }
+            let slopes: Vec<f64> = values
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]) / step)
+                .collect();
+            let spread = slopes.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                - slopes.iter().copied().fold(f64::INFINITY, f64::min);
+            assert!(
+                spread < 1e-5,
+                "rgatemod {resistive}: saturation_voltage slopes jittered by {spread:e}: {slopes:?}"
+            );
+        }
+    }
+
     /// Second derivatives in the unknowns match finite differences across BSIM4's external
     /// drain/source, gate, and body resistance networks.
     #[test]

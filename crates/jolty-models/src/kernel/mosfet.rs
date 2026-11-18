@@ -961,14 +961,14 @@ impl Kernel for Mosfet {
         // across it alone, of the first node of its pair over the second.
         let [drain, source] = &prepared.junctions;
         for (pair, junction) in [((BULK, INNER_DRAIN), drain), ((BULK, INNER_SOURCE), source)] {
-            let across = across(&bias, pair);
+            let pair_bias = across(&bias, pair);
             let added = Oriented {
                 nodes: &shape.stamp,
                 sign,
-                bias: &across,
+                bias: &pair_bias,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.across(&shape.stamp, at, (sign, [pair])));
+            let [voltage] = Dual::variables(added.across(at));
             let (current, charge) = junction.evaluate(voltage, at.gmin);
             added.add_current(stamp, sums, pair, current);
             added.add_charge(stamp, sums, pair, charge);
@@ -979,14 +979,14 @@ impl Kernel for Mosfet {
             ((GATE, INNER_DRAIN), drain_overlap),
             ((GATE, BULK), bulk_overlap),
         ] {
-            let across = across(&bias, pair);
+            let pair_bias = across(&bias, pair);
             let added = Oriented {
                 nodes: &shape.stamp,
                 sign,
-                bias: &across,
+                bias: &pair_bias,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.across(&shape.stamp, at, (sign, [pair])));
+            let [voltage] = Dual::variables(added.across(at));
             added.add_charge(stamp, sums, pair, voltage.scale(overlap));
         }
 

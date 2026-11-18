@@ -22,7 +22,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use self::channel::{
-    above_half, above_tenth, factor_above_tenth, reciprocal_above_tenth,
+    above_half, above_tenth, factor_above_tenth, non_saturation_excess, reciprocal_above_tenth,
+    saturation_voltage, smooth_positive,
 };
 pub(crate) use self::charges::{depletion, flat_band};
 pub use self::parameters::Bsim3Parameters;
@@ -1130,5 +1131,33 @@ mod tests {
         for (from, to, margin) in switches {
             assert_switches_where_margin_vanishes(&mut n, (&from, &to), margin);
         }
+    }
+
+    #[test]
+    fn saturation_voltage_stays_smooth_with_zero_rds_as_lambda_nears_one() {
+        let parameters = SHORT
+            .replace(r#""rdsw": 600"#, r#""rdsw": 0"#)
+            .replace(r#""alpha0": 1e-6, "#, "");
+        assert_ne!(parameters, SHORT);
+        let x = [-1.9, 1.7, 0.0, -1.95];
+        assert_jacobians_match::<Bsim3>(&parameters, &x);
+        let mut bench = Bench::new::<Bsim3>(&parameters);
+        let step = 1e-8;
+        let mut values = Vec::new();
+        for offset in -2..=2 {
+            let shifted = [x[0], x[1], f64::from(offset) * step, x[3]];
+            bench.settle(&shifted);
+            values.push(bench.variable("saturation_voltage"));
+        }
+        let slopes: Vec<f64> = values
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) / step)
+            .collect();
+        let spread = slopes.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - slopes.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            spread < 1e-5,
+            "saturation_voltage slopes jittered by {spread:e}: {slopes:?}"
+        );
     }
 }

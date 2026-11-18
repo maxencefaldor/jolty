@@ -10,7 +10,9 @@ use super::channel::Operating;
 use super::prepare::{Core, Overlaps};
 use super::{D, J};
 use crate::Real;
-use crate::kernel::bsim3::{DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, depletion, flat_band};
+use crate::kernel::bsim3::{
+    DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, depletion, flat_band, smooth_positive,
+};
 
 /// The channel's charges at one bias, in the frame whose drain lies at or above its
 /// source: on the gate, on the body and on the frame's drain.
@@ -141,8 +143,7 @@ impl<R: Real> Core<R> {
         let t1 = vgsteff.plus(t0 * 2.0);
         let delta_phi = (t1 * vgsteff).divide(denominator).ln_1p().scale(vtm);
         let t0 = vgsteff - delta_phi - 0.001;
-        let t1 = (t0 * t0 + vgsteff * 0.004).sqrt();
-        let vg_dp = (t0 + t1) * 0.5;
+        let vg_dp = smooth_positive(t0, vgsteff * 0.004);
         let t0 = vgsteff.plus(self.vtfbphi2).divide(tox * 2.0);
         let tmp = (t0.ln() * 0.7).exp();
         let tcen = (tmp + 1.0).recip() * 1.9e-9;
