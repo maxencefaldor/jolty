@@ -11,8 +11,11 @@ scripts/bench                      # the suite: a few minutes, before and after 
 scripts/bench bjt_amp buck         # only these fixtures
 scripts/bench --compare main,HEAD  # the builds of main and HEAD, their runs alternating, a change named only where it is decided
 scripts/bench --nightly DIR        # the checked-out commit's build against the previous night's, kept in DIR
-scripts/bench --scale              # the large fixtures, serially and spread over threads, in rounds
+scripts/bench --scale              # the large fixtures, serially and spread over threads, in rounds, with concurrent copies and peak memory
 scripts/bench --scale --largest    # and the 50,000 inverters' chain on each number of threads too
+scripts/bench --no-peak-memory     # skip isolated peak resident memory probes
+scripts/bench --scale --no-concurrent-copies  # skip N concurrent single-thread copy runs
+scripts/bench --scale --copy-rounds 5         # synchronized rounds for concurrent copies (default 3)
 scripts/bench --view matched       # every simulator on the fixtures, at matched options
 scripts/bench --view defaults      # every simulator on them, each at its own defaults
 scripts/bench --view equal-error   # every simulator's least time to equal error, on the precision suite's fixtures
@@ -294,9 +297,30 @@ On 64 threads a chain's devices and its work on each unknown stay on one thread,
 
 `scripts/bench --scale` runs each large fixture serially, on one thread with no block of its matrix dissected, and with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each compared with the serial run.
 The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Max, so it runs them only with `--largest`, and else once at the defaults; `--threads` names other numbers of threads.
-It prints each run's time, its speed-up against the serial run and against the spread run on one thread, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
+It prints each run's time, its speed-up against the serial run and against the spread run on one thread, the makespan of N independent single-thread copies run concurrently with its attainable speed-up and throughput efficiency, each row's isolated peak resident memory, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
 The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.
-The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, and the fingerprints.
+The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, the fingerprints, each timing's optional `peak_memory_bytes`, and each fixture's concurrent-copy measurements under `copies`.
+
+### Peak memory and concurrent-copy efficiency
+
+Every Python timing records peak resident memory (`peak_memory_bytes`), measured in a fresh child process (`timing.py`) so an earlier fixture's high-water mark cannot contaminate a smaller fixture's reading.
+On Linux, `fork(2)` or `vfork(2)` followed by `execve(2)` preserves the parent process's `hiwater_rss` inside `signal->maxrss`, so `getrusage(2)` `ru_maxrss` in a child would inherit a larger parent's memory; `measuring.peak_memory_bytes` therefore reads `VmHWM` (in kibibytes) from `/proc/self/status` (`proc_pid_status(5)`), which resets on `execve(2)`.
+On macOS and BSDs, or whenever `/proc/self/status` is absent, it reads `getrusage(2)` `ru_maxrss` and converts it through `measuring.ru_maxrss_to_bytes` (bytes on `darwin`, kibibytes times 1,024 elsewhere).
+Byte counts print with IEC binary prefixes (`B`, `KiB`, `MiB`, `GiB`, `TiB`) to four significant figures in the speed summary, baseline comparison, `--compare`, and `--scale` tables.
+In the default suite, each fixture takes one fresh probe beside its repeated timing; for single-run `--scale` fixtures, that one run executes directly in the child process so no extra simulation runs.
+Pass `--no-peak-memory` to skip the probes; older committed baseline files without `peak_memory_bytes` or `copies` remain valid.
+
+Parallel efficiency on mixed-core and SMT machines is measured directly against the machine's attainable throughput: running `N` independent single-thread (`max_threads=1`, undissected) copies of the same fixture at once in separate `timing.py` worker processes, each prepared before a synchronized barrier release so interpreter startup and JSON parsing do not enter the makespan.
+Across `--copy-rounds` (3 by default) synchronized rounds, let `T_1` be the serial median wall time, `T_par(N)` the single `N`-thread run's median wall time, and `T_copies(N)` the median makespan of `N` concurrent copies:
+
+- Observed speed-up: `S(N) = T_1 / T_par(N)`.
+- Attainable speed-up (SPEC-rate aggregate throughput ceiling): `S_attainable(N) = N * T_1 / T_copies(N)`.
+- Throughput efficiency: `E(N) = S(N) / S_attainable(N) = T_copies(N) / (N * T_par(N))`.
+
+Efficiency is never clamped to 100%, because independent copies of a memory-bound fixture can contend for memory bandwidth more than one shared run does, yielding values above 100% that are reported as found.
+Each measurement also records the individual copy wall times from the median round (`copy_seconds`): on hybrid processors (such as performance and efficiency cores), when `max(copy_seconds) / min(copy_seconds) >= 1.25`, the scaling table prints a note showing the steady-state rate-sum attainable speed-up (`T_1 * sum(1 / t_i)`) beside the batch makespan.
+Before launching `N > 1` copies, the runner checks `N * peak_memory_bytes` against 85% of available machine memory (`MemAvailable` on Linux, `hw.memsize` on macOS) and records a clear `skipped_reason` instead of risking an out-of-memory kill on multi-gigabyte fixtures like `inverter_chain_50000`.
+Pass `--no-concurrent-copies` to skip the concurrent-copy runs under `--scale`.
 
 Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1,2,4,8,16,32,64]"` on `cedar` on 16 November 2026 from 07:28 to 07:45 UTC, while the load average, the measurement's own threads included, was 1.1 to 9.9 on its 64 threads:
 

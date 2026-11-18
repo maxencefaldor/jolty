@@ -7,16 +7,20 @@ provenance: the commit, marked ``-dirty`` when tracked files have changes, and t
 machine. This module is the one definition of each, which every suite imports: the
 suites themselves (`Suite`), `load_average`, `commit`, `machine`, `provenance`,
 `results_path` in each suite's `results_directory`, and `save` and `load` for the
-results files; `duration`, how the suites print a time; and `median`, the median of a
-time's runs with the interval that holds the true median at `CONFIDENCE`.
+results files; `duration`, how the suites print a time; `memory`, how they print a byte
+count; `ru_maxrss_to_bytes`, `peak_memory_bytes` and `available_memory_bytes` for
+resident memory; and `median`, the median of a time's runs with the interval that holds
+the true median at `CONFIDENCE`.
 """
 
 import json
 import math
 import os
 import platform
+import resource
 import statistics
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -47,6 +51,29 @@ class Suite(StrEnum):
 
 DIRTY: Final = "-dirty"
 """What marks a commit whose working tree has changes to tracked files."""
+
+KIBIBYTE: Final = 1024
+"""Bytes per kibibyte, the unit Linux ``getrusage(2)`` and ``/proc`` report."""
+
+_MEMORY_UNITS: Final = (
+    (1 << 40, "TiB"),
+    (1 << 30, "GiB"),
+    (1 << 20, "MiB"),
+    (1 << 10, "KiB"),
+)
+"""IEC binary prefixes for `memory`, largest first."""
+
+_DARWIN: Final = "darwin"
+"""`sys.platform` value on macOS, where ``getrusage(2)`` reports bytes."""
+
+_PROC_STATUS: Final = Path("/proc/self/status")
+"""Linux process status file holding `VmHWM` (`proc_pid_status(5)`)."""
+
+_PROC_MEMINFO: Final = Path("/proc/meminfo")
+"""Linux memory summary file (`proc_meminfo(5)`)."""
+
+_PROC_FIELDS: Final = 2
+"""Minimum whitespace-separated tokens on a Linux ``/proc`` key-value line."""
 
 
 def load_average() -> float:
@@ -100,7 +127,7 @@ def machine() -> dict[str, JsonValue]:
     """The machine the suites measure on: its processor, memory and system."""
     cpu = _sysctl("machdep.cpu.brand_string")
     sockets = _sysctl("hw.packages")
-    memory = _sysctl("hw.memsize")
+    total_memory = _sysctl("hw.memsize")
     # macOS names each kind of core, such as Apple silicon's performance and efficiency
     # cores, and counts them.
     kinds = int(_sysctl("hw.nperflevels") or 0)
@@ -119,26 +146,29 @@ def machine() -> dict[str, JsonValue]:
         cpu = names[0] if names else None
         packages = {line for line in lines if line.startswith("physical id")}
         sockets = str(len(packages)) if packages else None
-    totals = Path("/proc/meminfo")
-    if memory is None and totals.is_file():
-        first = totals.read_text(encoding="utf-8").splitlines()[0]
-        memory = str(int(first.split()[1]) * 1024)
-    rustc = subprocess.run(
-        ["rustc", "--version"],  # noqa: S607 - rustc is on the path
-        capture_output=True,
-        check=True,
-        cwd=ROOT,
-        text=True,
-    )
+    if total_memory is None and _PROC_MEMINFO.is_file():
+        first = _PROC_MEMINFO.read_text(encoding="utf-8").splitlines()[0]
+        total_memory = str(int(first.split()[1]) * KIBIBYTE)
+    try:
+        rustc = subprocess.run(
+            ["rustc", "--version"],  # noqa: S607 - rustc is on the path
+            capture_output=True,
+            check=True,
+            cwd=ROOT,
+            text=True,
+        )
+        rustc_version: str | None = rustc.stdout.strip()
+    except OSError, subprocess.CalledProcessError:
+        rustc_version = None
     return {
         "cpu": cpu or platform.processor(),
         "cores": usable_cores(),
         "kinds of core": {str(kind): int(count or 0) for kind, count in cores.items()},
         "sockets": None if sockets is None else int(sockets),
-        "memory": None if memory is None else int(memory),
+        "memory": None if total_memory is None else int(total_memory),
         "system": platform.platform(),
         "python": platform.python_version(),
-        "rustc": rustc.stdout.strip(),
+        "rustc": rustc_version,
     }
 
 
@@ -284,3 +314,112 @@ def duration(seconds: float) -> str:
         if seconds >= factor:
             return f"{seconds / factor:.4g} {unit}"
     return f"{seconds / 1e-9:.4g} ns"
+
+
+def ru_maxrss_to_bytes(ru_maxrss: int, platform_name: str | None = None) -> int:
+    """Converts ``getrusage(2)``'s `ru_maxrss` reading into bytes.
+
+    On macOS (`darwin`), ``getrusage(2)`` reports `ru_maxrss` directly in bytes.
+    On Linux and BSD systems, ``getrusage(2)`` reports `ru_maxrss` in kibibytes
+    (1,024 bytes).
+
+    Raises:
+        ValueError: When `ru_maxrss` is negative.
+
+    Examples:
+        >>> ru_maxrss_to_bytes(1024, "linux")
+        1048576
+        >>> ru_maxrss_to_bytes(1048576, "darwin")
+        1048576
+    """
+    if ru_maxrss < 0:
+        message = f"ru_maxrss must be non-negative, not {ru_maxrss}"
+        raise ValueError(message)
+    target_platform = sys.platform if platform_name is None else platform_name
+    return ru_maxrss if target_platform == _DARWIN else ru_maxrss * KIBIBYTE
+
+
+def _linux_vm_hwm_bytes(status_path: Path = _PROC_STATUS) -> int | None:
+    """Reads `VmHWM` (peak resident set size) from Linux ``proc_pid_status(5)``.
+
+    Linux records `VmHWM` on the active `mm_struct` created by ``execve(2)`` in
+    kibibytes (`kB` = 1,024 bytes). Unlike ``getrusage(2)``'s `ru_maxrss`, which
+    carries the parent process's `hiwater_rss` across ``fork(2)``/``vfork(2)`` and
+    ``execve(2)`` via `signal->maxrss`, `VmHWM` resets cleanly for each exec'd child.
+    """
+    try:
+        text = status_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("VmHWM:"):
+            parts = line.split()
+            if len(parts) >= _PROC_FIELDS and parts[1].isdigit():
+                return int(parts[1]) * KIBIBYTE
+    return None
+
+
+def peak_memory_bytes() -> int:
+    """The current process's peak resident set size, in bytes.
+
+    On Linux, reads `VmHWM` from ``/proc/self/status`` (`proc_pid_status(5)`) so a
+    child spawned via ``fork(2)`` or ``vfork(2)`` and ``execve(2)`` is not polluted
+    by its parent's higher resident memory. Falls back to ``getrusage(2)``
+    (`resource.RUSAGE_SELF`), converting `ru_maxrss` via `ru_maxrss_to_bytes`, on
+    macOS and any system without ``/proc/self/status``.
+    """
+    if sys.platform.startswith("linux"):
+        high_water_mark = _linux_vm_hwm_bytes()
+        if high_water_mark is not None:
+            return high_water_mark
+    return ru_maxrss_to_bytes(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+
+def available_memory_bytes(meminfo_path: Path = _PROC_MEMINFO) -> int | None:
+    """Available machine memory in bytes, for budgeting concurrent runs.
+
+    On Linux, reads `MemAvailable` (falling back to `MemTotal`) from
+    ``/proc/meminfo`` (`proc_meminfo(5)`). On macOS, reads `hw.memsize` via
+    ``sysctl``. Returns None if neither is available.
+    """
+    if meminfo_path.is_file():
+        values: dict[str, int] = {}
+        try:
+            lines = meminfo_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            if line.startswith(("MemAvailable:", "MemTotal:")):
+                parts = line.split()
+                if len(parts) >= _PROC_FIELDS and parts[1].isdigit():
+                    values[parts[0].rstrip(":")] = int(parts[1]) * KIBIBYTE
+        if "MemAvailable" in values:
+            return values["MemAvailable"]
+        if "MemTotal" in values:
+            return values["MemTotal"]
+    total = _sysctl("hw.memsize")
+    return None if total is None or not total.isdigit() else int(total)
+
+
+def memory(byte_count: int) -> str:
+    """`byte_count` with an IEC binary prefix, to four figures.
+
+    Uses binary prefixes (`TiB`, `GiB`, `MiB`, `KiB`, `B`) matching the convention
+    in `benchmarks/speed/README.md` (1 KiB = 1,024 bytes).
+
+    Raises:
+        ValueError: When `byte_count` is negative.
+
+    Examples:
+        >>> memory(512)
+        '512 B'
+        >>> memory(1536 * 1024)
+        '1.5 MiB'
+    """
+    if byte_count < 0:
+        message = f"byte_count must be non-negative, not {byte_count}"
+        raise ValueError(message)
+    for factor, unit in _MEMORY_UNITS:
+        if byte_count >= factor:
+            return f"{byte_count / factor:.4g} {unit}"
+    return f"{byte_count} B"

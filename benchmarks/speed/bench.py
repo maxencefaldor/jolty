@@ -48,10 +48,12 @@ in a directory of its own.
 
 ``--scale`` runs each large fixture serially, on one thread with no block of its matrix
 dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
-every threshold at its break-even, in `alternated` rounds, and prints the speed-ups and
-its results' fingerprint, which must be the same on every number of threads; it runs
-the 50,000 inverters' chain so only with ``--largest``, and else once with the
-defaults.
+every threshold at its break-even, in `alternated` rounds, and prints the speed-ups,
+attainable throughput against N independent single-thread copies run concurrently,
+peak resident memory of an isolated process for each row, and its results' fingerprint,
+which must be the same on every number of threads; it runs the 50,000 inverters' chain
+so only with ``--largest``, and else once with the defaults. Pass
+``--no-concurrent-copies`` or ``--no-peak-memory`` to skip either probe.
 
 ``--view`` times every simulator instead, the owner's three views of them: jolty,
 ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or those ``--simulator``
@@ -93,17 +95,21 @@ Each suite runs every simulator by its runner of ``benchmarks/simulators.py``, a
 writes its results headed by their provenance, ``benchmarks/measuring.py``'s.
 """
 
+import concurrent.futures
+import contextlib
 import dataclasses
 import functools
 import hashlib
 import itertools
 import json
+import math
 import mmap
 import os
 import random
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -122,13 +128,16 @@ from measuring import (
     DIRTY,
     ROOT,
     Median,
+    Provenance,
     Suite,
+    available_memory_bytes,
     commit,
     duration,
     git,
     load,
     load_average,
     median,
+    memory,
     provenance,
     rank,
     results_directory,
@@ -137,7 +146,7 @@ from measuring import (
     shown,
     usable_cores,
 )
-from pydantic import Field
+from pydantic import BaseModel, Field, JsonValue
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from simulators import (
     RUSAGE,
@@ -157,8 +166,10 @@ from timing import (
     clocked,
     load_fixture,
     planned,
+    probe,
     run,
     scripts,
+    serially,
     work,
 )
 
@@ -239,6 +250,28 @@ unless ``--most-rounds`` says otherwise: four times the fewest, which about halv
 their medians' intervals, as an interval narrows with the square root of the runs. A
 comparison stopped there undecided says so."""
 
+COPY_ROUNDS: Final = 3
+"""The default synchronized rounds of concurrent single-thread copies.
+
+Taking the median of three rounds filters single-round scheduling noise without
+inflating ``--scale`` wall time as full confidence-interval rounds would.
+"""
+
+MEMORY_HEADROOM: Final = 0.85
+"""The fraction of available machine memory concurrent copies may budget.
+
+Leaves room for the operating system, the parent process, and transient allocator
+peaks so large fixtures (such as the 50,000-inverter chain, ~2 to 4 GiB per copy)
+never trigger an out-of-memory kill when launching many copies at once.
+"""
+
+HYBRID_SPREAD_THRESHOLD: Final = 1.25
+"""The max-to-min copy time ratio above which the scaling table notes core
+heterogeneity (such as performance and efficiency cores)."""
+
+_BARRIER_TIMEOUT_SECONDS: Final = 60.0
+"""Upper bound in seconds waiting for worker threads to meet at the launch barrier."""
+
 SWEPT_THREADS: Final = (2, 4, 8)
 """The threads a break-even is measured on, as far as there are cores, and then
 every core."""
@@ -281,9 +314,11 @@ class Timing:
     """A time measured: the median of its runs' wall seconds, and their number.
 
     Beside them, the machine's load average over the last minute as the runs began and
-    as they ended, when measured, and each run's seconds by the wall clock and of the
-    processor, when kept, from which the medians' intervals are read: a results file of
-    an earlier version holds neither.
+    as they ended, when measured; each run's seconds by the wall clock and of the
+    processor, when kept, from which the medians' intervals are read; and the peak
+    resident memory in bytes of an isolated child process running this fixture alone,
+    when measured. A results file of an earlier version holds none of these optional
+    fields.
     """
 
     seconds: float
@@ -292,13 +327,39 @@ class Timing:
     load_after: float | None = None
     wall: tuple[float, ...] = ()
     cpu: tuple[float, ...] = ()
+    peak_memory_bytes: int | None = None
 
     @classmethod
-    def of(cls, runs: Sequence[Run], load: float, load_after: float) -> Timing:
-        """The timing of `runs`, which began at `load` and ended at `load_after`."""
+    def of(
+        cls,
+        runs: Sequence[Run],
+        load: float,
+        load_after: float,
+        peak_memory_bytes: int | None = None,
+    ) -> Timing:
+        """The timing of `runs`, which began at `load` and ended at `load_after`.
+
+        When `peak_memory_bytes` is omitted, takes the maximum peak resident memory
+        recorded across `runs`, or None when none carried a measurement.
+        """
         wall = tuple(each.wall for each in runs)
         cpu = tuple(each.cpu for each in runs)
-        return cls(statistics.median(wall), len(wall), load, load_after, wall, cpu)
+        if peak_memory_bytes is None:
+            measured_memory = [
+                each.peak_memory_bytes
+                for each in runs
+                if each.peak_memory_bytes is not None
+            ]
+            peak_memory_bytes = max(measured_memory) if measured_memory else None
+        return cls(
+            statistics.median(wall),
+            len(wall),
+            load,
+            load_after,
+            wall,
+            cpu,
+            peak_memory_bytes,
+        )
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> Timing:
@@ -310,12 +371,17 @@ class Timing:
             value.get("load_after"),
             tuple(value.get("wall", ())),
             tuple(value.get("cpu", ())),
+            value.get("peak_memory_bytes"),
         )
 
     def to_json(self) -> dict[str, object]:
         """The timing as its results file holds it, without what was not measured."""
         written = dataclasses.asdict(self)
-        return {key: value for key, value in written.items() if value not in (None, ())}
+        return {
+            key: value
+            for key, value in written.items()
+            if value is not None and value != ()
+        }
 
     def wall_median(self) -> Median:
         """The median of the wall seconds, with its interval if the runs are kept."""
@@ -324,6 +390,160 @@ class Timing:
     def cpu_median(self) -> Median | None:
         """The median of the processor's seconds, with its interval, if kept."""
         return median(self.cpu) if self.cpu else None
+
+
+class TimingRecord(BaseModel):
+    """A serialized timing entry in a speed suite results file."""
+
+    seconds: float
+    runs: int
+    load: float | None = None
+    load_after: float | None = None
+    wall: list[float] = Field(default_factory=list)
+    cpu: list[float] = Field(default_factory=list)
+    peak_memory_bytes: int | None = Field(default=None, ge=0)
+
+    def to_timing(self) -> Timing:
+        """Converts this record into a `Timing` dataclass."""
+        return Timing(
+            self.seconds,
+            self.runs,
+            self.load,
+            self.load_after,
+            tuple(self.wall),
+            tuple(self.cpu),
+            self.peak_memory_bytes,
+        )
+
+
+class ConcurrentCopies(BaseModel):
+    """`copies` independent single-thread copies of a fixture run concurrently.
+
+    Each copy runs in its own isolated `timing.py` worker process with
+    `max_threads=1` and no matrix dissection. `wall_seconds` is the median makespan
+    across `rounds` synchronized rounds (from barrier release until the last copy
+    completes). `copy_seconds` records each copy's individual wall seconds from the
+    representative median round, sorted ascending. When `copies` would exceed the
+    machine memory budget, `wall_seconds` is None and `skipped_reason` explains why.
+    """
+
+    copies: int = Field(ge=1)
+    rounds: int = Field(default=0, ge=0)
+    wall_seconds: float | None = Field(default=None, gt=0.0)
+    round_seconds: list[float] = Field(default_factory=list)
+    copy_seconds: list[float] = Field(default_factory=list)
+    per_copy_peak_memory_bytes: int | None = Field(default=None, ge=0)
+    load: float | None = None
+    load_after: float | None = None
+    skipped_reason: str | None = None
+
+    def wall_median(self) -> Median | None:
+        """The median makespan with its confidence interval, if measured."""
+        if self.round_seconds:
+            return median(self.round_seconds)
+        if self.wall_seconds is not None:
+            return Median(self.wall_seconds)
+        return None
+
+
+class ThroughputEfficiency(BaseModel):
+    """Parallel efficiency of one N-thread run against N concurrent 1-thread copies.
+
+    Given serial time ``T_1``, N-thread time ``T_par``, and concurrent makespan
+    ``T_copies`` for ``N`` copies:
+
+    - ``speedup = T_1 / T_par``
+    - ``attainable_speedup = N * T_1 / T_copies``
+    - ``efficiency = speedup / attainable_speedup = T_copies / (N * T_par)``
+
+    Efficiency is never clamped to 1.0: concurrent copies of a memory-bound fixture
+    may contend for memory bandwidth more than a single shared run does, yielding
+    efficiency above 100%, which is reported as found.
+
+    When individual `copy_seconds` are provided for all ``N`` copies, also records
+    `rate_sum_attainable_speedup = T_1 * sum(1 / t_i)`, `rate_sum_efficiency`, and
+    `copy_spread_ratio = max(t_i) / min(t_i)` to surface hybrid-core heterogeneity
+    where slow efficiency cores stretch batch makespan.
+    """
+
+    threads: int = Field(ge=1)
+    speedup: float
+    attainable_speedup: float
+    efficiency: float
+    rate_sum_attainable_speedup: float | None = None
+    rate_sum_efficiency: float | None = None
+    copy_spread_ratio: float | None = None
+
+
+class SpeedResults(Provenance):
+    """A speed suite results file, compatible with earlier committed baselines.
+
+    Every field added after the initial baseline (`fingerprints`, `views`, `copies`,
+    and `TimingRecord.peak_memory_bytes`) defaults to empty or None so committed
+    results files from earlier commits validate without migration.
+    """
+
+    timings: dict[str, TimingRecord] = Field(default_factory=dict)
+    profiles: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
+    fingerprints: dict[str, dict[str, str]] = Field(default_factory=dict)
+    views: dict[str, JsonValue] = Field(default_factory=dict)
+    copies: dict[str, dict[str, ConcurrentCopies]] = Field(default_factory=dict)
+
+
+def load_results(path: Path) -> SpeedResults:
+    """Loads and validates a speed suite results file from `path`."""
+    return SpeedResults.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def throughput_efficiency(
+    *,
+    threads: int,
+    serial_seconds: float,
+    parallel_seconds: float,
+    copies_wall_seconds: float,
+    copy_seconds: Sequence[float] = (),
+) -> ThroughputEfficiency | None:
+    """Computes attainable speed-up and throughput efficiency for `threads` threads.
+
+    Returns None when any timing is non-positive or non-finite.
+
+    Raises:
+        ValueError: When `threads` is less than 1, or `copy_seconds` is non-empty
+            and its length does not equal `threads`.
+    """
+    if threads < 1:
+        message = f"threads must be at least 1, not {threads}"
+        raise ValueError(message)
+    if copy_seconds and len(copy_seconds) != threads:
+        message = f"expected {threads} copy times, not {len(copy_seconds)}"
+        raise ValueError(message)
+    if not all(
+        math.isfinite(value) and value > 0.0
+        for value in (serial_seconds, parallel_seconds, copies_wall_seconds)
+    ):
+        return None
+    speedup = serial_seconds / parallel_seconds
+    attainable = threads * serial_seconds / copies_wall_seconds
+    efficiency = copies_wall_seconds / (threads * parallel_seconds)
+    rate_sum_attainable: float | None = None
+    rate_sum_efficiency: float | None = None
+    spread_ratio: float | None = None
+    if copy_seconds and all(
+        math.isfinite(value) and value > 0.0 for value in copy_seconds
+    ):
+        rate_sum = sum(1.0 / value for value in copy_seconds)
+        rate_sum_attainable = serial_seconds * rate_sum
+        rate_sum_efficiency = speedup / rate_sum_attainable
+        spread_ratio = max(copy_seconds) / min(copy_seconds)
+    return ThroughputEfficiency(
+        threads=threads,
+        speedup=speedup,
+        attainable_speedup=attainable,
+        efficiency=efficiency,
+        rate_sum_attainable_speedup=rate_sum_attainable,
+        rate_sum_efficiency=rate_sum_efficiency,
+        copy_spread_ratio=spread_ratio,
+    )
 
 
 def fixtures() -> dict[str, Fixture]:
@@ -495,52 +715,409 @@ def requests(
 
 
 def python(
-    names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool
+    names: Iterable[str],
+    found: Mapping[str, Fixture],
+    *,
+    scale: bool,
+    measure_memory: bool = True,
 ) -> dict[str, Timing]:
     """The Python timings of the fixtures `names`' `requests`, each run once at `scale`.
 
-    A Monte Carlo fixture's times are per sample.
+    A Monte Carlo fixture's times are per sample. When `measure_memory` is True, each
+    timing records `peak_memory_bytes` from a fresh child process so an earlier
+    fixture's high-water mark cannot pollute it; at `scale` (once each), that single
+    run executes directly inside the child process so no extra simulation runs.
     """
     timings: dict[str, Timing] = {}
     for key, request in requests(names, found, scale=scale).items():
         print(f"timing {key}", flush=True)
-        timings[key] = timed(work(request, dict(found)), once=scale)
+        if scale and measure_memory:
+            load_before = load_average()
+            measured = probe(request)
+            timings[key] = Timing.of([measured], load_before, load_average())
+            continue
+        measured_timing = timed(work(request, dict(found)), once=scale)
+        if measure_memory:
+            probed = probe(request)
+            measured_timing = dataclasses.replace(
+                measured_timing, peak_memory_bytes=probed.peak_memory_bytes
+            )
+        timings[key] = measured_timing
     return timings
 
 
-def serially(loaded: Loaded) -> Options:
-    """The fixture's options for a serial run.
+@dataclass(frozen=True, slots=True)
+class CopyOptions:
+    """Options governing `concurrent_copies`."""
 
-    Its run takes one thread, and no block of its matrix is dissected, its interiors as
-    large as its circuit.
+    rounds: int = COPY_ROUNDS
+    warmup: bool = True
+    samples: int | None = None
+    single_copy_memory_bytes: int | None = None
+    memory_budget_bytes: int | None = None
+    python_executable: str = sys.executable
+
+
+@dataclass(frozen=True, slots=True)
+class _CopyWorker:
+    """One isolated `timing.py` child process used by `concurrent_copies`."""
+
+    process: subprocess.Popen[str]
+    requests: IO[str]
+    answers: IO[str]
+
+    @classmethod
+    def start(cls, python_executable: str) -> _CopyWorker:
+        """Starts a fresh `timing.py` child process and waits for its handshake.
+
+        Raises:
+            RuntimeError: When the child fails to start or exits before handshaking.
+        """
+        process = subprocess.Popen(  # noqa: S603 - active Python interpreter
+            [python_executable, str(SPEED / "timing.py")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            cwd=ROOT,
+        )
+        if process.stdin is None or process.stdout is None:
+            process.terminate()
+            process.wait()
+            message = "concurrent copy worker started without stdio pipes"
+            raise RuntimeError(message)
+        worker = cls(process, process.stdin, process.stdout)
+        said = worker.answers.readline()
+        if not said:
+            worker.close()
+            message = "concurrent copy worker exited before completing startup"
+            raise RuntimeError(message)
+        return worker
+
+    def prepare(self, line: str) -> None:
+        """Pre-loads a fixture in the worker before timing starts.
+
+        Raises:
+            RuntimeError: When the worker exits instead of acknowledging readiness.
+        """
+        self.requests.write(line)
+        self.requests.flush()
+        answer = self.answers.readline()
+        if not answer or not json.loads(answer).get("ready"):
+            message = f"concurrent copy worker failed to prepare: {answer!r}"
+            raise RuntimeError(message)
+
+    def run_line(self, line: str) -> Run:
+        """Sends a pre-serialized JSON request line and returns the worker's `Run`.
+
+        Raises:
+            RuntimeError: When the worker exits instead of returning a run.
+        """
+        self.requests.write(line)
+        self.requests.flush()
+        answer = self.answers.readline()
+        if not answer:
+            message = "concurrent copy worker exited while executing a run"
+            raise RuntimeError(message)
+        return Run(**json.loads(answer))
+
+    def close(self) -> None:
+        """Closes stdio pipes and reaps the worker process cleanly."""
+        with contextlib.suppress(OSError):
+            self.requests.close()
+        try:
+            self.process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            self.process.wait()
+        finally:
+            with contextlib.suppress(OSError):
+                self.answers.close()
+
+
+def _synchronized_round(
+    executor: concurrent.futures.ThreadPoolExecutor,
+    workers: Sequence[_CopyWorker],
+    request_line: str,
+) -> tuple[float, list[Run]]:
+    """Releases all `workers` at a barrier and returns `(makespan, runs)`."""
+    started = 0.0
+
+    def mark_start() -> None:
+        nonlocal started
+        started = time.perf_counter()
+
+    barrier = threading.Barrier(len(workers), action=mark_start)
+
+    def run_copy(worker: _CopyWorker) -> Run:
+        barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        return worker.run_line(request_line)
+
+    runs = list(executor.map(run_copy, workers))
+    return time.perf_counter() - started, runs
+
+
+def _memory_budget_for_copies(options: CopyOptions) -> int | None:
+    """Computes the byte budget available for launching concurrent copies."""
+    if options.memory_budget_bytes is not None:
+        return options.memory_budget_bytes
+    available = available_memory_bytes()
+    if available is None:
+        return None
+    return int(available * MEMORY_HEADROOM)
+
+
+def concurrent_copies(
+    fixture_name: str,
+    copies: int,
+    options: CopyOptions | None = None,
+) -> ConcurrentCopies:
+    """Runs `copies` independent single-thread copies of `fixture_name` concurrently.
+
+    Each copy runs in its own fresh `timing.py` worker process with `serial=True`
+    (`max_threads=1`, no matrix dissection) to measure the machine's attainable
+    multi-copy throughput without GIL or allocator coupling. Every worker prepares
+    the fixture before a synchronized barrier release, so interpreter startup and
+    circuit JSON parsing do not contaminate the measured makespan.
+
+    When `copies > 1` and the estimated memory (`copies * single_copy_memory_bytes`)
+    exceeds the memory budget, returns a skipped `ConcurrentCopies` record instead
+    of risking an out-of-memory kill.
+
+    Raises:
+        ValueError: When `copies < 1` or `options.rounds < 1`.
     """
-    unknowns = len(Simulation(loaded.circuit).unknowns)
-    spread = dataclasses.replace(
-        loaded.plan.options.parallelism,
-        max_threads=1,
-        max_unknowns_per_interior=unknowns,
+    chosen = CopyOptions() if options is None else options
+    if copies < 1:
+        message = f"copies must be at least 1, not {copies}"
+        raise ValueError(message)
+    if chosen.rounds < 1:
+        message = f"rounds must be at least 1, not {chosen.rounds}"
+        raise ValueError(message)
+    budget = _memory_budget_for_copies(chosen)
+    if (
+        copies > 1
+        and chosen.single_copy_memory_bytes is not None
+        and budget is not None
+    ):
+        estimated = copies * chosen.single_copy_memory_bytes
+        if estimated > budget:
+            reason = (
+                f"estimated {memory(estimated)} for {copies} copies exceeds "
+                f"{memory(budget)} memory budget"
+            )
+            return ConcurrentCopies(copies=copies, skipped_reason=reason)
+    request = Request(fixture_name, samples=chosen.samples, threads=1, serial=True)
+    request_payload = dataclasses.asdict(request)
+    prepare_line = json.dumps(request_payload | {"prepare": True}) + "\n"
+    request_line = json.dumps(request_payload) + "\n"
+    workers: list[_CopyWorker] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=copies) as executor:
+            workers = list(
+                executor.map(
+                    lambda _: _CopyWorker.start(chosen.python_executable),
+                    range(copies),
+                )
+            )
+            list(executor.map(lambda worker: worker.prepare(prepare_line), workers))
+            if chosen.warmup:
+                _synchronized_round(executor, workers, request_line)
+            load_before = load_average()
+            round_seconds: list[float] = []
+            round_runs: list[list[Run]] = []
+            for _ in range(chosen.rounds):
+                elapsed, runs = _synchronized_round(executor, workers, request_line)
+                round_seconds.append(elapsed)
+                round_runs.append(runs)
+            load_after = load_average()
+    finally:
+        for worker in workers:
+            worker.close()
+    median_makespan = statistics.median(round_seconds)
+    median_index = min(
+        range(len(round_seconds)),
+        key=lambda index: abs(round_seconds[index] - median_makespan),
     )
-    return dataclasses.replace(loaded.plan.options, parallelism=spread)
+    copy_seconds = sorted(each.wall for each in round_runs[median_index])
+    peak_samples = [
+        each.peak_memory_bytes
+        for batch in round_runs
+        for each in batch
+        if each.peak_memory_bytes is not None
+    ]
+    per_copy_peak = max(peak_samples) if peak_samples else None
+    return ConcurrentCopies(
+        copies=copies,
+        rounds=chosen.rounds,
+        wall_seconds=median_makespan,
+        round_seconds=round_seconds,
+        copy_seconds=copy_seconds,
+        per_copy_peak_memory_bytes=per_copy_peak,
+        load=load_before,
+        load_after=load_after,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingOptions:
+    """Optional memory and concurrent-copy probes attached to `scaling`."""
+
+    peak_memory: bool = True
+    concurrent_copies: bool = True
+    copy_rounds: int = COPY_ROUNDS
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingRow:
+    """One row of a `--scale` table: label, thread count, timing and fingerprint."""
+
+    label: str
+    threads: int | None
+    timing: Timing
+    fingerprint: str
+    copies: ConcurrentCopies | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingResult:
+    """The times, fingerprints, and concurrent-copies results of `scaling`."""
+
+    timings: dict[str, Timing]
+    fingerprints: dict[str, str]
+    copies: dict[str, ConcurrentCopies]
+
+
+def _ratio_text(numerator: float, denominator: float) -> str:
+    """Formats `numerator / denominator` as a speed-up multiplier, or empty on zero."""
+    if not (
+        math.isfinite(numerator)
+        and math.isfinite(denominator)
+        and numerator > 0.0
+        and denominator > 0.0
+    ):
+        return ""
+    return f"{numerator / denominator:.2f}x"
+
+
+def _copy_cells(
+    row: ScalingRow,
+    serial_seconds: float,
+    notes: list[str],
+) -> tuple[str, str, str]:
+    """Formats `(N copies, attainable, efficiency)` cells and appends any notes."""
+    if row.copies is None or row.threads is None:
+        return ("", "", "")
+    if row.copies.skipped_reason is not None:
+        notes.append(
+            f"  {row.copies.copies} copies skipped: {row.copies.skipped_reason}"
+        )
+        return ("skipped", "", "")
+    if row.copies.wall_seconds is None:
+        return ("", "", "")
+    measured = throughput_efficiency(
+        threads=row.threads,
+        serial_seconds=serial_seconds,
+        parallel_seconds=row.timing.seconds,
+        copies_wall_seconds=row.copies.wall_seconds,
+        copy_seconds=row.copies.copy_seconds,
+    )
+    if measured is None:
+        return (duration(row.copies.wall_seconds), "", "")
+    if (
+        measured.copy_spread_ratio is not None
+        and measured.copy_spread_ratio >= HYBRID_SPREAD_THRESHOLD
+        and measured.rate_sum_attainable_speedup is not None
+        and measured.rate_sum_efficiency is not None
+    ):
+        notes.append(
+            f"  note: {row.threads} copies span "
+            f"{duration(min(row.copies.copy_seconds))} to "
+            f"{duration(max(row.copies.copy_seconds))} "
+            f"({measured.copy_spread_ratio:.2f}x spread across cores); "
+            f"steady-state rate sum attainable "
+            f"{measured.rate_sum_attainable_speedup:.2f}x, "
+            f"efficiency {measured.rate_sum_efficiency:.1%}"
+        )
+    return (
+        duration(row.copies.wall_seconds),
+        f"{measured.attainable_speedup:.2f}x",
+        f"{measured.efficiency:.1%}",
+    )
+
+
+def format_scaling_table(name: str, summary: str, rows: Sequence[ScalingRow]) -> str:
+    """Formats the `--scale` table with optional concurrent-copy and memory columns."""
+    if not rows:
+        return f"\n{name}, serially and spread by the default parallelism, {summary}:"
+    has_copies = any(row.copies is not None for row in rows)
+    has_memory = any(row.timing.peak_memory_bytes is not None for row in rows)
+    serial = rows[0].timing
+    one = next((row.timing for row in rows[1:] if row.label == "1 thread"), None)
+    heads: list[str] = ["threads", "time", "against serial", "against 1 thread"]
+    widths: list[int] = [10, 34, 14, 16]
+    if has_copies:
+        heads.extend(["N copies", "attainable", "efficiency"])
+        widths.extend([12, 10, 10])
+    if has_memory:
+        heads.append("peak memory")
+        widths.append(12)
+    heads.extend(["", "results"])
+    widths.extend([11, 16])
+    lines = [
+        f"\n{name}, serially and spread by the default parallelism, {summary}:",
+        table(heads, widths),
+    ]
+    notes: list[str] = []
+    for index, row in enumerate(rows):
+        cells: list[str] = [
+            row.label,
+            interval(row.timing.wall_median()),
+            _ratio_text(serial.seconds, row.timing.seconds),
+            ""
+            if one is None or index == 0
+            else _ratio_text(one.seconds, row.timing.seconds),
+        ]
+        if has_copies:
+            cells.extend(_copy_cells(row, serial.seconds, notes))
+        if has_memory:
+            bytes_used = row.timing.peak_memory_bytes
+            cells.append("" if bytes_used is None else memory(bytes_used))
+        cells.extend(
+            [
+                ""
+                if index == 0
+                else decided(serial.wall_median(), row.timing.wall_median()),
+                row.fingerprint,
+            ]
+        )
+        lines.append(table(cells, widths))
+    lines.extend(notes)
+    return "\n".join(lines)
 
 
 def scaling(
-    name: str, loaded: Loaded, counts: Sequence[int], most: int
-) -> tuple[dict[str, Timing], dict[str, str]]:
+    name: str,
+    loaded: Loaded,
+    counts: Sequence[int],
+    most: int,
+    options: ScalingOptions | None = None,
+) -> ScalingResult:
     """The fixture `name` serially and spread on each of `counts`, `interleaved`.
 
     The serial run runs on one thread with no block of its matrix dissected, `serially`;
     each spread run takes the fixture's options, which leave every setting of its
     parallelism to its default, on a pool of so many threads; each is compared with the
-    serial run, in at most `most` rounds. Prints each one's median time with its
-    interval, its speed-up against the serial run and against the spread run on one
-    thread, whether it is `decided` against the serial run, and the fingerprint of its
-    results; returns the times and the serial and spread runs' fingerprints.
+    serial run, in at most `most` rounds. When enabled in `options`, probes peak
+    resident memory in fresh child processes and runs `N` independent single-thread
+    copies concurrently for each `N` in `counts` to report attainable speed-up and
+    throughput efficiency. Prints the table and returns a `ScalingResult`.
 
     Raises:
         SystemExit: When, but for a circuit large enough for a block to be dissected,
             whose default interiors depend on the threads, a spread run finds other
             bits than the serial run.
     """
+    chosen = ScalingOptions() if options is None else options
     print(f"timing {name} in Python, serially and spread, in rounds", flush=True)
     alone_options = serially(loaded)
     labels = [
@@ -552,35 +1129,55 @@ def scaling(
         *(on(count, functools.partial(run, loaded)) for count in counts),
     ]
     measured, prints = interleaved(works, most)
-    found = measured.timings
+    found = list(measured.timings)
+    if chosen.peak_memory:
+        print(f"probing peak memory of {name} in isolated processes", flush=True)
+        serial_probe = probe(Request(name, serial=True))
+        found[0] = dataclasses.replace(
+            found[0], peak_memory_bytes=serial_probe.peak_memory_bytes
+        )
+        for index, count in enumerate(counts, start=1):
+            spread_probe = probe(Request(name, threads=count))
+            found[index] = dataclasses.replace(
+                found[index], peak_memory_bytes=spread_probe.peak_memory_bytes
+            )
+    copies_by_count: dict[int, ConcurrentCopies] = {}
+    if chosen.concurrent_copies:
+        single_memory = found[0].peak_memory_bytes
+        for count in counts:
+            print(
+                f"timing {count} concurrent 1-thread "
+                f"{'copy' if count == 1 else 'copies'} of {name}",
+                flush=True,
+            )
+            copies_by_count[count] = concurrent_copies(
+                name,
+                count,
+                CopyOptions(
+                    rounds=chosen.copy_rounds,
+                    single_copy_memory_bytes=single_memory,
+                ),
+            )
     timings = {f"python/{name}": found[0]} | {
         f"python/{name}/spread on {label}": each
         for label, each in zip(labels[1:], found[1:], strict=True)
     }
-    print(
-        f"\n{name}, serially and spread by the default parallelism, "
-        f"{measured.summary()}:"
-    )
-    widths = (10, 34, 14, 16, 8, 16)
-    heads = ("threads", "time", "against serial", "against 1 thread", "", "results")
-    print(table(heads, widths))
-    serial = found[0]
-    one = found[labels.index("1 thread")] if "1 thread" in labels else None
-    for index, (label, each, fingerprinted) in enumerate(
-        zip(labels, found, prints, strict=True)
-    ):
-        against = (
-            "" if one is None or index == 0 else f"{one.seconds / each.seconds:.2f}x"
-        )
-        cells = (
-            label,
-            interval(each.wall_median()),
-            f"{serial.seconds / each.seconds:.2f}x",
-            against,
-            "" if index == 0 else decided(serial.wall_median(), each.wall_median()),
-            fingerprinted,
-        )
-        print(table(cells, widths))
+    rows = [
+        ScalingRow(labels[0], None, found[0], prints[0]),
+        *(
+            ScalingRow(
+                label,
+                count,
+                each,
+                fingerprinted,
+                copies_by_count.get(count),
+            )
+            for label, count, each, fingerprinted in zip(
+                labels[1:], counts, found[1:], prints[1:], strict=True
+            )
+        ),
+    ]
+    print(format_scaling_table(name, measured.summary(), rows))
     alone = prints[0]
     spread_prints = set(prints[1:])
     unknowns = alone_options.parallelism.max_unknowns_per_interior or 0
@@ -589,7 +1186,11 @@ def scaling(
     if not dissectable and spread_prints != {alone}:
         message = f"{name} found other bits spread: {', '.join(prints)}"
         raise SystemExit(message)
-    return timings, {"serial": alone, "spread": next(iter(spread_prints), alone)}
+    return ScalingResult(
+        timings=timings,
+        fingerprints={"serial": alone, "spread": next(iter(spread_prints), alone)},
+        copies={str(count): result for count, result in copies_by_count.items()},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1165,37 +1766,93 @@ def baseline(given: str | None) -> Path | None:
     return None
 
 
-def against(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) -> None:
-    """Prints the times `now` against those `before`, from the results `name`.
+def _memory_delta(old_bytes: int | None, new_bytes: int | None) -> str:
+    """Formats a timing's peak memory against an optional earlier measurement."""
+    if new_bytes is not None:
+        formatted = memory(new_bytes)
+        if old_bytes is not None and old_bytes > 0:
+            return f"{formatted} ({new_bytes / old_bytes - 1:+.1%})"
+        return formatted
+    if old_bytes is not None:
+        return f"was {memory(old_bytes)}"
+    return ""
 
-    Each median with its interval, and a change named only where the intervals
-    separate; a time of results that kept no runs has no interval, so no change of it
-    is named. The two were measured at different times, under whatever load each met:
-    `--compare` alternates the builds' runs instead.
-    """
+
+def format_speed_table(timings: Mapping[str, Timing]) -> str:
+    """Formats measured times and peak resident memory as an aligned table."""
+    if not timings:
+        return ""
+    width = max(len(key) for key in timings)
+    has_memory = any(each.peak_memory_bytes is not None for each in timings.values())
+    heads: list[str] = ["fixture", "time"]
+    widths: list[int] = [max(width, len("fixture")), 34]
+    if has_memory:
+        heads.append("peak memory")
+        widths.append(12)
+    lines = ["\nspeed summary:", table(heads, widths)]
+    for key, each in timings.items():
+        cells = [key, interval(each.wall_median())]
+        if has_memory:
+            bytes_used = each.peak_memory_bytes
+            cells.append("" if bytes_used is None else memory(bytes_used))
+        lines.append(table(cells, widths))
+    return "\n".join(lines)
+
+
+def format_against_table(
+    now: Mapping[str, Timing], before: Mapping[str, Timing], name: str
+) -> str:
+    """Formats the times `now` against those `before`, from the results `name`."""
     shared = [key for key in now if key in before]
     if not shared:
-        print(f"\nno time measured here is in {name}")
-        return
+        return f"\nno time measured here is in {name}"
     width = max(len(key) for key in shared)
-    print(f"\nagainst {name}, medians with their {CONFIDENCE:.0%} intervals:")
-    heads = (" ", "before", "now", "change", "")
-    widths = (width, 34, 34, 8, 0)
-    print(table(heads, widths))
+    has_memory = any(
+        before[key].peak_memory_bytes is not None
+        or now[key].peak_memory_bytes is not None
+        for key in shared
+    )
+    heads: list[str] = [" ", "before", "now", "change", ""]
+    widths: list[int] = [width, 34, 34, 8, 11]
+    if has_memory:
+        heads.append("peak memory")
+        widths.append(22)
+    lines = [
+        f"\nagainst {name}, medians with their {CONFIDENCE:.0%} intervals:",
+        table(heads, widths),
+    ]
     named = 0
     for key in shared:
         old, new = before[key].wall_median(), now[key].wall_median()
         verdict = decided(old, new)
         named += verdict in {"slower", "faster"}
-        cells = (
+        change_text = f"{new.value / old.value - 1:+.1%}" if old.value > 0 else ""
+        cells: list[str] = [
             key,
             interval(old),
             interval(new),
-            f"{new.value / old.value - 1:+.1%}",
+            change_text,
             verdict,
-        )
-        print(table(cells, widths))
-    print(f"{named} of {len(shared)} changed, their intervals apart")
+        ]
+        if has_memory:
+            cells.append(
+                _memory_delta(before[key].peak_memory_bytes, now[key].peak_memory_bytes)
+            )
+        lines.append(table(cells, widths))
+    lines.append(f"{named} of {len(shared)} changed, their intervals apart")
+    return "\n".join(lines)
+
+
+def against(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) -> None:
+    """Prints the times `now` against those `before`, from the results `name`.
+
+    Each median with its interval, peak resident memory when measured, and a change
+    named only where the intervals separate; a time of results that kept no runs has
+    no interval, so no change of it is named. The two were measured at different
+    times, under whatever load each met: ``--compare`` alternates the builds' runs
+    instead.
+    """
+    print(format_against_table(now, before, name))
 
 
 def fingerprint(found: Mapping[str, results.AnalysisResult]) -> str:
@@ -1617,6 +2274,28 @@ class Bench(cli.CommandLine):
             "comparison in before stopping it undecided."
         ),
     )
+    peak_memory: bool = Field(
+        default=True,
+        description=(
+            "Measure each fixture's peak resident memory (VmHWM on Linux, "
+            "getrusage(2) ru_maxrss on macOS) in a fresh child process."
+        ),
+    )
+    concurrent_copies: bool = Field(
+        default=True,
+        description=(
+            "With --scale, also run N independent single-thread copies concurrently "
+            "to measure attainable speed-up and throughput efficiency."
+        ),
+    )
+    copy_rounds: int = Field(
+        default=COPY_ROUNDS,
+        ge=1,
+        description=(
+            "The synchronized rounds of concurrent single-thread copies --scale "
+            "takes the median makespan of."
+        ),
+    )
     output: Path | None = Field(default=None, description="The results file to write.")
 
     def cli_cmd(self) -> None:
@@ -1635,28 +2314,41 @@ def every(counts: Iterable[int]) -> list[int]:
     return [count for count in counts if count < cores] + [cores]
 
 
-def merged(
+def merged(  # noqa: PLR0913 - each section of a speed suite results file
     output: Path,
     timings: Mapping[str, Timing],
     profiles: Mapping[str, object] | None = None,
     fingerprints: Mapping[str, object] | None = None,
     views: Mapping[str, object] | None = None,
+    *,
+    copies: Mapping[str, Mapping[str, ConcurrentCopies]] | None = None,
 ) -> dict[str, object]:
     """The results file `output`, with what this run measured added.
 
-    `timings`, `profiles`, `fingerprints` and `views` each add to what the file holds
-    of its kind, if anything: `views`, each cell of a view's table, by its view, its
-    configuration and its fixture.
+    `timings`, `profiles`, `fingerprints`, `views` and `copies` each add to what the
+    file holds of its kind, if anything: `views`, each cell of a view's table, by its
+    view, its configuration and its fixture; `copies`, each fixture's concurrent-copy
+    measurements by copy count.
     """
-    earlier = load(output) if output.is_file() else {}
+    earlier = load(output) if output.is_file() and output.stat().st_size > 0 else {}
     written = {**earlier.get("timings", {})}
     written |= {key: each.to_json() for key, each in timings.items()}
+    merged_copies: dict[str, dict[str, object]] = {
+        fixture_name: dict(entries)
+        for fixture_name, entries in earlier.get("copies", {}).items()
+    }
+    for fixture_name, entries in (copies or {}).items():
+        merged_copies[fixture_name] = merged_copies.get(fixture_name, {}) | {
+            count: entry.model_dump(mode="json", exclude_none=True)
+            for count, entry in entries.items()
+        }
     return {
         **provenance().model_dump(mode="json"),
         "timings": written,
         "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
         "fingerprints": earlier.get("fingerprints", {}) | dict(fingerprints or {}),
         "views": earlier.get("views", {}) | dict(views or {}),
+        "copies": merged_copies,
     }
 
 
@@ -1788,7 +2480,10 @@ class Worker:
     def close(self) -> None:
         """Ends the process, once it has read every request."""
         self.requests.close()
-        self.process.wait()
+        try:
+            self.process.wait()
+        finally:
+            self.answers.close()
 
 
 def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
@@ -1942,6 +2637,38 @@ def comparison(
                 ]
             )
     lines = ["| " + " | ".join(row) + " |" for row in rows]
+    memory_rows: list[list[str]] = []
+    for key, rounds in measured.items():
+        old_bytes = rounds.timings[0].peak_memory_bytes
+        new_bytes = rounds.timings[1].peak_memory_bytes
+        if old_bytes is None and new_bytes is None:
+            continue
+        delta = (
+            f"{new_bytes / old_bytes - 1:+.1%}"
+            if old_bytes is not None and old_bytes > 0 and new_bytes is not None
+            else ""
+        )
+        memory_rows.append(
+            [
+                f"`{key}`",
+                "" if old_bytes is None else memory(old_bytes),
+                "" if new_bytes is None else memory(new_bytes),
+                delta,
+            ]
+        )
+    if memory_rows:
+        memory_header = [
+            [
+                "Peak memory",
+                f"`{first.revision}` ({first.commit[:12]})",
+                f"`{second.revision}` ({second.commit[:12]})",
+                "Change",
+            ],
+            ["---", "---", "---", "---"],
+            *memory_rows,
+        ]
+        lines.append("")
+        lines.extend("| " + " | ".join(row) + " |" for row in memory_header)
     lines.append("")
     lines.append(
         f"Each time is the median of its rounds, with its {CONFIDENCE:.0%} interval; "
@@ -2104,28 +2831,48 @@ def measure(arguments: Bench) -> None:
     found_profiles: dict[str, dict[str, Profiled]] = {}
     fingerprints: dict[str, dict[str, str]] = {}
     views: dict[str, object] = {}
+    found_copies: dict[str, dict[str, ConcurrentCopies]] = {}
     if arguments.view is not None:
         timings, views = viewed(arguments, arguments.view, names, found, output)
     else:
         timings = {} if arguments.scale else rust(names, found)
         spread = {
             name
-            for name in SCALE
+            for name in names
             if arguments.scale
             and found[name].plan.monte_carlo is None
             and (name != LONGEST or arguments.largest)
         }
         counts = arguments.threads or every(THREADS)
+        scaling_options = ScalingOptions(
+            peak_memory=arguments.peak_memory,
+            concurrent_copies=arguments.concurrent_copies,
+            copy_rounds=arguments.copy_rounds,
+        )
         for name in names:
             if name in spread:
-                measured, fingerprints[name] = scaling(
-                    name, load_fixture(found[name]), counts, arguments.most_rounds
+                scaled = scaling(
+                    name,
+                    load_fixture(found[name]),
+                    counts,
+                    arguments.most_rounds,
+                    scaling_options,
                 )
-                timings |= measured
+                timings |= scaled.timings
+                fingerprints[name] = scaled.fingerprints
+                if scaled.copies:
+                    found_copies[name] = scaled.copies
             else:
-                timings |= python([name], found, scale=arguments.scale)
+                timings |= python(
+                    [name],
+                    found,
+                    scale=arguments.scale,
+                    measure_memory=arguments.peak_memory,
+                )
         found_profiles = profiles(names, found)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
+    if any(each.peak_memory_bytes is not None for each in timings.values()):
+        print(format_speed_table(timings))
     shares(found_profiles)
     profiled = {
         name: {
@@ -2133,7 +2880,10 @@ def measure(arguments: Bench) -> None:
         }
         for name, analyses in found_profiles.items()
     }
-    save(output, merged(output, timings, profiled, fingerprints, views))
+    save(
+        output,
+        merged(output, timings, profiled, fingerprints, views, copies=found_copies),
+    )
     if baseline_path is not None and baseline_path.resolve() != output.resolve():
         before = {
             key: Timing.from_json(value)

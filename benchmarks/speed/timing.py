@@ -10,16 +10,22 @@ clock and by the processor time of every thread of the process (`clocked`).
 so each build's runs take place in a process of its own: the build's interpreter runs
 this module, which imports the build's jolty and reads requests from its standard
 input, one JSON object a line, each a fixture and how to run it (`Request`); it runs the
-fixture once and writes its wall and processor seconds (`Run`) as a line of JSON. Its
-first line says which jolty it imported, so the caller can check that it is the build's.
-What jolty or a simulation prints goes to the standard error, so that only the answers
-reach the standard output.
+fixture once and writes its wall and processor seconds and peak resident memory (`Run`)
+as a line of JSON. Its first line says which jolty it imported, so the caller can check
+that it is the build's. A request with ``"prepare": true`` loads the fixture without
+running it and replies ``{"ready": true}``, so concurrent copies can start together at a
+barrier. `probe` runs one request in a fresh child process to read an isolated fixture's
+peak resident memory without inheriting another fixture's high-water mark. What jolty
+or a simulation prints goes to the standard error, so that only the answers reach the
+standard output.
 """
 
+import dataclasses
 import functools
 import importlib
 import json
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -32,6 +38,7 @@ from types import ModuleType
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "circuits"))
 from fixture import CIRCUITS, Fixture
+from measuring import ROOT, peak_memory_bytes
 from simulators import Jolty
 
 import jolty
@@ -61,6 +68,21 @@ def load_fixture(fixture: Fixture) -> Loaded:
     """The fixture's circuit, read from its file, and its plan."""
     text = (CIRCUITS / f"{fixture.circuit}.json").read_text(encoding="utf-8")
     return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
+
+
+def serially(loaded: Loaded) -> Options:
+    """The fixture's options for a serial run.
+
+    Its run takes one thread, and no block of its matrix is dissected, its interiors as
+    large as its circuit.
+    """
+    unknowns = len(Simulation(loaded.circuit).unknowns)
+    spread = dataclasses.replace(
+        loaded.plan.options.parallelism,
+        max_threads=1,
+        max_unknowns_per_interior=unknowns,
+    )
+    return dataclasses.replace(loaded.plan.options, parallelism=spread)
 
 
 def run(
@@ -97,14 +119,17 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
 
 @dataclass(frozen=True, slots=True)
 class Run:
-    """One run's seconds: by the wall clock, and of the processor.
+    """One run's seconds, by the wall clock and of the processor, and peak memory.
 
     The processor's are those of every thread of the process, so a run spread over
-    threads takes more of them than of the wall clock.
+    threads takes more of them than of the wall clock. `peak_memory_bytes` is the
+    resident high-water mark of an isolated child process that ran this fixture alone,
+    or None when measured in a shared process.
     """
 
     wall: float
     cpu: float
+    peak_memory_bytes: int | None = None
 
 
 def clocked(work: Callable[[], object]) -> Callable[[], Run]:
@@ -124,12 +149,14 @@ class Request:
 
     A Monte Carlo fixture runs its first `samples` on a pool of `threads` threads, as
     `sampled` runs them, and its seconds are per sample; any other runs its analyses
-    once, as `run` runs them.
+    once, as `run` runs them, optionally restricted to `threads` threads or run
+    `serial` (on one thread with no block of its matrix dissected).
     """
 
     fixture: str
     samples: int | None = None
     threads: int | None = None
+    serial: bool = False
 
 
 def planned() -> dict[str, Fixture]:
@@ -145,8 +172,25 @@ def work(request: Request, fixtures: dict[str, Fixture]) -> Callable[[], Run]:
     """The run `request` asks, clocked; per sample for a Monte Carlo fixture's."""
     loaded = load_fixture(fixtures[request.fixture])
     if request.samples is None:
+        if request.serial:
+            options = serially(loaded)
+
+            def serial_run() -> None:
+                with simulate.threads(1):
+                    run(loaded, options)
+
+            return clocked(serial_run)
+        if request.threads is not None:
+            thread_count = request.threads
+
+            def threaded_run() -> None:
+                with simulate.threads(thread_count):
+                    run(loaded)
+
+            return clocked(threaded_run)
         return clocked(functools.partial(run, loaded))
-    every = clocked(sampled(loaded, request.samples, request.threads or 1))
+    thread_count = 1 if request.serial else (request.threads or 1)
+    every = clocked(sampled(loaded, request.samples, thread_count))
     samples = request.samples
 
     def per_sample() -> Run:
@@ -156,24 +200,77 @@ def work(request: Request, fixtures: dict[str, Fixture]) -> Callable[[], Run]:
     return per_sample
 
 
+def probe(request: Request, *, python_executable: str = sys.executable) -> Run:
+    """Runs `request` once in a fresh `timing.py` child process.
+
+    Running in a fresh child process ensures `peak_memory_bytes` reflects this
+    fixture alone rather than a shared process's monotonic high-water mark.
+
+    Raises:
+        RuntimeError: When the child process exits with an error or returns no run.
+    """
+    script = Path(__file__).resolve()
+    payload = json.dumps(asdict(request)) + "\n"
+    done = subprocess.run(  # noqa: S603 - runs this module with the active interpreter
+        [python_executable, str(script)],
+        input=payload,
+        capture_output=True,
+        check=False,
+        cwd=ROOT,
+        text=True,
+    )
+    if done.returncode != 0:
+        message = (
+            f"timing probe for {request.fixture!r} exited with {done.returncode}: "
+            f"{done.stderr.strip()}"
+        )
+        raise RuntimeError(message)
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        message = (
+            f"timing probe for {request.fixture!r} returned no result: "
+            f"{done.stderr.strip()}"
+        )
+        raise RuntimeError(message)
+    return Run(**json.loads(lines[-1]))
+
+
 def serve() -> None:
     """Runs each request its standard input holds, and answers each on its output.
 
     Every run of one request reuses the fixture as first loaded, as a timing in one
-    process does.
+    process does. When only a single distinct request has run in this process, each
+    answer also carries `peak_memory_bytes`; once a second distinct request runs,
+    `peak_memory_bytes` is reported as None so an earlier fixture's high-water mark
+    cannot be attributed to another.
     """
-    answers = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
-    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    answers.write(json.dumps({"jolty": jolty.__file__}) + "\n")
-    answers.flush()
-    fixtures = planned()
-    works: dict[Request, Callable[[], Run]] = {}
-    for line in sys.stdin:
-        request = Request(**json.loads(line))
-        if request not in works:
-            works[request] = work(request, fixtures)
-        answers.write(json.dumps(asdict(works[request]())) + "\n")
+    with os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8") as answers:
+        os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+        answers.write(json.dumps({"jolty": jolty.__file__}) + "\n")
         answers.flush()
+        fixtures = planned()
+        works: dict[Request, Callable[[], Run]] = {}
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            prepare_only = bool(payload.pop("prepare", False))
+            request = Request(**payload)
+            if request not in works:
+                works[request] = work(request, fixtures)
+            if prepare_only:
+                answers.write(json.dumps({"ready": True}) + "\n")
+                answers.flush()
+                continue
+            measured = works[request]()
+            isolated = len(works) == 1
+            answered = Run(
+                measured.wall,
+                measured.cpu,
+                peak_memory_bytes() if isolated else None,
+            )
+            answers.write(json.dumps(asdict(answered)) + "\n")
+            answers.flush()
 
 
 if __name__ == "__main__":

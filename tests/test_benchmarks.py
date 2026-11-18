@@ -1,14 +1,21 @@
 # Copyright 2026 Maxence Faldor
 
 import json
+import math
+import os
+import resource
 import runpy
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import bench
+import measuring
 import numpy as np
 import pytest
+import timing
 
 from jolty import (
     Builder,
@@ -947,3 +954,576 @@ def test_a_script_that_fails_to_build_fails_its_task(tmp_path: Path) -> None:
     assert score(BALUN, tmp_path).reasons == (
         "design.py's build() fails: RuntimeError('unfinished')",
     )
+
+
+SPEED_RESULTS = Path(__file__).parent.parent / "benchmarks" / "speed" / "results"
+
+
+def test_ru_maxrss_to_bytes_converts_linux_kibibytes_and_macos_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert measuring.ru_maxrss_to_bytes(1024, "linux") == 1024 * 1024
+    assert measuring.ru_maxrss_to_bytes(1024, "freebsd14") == 1024 * 1024
+    assert measuring.ru_maxrss_to_bytes(1_048_576, "darwin") == 1_048_576
+    assert measuring.ru_maxrss_to_bytes(0, "linux") == 0
+    assert measuring.ru_maxrss_to_bytes(0, "darwin") == 0
+    with pytest.raises(ValueError, match="non-negative"):
+        measuring.ru_maxrss_to_bytes(-1, "linux")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert measuring.ru_maxrss_to_bytes(4096) == 4096
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert measuring.ru_maxrss_to_bytes(4096) == 4096 * 1024
+
+
+def test_memory_formats_iec_binary_prefixes() -> None:
+    assert measuring.memory(0) == "0 B"
+    assert measuring.memory(512) == "512 B"
+    assert measuring.memory(1024) == "1 KiB"
+    assert measuring.memory(1536 * 1024) == "1.5 MiB"
+    assert measuring.memory(2 * (1 << 30)) == "2 GiB"
+    assert measuring.memory(3 * (1 << 40)) == "3 TiB"
+    with pytest.raises(ValueError, match="non-negative"):
+        measuring.memory(-1)
+
+
+def test_linux_vm_hwm_and_available_memory_parsers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status = tmp_path / "status"
+    status.write_text("Name:\tpython\nVmHWM:\t  12345 kB\nVmRSS:\t 10000 kB\n", "utf-8")
+    assert measuring._linux_vm_hwm_bytes(status) == 12345 * 1024  # noqa: SLF001 - unit testing parser
+    status.write_text("Name:\tpython\nVmRSS:\t 10000 kB\n", "utf-8")
+    assert measuring._linux_vm_hwm_bytes(status) is None  # noqa: SLF001 - unit testing parser
+    assert measuring._linux_vm_hwm_bytes(tmp_path / "missing") is None  # noqa: SLF001 - unit testing parser
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       65536000 kB\nMemFree:        10000000 kB\n"
+        "MemAvailable:   32768000 kB\n",
+        encoding="utf-8",
+    )
+    assert measuring.available_memory_bytes(meminfo) == 32_768_000 * 1024
+    meminfo.write_text("MemTotal:       65536000 kB\n", encoding="utf-8")
+    assert measuring.available_memory_bytes(meminfo) == 65_536_000 * 1024
+
+    assert measuring.peak_memory_bytes() > 0
+
+    class FakeUsage:
+        ru_maxrss = 2048
+
+    monkeypatch.setattr(resource, "getrusage", lambda _who: FakeUsage())
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert measuring.peak_memory_bytes() == 2048
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(measuring, "_linux_vm_hwm_bytes", lambda: None)
+    assert measuring.peak_memory_bytes() == 2048 * 1024
+
+
+def test_probe_captures_isolated_child_peak_memory_independent_of_parent() -> None:
+    measured = timing.probe(timing.Request("bjt_amp", serial=True))
+    assert measured.wall > 0
+    assert measured.cpu > 0
+    assert measured.peak_memory_bytes is not None
+    assert measured.peak_memory_bytes > 0
+
+    # Spawn an intermediate parent that allocates and touches 256 MiB before probing
+    # `bjt_amp` in a fresh child, proving the child's peak RSS does not inherit the
+    # parent's high-water mark (even on Linux where fork+exec copies signal->maxrss).
+    parent_script = (
+        "import json, measuring, timing\n"
+        "buffer = bytearray(256 * 1024 * 1024)\n"
+        "buffer[0::4096] = b'\\x01' * (len(buffer) // 4096)\n"
+        "parent_peak = measuring.peak_memory_bytes()\n"
+        "child = timing.probe(timing.Request('bjt_amp', serial=True))\n"
+        "print(json.dumps({'parent': parent_peak, 'child': child.peak_memory_bytes}))\n"
+    )
+    environment = dict(os.environ)
+    paths = [
+        str(Path(__file__).parent.parent / "benchmarks"),
+        str(Path(__file__).parent.parent / "benchmarks" / "speed"),
+        str(Path(__file__).parent.parent / "benchmarks" / "speed" / "circuits"),
+    ]
+    existing = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [*paths, *([existing] if existing is not None and existing != "" else [])]
+    )
+    done = subprocess.run(  # noqa: S603 - active Python interpreter
+        [sys.executable, "-c", parent_script],
+        capture_output=True,
+        check=True,
+        cwd=measuring.ROOT,
+        env=environment,
+        text=True,
+    )
+    reported = json.loads(done.stdout.strip().splitlines()[-1])
+    parent_peak = reported["parent"]
+    child_peak = reported["child"]
+    assert isinstance(parent_peak, int)
+    assert isinstance(child_peak, int)
+    assert parent_peak >= 256 * 1024 * 1024
+    assert child_peak > 0
+    assert child_peak < parent_peak - 100 * 1024 * 1024
+
+
+def test_timing_server_drops_peak_memory_when_reused_for_second_fixture() -> None:
+    script = Path(__file__).parent.parent / "benchmarks" / "speed" / "timing.py"
+    requests_text = (
+        json.dumps({"fixture": "bjt_amp", "serial": True})
+        + "\n"
+        + json.dumps({"fixture": "ac_wide", "serial": True})
+        + "\n"
+    )
+    done = subprocess.run(  # noqa: S603 - runs timing.py with active interpreter
+        [sys.executable, str(script)],
+        input=requests_text,
+        capture_output=True,
+        check=True,
+        cwd=measuring.ROOT,
+        text=True,
+    )
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    assert len(lines) == 3
+    first = json.loads(lines[1])
+    second = json.loads(lines[2])
+    assert first["peak_memory_bytes"] is not None
+    assert first["peak_memory_bytes"] > 0
+    assert second["peak_memory_bytes"] is None
+
+
+def test_throughput_efficiency_math_and_edge_cases() -> None:
+    # N == 1 baseline case.
+    single = bench.throughput_efficiency(
+        threads=1,
+        serial_seconds=2.0,
+        parallel_seconds=2.0,
+        copies_wall_seconds=2.0,
+        copy_seconds=[2.0],
+    )
+    assert single is not None
+    assert single.speedup == pytest.approx(1.0)
+    assert single.attainable_speedup == pytest.approx(1.0)
+    assert single.efficiency == pytest.approx(1.0)
+    assert single.rate_sum_attainable_speedup == pytest.approx(1.0)
+    assert single.rate_sum_efficiency == pytest.approx(1.0)
+    assert single.copy_spread_ratio == pytest.approx(1.0)
+
+    # Homogeneous machine with all-core throttling: 8 copies take 12.5s vs 10s serial.
+    throttled = bench.throughput_efficiency(
+        threads=8,
+        serial_seconds=10.0,
+        parallel_seconds=2.5,
+        copies_wall_seconds=12.5,
+    )
+    assert throttled is not None
+    assert throttled.speedup == pytest.approx(4.0)
+    assert throttled.attainable_speedup == pytest.approx(6.4)
+    assert throttled.efficiency == pytest.approx(0.625)
+    assert throttled.efficiency == pytest.approx(
+        throttled.speedup / throttled.attainable_speedup
+    )
+    assert throttled.rate_sum_attainable_speedup is None
+    assert throttled.copy_spread_ratio is None
+
+    # Memory-bound copies contend more than one shared run: efficiency > 100%, never
+    # clamped.
+    superlinear = bench.throughput_efficiency(
+        threads=8,
+        serial_seconds=10.0,
+        parallel_seconds=2.5,
+        copies_wall_seconds=25.0,
+    )
+    assert superlinear is not None
+    assert superlinear.attainable_speedup == pytest.approx(3.2)
+    assert superlinear.efficiency == pytest.approx(1.25)
+
+    # Hybrid cores (e.g. 8 performance cores @ 1.0s, 4 efficiency cores @ 2.5s).
+    hybrid = bench.throughput_efficiency(
+        threads=12,
+        serial_seconds=1.0,
+        parallel_seconds=0.2,
+        copies_wall_seconds=2.5,
+        copy_seconds=[1.0] * 8 + [2.5] * 4,
+    )
+    assert hybrid is not None
+    assert hybrid.speedup == pytest.approx(5.0)
+    assert hybrid.attainable_speedup == pytest.approx(12 * 1.0 / 2.5)
+    assert hybrid.efficiency == pytest.approx(2.5 / (12 * 0.2))
+    assert hybrid.rate_sum_attainable_speedup == pytest.approx(9.6)
+    assert hybrid.rate_sum_efficiency == pytest.approx(5.0 / 9.6)
+    assert hybrid.copy_spread_ratio == pytest.approx(2.5)
+
+    # Zero, negative, and non-finite inputs yield None without ZeroDivisionError.
+    for bad in (0.0, -1.0, math.nan, math.inf):
+        assert (
+            bench.throughput_efficiency(
+                threads=4,
+                serial_seconds=bad,
+                parallel_seconds=1.0,
+                copies_wall_seconds=1.0,
+            )
+            is None
+        )
+        assert (
+            bench.throughput_efficiency(
+                threads=4,
+                serial_seconds=1.0,
+                parallel_seconds=bad,
+                copies_wall_seconds=1.0,
+            )
+            is None
+        )
+        assert (
+            bench.throughput_efficiency(
+                threads=4,
+                serial_seconds=1.0,
+                parallel_seconds=1.0,
+                copies_wall_seconds=bad,
+            )
+            is None
+        )
+
+    with pytest.raises(ValueError, match="at least 1"):
+        bench.throughput_efficiency(
+            threads=0,
+            serial_seconds=1.0,
+            parallel_seconds=1.0,
+            copies_wall_seconds=1.0,
+        )
+    with pytest.raises(ValueError, match="expected 4 copy times, not 2"):
+        bench.throughput_efficiency(
+            threads=4,
+            serial_seconds=1.0,
+            parallel_seconds=1.0,
+            copies_wall_seconds=1.0,
+            copy_seconds=[1.0, 1.0],
+        )
+
+
+def test_concurrent_copies_runs_real_workers_and_respects_memory_budget() -> None:
+    measured = bench.concurrent_copies(
+        "bjt_amp",
+        2,
+        bench.CopyOptions(rounds=2, warmup=False),
+    )
+    assert measured.copies == 2
+    assert measured.rounds == 2
+    assert measured.skipped_reason is None
+    assert measured.wall_seconds is not None
+    assert measured.wall_seconds > 0
+    assert len(measured.round_seconds) == 2
+    assert len(measured.copy_seconds) == 2
+    assert measured.copy_seconds == sorted(measured.copy_seconds)
+    assert measured.per_copy_peak_memory_bytes is not None
+    assert measured.per_copy_peak_memory_bytes > 0
+    wall_median = measured.wall_median()
+    assert wall_median is not None
+    assert wall_median.value == pytest.approx(measured.wall_seconds)
+
+    # Budget check skips without launching subprocesses when copies * single > budget.
+    skipped = bench.concurrent_copies(
+        "bjt_amp",
+        4,
+        bench.CopyOptions(
+            single_copy_memory_bytes=2 * (1 << 30),
+            memory_budget_bytes=4 * (1 << 30),
+        ),
+    )
+    assert skipped.copies == 4
+    assert skipped.wall_seconds is None
+    assert skipped.wall_median() is None
+    assert skipped.skipped_reason is not None
+    assert "8 GiB" in skipped.skipped_reason
+    assert "4 GiB" in skipped.skipped_reason
+
+    with pytest.raises(ValueError, match="copies must be at least 1"):
+        bench.concurrent_copies("bjt_amp", 0)
+    with pytest.raises(ValueError, match="rounds must be at least 1"):
+        bench.concurrent_copies("bjt_amp", 1, bench.CopyOptions(rounds=0))
+
+
+def test_speed_results_schema_round_trip_and_baseline_backwards_compatibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        bench,
+        "provenance",
+        lambda: measuring.Provenance(
+            commit="a" * 40,
+            machine={"cpu": "test", "cores": 4, "rustc": None},
+        ),
+    )
+    baseline_files = sorted(SPEED_RESULTS.glob("*.json"))
+    assert baseline_files
+    for baseline_file in baseline_files:
+        loaded = bench.load_results(baseline_file)
+        assert loaded.timings
+        assert loaded.copies == {}
+        for record in loaded.timings.values():
+            assert record.peak_memory_bytes is None
+            assert record.to_timing().peak_memory_bytes is None
+        raw = measuring.load(baseline_file)
+        for value in raw["timings"].values():
+            assert bench.Timing.from_json(value).peak_memory_bytes is None
+
+    # Timing round-trip with peak_memory_bytes (including zero and None).
+    runs_with_memory = [
+        timing.Run(1.0 + index / 100, 1.5, peak_memory_bytes=100_000 + index * 4096)
+        for index in range(6)
+    ]
+    recorded = bench.Timing.of(runs_with_memory, 1.2, 1.4)
+    assert recorded.peak_memory_bytes == 100_000 + 5 * 4096
+    assert bench.Timing.from_json(recorded.to_json()) == recorded
+
+    zero_memory = bench.Timing(seconds=1.0, runs=1, peak_memory_bytes=0)
+    assert zero_memory.to_json()["peak_memory_bytes"] == 0
+    assert bench.Timing.from_json(zero_memory.to_json()) == zero_memory
+
+    no_memory = bench.Timing(seconds=1.0, runs=1)
+    assert "peak_memory_bytes" not in no_memory.to_json()
+
+    # Merging into a legacy baseline preserves old entries and round-trips new ones.
+    copied_baseline = tmp_path / "merged.json"
+    copied_baseline.write_text(baseline_files[0].read_text(encoding="utf-8"), "utf-8")
+    copies_data = {
+        "rc_mesh_300": {
+            "4": bench.ConcurrentCopies(
+                copies=4,
+                rounds=3,
+                wall_seconds=15.5,
+                round_seconds=[15.2, 15.5, 15.9],
+                copy_seconds=[15.0, 15.1, 15.4, 15.5],
+                per_copy_peak_memory_bytes=320 * (1 << 20),
+                load=1.0,
+                load_after=1.5,
+            ),
+            "64": bench.ConcurrentCopies(
+                copies=64,
+                skipped_reason="estimated 20 GiB for 64 copies exceeds 16 GiB budget",
+            ),
+        }
+    }
+    document = bench.merged(
+        copied_baseline,
+        {"python/bjt_amp": recorded},
+        copies=copies_data,
+    )
+    measuring.save(copied_baseline, document)
+    round_tripped = bench.load_results(copied_baseline)
+    assert "rust/bjt_amp/setup" in round_tripped.timings
+    assert round_tripped.timings["python/bjt_amp"].peak_memory_bytes == (
+        recorded.peak_memory_bytes
+    )
+    assert round_tripped.copies["rc_mesh_300"]["4"].wall_seconds == 15.5
+    assert round_tripped.copies["rc_mesh_300"][
+        "4"
+    ].per_copy_peak_memory_bytes == 320 * (1 << 20)
+    assert round_tripped.copies["rc_mesh_300"]["64"].wall_seconds is None
+    assert "exceeds 16 GiB budget" in (
+        round_tripped.copies["rc_mesh_300"]["64"].skipped_reason or ""
+    )
+
+    # Merging into an empty pre-created file (e.g. from mktemp) does not crash.
+    empty_file = tmp_path / "empty.json"
+    empty_file.write_text("", encoding="utf-8")
+    measuring.save(empty_file, bench.merged(empty_file, {"python/bjt_amp": recorded}))
+    assert bench.load_results(empty_file).timings["python/bjt_amp"].to_timing() == (
+        recorded
+    )
+
+
+def test_formatted_speed_scaling_and_comparison_tables(tmp_path: Path) -> None:
+    timings_with_memory = {
+        "python/bjt_amp": bench.Timing(
+            seconds=0.002,
+            runs=6,
+            wall=(0.0019, 0.0020, 0.0020, 0.0020, 0.0020, 0.0021),
+            peak_memory_bytes=100 * (1 << 20),
+        ),
+        "rust/bjt_amp/run": bench.Timing(seconds=0.001, runs=10),
+    }
+    summary = bench.format_speed_table(timings_with_memory)
+    assert "peak memory" in summary
+    assert "100 MiB" in summary
+    assert "peak memory" not in bench.format_speed_table(
+        {"rust/bjt_amp/run": bench.Timing(seconds=0.001, runs=10)}
+    )
+
+    # Against older baseline (no memory) and newer baseline (with memory delta).
+    old_no_memory = {"python/bjt_amp": bench.Timing(seconds=0.002, runs=10)}
+    text_vs_old = bench.format_against_table(
+        {"python/bjt_amp": timings_with_memory["python/bjt_amp"]},
+        old_no_memory,
+        "legacy.json",
+    )
+    assert "peak memory" in text_vs_old
+    assert "100 MiB" in text_vs_old
+    old_with_memory = {
+        "python/bjt_amp": bench.Timing(
+            seconds=0.002, runs=10, peak_memory_bytes=100 * (1 << 20)
+        )
+    }
+    now_higher_memory = {
+        "python/bjt_amp": bench.Timing(
+            seconds=0.002, runs=10, peak_memory_bytes=105 * (1 << 20)
+        )
+    }
+    text_vs_new = bench.format_against_table(
+        now_higher_memory, old_with_memory, "recent.json"
+    )
+    assert "105 MiB (+5.0%)" in text_vs_new
+
+    # Scaling table with concurrent copies, hybrid-core spread note, and skipped entry.
+    serial_timing = bench.Timing(
+        seconds=10.0,
+        runs=6,
+        wall=(9.9, 10.0, 10.0, 10.0, 10.0, 10.1),
+        peak_memory_bytes=200 * (1 << 20),
+    )
+    rows = [
+        bench.ScalingRow("serially", None, serial_timing, "aaaaaaaaaaaaaaaa"),
+        bench.ScalingRow(
+            "8 threads",
+            8,
+            bench.Timing(
+                seconds=2.5,
+                runs=6,
+                wall=(2.4, 2.5, 2.5, 2.5, 2.5, 2.6),
+                peak_memory_bytes=250 * (1 << 20),
+            ),
+            "bbbbbbbbbbbbbbbb",
+            bench.ConcurrentCopies(
+                copies=8,
+                rounds=3,
+                wall_seconds=12.5,
+                round_seconds=[12.4, 12.5, 12.6],
+                copy_seconds=[12.5] * 8,
+            ),
+        ),
+        bench.ScalingRow(
+            "12 threads",
+            12,
+            bench.Timing(
+                seconds=2.0,
+                runs=6,
+                wall=(1.9, 2.0, 2.0, 2.0, 2.0, 2.1),
+                peak_memory_bytes=260 * (1 << 20),
+            ),
+            "cccccccccccccccc",
+            bench.ConcurrentCopies(
+                copies=12,
+                rounds=3,
+                wall_seconds=25.0,
+                round_seconds=[24.8, 25.0, 25.2],
+                copy_seconds=[10.0] * 8 + [25.0] * 4,
+            ),
+        ),
+        bench.ScalingRow(
+            "64 threads",
+            64,
+            bench.Timing(seconds=0.0, runs=1),
+            "dddddddddddddddd",
+            bench.ConcurrentCopies(
+                copies=64,
+                skipped_reason="estimated 128 GiB for 64 copies exceeds 64 GiB budget",
+            ),
+        ),
+    ]
+    scaling_text = bench.format_scaling_table("rc_mesh_300", "6 rounds", rows)
+    for expected in (
+        "N copies",
+        "attainable",
+        "efficiency",
+        "peak memory",
+        "6.40x",
+        "62.5%",
+        "250 MiB",
+        "skipped",
+        "64 copies skipped:",
+        "2.50x spread across cores",
+        "steady-state rate sum attainable",
+    ):
+        assert expected in scaling_text
+
+    minimal_text = bench.format_scaling_table(
+        "bjt_amp",
+        "6 rounds",
+        [bench.ScalingRow("serially", None, bench.Timing(seconds=1.0, runs=1), "1111")],
+    )
+    assert "N copies" not in minimal_text
+    assert "peak memory" not in minimal_text
+
+    # comparison() includes Peak memory section when present and omits it when absent.
+    pair = (
+        bench.Build("main", "a" * 40, tmp_path / "a"),
+        bench.Build("HEAD", "b" * 40, tmp_path / "b"),
+    )
+    rounds_without = {
+        "python/bjt_amp": bench.Rounds(
+            [
+                bench.Timing(seconds=1.0, runs=6, wall=(1.0,) * 6),
+                bench.Timing(seconds=1.0, runs=6, wall=(1.0,) * 6),
+            ],
+            [(1.0, 1.0)] * 6,
+        )
+    }
+    plain_md, _ = bench.comparison(pair, rounds_without)
+    assert "| Peak memory |" not in plain_md
+
+    rounds_with = {
+        "python/bjt_amp": bench.Rounds(
+            [
+                bench.Timing(
+                    seconds=1.0,
+                    runs=6,
+                    wall=(1.0,) * 6,
+                    peak_memory_bytes=100 * (1 << 20),
+                ),
+                bench.Timing(
+                    seconds=1.0,
+                    runs=6,
+                    wall=(1.0,) * 6,
+                    peak_memory_bytes=110 * (1 << 20),
+                ),
+            ],
+            [(1.0, 1.0)] * 6,
+        )
+    }
+    memory_md, _ = bench.comparison(pair, rounds_with)
+    assert "| Peak memory |" in memory_md
+    assert "100 MiB" in memory_md
+    assert "110 MiB" in memory_md
+    assert "+10.0%" in memory_md
+
+
+def test_bench_cli_flags_and_python_single_shot_memory_probe() -> None:
+    defaults = bench.Bench(_cli_parse_args=[])
+    assert defaults.peak_memory is True
+    assert defaults.concurrent_copies is True
+    assert defaults.copy_rounds == bench.COPY_ROUNDS
+
+    custom = bench.Bench(
+        _cli_parse_args=[
+            "--no-peak-memory",
+            "--no-concurrent-copies",
+            "--copy-rounds",
+            "5",
+        ]
+    )
+    assert custom.peak_memory is False
+    assert custom.concurrent_copies is False
+    assert custom.copy_rounds == 5
+
+    found = timing.planned()
+    measured_with_memory = bench.python(
+        ["bjt_amp"], found, scale=True, measure_memory=True
+    )
+    entry = measured_with_memory["python/bjt_amp"]
+    assert entry.runs == 1
+    assert entry.seconds > 0
+    assert entry.peak_memory_bytes is not None
+    assert entry.peak_memory_bytes > 0
+
+    measured_without_memory = bench.python(
+        ["bjt_amp"], found, scale=True, measure_memory=False
+    )
+    assert measured_without_memory["python/bjt_amp"].peak_memory_bytes is None
