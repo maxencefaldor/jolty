@@ -46,7 +46,7 @@ pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
 pub use device::{Differentiable, Model, ParameterError, Specification};
 pub use evaluation::{Contributions, Input};
 pub use group::{
-    Alone, Block, Changed, Groups, Instance, Moving, Runs, Seeds, Tasks, TooLarge, Twin,
+    Alone, Block, Changed, Groups, Instance, Runs, Seeds, Tasks, TooLarge, Twin, TwinNumber,
 };
 pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{

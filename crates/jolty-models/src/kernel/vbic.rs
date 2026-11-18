@@ -1960,7 +1960,7 @@ impl Kernel for Vbic {
         }
         for (pair, capacitance) in shape.overlap.iter().zip(prepared.overlap) {
             if let Some(pair) = pair {
-                pair.add_charge(stamp, capacitance * pair.moving::<R>(at, pair.voltage(at)));
+                pair.add_charge(stamp, capacitance * pair.across::<R>(at, pair.voltage(at)));
                 pair.add_capacitance(stamp, capacitance);
             }
         }
@@ -1974,7 +1974,7 @@ impl Kernel for Vbic {
             bias: &bias,
             variables: VARIABLES,
         };
-        let branches = prepared.core.evaluate(added.moving(at), at.gmin);
+        let branches = prepared.core.evaluate(added.across(at), at.gmin);
         let intrinsic = added.reading(INTRINSIC);
         let Branches {
             ibe,

@@ -45,7 +45,7 @@ pub trait Real:
 
     /// The number `value` moving at `rates` along each seed, padded with zeros or truncated
     /// to [`Real::SEEDS`].
-    fn moving(value: f64, rates: &[f64]) -> Self;
+    fn seeded(value: f64, rates: &[f64]) -> Self;
 
     /// The number's value.
     fn value(self) -> f64;
@@ -59,23 +59,24 @@ pub trait Real:
     #[must_use]
     fn with_value(self, value: f64) -> Self;
 
-    /// `f(self)`, given `f`'s value, slope and curvature at `self`: a number carrying
-    /// derivatives of the second order, such as [`Hyper`], reads the curvature.
+    /// A function of the number, given `function`, its value, slope and curvature at
+    /// the number: a number carrying derivatives of the second order, such as [`Hyper`],
+    /// reads the curvature.
     #[must_use]
-    fn chain(self, value: f64, slope: f64, curvature: f64) -> Self;
+    fn chain(self, function: (f64, f64, f64)) -> Self;
 
     /// `e` raised to the number.
     #[must_use]
     fn exp(self) -> Self {
         let exponential = self.value().exp();
-        self.chain(exponential, exponential, exponential)
+        self.chain((exponential, exponential, exponential))
     }
 
     /// The natural logarithm.
     #[must_use]
     fn ln(self) -> Self {
         let value = self.value();
-        self.chain(value.ln(), value.recip(), -(value * value).recip())
+        self.chain((value.ln(), value.recip(), -(value * value).recip()))
     }
 
     /// `ln(1 + x)` of the number `x`, to its last digit where `x` is near zero, where
@@ -84,7 +85,7 @@ pub trait Real:
     fn ln_1p(self) -> Self {
         let value = self.value();
         let base = 1.0 + value;
-        self.chain(value.ln_1p(), base.recip(), -(base * base).recip())
+        self.chain((value.ln_1p(), base.recip(), -(base * base).recip()))
     }
 
     /// `eˣ − 1` of the number `x`, to its last digit where `x` is near zero, where the
@@ -93,7 +94,7 @@ pub trait Real:
     fn exp_m1(self) -> Self {
         let value = self.value();
         let exponential = value.exp();
-        self.chain(value.exp_m1(), exponential, exponential)
+        self.chain((value.exp_m1(), exponential, exponential))
     }
 
     /// The square root.
@@ -101,7 +102,7 @@ pub trait Real:
     fn sqrt(self) -> Self {
         let value = self.value();
         let root = value.sqrt();
-        self.chain(root, 0.5 / root, -0.25 / (root * value))
+        self.chain((root, 0.5 / root, -0.25 / (root * value)))
     }
 
     /// The reciprocal.
@@ -109,11 +110,11 @@ pub trait Real:
     fn recip(self) -> Self {
         let value = self.value();
         let reciprocal = value.recip();
-        self.chain(
+        self.chain((
             reciprocal,
             -(value * value).recip(),
             2.0 * reciprocal * reciprocal * reciprocal,
-        )
+        ))
     }
 
     /// The number raised to the constant `exponent`.
@@ -133,7 +134,7 @@ pub trait Real:
         } else {
             curvature_factor * value.powf(exponent - 2.0)
         };
-        self.chain(value.powf(exponent), slope, curvature)
+        self.chain((value.powf(exponent), slope, curvature))
     }
 
     /// The number raised to `exponent`, itself a number with a derivative.
@@ -152,7 +153,7 @@ pub trait Real:
     #[must_use]
     fn sin(self) -> Self {
         let sine = self.value().sin();
-        self.chain(sine, self.value().cos(), -sine)
+        self.chain((sine, self.value().cos(), -sine))
     }
 
     /// The tangent, of an angle in radians.
@@ -160,7 +161,7 @@ pub trait Real:
     fn tan(self) -> Self {
         let tangent = self.value().tan();
         let slope = tangent.mul_add(tangent, 1.0);
-        self.chain(tangent, slope, 2.0 * tangent * slope)
+        self.chain((tangent, slope, 2.0 * tangent * slope))
     }
 
     /// The least non-negative remainder of division by `divisor`: the number less
@@ -203,7 +204,7 @@ impl Real for f64 {
         value
     }
 
-    fn moving(value: f64, _: &[f64]) -> Self {
+    fn seeded(value: f64, _: &[f64]) -> Self {
         value
     }
 
@@ -219,7 +220,7 @@ impl Real for f64 {
         value
     }
 
-    fn chain(self, value: f64, _: f64, _: f64) -> Self {
+    fn chain(self, (value, _, _): (f64, f64, f64)) -> Self {
         value
     }
 
@@ -368,7 +369,7 @@ impl<const K: usize> Real for Gradient<K> {
         unit
     }
 
-    fn moving(value: f64, rates: &[f64]) -> Self {
+    fn seeded(value: f64, rates: &[f64]) -> Self {
         Self {
             value,
             derivatives: std::array::from_fn(|slot| rates.get(slot).copied().unwrap_or(0.0)),
@@ -387,7 +388,7 @@ impl<const K: usize> Real for Gradient<K> {
         Self { value, ..self }
     }
 
-    fn chain(self, value: f64, slope: f64, _: f64) -> Self {
+    fn chain(self, (value, slope, _): (f64, f64, f64)) -> Self {
         Self {
             value,
             derivatives: self.map(|derivative| scaled(slope, derivative)),
@@ -606,7 +607,7 @@ impl<const K: usize> Real for Hyper<K> {
         unit
     }
 
-    fn moving(value: f64, rates: &[f64]) -> Self {
+    fn seeded(value: f64, rates: &[f64]) -> Self {
         Self::new(
             value,
             std::array::from_fn(|slot| rates.get(slot).copied().unwrap_or(0.0)),
@@ -625,7 +626,7 @@ impl<const K: usize> Real for Hyper<K> {
         Self { value, ..self }
     }
 
-    fn chain(self, value: f64, slope: f64, curvature: f64) -> Self {
+    fn chain(self, (value, slope, curvature): (f64, f64, f64)) -> Self {
         Self {
             value,
             first: self.first.map(|first| scaled(slope, first)),

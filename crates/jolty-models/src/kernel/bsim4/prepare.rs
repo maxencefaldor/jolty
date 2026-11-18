@@ -209,7 +209,7 @@ pub struct PreparedBsim4<R: Real> {
 fn atan<R: Real>(x: R) -> R {
     let value = x.value();
     let slope = 1.0 / (1.0 + value * value);
-    x.chain(value.atan(), slope, -2.0 * value * slope * slope)
+    x.chain((value.atan(), slope, -2.0 * value * slope * slope))
 }
 
 /// The source's and the drain's diffusions of `fingers` fingers, `b4v5geo.c`'s

@@ -519,7 +519,7 @@ fn add_body_network<R: Real>(
     stamp: &mut Stamp<'_, R>,
 ) {
     for ((plus, minus), conductance) in BODY_RESISTANCES.into_iter().zip(conductances) {
-        let voltage = nodes.moving::<R>(at, plus) - nodes.moving::<R>(at, minus);
+        let voltage = nodes.unknown::<R>(at, plus) - nodes.unknown::<R>(at, minus);
         nodes.current(stamp, plus, minus, conductance * voltage);
         nodes.conductance(stamp, (plus, minus), (plus, minus), conductance);
     }
@@ -634,7 +634,7 @@ impl<R: Real> External<R> {
                 bias: &bias,
                 variables,
             };
-            let [vg, vb, across] = Dual::variables(oriented.moving(at));
+            let [vg, vb, across] = Dual::variables(oriented.across(at));
             let current = (self.conductance(side, [vg, vb]) * across).scale(multiplier);
             oriented.add_current(stamp, &mut derivatives, variables[2], current);
         }
@@ -677,7 +677,7 @@ impl<R: Real> Gate<R> {
     ) {
         if matches!(self.model, GateResistance::One | GateResistance::Three) {
             let electrode = self.electrode * multiplier;
-            let voltage = nodes.moving::<R>(at, GATE) - nodes.moving::<R>(at, MIDDLE_GATE);
+            let voltage = nodes.unknown::<R>(at, GATE) - nodes.unknown::<R>(at, MIDDLE_GATE);
             nodes.current(stamp, GATE, MIDDLE_GATE, electrode * voltage);
             nodes.conductance(stamp, (GATE, MIDDLE_GATE), (GATE, MIDDLE_GATE), electrode);
         }
@@ -1025,9 +1025,9 @@ impl Kernel for Bsim4 {
             variables: [(SOURCE_BODY, INNER_SOURCE)],
         };
         let [drain_junction, source_junction] =
-            [&drain_side, &source_side].map(|side| side.moving(at)[0]);
+            [&drain_side, &source_side].map(|side| side.across(at)[0]);
         let terminals = prepared.terminals(
-            channel.moving(at),
+            channel.across(at),
             nodes.across(at, (MIDDLE_GATE, INNER_GATE), (sign, middle)),
             [drain_junction, source_junction],
             at.gmin,

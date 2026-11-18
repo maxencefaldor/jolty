@@ -310,7 +310,7 @@ impl BehavioralShape {
         let make = |base: f64, factor: f64, rates: Option<&[f64; crate::Seeds::MOST]>| match rates {
             Some(rates) => {
                 let scaled = rates.map(|rate| factor * rate);
-                R::moving(factor * base, &scaled)
+                R::seeded(factor * base, &scaled)
             }
             None => R::constant(factor * base),
         };

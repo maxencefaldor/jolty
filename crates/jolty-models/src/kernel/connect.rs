@@ -210,7 +210,7 @@ impl Kernel for ThresholdDetector {
         stamp: &mut Stamp<'_, R>,
     ) {
         let capacitance = parameters.capacitance;
-        pair.add_charge(stamp, pair.moving::<R>(at, pair.voltage(at)) * capacitance);
+        pair.add_charge(stamp, pair.across::<R>(at, pair.voltage(at)) * capacitance);
         pair.add_capacitance(stamp, R::constant(capacitance));
     }
 

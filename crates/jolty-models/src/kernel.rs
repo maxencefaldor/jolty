@@ -543,7 +543,7 @@ impl<'a> Local<'a> {
                 for (rate, tangent) in rates.iter_mut().zip(tangents) {
                     *rate = tangent.get(index).copied().unwrap_or(0.0);
                 }
-                R::moving(value, &rates)
+                R::seeded(value, &rates)
             }
         }
     }

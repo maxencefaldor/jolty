@@ -770,10 +770,10 @@ impl Kernel for Diode {
             if v.vd.value.value() < prepared.threshold.value() {
                 let t0022 = -v.vd.chain((v.vd.value / prepared.potential, prepared.h19));
                 let t0023 = t0022.value.value();
-                let t0024 = t0022.value.chain(t0023.ln_1p(), (t0023 + 1.0).recip(), -((t0023 + 1.0) * (t0023 + 1.0)).recip());
+                let t0024 = t0022.value.chain((t0023.ln_1p(), (t0023 + 1.0).recip(), -((t0023 + 1.0) * (t0023 + 1.0)).recip()));
                 let t0025 = t0022.chain((t0024, (t0022.value + 1.0).recip())).scale(prepared.h37);
                 let t0026 = t0025.value.value();
-                let t0027 = t0025.value.chain(t0026.exp_m1(), t0026.exp(), t0026.exp());
+                let t0027 = t0025.value.chain((t0026.exp_m1(), t0026.exp(), t0026.exp()));
                 let t0028 = (-t0025.chain((t0027, t0025.value.exp()))).scale(prepared.h36);
                 v.qd = t0028.chain((t0028.value / prepared.h37, prepared.h38));
             } else {
@@ -822,10 +822,10 @@ impl Kernel for Diode {
             if v.vs.value.value() < prepared.sidewall_threshold.value() {
                 let t0037 = -v.vs.chain((v.vs.value / prepared.sidewall_potential, prepared.h66));
                 let t0038 = t0037.value.value();
-                let t0039 = t0037.value.chain(t0038.ln_1p(), (t0038 + 1.0).recip(), -((t0038 + 1.0) * (t0038 + 1.0)).recip());
+                let t0039 = t0037.value.chain((t0038.ln_1p(), (t0038 + 1.0).recip(), -((t0038 + 1.0) * (t0038 + 1.0)).recip()));
                 let t0040 = t0037.chain((t0039, (t0037.value + 1.0).recip())).scale(prepared.h64);
                 let t0041 = t0040.value.value();
-                let t0042 = t0040.value.chain(t0041.exp_m1(), t0041.exp(), t0041.exp());
+                let t0042 = t0040.value.chain((t0041.exp_m1(), t0041.exp(), t0041.exp()));
                 let t0043 = (-t0040.chain((t0042, t0040.value.exp()))).scale(prepared.h63);
                 v.qs = t0043.chain((t0043.value / prepared.h64, prepared.h67));
             } else {

@@ -151,12 +151,12 @@ const fn smooth(builtin: Builtin) -> Option<Smooth> {
         Builtin::Sin => (
             "sin",
             ["{a}.sin()", "{a}.cos()", "-{a}.sin()"],
-            "{x}.chain({a}.cos(), -{a}.sin(), -{a}.cos())",
+            "{x}.chain(({a}.cos(), -{a}.sin(), -{a}.cos()))",
         ),
         Builtin::Cos => (
             "cos",
             ["{a}.cos()", "-{a}.sin()", "-{a}.cos()"],
-            "{x}.chain(-{a}.sin(), -{a}.cos(), {a}.sin())",
+            "{x}.chain((-{a}.sin(), -{a}.cos(), {a}.sin()))",
         ),
         Builtin::Tan => (
             "tan",
@@ -170,12 +170,12 @@ const fn smooth(builtin: Builtin) -> Option<Smooth> {
         Builtin::Sinh => (
             "sinh",
             ["{a}.sinh()", "{a}.cosh()", "{a}.sinh()"],
-            "{x}.chain({a}.cosh(), {a}.sinh(), {a}.cosh())",
+            "{x}.chain(({a}.cosh(), {a}.sinh(), {a}.cosh()))",
         ),
         Builtin::Cosh => (
             "cosh",
             ["{a}.cosh()", "{a}.sinh()", "{a}.cosh()"],
-            "{x}.chain({a}.sinh(), {a}.cosh(), {a}.sinh())",
+            "{x}.chain(({a}.sinh(), {a}.cosh(), {a}.sinh()))",
         ),
         Builtin::Tanh => (
             "tanh",
@@ -3392,7 +3392,7 @@ impl Emitter<'_, '_> {
                 let [value, slope, curvature] =
                     smooth.plain.map(|template| fill(template, &a, &x.code, ""));
                 Operand::new(
-                    format!("{}.chain({value}, {slope}, {curvature})", x.code),
+                    format!("{}.chain(({value}, {slope}, {curvature}))", x.code),
                     ATOM,
                     Kind::Real,
                 )
@@ -3405,7 +3405,7 @@ impl Emitter<'_, '_> {
                     smooth.plain.map(|template| fill(template, &a, "", ""));
                 let r = self.temporary();
                 out.push(Rust::Line(format!(
-                    "let {r} = {}.value.chain({value}, {slope}, {curvature});",
+                    "let {r} = {}.value.chain(({value}, {slope}, {curvature}));",
                     x.code
                 )));
                 let inner = format!("{}.value", x.code);

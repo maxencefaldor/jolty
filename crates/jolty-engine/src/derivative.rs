@@ -849,7 +849,7 @@ impl Simulator {
             .into_iter()
             .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
         twins.evaluate(x, None, options.gmin, parallelism);
-        let by_twin = twins.dots((Part::Residual, -1.0), &adjoints, parallelism);
+        let by_twin = twins.dots(Part::Residual, -1.0, &adjoints, parallelism);
         for (&(index, _), terms) in at.iter().zip(transposed(by_twin, at.len())) {
             fold(index, &terms);
         }
@@ -923,13 +923,8 @@ impl Simulator {
                     let mut moved = vec![Complex64::default(); dimension];
                     for (column, &along) in direction.iter().enumerate() {
                         if along != 0.0 {
-                            twins.add_product(
-                                column,
-                                &positions,
-                                along,
-                                (omega, phasors),
-                                &mut moved,
-                            );
+                            twins
+                                .add_product(column, &positions, along, omega, phasors, &mut moved);
                         }
                     }
                     for &(slot, conductance_rate, capacitance_rate) in entries {
@@ -985,7 +980,7 @@ impl Simulator {
                         factors.solve_transpose(&mut adjoint)?;
                         let by_twin: Vec<Complex64> = (0..twins.len())
                             .map(|column| {
-                                -twins.product(column, &positions, &adjoint, (omega, phasors))
+                                -twins.product(column, &positions, &adjoint, omega, phasors)
                             })
                             .collect();
                         at.push((cotangent, omega, adjoint, by_twin));
@@ -1097,7 +1092,7 @@ impl Simulator {
         solved
             .into_iter()
             .collect::<Result<Vec<()>, SimulationError>>()?;
-        let by_column = twins.dots((Part::Residual, 1.0), &sides, parallelism);
+        let by_column = twins.dots(Part::Residual, 1.0, &sides, parallelism);
         for (column, dots) in by_column.into_iter().enumerate() {
             for (&[real, imaginary], &(cotangent, _)) in dots.as_chunks::<2>().0.iter().zip(&active)
             {
@@ -1454,9 +1449,9 @@ impl Simulator {
                 .map(|(_, _, solution)| solution)
                 .collect();
             twins.evaluate(x, Some(time), gmin, &options.parallelism);
-            let charged = twins.dots((Part::Charge, 1.0), &shifted, &options.parallelism);
+            let charged = twins.dots(Part::Charge, 1.0, &shifted, &options.parallelism);
             let charged = transposed(charged, active.len());
-            let resistive = twins.dots((Part::Residual, -1.0), &solutions, &options.parallelism);
+            let resistive = twins.dots(Part::Residual, -1.0, &solutions, &options.parallelism);
             let resistive = transposed(resistive, active.len());
             for ((&index, charged), resistive) in active.iter().zip(&charged).zip(&resistive) {
                 fold(index, charged);
@@ -1519,7 +1514,7 @@ impl Simulator {
             periods.push(period);
         }
         twins.evaluate(x, Some(0.0), gmin, &options.parallelism);
-        let charged = twins.dots((Part::Charge, 1.0), &held_all, &options.parallelism);
+        let charged = twins.dots(Part::Charge, 1.0, &held_all, &options.parallelism);
         for (index, terms) in transposed(charged, seeds.len()).iter().enumerate() {
             fold(index, terms);
         }
@@ -1539,7 +1534,7 @@ impl Simulator {
             }
         }
         twins.evaluate(x, None, gmin, &options.parallelism);
-        let resistive = twins.dots((Part::Residual, -1.0), &solutions, &options.parallelism);
+        let resistive = twins.dots(Part::Residual, -1.0, &solutions, &options.parallelism);
         for (index, terms) in transposed(resistive, seeds.len()).iter().enumerate() {
             fold(index, terms);
         }

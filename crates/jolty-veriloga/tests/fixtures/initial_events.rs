@@ -108,7 +108,7 @@ impl Kernel for InitialEvents {
         let t0000 = parameters.fingers + 0.5;
         let t0001 = t0000.value();
         let t0002 = parameters.fingers.value();
-        v.g = (t0000.chain(t0001.floor(), 0.0, 0.0) + parameters.fingers.chain(t0002.ceil(), 0.0, 0.0)) / parameters.r;
+        v.g = (t0000.chain((t0001.floor(), 0.0, 0.0)) + parameters.fingers.chain((t0002.ceil(), 0.0, 0.0))) / parameters.r;
         if parameters.refuse != 0 {
             return Err(ParameterError("the model calls $finish".to_owned()));
         }

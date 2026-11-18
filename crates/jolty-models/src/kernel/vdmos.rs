@@ -430,9 +430,9 @@ fn softplus<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
     let curvature = logistic * (1.0 - logistic);
     let value = at.max(0.0) + falling.ln_1p();
     x.chain((
-        x.value.chain(value, logistic, curvature),
+        x.value.chain((value, logistic, curvature)),
         x.value
-            .chain(logistic, curvature, curvature * (1.0 - 2.0 * logistic)),
+            .chain((logistic, curvature, curvature * (1.0 - 2.0 * logistic))),
     ))
 }
 
@@ -467,19 +467,19 @@ impl<R: Real> Gate<R> {
             let tanh = at.tanh();
             let square = 1.0 - tanh * tanh;
             (
-                u.chain(
+                u.chain((
                     at + (-2.0 * at).exp().ln_1p() - std::f64::consts::LN_2,
                     tanh,
                     square,
-                ),
-                u.chain(tanh, square, -2.0 * tanh * square),
+                )),
+                u.chain((tanh, square, -2.0 * tanh * square)),
             )
         } else {
             let atan = at.atan();
             let inverse = 1.0 / (1.0 + at * at);
             (
-                u.chain(at * atan - 0.5 * (at * at).ln_1p(), atan, inverse),
-                u.chain(atan, inverse, -2.0 * at * inverse * inverse),
+                u.chain((at * atan - 0.5 * (at * at).ln_1p(), atan, inverse)),
+                u.chain((atan, inverse, -2.0 * at * inverse * inverse)),
             )
         };
         vgd.chain((
@@ -612,7 +612,7 @@ impl Kernel for Vdmos {
         }
         let bias = prepared.bias(shape, memory, at, stamp);
         let sign = prepared.sign;
-        let [vgs, vds] = Dual::variables(bias.moving(&shape.stamp, at, (sign, VARIABLES)));
+        let [vgs, vds] = Dual::variables(bias.across(&shape.stamp, at, (sign, VARIABLES)));
         let conduction = prepared.channel.evaluate([vgs, vds]);
         match (&shape.quasi, &prepared.quasi) {
             (Some(varying), Some(quasi)) if conduction.forward => {
@@ -648,7 +648,7 @@ impl Kernel for Vdmos {
         );
         shape.shunt.add_current(
             stamp,
-            prepared.shunt * shape.shunt.moving::<R>(at, shape.shunt.voltage(at)),
+            prepared.shunt * shape.shunt.across::<R>(at, shape.shunt.voltage(at)),
         );
         shape.shunt.add_conductance(stamp, prepared.shunt);
         let [by_gate, _] = gate_drain.gradient;

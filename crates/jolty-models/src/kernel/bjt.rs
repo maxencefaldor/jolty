@@ -1811,8 +1811,8 @@ impl Kernel for BipolarTransistor {
             bias: &bias,
             variables: VARIABLES,
         };
-        let moving = added.moving(at);
-        let [vbe, vbc, ..] = moving;
+        let voltages = added.across(at);
+        let [vbe, vbc, ..] = voltages;
         let state = prepared.junctions.evaluate([vbe, vbc], at.gmin);
         let intrinsic = added.reading(INTRINSIC);
         // Every derivative among the stamped nodes is summed here, and written once.
@@ -1837,14 +1837,14 @@ impl Kernel for BipolarTransistor {
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
             form.add(
                 resistance.evaluate(&state),
-                moving[VRB],
+                voltages[VRB],
                 (&added, &mut *sums),
                 at,
                 stamp,
             );
         }
         if let Some(charges) = &prepared.charges {
-            charges.evaluate(moving, &state).add(&added, sums, stamp);
+            charges.evaluate(voltages, &state).add(&added, sums, stamp);
         }
         derivatives.stamp(&shape.stamp, stamp);
         if let (Some(junction), Some(nodes)) = (&prepared.substrate, &shape.substrate) {

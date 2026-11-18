@@ -392,7 +392,7 @@ impl Kernel for Jfet {
         let bias = prepared.bias(shape, memory, at, stamp);
         let [vgs, _, vds] = bias.voltages;
         let (region, [overdrive, margin]) = prepared.channel.region(vgs, vds);
-        let [vgs, vgd, vds] = bias.moving(&shape.stamp, at, (prepared.sign, VARIABLES));
+        let [vgs, vgd, vds] = bias.across(&shape.stamp, at, (prepared.sign, VARIABLES));
         memory.variables = [f64::from(region as u8), overdrive, margin];
         let added = Oriented {
             nodes: &shape.stamp,

@@ -763,7 +763,7 @@ impl Displacement {
         let row = self.unknown;
         let [own, gate, node, from_gate, from_node] = self.entries;
         let displacement = at.unknown::<R>(row);
-        let voltage = nodes.moving::<R>(at, GATE) - nodes.moving::<R>(at, index);
+        let voltage = nodes.unknown::<R>(at, GATE) - nodes.unknown::<R>(at, index);
         stamp.add_residual(row, displacement);
         stamp.add_charge(row, -oxide * voltage);
         stamp.add_conductance(own, R::constant(1.0));
@@ -931,7 +931,7 @@ impl Kernel for Mosfet {
         shape.source_series.add(source_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
         let sign = prepared.sign;
-        let [vgs, vds, vbs] = Dual::variables(bias.moving(&shape.stamp, at, (sign, VARIABLES)));
+        let [vgs, vds, vbs] = Dual::variables(bias.across(&shape.stamp, at, (sign, VARIABLES)));
         let conduction = prepared.channel.evaluate([vgs, vds, vbs]);
         let threshold = conduction.threshold.value.value();
         memory.threshold = Some(threshold);
@@ -968,7 +968,7 @@ impl Kernel for Mosfet {
                 bias: &across,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.moving(&shape.stamp, at, (sign, [pair])));
+            let [voltage] = Dual::variables(across.across(&shape.stamp, at, (sign, [pair])));
             let (current, charge) = junction.evaluate(voltage, at.gmin);
             added.add_current(stamp, sums, pair, current);
             added.add_charge(stamp, sums, pair, charge);
@@ -986,7 +986,7 @@ impl Kernel for Mosfet {
                 bias: &across,
                 variables: [pair],
             };
-            let [voltage] = Dual::variables(across.moving(&shape.stamp, at, (sign, [pair])));
+            let [voltage] = Dual::variables(across.across(&shape.stamp, at, (sign, [pair])));
             added.add_charge(stamp, sums, pair, voltage.scale(overlap));
         }
 

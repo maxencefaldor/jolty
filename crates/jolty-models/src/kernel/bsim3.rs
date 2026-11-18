@@ -566,8 +566,8 @@ impl Kernel for Bsim3 {
         shape.source_series.add(source_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
         let sign = prepared.core.sign;
-        let moving = bias.moving(&shape.stamp, at, (sign, VARIABLES));
-        let terminals = prepared.terminals(moving, at.gmin);
+        let voltages = bias.across(&shape.stamp, at, (sign, VARIABLES));
+        let terminals = prepared.terminals(voltages, at.gmin);
         memory.threshold = Some(terminals.threshold);
         let [overdrive, margin] = terminals.margins;
         memory.variables = [

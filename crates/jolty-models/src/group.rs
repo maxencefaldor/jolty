@@ -30,6 +30,7 @@
 //! kernel's equations are its entries times its local unknowns.
 
 use std::any::{Any, TypeId};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::OnceLock;
@@ -2296,7 +2297,8 @@ impl Seeds {
     /// twin of another count taking the next of them up.
     pub const MOST: usize = 8;
 
-    /// A seed for each of the numbers at `paths`, which moves that number alone.
+    /// A seed for each of the numbers at `paths`, which moves that number alone; a path
+    /// given more than once moves along each of its seeds.
     ///
     /// A twin accepts between `1` and [`Seeds::MOST`] seeds; empty or larger sets yield
     /// `None` when passed to [`Runs::twin`].
@@ -2314,11 +2316,11 @@ impl Seeds {
                 (path.to_owned(), rates)
             })
             .collect();
-        Self {
-            numbers,
+        Self::new(numbers, count).unwrap_or(Self {
+            numbers: Vec::new(),
             count,
             seeded: Vec::new(),
-        }
+        })
     }
 
     /// A seed for each of the circuit's `unknowns`, at most [`Seeds::MOST`], its parameters
@@ -2351,16 +2353,32 @@ impl Seeds {
     }
 
     /// `count` seeds, between `1` and [`Seeds::MOST`], along which each number of
-    /// `numbers`, at its path, moves at its rates, one per seed; `None` when `count` is
-    /// out of range or a number has another count of rates.
+    /// `numbers`, at its path, moves at its rates, one per seed, a path given more than once
+    /// moving at the sum of its rates, added in the order given; `None` when `count` is out
+    /// of range or a number has another count of rates.
     #[must_use]
     pub fn new(numbers: Vec<(String, Vec<f64>)>, count: usize) -> Option<Self> {
-        ((1..=Self::MOST).contains(&count) && numbers.iter().all(|(_, rates)| rates.len() == count))
-            .then_some(Self {
-                numbers,
-                count,
-                seeded: Vec::new(),
-            })
+        if !(1..=Self::MOST).contains(&count)
+            || numbers.iter().any(|(_, rates)| rates.len() != count)
+        {
+            return None;
+        }
+        let mut place: BTreeMap<String, usize> = BTreeMap::new();
+        let mut summed: Vec<(String, Vec<f64>)> = Vec::with_capacity(numbers.len());
+        for (path, rates) in numbers {
+            let at = *place.entry(path.clone()).or_insert_with(|| {
+                summed.push((path, vec![0.0; count]));
+                summed.len() - 1
+            });
+            for (total, rate) in summed[at].1.iter_mut().zip(rates) {
+                *total += rate;
+            }
+        }
+        Some(Self {
+            numbers: summed,
+            count,
+            seeded: Vec::new(),
+        })
     }
 
     /// How many seeds there are.
@@ -2483,7 +2501,7 @@ pub struct Twin {
 
 /// A contribution of a twin as last evaluated: its value, and its derivative along each of
 /// the twin's seeds.
-pub type Moving<'a> = (f64, &'a [f64]);
+pub type TwinNumber<'a> = (f64, &'a [f64]);
 
 impl Twin {
     /// How many seeds the twin differentiates along.
@@ -2515,13 +2533,13 @@ impl Twin {
     /// Each residual the instance adds, by the circuit's unknown whose equation it enters,
     /// in the order of its local unknowns, those on the reference left out: `f`, and
     /// `∂f/∂p · s` along each seed `s`, as last evaluated.
-    pub fn residual(&self) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+    pub fn residual(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.by_unknown(Contribution::Residual)
     }
 
     /// Each charge the instance adds, as [`Twin::residual`] gives the residuals: `q`, and
     /// `∂q/∂p · s` along each seed, as last evaluated.
-    pub fn charge(&self) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+    pub fn charge(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.by_unknown(Contribution::Charge)
     }
 
@@ -2538,7 +2556,7 @@ impl Twin {
     /// Each conductance and capacitance the instance adds, by the stored position it adds
     /// to, in the order of its local entries, those on the reference left out: `G` and `C`,
     /// and their derivatives along each seed, as last evaluated.
-    pub fn entries(&self) -> impl Iterator<Item = (usize, Moving<'_>, Moving<'_>)> + '_ {
+    pub fn entries(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>, TwinNumber<'_>)> + '_ {
         self.slots
             .iter()
             .enumerate()
@@ -2555,7 +2573,7 @@ impl Twin {
     fn by_unknown(
         &self,
         contribution: Contribution,
-    ) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
+    ) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.nodes
             .iter()
             .enumerate()
@@ -2933,5 +2951,26 @@ fn add(
             *sum += conductance;
             *held += capacitance;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Seeds;
+
+    #[test]
+    fn a_path_given_twice_moves_at_the_sum_of_its_rates() {
+        let numbers = vec![
+            ("w".to_owned(), vec![1.0, -0.5]),
+            ("l".to_owned(), vec![0.0, 1.0]),
+            ("w".to_owned(), vec![0.25, 2.0]),
+        ];
+        let seeds = Seeds::new(numbers, 2).expect("two seeds");
+        assert_eq!(
+            seeds.padded::<2>(),
+            vec![("w", [1.25, 1.5]), ("l", [0.0, 1.0])]
+        );
+        let units = Seeds::units(&["w", "w"]);
+        assert_eq!(units.padded::<2>(), vec![("w", [1.0, 1.0])]);
     }
 }

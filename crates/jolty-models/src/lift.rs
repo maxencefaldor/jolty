@@ -74,33 +74,46 @@ impl ParameterPath<'_> {
     /// Whether this is the path `written`, its keys and indices joined by dots.
     #[must_use]
     pub fn is(&self, written: &str) -> bool {
+        self.matches(&segments(written))
+    }
+
+    /// Whether this is the path whose steps are `segments`, as [`segments`] reads them.
+    fn matches(&self, segments: &[Segment<'_>]) -> bool {
         match self {
-            Self::Root => written.is_empty(),
-            Self::Key {
-                within: Self::Root,
-                key,
-            } => written == *key,
-            Self::Key { within, key } => written
-                .rsplit_once('.')
-                .is_some_and(|(before, last)| last == *key && within.is(before)),
-            Self::Index {
-                within: Self::Root,
-                index,
-            } => is_canonical_index(written, *index),
-            Self::Index { within, index } => {
-                written.rsplit_once('.').is_some_and(|(before, last)| {
-                    is_canonical_index(last, *index) && within.is(before)
-                })
-            }
+            Self::Root => segments.is_empty(),
+            Self::Key { within, key } => segments
+                .split_last()
+                .is_some_and(|(last, before)| last.text == *key && within.matches(before)),
+            Self::Index { within, index } => segments
+                .split_last()
+                .is_some_and(|(last, before)| last.index == Some(*index) && within.matches(before)),
         }
     }
 }
 
-/// Whether `text` is the canonical decimal form of `index`, with no sign or leading zeros.
-fn is_canonical_index(text: &str, index: usize) -> bool {
-    !text.starts_with('+')
-        && (text == "0" || !text.starts_with('0'))
-        && text.parse::<usize>() == Ok(index)
+/// One step of a path as written: its text, and the index it is when it is the canonical
+/// decimal form of one, with no sign or leading zeros.
+#[derive(Debug, Clone, Copy)]
+struct Segment<'a> {
+    text: &'a str,
+    index: Option<usize>,
+}
+
+/// The steps of the path `written`, its keys and indices joined by dots, each read once;
+/// none for the parameters themselves, written as the empty text.
+fn segments(written: &str) -> Vec<Segment<'_>> {
+    if written.is_empty() {
+        return Vec::new();
+    }
+    written
+        .split('.')
+        .map(|text| Segment {
+            text,
+            index: (!text.starts_with('+') && (text == "0" || !text.starts_with('0')))
+                .then(|| text.parse().ok())
+                .flatten(),
+        })
+        .collect()
 }
 
 impl fmt::Display for ParameterPath<'_> {
@@ -187,8 +200,9 @@ pub(crate) fn constant<P: Lift<R>, R: Real>(parameters: &P::Plain) -> P {
 }
 
 /// The parameters `P` of a twin made of the plain `parameters`, each number at the path of
-/// one of `seeds` made by `seeded` of its value and its rate along each seed, a path named
-/// more than once moving at the sum of its rates, and every other number constant.
+/// one of `seeds` made by `seeded` of its value and its rate along each seed, and every
+/// other number constant. Each path is given once, as [`crate::Seeds`] holds them, so
+/// that a number is at the path of one seed at most.
 ///
 /// # Errors
 ///
@@ -199,28 +213,20 @@ pub(crate) fn lift<P: Lift<R>, R: Real, const K: usize>(
     seeds: &[(&str, [f64; K])],
     seeded: impl Fn(f64, [f64; K]) -> R,
 ) -> Result<P, ParameterError> {
-    let mut read = vec![false; seeds.len()];
-    let lifted = P::lift(parameters, &ParameterPath::Root, &mut |path, value| {
-        let mut combined: Option<[f64; K]> = None;
-        for ((seed, rates), seen) in seeds.iter().zip(&mut read) {
-            if path.is(seed) {
-                *seen = true;
-                match &mut combined {
-                    Some(sum) => {
-                        for (total, &rate) in sum.iter_mut().zip(rates) {
-                            *total += rate;
-                        }
-                    }
-                    None => combined = Some(*rates),
-                }
+    let read: Vec<Vec<Segment<'_>>> = seeds.iter().map(|(path, _)| segments(path)).collect();
+    let mut found = vec![false; seeds.len()];
+    let lifted = P::lift(
+        parameters,
+        &ParameterPath::Root,
+        &mut |path, value| match read.iter().position(|segments| path.matches(segments)) {
+            Some(seed) => {
+                found[seed] = true;
+                seeded(value, seeds[seed].1)
             }
-        }
-        match combined {
-            Some(rates) => seeded(value, rates),
             None => R::constant(value),
-        }
-    });
-    match seeds.iter().zip(&read).find(|(_, read)| !**read) {
+        },
+    );
+    match seeds.iter().zip(&found).find(|(_, found)| !**found) {
         Some(((path, _), _)) => Err(ParameterError(format!(
             "the parameters hold no real number at `{path}`"
         ))),
@@ -358,14 +364,10 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_seed_paths_sum_their_rates() {
+    fn a_path_seeded_once_moves_along_its_rates() {
         let card = cards().swap_remove(0);
-        let lifted: Card<Gradient<2>> = lift(
-            &card,
-            &[("w", [1.0, -0.5]), ("w", [0.25, 2.0])],
-            Gradient::new,
-        )
-        .expect("duplicate paths sum");
+        let lifted: Card<Gradient<2>> =
+            lift(&card, &[("w", [1.25, 1.5])], Gradient::new).expect("a real number at w");
         assert_eq!(lifted.width, Gradient::new(8.0, [1.25, 1.5]));
     }
 

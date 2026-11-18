@@ -22,9 +22,13 @@ use crate::sensitivity::Parameter;
 use crate::state::Held;
 use crate::sweep::Swept;
 
-/// What a column differentiates along: a device, by its index, and each number of its
-/// parameters, by its name, with its rate.
-pub(crate) type Direction = (usize, Vec<(String, f64)>);
+/// What a column differentiates along: a direction of one device's parameters.
+struct Direction {
+    /// The device, by its index.
+    device: usize,
+    /// Each number of its parameters the direction moves, by its path, with its rate.
+    rates: Vec<(String, f64)>,
+}
 
 /// Which of a twin's derivatives a quantity reads.
 #[derive(Clone, Copy)]
@@ -42,6 +46,21 @@ struct Chunk {
     columns: Vec<usize>,
 }
 
+/// Where a column's derivatives lie: its chunk, by its index, and its seed there.
+#[derive(Clone, Copy)]
+struct Place {
+    chunk: usize,
+    seed: usize,
+}
+
+/// The twins of some columns: each chunk, each column's place, and the columns along a
+/// number no model reads as a real one, which no twin carries, in increasing order.
+struct Chunked {
+    chunks: Vec<Chunk>,
+    places: Vec<Place>,
+    unread: Vec<usize>,
+}
+
 /// The twins of a derivative's columns.
 pub(crate) struct Twins {
     /// The parameters the derivative is with respect to, in their order, each at its value.
@@ -49,22 +68,22 @@ pub(crate) struct Twins {
     chunks: Vec<Chunk>,
     /// Each column's direction.
     directions: Vec<Direction>,
-    /// Each column's chunk, and its seed there.
-    places: Vec<(usize, usize)>,
+    /// Each column's place.
+    places: Vec<Place>,
     /// Whether a sweep holds each column's numbers, which then moves nothing: its device's
     /// level, or every number of the column.
     fixed: Vec<bool>,
 }
 
 impl Twins {
-    /// The twins `chunks` of `directions`, each column's twin and seed at `places`, the
-    /// derivative being with respect to `parameters`; the columns `unread`, which no twin
-    /// carries, left out.
-    fn new(
-        parameters: Vec<Parameter>,
-        (directions, mut chunks, places): (Vec<Direction>, Vec<Chunk>, Vec<(usize, usize)>),
-        unread: &[usize],
-    ) -> Self {
+    /// The twins `chunked` of `directions`, the derivative being with respect to
+    /// `parameters`, the columns no twin carries left out.
+    fn new(parameters: Vec<Parameter>, directions: Vec<Direction>, chunked: Chunked) -> Self {
+        let Chunked {
+            mut chunks,
+            places,
+            unread,
+        } = chunked;
         let mut renumbered = vec![usize::MAX; directions.len()];
         let mut kept_directions = Vec::with_capacity(directions.len() - unread.len());
         let mut kept_places = Vec::with_capacity(kept_directions.capacity());
@@ -113,12 +132,13 @@ impl Twins {
         );
     }
 
-    /// `sign · aᵀ ∂f/∂p` or `sign · aᵀ ∂q/∂p` along each column for each `a` of `vectors`,
-    /// by column then vector, as the twins were last evaluated: each twin's own terms
-    /// alone, zero for a column a sweep holds.
+    /// `sign · aᵀ ∂f/∂p` or `sign · aᵀ ∂q/∂p`, as `part` names, along each column for each
+    /// `a` of `vectors`, by column then vector, as the twins were last evaluated: each
+    /// twin's own terms alone, zero for a column a sweep holds.
     pub(crate) fn dots(
         &mut self,
-        (part, sign): (Part, f64),
+        part: Part,
+        sign: f64,
         vectors: &[Vec<f64>],
         parallelism: &Parallelism,
     ) -> Vec<Vec<f64>> {
@@ -158,26 +178,27 @@ impl Twins {
             if along == 0.0 || self.fixed[column] {
                 continue;
             }
-            let (chunk, seed) = self.places[column];
+            let Place { chunk, seed } = self.places[column];
             let twin = &self.chunks[chunk].twin;
-            for (unknown, (_, derivatives)) in moving(twin, part) {
+            for (unknown, (_, derivatives)) in contributions(twin, part) {
                 values[unknown] += along * derivatives[seed];
             }
         }
         values
     }
 
-    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` along `column` at `(ω, x)`, for the vector `a` of the
-    /// equations, as last evaluated: its twin's own entries alone, each at its row and
-    /// column of `positions`.
+    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` along `column` at the angular frequency `omega` and the
+    /// phasors `x`, for the vector `a` of the equations, as last evaluated: its twin's own
+    /// entries alone, each at its row and column of `positions`.
     pub(crate) fn product(
         &self,
         column: usize,
         positions: &[(usize, usize)],
         a: &[Complex64],
-        (omega, x): (f64, &[Complex64]),
+        omega: f64,
+        x: &[Complex64],
     ) -> Complex64 {
-        let (chunk, seed) = self.places[column];
+        let Place { chunk, seed } = self.places[column];
         self.chunks[chunk]
             .twin
             .entries()
@@ -189,17 +210,18 @@ impl Twins {
             .sum()
     }
 
-    /// Adds `scale (∂G/∂p + jω ∂C/∂p) x` along `column` at `(ω, x)` to `into`, as last
-    /// evaluated.
+    /// Adds `scale (∂G/∂p + jω ∂C/∂p) x` along `column` at the angular frequency `omega`
+    /// and the phasors `x` to `into`, as last evaluated.
     pub(crate) fn add_product(
         &self,
         column: usize,
         positions: &[(usize, usize)],
         scale: f64,
-        (omega, x): (f64, &[Complex64]),
+        omega: f64,
+        x: &[Complex64],
         into: &mut [Complex64],
     ) {
-        let (chunk, seed) = self.places[column];
+        let Place { chunk, seed } = self.places[column];
         for (slot, (_, conductance), (_, capacitance)) in self.chunks[chunk].twin.entries() {
             let (row, column) = positions[slot];
             let derivative = Complex64::new(conductance[seed], omega * capacitance[seed]);
@@ -217,10 +239,10 @@ impl Twins {
             Held::Number(_) => parameter,
         };
         for column in 0..self.len() {
-            let (device, numbers) = &self.directions[column];
-            if *device == swept.device {
+            let direction = &self.directions[column];
+            if direction.device == swept.device {
                 self.fixed[column] =
-                    held.is_none_or(|held| numbers.iter().all(|(name, _)| name == held));
+                    held.is_none_or(|held| direction.rates.iter().all(|(name, _)| name == held));
             }
         }
         let Some(held) = held else {
@@ -256,10 +278,10 @@ fn unlimited(x: &[f64], time: Option<f64>, gmin: f64) -> Input<'_> {
 }
 
 /// The residuals or charges, `part`, `twin` adds, as last evaluated.
-fn moving(
+fn contributions(
     twin: &Twin,
     part: Part,
-) -> Box<dyn Iterator<Item = (usize, jolty_models::Moving<'_>)> + '_> {
+) -> Box<dyn Iterator<Item = (usize, jolty_models::TwinNumber<'_>)> + '_> {
     match part {
         Part::Residual => Box::new(twin.residual()),
         Part::Charge => Box::new(twin.charge()),
@@ -268,34 +290,60 @@ fn moving(
 
 /// `aᵀ ∂f/∂p` or `aᵀ ∂q/∂p` along the seed `seed` of `twin`, as last evaluated.
 fn dot(twin: &Twin, part: Part, seed: usize, a: &[f64]) -> f64 {
-    moving(twin, part)
+    contributions(twin, part)
         .map(|(unknown, (_, derivatives))| a[unknown] * derivatives[seed])
         .sum()
 }
 
-/// The seeds of `columns`, each direction one seed, every number they move with its rate
-/// along each, a number named twice moving at the sum of its rates; the number `held`
-/// left out.
+/// The seeds of `columns`, each direction one seed, every number it moves at its rate
+/// along it; the number `held` left out. [`Seeds::new`] sums the rates of a number that
+/// several directions, or one direction twice, move.
 fn seeds(columns: &[&Direction], held: Option<&str>) -> Option<Seeds> {
-    let mut rates: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
-    let mut order = Vec::new();
-    for (seed, (_, numbers)) in columns.iter().enumerate() {
-        for (name, rate) in numbers {
-            if Some(name.as_str()) == held {
-                continue;
-            }
-            let row = rates.entry(name).or_insert_with(|| {
-                order.push(name.as_str());
-                vec![0.0; columns.len()]
-            });
-            row[seed] += rate;
-        }
-    }
-    let numbers = order
-        .into_iter()
-        .map(|name| (name.to_owned(), rates.remove(name).unwrap_or_default()))
+    let count = columns.len();
+    let numbers = columns
+        .iter()
+        .enumerate()
+        .flat_map(|(seed, direction)| {
+            direction
+                .rates
+                .iter()
+                .filter(move |(name, _)| Some(name.as_str()) != held)
+                .map(move |(name, rate)| {
+                    let mut rates = vec![0.0; count];
+                    rates[seed] = *rate;
+                    (name.clone(), rates)
+                })
+        })
         .collect();
-    Seeds::new(numbers, columns.len())
+    Seeds::new(numbers, count)
+}
+
+/// A direction for each of `parameters`, each a device's index and one of its numbers,
+/// that moves that number alone, at the unit rate.
+fn units(parameters: &[(usize, Parameter)]) -> Vec<Direction> {
+    parameters
+        .iter()
+        .map(|(device, parameter)| Direction {
+            device: *device,
+            rates: vec![(parameter.name.clone(), 1.0)],
+        })
+        .collect()
+}
+
+/// The order `items` first name each device in, and the indices of the items of each, in
+/// their order: linear in the items, however many devices they name.
+fn by_device<T>(items: &[T], device: impl Fn(&T) -> usize) -> Vec<(usize, Vec<usize>)> {
+    let mut position: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut grouped: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let each = device(item);
+        let at = *position.entry(each).or_insert_with(|| {
+            grouped.push((each, Vec::new()));
+            grouped.len() - 1
+        });
+        grouped[at].1.push(index);
+    }
+    grouped
 }
 
 impl Simulator {
@@ -306,22 +354,18 @@ impl Simulator {
         &self,
         parameters: Vec<(usize, Parameter)>,
     ) -> (Twins, Vec<Parameter>) {
-        let directions: Vec<Direction> = parameters
-            .iter()
-            .map(|(device, parameter)| (*device, vec![(parameter.name.clone(), 1.0)]))
-            .collect();
-        let (chunks, places, unread) = self.chunked(&directions);
+        let directions = units(&parameters);
+        let chunked = self.chunked(&directions);
         let mut kept = Vec::with_capacity(parameters.len());
         let mut left_out = Vec::new();
         for (column, (_, parameter)) in parameters.into_iter().enumerate() {
-            if unread.binary_search(&column).is_ok() {
+            if chunked.unread.binary_search(&column).is_ok() {
                 left_out.push(parameter);
             } else {
                 kept.push(parameter);
             }
         }
-        let twins = Twins::new(kept, (directions, chunks, places), &unread);
-        (twins, left_out)
+        (Twins::new(kept, directions, chunked), left_out)
     }
 
     /// The twins of `tangents`, each a number per parameter of `parameters`, each a
@@ -334,76 +378,61 @@ impl Simulator {
         parameters: Vec<(usize, Parameter)>,
         tangents: &[Vec<f64>],
     ) -> Result<(Twins, Vec<Vec<f64>>), Vec<Parameter>> {
-        if tangents.is_empty() {
-            let (twins, unread) = self.unit_twins(parameters);
-            if !unread.is_empty() {
-                return Err(unread);
-            }
-            return Ok((
-                Twins::new(twins.parameters, (Vec::new(), Vec::new(), Vec::new()), &[]),
-                Vec::new(),
-            ));
-        }
-        let mut devices: Vec<usize> = Vec::new();
-        for (device, _) in &parameters {
-            if !devices.contains(device) {
-                devices.push(*device);
-            }
-        }
+        let devices = by_device(&parameters, |(device, _)| *device);
         let mut directions = Vec::with_capacity(tangents.len() * devices.len());
         let mut along = vec![vec![0.0; tangents.len() * devices.len()]; tangents.len()];
         for (index, tangent) in tangents.iter().enumerate() {
-            for &device in &devices {
-                let numbers = parameters
+            for (device, members) in &devices {
+                let rates = members
                     .iter()
-                    .zip(tangent)
-                    .filter(|((each, _), _)| *each == device)
-                    .map(|((_, parameter), &rate)| (parameter.name.clone(), rate))
+                    .map(|&member| (parameters[member].1.name.clone(), tangent[member]))
                     .collect();
                 along[index][directions.len()] = 1.0;
-                directions.push((device, numbers));
+                directions.push(Direction {
+                    device: *device,
+                    rates,
+                });
             }
         }
-        let (chunks, places, unread) = self.chunked(&directions);
+        let chunked = self.chunked(&directions);
+        // With no tangent there is no column, so each parameter is tried alone.
+        let unread = if tangents.is_empty() || !chunked.unread.is_empty() {
+            self.chunked(&units(&parameters)).unread
+        } else {
+            Vec::new()
+        };
         if !unread.is_empty() {
-            return Err(parameters
+            return Err(unread
                 .into_iter()
-                .filter(|(device, parameter)| {
-                    let unit = (*device, vec![(parameter.name.clone(), 1.0)]);
-                    seeds(&[&unit], None)
-                        .and_then(|seeds| self.twin_of(*device, &seeds))
-                        .is_none()
-                })
-                .map(|(_, parameter)| parameter)
+                .map(|column| parameters[column].1.clone())
                 .collect());
         }
         let named = parameters
             .into_iter()
             .map(|(_, parameter)| parameter)
             .collect();
-        Ok((Twins::new(named, (directions, chunks, places), &[]), along))
+        Ok((Twins::new(named, directions, chunked), along))
     }
 
     /// Each device's twins of `directions`, the columns, up to [`Seeds::MOST`] to a twin,
-    /// each column's twin and seed there, and the columns along a number no model reads
-    /// as a real one, which no twin carries.
-    fn chunked(&self, directions: &[Direction]) -> (Vec<Chunk>, Vec<(usize, usize)>, Vec<usize>) {
-        let mut by_device: Vec<(usize, Vec<usize>)> = Vec::new();
-        for (column, (device, _)) in directions.iter().enumerate() {
-            match by_device.iter_mut().find(|(each, _)| each == device) {
-                Some((_, columns)) => columns.push(column),
-                None => by_device.push((*device, vec![column])),
-            }
-        }
+    /// each column's place among them, and the columns along a number no model reads as a
+    /// real one, which no twin carries.
+    fn chunked(&self, directions: &[Direction]) -> Chunked {
         let mut chunks = Vec::new();
-        let mut places = vec![(usize::MAX, 0); directions.len()];
+        let mut places = vec![
+            Place {
+                chunk: usize::MAX,
+                seed: 0,
+            };
+            directions.len()
+        ];
         let mut unread = Vec::new();
         let twin_of = |device: usize, columns: &[usize]| {
             let along: Vec<&Direction> =
                 columns.iter().map(|&column| &directions[column]).collect();
             seeds(&along, None).and_then(|seeds| self.twin_of(device, &seeds))
         };
-        for (device, columns) in by_device {
+        for (device, columns) in by_device(directions, |direction| direction.device) {
             for members in columns.chunks(Seeds::MOST) {
                 let mut members = members.to_vec();
                 let mut twin = twin_of(device, &members);
@@ -426,7 +455,10 @@ impl Simulator {
                     continue;
                 };
                 for (seed, &column) in members.iter().enumerate() {
-                    places[column] = (chunks.len(), seed);
+                    places[column] = Place {
+                        chunk: chunks.len(),
+                        seed,
+                    };
                 }
                 chunks.push(Chunk {
                     device,
@@ -436,7 +468,11 @@ impl Simulator {
             }
         }
         unread.sort_unstable();
-        (chunks, places, unread)
+        Chunked {
+            chunks,
+            places,
+            unread,
+        }
     }
 
     /// The twin of the device at `index` along `seeds`, made from what the device is made

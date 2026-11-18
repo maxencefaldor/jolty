@@ -215,7 +215,7 @@ impl Kernel for Resistor {
         match &shape.0 {
             Form::Conductance(pair) => {
                 // i = v / (r · f(v)).
-                let voltage = Dual::variable(pair.moving(at, pair.voltage(at)));
+                let voltage = Dual::variable(pair.across(at, pair.voltage(at)));
                 let resistance = prepared
                     .coefficients
                     .factor(voltage)
@@ -379,7 +379,7 @@ impl Kernel for Capacitor {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let voltage = Dual::variable(pair.moving(at, pair.voltage(at)));
+        let voltage = Dual::variable(pair.across(at, pair.voltage(at)));
         let charge = prepared
             .coefficients
             .integral(voltage)

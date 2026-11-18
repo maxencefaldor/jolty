@@ -31,8 +31,8 @@ pub(crate) use laws::assert_mirrors;
 
 use crate::{
     BOLTZMANN, Binding, Contributions, Differentiable, Gradient, Groups, Input, Kernel, Model,
-    Moving, Nature, Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions,
-    Runs, Seeds, Twin, Unknown, UnknownIndex,
+    Nature, Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Seeds,
+    Twin, TwinNumber, Unknown, UnknownIndex,
 };
 
 /// One device whose terminals each connect to an unknown of their own, its instance in a
@@ -502,7 +502,7 @@ impl Rig<'_> {
         twin.evaluate(&input);
         let zero = (0.0, vec![0.0; paths.len()]);
         let mut found = [x.len(), x.len(), pattern.len()].map(|length| vec![zero.clone(); length]);
-        let add = |(sum, sums): &mut Moved, (value, derivatives): Moving<'_>| {
+        let add = |(sum, sums): &mut Moved, (value, derivatives): TwinNumber<'_>| {
             *sum += value;
             for (sum, derivative) in sums.iter_mut().zip(derivatives) {
                 *sum += derivative;

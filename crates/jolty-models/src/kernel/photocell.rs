@@ -114,7 +114,7 @@ impl<R: Real> PreparedPhotocell<R> {
         let across = illuminance.value();
         let root_value = across.hypot(DARKNESS);
         let ratio = DARKNESS / root_value;
-        let root = illuminance.chain(root_value, across / root_value, ratio * ratio / root_value);
+        let root = illuminance.chain((root_value, across / root_value, ratio * ratio / root_value));
         let lit = if across >= 0.0 {
             (illuminance + root) * 0.5
         } else {

@@ -530,7 +530,7 @@ impl Kernel for Diode {
                 .junction
                 .limited(&shape.junction, &mut memory.last_voltage, at, stamp);
         let beyond = [applied - voltage];
-        let [voltage] = Dual::variables([shape.junction.moving(at, voltage)]);
+        let [voltage] = Dual::variables([shape.junction.across(at, voltage)]);
         let mut current = prepared.bottom.current(voltage);
         let mut charge = depletion_charge(prepared.bottom.junction.depletion.as_ref(), voltage);
         if shape.sidewall.is_none() {
@@ -562,7 +562,7 @@ impl Kernel for Diode {
             stamp,
         );
         let beyond = [applied - voltage];
-        let [voltage] = Dual::variables([separate.junction.moving(at, voltage)]);
+        let [voltage] = Dual::variables([separate.junction.across(at, voltage)]);
         let current = prepared.sidewall.current(voltage);
         let charge = depletion_charge(prepared.sidewall.junction.depletion.as_ref(), voltage);
         add_junction(
@@ -1121,7 +1121,7 @@ impl<R: Real> Junction<R> {
     ) -> R {
         let (applied, voltage) = self.limited(pair, last, at, stamp);
         let beyond = [applied - voltage];
-        let [voltage] = Dual::variables([pair.moving(at, voltage)]);
+        let [voltage] = Dual::variables([pair.across(at, voltage)]);
         let current = self.current(voltage);
         let charge =
             depletion_charge(self.depletion.as_ref(), voltage) + current.scale(transit_time);

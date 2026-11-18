@@ -155,12 +155,12 @@ impl Kernel for Constructs {
         v.v = v.voltage_a_b;
         let t0000 = v.v.chain((v.v.value / prepared.saturation, prepared.h2));
         let t0001 = t0000.value.value();
-        let t0002 = t0000.value.chain(t0001.atan(), (t0001 * t0001 + 1.0).recip(), -2.0 * t0001 * (t0001 * t0001 + 1.0).powi(-2));
+        let t0002 = t0000.value.chain((t0001.atan(), (t0001 * t0001 + 1.0).recip(), -2.0 * t0001 * (t0001 * t0001 + 1.0).powi(-2)));
         v.bent = t0000.chain((t0002, (t0000.value * t0000.value + 1.0).recip())).scale(prepared.h0);
         v.saturated1_v = v.v;
         let t0003 = v.saturated1_v.chain((v.saturated1_v.value / prepared.saturated1_vs, prepared.h5));
         let t0004 = t0003.value.value();
-        let t0005 = t0003.value.chain(t0004.tanh(), 1.0 - t0004.tanh() * t0004.tanh(), -2.0 * t0004.tanh() * (1.0 - t0004.tanh() * t0004.tanh()));
+        let t0005 = t0003.value.chain((t0004.tanh(), 1.0 - t0004.tanh() * t0004.tanh(), -2.0 * t0004.tanh() * (1.0 - t0004.tanh() * t0004.tanh())));
         v.saturated1_saturated = t0003.chain((t0005, R::constant(1.0) - t0005 * t0005)).scale(prepared.h3);
         v.current = (v.saturated1_saturated + v.bent) * 1.0;
         v.a_b_flow = v.a_b_flow + v.current;
