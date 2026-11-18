@@ -14,6 +14,9 @@ dist/
 *.so
 *.pyd
 
+# Offline guide and examples bundle copied by maturin editable builds
+src/jolty/assets/docs.json
+
 # What building and simulating the examples writes
 examples/*.jolty.json
 examples/*.results.npz

@@ -56,9 +56,12 @@ The server offers one tool per command:
 | `view_circuit` | `jolty view` |
 | `check_circuit` | `jolty check` |
 | `explain_rules` | `jolty explain` |
+| `read_docs` | `jolty docs` |
 | `cost_circuit` | `jolty cost` |
 | `export_kicad_netlist` | `jolty export-kicad` |
 
 Each tool answers with the text the command prints, with the result itself as structured content, and with the schematics and plots it drew as images.
+The server also exposes the guide pages (`jolty://docs/guide/<slug>`) and example scripts (`jolty://docs/examples/<slug>`) offline as MCP resources, with matching URI templates (`jolty://docs/guide/{slug}` and `jolty://docs/examples/{+slug}`), backed by the same loader as `jolty docs` and `read_docs`.
+The server's instructions derive programmatically from the code, naming every device constructor, real part, analysis, measurement and offline resource URI.
 Scripts run in a process of their own, with the configured time limit, so nothing a script prints can reach the protocol stream.
-The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the check, explain and price tools only read, and the plot, draw, viewer and KiCad tools only add files beside the files they read.
+The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the check, explain, docs and price tools only read, and the plot, draw, viewer and KiCad tools only add files beside the files they read.

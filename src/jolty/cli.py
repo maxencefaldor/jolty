@@ -106,6 +106,14 @@ class ExplainCommand(service.ExplainRequest, _Output):
         self.emit(await service.explain(self, Settings.load()))
 
 
+class DocsCommand(service.DocsRequest, _Output):
+    """List or read jolty's offline guide pages and example scripts."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.docs(self, Settings.load()))
+
+
 class CostCommand(service.CostRequest, _Output):
     """Price a component of a saved circuit file with a catalog's parts."""
 
@@ -198,6 +206,9 @@ class Jolty(CommandLine):
     )
     explain: CliSubCommand[ExplainCommand] = Field(
         description="Explain rules and their levels."
+    )
+    docs: CliSubCommand[DocsCommand] = Field(
+        description="List or read the offline guide and examples."
     )
     cost: CliSubCommand[CostCommand] = Field(
         description="Price a component of a saved circuit file with a catalog."

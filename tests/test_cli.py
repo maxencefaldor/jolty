@@ -1,6 +1,7 @@
 # Copyright 2026 Maxence Faldor
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,11 @@ from jolty import __version__
 from jolty.cli import main
 from jolty.files import load_raw, load_results
 from jolty.results import AcResult, OperatingPointResult, TransientResult
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+ADVICE_WORDS = re.compile(
+    r"\b(?:use|pass|try|instead|should|give|did you mean)\b", re.IGNORECASE
+)
 
 FILTER = """
 from jolty import Builder, Plan, Role, Transient, component, devices
@@ -381,3 +387,77 @@ def test_simulate_raw_option_validation_errors(
         == 2
     )
     assert "writes no raw file" in capsys.readouterr().err
+
+
+def test_docs_lists_and_reads_guide_and_examples(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run("docs") == 0
+    listed = capsys.readouterr().out
+    assert "guide (17 pages, jolty://docs/guide/<slug>):" in listed
+    assert "examples (33 scripts, jolty://docs/examples/<slug>):" in listed
+    assert "units" in listed
+    assert "cluster/amplifier" in listed
+
+    assert run("docs", "--section", "guide") == 0
+    guide_list = capsys.readouterr().out
+    assert "units" in guide_list
+    assert "rc_filter" not in guide_list
+
+    assert run("docs", "--section", "examples") == 0
+    examples_list = capsys.readouterr().out
+    assert "rc_filter" in examples_list
+    assert "cluster/amplifier" in examples_list
+    assert "guide (" not in examples_list
+
+    expected_units = (REPOSITORY_ROOT / "docs" / "guide" / "units.md").read_text(
+        encoding="utf-8"
+    )
+    assert run("docs", "units") == 0
+    assert capsys.readouterr().out == expected_units
+
+    assert run("docs", "guide/units") == 0
+    assert capsys.readouterr().out == expected_units
+
+    expected_example = (
+        REPOSITORY_ROOT / "examples" / "cluster" / "amplifier.py"
+    ).read_text(encoding="utf-8")
+    assert run("docs", "cluster/amplifier") == 0
+    assert capsys.readouterr().out == expected_example
+
+    assert run("docs", "units", "--output-format", "json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["entries"] == []
+    assert payload["document"]["uri"] == "jolty://docs/guide/units"
+    assert payload["document"]["mime_type"] == "text/markdown"
+    assert payload["document"]["content"] == expected_units
+
+    assert run("docs", "--output-format", "json") == 0
+    listing_payload = json.loads(capsys.readouterr().out)
+    assert listing_payload["document"] is None
+    assert len(listing_payload["entries"]) == 50
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("docs", "nonexistent"),
+        ("docs", "../README.md"),
+        ("docs", "/etc/passwd"),
+        ("docs", "cluster/../rc_filter"),
+        ("docs", ""),
+        ("docs", "guide/units", "--section", "examples"),
+    ],
+)
+def test_docs_rejects_invalid_and_unknown_topics_with_facts(
+    arguments: tuple[str, ...], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(*arguments) == 2
+    error_text = capsys.readouterr().err
+    assert error_text.startswith("error: ")
+    assert not ADVICE_WORDS.search(error_text), error_text
+
+    assert run(*arguments, "--output-format=json") == 2
+    json_error = json.loads(capsys.readouterr().out)
+    assert isinstance(json_error["error"], str)
+    assert not ADVICE_WORDS.search(json_error["error"]), json_error["error"]

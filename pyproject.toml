@@ -58,6 +58,8 @@ cache-keys = [
     { file = "crates/**/Cargo.toml" },
     { file = "crates/**/*.rs" },
     { file = "crates/**/*.md" },
+    { file = "docs/guide/**/*.md" },
+    { file = "examples/**/*.py" },
 ]
 
 [tool.maturin]
@@ -65,6 +67,11 @@ manifest-path = "crates/jolty-python/Cargo.toml"
 module-name = "jolty._core"
 python-source = "src"
 features = ["pyo3/extension-module"]
+include = [
+    { path = "docs/guide/**/*.md", format = "sdist" },
+    { path = "examples/**/*.py", format = "sdist" },
+    { path = "docs.json", from = "out-dir", to = "jolty/assets" },
+]
 
 # ruff: the formatter at its defaults (4 spaces, 88 columns), so no width and
 # no indent appear here. The lint is strict: every stable rule is on.

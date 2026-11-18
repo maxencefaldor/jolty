@@ -120,6 +120,16 @@ Explain rules and their levels.
 | `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
 | `RULES` |  | Rules to explain; every rule by default. |
 
+## `jolty docs`
+
+List or read the offline guide and examples.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `TOPIC` |  | Topic to read: a bare slug such as 'units' or 'rc_filter', a qualified name such as 'guide/units' or 'examples/cluster/amplifier', or a resource URI such as 'jolty://docs/guide/units'. Lists all topics when omitted. |
+| `--section` |  | Limit listing or lookup to 'guide' or 'examples'. |
+
 ## `jolty cost`
 
 Price a component of a saved circuit file with a catalog.
