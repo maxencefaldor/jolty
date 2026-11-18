@@ -34,6 +34,8 @@ Build a script's circuit and run a plan's analyses on it.
 | `--plan` |  | Python file defining plan(), which returns a Plan; defaults to the script. |
 | `--output` |  | Where to save the circuit; defaults to &lt;script&gt;.jolty.json. |
 | `--results` |  | Where to save the results; defaults to &lt;script&gt;.results.npz. |
+| `--raw` |  | Where to save a SPICE raw file of completed operating point, DC sweep, small-signal response and transient analyses; omitted when unset. |
+| `--raw-format` | `binary` | Encoding of the SPICE raw file named by --raw: 'binary' for little-endian doubles, or 'ascii'. |
 | `--check`, `--no-check` | `True` | Check the circuit's structure after building it. |
 | `--error` |  | Rules to report as errors, such as 'shorted-device', or 'all' for every rule; overrides the configured levels. |
 | `--warn` |  | Rules to report as warnings, such as 'no-dc-path', or 'all' for every rule; overrides the configured levels. |
@@ -71,6 +73,32 @@ Plot the analyses of a saved results file.
 | `RESULTS` | required | A .results.npz file. |
 | `--analyses` |  | Analyses to plot, by name; every one but operating points and sensitivities by default. |
 | `--traces` |  | Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the nets the top component names, up to eight. |
+
+## `jolty measure`
+
+Read a measurement from a saved results file.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `RESULTS` | required | A .results.npz file. |
+| `--measure` | required | Measurement to read from the analysis result. |
+| `--analysis` |  | Name of the analysis in the results file; optional when the file holds a single analysis. |
+| `--signal` |  | Unknown to read, such as 'out', 'X1/mid' or 'V1:current'; omitted for a stability loop gain, period, noise, solutions or pole-zero measure. |
+| `--reference` |  | Reference net for a differential voltage measurement. |
+| `--over` |  | Divisor unknown for a small-signal transfer measurement (gain, phase, bandwidth, crossover, phase_margin, gain_margin). |
+| `--at` |  | Point along the analysis axis in SI base units: time in seconds for a transient or periodic steady state, swept level for a DC sweep, or frequency in hertz for gain, phase and noise_density. |
+| `--start` |  | Window start in SI base units: time in seconds, swept level, or frequency in hertz for integrated_noise; defaults to the start of the axis. |
+| `--stop` |  | Window stop in SI base units: time in seconds, swept level, or frequency in hertz for integrated_noise; defaults to the end of the axis. |
+| `--drop` |  | Gain drop in decibels for bandwidth; defaults to 3.0. |
+| `--low` |  | Lower step fraction (between 0 and 1) for rise_time; defaults to 0.1. |
+| `--high` |  | Upper step fraction (between 0 and 1) for rise_time; defaults to 0.9. |
+| `--band` |  | Settling band fraction (positive) for settling_time; defaults to 0.02. |
+| `--level` |  | Threshold level in SI base units of the signal (volts, amperes, kelvins or plain number) for crossing (required) or frequency (optional midpoint default). |
+| `--edge` |  | Crossing direction for crossing: 'rising', 'falling' or 'either'; defaults to 'either'. |
+| `--fundamental` |  | Fundamental frequency in hertz for distortion (required). |
+| `--harmonics` |  | Highest harmonic counted for distortion; defaults to 9. |
+| `--referred`, `--no-referred` | `False` | Whether noise_density or integrated_noise is referred to the input source. |
 
 ## `jolty draw`
 
@@ -117,6 +145,16 @@ Explain rules and their levels.
 | --- | --- | --- |
 | `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
 | `RULES` |  | Rules to explain; every rule by default. |
+
+## `jolty docs`
+
+List or read the offline guide and examples.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `TOPIC` |  | Topic to read: a bare slug such as 'units' or 'rc_filter', a qualified name such as 'guide/units' or 'examples/cluster/amplifier', or a resource URI such as 'jolty://docs/guide/units'. Lists all topics when omitted. |
+| `--section` |  | Limit listing or lookup to 'guide' or 'examples'. |
 
 ## `jolty cost`
 

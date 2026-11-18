@@ -23,7 +23,7 @@ and analytic fixtures are checked tightly while chaotic multi-step nonlinear fix
 
 Run from the repository root:
 
-    uv run python benchmarks/deterministic.py --check
+    uv run python benchmarks/deterministic.py
     uv run python benchmarks/deterministic.py --record
 """
 

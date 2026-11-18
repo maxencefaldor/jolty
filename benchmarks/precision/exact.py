@@ -392,8 +392,8 @@ class _Elimination:
     """
 
     parents: tuple[int, ...]
-    diagonal: list[_mpf]
-    off: list[_mpf]
+    diagonal: Sequence[_mpf]
+    off: Sequence[_mpf]
 
     def pivots(self, mu: _mpf) -> tuple[list[_mpf], list[_mpf]]:
         """The pivots ``dᵢ(μ)`` and their derivatives in ``μ``."""

@@ -1827,7 +1827,7 @@ def _switch_fixture(
             ngspice=(ngspice_command,),
             xyce=Documented(xyce_note),
             reads=_reads(names),
-            compatibility="ps",
+            compatibility="psa",
             libraries=(library_path,),
         ),
     )
@@ -2689,7 +2689,7 @@ def outputs() -> list[Fixture]:
             jolty=run_fourier,
             spice=Spice(
                 deck=fourier_deck,
-                ngspice=("tran 2u 2m 0 2u\nfour 1k v(out)",),
+                ngspice=("tran 2u 2m 0 2u\nfourier 1k v(out)",),
                 xyce=Documented(
                     "Xyce Reference Guide 7.10, .FOUR: Fourier analysis written "
                     "to a .four file; no fixture runs it here yet"
@@ -2978,7 +2978,12 @@ def extended_analyses() -> list[Fixture]:
             ),
             spice=Spice(
                 deck=distortion_deck,
-                ngspice=("disto lin 1 1k 1k\nsetplot disto1", "setplot disto2"),
+                # ngspice 47 crashes with an integer-underflow malloc on single-point
+                # `disto lin 1 1k 1k`; `lin 2 1k 2k` runs and evaluates `1k` at index 0.
+                # Its `disto2` (HD3) carries a known SPICE3f5 global sign inversion
+                # (-Vt/12 instead of the exact Volterra/Fourier coefficient +Vt/12).
+                ngspice=("disto lin 2 1k 2k\nsetplot disto1", "setplot disto2"),
+                temperature=ngspice.same_kelvins(ROOM),
                 xyce=Unsupported(XYCE_COMMANDS),
                 reads={
                     "v(hd2)": Read(ngspice="v(out)", plot=0, complex=True),

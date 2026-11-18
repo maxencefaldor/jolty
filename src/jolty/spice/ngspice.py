@@ -120,8 +120,9 @@ TIMEOUT: Final = 300
 """The seconds ngspice may run an analysis."""
 
 
-type Compatibility = Literal["ps", "hsa"]
-"""A compatibility mode of ngspice's: PSpice's, ``ps``, or HSPICE's, ``hsa``, which
+type Compatibility = Literal["ps", "psa", "hsa"]
+"""A compatibility mode of ngspice's: PSpice's, ``ps`` (libraries) or ``psa`` (whole
+deck, translating ``VSWITCH``/``ISWITCH`` via XSPICE), or HSPICE's, ``hsa``, which
 foundries' process design kits ask for."""
 
 
