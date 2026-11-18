@@ -96,6 +96,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "simulate_circuit",
         "merge_shards",
         "plot_results",
+        "measure_results",
         "draw_schematic",
         "view_circuit",
         "check_circuit",
@@ -135,7 +136,13 @@ def test_tools_mirror_the_service_requests() -> None:
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.destructive_hint is True  # a script runs any Python
-    for name in ("check_circuit", "explain_rules", "read_docs", "cost_circuit"):
+    for name in (
+        "measure_results",
+        "check_circuit",
+        "explain_rules",
+        "read_docs",
+        "cost_circuit",
+    ):
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.read_only_hint is True
@@ -637,3 +644,45 @@ def test_offline_docs_fallback_to_packaged_bundle_without_checkout(
     with pytest.raises(JoltyError, match="not available") as unavailable:
         service.document_summaries()
     assert not ADVICE_WORDS.search(str(unavailable.value))
+
+
+def test_measure_results_reads_saved_results_without_simulating(
+    script: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    simulated = call("simulate_circuit", {"script": str(script), "schematic": False})
+    assert not simulated.is_error, text_of(simulated)
+    saved = script.with_name("divider.results.npz")
+
+    log_path = tmp_path / "analyses.jsonl"
+    monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log_path))
+
+    measured = call(
+        "measure_results",
+        {
+            "results": str(saved),
+            "analysis": "op",
+            "measure": "value",
+            "signal": "out",
+        },
+    )
+    assert not measured.is_error, text_of(measured)
+    assert text_of(measured) == "out in op: 2.5 V"
+    assert measured.structured_content is not None
+    assert measured.structured_content["value"] == 2.5
+    assert measured.structured_content["unit"] == "V"
+    assert measured.structured_content["formatted"] == "2.5 V"
+
+    missing = call(
+        "measure_results",
+        {
+            "results": str(saved),
+            "analysis": "op",
+            "measure": "value",
+            "signal": "missing_node",
+        },
+    )
+    assert missing.is_error
+    error_text = text_of(missing)
+    assert "no unknown named 'missing_node'" in error_text
+    assert "out" in error_text
+    assert not log_path.exists()

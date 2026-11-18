@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jolty import __version__
+from jolty import __version__, specs
 from jolty.cli import main
 from jolty.files import load_raw, load_results
 from jolty.results import AcResult, OperatingPointResult, TransientResult
@@ -461,3 +461,80 @@ def test_docs_rejects_invalid_and_unknown_topics_with_facts(
     json_error = json.loads(capsys.readouterr().out)
     assert isinstance(json_error["error"], str)
     assert not ADVICE_WORDS.search(json_error["error"]), json_error["error"]
+
+
+def test_measure_reads_saved_results_without_running_a_simulation(
+    script: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert run("simulate", str(script), "--no-plot", "--no-schematic") == 0
+    capsys.readouterr()
+    saved = script.with_name("low_pass.results.npz")
+
+    log_path = tmp_path / "analyses.jsonl"
+    monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log_path))
+
+    # Single-analysis file: --analysis can be omitted.
+    assert (
+        run(
+            "measure",
+            str(saved),
+            "--measure",
+            "rms",
+            "--signal",
+            "out",
+            "--output-format",
+            "json",
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    loaded = load_results(saved)["step"]
+
+    expected = specs.rms("step", "out").read(loaded)
+    assert payload["analysis"] == "step"
+    assert payload["measure"] == "rms"
+    assert payload["value"] == expected.value
+    assert payload["unit"] == "V"
+
+    # Text output format.
+    assert (
+        run(
+            "measure",
+            str(saved),
+            "--analysis",
+            "step",
+            "--measure",
+            "value",
+            "--signal",
+            "out",
+            "--at",
+            "5e-6",
+        )
+        == 0
+    )
+    text = capsys.readouterr().out.strip()
+    assert text.startswith("out at 5 µs in step: ")
+
+    # Missing analysis fails with exit code 2 and names available analyses.
+    assert (
+        run(
+            "measure",
+            str(saved),
+            "--analysis",
+            "missing",
+            "--measure",
+            "value",
+            "--signal",
+            "out",
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "holds no analysis named 'missing'" in err
+    assert "step" in err
+
+    # Zero simulations executed during any measure command.
+    assert not log_path.exists()

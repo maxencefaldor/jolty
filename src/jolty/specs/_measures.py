@@ -130,6 +130,7 @@ def value(
                 | results.NoiseResult()
                 | results.PoleZeroResult()
                 | results.OperatingPointsResult()
+                | results.TransferFunctionResult()
             ):
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
@@ -1088,6 +1089,7 @@ _KINDS: Final[dict[type, str]] = {
     results.NoiseResult: "a noise spectrum",
     results.PoleZeroResult: "poles and zeros",
     results.OperatingPointsResult: "DC solutions",
+    results.TransferFunctionResult: "a transfer function",
 }
 """What each kind of result is, as messages name it."""
 

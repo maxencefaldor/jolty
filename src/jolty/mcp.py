@@ -62,7 +62,8 @@ operating point's voltages on the schematic, checks specs() verdicts (passed, ma
 failed, unmeasured, with slack, worst corner and Wilson yield interval), plots each
 analysis except operating points and sensitivities, and saves results to a .npz file
 readable by jolty.files.load_results. plot_results draws other unknowns from saved
-results; draw_schematic draws the component inside an instance; view_circuit writes a
+results; measure_results reads any measurement from saved results without running a
+simulation; draw_schematic draws the component inside an instance; view_circuit writes a
 standalone 3D HTML viewer; check_circuit checks a saved circuit; cost_circuit prices
 instances against a catalog file; export_kicad_netlist writes a KiCad netlist; and
 read_docs (or MCP resources below) reads the offline guide and examples.
@@ -536,6 +537,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.plot,
         service.PlotResult,
         WRITES_FILES,
+    )
+    register(
+        "measure_results",
+        service.MeasureRequest,
+        service.measure,
+        service.MeasureResult,
+        READS_FILES,
     )
     register(
         "draw_schematic",

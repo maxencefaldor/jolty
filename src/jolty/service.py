@@ -17,13 +17,14 @@ import ast
 import asyncio
 import importlib.resources
 import json
+import math
 import re
 import secrets
 import shutil
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final, Literal, Self, override
@@ -58,7 +59,19 @@ from jolty.report import (
 )
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
-from jolty.specs import Verdict
+from jolty.specs import Edge, ExtendedReal, Verdict
+from jolty.units import (
+    CURRENT,
+    DIMENSIONLESS,
+    FREQUENCY,
+    TEMPERATURE,
+    TIME,
+    VOLTAGE,
+    Dimension,
+    Quantity,
+    format_si,
+)
+from jolty.unknowns import Unknown
 
 _SCRIPT_DESCRIPTION = (
     "Python file defining build(), which returns the top Component of the circuit."
@@ -814,6 +827,618 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
         _plot, request.results, loaded, request.analyses, request.traces
     )
     return PlotResult(plots=drawn)
+
+
+type MeasureKind = Literal[
+    "value",
+    "gain",
+    "phase",
+    "bandwidth",
+    "crossover",
+    "phase_margin",
+    "gain_margin",
+    "maximum",
+    "minimum",
+    "peak_to_peak",
+    "mean",
+    "rms",
+    "rise_time",
+    "overshoot",
+    "settling_time",
+    "crossing",
+    "frequency",
+    "distortion",
+    "period",
+    "noise_density",
+    "integrated_noise",
+    "solutions",
+    "damping",
+    "dominant_pole",
+]
+"""Every measurement that ``jolty measure`` reads from a saved results file."""
+
+_MEASURE_OPTION_FIELDS: Final[tuple[str, ...]] = (
+    "signal",
+    "reference",
+    "over",
+    "at",
+    "start",
+    "stop",
+    "drop",
+    "low",
+    "high",
+    "band",
+    "level",
+    "edge",
+    "fundamental",
+    "harmonics",
+    "referred",
+)
+
+_WINDOW_FIELDS: Final = frozenset({"signal", "reference", "start", "stop"})
+_TRANSFER_FIELDS: Final = frozenset({"signal", "reference", "over"})
+
+_ALLOWED_MEASURE_OPTIONS: Final[dict[MeasureKind, frozenset[str]]] = {
+    "value": frozenset({"signal", "reference", "at"}),
+    "gain": _TRANSFER_FIELDS | {"at"},
+    "phase": _TRANSFER_FIELDS | {"at"},
+    "bandwidth": _TRANSFER_FIELDS | {"drop"},
+    "crossover": _TRANSFER_FIELDS,
+    "phase_margin": _TRANSFER_FIELDS,
+    "gain_margin": _TRANSFER_FIELDS,
+    "maximum": _WINDOW_FIELDS,
+    "minimum": _WINDOW_FIELDS,
+    "peak_to_peak": _WINDOW_FIELDS,
+    "mean": _WINDOW_FIELDS,
+    "rms": _WINDOW_FIELDS,
+    "rise_time": _WINDOW_FIELDS | {"low", "high"},
+    "overshoot": _WINDOW_FIELDS,
+    "settling_time": _WINDOW_FIELDS | {"band"},
+    "crossing": _WINDOW_FIELDS | {"level", "edge"},
+    "frequency": _WINDOW_FIELDS | {"level"},
+    "distortion": _WINDOW_FIELDS | {"fundamental", "harmonics"},
+    "period": frozenset(),
+    "noise_density": frozenset({"at", "referred"}),
+    "integrated_noise": frozenset({"start", "stop", "referred"}),
+    "solutions": frozenset(),
+    "damping": frozenset(),
+    "dominant_pole": frozenset(),
+}
+
+
+def _result_kind(result: results.AnalysisResult) -> str:
+    """What kind of analysis result `result` is, in words."""
+    kinds: dict[type, str] = {
+        results.OperatingPointResult: "an operating point",
+        results.DcSweepResult: "a DC sweep",
+        results.AcResult: "a small-signal response",
+        results.TransientResult: "a transient",
+        results.PeriodicSteadyStateResult: "a periodic steady state",
+        results.SensitivityResult: "sensitivities",
+        results.MismatchResult: "a mismatch",
+        results.StabilityResult: "a loop gain",
+        results.NoiseResult: "a noise spectrum",
+        results.PoleZeroResult: "poles and zeros",
+        results.OperatingPointsResult: "DC solutions",
+        results.TransferFunctionResult: "a transfer function",
+    }
+    return kinds.get(type(result), type(result).__name__)
+
+
+_NATURE_DIMENSIONS: Final[dict[results.Nature, Dimension]] = {
+    "voltage": VOLTAGE,
+    "current": CURRENT,
+    "temperature": TEMPERATURE,
+    "state": DIMENSIONLESS,
+}
+
+
+class MeasureRequest(_Model):
+    """Read a measurement from a saved results file without running a simulation.
+
+    Evaluates any measure of ``jolty.specs`` (``value``, ``gain``, ``phase``,
+    ``bandwidth``, ``crossover``, ``phase_margin``, ``gain_margin``, ``maximum``,
+    ``minimum``, ``peak_to_peak``, ``mean``, ``rms``, ``rise_time``, ``overshoot``,
+    ``settling_time``, ``crossing``, ``frequency``, ``distortion``, ``noise_density``,
+    ``integrated_noise``, ``solutions``, ``damping``, ``dominant_pole``), plus
+    ``period`` on a periodic steady state, directly from a saved ``.results.npz``
+    file. Numeric options (``at``, ``start``, ``stop``, ``level``, ``fundamental``)
+    are in SI base units: seconds for transients and periodic steady states, hertz
+    for small-signal and noise analyses, and volts, amperes, kelvins or plain
+    numbers for signal levels and DC sweeps.
+    """
+
+    results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
+    measure: MeasureKind = Field(
+        description="Measurement to read from the analysis result."
+    )
+    analysis: str | None = Field(
+        default=None,
+        description="Name of the analysis in the results file; optional when the file "
+        "holds a single analysis.",
+    )
+    signal: str | None = Field(
+        default=None,
+        description="Unknown to read, such as 'out', 'X1/mid' or 'V1:current'; omitted "
+        "for a stability loop gain, period, noise, solutions or pole-zero measure.",
+    )
+    reference: str | None = Field(
+        default=None,
+        description="Reference net for a differential voltage measurement.",
+    )
+    over: str | None = Field(
+        default=None,
+        description="Divisor unknown for a small-signal transfer measurement (gain, "
+        "phase, bandwidth, crossover, phase_margin, gain_margin).",
+    )
+    at: float | None = Field(
+        default=None,
+        description="Point along the analysis axis in SI base units: time in seconds "
+        "for a transient or periodic steady state, swept level for a DC sweep, or "
+        "frequency in hertz for gain, phase and noise_density.",
+    )
+    start: float | None = Field(
+        default=None,
+        description="Window start in SI base units: time in seconds, swept level, or "
+        "frequency in hertz for integrated_noise; defaults to the start of the axis.",
+    )
+    stop: float | None = Field(
+        default=None,
+        description="Window stop in SI base units: time in seconds, swept level, or "
+        "frequency in hertz for integrated_noise; defaults to the end of the axis.",
+    )
+    drop: float | None = Field(
+        default=None,
+        description="Gain drop in decibels for bandwidth; defaults to 3.0.",
+    )
+    low: float | None = Field(
+        default=None,
+        description="Lower step fraction (between 0 and 1) for rise_time; defaults "
+        "to 0.1.",
+    )
+    high: float | None = Field(
+        default=None,
+        description="Upper step fraction (between 0 and 1) for rise_time; defaults "
+        "to 0.9.",
+    )
+    band: float | None = Field(
+        default=None,
+        description="Settling band fraction (positive) for settling_time; defaults "
+        "to 0.02.",
+    )
+    level: float | None = Field(
+        default=None,
+        description="Threshold level in SI base units of the signal (volts, amperes, "
+        "kelvins or plain number) for crossing (required) or frequency (optional "
+        "midpoint default).",
+    )
+    edge: Edge | None = Field(
+        default=None,
+        description="Crossing direction for crossing: 'rising', 'falling' or 'either'; "
+        "defaults to 'either'.",
+    )
+    fundamental: float | None = Field(
+        default=None,
+        description="Fundamental frequency in hertz for distortion (required).",
+    )
+    harmonics: int | None = Field(
+        default=None,
+        ge=2,
+        description="Highest harmonic counted for distortion; defaults to 9.",
+    )
+    referred: bool = Field(
+        default=False,
+        description="Whether noise_density or integrated_noise is referred to the "
+        "input source.",
+    )
+
+
+class MeasureResult(CommandResult):
+    """A measurement read from a saved results file."""
+
+    results: Path = Field(description="The saved results file.")
+    analysis: str = Field(description="The analysis read.")
+    measure: MeasureKind = Field(description="The measure read.")
+    description: str = Field(
+        description="The measure in words, such as 'gain of out at 1 kHz in bode'."
+    )
+    value: ExtendedReal = Field(
+        description="The value read, in SI base units, or in dB, degrees or percent."
+    )
+    unit: str = Field(
+        description="The value's unit, such as 'V', 'Hz', 's', 'dB', '°', '%', or '' "
+        "for a plain number."
+    )
+    formatted: str = Field(
+        description="The value formatted with SI prefix or unit, such as '2.5 V' or "
+        "'-3.01 dB'."
+    )
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Always: a reading succeeded (invalid or unmeasured queries raise)."""
+        return True
+
+    @override
+    def describe(self) -> str:
+        """The reading as text, in one line."""
+        return f"{self.description}: {self.formatted}"
+
+
+async def measure(request: MeasureRequest, settings: Settings) -> MeasureResult:
+    """Reads a measurement from a saved results file without running any simulation.
+
+    Raises:
+        JoltyError: When the file is missing or invalid, the requested analysis or
+            unknown is missing, an option does not apply to the measure, or the
+            measure cannot be read from the analysis result.
+    """
+    _check_measure_options(request)
+    loaded = await asyncio.to_thread(_load, request.results)
+    analysis_name, analysis_result = _select_analysis(
+        request.results, loaded, request.analysis
+    )
+    description, reading = await asyncio.to_thread(
+        _evaluate_measure,
+        request,
+        analysis_name,
+        analysis_result,
+        settings.max_unknowns,
+    )
+    if math.isnan(reading.value):
+        message = f"{description} read not a number"
+        raise JoltyError(message)
+    unit = "" if reading.unit == DIMENSIONLESS else str(reading.unit)
+    formatted = _format_reading(reading.value, unit)
+    return MeasureResult(
+        results=request.results,
+        analysis=analysis_name,
+        measure=request.measure,
+        description=description,
+        value=reading.value,
+        unit=unit,
+        formatted=formatted,
+    )
+
+
+def _check_measure_options(request: MeasureRequest) -> None:
+    """Rejects options that do not apply to `request.measure`."""
+    allowed = _ALLOWED_MEASURE_OPTIONS[request.measure]
+    extra = [
+        name
+        for name in _MEASURE_OPTION_FIELDS
+        if name not in allowed
+        and (
+            bool(getattr(request, name))
+            if name == "referred"
+            else getattr(request, name) is not None
+        )
+    ]
+    if extra:
+        listed = ", ".join(extra)
+        message = f"measure {request.measure} takes no {listed}"
+        raise JoltyError(message)
+
+
+def _select_analysis(
+    path: Path,
+    loaded: Mapping[str, results.AnalysisResult],
+    analysis: str | None,
+) -> tuple[str, results.AnalysisResult]:
+    """The named analysis from `loaded`, or the sole analysis when `analysis` is None.
+
+    Raises:
+        JoltyError: Naming available analyses when selection is missing or ambiguous.
+    """
+    if analysis is None:
+        if not loaded:
+            message = f"{path} holds no analyses"
+            raise JoltyError(message)
+        if len(loaded) > 1:
+            available = ", ".join(loaded)
+            message = (
+                f"{path} holds {len(loaded)} analyses ({available}); analysis is unset"
+            )
+            raise JoltyError(message)
+        sole = next(iter(loaded))
+        return sole, loaded[sole]
+    if analysis not in loaded:
+        if loaded:
+            available = ", ".join(loaded)
+            message = (
+                f"{path} holds no analysis named {analysis!r}; "
+                f"the analyses are {available}"
+            )
+        else:
+            message = (
+                f"{path} holds no analysis named {analysis!r}; "
+                "the file holds no analyses"
+            )
+        raise JoltyError(message)
+    return analysis, loaded[analysis]
+
+
+def _evaluate_measure(
+    request: MeasureRequest,
+    analysis_name: str,
+    result: results.AnalysisResult,
+    max_unknowns: int,
+) -> tuple[str, specs.Reading]:
+    """Constructs and evaluates the measure requested against `result`."""
+    if request.measure == "period":
+        if not isinstance(result, results.PeriodicSteadyStateResult):
+            message = (
+                f"period reads a periodic steady state, not {_result_kind(result)}"
+            )
+            raise JoltyError(message)
+        return f"period in {analysis_name}", specs.Reading(result.period, TIME)
+    try:
+        built = _build_measure(request, analysis_name, result, max_unknowns)
+        reading = built.read(result)
+    except KeyError as error:
+        available = _available_unknowns(result.unknowns, max_unknowns)
+        message = f"{error.args[0]}; unknowns in {analysis_name}: {available}"
+        raise JoltyError(message) from None
+    except ValueError as error:
+        raise JoltyError(str(error)) from None
+    return str(built), reading
+
+
+def _build_measure(
+    request: MeasureRequest,
+    analysis_name: str,
+    result: results.AnalysisResult,
+    max_unknowns: int,
+) -> specs.Measure:
+    """Builds the `jolty.specs.Measure` described by `request`."""
+    kind = request.measure
+    if kind in {"solutions", "damping", "dominant_pole"}:
+        factories: dict[str, Callable[[str], specs.Measure]] = {
+            "solutions": specs.solutions,
+            "damping": specs.damping,
+            "dominant_pole": specs.dominant_pole,
+        }
+        return factories[kind](analysis_name)
+    if kind in {"noise_density", "integrated_noise"}:
+        return _build_noise_measure(request, analysis_name)
+    if kind in {
+        "gain",
+        "phase",
+        "bandwidth",
+        "crossover",
+        "phase_margin",
+        "gain_margin",
+    }:
+        return _build_transfer_measure(request, analysis_name, result, max_unknowns)
+    signal = _require_signal(request, analysis_name, result, max_unknowns)
+    if kind == "value":
+        axis = _axis_dimension(result)
+        point = None if request.at is None else Quantity(request.at, axis)
+        return specs.value(analysis_name, signal, at=point, reference=request.reference)
+    if kind in {"maximum", "minimum", "peak_to_peak", "mean", "rms"}:
+        return _build_statistic_measure(request, analysis_name, signal, result)
+    return _build_transient_measure(request, analysis_name, signal, result)
+
+
+def _require_signal(
+    request: MeasureRequest,
+    analysis_name: str,
+    result: results.AnalysisResult,
+    max_unknowns: int,
+) -> str:
+    """Returns `request.signal` or raises a factual error listing available unknowns."""
+    if request.signal is None:
+        available = _available_unknowns(result.unknowns, max_unknowns)
+        message = (
+            f"measure {request.measure} takes a signal; "
+            f"unknowns in {analysis_name}: {available}"
+        )
+        raise JoltyError(message)
+    return request.signal
+
+
+def _build_noise_measure(request: MeasureRequest, analysis_name: str) -> specs.Measure:
+    """Builds a `noise_density` or `integrated_noise` measure."""
+    if request.measure == "noise_density":
+        if request.at is None:
+            message = "measure noise_density takes a frequency as at, in Hz"
+            raise JoltyError(message)
+        return specs.noise_density(
+            analysis_name,
+            at=Quantity(request.at, FREQUENCY),
+            referred=request.referred,
+        )
+    start = None if request.start is None else Quantity(request.start, FREQUENCY)
+    stop = None if request.stop is None else Quantity(request.stop, FREQUENCY)
+    return specs.integrated_noise(
+        analysis_name, start=start, stop=stop, referred=request.referred
+    )
+
+
+def _build_transfer_measure(
+    request: MeasureRequest,
+    analysis_name: str,
+    result: results.AnalysisResult,
+    max_unknowns: int,
+) -> specs.Measure:
+    """Builds a small-signal response or stability loop-gain measure."""
+    if isinstance(result, results.AcResult) and request.signal is None:
+        available = _available_unknowns(result.unknowns, max_unknowns)
+        message = (
+            f"measure {request.measure} on a small-signal response takes a signal; "
+            f"unknowns in {analysis_name}: {available}"
+        )
+        raise JoltyError(message)
+    kind = request.measure
+    if kind in {"gain", "phase"}:
+        if request.at is None:
+            message = f"measure {kind} takes a frequency as at, in Hz"
+            raise JoltyError(message)
+        builder = specs.gain if kind == "gain" else specs.phase
+        return builder(
+            analysis_name,
+            request.signal,
+            at=Quantity(request.at, FREQUENCY),
+            over=request.over,
+            reference=request.reference,
+        )
+    if kind == "bandwidth":
+        drop = 3.0 if request.drop is None else request.drop
+        return specs.bandwidth(
+            analysis_name,
+            request.signal,
+            drop=drop,
+            over=request.over,
+            reference=request.reference,
+        )
+    builders = {
+        "crossover": specs.crossover,
+        "phase_margin": specs.phase_margin,
+        "gain_margin": specs.gain_margin,
+    }
+    return builders[kind](
+        analysis_name,
+        request.signal,
+        over=request.over,
+        reference=request.reference,
+    )
+
+
+def _build_statistic_measure(
+    request: MeasureRequest,
+    analysis_name: str,
+    signal: str,
+    result: results.AnalysisResult,
+) -> specs.Measure:
+    """Builds `maximum`, `minimum`, `peak_to_peak`, `mean` or `rms`."""
+    axis = _axis_dimension(result)
+    start = None if request.start is None else Quantity(request.start, axis)
+    stop = None if request.stop is None else Quantity(request.stop, axis)
+    builders = {
+        "maximum": specs.maximum,
+        "minimum": specs.minimum,
+        "peak_to_peak": specs.peak_to_peak,
+        "mean": specs.mean,
+        "rms": specs.rms,
+    }
+    return builders[request.measure](
+        analysis_name, signal, start=start, stop=stop, reference=request.reference
+    )
+
+
+def _build_transient_measure(
+    request: MeasureRequest,
+    analysis_name: str,
+    signal: str,
+    result: results.AnalysisResult,
+) -> specs.Measure:
+    """Builds a transient timing, crossing, frequency or distortion measure."""
+    start = None if request.start is None else Quantity(request.start, TIME)
+    stop = None if request.stop is None else Quantity(request.stop, TIME)
+    kind = request.measure
+    if kind == "rise_time":
+        return specs.rise_time(
+            analysis_name,
+            signal,
+            low=0.1 if request.low is None else request.low,
+            high=0.9 if request.high is None else request.high,
+            start=start,
+            stop=stop,
+            reference=request.reference,
+        )
+    if kind == "overshoot":
+        return specs.overshoot(
+            analysis_name, signal, start=start, stop=stop, reference=request.reference
+        )
+    if kind == "settling_time":
+        return specs.settling_time(
+            analysis_name,
+            signal,
+            band=0.02 if request.band is None else request.band,
+            start=start,
+            stop=stop,
+            reference=request.reference,
+        )
+    if kind == "crossing":
+        if request.level is None:
+            message = "measure crossing takes a level"
+            raise JoltyError(message)
+        dimension = _signal_dimension(result, signal)
+        return specs.crossing(
+            analysis_name,
+            signal,
+            Quantity(request.level, dimension),
+            edge="either" if request.edge is None else request.edge,
+            start=start,
+            stop=stop,
+            reference=request.reference,
+        )
+    if kind == "frequency":
+        level = (
+            None
+            if request.level is None
+            else Quantity(request.level, _signal_dimension(result, signal))
+        )
+        return specs.frequency(
+            analysis_name,
+            signal,
+            level=level,
+            start=start,
+            stop=stop,
+            reference=request.reference,
+        )
+    if request.fundamental is None:
+        message = "measure distortion takes a fundamental frequency, in Hz"
+        raise JoltyError(message)
+    return specs.distortion(
+        analysis_name,
+        signal,
+        fundamental=Quantity(request.fundamental, FREQUENCY),
+        harmonics=9 if request.harmonics is None else request.harmonics,
+        start=start,
+        stop=stop,
+        reference=request.reference,
+    )
+
+
+def _axis_dimension(result: results.AnalysisResult) -> Dimension:
+    """The dimension of a transient's or DC sweep's axis; seconds otherwise."""
+    if isinstance(result, results.DcSweepResult):
+        if result.nature == "voltage":
+            return VOLTAGE
+        if result.nature == "current":
+            return CURRENT
+        return DIMENSIONLESS
+    return TIME
+
+
+def _signal_dimension(result: results.AnalysisResult, signal: str) -> Dimension:
+    """The dimension of `signal` in `result.unknowns` (voltage for non-transients)."""
+    if not isinstance(result, results.TransientResult):
+        return VOLTAGE
+    index = results.column(result.unknowns, signal)
+    return _NATURE_DIMENSIONS[result.unknowns[index].nature]
+
+
+def _available_unknowns(unknowns: tuple[Unknown, ...], limit: int) -> str:
+    """The unknown names in `unknowns`, capped at `limit`."""
+    if not unknowns:
+        return "none"
+    names = [unknown.name for unknown in unknowns]
+    if len(names) <= limit:
+        return ", ".join(names)
+    shown = ", ".join(names[:limit])
+    return f"{shown}, ... ({len(names) - limit} more)"
+
+
+def _format_reading(value: float, unit: str) -> str:
+    """`value` in `unit`, to four significant digits, with an SI prefix if any."""
+    if unit in {"dB", "°", "%"}:
+        return f"{value:.4g} {unit}"
+    if not unit:
+        return f"{value:.4g}"
+    return format_si(value, unit)
 
 
 def _load(path: Path) -> dict[str, results.AnalysisResult]:

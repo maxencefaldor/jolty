@@ -74,6 +74,14 @@ class PlotCommand(service.PlotRequest, _Output):
         self.emit(await service.plot(self, Settings.load()))
 
 
+class MeasureCommand(service.MeasureRequest, _Output):
+    """Read a measurement from a saved results file without simulating again."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.measure(self, Settings.load()))
+
+
 class DrawCommand(service.DrawRequest, _Output):
     """Draw the schematic of a saved circuit's top component, or of an instance's."""
 
@@ -194,6 +202,9 @@ class Jolty(CommandLine):
     )
     plot: CliSubCommand[PlotCommand] = Field(
         description="Plot the analyses of a saved results file."
+    )
+    measure: CliSubCommand[MeasureCommand] = Field(
+        description="Read a measurement from a saved results file."
     )
     draw: CliSubCommand[DrawCommand] = Field(
         description="Draw a component of a saved circuit file."
