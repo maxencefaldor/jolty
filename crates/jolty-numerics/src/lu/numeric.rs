@@ -17,13 +17,18 @@ use super::{LinearError, Ordering, Scalar, Workspace};
 use crate::reduce::{self, CHUNK};
 
 /// No index: a row not yet a pivot, a row not yet visited.
+///
+/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
 const NONE: usize = usize::MAX;
 
 /// The least fraction of the largest candidate in its column that a pivot is: a
 /// factorization takes the ordering's diagonal entry as the pivot when it reaches this
 /// fraction, and else the largest, and a refactorization keeps each pivot while it reaches
 /// it. It bounds every entry of `L` by its inverse, ten, against a thousand for the
-/// thousandth that KLU and SPICE take, which keeps the rounding of the solutions close to
+/// thousandth that KLU and SPICE take (threshold partial pivoting: Duff, Erisman and Reid,
+/// *Direct Methods for Sparse Matrices*, 2nd ed., 2017; compare Davis and Palamadai
+/// Natarajan, "Algorithm 907: KLU", *ACM Transactions on Mathematical Software* 37(3),
+/// 2010, whose default is `0.001`), which keeps the rounding of the solutions close to
 /// that of strict partial pivoting: over 20,000 of the tests' random circuits, the largest
 /// backward error of a solution is 4.5e-15 with a tenth, against 7.7e-9 with a thousandth.
 /// On the matrices of the example circuits, meshes and inverter chains measured, the

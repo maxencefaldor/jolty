@@ -39,42 +39,77 @@ use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
 /// root beyond `10¹²` times the circuit's characteristic frequency.
+///
+/// Origin: jolty's own QZ rounding threshold (`~4.5e3 * f64::EPSILON`), above typical
+/// `O(n * eps)` backward error of the QZ factorization on algebraic (infinite) eigenvalues
+/// of the scaled, equilibrated pencil `(G, -C)`.
 const INFINITE: f64 = 1e-12;
 
 /// The fraction of the largest root below which a zero is at the origin: no closer than the
 /// linearized circuit, solved to Newton's tolerance, resolves it.
+///
+/// Origin: jolty's own QZ origin-snapping threshold (`100 * INFINITE`), wide enough to absorb
+/// Newton operating-point and QZ cancellation noise on exact DC zeros (such as coupling
+/// capacitors) while preserving low-frequency finite zeros.
 const ORIGIN: f64 = 1e-10;
 
 /// The size below which both parts of an eigenvalue of the equilibrated pencil vanish, as
 /// they do for a pencil whose determinant is zero everywhere.
+///
+/// Origin: jolty's own QZ singular-pencil threshold (`~4.5e3 * f64::EPSILON`, matching
+/// `INFINITE`) on the equilibrated pencil whose entries have norm near `1`, detecting `0 / 0`
+/// eigenvalues.
 const DEGENERATE: f64 = 1e-12;
 
 /// The imaginary part, relative to its magnitude, below which a root is real: the error of
 /// the complex QZ iteration on a real pencil.
+///
+/// Origin: jolty's own threshold (`~4.5e6 * f64::EPSILON`, three decades above `INFINITE`),
+/// stripping spurious QZ imaginary noise from real roots while retaining lightly damped
+/// conjugate pairs.
 const REAL: f64 = 1e-9;
 
 /// The equilibration passes, each of which brings every row's and column's largest entry
 /// nearer to 1.
+///
+/// Source: Ruiz equilibration (D. Ruiz, "A scaling algorithm to equilibrate both rows and
+/// columns norms in matrices", Technical Report `RAL-TR-2001-034`, 2001), which converges
+/// quadratically in the infinity norm; 4 passes is jolty's fixed iteration count, sufficient
+/// to bring typical `G`/`C` imbalances close to unit row and column norms.
 const PASSES: usize = 4;
 
 /// The real part, relative to its magnitude, above which a pole grows: well above the
 /// error of the QZ iteration, so that a lossless resonator's poles do not.
+///
+/// Origin: jolty's own stability threshold (equivalent to negative damping ratio `zeta < -1e-6`,
+/// three decades above `REAL`), keeping numerical perturbation of imaginary-axis LC resonator
+/// poles from triggering false positive growth.
 const GROWING: f64 = 1e-6;
 
 /// The distance from a pole, relative to its magnitude, at which inverse iteration factors
 /// `G + sC`: near enough that the pole's mode dominates the solution a million times over,
 /// far enough that the factorization stays regular.
+///
+/// Source: shifted inverse iteration (Golub and Van Loan, *Matrix Computations*, 4th ed.,
+/// 2013); jolty's relative imaginary shift `1e-6` amplifies the target mode by `~1e6` per
+/// solve while leaving `G + sC` conditioned by `~1e6` (~10 digits preserved in `f64`).
 const BESIDE: f64 = 1e-6;
 
 /// The steps of inverse iteration, each of which multiplies the mode's lead by `1 / BESIDE`.
+///
+/// Derivation: with `BESIDE = 1e-6`, two solves suppress competing modes by `~1 / BESIDE^2 =
+/// 1e12` (near `f64` accuracy relative to the shifted matrix conditioning `~1e6`).
 const ITERATIONS: usize = 2;
 
 /// The most dense real matrices a pole-zero analysis holds at once, each of a row per
 /// unknown, and one more where it borders them for the zeros: the circuit's `G` and `C`,
 /// and, for the pencil it solves, the two it equilibrates and the two complex ones its QZ
 /// iteration works on, each the size of two real ones.
+///
+/// Derivation: exact count `1 (G) + 1 (C) + 2 (equilibrated) + 2 * 2 (complex QZ) = 8`.
 const PENCIL_MATRICES: f64 = 8.0;
 /// The analysis's name in its messages.
+/// Origin: shared jolty diagnostic label (no numeric parameter).
 const POLE_ZERO: &str = "pole-zero analysis";
 /// Why a pole-zero analysis, and the search for growing modes, take no delay line: its
 /// `e^{−sτ}` makes the circuit's determinant transcendental in `s`, whose roots are

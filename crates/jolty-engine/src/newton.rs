@@ -11,17 +11,29 @@ use crate::{Options, SimulationError, Simulator};
 
 /// How many roundings of the unknowns a residual may show and still count as zero.
 ///
+/// Derivation: jolty's own rounding floor grounded in floating-point inner-product error
+/// analysis (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., 2002, ch. 3).
 /// Each unknown is stored to half a unit in its last place, so a residual cannot resolve
 /// changes finer than `ε·(|J|·|x|)` of its row, and each term it sums adds a rounding or two
-/// of its own. Without this floor, an equation whose terms cancel, such as the current
-/// through a milliohm between two nodes at hundreds of volts, could never converge.
+/// of its own; `8 * f64::EPSILON` absorbs the rounding of a typical KCL node stencil without
+/// masking an unconverged residual. Without this floor, an equation whose terms cancel, such
+/// as the current through a milliohm between two nodes at hundreds of volts, could never
+/// converge.
 const RESIDUAL_ROUNDINGS: f64 = 8.0;
 
-/// How many unknowns a failure to converge names.
+/// How many unknowns a failure to converge or a singular matrix names.
+///
+/// Origin: jolty's own diagnostic formatting limit so error messages stay concise (documented
+/// in `docs/guide/simulation.md`).
 pub(crate) const NAMED_UNKNOWNS: usize = 3;
 
 /// The shift of the deflation `1/‖x − r‖² + SHIFT` of each known root `r`: far from every
 /// root, where the distance in volts grows, the deflated equations become the plain ones.
+///
+/// Source: Farrell, Birkisson and Funke, "Deflation techniques for finding distinct solutions
+/// of nonlinear partial differential equations", *SIAM Journal on Scientific Computing* 37(4),
+/// 2015 (shifted deflation operator `1 / ||x - r||^p + sigma` with power `p = 2` and shift
+/// `sigma = 1`).
 const SHIFT: f64 = 1.0;
 
 /// The floating-point resolution of a residual whose equation's `|J|·|x|` is `resolution`:

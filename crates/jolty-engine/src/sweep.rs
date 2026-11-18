@@ -16,6 +16,11 @@ use crate::{OperatingPointResult, Options, RecordedSeries, SimulationError, Simu
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
+///
+/// Origin: jolty's own natural-parameter continuation floor (`2^10 = 1024`, i.e. 10
+/// consecutive exact power-of-two step halvings on Newton failure). By comparison, ngspice
+/// 47 solves a failed sweep point from scratch as an operating point (`dctrcurv.c`, lines
+/// 306 to 314).
 const SMALLEST_CONTINUATION: f64 = 1024.0;
 
 /// A DC sweep: the operating point at each level of one independent source, or at each

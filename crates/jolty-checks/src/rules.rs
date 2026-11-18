@@ -11,8 +11,12 @@ use crate::structure::{REFERENCE, Structure, ends, index, list};
 use crate::{Diagnostic, Level, Rule};
 
 /// The most nodes or instances a message names before it counts the rest.
+///
+/// Origin: jolty's own diagnostic formatting cap, matching `NAMED = 5` in `point.rs`.
 const NAMED: usize = 5;
 
+/// Rule definition for `unconnected-terminal` (structural connectivity check; `AGENTS.md`,
+/// "Rules, as in ty").
 const UNCONNECTED_TERMINAL: Rule = Rule {
     name: "unconnected-terminal",
     level: Level::Error,
@@ -20,6 +24,8 @@ const UNCONNECTED_TERMINAL: Rule = Rule {
                 joins and that is not the ground: nothing connects to it.",
 };
 
+/// Rule definition for `shorted-source` (structural topology check; `AGENTS.md`, "Rules, as
+/// in ty").
 const SHORTED_SOURCE: Rule = Rule {
     name: "shorted-source",
     level: Level::Error,
@@ -30,6 +36,8 @@ const SHORTED_SOURCE: Rule = Rule {
                 and a sensing port senses no current.",
 };
 
+/// Rule definition for `shorted-device` (structural topology check; `AGENTS.md`, "Rules, as
+/// in ty").
 const SHORTED_DEVICE: Rule = Rule {
     name: "shorted-device",
     level: Level::Warn,
@@ -38,6 +46,8 @@ const SHORTED_DEVICE: Rule = Rule {
                 some terminals joined, such as a diode-connected one, raises nothing.",
 };
 
+/// Rule definition for `voltage-loop` (Kirchhoff's voltage law structural check; `AGENTS.md`,
+/// "Rules, as in ty").
 const VOLTAGE_LOOP: Rule = Rule {
     name: "voltage-loop",
     level: Level::Error,
@@ -47,6 +57,8 @@ const VOLTAGE_LOOP: Rule = Rule {
                 independent loop raises one diagnostic.",
 };
 
+/// Rule definition for `no-dc-path` (DC graph connectivity check; `AGENTS.md`, "Rules, as in
+/// ty").
 const NO_DC_PATH: Rule = Rule {
     name: "no-dc-path",
     level: Level::Error,
@@ -57,6 +69,8 @@ const NO_DC_PATH: Rule = Rule {
                 left to unconnected-terminal.",
 };
 
+/// Rule definition for `current-cutset` (Kirchhoff's current law structural check;
+/// `AGENTS.md`, "Rules, as in ty").
 const CURRENT_CUTSET: Rule = Rule {
     name: "current-cutset",
     level: Level::Error,
@@ -66,6 +80,8 @@ const CURRENT_CUTSET: Rule = Rule {
                 unconnected-terminal.",
 };
 
+/// Rule definition for `driver-conflict` (mixed-signal logic contention check; `AGENTS.md`,
+/// "Rules, as in ty").
 const DRIVER_CONFLICT: Rule = Rule {
     name: "driver-conflict",
     level: Level::Error,
@@ -73,6 +89,8 @@ const DRIVER_CONFLICT: Rule = Rule {
                 levels, the net's level is unknown.",
 };
 
+/// Rule definition for `non-standard-value` (preferred-value check against IEC 60063 E
+/// series; `AGENTS.md`, "Rules, as in ty").
 const NON_STANDARD_VALUE: Rule = Rule {
     name: "non-standard-value",
     level: Level::Warn,
@@ -81,6 +99,8 @@ const NON_STANDARD_VALUE: Rule = Rule {
                 but for rounding: no standard part has the value.",
 };
 
+/// Rule definition for `floating-input` (mixed-signal undriven-net check; `AGENTS.md`,
+/// "Rules, as in ty").
 const FLOATING_INPUT: Rule = Rule {
     name: "floating-input",
     level: Level::Error,
@@ -89,6 +109,9 @@ const FLOATING_INPUT: Rule = Rule {
 };
 
 /// Every rule, in the order a check reports them.
+///
+/// Origin: registry enumerating all 9 structural and 3 operating-point rules in `jolty-checks`
+/// (`AGENTS.md`, "Rules, as in ty").
 pub const RULES: &[Rule] = &[
     UNCONNECTED_TERMINAL,
     SHORTED_SOURCE,

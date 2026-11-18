@@ -28,6 +28,9 @@ use crate::{
 pub(crate) const STEPS_PER_RUN: f64 = 50.0;
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
+///
+/// Source: ngspice 47 (`src/spicelib/analysis/dctran.c`, lines 507 to 508:
+/// `MIN(ckt->CKTdelta, .1 * MIN(ckt->CKTsaveDelta, ckt->CKTbreaks[1] - ckt->CKTbreaks[0]))`).
 const RESTART_FRACTION: f64 = 0.1;
 /// The smallest step allowed, as a fraction of the longest: SPICE's `delmin` (ngspice 47's
 /// `traninit.c`, line 36). A charge behind a small resistance settles within picoseconds
@@ -35,15 +38,37 @@ const RESTART_FRACTION: f64 = 0.1;
 /// in 10 ps, and resolving that to SPICE's charge tolerance at a relative tolerance of 1e-5
 /// takes steps of 2e-14 s, below 1e-9 of the buck's longest.
 const SMALLEST_STEP_FRACTION: f64 = 1e-11;
-/// The factor a step shrinks by when Newton iteration fails.
+/// The factor a step shrinks by when Newton iteration fails (`1 / 8 = 0.125`, exact in binary
+/// floating point).
+///
+/// Source: ngspice 47 (`src/spicelib/analysis/dctran.c`, line 733:
+/// `ckt->CKTdelta = ckt->CKTdelta/8;`).
 const FAILURE_SHRINK: f64 = 0.125;
 /// The bounds on the factor the truncation error changes the step by.
+///
+/// Source: upper bound `2.0` matches SPICE / ngspice 47 (`src/spicelib/analysis/ckttrunc.c`,
+/// line 53: `*timeStep = MIN(2 * *timeStep, timetemp);`); lower bound `0.1` follows standard
+/// ODE step-size clamping (Hairer, Nørsett and Wanner, *Solving Ordinary Differential
+/// Equations I*, 2nd ed., 1993, II.4).
 const FACTOR_BOUNDS: (f64, f64) = (0.1, 2.0);
 /// The safety factor on the step the truncation error predicts.
+///
+/// Source: standard ODE step-size safety factor `fac = 0.9` (Hairer, Nørsett and Wanner,
+/// *Solving Ordinary Differential Equations I*, 2nd ed., 1993, II.4; Hairer and Wanner,
+/// *Solving Ordinary Differential Equations II*, 1996, IV.8), matching ngspice 47's step
+/// acceptance threshold `newdelta > .9 * ckt->CKTdelta` (`dctran.c`, line 801).
 const SAFETY: f64 = 0.9;
 /// The most accepted points the error estimate reads: enough for second-order formulas.
+///
+/// Derivation: the local truncation error of a second-order formula (`p = 2`, trapezoidal or
+/// Gear2) uses the `(p + 1) = 3`rd divided difference over `p + 2 = 4` points, i.e. 3 prior
+/// accepted points plus the candidate step.
 const HISTORY: usize = 3;
 /// The earlier derivatives kept to tell the trapezoidal formula's ringing, besides the last.
+///
+/// Derivation: detecting two consecutive slope sign reversals (`turns[0] * turns[1] < 0` and
+/// `turns[1] * turns[2] < 0`) requires 4 consecutive derivatives, so 2 earlier ones are held
+/// beside `history.derivative` and `newest`.
 const RINGING: usize = 2;
 
 /// A transient analysis from time zero, starting at the operating point, or from its

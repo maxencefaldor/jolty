@@ -12,22 +12,39 @@ use crate::{Diagnostic, Level, Rule};
 
 /// The most unknowns of a circuit the checks linearize: the dense pencil of 500 unknowns
 /// takes the QZ algorithm about a second.
+///
+/// Origin: jolty's own runtime budget for the `O(n^3)` dense QZ eigenvalue solve inside
+/// `check_operating_point` (`500^3 = 1.25e8` flops scale; matches the condition strings of
+/// `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
 pub const MOST_LINEARIZED: usize = 500;
 
 /// The fraction of a mode's largest net amplitude, or of the largest difference between two
 /// DC solutions, from which a net is named.
+///
+/// Origin: jolty's own 50% (`-6 dB`) prominence threshold for diagnostic focus (matches the
+/// condition strings of `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
 const LARGEST: f64 = 0.5;
 
 /// The most nets a diagnostic names before it counts the rest.
+///
+/// Origin: jolty's own diagnostic formatting cap, matching `NAMED = 5` in `rules.rs`.
 const NAMED: usize = 5;
 
 /// The fraction of the larger of a node's voltage and [`VOLT`] that doubling gmin may move
-/// it by before gmin-dependence names it.
+/// it by before `gmin-dependence` names it.
+///
+/// Origin: jolty's own 1% (`1e-2`) warning threshold, one decade above default `reltol =
+/// 1e-3` so normal simulator convergence noise is not reported as `gmin` dependence.
 const GMIN_MOVE: f64 = 1e-2;
 
-/// One volt, below which gmin-dependence measures a node's move against it instead.
+/// One volt, below which `gmin-dependence` measures a node's move against it instead.
+///
+/// Origin: jolty's own `1 V` reference floor (typical circuit voltage scale), preventing
+/// near-zero node voltages from triggering relative `GMIN_MOVE` warnings on tiny shifts.
 const VOLT: f64 = 1.0;
 
+/// Rule definition for `gmin-dependence` (jolty operating-point rule; uses `GMIN_MOVE` and
+/// `VOLT` per `AGENTS.md`, "Rules, as in ty").
 pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
     name: "gmin-dependence",
     level: Level::Warn,
@@ -40,6 +57,8 @@ pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
                 checks it at its plan's operating point.",
 };
 
+/// Rule definition for `multiple-operating-points` (jolty operating-point rule; bounded by
+/// `MOST_LINEARIZED` and `LARGEST` per `AGENTS.md`, "Rules, as in ty").
 pub(crate) const MULTIPLE_OPERATING_POINTS: Rule = Rule {
     name: "multiple-operating-points",
     level: Level::Warn,
@@ -52,6 +71,9 @@ pub(crate) const MULTIPLE_OPERATING_POINTS: Rule = Rule {
                 on circuits of at most 500 unknowns.",
 };
 
+/// Rule definition for `unstable-pole` (jolty linearized operating-point rule; growth
+/// threshold `1e-6` matches `growing_modes` in `jolty-engine`, per `AGENTS.md`, "Rules, as in
+/// ty").
 pub(crate) const UNSTABLE_POLE: Rule = Rule {
     name: "unstable-pole",
     level: Level::Warn,

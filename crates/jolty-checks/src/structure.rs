@@ -4,6 +4,10 @@ use jolty_engine::{Endpoint, Placed, Simulator};
 use jolty_models::{Branch, Node};
 
 /// The index of the reference node among a structure's nodes.
+///
+/// Source: SPICE / modified nodal analysis datum node convention (`0` is ground; L. W. Nagel,
+/// "SPICE2: A computer program to simulate semiconductor circuits", Memorandum ERL-M520,
+/// University of California, Berkeley, 1975).
 pub(crate) const REFERENCE: usize = 0;
 
 /// The nodes of an elaborated circuit and the devices that join them.

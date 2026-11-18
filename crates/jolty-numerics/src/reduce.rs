@@ -12,6 +12,10 @@
 use rayon::prelude::*;
 
 /// The terms a chunk adds before its total joins the others'.
+///
+/// Origin: jolty's own power-of-two deterministic-reduction chunk size (`2^10 = 1024` `f64`
+/// values, 8,192 bytes), fitting within a typical L1 data cache while amortizing rayon
+/// task-scheduling overhead across threads.
 pub const CHUNK: usize = 1024;
 
 /// The sum of the `count` terms `term` gives for the indices from 0, in chunks of

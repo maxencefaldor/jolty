@@ -10,6 +10,9 @@ use super::{LinearError, Scalar};
 use crate::{Entry, Pattern, PatternBuilder};
 
 /// No index: a row or a column eliminated, or one kept.
+///
+/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index (allocations are
+/// bounded by `isize::MAX`).
 const NONE: usize = usize::MAX;
 
 /// Which unknowns of a pattern's matrices are eliminated before the sparse factorization,
@@ -93,6 +96,9 @@ struct At(usize);
 
 /// The bit of an [`At`] that says it lies among the values the eliminations write: no slot
 /// reaches it, as no vector holds that many values.
+///
+/// Derivation: high bit `1 << (usize::BITS - 1)` of `usize`; disjoint from all valid Rust
+/// `Vec` indices, which cannot exceed `isize::MAX`.
 const WRITTEN: usize = 1 << (usize::BITS - 1);
 
 /// An elimination as it is laid out: its unknown, its pivot's row and where its pivot

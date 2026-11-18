@@ -62,7 +62,7 @@ pub trait Scalar:
     + AddAssign
     + SubAssign
 {
-    /// Zero.
+    /// Additive identity (`0`) of the scalar field.
     const ZERO: Self;
 
     /// The value's magnitude: its absolute value, or a complex number's modulus.
@@ -82,6 +82,7 @@ pub trait Scalar:
 }
 
 impl Scalar for f64 {
+    /// Additive identity of IEEE 754 binary64 reals (`0.0`).
     const ZERO: Self = 0.0;
 
     fn magnitude(self) -> f64 {
@@ -102,6 +103,7 @@ impl Scalar for f64 {
 }
 
 impl Scalar for Complex64 {
+    /// Additive identity of complex numbers (`0.0 + 0.0i`).
     const ZERO: Self = Self::new(0.0, 0.0);
 
     fn magnitude(self) -> f64 {

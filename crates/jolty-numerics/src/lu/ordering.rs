@@ -14,6 +14,8 @@ use super::dissection::{self, Dissection, Graph};
 use crate::Pattern;
 
 /// No index: an unmatched row or column, an unvisited vertex.
+///
+/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
 const NONE: usize = usize::MAX;
 
 /// The analysis of a [`Pattern`] that every factorization of its matrices shares, real or

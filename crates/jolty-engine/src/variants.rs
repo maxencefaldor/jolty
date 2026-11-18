@@ -332,8 +332,11 @@ fn key(first: &str, second: &str) -> u64 {
 /// The FNV-1a hash of `bytes`, 64 bits wide (Fowler, Noll and Vo; IETF draft
 /// `draft-eastlake-fnv`).
 fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
-    /// FNV's offset basis and prime for 64 bits.
+    /// FNV-1a 64-bit offset basis (`14695981039346656037`; Fowler, Noll and Vo, IETF draft
+    /// `draft-eastlake-fnv`).
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    /// FNV-1a 64-bit prime (`2^40 + 2^8 + 0xb3 = 1099511628211`; Fowler, Noll and Vo, IETF
+    /// draft `draft-eastlake-fnv`).
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     bytes.into_iter().fold(BASIS, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(PRIME)

@@ -24,6 +24,9 @@ pub enum Series {
 
 impl Series {
     /// Every series, from the sparsest.
+    ///
+    /// Source: IEC 60063 preferred-number E series (`E3`, `E6`, `E12`, `E24`, `E48`, `E96`,
+    /// `E192`).
     pub const ALL: [Self; 7] = [
         Self::E3,
         Self::E6,

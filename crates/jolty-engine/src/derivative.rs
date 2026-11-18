@@ -74,18 +74,23 @@ use crate::{
     SimulationError, Simulator, Transient, TransientResult,
 };
 
-/// A derivative over frequency, as a delay line's refusal names it.
+/// Analysis label for frequency-domain differentiation in delay-line refusals.
+/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const OVER_FREQUENCY: &str = "derivative over frequency";
-/// Why a derivative over frequency takes no delay line.
+/// Explanation for refusing delay lines in frequency-domain differentiation.
+/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const LEFT_OUT_OVER_FREQUENCY: &str = "it leaves out those of the terms its lines delay";
-/// A derivative over time, as a delay line's refusal names it.
+/// Analysis label for time-domain differentiation in delay-line refusals.
+/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const OVER_TIME: &str = "derivative over time";
-/// Why a derivative over time takes no delay line.
+/// Explanation for refusing delay lines in time-domain differentiation.
+/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const LEFT_OUT_OVER_TIME: &str = "it leaves out those of the past its lines read";
 /// A periodic steady state's sensitivity, as [`SimulationError::TooMuchMemory`] names it.
 pub(crate) const PERIODIC_SENSITIVITY: &str = "periodic steady state sensitivity";
 
-/// What a pullback says of cotangents of the wrong kind.
+/// Message text for cotangent kind mismatches in the pullback (`vjp`).
+/// Origin: shared jolty diagnostic text derived from real vs complex analysis returns.
 const KINDS: &str =
     "cotangents on a response's phasors are complex, and on any other analysis's values real";
 

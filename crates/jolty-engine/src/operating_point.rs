@@ -26,35 +26,85 @@ use crate::solver::Solver;
 use crate::state::{Held, Warm};
 use crate::{Options, ParameterId, Partition, RecordedValues, SimulationError, Simulator, Values};
 
-/// The largest conductance gmin stepping starts from, in siemens.
+/// The largest conductance gmin stepping starts from, in siemens (`10 mS`, i.e. `100` ohms).
+///
+/// Source: ngspice 47 (`src/spicelib/analysis/cktop.c`, line 189 in `dynamic_gmin` and line
+/// 378 in `new_gmin`: `OldGmin = 1e-2;`).
 const FIRST_STEPPED: f64 = 1e-2;
 /// The largest factor gmin stepping divides the conductance by from one stage to the next.
+///
+/// Source: ngspice 47 (`src/spicelib/analysis/cktntask.c`, line 122:
+/// `tsk->TSKgminFactor = 10;`, read in `cktop.c`, lines 188, 218 to 219, 377, 407 to 408).
+/// Candidate for a future `Options` knob per `AGENTS.md`, "Knobs over opinions" (ngspice
+/// exposes this as `gminfactor`).
 const STEPPED_DIVISOR: f64 = 10.0;
 /// The factor below which gmin stepping, having shrunk its divisor after each failure or
 /// each stage that barely converged, gives up.
+///
+/// Source: ngspice 47 (`src/spicelib/analysis/cktop.c`, line 223:
+/// `factor = MAX(sqrt (factor), 1.00005);` and line 234: `if (factor < 1.00005)`).
 const SMALLEST_STEPPED_DIVISOR: f64 = 1.00005;
 /// The first increment of the source scale in source stepping.
+///
+/// Origin: jolty's own continuation step (`10%` of full source scale; doubles on success and
+/// quarters on failure, reaching `1.0` in 4 unconstrained steps). By comparison, ngspice 47's
+/// `gillespie_src` starts at `raise = 0.001` (`src/spicelib/analysis/cktop.c`, line 555) and
+/// grows by `1.5` (line 604). Candidate for a future `Options` knob.
 const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 /// The smallest increment of the source scale before source stepping gives up.
+///
+/// Origin: jolty's own continuation floor (`0.01%` of full scale: 5 consecutive quarterings
+/// from `FIRST_SOURCE_INCREMENT = 0.1`, since `0.1 / 4^5 = 9.765625e-5 < 1e-4`, or at most
+/// 10,000 steps across `[0, 1]`). By comparison, ngspice 47's `gillespie_src` stops below
+/// `1e-7` (`src/spicelib/analysis/cktop.c`, line 641) or step diff `< 1e-8` (line 621).
+/// Candidate for a future `Options` knob.
 const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
 /// The conductance, in siemens, that first holds each node to its last voltage in
 /// pseudo-transient continuation: a farad's capacitance over a step of a second.
+///
+/// Source: pseudo-transient continuation (Kelley and Keyes, "Convergence analysis of
+/// pseudo-transient continuation", *SIAM Journal on Numerical Analysis* 35(2), 1998);
+/// jolty's own initial diagonal damping `C / dt = 1 F / 1 s = 1 S`.
 const FIRST_HELD: f64 = 1.0;
 /// The largest conductance pseudo-transient continuation holds each node with before it
 /// gives up: a farad over a nanosecond, past which the circuit barely moves.
+///
+/// Source: pseudo-transient continuation (Kelley and Keyes, 1998); jolty's own ceiling
+/// `1 F / 1 ns = 1e9 S`, 9 decades (`9` consecutive `STEPPED_DIVISOR = 10` backoffs) above
+/// `FIRST_HELD`.
 const LARGEST_HELD: f64 = 1e9;
 /// The most steps pseudo-transient continuation takes before it gives up.
+///
+/// Source: pseudo-transient continuation (Kelley and Keyes, 1998); jolty's own iteration cap
+/// bounding runtime while giving ample margin past the ~24 half-decade (`sqrt(10)`) steps
+/// needed to sweep monotonically from `FIRST_HELD = 1 S` to default `gmin = 1e-12 S`.
 const MOST_HELD_STEPS: usize = 1000;
 /// The frequency, in hertz, at which a logic driver's load is read: low enough that every
 /// capacitance it drives charges fully.
+///
+/// Origin: jolty's own quasi-static AC probe (`1 Hz`, `omega = 2 * pi rad/s`, documented in
+/// `docs/guide/simulation.md`), well below typical logic poles so `|Im(I)| / omega` measures
+/// total driven capacitance cleanly.
 const LOAD_FREQUENCY: f64 = 1.0;
 /// How many tolerances apart two solutions must lie in some unknown to be distinct.
+///
+/// Origin: jolty's own root-deduplication threshold (`10x` Newton tolerance), providing one
+/// decade of separation above the worst-case `~2x` distance between two iterates converging
+/// to the same root from opposite sides.
 const DISTINCT: f64 = 10.0;
 /// How far, in volts, a search moves each node voltage of a solution found, up and down
 /// in turn, to start from beside it.
+///
+/// Origin: jolty's own deflated-Newton restart perturbation (`0.1 V`, about `4 * kT/q` at
+/// `300 K`), large enough to step clear of the deflation pole at a known root and perturb
+/// semiconductor junctions without driving them deeply into exponential saturation.
 const NUDGE: f64 = 0.1;
 /// How many times the logic and the analog circuit settle each other at DC before the
 /// detectors still changing are taken to read unknown levels, as in a loop that oscillates.
+///
+/// Origin: jolty's own mixed-signal DC cycle limit (`docs/guide/simulation.md`, "Logic"),
+/// matching `SETTLE_CHANGES = 4` in `logic.rs` (two complete high/low round-trips before
+/// flagging a feedback oscillation as `LogicLevel::Unknown`).
 const SETTLE_ROUNDS: usize = 4;
 
 /// A DC solution: every unknown's value, every logic net's level, and how it was found.

@@ -9,6 +9,9 @@ use std::num::NonZeroUsize;
 use crate::SimulationError;
 
 /// The numbers of eight bytes a gibibyte holds.
+///
+/// Derivation: `2^30 / 8 = 1_073_741_824 / 8 = 134_217_728` IEEE 754 `f64` values per
+/// gibibyte (IEC 80000-13 binary prefix).
 pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
 
 /// The break-evens of the thresholds of [`Parallelism`] that spread a kind of work in
@@ -57,6 +60,10 @@ impl BreakEvens {
 
 /// The break-evens each threshold of [`Parallelism`] left unset takes, on 2, 4, 8 and 64
 /// threads.
+///
+/// Source: measured by `scripts/bench --break-even` on `cedar` (AMD Ryzen Threadripper 3970X,
+/// 32 cores / 64 threads, 16 November 2026); see `docs/guide/simulation.md` and
+/// `benchmarks/speed/README.md` for each fixture and load average.
 pub const BREAK_EVENS: BreakEvens = BreakEvens {
     threads: [2, 4, 8, 64],
     min_solves_per_task: [Some(4_999), Some(11), Some(11), Some(4)],

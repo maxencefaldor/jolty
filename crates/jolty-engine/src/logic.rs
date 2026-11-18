@@ -316,6 +316,11 @@ pub(crate) struct Crossing {
 
 /// How many times each source may change while the logic settles at DC before the sources
 /// still changing are taken to be unknown, as an oscillating loop's are.
+///
+/// Origin: jolty's own DC cycle-detection threshold, chosen as two complete high/low toggle
+/// cycles (4 transitions, matching `SETTLE_ROUNDS` in `operating_point.rs`). A combinational
+/// acyclic gate settles in at most 2 to 3 transitions from `Unknown`, whereas an oscillating
+/// loop toggles indefinitely and is forced to `LogicLevel::Unknown` once its count exceeds 4.
 const SETTLE_CHANGES: usize = 4;
 
 /// The state of [`Events`] before a tentative advance: see [`Events::checkpoint`].

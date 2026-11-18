@@ -1021,7 +1021,8 @@ impl Elaborated {
 /// they write one and `value` is a whole number an integer holds exactly, so that a model
 /// reads it as the circuit's own, and else as a real number.
 fn written(written: &Value, value: f64) -> Value {
-    /// The largest magnitude below which every whole number is exact in a `f64`: 2⁵³.
+    /// The largest magnitude below which every whole number is exact in IEEE 754 binary64
+    /// (`f64`): `2^53` (53-bit significand precision, `f64::MANTISSA_DIGITS`).
     const EXACT: f64 = 9_007_199_254_740_992.0;
     let integer = written.is_i64() || written.is_u64();
     if integer && value.fract() == 0.0 && value.abs() < EXACT {

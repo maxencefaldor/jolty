@@ -231,7 +231,8 @@ fn dot(column: faer::ColRef<'_, f64>, vector: &[f64]) -> f64 {
 mod tests {
     use super::*;
 
-    /// No singular value counts as zero but those within the rounding.
+    /// No singular value counts as zero but those within the rounding: exact zero
+    /// `(relative, absolute)` threshold tuple for unit tests of `solve_in_range`.
     const EXACT: (f64, f64) = (0.0, 0.0);
 
     /// `A x` for the dense matrix `a` of `x.len()` rows, in column-major order.

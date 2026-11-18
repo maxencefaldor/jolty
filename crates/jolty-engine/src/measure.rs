@@ -40,13 +40,27 @@ pub(crate) use arithmetic::trapezoid;
 pub use arithmetic::{dampings, density, integrate, natural_frequencies, referred};
 
 /// How far past an end of an axis, relative to its span, a point still lies on it.
+///
+/// Origin: jolty's own endpoint rounding margin (`1e-9` of span, about `4.5e6 * f64::EPSILON`),
+/// wide enough to absorb binary-decimal unit scaling and log-grid rounding at axis endpoints
+/// (such as `stop = N / fundamental` in period counting) while rejecting genuinely out-of-range
+/// requests.
 pub const ON_AXIS: f64 = 1e-9;
 
 /// The points a distortion samples each period of its fundamental at, interpolated.
+///
+/// Origin: jolty's own power-of-two sampling grid (`2^10 = 1024`; compare ngspice 47's
+/// `DEF_FOURGRIDSIZE = 200` in `src/frontend/fourier.c`, line 32). Divisibility by 4 keeps
+/// quarter-turn axes exact (`256` steps per quadrant), and `N / 2 = 512` resolves harmonics
+/// 1 through 511 below Nyquist without aliasing.
 pub const SAMPLES_PER_PERIOD: usize = 1024;
 
 /// The least ratio of its harmonics to its fundamental a distortion reads, so that a signal
 /// without harmonics reads -6000 dB rather than minus infinity.
+///
+/// Derivation: round power of ten (`20 * log10(1e-300) = -6000 dB`) safely above the smallest
+/// positive IEEE 754 binary64 normal `f64::MIN_POSITIVE` (`~2.225e-308`, margin `~4.5e7`),
+/// avoiding subnormals and `-inf` in `log10`.
 const LEAST_DISTORTION: f64 = 1e-300;
 
 /// An unknown, or a voltage relative to another: their indices among a result's unknowns.

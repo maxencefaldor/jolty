@@ -27,6 +27,8 @@ use super::numeric::{PIVOT_TOLERANCE, Triangle};
 use super::{LinearError, Scalar};
 
 /// No index: a row not pivoted yet.
+///
+/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
 const NONE: usize = usize::MAX;
 
 /// The factors of a dissected block: each node's, in the order of the dissection's nodes.
