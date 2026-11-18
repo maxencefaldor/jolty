@@ -5,6 +5,7 @@ import json
 import math
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import bench
@@ -12,6 +13,8 @@ import numpy as np
 import pytest
 from measuring import CONFIDENCE, Median, median, rank, usable_cores
 from timing import Run
+
+from jolty.simulate import pool
 
 
 def coverage(count: int, k: int) -> float:
@@ -197,15 +200,13 @@ def test_a_night_compares_its_build_with_the_last_and_keeps_its_own(
     assert compared == [((last, tonight), today)]
 
 
-def test_usable_cores_respects_process_cpu_affinity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("measuring.os.process_cpu_count", lambda: 16)
-    monkeypatch.setattr("measuring.os.cpu_count", lambda: 384)
+def test_usable_cores_are_the_engines_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert usable_cores() == pool().threads >= 1
+
+    @dataclass(frozen=True)
+    class Pool:
+        threads: int
+
+    monkeypatch.setattr("measuring.pool", lambda: Pool(16))
     assert usable_cores() == 16
     assert bench.every((1, 2, 4, 8, 32, 64)) == [1, 2, 4, 8, 16]
-
-    monkeypatch.setattr("measuring.os.process_cpu_count", lambda: None)
-    assert usable_cores() == 384
-    monkeypatch.setattr("measuring.os.cpu_count", lambda: None)
-    assert usable_cores() == 1

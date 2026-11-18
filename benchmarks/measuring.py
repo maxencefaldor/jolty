@@ -26,6 +26,8 @@ from typing import Any, Final
 
 from pydantic import BaseModel, JsonValue
 
+from jolty.simulate import pool
+
 BENCHMARKS: Final = Path(__file__).resolve().parent
 """The ``benchmarks`` directory, which holds a directory for each suite."""
 
@@ -53,8 +55,13 @@ def load_average() -> float:
 
 
 def usable_cores() -> int:
-    """The logical processors available to this process, respecting affinity masks."""
-    return os.process_cpu_count() or os.cpu_count() or 1
+    """The threads the engine runs on by default, a thread per processor it may use.
+
+    The engine's own count, as Rust's `available_parallelism` reads it: the processors
+    the process's affinity allows, within its container's CPU quota, so that "every
+    core" is the same number in the Python timings as in the engine's batches.
+    """
+    return pool().threads
 
 
 def git(*arguments: str) -> str:
