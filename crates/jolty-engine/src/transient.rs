@@ -1219,7 +1219,9 @@ impl Simulator {
             // The first step after the corner, its error now estimated within tolerance.
             let at = (stepper.time, stepper.x.clone());
             let step = (pending.formula, pending.length, pending.iterations);
-            stepper.leak.accumulate(&pending.formula, &pending.residual, false, inside);
+            stepper
+                .leak
+                .accumulate(&pending.formula, &pending.residual, false, inside);
             points.push(self.accept(stepper, at, step, (false, &pending.read)));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));

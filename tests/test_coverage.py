@@ -333,11 +333,15 @@ def test_v2_unsupported_and_documented_rows_work_offline() -> None:
     binned = next(
         instance for instance in component.definition.instances if instance.name == "M2"
     )
-    assert binned.parameters["vth0"] == pytest.approx(0.4)
-    assert binned.parameters["width"] == pytest.approx(4e-6)
-    assert binned.parameters["length"] == pytest.approx(5e-7)
+    # SI scale-suffix rounding for exact card parameters (rel=1e-12, abs=0).
+    assert binned.parameters["vth0"] == pytest.approx(0.4, rel=1e-12, abs=0)
+    assert binned.parameters["width"] == pytest.approx(4e-6, rel=1e-12, abs=0)
+    assert binned.parameters["length"] == pytest.approx(5e-7, rel=1e-12, abs=0)
     result = simulation(circuit(component)).run(OperatingPoint(), TIGHT)
-    assert float(result.voltage("out")) == pytest.approx(5.0 * 3.0 / 4.2, rel=1e-12)
+    # Linear divider closed-form solution 5 * 3 / (1.2 + 3) V within LU/Newton rounding.
+    assert float(result.voltage("out")) == pytest.approx(
+        5.0 * 3.0 / 4.2, rel=1e-12, abs=0
+    )
 
 
 def test_printed_reads_equals_and_colon_formats() -> None:
@@ -346,12 +350,12 @@ def test_printed_reads_equals_and_colon_formats() -> None:
     fourier_text = (
         "No. Harmonics: 10, THD: 5.000000 %, Gridsize: 200, Interpolation Degree: 1"
     )
-    # Exact parsing against the printed float strings.
+    # Decimal-to-binary IEEE-754 parsing rounding on printed floats (rel=1e-15, abs=0).
     assert matrix._printed(measure_text, "printed:tcross") == pytest.approx(  # noqa: SLF001 - unit-testing printed-value parser
-        1.693147e-06, rel=1e-15
+        1.693147e-06, rel=1e-15, abs=0
     )
     assert matrix._printed(fourier_text, "printed:THD") == pytest.approx(  # noqa: SLF001 - unit-testing printed-value parser
-        5.0, rel=1e-15
+        5.0, rel=1e-15, abs=0
     )
     with pytest.raises(matrix.Failed):
         matrix._printed("NOT_THD: 9.0", "printed:THD")  # noqa: SLF001 - unit-testing printed-value parser

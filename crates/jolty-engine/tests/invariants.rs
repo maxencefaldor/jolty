@@ -515,9 +515,8 @@ fn check_closed_island(
     let accepted = f64::from(u32::try_from(waveforms.statistics.accepted).expect("step count"));
     // Without manual observation breakpoints, every Gear2 step ratio satisfies omega <= 2.0
     // (FACTOR_BOUNDS.1), bounding `(|beta_0| + |beta_1|) / alpha <= 13/5 < 3.0`.
-    let rounding = 128.0
-        * f64::EPSILON
-        * (3.0 * accepted * charge_scale + stop * current_scale).max(1e-30);
+    let rounding =
+        128.0 * f64::EPSILON * (3.0 * accepted * charge_scale + stop * current_scale).max(1e-30);
 
     let initial_charge = total_charges[0];
     let final_charge = *total_charges.last().expect("at least one point");
@@ -742,8 +741,8 @@ fn charge_leak_is_bit_identical_across_thread_counts() {
             .expect("a pool");
         pool.install(|| {
             let (library, conditions) = (Library::standard(), Conditions::default());
-            let mut simulator = Simulator::new(&built, &library, &conditions)
-                .expect("an elaborated circuit");
+            let mut simulator =
+                Simulator::new(&built, &library, &conditions).expect("an elaborated circuit");
             let waveforms = simulator
                 .transient(&transient, &options)
                 .expect("transient finishes");
@@ -776,8 +775,8 @@ fn pure_logic_transient_has_empty_charge_leak() {
         }}
     });
     let built = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    let mut simulator = Simulator::new(&built, &Library::standard(), &Conditions::default())
-        .expect("elaborates");
+    let mut simulator =
+        Simulator::new(&built, &Library::standard(), &Conditions::default()).expect("elaborates");
     let transient = Transient {
         stop: 5e-9,
         max_step: None,
@@ -831,8 +830,8 @@ fn periodic_steady_state_carries_period_charge_leak() {
         }}
     });
     let built = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    let mut simulator = Simulator::new(&built, &Library::standard(), &Conditions::default())
-        .expect("elaborates");
+    let mut simulator =
+        Simulator::new(&built, &Library::standard(), &Conditions::default()).expect("elaborates");
     let steady_state = PeriodicSteadyState {
         period: Some(1e-5),
         max_step: Some(2e-7),

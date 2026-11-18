@@ -607,38 +607,39 @@ fn an_autonomous_periodic_steady_state_allows_dc_and_constant_waveforms() {
     let regulation = (0.2 / impedance, impedance);
     let expected = TAU * (inductance * capacitance).sqrt();
     let mut instances = regulated_tank((inductance, capacitance), regulation, 1.0);
-    instances
-        .as_array_mut()
-        .expect("an instance list")
-        .extend([
-            json!({"name": "VDC", "of": {"model": "voltage_source"},
+    instances.as_array_mut().expect("an instance list").extend([
+        json!({"name": "VDC", "of": {"model": "voltage_source"},
                    "parameters": {"waveform": {"dc": 3.3}},
                    "terminals": {"positive": "vdc", "negative": "0"}}),
-            two_terminal("RDC", ("resistor", "resistance", 1e3), "vdc", "0"),
-            sine("VSIN0", "vsin0", (1.0, 0.0, 1e6)),
-            two_terminal("RSIN0", ("resistor", "resistance", 1e3), "vsin0", "0"),
-            json!({"name": "VP0", "of": {"model": "voltage_source"},
+        two_terminal("RDC", ("resistor", "resistance", 1e3), "vdc", "0"),
+        sine("VSIN0", "vsin0", (1.0, 0.0, 1e6)),
+        two_terminal("RSIN0", ("resistor", "resistance", 1e3), "vsin0", "0"),
+        json!({"name": "VP0", "of": {"model": "voltage_source"},
                    "parameters": {"waveform": {"pulse": {
                        "initial": 2.0, "pulsed": 2.0, "rise": 1e-9, "fall": 1e-9, "width": 1e-8
                    }}},
                    "terminals": {"positive": "vp0", "negative": "0"}}),
-            two_terminal("RP0", ("resistor", "resistance", 1e3), "vp0", "0"),
-            json!({"name": "IPWL0", "of": {"model": "current_source"},
+        two_terminal("RP0", ("resistor", "resistance", 1e3), "vp0", "0"),
+        json!({"name": "IPWL0", "of": {"model": "current_source"},
                    "parameters": {"waveform": {"piecewise": {
                        "points": [[0.0, 1e-3], [1e-6, 1e-3]]
                    }}},
                    "terminals": {"positive": "ipwl0", "negative": "0"}}),
-            two_terminal("RPWL0", ("resistor", "resistance", 1e3), "ipwl0", "0"),
-            json!({"name": "VEXP0", "of": {"model": "voltage_source"},
+        two_terminal("RPWL0", ("resistor", "resistance", 1e3), "ipwl0", "0"),
+        json!({"name": "VEXP0", "of": {"model": "voltage_source"},
                    "parameters": {"waveform": {"exponential": {
                        "initial": 1.0, "pulsed": 1.0, "rise_delay": 0.0,
                        "rise_time_constant": 1e-9, "fall_delay": 1e-6, "fall_time_constant": 1e-9
                    }}},
                    "terminals": {"positive": "vexp0", "negative": "0"}}),
-            two_terminal("REXP0", ("resistor", "resistance", 1e3), "vexp0", "0"),
-        ]);
+        two_terminal("REXP0", ("resistor", "resistance", 1e3), "vexp0", "0"),
+    ]);
     let mut simulator = simulator(&instances);
-    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    let found = steady(
+        &mut simulator,
+        (None, expected / 100.0),
+        &Options::default(),
+    );
     assert!(
         (found.period / expected - 1.0).abs() < 1e-2,
         "{} against {expected}",
@@ -768,7 +769,11 @@ fn resetting_a_sine_amplitude_updates_autonomous_time_varying_check() {
         two_terminal("RSIN", ("resistor", "resistance", 1e3), "vsin", "0"),
     ]);
     let mut simulator = simulator(&instances);
-    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    let found = steady(
+        &mut simulator,
+        (None, expected / 100.0),
+        &Options::default(),
+    );
     assert!((found.period / expected - 1.0).abs() < 1e-2);
 
     let amplitude = simulator
@@ -796,7 +801,11 @@ fn resetting_a_sine_amplitude_updates_autonomous_time_varying_check() {
     simulator
         .reset(Values::default())
         .expect("reset back to zero amplitude");
-    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    let found = steady(
+        &mut simulator,
+        (None, expected / 100.0),
+        &Options::default(),
+    );
     assert!((found.period / expected - 1.0).abs() < 1e-2);
 }
 

@@ -246,7 +246,8 @@ def test_simulate_circuit_writes_raw_file(script: Path, tmp_path: Path) -> None:
     assert result.structured_content is not None
     assert result.structured_content["raw"] == str(raw_binary)
     loaded = load_raw(raw_binary)
-    assert loaded["op"].voltage("out") == pytest.approx(2.5, rel=1e-15)
+    # Exact 1:1 resistive divider (2.5 V); rel=1e-15 (~4.5 eps) covers LU rounding.
+    assert loaded["op"].voltage("out") == pytest.approx(2.5, rel=1e-15, abs=0)
 
     raw_ascii = tmp_path / "divider_ascii.raw"
     ascii_result = call(
@@ -260,7 +261,10 @@ def test_simulate_circuit_writes_raw_file(script: Path, tmp_path: Path) -> None:
     )
     assert not ascii_result.is_error, text_of(ascii_result)
     assert b"Values:\n" in raw_ascii.read_bytes()
-    assert load_raw(raw_ascii)["op"].voltage("out") == pytest.approx(2.5, rel=1e-15)
+    # ASCII raw writes full IEEE-754 decimal precision; rel=1e-15 covers rounding.
+    assert load_raw(raw_ascii)["op"].voltage("out") == pytest.approx(
+        2.5, rel=1e-15, abs=0
+    )
 
 
 def _public_functions_returning(path: Path, return_annotations: set[str]) -> list[str]:

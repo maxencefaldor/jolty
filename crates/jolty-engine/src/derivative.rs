@@ -87,6 +87,7 @@ const OVER_TIME: &str = "derivative over time";
 /// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const LEFT_OUT_OVER_TIME: &str = "it leaves out those of the past its lines read";
 /// A periodic steady state's sensitivity, as [`SimulationError::TooMuchMemory`] names it.
+/// Origin: shared jolty diagnostic text across `derivative` and `sensitivity` (no numeric parameter).
 pub(crate) const PERIODIC_SENSITIVITY: &str = "periodic steady state sensitivity";
 
 /// Message text for cotangent kind mismatches in the pullback (`vjp`).
@@ -221,7 +222,11 @@ fn forward_period_numbers(
     let directions_float = float_count(directions);
     let solve_phase =
         DENSE_MATRICES * rows_float * rows_float + directions_float * rows_float + waveforms;
-    let charges = if oscillator { 3.0 * unknowns_float } else { 0.0 };
+    let charges = if oscillator {
+        3.0 * unknowns_float
+    } else {
+        0.0
+    };
     let replay_phase = rows_float * rows_float
         + 4.0 * directions_float * unknowns_float
         + charges

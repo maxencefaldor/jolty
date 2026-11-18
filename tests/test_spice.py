@@ -377,15 +377,17 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
     }
     # ngspice multiplies the saturation current, 1e-16 A unless the card gives one,
     # by the area (bjttemp.c:168), and a diode's 1e-14 A, a JFET's 1e-14 A and its
-    # transconductance parameter, 1e-4 A/V², alike. Default pytest.approx (rel=1e-6,
-    # abs=1e-12) covers scaling rounding; note abs=1e-12 dominates currents below 1e-12.
-    assert read["Q1"]["saturation_current"] == pytest.approx(1e-15)
-    assert read["Q2"]["saturation_current"] == pytest.approx(2e-16)
+    # transconductance parameter, 1e-4 A/V², alike. Explicit abs=0 prevents default
+    # abs=1e-12 from masking sub-picoampere values; rel=1e-12 covers scaling rounding.
+    assert read["Q1"]["saturation_current"] == pytest.approx(1e-15, rel=1e-12, abs=0)
+    assert read["Q2"]["saturation_current"] == pytest.approx(2e-16, rel=1e-12, abs=0)
     assert "saturation_current" not in read["Q3"]
-    # Default pytest.approx (rel=1e-6, abs=1e-12) for area-scaled IEEE-754 products.
-    assert read["D1"]["saturation_current"] == pytest.approx(3e-14)
-    assert read["J1"]["saturation_current"] == pytest.approx(4e-14)
-    assert read["J1"]["transconductance_parameter"] == pytest.approx(4e-4)
+    # Explicit abs=0 with rel=1e-12 covers area-scaled IEEE-754 products.
+    assert read["D1"]["saturation_current"] == pytest.approx(3e-14, rel=1e-12, abs=0)
+    assert read["J1"]["saturation_current"] == pytest.approx(4e-14, rel=1e-12, abs=0)
+    assert read["J1"]["transconductance_parameter"] == pytest.approx(
+        4e-4, rel=1e-12, abs=0
+    )
 
 
 def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it() -> (
@@ -406,8 +408,8 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
     # Level 3: an area of (1.5 + 0.5)(3.5 + 0.5) µm², a perimeter of 2·2 + 2·4 µm,
     # each times the copies once (`diosetup.c`, lines 336 and 337, where ngspice
     # multiplies them again, as the guide's departures state); `IKR` of 0 is off, and
-    # the breakdown current scales with the area. Default pytest.approx (rel=1e-6,
-    # abs=1e-12) covers geometry scaling rounding (abs dominates entries below 1e-12).
+    # the breakdown current scales with the area. Explicit abs=0 prevents default
+    # abs=1e-12 from masking femtocurrent/femtofarad entries; rel=1e-12 covers rounding.
     area, perimeter = 8e-12 * 2, 12e-6 * 2
     assert read["D1"] == pytest.approx(
         {
@@ -423,26 +425,32 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
             "nominal_temperature": celsius(30).value,
             "temperature_model": 2,
             "capacitance_temperature_model": 1,
-        }
+        },
+        rel=1e-12,
+        abs=0,
     )
     # Level 1: the card's area and perimeter where the element gives no size, and 1 and
     # 0 where it gives a width; the breakdown current scales with the copies alone.
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers float scaling rounding.
+    # Explicit abs=0 with rel=1e-12 covers float scaling rounding at sub-pA scale.
     assert read["D2"] == pytest.approx(
         {
             "saturation_current": 1e-14 * 6,
             "sidewall_saturation_current": 1e-15 * 4,
             "breakdown_current": 2e-3,
             "breakdown_voltage": 5.0,
-        }
+        },
+        rel=1e-12,
+        abs=0,
     )
-    # Same default pytest.approx (rel=1e-6, abs=1e-12) for area/copies scaling rounding.
+    # Same explicit abs=0 with rel=1e-12 for area/copies scaling rounding.
     assert read["D3"] == pytest.approx(
         {
             "saturation_current": 1e-14,
             "breakdown_current": 1e-3,
             "breakdown_voltage": 5.0,
-        }
+        },
+        rel=1e-12,
+        abs=0,
     )
 
 
@@ -1383,8 +1391,8 @@ def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
 
     A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
     and between its fingers, as `b4v5par.c` scales them, all in micrometres here.
-    `rel=1e-15` (~4.5 eps) covers single `scale` and `scale**2` rounding (note default
-    `abs=1e-12` matches `drain_area=1e-12`).
+    `rel=1e-15, abs=0` (~4.5 eps) covers single `scale` and `scale**2` rounding without
+    default `abs=1e-12` masking `drain_area=1e-12`.
     """
     parts = spice.Library()
     parts.read(
@@ -1416,6 +1424,7 @@ def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
             "finger_spacing": 1.25e-7,
         },
         rel=1e-15,
+        abs=0,
     )
 
 
@@ -1898,26 +1907,27 @@ def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
     capacitor and its diode by 3, its resistor's own 2 copies times 3, whose flicker
     noise is `m KF (I / m)^AF` (`resnoise.c`), and its instance's 2 copies of `inner`
     times 3; a subcircuit with a parameter `m` reads it as its own, and a current
-    source under a multiplier is refused. Default `pytest.approx` (`rel=1e-6`,
-    `abs=1e-12`) covers IEEE-754 multiplier scaling rounding (note `abs=1e-12`
-    dominates `1e-12 / 6` and `3e-14`).
+    source under a multiplier is refused. `rel=1e-12, abs=0` covers IEEE-754 multiplier
+    scaling rounding without default `abs=1e-12` masking `1e-12 / 6` or `3e-14`.
     """
     parts = library(MULTIPLIED)
     cell = parts.component("cell", m=3)
     found = {
         instance.name: instance.parameters for instance in cell.definition.instances
     }
-    assert found["R1"]["resistance"] == pytest.approx(1e3)
-    assert found["R2"]["resistance"] == pytest.approx(500)
-    assert found["R2"]["flicker_coefficient"] == pytest.approx(1e-12 / 6)
-    assert found["C1"]["capacitance"] == pytest.approx(6e-12)
-    assert found["L1"]["inductance"] == pytest.approx(2e-9)
-    assert found["D1"]["saturation_current"] == pytest.approx(3e-14)
+    assert found["R1"]["resistance"] == pytest.approx(1e3, rel=1e-12, abs=0)
+    assert found["R2"]["resistance"] == pytest.approx(500, rel=1e-12, abs=0)
+    assert found["R2"]["flicker_coefficient"] == pytest.approx(
+        1e-12 / 6, rel=1e-12, abs=0
+    )
+    assert found["C1"]["capacitance"] == pytest.approx(6e-12, rel=1e-12, abs=0)
+    assert found["L1"]["inductance"] == pytest.approx(2e-9, rel=1e-12, abs=0)
+    assert found["D1"]["saturation_current"] == pytest.approx(3e-14, rel=1e-12, abs=0)
     (inner,) = cell.children
     (resistor,) = inner.definition.instances
-    assert resistor.parameters["resistance"] == pytest.approx(4e3 / 6)
+    assert resistor.parameters["resistance"] == pytest.approx(4e3 / 6, rel=1e-12, abs=0)
     (own,) = parts.component("own", m=2).definition.instances
-    assert own.parameters["resistance"] == pytest.approx(2e3)
+    assert own.parameters["resistance"] == pytest.approx(2e3, rel=1e-12, abs=0)
     with pytest.raises(SpiceError, match="multiplies no current source by its"):
         parts.component("sourced", m=2)
 
@@ -2646,8 +2656,8 @@ def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
 def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
     """Derived AKO: `.model` cards resolve against the active local base card.
 
-    `rel=1e-15` (~4.5 eps) covers IEEE-754 decimal literal parsing rounding (note
-    `pytest.approx` default `abs=1e-12` dominates `1e-14` and matches `1e-12`).
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 decimal literal parsing rounding
+    without default `abs=1e-12` masking `1e-14` or `1e-12`.
     """
     lib = library(
         ".subckt switched a k sel=0\n"
@@ -2662,10 +2672,10 @@ def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
     )
     zero = _devices(lib.component("switched", sel=0))["D1"][1]
     one = _devices(lib.component("switched", sel=1))["D1"][1]
-    assert zero["saturation_current"] == pytest.approx(1e-14, rel=1e-15)
-    assert zero["emission_coefficient"] == pytest.approx(1.0, rel=1e-15)
-    assert one["saturation_current"] == pytest.approx(1e-12, rel=1e-15)
-    assert one["emission_coefficient"] == pytest.approx(1.5, rel=1e-15)
+    assert zero["saturation_current"] == pytest.approx(1e-14, rel=1e-15, abs=0)
+    assert zero["emission_coefficient"] == pytest.approx(1.0, rel=1e-15, abs=0)
+    assert one["saturation_current"] == pytest.approx(1e-12, rel=1e-15, abs=0)
+    assert one["emission_coefficient"] == pytest.approx(1.5, rel=1e-15, abs=0)
 
 
 def test_model_card_parameters_are_read_only() -> None:
@@ -2776,17 +2786,23 @@ def test_include_and_lib_expand_inside_subcircuits_from_file_and_text(
     )
 
     via_include = spice.load(deck)
+    # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
     assert output(via_include.component("fast_div"), 4.0) == pytest.approx(
-        3.0, rel=1e-12
+        3.0, rel=1e-12, abs=0
     )
     assert output(via_include.component("slow_div"), 4.0) == pytest.approx(
-        2.0, rel=1e-12
+        2.0, rel=1e-12, abs=0
     )
 
     via_read = spice.Library()
     via_read.read(deck.read_text(encoding="utf-8"), str(deck))
-    assert output(via_read.component("fast_div"), 4.0) == pytest.approx(3.0, rel=1e-12)
-    assert output(via_read.component("slow_div"), 4.0) == pytest.approx(2.0, rel=1e-12)
+    # Same closed-form divider ratios within LU rounding (rel=1e-12, abs=0).
+    assert output(via_read.component("fast_div"), 4.0) == pytest.approx(
+        3.0, rel=1e-12, abs=0
+    )
+    assert output(via_read.component("slow_div"), 4.0) == pytest.approx(
+        2.0, rel=1e-12, abs=0
+    )
 
 
 def test_include_inside_if_block_within_subcircuit(tmp_path: Path) -> None:
@@ -2805,8 +2821,13 @@ def test_include_inside_if_block_within_subcircuit(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     lib = spice.load(deck)
-    assert output(lib.component("stage", mode=0), 4.0) == pytest.approx(2.0, rel=1e-12)
-    assert output(lib.component("stage", mode=1), 4.0) == pytest.approx(3.0, rel=1e-12)
+    # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
+    assert output(lib.component("stage", mode=0), 4.0) == pytest.approx(
+        2.0, rel=1e-12, abs=0
+    )
+    assert output(lib.component("stage", mode=1), 4.0) == pytest.approx(
+        3.0, rel=1e-12, abs=0
+    )
 
 
 def test_malformed_two_word_lib_inside_subcircuit_is_refused(tmp_path: Path) -> None:
@@ -2880,7 +2901,8 @@ def test_coverage_lib_and_include_probe_decks_solve_in_subcircuit() -> None:
             "fixture.cir",
         )
         point = Simulation(circuit(lib.component("deck"))).run(OperatingPoint())
-        assert point.voltage("out") == pytest.approx(2.0, rel=1e-12)
+        # Exact 1:1 divider (4 V * 3k / 6k = 2 V) within LU rounding (rel=1e-12, abs=0).
+        assert point.voltage("out") == pytest.approx(2.0, rel=1e-12, abs=0)
 
 
 # ---------------------------------------------------------------------------
@@ -2889,6 +2911,10 @@ def test_coverage_lib_and_include_probe_decks_solve_in_subcircuit() -> None:
 
 
 def test_local_func_scopes_in_subcircuits_and_elements() -> None:
+    """Local `.func` definitions shadow globals within their subcircuit without leaking.
+
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 expression scaling rounding.
+    """
     lib = library(
         ".func g(x) {x + 1}\n"
         ".subckt inner a b k=1\n"
@@ -2914,20 +2940,28 @@ def test_local_func_scopes_in_subcircuits_and_elements() -> None:
         ".ends\n"
     )
     outer_devices = _devices(lib.component("outer"))
-    assert outer_devices["Rtop"][1]["resistance"] == pytest.approx(1000.0, rel=1e-15)
+    assert outer_devices["Rtop"][1]["resistance"] == pytest.approx(
+        1000.0, rel=1e-15, abs=0
+    )
     # Local shadow must NOT mutate global library.functions or leak to sibling or child.
     sibling_devices = _devices(lib.component("sibling"))
-    assert sibling_devices["R1"][1]["resistance"] == pytest.approx(2000.0, rel=1e-15)
+    assert sibling_devices["R1"][1]["resistance"] == pytest.approx(
+        2000.0, rel=1e-15, abs=0
+    )
     # In outer, X1 gets k = local g(0.2) = 2.0; inside inner, global g(2.0) = 3.0 -> 3k.
     outer_comp = lib.component("outer")
     inner_comp = next(c for c in outer_comp.children if c.name.startswith("inner"))
     assert _devices(inner_comp)["R1"][1]["resistance"] == pytest.approx(
-        3000.0, rel=1e-15
+        3000.0, rel=1e-15, abs=0
     )
     assert set(lib.functions) == {"g"}
 
 
 def test_conditional_local_func_overrides_unconditional_in_any_order() -> None:
+    """Conditional `.func` overrides unconditional definitions.
+
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding.
+    """
     lib = library(
         ".subckt cell a b mode=0\n"
         ".if (mode == 1)\n"
@@ -2939,14 +2973,18 @@ def test_conditional_local_func_overrides_unconditional_in_any_order() -> None:
         ".ends\n"
     )
     assert _devices(lib.component("cell", mode=0))["R1"][1]["resistance"] == (
-        pytest.approx(200.0, rel=1e-15)
+        pytest.approx(200.0, rel=1e-15, abs=0)
     )
     assert _devices(lib.component("cell", mode=1))["R1"][1]["resistance"] == (
-        pytest.approx(500.0, rel=1e-15)
+        pytest.approx(500.0, rel=1e-15, abs=0)
     )
 
 
 def test_model_cards_evaluate_global_and_local_func_and_bare_calls() -> None:
+    """Global and local `.func` calls in `.model` cards evaluate cleanly.
+
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding at sub-pA scale.
+    """
     lib = library(
         # Global .model defined BEFORE global .func.
         ".model d_glob D IS=scale_is(1e-14) N=bump(1.0)\n"
@@ -2966,24 +3004,32 @@ def test_model_cards_evaluate_global_and_local_func_and_bare_calls() -> None:
         "D5 a k d_loc_ako\n"
         ".ends\n"
     )
-    assert lib.options["scale"] == pytest.approx(1.0, rel=1e-15)
+    assert lib.options["scale"] == pytest.approx(1.0, rel=1e-15, abs=0)
     devs = _devices(lib.component("use_bare"))
-    assert devs["D1"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15)
-    assert devs["D1"][1]["emission_coefficient"] == pytest.approx(1.25, rel=1e-15)
-    assert devs["D2"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15)
-    assert devs["D2"][1]["emission_coefficient"] == pytest.approx(1.2, rel=1e-15)
-    assert devs["D3"][1]["saturation_current"] == pytest.approx(6e-14, rel=1e-15)
-    assert devs["D3"][1]["emission_coefficient"] == pytest.approx(0.75, rel=1e-15)
-    assert devs["D4"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15)
-    assert devs["D4"][1]["series_resistance"] == pytest.approx(5.0, rel=1e-15)
-    assert devs["D5"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15)
-    assert devs["D5"][1]["series_resistance"] == pytest.approx(6.0, rel=1e-15)
+    assert devs["D1"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15, abs=0)
+    assert devs["D1"][1]["emission_coefficient"] == pytest.approx(
+        1.25, rel=1e-15, abs=0
+    )
+    assert devs["D2"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15, abs=0)
+    assert devs["D2"][1]["emission_coefficient"] == pytest.approx(1.2, rel=1e-15, abs=0)
+    assert devs["D3"][1]["saturation_current"] == pytest.approx(6e-14, rel=1e-15, abs=0)
+    assert devs["D3"][1]["emission_coefficient"] == pytest.approx(
+        0.75, rel=1e-15, abs=0
+    )
+    assert devs["D4"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15, abs=0)
+    assert devs["D4"][1]["series_resistance"] == pytest.approx(5.0, rel=1e-15, abs=0)
+    assert devs["D5"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15, abs=0)
+    assert devs["D5"][1]["series_resistance"] == pytest.approx(6.0, rel=1e-15, abs=0)
     # survey_model also resolves global .func.
     surveyed = lib.survey_model("d_glob")
     assert surveyed.problem is None
 
 
 def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
+    """Passive, geometric, binned, and VBIC `.model` cards evaluate `.func`.
+
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding.
+    """
     lib = library(
         ".func twice(x) {2 * x}\n"
         ".model r_ps RES(R=twice(1.5) TC1=twice(1m))\n"
@@ -3001,17 +3047,17 @@ def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
         ".ends\n"
     )
     devs = _devices(lib.component("deck"))
-    assert devs["R1"][1]["resistance"] == pytest.approx(3000.0, rel=1e-15)
-    assert devs["R2"][1]["resistance"] == pytest.approx(200.0, rel=1e-15)
-    assert devs["C1"][1]["capacitance"] == pytest.approx(2e-13, rel=1e-15)
-    assert devs["M1"][1]["vth0"] == pytest.approx(0.7, rel=1e-15)
+    assert devs["R1"][1]["resistance"] == pytest.approx(3000.0, rel=1e-15, abs=0)
+    assert devs["R2"][1]["resistance"] == pytest.approx(200.0, rel=1e-15, abs=0)
+    assert devs["C1"][1]["capacitance"] == pytest.approx(2e-13, rel=1e-15, abs=0)
+    assert devs["M1"][1]["vth0"] == pytest.approx(0.7, rel=1e-15, abs=0)
     assert "Q1.rth" in devs
-    assert devs["Q1.rth"][1]["resistance"] == pytest.approx(100.0, rel=1e-15)
-    assert devs["Q1.cth"][1]["capacitance"] == pytest.approx(2e-6, rel=1e-15)
+    assert devs["Q1.rth"][1]["resistance"] == pytest.approx(100.0, rel=1e-15, abs=0)
+    assert devs["Q1.cth"][1]["capacitance"] == pytest.approx(2e-6, rel=1e-15, abs=0)
     bin_card = lib.card("mbin", {})
     assert bin_card is not None
     assert models.centre(bin_card, lib.values(), functions=lib.functions) == (
-        pytest.approx((1.25e-6, 5.5e-6), rel=1e-15)
+        pytest.approx((1.25e-6, 5.5e-6), rel=1e-15, abs=0)
     )
 
 
@@ -3056,6 +3102,10 @@ def test_recursive_local_func_and_wrong_arity_are_refused() -> None:
 
 
 def test_local_func_model_cache_has_no_crosstalk() -> None:
+    """Subcircuit-local `.func` calls do not crosstalk via the model cache.
+
+    `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding at sub-pA scale.
+    """
     lib = library(
         ".func scale(x) {x}\n"
         ".model d_shared D(IS=scale(1e-14))\n"
@@ -3078,17 +3128,17 @@ def test_local_func_model_cache_has_no_crosstalk() -> None:
         ".ends\n"
     )
     assert _devices(lib.component("cell_a"))["D1"][1]["saturation_current"] == (
-        pytest.approx(2e-14, rel=1e-15)
+        pytest.approx(2e-14, rel=1e-15, abs=0)
     )
     assert _devices(lib.component("cell_b"))["D1"][1]["saturation_current"] == (
-        pytest.approx(7e-14, rel=1e-15)
+        pytest.approx(7e-14, rel=1e-15, abs=0)
     )
     assert _devices(lib.component("switched", sel=0))["D1"][1][
         "saturation_current"
-    ] == pytest.approx(3e-14, rel=1e-15)
+    ] == pytest.approx(3e-14, rel=1e-15, abs=0)
     assert _devices(lib.component("switched", sel=1))["D1"][1][
         "saturation_current"
-    ] == pytest.approx(9e-14, rel=1e-15)
+    ] == pytest.approx(9e-14, rel=1e-15, abs=0)
 
 
 # ---------------------------------------------------------------------------
@@ -3266,6 +3316,7 @@ def test_contradictory_and_malformed_ic_are_refused() -> None:
 
 
 def test_inductor_ic_currents_multiplier_and_coupled_windings() -> None:
+    """Inductor `IC=` currents scale by `m` (`rel=1e-15, abs=0` for IEEE-754)."""
     lib = library(
         ".subckt coil a b\n"
         "L1 a b 1m M=2 IC=0.25\n"
@@ -3280,14 +3331,14 @@ def test_inductor_ic_currents_multiplier_and_coupled_windings() -> None:
     )
     currents = lib.initial_currents_of("top")
     assert currents == {
-        "X1/L1:current": pytest.approx(1.5, rel=1e-15),
-        "K1:current1": pytest.approx(0.1, rel=1e-15),
-        "K1:current2": pytest.approx(-0.2, rel=1e-15),
+        "X1/L1:current": pytest.approx(1.5, rel=1e-15, abs=0),
+        "K1:current1": pytest.approx(0.1, rel=1e-15, abs=0),
+        "K1:current2": pytest.approx(-0.2, rel=1e-15, abs=0),
         "Lzero:current": 0.0,
     }
     prefixed = lib.initial_currents_of("top", "U1")
-    assert prefixed["U1/X1/L1:current"] == pytest.approx(1.5, rel=1e-15)
-    assert prefixed["U1/K1:current1"] == pytest.approx(0.1, rel=1e-15)
+    assert prefixed["U1/X1/L1:current"] == pytest.approx(1.5, rel=1e-15, abs=0)
+    assert prefixed["U1/K1:current1"] == pytest.approx(0.1, rel=1e-15, abs=0)
 
     # Non-zero inductor IC= is refused under operating_point=False.
     with pytest.raises(
@@ -3334,9 +3385,12 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
         ),
         TIGHT,
     )
-    assert res_ic.voltage("mid")[0] == pytest.approx(3.0, rel=1e-12)
+    # Initial condition at t=0 matches exactly within LU rounding (rel=1e-12, abs=0);
+    # trapezoidal discretization with max_step=20 us on tau=1 ms (h/tau=0.02) gives
+    # O(h^2/tau^2) ~ 1e-4 relative error at t=2 ms (bounded by rel=1e-4, abs=0).
+    assert res_ic.voltage("mid")[0] == pytest.approx(3.0, rel=1e-12, abs=0)
     assert res_ic.voltage("mid")[-1] == pytest.approx(
-        3.0 * math.exp(-2e-3 / tau), rel=1e-4
+        3.0 * math.exp(-2e-3 / tau), rel=1e-4, abs=0
     )
 
     # 2) Nested subcircuit capacitor IC=4 under UIC matches 4 * exp(-t / tau).
@@ -3356,9 +3410,10 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
         ),
         TIGHT,
     )
-    assert res_cap.voltage("X1/mid")[0] == pytest.approx(4.0, rel=1e-12)
+    # Same LU rounding (rel=1e-12) and O(h^2/tau^2) trapezoidal error (rel=1e-4).
+    assert res_cap.voltage("X1/mid")[0] == pytest.approx(4.0, rel=1e-12, abs=0)
     assert res_cap.voltage("X1/mid")[-1] == pytest.approx(
-        4.0 * math.exp(-2e-3 / tau), rel=1e-4
+        4.0 * math.exp(-2e-3 / tau), rel=1e-4, abs=0
     )
 
     # 3) Subcircuit .nodeset guides a bistable tanh circuit to its chosen root.
@@ -3377,11 +3432,13 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
     op = Simulation(circuit(bistable.component("top"))).run(
         OperatingPoint(), Options(nodesets=nodesets)
     )
-    # Root of v = 2 * tanh(v) is ~1.915008 V.
-    assert op.voltage("X1/x") == pytest.approx(1.915008046, rel=1e-6)
+    # Closed-form fixed point of v = 2 * tanh(v) is 1.915008046... V; rel=1e-6 covers
+    # default Newton operating-point reltol=1e-3 / vntol=1e-6 convergence tolerance.
+    assert op.voltage("X1/x") == pytest.approx(1.915008046, rel=1e-6, abs=0)
 
 
 def test_library_reads_driven_pss_statements() -> None:
+    """Driven `.pss` card values parse within IEEE-754 rounding (`rel=1e-12, abs=0`)."""
     read = library(
         ".param f0=1meg\n"
         ".func half(x) {x / 2}\n"
@@ -3396,39 +3453,40 @@ def test_library_reads_driven_pss_statements() -> None:
 
     # .pss 1meg -> driven at 1 MHz
     assert cards[0].autonomous is False
-    assert cards[0].frequency == pytest.approx(1e6)
-    assert cards[0].period == pytest.approx(1e-6)
+    assert cards[0].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
+    assert cards[0].period == pytest.approx(1e-6, rel=1e-12, abs=0)
     assert cards[0].stabilization is None
     assert cards[0].statement is not None
     assert cards[0].statement.line == 3
 
     # Parameterized driven .pss with user function
     assert cards[1].autonomous is False
-    assert cards[1].frequency == pytest.approx(1e6)
-    assert cards[1].period == pytest.approx(1e-6)
-    assert cards[1].stabilization == pytest.approx(10e-6)
+    assert cards[1].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
+    assert cards[1].period == pytest.approx(1e-6, rel=1e-12, abs=0)
+    assert cards[1].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
 
     # Keyword driven with period, max_step, method
     assert cards[2].autonomous is False
-    assert cards[2].period == pytest.approx(1e-6)
-    assert cards[2].frequency == pytest.approx(1e6)
-    assert cards[2].max_step == pytest.approx(5e-9)
+    assert cards[2].period == pytest.approx(1e-6, rel=1e-12, abs=0)
+    assert cards[2].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
+    assert cards[2].max_step == pytest.approx(5e-9, rel=1e-12, abs=0)
     assert cards[2].method == "gear2"
 
     # Keyword driven with fund, points, method alias
     assert cards[3].autonomous is False
-    assert cards[3].period == pytest.approx(1e-3)
+    assert cards[3].period == pytest.approx(1e-3, rel=1e-12, abs=0)
     assert cards[3].points == 100
     assert cards[3].method == "backward_euler"
 
     # Keyword driven with freq, tstep, uic
     assert cards[4].autonomous is False
-    assert cards[4].period == pytest.approx(1e-4)
-    assert cards[4].max_step == pytest.approx(1e-6)
+    assert cards[4].period == pytest.approx(1e-4, rel=1e-12, abs=0)
+    assert cards[4].max_step == pytest.approx(1e-6, rel=1e-12, abs=0)
     assert cards[4].uic is True
 
 
 def test_library_reads_autonomous_pss_statements() -> None:
+    """Autonomous `.pss` cards parse within IEEE-754 rounding (`rel=1e-12, abs=0`)."""
     read = library(
         ".pss\n"
         ".pss 1meg 10u out\n"
@@ -3451,20 +3509,20 @@ def test_library_reads_autonomous_pss_statements() -> None:
     # ngspice 3-arg autonomous .pss
     assert cards[1].autonomous is True
     assert cards[1].period is None
-    assert cards[1].frequency == pytest.approx(1e6)
-    assert cards[1].stabilization == pytest.approx(10e-6)
+    assert cards[1].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
+    assert cards[1].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
     assert cards[1].oscillator_node == "out"
 
     # ngspice full positional autonomous .pss with V(out) and uic
     assert cards[2].autonomous is True
     assert cards[2].period is None
-    assert cards[2].frequency == pytest.approx(1e6)
-    assert cards[2].stabilization == pytest.approx(10e-6)
+    assert cards[2].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
+    assert cards[2].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
     assert cards[2].oscillator_node == "out"
     assert cards[2].points == 1024
     assert cards[2].harmonics == 10
     assert cards[2].shooting_iterations == 50
-    assert cards[2].steady_coefficient == pytest.approx(5e-3)
+    assert cards[2].steady_coefficient == pytest.approx(5e-3, rel=1e-12, abs=0)
     assert cards[2].uic is True
 
     # Numeric non-ground node name
@@ -3476,22 +3534,29 @@ def test_library_reads_autonomous_pss_statements() -> None:
     # Keyword autonomous with oscnode=v(tank)
     assert cards[4].autonomous is True
     assert cards[4].period is None
-    assert cards[4].frequency == pytest.approx(2e6)
-    assert cards[4].stabilization == pytest.approx(5e-6)
+    assert cards[4].frequency == pytest.approx(2e6, rel=1e-12, abs=0)
+    assert cards[4].stabilization == pytest.approx(5e-6, rel=1e-12, abs=0)
     assert cards[4].oscillator_node == "tank"
     assert cards[4].harmonics == 8
     assert cards[4].shooting_iterations == 40
-    assert cards[4].steady_coefficient == pytest.approx(1e-3)
+    assert cards[4].steady_coefficient == pytest.approx(1e-3, rel=1e-12, abs=0)
 
     # Explicit autonomous flag and ngspice oscnob spelling alias
     assert cards[5].autonomous is True
     assert cards[5].period is None
-    assert cards[5].max_step == pytest.approx(2e-9)
+    assert cards[5].max_step == pytest.approx(2e-9, rel=1e-12, abs=0)
     assert cards[6].autonomous is True
     assert cards[6].oscillator_node == "node_a"
 
 
 def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
+    """`.pss` card conversion and shooting integration on driven and autonomous decks.
+
+    Driven `period` and `max_step` match exact decimal parsing within IEEE-754 rounding
+    (`rel=1e-12, abs=0`); autonomous regulated tank period matches `2*pi*sqrt(L*C)` to
+    within 1% (`rel=1e-2`, matching `crates/jolty-engine/tests/periodic.rs` trapezoidal
+    limit-cycle discretization tolerance).
+    """
     driven_deck = library(
         ".subckt rc_driven\n"
         "V1 in 0 SIN(0 1 1meg)\n"
@@ -3503,15 +3568,15 @@ def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
     (driven_card,) = driven_deck.periodic_steady_states
     driven_analysis = PeriodicSteadyState.from_spice(driven_card)
     assert driven_analysis.period is not None
-    assert driven_analysis.period.value == pytest.approx(1e-6)
+    assert driven_analysis.period.value == pytest.approx(1e-6, rel=1e-12, abs=0)
     assert driven_analysis.max_step is not None
-    assert driven_analysis.max_step.value == pytest.approx(1e-8)
+    assert driven_analysis.max_step.value == pytest.approx(1e-8, rel=1e-12, abs=0)
     assert driven_analysis.method == "trapezoidal"
     driven_result = Simulation(circuit(driven_deck.component("rc_driven"))).run(
         driven_analysis
     )
     assert isinstance(driven_result, results.PeriodicSteadyStateResult)
-    assert driven_result.period == pytest.approx(1e-6)
+    assert driven_result.period == pytest.approx(1e-6, rel=1e-12, abs=0)
 
     # Autonomous regulated LC tank: L=1uH, C=1nF -> f0 ~ 5.033 MHz, T ~ 198.7 ns.
     inductance, capacitance = 1e-6, 1e-9
@@ -3535,7 +3600,7 @@ def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
     osc_result = Simulation(circuit(osc_deck.component("tank"))).run(osc_analysis)
     assert isinstance(osc_result, results.PeriodicSteadyStateResult)
     expected_period = 2.0 * math.pi * math.sqrt(inductance * capacitance)
-    assert osc_result.period == pytest.approx(expected_period, rel=1e-2)
+    assert osc_result.period == pytest.approx(expected_period, rel=1e-2, abs=0)
 
 
 @pytest.mark.parametrize(

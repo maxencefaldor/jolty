@@ -657,26 +657,28 @@ def test_noise_reads_densities_and_rms_noise() -> None:
     spectrum = hiss()
     density = noise_density("hiss", at=1 * kHz).read(spectrum)
     assert density.unit == VOLTAGE / rtHz.dimension
-    # Exact 1 kHz grid point (~4.12e-9 V/rtHz); rel=1e-12 covers sqrt rounding (note
-    # pytest.approx default abs=1e-12 also applies at nanovolt scale).
-    assert density.value == pytest.approx(math.sqrt(16e-18 + 1e-18), rel=1e-12)
+    # Exact 1 kHz grid point (~4.12e-9 V/rtHz); abs=0 prevents default abs=1e-12
+    # from masking nanovolt-scale errors; rel=1e-12 covers sqrt rounding.
+    assert density.value == pytest.approx(math.sqrt(16e-18 + 1e-18), rel=1e-12, abs=0)
     between = noise_density("hiss", at=1.5 * kHz).read(spectrum)
-    # Piecewise power-law interpolation of white + 1/f at 1.5 kHz has 9.6e-5 relative
-    # error (~3.9e-13 V/rtHz on 4.08e-9 V/rtHz), covered by default abs=1e-12.
-    assert between.value == pytest.approx(math.sqrt(16e-18 + 1e-15 / 1.5e3), rel=1e-12)
+    # Piecewise power-law interpolation of white + 1/f at 1.5 kHz has 9.62e-5 relative
+    # error (~3.93e-13 V/rtHz on 4.08e-9 V/rtHz); abs=0 prevents default abs=1e-12 mask.
+    assert between.value == pytest.approx(
+        math.sqrt(16e-18 + 1e-15 / 1.5e3), rel=1e-4, abs=0
+    )
     referred = noise_density("hiss", at=1 * kHz, referred=True).read(spectrum)
     # Input gain is constant 2; division by 2 matches within rounding (rel=1e-12).
-    assert referred.value == pytest.approx(density.value / 2, rel=1e-12)
+    assert referred.value == pytest.approx(density.value / 2, rel=1e-12, abs=0)
     # The sum of two power laws is not a power law: piecewise power-law quadrature on
-    # 10 pts/decade has ~1e-4 relative error (bounded by rel=1e-4).
+    # 10 pts/decade has 9.94e-6 relative error across the band (bounded by rel=1e-4).
     power = 16e-18 * (1e5 - 10) + 1e-15 * math.log(1e4)
     total = integrated_noise("hiss").read(spectrum)
     assert total.unit == VOLTAGE
-    assert total.value == pytest.approx(math.sqrt(power), rel=1e-4)
+    assert total.value == pytest.approx(math.sqrt(power), rel=1e-4, abs=0)
     band = integrated_noise("hiss", start=100 * Hz, stop=10 * kHz).read(spectrum)
     expected = 16e-18 * (1e4 - 100) + 1e-15 * math.log(100)
-    # Same piecewise power-law quadrature error on 10 pts/decade (bounded by rel=1e-4).
-    assert band.value == pytest.approx(math.sqrt(expected), rel=1e-4)
+    # Same piecewise power-law quadrature error (5.60e-5 relative on 10 pts/decade).
+    assert band.value == pytest.approx(math.sqrt(expected), rel=1e-4, abs=0)
     assert band.value == spectrum.rms(100.0, 1e4)
     assert str(noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz) == (
         "noise density at 1 kHz in hiss ≤ 10 nV/√Hz"
