@@ -345,3 +345,63 @@ Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1
 
 The chain found the serial run's bits on every number of threads; it spread its devices on 4 to 32 threads, from the break-evens on 4 and 8, and nothing on 1, 2 or 64, where no size measured paid, so on 64 it ran as serially.
 The mesh found the serial run's bits on one thread, ordered by the minimum degree, and other last digits on each number of threads whose break-even of the interiors differs, the same on 8, 16 and 32, which take 8's; it ran 5.86 times as fast on 32 threads as serially, its dissection doing it all, as its devices are linear and its work on each unknown spreads on no number.
+
+### Machine D baseline (`430c75d`)
+
+Commit `430c75d` (`results/430c75d6b0b402812924ebcfd22ed6c91fee6378.json`) records the full speed suite, scaling runs, and transient profiles on machine D (AMD EPYC 9B14 96-core server, 24 cores available, Linux x86_64 with glibc 2.27, Rust 1.100.0, Python 3.15.2, ngspice 47), measured on 18 November 2026 under shared-host load averages of 145 to 224.
+Each entry retains individual run samples (`wall` and `cpu`) so baseline comparisons compute exact 95% rank confidence intervals.
+
+| Fixture | Rust setup | Rust shared | Rust run | Python (median [95% CI]) |
+| --- | --- | --- | --- | --- |
+| `bjt_amp` | 117.4 µs | 5.159 µs | 1.532 ms | 1.942 ms [1.942, 1.943] |
+| `ac_wide` | 118.1 µs | 4.895 µs | 3.069 ms | 9.691 ms [9.64, 9.741] |
+| `buck` | 74.4 µs | 4.313 µs | 1.518 s | 1.556 s [1.547, 1.566] |
+| `inverter_chain_500` | 7.636 ms | 1.054 ms | 7.825 s | 8.574 s [8.507, 8.639] |
+| `rc_mesh_100` | 66.87 ms | 2.644 ms | 1.340 s | 1.155 s [1.129, 1.195] |
+
+Monte Carlo batch scaling on `430c75d`: in Rust (1,000 samples), 963.1 µs/sample on 1 thread, 493.2 µs on 2, 244.4 µs on 4, 121.9 µs on 8, and 57.92 µs on 24 threads (16.6×); in Python, 979.0 µs/sample on one core, 61.70 µs on 24 cores (1,000 samples, 15.9×), and 59.72 µs on 24 cores across all 100,000 samples (5.97 s total).
+
+Large-circuit scaling on machine D (6 interleaved rounds, default parallelism):
+
+| Fixture | Threads | Time (median [95% CI]) | Against serial | Against 1 thread | Verdict | Results |
+| --- | --- | --- | --- | --- | --- | --- |
+| `rc_mesh_300` | serially | 78.84 s [76.92, 82.19] | 1.00× | | | `4998e669da8acfba` |
+| `rc_mesh_300` | 1 | 79.55 s [76.65, 83.21] | 0.99× | 1.00× | undecided | `4998e669da8acfba` |
+| `rc_mesh_300` | 2 | 21.94 s [20.36, 22.20] | 3.59× | 3.63× | faster | `54b9ddd5b34d2b45` |
+| `rc_mesh_300` | 4 | 15.03 s [14.37, 15.70] | 5.24× | 5.29× | faster | `e9b2d729b36516e9` |
+| `rc_mesh_300` | 8 | 12.38 s [11.99, 13.29] | 6.37× | 6.43× | faster | `40d3afc4e97cf08b` |
+| `rc_mesh_300` | 16 | 11.81 s [11.37, 12.22] | 6.67× | 6.73× | faster | `40d3afc4e97cf08b` |
+| `rc_mesh_300` | 24 | 11.08 s [10.71, 11.34] | 7.12× | 7.18× | faster | `40d3afc4e97cf08b` |
+| `inverter_chain_5000` | serially | 250.3 s [138.9, 375.2] | 1.00× | | | `988bcd74633cb666` |
+| `inverter_chain_5000` | 1 | 224.7 s [91.88, 375.6] | 1.11× | 1.00× | undecided | `988bcd74633cb666` |
+| `inverter_chain_5000` | 2 | 201.0 s [91.04, 359.1] | 1.25× | 1.12× | undecided | `988bcd74633cb666` |
+| `inverter_chain_5000` | 4 | 75.13 s [61.60, 139.9] | 3.33× | 2.99× | undecided | `988bcd74633cb666` |
+| `inverter_chain_5000` | 8 | 59.10 s [52.14, 77.45] | 4.24× | 3.80× | faster | `988bcd74633cb666` |
+| `inverter_chain_5000` | 16 | 58.81 s [54.92, 60.16] | 4.26× | 3.82× | faster | `988bcd74633cb666` |
+| `inverter_chain_5000` | 24 | 70.78 s [65.31, 89.90] | 3.54× | 3.17× | faster | `988bcd74633cb666` |
+| `inverter_chain_50000` | default (1 run) | 1,001 s (881.9 s profiled) | | | | |
+
+`inverter_chain_5000` produced the bit-identical result fingerprint `988bcd74633cb666` across every thread count; `rc_mesh_300` matched `4998e669da8acfba` serially and on 1 thread, and `40d3afc4e97cf08b` across 8, 16 and 24 threads (where nested dissection picks the same interior bound).
+
+Transient profile work counts on `430c75d` (machine D, glibc 2.27):
+
+| Transient | Profiled time | Eval | Asm | Factor | Solve | Step | Other | Iterations | Fact, Refact, Fallback, Reuse |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `bjt_amp/tran` | 1.391 ms | 27% | 4% | 10% | 5% | 15% | 39% | 106 | 0, 159, 0, 0 |
+| `buck/tran` | 1.597 s | 41% | 7% | 15% | 11% | 16% | 9% | 331,101 | 1, 433,499, 13,039, 1,793 |
+| `inverter_chain_500/tran` | 9.249 s | 62% | 8% | 8% | 6% | 14% | 2% | 11,797 | 2, 14,884, 30, 3 |
+| `rc_mesh_100/tran` | 1.133 s | 26% | 8% | 33% | 14% | 16% | 2% | 227 | 1, 94, 0, 247 |
+| `inverter_chain_5000/tran` | 84.81 s | 29% | 21% | 20% | 15% | 10% | 5% | 12,116 | 2, 15,256, 31, 3 |
+| `inverter_chain_50000/tran` | 881.9 s | 22% | 26% | 20% | 22% | 8% | 3% | 12,037 | 2, 15,138, 32, 3 |
+| `rc_mesh_300/tran` | 7.513 s | 31% | 10% | 27% | 10% | 20% | 3% | 225 | 1, 94, 0, 245 |
+
+`--view defaults` on machine D (`430c75d`, ngspice 47; raw view JSON kept out of the repository; `bjt_amp` transient deviations below were measured before replacing linear `np.interp` with Huynh (1993) cubic Hermite, after which `--view matched bjt_amp` dropped from `3.8e-03` to `5.9e-05` on both Sparse and KLU):
+
+| Fixture | jolty | ngspice-sparse | ngspice-klu |
+| --- | --- | --- | --- |
+| options | its defaults | its defaults | `.options klu` |
+| `bjt_amp` | 2.029 ms (1.72 ms analysis); op 1.5e-11, ac 5.8e-13, tran 1.9e-03 | 3.711 ms (881.6 µs analysis); op 2.0e-11, ac 7.5e-13, tran 3.5e-03 | 3.948 ms (1.151 ms analysis); op 1.1e-11, ac 4.1e-13, tran 3.5e-03 |
+| `ac_wide` | 12.42 ms (11.92 ms analysis); ac 5.8e-13 | 44.18 ms (17.24 ms analysis); ac 7.5e-13 | 54.83 ms (27.34 ms analysis); ac 4.4e-13 |
+| `buck` | 1.589 s (1.589 s analysis); tran 2.0e-03 | 358.7 ms (309.8 ms analysis); tran 2.5e-03 | 406.7 ms (359.6 ms analysis); tran 2.5e-03 |
+| `inverter_chain_500` | 9.912 s (9.897 s analysis); tran 1.0e+00 | 2.428 s (2.38 s analysis); tran 9.9e-01 | 2.51 s (2.46 s analysis); tran 9.9e-01 |
+| `rc_mesh_100` | 1.497 s (1.383 s analysis); tran 1.2e-02 | 51.39 s (51.22 s analysis); tran 3.7e-03 | 5.069 s (4.552 s analysis); tran 3.7e-03 |
