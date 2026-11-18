@@ -10,7 +10,7 @@ from pathlib import Path
 import bench
 import numpy as np
 import pytest
-from measuring import CONFIDENCE, Median, median, rank
+from measuring import CONFIDENCE, Median, median, rank, usable_cores
 from timing import Run
 
 
@@ -195,3 +195,17 @@ def test_a_night_compares_its_build_with_the_last_and_keeps_its_own(
     compared.clear()
     bench.nightly(arguments, nights)
     assert compared == [((last, tonight), today)]
+
+
+def test_usable_cores_respects_process_cpu_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("measuring.os.process_cpu_count", lambda: 16)
+    monkeypatch.setattr("measuring.os.cpu_count", lambda: 384)
+    assert usable_cores() == 16
+    assert bench.every((1, 2, 4, 8, 32, 64)) == [1, 2, 4, 8, 16]
+
+    monkeypatch.setattr("measuring.os.process_cpu_count", lambda: None)
+    assert usable_cores() == 384
+    monkeypatch.setattr("measuring.os.cpu_count", lambda: None)
+    assert usable_cores() == 1

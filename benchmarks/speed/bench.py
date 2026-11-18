@@ -135,6 +135,7 @@ from measuring import (
     results_path,
     save,
     shown,
+    usable_cores,
 )
 from pydantic import Field
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
@@ -473,7 +474,7 @@ def requests(
     thread and on a thread per core, or every sample on a thread per core at `scale`,
     named by the number of samples run.
     """
-    cores = os.cpu_count() or 1
+    cores = usable_cores()
     asked: dict[str, Request] = {}
     for name in names:
         monte_carlo = found[name].plan.monte_carlo
@@ -1630,7 +1631,7 @@ def main(argv: list[str] | None = None) -> None:
 
 def every(counts: Iterable[int]) -> list[int]:
     """Each of `counts` that is fewer than the cores, and then every core."""
-    cores = os.cpu_count() or 1
+    cores = usable_cores()
     return [count for count in counts if count < cores] + [cores]
 
 

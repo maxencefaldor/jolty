@@ -52,6 +52,11 @@ def load_average() -> float:
     return os.getloadavg()[0]
 
 
+def usable_cores() -> int:
+    """The logical processors available to this process, respecting affinity masks."""
+    return os.process_cpu_count() or os.cpu_count() or 1
+
+
 def git(*arguments: str) -> str:
     """What git prints for `arguments`, in the repository."""
     done = subprocess.run(  # noqa: S603 - git reads the repository
@@ -120,7 +125,7 @@ def machine() -> dict[str, JsonValue]:
     )
     return {
         "cpu": cpu or platform.processor(),
-        "cores": os.cpu_count(),
+        "cores": usable_cores(),
         "kinds of core": {str(kind): int(count or 0) for kind, count in cores.items()},
         "sockets": None if sockets is None else int(sockets),
         "memory": None if memory is None else int(memory),
