@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status (18 November 2026): steps 1, 2 and 2b done, on `main`; not done: the largest chunk's measured break-even (2.3) and a whole VJP's time (2.6); steps 3 and 4 deferred; the measurement that would decide step 3 held for the owner.
+Status (18 November 2026): steps 1, 2 and 2b done, on `main`; the largest chunk measured against a width of 16 (2.3), its choice put to the owner; not done: a whole VJP's time (2.6); steps 3 and 4 deferred; the measurement that would decide step 3 held for the owner.
 How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
 
 ## Why
@@ -151,6 +151,18 @@ So every width is cheaper than as many twins of one, from two on: chunks always 
 Past eight, the line through these counts gives each seed less incremental benefit while a twin's stack footprint grows with its width; eight holds the six to eight numbers a kit's mismatch moves on a device, and stays the largest.
 Padding costs where the part per seed is large: five of BSIM4's parameters cost 92,128 instructions in a twin of eight against 80,427 in a twin of four and one of one, where the diode's cost 2,482 against 2,752; the rule stays the smallest width that holds a chunk, one twin per chunk, until a measurement of whole gradients asks for more.
 Instruction counts are deterministic and independent of machine load.
+
+**Width 16, timed** (18 November, `d98de4c` with `Seeds::MOST` set to 16 in a copy, not kept): one build of `evaluation.rs`, criterion, on one pinned core of machine D at a host load of 259 to 269 over its 96 cores, medians:
+
+| Twin | 1 | 2 | 4 | 8 | 16 | 16 against two of 8 |
+| --- | --- | --- | --- | --- | --- | --- |
+| BSIM4 | 3.691 µs | 4.075 µs | 6.603 µs | 10.92 µs | 20.42 µs | 6.5% less |
+| Diode (0.69 V forward) | 129.0 ns | 156.7 ns | 188.2 ns | 281.2 ns | 533.1 ns | 5.2% less |
+| Resistor, with voltage coefficients | 59.54 ns | 60.81 ns | 88.44 ns | 149.4 ns | 228.2 ns | 24% less |
+
+A twin of 16 takes less time than two of 8 on all three, by little on BSIM4 and the diode, whose intervals touch, and a quarter on the resistor; a release build of `jolty-models` takes 211.3 s rather than 172.4 s (+23%), and the gain reaches only a device seeded along more than eight directions in one derivative, more than a kit's mismatch moves.
+Eight stays the largest: the recommendation put to the owner, who may choose 16.
+These are criterion's own runs, not the timing protocol's alternating builds, and on another server than the times of 2.6, so the two tables are compared within themselves only.
 
 ### 2.4 The JVP without chunks
 
