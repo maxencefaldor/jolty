@@ -6,6 +6,7 @@ import math
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -51,11 +52,13 @@ from jolty.units import (
     kohm,
     m,
     mA,
+    nF,
     nm,
     ns,
     ohm,
     s,
     uF,
+    uH,
     um,
 )
 from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
@@ -2064,3 +2067,467 @@ def test_a_function_that_calls_itself_is_refused_by_name(
         library(f"{functions}\n.subckt part a\nR1 a 0 {{f(2)}}\n.ends").component(
             "part"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _AsItself:
+    """Model exports and reads back as itself, optionally with auxiliary elements."""
+
+    auxiliary: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class _AsMapped:
+    """Model exports by documented design as different SPICE elements."""
+
+    models: frozenset[str]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AsSubcircuit:
+    """Model exports as a foundry subcircuit call (`X`) rather than a primitive."""
+
+    subcircuit: str
+    stub_header: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Refused:
+    """Model has no SPICE element and is refused by name during export."""
+
+    message: str
+
+
+type _RoundTripOutcome = _AsItself | _AsMapped | _AsSubcircuit | _Refused
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalDrive:
+    """How a bench terminal is connected: ground, resistor load, or biased source."""
+
+    kind: str
+    value: float = 0.0
+    series: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _RoundTripCase:
+    """One model's round-trip fixture and expected SPICE outcome."""
+
+    device: devices.Device
+    outcome: _RoundTripOutcome
+    drives: tuple[_TerminalDrive, ...] = ()
+    frequency: float | None = None
+    probe_index: int = 0
+
+
+def _ground() -> _TerminalDrive:
+    return _TerminalDrive("ground")
+
+
+def _voltage(volts: float, *, series: float = 0.0) -> _TerminalDrive:
+    return _TerminalDrive("voltage", volts, series)
+
+
+def _load(ohms: float) -> _TerminalDrive:
+    return _TerminalDrive("load", ohms)
+
+
+_SPICE_ROUND_TRIP: Final[dict[str, _RoundTripCase]] = {
+    "resistor": _RoundTripCase(
+        devices.resistor(1 * kohm),
+        _AsItself(),
+        (_voltage(1.5), _ground()),
+    ),
+    "capacitor": _RoundTripCase(
+        devices.capacitor(1 * nF),
+        _AsItself(),
+        (_voltage(1.5), _ground()),
+        frequency=1e6,
+    ),
+    "inductor": _RoundTripCase(
+        devices.inductor(1 * uH),
+        _AsItself(),
+        (_voltage(0.0, series=50.0), _ground()),
+        frequency=1e6,
+    ),
+    "coupled_inductors": _RoundTripCase(
+        devices.coupled_inductors(
+            [devices.inductor(1 * uH), devices.inductor(2 * uH)],
+            {(1, 2): 0.8},
+        ),
+        _AsItself(),
+        (_voltage(0.0, series=50.0), _ground(), _load(50.0), _ground()),
+        frequency=1e6,
+    ),
+    "transmission_line": _RoundTripCase(
+        devices.transmission_line(50 * ohm, 5 * ns),
+        _AsItself(),
+        (_voltage(1.0, series=50.0), _ground(), _load(50.0), _ground()),
+        frequency=1e7,
+    ),
+    "voltage_source": _RoundTripCase(
+        devices.voltage_source(3.3 * V),
+        _AsItself(),
+        (_load(1000.0), _ground()),
+    ),
+    "current_source": _RoundTripCase(
+        devices.current_source(1 * mA),
+        _AsItself(),
+        (_voltage(1.0), _ground()),
+    ),
+    "voltage_controlled_voltage_source": _RoundTripCase(
+        devices.voltage_controlled_voltage_source(2.0),
+        _AsItself(),
+        (_load(1000.0), _ground(), _voltage(1.2), _ground()),
+    ),
+    "voltage_controlled_current_source": _RoundTripCase(
+        devices.voltage_controlled_current_source(1e-3 * A / V),
+        _AsItself(),
+        (_voltage(0.5), _ground(), _voltage(1.2), _ground()),
+    ),
+    "current_controlled_voltage_source": _RoundTripCase(
+        devices.current_controlled_voltage_source(500 * ohm),
+        _AsItself(auxiliary=frozenset({"voltage_source"})),
+        (_load(1000.0), _ground(), _voltage(1.0, series=1000.0), _ground()),
+    ),
+    "current_controlled_current_source": _RoundTripCase(
+        devices.current_controlled_current_source(3.0),
+        _AsItself(auxiliary=frozenset({"voltage_source"})),
+        (_voltage(0.5), _ground(), _voltage(1.0, series=1000.0), _ground()),
+    ),
+    "behavioral_voltage_source": _RoundTripCase(
+        devices.behavioral_voltage_source("2.0 * v(control) + 1.5"),
+        _AsItself(),
+        (_load(1000.0), _ground(), _voltage(0.75)),
+    ),
+    "behavioral_current_source": _RoundTripCase(
+        devices.behavioral_current_source("1e-3 * v(positive, negative)"),
+        _AsItself(),
+        (_voltage(1.2), _ground()),
+    ),
+    "behavioral_capacitor": _RoundTripCase(
+        devices.behavioral_capacitor("1e-12 * v(positive, negative)"),
+        _AsItself(),
+        (_voltage(1.2), _ground()),
+        frequency=1e6,
+    ),
+    "voltage_controlled_switch": _RoundTripCase(
+        devices.voltage_controlled_switch(on_voltage=2 * V, off_voltage=0.5 * V),
+        _AsMapped(
+            models=frozenset({"behavioral_current_source"}),
+            reason=(
+                "smooth cubic transition exported as behavioral current B source "
+                "rather than ngspice's discontinuous S switch"
+            ),
+        ),
+        (_voltage(1.0), _ground(), _voltage(1.3), _ground()),
+    ),
+    "current_controlled_switch": _RoundTripCase(
+        devices.current_controlled_switch(on_current=2 * mA, off_current=0.5 * mA),
+        _AsMapped(
+            models=frozenset({"behavioral_current_source", "voltage_source"}),
+            reason=(
+                "smooth cubic transition exported as behavioral current B source "
+                "with 0 V sense voltage source"
+            ),
+        ),
+        (_voltage(1.0), _ground(), _voltage(1.3, series=1000.0), _ground()),
+    ),
+    "diode": _RoundTripCase(
+        devices.diode(saturation_current=1e-14 * A, emission_coefficient=1.2),
+        _AsItself(),
+        (_voltage(0.7), _ground()),
+    ),
+    "bipolar_transistor": _RoundTripCase(
+        devices.bipolar_transistor(saturation_current=1e-15 * A, forward_beta=100),
+        _AsItself(),
+        (_voltage(2.0), _voltage(0.7), _ground()),
+    ),
+    "vbic": _RoundTripCase(
+        devices.vbic(saturation_current=1e-16 * A),
+        _AsItself(),
+        (_voltage(2.0), _voltage(0.7), _ground(), _ground()),
+    ),
+    "jfet": _RoundTripCase(
+        devices.jfet(
+            threshold_voltage=-2 * V, transconductance_parameter=1e-3 * A / V**2
+        ),
+        _AsItself(),
+        (_voltage(5.0), _voltage(-1.0), _ground()),
+    ),
+    "mosfet": _RoundTripCase(
+        devices.mosfet(
+            threshold_voltage=0.7 * V,
+            transconductance_parameter=1e-4 * A / V**2,
+            width=10 * um,
+            length=2 * um,
+        ),
+        _AsItself(),
+        (_voltage(3.0), _voltage(2.0), _ground(), _ground()),
+    ),
+    "vdmos": _RoundTripCase(
+        devices.vdmos(
+            threshold_voltage=2 * V,
+            transconductance_parameter=0.5 * A / V**2,
+        ),
+        _AsItself(),
+        (_voltage(5.0), _voltage(4.0), _ground()),
+    ),
+    "bsim3": _RoundTripCase(
+        devices.bsim3(channel="n", width=10 * um, length=1 * um),
+        _AsItself(),
+        (_voltage(1.5), _voltage(1.2), _ground(), _ground()),
+    ),
+    "bsim4": _RoundTripCase(
+        devices.bsim4(channel="n", width=10 * um, length=1 * um),
+        _AsItself(),
+        (_voltage(1.5), _voltage(1.2), _ground(), _ground()),
+    ),
+    "foundry_mosfet": _RoundTripCase(
+        sky130.mosfet("nfet_01v8", width=1 * um, length=0.15 * um),
+        _AsSubcircuit(
+            subcircuit="sky130_fd_pr__nfet_01v8",
+            stub_header=(
+                ".subckt sky130_fd_pr__nfet_01v8 d g s b "
+                "L=0.15 W=1 nf=1 ad=0 as=0 pd=0 ps=0 nrd=0 nrs=0 "
+                "sa=0 sb=0 sd=0 mult=1 m=1"
+            ),
+        ),
+    ),
+    "voltage_controlled_memristor": _RoundTripCase(
+        devices.voltage_controlled_memristor(
+            on_resistance=100 * ohm,
+            off_resistance=16 * kohm,
+            on_voltage=-1 * V,
+            off_voltage=1 * V,
+            on_rate=1e3 / s,
+            off_rate=1e3 / s,
+            state=0.25,
+        ),
+        _AsMapped(
+            models=frozenset({"behavioral_current_source", "voltage_source"}),
+            reason="ngspice lacks jolty's VTEAM memristor law; exported as B source",
+        ),
+        (_voltage(0.5), _ground()),
+    ),
+    "current_controlled_memristor": _RoundTripCase(
+        devices.current_controlled_memristor(
+            on_resistance=100 * ohm,
+            off_resistance=16 * kohm,
+            charge=1e-6 * A * s,
+            state=0.25,
+        ),
+        _AsMapped(
+            models=frozenset({"behavioral_current_source", "voltage_source"}),
+            reason="ngspice lacks jolty's HP ion-drift memristor; exported as B source",
+        ),
+        (_voltage(0.5), _ground()),
+    ),
+    "photocell": _RoundTripCase(
+        devices.photocell(10 * kohm),
+        _AsMapped(
+            models=frozenset({"behavioral_current_source"}),
+            reason="ngspice has no native photocell; exported as B source",
+        ),
+        (_voltage(1.0), _ground(), _voltage(5.0), _ground()),
+    ),
+    "heat_source": _RoundTripCase(
+        devices.heat_source(1 * W),
+        _Refused("a heat_source has no SPICE element"),
+    ),
+    "thermal_resistance": _RoundTripCase(
+        devices.thermal_resistance(50 * K / W),
+        _Refused("a thermal_resistance has no SPICE element"),
+    ),
+    "thermal_capacitance": _RoundTripCase(
+        devices.thermal_capacitance(1e-3 * J / K),
+        _Refused("a thermal_capacitance has no SPICE element"),
+    ),
+    "logic_source": _RoundTripCase(
+        devices.logic_source(0, [(1 * ns, 1)], transition=1 * ns),
+        _Refused("a logic_source has no SPICE element"),
+    ),
+    "logic_cell": _RoundTripCase(
+        devices.logic_cell(["a"], {"y": "10"}, rise=1 * ns, transition=1 * ns),
+        _Refused("a logic_cell has no SPICE element"),
+    ),
+}
+"""Every model in `Library::standard()` with its SPICE round-trip expectation."""
+
+
+def _isolated_circuit(case: _RoundTripCase) -> tuple[ir.Circuit, list[str]]:
+    """Minimal circuit holding one instance of `case.device` and its port nets."""
+    c = Builder("isolated")
+    ground = c.port("ground", Role.GROUND)
+    placed = c.place(case.device, name="U1")
+    terminals = case.device.terminals
+    drives = case.drives or tuple(
+        _ground() if index == len(terminals) - 1 else _load(1000.0)
+        for index in range(len(terminals))
+    )
+    ports: list[str] = []
+    for terminal, drive in zip(terminals, drives, strict=True):
+        if drive.kind == "ground":
+            c.connect(placed[terminal], ground)
+        else:
+            net_name = f"net_{terminal}"
+            c.connect(placed[terminal], name=net_name)
+            ports.append(net_name)
+    return circuit(c.finish()), ports
+
+
+def _driven_bench(
+    subject: devices.Device | Component,
+    terminals: tuple[str, ...],
+    drives: tuple[_TerminalDrive, ...],
+    *,
+    port_prefix: str = "",
+) -> tuple[Component, str, str]:
+    """Wraps `subject` with sources and loads matching `drives`."""
+    c = Builder("bench")
+    ground = c.port("ground", Role.GROUND)
+    placed = c.place(subject, name="DUT")
+    if isinstance(subject, Component) and spice.GROUND in (
+        port.name for port in subject.definition.ports
+    ):
+        c.connect(placed[spice.GROUND], ground)
+    first_source = ""
+    first_net = ""
+    for index, (terminal, drive) in enumerate(zip(terminals, drives, strict=True)):
+        pin = placed[f"{port_prefix}{terminal}"]
+        if drive.kind == "ground":
+            if not port_prefix:
+                c.connect(pin, ground)
+            continue
+        net_name = f"net_{terminal}"
+        if not first_net:
+            first_net = net_name
+        if drive.kind == "load":
+            resistor = c.place(devices.resistor(drive.value * ohm), name=f"RL{index}")
+            c.connect(pin, resistor.a, name=net_name)
+            c.connect(resistor.b, ground)
+        else:
+            source_name = f"VS{index}"
+            if not first_source:
+                first_source = source_name
+            source = c.place(devices.voltage_source(drive.value * V), name=source_name)
+            c.connect(source.negative, ground)
+            if drive.series > 0.0:
+                series = c.place(
+                    devices.resistor(drive.series * ohm), name=f"RS{index}"
+                )
+                c.connect(source.positive, series.a, name=f"src_{index}")
+                c.connect(series.b, pin, name=net_name)
+            else:
+                c.connect(source.positive, pin, name=net_name)
+    return c.finish(), first_source, first_net
+
+
+def test_every_model_has_a_spice_round_trip_case() -> None:
+    """Every model in `Library::standard()` is accounted for in `_SPICE_ROUND_TRIP`."""
+    assert set(_SPICE_ROUND_TRIP) == set(_core.models())
+
+
+@pytest.mark.parametrize("model_name", sorted(_SPICE_ROUND_TRIP))
+def test_every_model_spice_round_trip(model_name: str) -> None:
+    """Every model round-trips electrically, maps by design, or refuses by name."""
+    case = _SPICE_ROUND_TRIP[model_name]
+    built, ports = _isolated_circuit(case)
+    outcome = case.outcome
+
+    if isinstance(outcome, _Refused):
+        with pytest.raises(JoltyError, match=re.escape(outcome.message)):
+            netlist(built)
+        return
+
+    lines = netlist(built)
+    body = [line for line in lines[1:] if line.strip()]
+    cards = [line for line in body if line.lower().startswith(".model")]
+    elements = [line for line in body if not line.lower().startswith(".model")]
+
+    if isinstance(outcome, _AsSubcircuit):
+        assert any(
+            line.startswith("XU1 ") and outcome.subcircuit in line for line in elements
+        ), body
+        missing = "\n".join([f".subckt dut {' '.join(ports)}", *elements, ".ends"])
+        with pytest.raises(SpiceError, match=re.escape(outcome.subcircuit)):
+            library(missing).component("dut")
+        stubbed = "\n".join(
+            [
+                outcome.stub_header,
+                "R1 d s 1k",
+                ".ends",
+                f".subckt dut {' '.join(ports)}",
+                *elements,
+                ".ends",
+            ]
+        )
+        dut = library(stubbed).component("dut")
+        subcircuits = {
+            instance.of.component.partition("[")[0]
+            for instance in dut.definition.instances
+            if isinstance(instance.of, ir.ComponentOf)
+        }
+        assert subcircuits == {outcome.subcircuit}
+        return
+
+    deck = "\n".join([*cards, f".subckt dut {' '.join(ports)}", *elements, ".ends"])
+    dut = library(deck).component("dut")
+    got_models = {
+        instance.of.model
+        for instance in dut.definition.instances
+        if isinstance(instance.of, ir.DeviceOf)
+    }
+
+    if isinstance(outcome, _AsItself):
+        assert got_models == {model_name, *outcome.auxiliary}
+    else:
+        assert got_models == outcome.models
+
+    terminals = case.device.terminals
+    original, source_name, probe_net = _driven_bench(
+        case.device, terminals, case.drives
+    )
+    round_trip_terminals = tuple(
+        terminal
+        for terminal, drive in zip(terminals, case.drives, strict=True)
+        if drive.kind != "ground"
+    )
+    round_trip_drives = tuple(drive for drive in case.drives if drive.kind != "ground")
+    round_trip_bench, _, _ = _driven_bench(
+        dut, round_trip_terminals, round_trip_drives, port_prefix="net_"
+    )
+
+    # Compare electrical response between original and round-tripped device.
+    # Tolerance 1e-9 relative covers IEEE-754 decimal serialization rounding in SPICE
+    # netlists and TIGHT Newton convergence (reltol=1e-6, abstol=1e-14).
+    if case.frequency is not None:
+        analysis = Ac(source_name, [case.frequency * Hz])
+        expected = complex(
+            Simulation(original).run(analysis, TIGHT).current(source_name)[0]
+        )
+        actual = complex(
+            Simulation(round_trip_bench).run(analysis, TIGHT).current(source_name)[0]
+        )
+    elif source_name and case.drives[0].kind == "voltage":
+        expected = complex(
+            Simulation(original).run(OperatingPoint(), TIGHT).current(source_name)
+        )
+        actual = complex(
+            Simulation(round_trip_bench)
+            .run(OperatingPoint(), TIGHT)
+            .current(source_name)
+        )
+    else:
+        expected = complex(
+            Simulation(original).run(OperatingPoint(), TIGHT).voltage(probe_net)
+        )
+        actual = complex(
+            Simulation(round_trip_bench).run(OperatingPoint(), TIGHT).voltage(probe_net)
+        )
+    scale = max(abs(expected), abs(actual), 1e-12)
+    assert abs(expected - actual) <= 1e-9 * scale, (
+        f"{model_name}: expected {expected!r}, round-tripped {actual!r}"
+    )

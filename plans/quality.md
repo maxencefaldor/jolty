@@ -17,7 +17,7 @@ Every ruff and ty rule and clippy's pedantic lints are errors; rustdoc's warning
 **Short of `AGENTS.md`'s spirit:**
 
 - **One fact in several places:** one parameter lives in six places in four files (`models.md` 4).
-- **Guards a new model can skip:** the SPICE round trip does not run over every model (item 4).
+- **Guards that enumerate the library:** allocation, Jacobian, law suite and SPICE round-trip checks all enumerate `Library::standard()` (item 4).
 - **Numbers without a source:** engine constants, and up to 340 of 428 test tolerance sites (a 15 November scan's upper bound) (items 10 and 11).
 - **Names:** unified across the library (`8a4d80a` to `bc35702`, item 12; only `measure::Signal` waits on the owner) and across the benchmark suites (`092e86f`, item 13, done: `fixture` everywhere, one `benchmarks/simulators.py`).
 
@@ -34,7 +34,7 @@ The analyses a spec names are resolved only after every analysis has run (item 8
 
 - One fact in several places: a model's facts (the benchmarks' helpers are unified, item 13).
 - One concept under several names: `measure::Signal` still waits on the owner (item 12).
-- Guards a new model can skip (the SPICE round trip over every model, item 4); numbers that do not say where they come from.
+- Numbers that do not say where they come from (items 10 and 11).
 - Units and names checked late on several user paths.
 - No how-to pages; guide sentences still run long (executable blocks and quotes are done, item 14).
 
@@ -70,7 +70,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 - **What:** every test that should hold for all models iterates the standard library, so a new model cannot skip it.
 - **Result:** the allocation test and the Jacobian check run over one table (`crates/jolty-models/src/testing/cases.rs`, 35 cases covering 28 analog models at `1235b50`; now 45 cases covering all 31 analog models in `Library::standard()`, 30 native plus `foundry_mosfet`), and fail if a model has no case; the kernels' lints are denied once, in `kernel.rs`, for every kernel beside it.
-    **Not done:** the SPICE round trip over every model (a model written and read back as itself, as another element by design, or refused by name, each decided per model).
+    `tests/test_spice.py` (`test_every_model_has_a_spice_round_trip_case` and `test_every_model_spice_round_trip`) now enumerates all 33 models in `_core.models()` (`Library::standard()`): 22 round-trip as themselves (2 with an auxiliary 0 V sense source), 5 map to behavioral sources by documented design (`voltage_controlled_switch`, `current_controlled_switch`, `voltage_controlled_memristor`, `current_controlled_memristor`, `photocell`), 1 exports as a foundry subcircuit call (`foundry_mosfet`), and 5 are refused by name (`heat_source`, `thermal_resistance`, `thermal_capacitance`, `logic_source`, `logic_cell`), with electrical equivalence checked to 1e-9 relative for all 27 exportable analog models.
 - **Done when:** removing a model's case fails a test; one `deny` attribute in the crate.
 - **Source:** row 8.
 
