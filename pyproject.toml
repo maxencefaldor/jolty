@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+jax = ["jax>=0.12"]
 mcp = ["mcp>=2.1"]
 
 [project.scripts]
@@ -33,6 +34,7 @@ Issues = "https://github.com/maxencefaldor/jolty/issues"
 dev = [
     "coverage>=7.17.3",
     "hypothesis",
+    "jax>=0.12",
     "maturin",
     "mcp>=2.1",
     "mpmath>=1.4.1",

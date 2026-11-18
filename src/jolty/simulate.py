@@ -31,6 +31,7 @@ import contextvars
 import functools
 import json
 import math
+import threading
 import time
 from collections.abc import (
     Callable,
@@ -332,6 +333,7 @@ class Elaborated:
                 self.circuit.model_dump_json(), _substitutes(substitutes)
             )
         self._structures: dict[_core.StructureKey, _core.Elaborated] = {}
+        self._structure_lock = threading.Lock()
 
     def simulator(
         self, overrides: Mapping[str, Mapping[str, float]] | None = None
@@ -353,9 +355,12 @@ class Elaborated:
             key = self._core.structure_of(values)
             shared = self._core
             if not key.unchanged:
-                shared = self._structures.get(key) or self._structures.setdefault(
-                    key, self._core.restructured(values)
-                )
+                with self._structure_lock:
+                    cached = self._structures.get(key)
+                    if cached is None:
+                        cached = self._core.restructured(values)
+                        self._structures[key] = cached
+                    shared = cached
             return _core.Simulator.from_elaborated(shared, values)
 
 

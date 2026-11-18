@@ -53,7 +53,7 @@ Raw measurement logs are not kept in the repository: each document states the nu
 
 Each waits on the owner:
 
-- **The JAX bridge** (`agentic.md` 19): `jax.grad` through a circuit by registering jolty's VJP as JAX's backward rule; needs `jax` as an optional dependency.
+- **The PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is complete; `torch.autograd.Function` around the same pullback waits on approval of `torch` as an optional dependency.
 - **Device derivatives** (`device-derivatives.md`): whether Gummel-Poon's and the JFET's derivatives, exact by construction, are worth their 2 to 8% more instructions an evaluation (1.3); and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
 - **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables`.
 - **Newton's two cuts** (`accuracy.md` 6): measured to misjudge (91% of the buck's iterations they would cut converged within ten anyway); the recommendation is to leave them out.

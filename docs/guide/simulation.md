@@ -172,6 +172,38 @@ gradient = pullback({name: 2 * distance for name, distance in distances.items()}
 The loss here is the sum of the squares of each output's distance to its target, so its cotangent is twice each distance; `gradient["W00"]["resistance"]` is the loss's derivative with respect to that weight, per ohm, and every weight's together cost one transposed solve.
 Over frequency, cotangents and their values are complex, `vᵀ dx/dp`; a real loss of the phasors `a + jb` takes the real part of the pullback of `∂L/∂a − j ∂L/∂b`.
 
+With the optional `jax` extra (`pip install 'jolty[jax]'`), `jolty.jax.function` exposes the same dict-to-dict map as a `jax.custom_vjp` callable that works inside `jax.jit`, `jax.grad`, `jax.vjp`, `jax.remat` and `jax.vmap` (dispatching `vmap` into one multi-threaded engine batch):
+
+```python
+import jax
+import jax.numpy as jnp
+
+import jolty.jax
+
+simulate_jax = jolty.jax.function(crossbar(), OperatingPoint())
+
+
+def loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+    solved = simulate_jax(parameters)
+    return sum(
+        (jnp.sum((solved[name] - target) ** 2) for name, target in targets.items()),
+        jnp.asarray(0.0),
+    )
+
+
+jax_gradient = jax.jit(jax.grad(loss))(
+    {
+        path: {name: jnp.asarray(value) for name, value in inner.items()}
+        for path, inner in weights.items()
+    }
+)
+```
+
+Transients and driven periodic steady states require explicit `breakpoints` so the output array has a fixed static shape.
+Autonomous oscillators return only `{PERIOD: scalar}` (`jolty.jax.PERIOD`), with no waveform arrays (unlike `jolty.function`).
+Because the custom VJP saves only the parameter vector across the callback boundary, every reverse-mode pullback (`value_and_grad`, `jax.grad`, `jax.vjp`, `jax.jacrev`) re-runs the forward simulation from scratch (2× forward cost for one pullback, `(k + 1)×` for `k` pullbacks).
+Only first-order reverse-mode differentiation is supported (`jax.jvp`, `jax.grad(jax.grad(...))` and `jax.hessian` are refused).
+
 The derivatives are exact, both directions of one computation.
 Each device's own derivatives with respect to its parameters, `∂F/∂p`, come from its twins: its instance prepared again computing with dual numbers that carry the derivative of each value along up to eight directions of its parameters through the same equations, temperature scaling included, evaluated where the instance is, so that one evaluation gives a device's derivatives along eight directions.
 A VJP seeds each parameter on a direction of its own, a device's parameters eight to a twin; a JVP seeds each tangent on one direction of each device it moves, its components on that device's parameters, so that a tangent costs a device one direction however many of its parameters it moves.

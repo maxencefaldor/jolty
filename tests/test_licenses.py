@@ -51,16 +51,18 @@ CLARIFIED: Final = {
     # The PSF License 2.0's terms, with the Matplotlib Development Team as the licensor.
     "matplotlib": "PSF-2.0",
     "rumdl": "MIT",
+    "scipy": "BSD-3-Clause",
     "sortedcontainers": "Apache-2.0",
     "ty": "MIT",
 }
 """The licenses of the dependencies whose metadata states no SPDX expression, or one
 SPDX reads not.
 
-Each is read from the license file the dependency ships: cycler's, kiwisolver's and
-matplotlib's metadata holds the file's text, sortedcontainers' says "Apache 2.0", and
-rumdl's and ty's say nothing but a classifier. bincode-next, a dependency of gungraun,
-writes its expression's `OR` in lowercase, which SPDX does not read.
+Each is read from the license file the dependency ships: cycler's, kiwisolver's,
+matplotlib's and scipy's metadata holds the file's text, sortedcontainers' says
+"Apache 2.0", and rumdl's and ty's say nothing but a classifier. bincode-next, a
+dependency of gungraun, writes its expression's `OR` in lowercase, which SPDX does not
+read.
 """
 
 _TOKEN: Final = re.compile(r"[()/]|[^\s()/]+")

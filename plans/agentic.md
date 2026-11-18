@@ -31,7 +31,7 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 - **Oscillators:** no steady state for one that runs on its own, so the agent runs long transients; oscillators are where published agents fail most (item 22).
 - **Images:** a plot costs 774 to 1,849 visual tokens, about 2,800 a simulation (item 6).
 
-**What the literature shows** (2024–2026): simulator feedback with computed measurements lifts success most (SPICEAssistant from 14.8% to 53.0%, AnalogPortBench from 30% to 56%); sizing is handed to numerical optimizers; agents fail on oscillators, topology changes and infeasible specs.
+**What the literature shows** (2024 to 2026): simulator feedback with computed measurements lifts success most (SPICEAssistant from 14.8% to 53.0%, AnalogPortBench from 30% to 56%); sizing is handed to numerical optimizers; agents fail on oscillators, topology changes and infeasible specs.
 No published study gives the same agent two toolchains, which item 8 does.
 
 ## 3. Gaps
@@ -191,18 +191,23 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead.**
     **Source:** the owner's call, 16 November; replaces item 7's pattern selection (the parameters passed are the selection) and gives item 19 its door.
 
-### 📋 19. Bridges to JAX and PyTorch
+### 🚧 19. Bridges to JAX and PyTorch
 
 - **What:** `jax.grad`, `jax.vjp`, `jax.vmap` and `jax.jit` through a circuit's analysis, as through any JAX function: jolty solves the circuit, JAX differentiates everything around it (a network, a loss, an optimizer).
 - **Why:** the owner's work trains analog circuits for transformer-like networks in a loop with JAX; today the loop passes through files, with no gradient into JAX.
 - **How:**
     - `jolty.jax.function(circuit, analysis)` returns a JAX function of a nested dict of parameters, the same dict `jolty.function` takes, to a dict of outputs.
     - Its forward calls jolty through `jax.pure_callback`, so it also runs inside `jit`, on the CPU, outside XLA's compiled code.
-    - Its backward rule, registered with `jax.custom_vjp`, is `jolty.vjp`'s pullback (item 12b): one transposed solve per backward pass whatever the number of parameters, AC excepted until `device-derivatives.md` 2b.
+    - Its backward rule, registered with `jax.custom_vjp`, is `jolty.vjp`'s pullback (item 12b): one transposed solve per backward pass whatever the number of parameters, including exact AC after `device-derivatives.md` 2b.
     - Its batching rule maps `jax.vmap` over inputs to one jolty batch run across every core.
     - A `custom_vjp` function refuses `jax.jvp`; forward mode is not built until a use appears (the owner agreed, 16 November).
     - PyTorch, through `torch.autograd.Function` around the same pullback, once JAX's is done.
-- **Needs:** item 12b (on `main`); `jax` as an optional dependency, `jolty[jax]`, which needs the owner's yes.
+- **Needs:** item 12b (on `main`); `jax` as an optional dependency, `jolty[jax]` (approved by the owner, 17 November); `torch` remains unapproved pending owner decision.
+- **Result (JAX done, PyTorch remaining):** `src/jolty/jax.py` exposes `jolty.jax.function(circuit, analysis, options=None)` with optional dependency `jax>=0.12` (`jolty[jax]`).
+    Covers all five differentiable analyses (`OperatingPoint`, `DcSweep`, `Ac` with exact complex Wirtinger cotangent convention, `Transient` with explicit validated `breakpoints`, and `PeriodicSteadyState` both driven with `breakpoints` and autonomous returning only `{PERIOD: scalar}`).
+    Uses a single packed `jax.pure_callback(..., vmap_method="broadcast_all")` dispatching `batch_size == 1` directly through `simulator.run`/`vjp` (bit-for-bit identical to `jolty.function`, preserving nested dissection) and `batch_size > 1` into one multi-threaded Rust `Simulator.batch` call with matching `max_unknowns_per_interior` and `max_threads` settings across forward and backward.
+    Handles empty batches (`batch_size == 0`), structural changes including dropped unknowns, `jax.remat`, `jax.jacrev`, `jax_enable_x64` (`True`/`False` via `canonicalize_dtype`) cleanly under `filterwarnings = ["error"]`, caches validated packed callbacks for eager and free-threaded `3.15t` execution without re-enabling the GIL, and locks `Elaborated._structures` narrowly in `simulate.py` (`tests/test_jax.py`).
+    PyTorch (`torch.autograd.Function`) remains planned.
 - **Done when:** `jax.grad` of a loss through an operating point, a DC sweep and a transient agrees with `jolty.vjp` bit for bit and with finite differences; under `jit`; and `vmap` over a batch of inputs agrees with a loop over them.
 - **Source:** row 14; the owner's direction, 16 and 17 November.
 

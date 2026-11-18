@@ -4,6 +4,8 @@ A simulation runs a plan's analyses on a circuit, its results read by net and by
 
 ::: jolty.simulate
 
+::: jolty.jax
+
 ::: jolty.foundry
 
 ::: jolty.plan
