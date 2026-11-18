@@ -16,6 +16,7 @@ import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Final
 
 from pydantic import JsonValue
@@ -1041,6 +1042,12 @@ class ModelCard:
     """The model's version, as a BSIM card names the equations it is of, if given."""
 
 
+def is_derived(statement: Statement) -> bool:
+    """Whether a ``.model`` statement inherits from another card through ``AKO:``."""
+    words = statement.text.split(maxsplit=2)
+    return len(words) >= 3 and words[2].casefold().startswith("ako:")  # noqa: PLR2004 - `.model`, name, type
+
+
 def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     """The model card `statement` defines.
 
@@ -1079,7 +1086,7 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
         version = base.version
     parameters = dict(base.parameters) if base else {}
     parameters |= assignments(statement, words)
-    return ModelCard(name, resolved, parameters, statement, version)
+    return ModelCard(name, resolved, MappingProxyType(parameters), statement, version)
 
 
 def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:

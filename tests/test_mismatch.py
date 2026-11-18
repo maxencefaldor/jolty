@@ -280,9 +280,8 @@ KIT_SAMPLES: Final = 1000
 reading about 4 ms."""
 
 MIM_SAMPLES: Final = 400
-"""The samples of each Monte Carlo analysis that reads SKY130's placements anew, each
-reading about 27 ms, nearly all of it the library's 11,855 parameters evaluated for the
-sample: five standard errors are 18 % of the standard deviation."""
+"""The samples of each Monte Carlo analysis that reads SKY130's placements anew:
+five standard errors are 18 % of the standard deviation."""
 
 
 # Against Monte Carlo: tolerances, drawn by the engine.
@@ -509,3 +508,103 @@ def test_sky130s_mim_capacitor_spreads_a_response_as_monte_carlo_finds(
         spreads = found.standard_deviation("out", part)
         for at, spread in enumerate(np.atleast_1d(spreads)):
             agrees(float(spread), samples[:, at])
+
+
+NFET: Final = "sky130_fd_pr__nfet_01v8"
+"""SKY130's 1.8 V n-channel BSIM4 MOSFET."""
+
+
+def sky130_nfet(library: Library, path: str, index: int | None) -> Component:
+    """A 1 µm by 0.15 µm SKY130 BSIM4 MOSFET, nominal or in the sample `index`."""
+    if index is None:
+        return library.component(NFET, w=1.0, l=0.15)
+    return library.drawn(NFET, Sample(11, index), path, w=1.0, l=0.15)
+
+
+@component
+def sky130_nfet_pair(c: Builder, library: Library, index: int | None) -> None:
+    """A differential pair of SKY130 BSIM4 MOSFETs, both gates at 1.0 V.
+
+    Its output is its drains' difference: its input offset times its voltage gain.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+    held = c.place(devices.voltage_source(1.0 * V), name="VIN")
+    tail = c.place(devices.current_source(100 * uA), name="IT")
+    first = c.place(sky130_nfet(library, "M1", index), name="M1")
+    second = c.place(sky130_nfet(library, "M2", index), name="M2")
+    loads = [c.place(devices.resistor(5 * kohm), name=name) for name in ("R1", "R2")]
+    sensed = c.place(devices.voltage_controlled_voltage_source(1), name="E1")
+    c.connect(supply.positive, loads[0].a, loads[1].a, name="vdd")
+    c.connect(loads[0].b, first.d, sensed.control_negative, name="d1")
+    c.connect(loads[1].b, second.d, sensed.control_positive, name="d2")
+    c.connect(held.positive, first.g, second.g, name="in")
+    c.connect(sensed.positive, name="out")
+    c.connect(first.s, second.s, tail.positive, name="tail")
+    c.connect(supply.negative, held.negative, tail.negative, sensed.negative, ground)
+    c.connect(first.b, second.b, ground)
+
+
+@component
+def sky130_nfet_mirror(c: Builder, library: Library, index: int | None) -> None:
+    """A current mirror of SKY130 BSIM4 MOSFETs, 100 µA in, output held at 1.2 V."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+    driven = c.place(devices.current_source(100 * uA), name="IIN")
+    held = c.place(devices.voltage_source(1.2 * V), name="VOUT")
+    first = c.place(sky130_nfet(library, "M1", index), name="M1")
+    second = c.place(sky130_nfet(library, "M2", index), name="M2")
+    c.connect(supply.positive, driven.positive, name="vdd")
+    c.connect(driven.negative, first.d, first.g, second.g, name="gate")
+    c.connect(held.positive, second.d, name="out")
+    c.connect(supply.negative, held.negative, first.s, second.s, ground)
+    c.connect(first.b, second.b, ground)
+
+
+@pytest.mark.parametrize(
+    ("circuit", "output"),
+    [(sky130_nfet_pair, "out"), (sky130_nfet_mirror, "VOUT:current")],
+    ids=["pair-offset", "mirror-output"],
+)
+def test_sky130s_bsim4_mosfet_mismatch_spreads_as_monte_carlo_finds(
+    mim: Library,
+    circuit: Callable[[Library, int | None], Component],
+    output: str,
+) -> None:
+    """SKY130's BSIM4 pair and mirror, from the kit's own mismatch of each transistor.
+
+    Each placement draws three independent mismatch variables (`toxe`, `vth0`, `voff`)
+    inside bin 71; first-order adjoint sensitivities agree with Monte Carlo over
+    `MIM_SAMPLES` draws within five standard errors.
+    """
+    given = [
+        variable
+        for path in ("M1", "M2")
+        for variable in mim.random_variables(NFET, path, w=1.0, l=0.15)
+    ]
+    assert {variable.name.rsplit(".", 1)[-1] for variable in given} == {
+        "toxe#0",
+        "vth0#0",
+        "voff#0",
+    }
+    assert len(given) == 6
+    found = Simulation(circuit(mim, None)).run(
+        Mismatch([output], random_variables=given)
+    )
+    shares = found.shares(output)
+    top_four = np.argsort(-shares)[:4]
+    named = {
+        found.random_variables[index].name.rsplit(".", 1)[-1] for index in top_four
+    }
+    # Both `vth0` and `toxe` dominate strong-inversion mismatch (>90% of variance);
+    # `voff` contributes the subthreshold/moderate-inversion remainder.
+    assert named == {"vth0#0", "toxe#0"}
+    assert float(shares[top_four].sum()) > 0.9
+    column = results.column(found.unknowns, output)
+    samples = np.array(
+        [
+            Simulation(circuit(mim, index)).run(OperatingPoint()).values[column]
+            for index in range(MIM_SAMPLES)
+        ]
+    )
+    agrees(float(found.standard_deviation(output)), samples)

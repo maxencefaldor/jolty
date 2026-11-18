@@ -650,6 +650,19 @@ def evaluate(
         SpiceError: When the expression reads a voltage, a current or an unknown name,
             or calls an unknown function.
     """
+    match expression:
+        case Number(value) if math.isfinite(value):
+            return float(value)
+        case Unary("-", Number(value)) if math.isfinite(value):
+            return -float(value)
+        case Unary("+", Number(value)) if math.isfinite(value):
+            return float(value)
+        case Name(name) if name in parameters:
+            value = parameters[name]
+            if math.isfinite(value):
+                return float(value)
+        case Name(name) if name in _CONSTANTS:
+            return _CONSTANTS[name]
 
     def unread(name: str) -> str:
         message = f"a parameter's expression reads no voltage or current, not `{name}`"

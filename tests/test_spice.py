@@ -5,9 +5,11 @@ import json
 import math
 import re
 import threading
+from collections.abc import MutableMapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 import pytest
@@ -35,7 +37,16 @@ from jolty import (
 from jolty.plan import TIGHT
 from jolty.spice import models, sky130
 from jolty.spice.export import netlist
-from jolty.spice.expressions import evaluate, number, parse, translate
+from jolty.spice.expressions import (
+    Function,
+    Name,
+    Number,
+    Unary,
+    evaluate,
+    number,
+    parse,
+    translate,
+)
 from jolty.spice.netlist import statements, tokens
 from jolty.spice.ngspice import Compatibility
 from jolty.units import (
@@ -2531,3 +2542,138 @@ def test_every_model_spice_round_trip(model_name: str) -> None:
     assert abs(expected - actual) <= 1e-9 * scale, (
         f"{model_name}: expected {expected!r}, round-tripped {actual!r}"
     )
+
+
+def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
+    """Global parameter plan, drawn scopes and built components stay coherent."""
+    lib = library(
+        ".param base=1k\n"
+        ".param scaled={base + 10 * temper}\n"
+        ".param noisy={agauss(base, 50, 1)}\n"
+        ".param derived={2 * noisy}\n"
+        ".func boost(x) {x}\n"
+        ".subckt load a\n"
+        "R1 a 0 {boost(scaled)}\n"
+        ".ends"
+    )
+    first_nominal = lib.values()
+    assert first_nominal["scaled"] == pytest.approx(1270.0, rel=1e-15)
+    assert first_nominal["derived"] == pytest.approx(2000.0, rel=1e-15)
+    assert _devices(lib.component("load"))["R1"][1]["resistance"] == pytest.approx(
+        1270.0, rel=1e-15
+    )
+
+    # Distinct samples genuinely draw distinct values for stochastic globals and their
+    # transitive dependents, while repeating a sample is bit-identical.
+    sample_a = spice.Sample(7, 0)
+    sample_b = spice.Sample(7, 1)
+    drawn_a = lib.values(sample_a)
+    drawn_b = lib.values(sample_b)
+    assert drawn_a["noisy"] != drawn_b["noisy"]
+    assert drawn_a["derived"] == pytest.approx(2.0 * drawn_a["noisy"], rel=1e-15)
+    assert drawn_b["derived"] == pytest.approx(2.0 * drawn_b["noisy"], rel=1e-15)
+    assert lib.values(sample_a) == drawn_a
+
+    # Adding a .param invalidates plan, scopes and built nominal components.
+    lib.read(".param base=2k", "override.lib")
+    assert lib.values()["scaled"] == pytest.approx(2270.0, rel=1e-15)
+    assert _devices(lib.component("load"))["R1"][1]["resistance"] == pytest.approx(
+        2270.0, rel=1e-15
+    )
+    assert lib.values(sample_a)["noisy"] != drawn_a["noisy"]
+
+    # Temperature change invalidates both values() and nominal component().
+    lib.temperature = 327.15
+    assert lib.values()["scaled"] == pytest.approx(2540.0, rel=1e-15)
+    assert _devices(lib.component("load"))["R1"][1]["resistance"] == pytest.approx(
+        2540.0, rel=1e-15
+    )
+
+    # Mutating library.functions directly invalidates plan and built components.
+    lib.functions["boost"] = Function(("x",), parse("2 * x"))
+    assert _devices(lib.component("load"))["R1"][1]["resistance"] == pytest.approx(
+        5080.0, rel=1e-15
+    )
+
+    # Adding a .func via read() invalidates as well.
+    lib.read(".func boost(x) {3 * x}", "fn.lib")
+    assert _devices(lib.component("load"))["R1"][1]["resistance"] == pytest.approx(
+        7620.0, rel=1e-15
+    )
+
+
+def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
+    """Derived AKO: `.model` cards resolve against the active local base card."""
+    lib = library(
+        ".subckt switched a k sel=0\n"
+        ".if (sel == 0)\n"
+        ".model base D(IS=1e-14 N=1.0)\n"
+        ".else\n"
+        ".model base D(IS=1e-12 N=1.5)\n"
+        ".endif\n"
+        ".model derived ako:base D(RS=5)\n"
+        "D1 a k derived\n"
+        ".ends"
+    )
+    zero = _devices(lib.component("switched", sel=0))["D1"][1]
+    one = _devices(lib.component("switched", sel=1))["D1"][1]
+    assert zero["saturation_current"] == pytest.approx(1e-14, rel=1e-15)
+    assert zero["emission_coefficient"] == pytest.approx(1.0, rel=1e-15)
+    assert one["saturation_current"] == pytest.approx(1e-12, rel=1e-15)
+    assert one["emission_coefficient"] == pytest.approx(1.5, rel=1e-15)
+
+
+def test_model_card_parameters_are_read_only() -> None:
+    """Cached ModelCard parameter mappings are immutable MappingProxyType views."""
+    (statement,) = statements(".model d1 D(IS=1e-14)", "card.lib")
+    card = models.read(statement, {})
+    assert isinstance(card.parameters, MappingProxyType)
+    assert not isinstance(card.parameters, MutableMapping)
+    assert not hasattr(card.parameters, "__setitem__")
+
+
+def test_drawn_is_thread_safe_and_bit_identical_under_contention() -> None:
+    """Concurrent `drawn` calls sharing a Library cache produce identical results."""
+    lib = library(
+        ".param g={agauss(1k, 100, 1)}\n"
+        ".subckt stage a\n"
+        ".model dloc D(IS=1e-14 RS=10)\n"
+        ".param r={agauss(g, 50, 1)}\n"
+        "R1 a 0 {r}\n"
+        "D1 a 0 dloc\n"
+        ".ends"
+    )
+    expected = {
+        index: _devices(lib.drawn("stage", spice.Sample(3, index), "X1"))["R1"][1][
+            "resistance"
+        ]
+        for index in range(16)
+    }
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results_list = list(
+            pool.map(
+                lambda idx: (
+                    idx,
+                    _devices(lib.drawn("stage", spice.Sample(3, idx), "X1"))["R1"][1][
+                        "resistance"
+                    ],
+                ),
+                list(range(16)) * 4,
+            )
+        )
+    for idx, value in results_list:
+        assert value == expected[idx]
+
+
+def test_evaluate_fast_path_handles_literals_unary_and_shadowed_constants() -> None:
+    """Fast path matches `_core.constant` semantics including non-finite shadows."""
+    assert evaluate(Number(3.5), {}) == 3.5
+    assert evaluate(Unary("-", Number(2.25)), {}) == -2.25
+    assert evaluate(Unary("+", Number(2.25)), {}) == 2.25
+    assert evaluate(Name("pi"), {}) == math.pi
+    assert evaluate(Name("pi"), {"pi": 4.0}) == 4.0
+    # Shadowing a built-in constant with non-finite value must NOT fall back to pi.
+    with pytest.raises(SpiceError):
+        evaluate(Name("pi"), {"pi": float("inf")})
+    with pytest.raises(SpiceError):
+        evaluate(Number(float("nan")), {})

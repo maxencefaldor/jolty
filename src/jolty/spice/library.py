@@ -20,6 +20,8 @@ import json
 import math
 import re
 import sys
+import threading
+from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +36,7 @@ from jolty.errors import SpiceError
 from jolty.ir import Role
 from jolty.spice import models
 from jolty.spice.expressions import (
+    STATISTICAL,
     Binary,
     Call,
     Conditional,
@@ -229,6 +232,157 @@ class Subcircuit:
     statement: Statement = field(repr=False)
 
 
+_MAX_CACHED_SCOPES: Final = 8
+"""How many `(sample, temperature)` global scopes a `Library` caches at once."""
+
+
+@dataclass(frozen=True, slots=True)
+class _GlobalPlan:
+    """Partition of global `.param` definitions at one `(temperature, functions)`.
+
+    `fixed` holds every deterministic parameter evaluated once (including ``temper``).
+    `nominal` holds every parameter at its nominal value (same dict as `fixed` when
+    `stochastic` is empty). `stochastic` holds inlined expressions that call a
+    statistical function or transitively depend on one, in topological order.
+    """
+
+    temperature: float
+    functions: dict[str, Function]
+    fixed: dict[str, float]
+    nominal: dict[str, float]
+    stochastic: tuple[tuple[str, Expression], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationOptions:
+    """Per-placement options injected into `_Translation`."""
+
+    drawing: _Drawing
+    multiplier: float = 1.0
+    parsed_models: dict[Statement, ModelCard] | None = None
+    lock: threading.Lock | None = None
+
+
+def _contains_statistical_call(expression: Expression) -> bool:
+    """Whether `expression` contains any statistical function call."""
+    match expression:
+        case Call(function, arguments):
+            if function in STATISTICAL and not (
+                function == "limit" and len(arguments) != STATISTICAL[function]
+            ):
+                return True
+            return any(_contains_statistical_call(argument) for argument in arguments)
+        case Unary(_, operand):
+            return _contains_statistical_call(operand)
+        case Binary(_, left, right):
+            return _contains_statistical_call(left) or _contains_statistical_call(right)
+        case Conditional(condition, then, otherwise):
+            return (
+                _contains_statistical_call(condition)
+                or _contains_statistical_call(then)
+                or _contains_statistical_call(otherwise)
+            )
+    return False
+
+
+def _dependency_graph(
+    definitions: Mapping[str, Expression],
+) -> tuple[dict[str, int], dict[str, list[str]]]:
+    """In-degrees and forward dependency edges over `definitions`."""
+    in_degree: dict[str, int] = {}
+    dependents: dict[str, list[str]] = {}
+    keys = definitions.keys()
+    for name, expression in definitions.items():
+        dependencies = (names(expression) - {name}) & keys
+        in_degree[name] = len(dependencies)
+        for dependency in dependencies:
+            dependents.setdefault(dependency, []).append(name)
+    return in_degree, dependents
+
+
+def _topological_order(
+    definitions: Mapping[str, Expression],
+    in_degree: dict[str, int],
+    dependents: Mapping[str, list[str]],
+) -> tuple[list[str], list[str]]:
+    """Kahn's topological sort returning `(ordered, cycle_remaining)`."""
+    remaining_degree = dict(in_degree)
+    ready = deque(name for name in definitions if remaining_degree[name] == 0)
+    ordered: list[str] = []
+    while ready:
+        current = ready.popleft()
+        ordered.append(current)
+        for dependent in dependents.get(current, ()):
+            remaining_degree[dependent] -= 1
+            if remaining_degree[dependent] == 0:
+                ready.append(dependent)
+    remaining = [name for name in definitions if remaining_degree[name] > 0]
+    return ordered, remaining
+
+
+def _stochastic_closure(
+    definitions: Mapping[str, Expression],
+    dependents: Mapping[str, list[str]],
+) -> set[str]:
+    """Every parameter containing a statistical call or transitively reading one."""
+    roots = [
+        name
+        for name, expression in definitions.items()
+        if _contains_statistical_call(expression)
+    ]
+    stochastic = set(roots)
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        for dependent in dependents.get(current, ()):
+            if dependent not in stochastic:
+                stochastic.add(dependent)
+                stack.append(dependent)
+    return stochastic
+
+
+def _build_global_plan(
+    parameters: Sequence[tuple[str, Expression]],
+    temperature: float,
+    functions: Mapping[str, Function],
+) -> _GlobalPlan:
+    """Partitions and evaluates global parameters for `(temperature, functions)`."""
+    functions_snapshot = dict(functions)
+    inlined_definitions = {
+        name: inlined(expression, functions_snapshot)
+        for name, expression in dict(parameters).items()
+    }
+    in_degree, dependents = _dependency_graph(inlined_definitions)
+    ordered, remaining = _topological_order(inlined_definitions, in_degree, dependents)
+    stochastic_names = _stochastic_closure(inlined_definitions, dependents)
+    celsius_temperature = temperature - ZERO_CELSIUS
+    fixed: dict[str, float] = {"temper": celsius_temperature}
+    nominal_values: dict[str, float] = (
+        {"temper": celsius_temperature} if stochastic_names else fixed
+    )
+    stochastic: list[tuple[str, Expression]] = []
+    for name in ordered:
+        expression = inlined_definitions[name]
+        if name in stochastic_names:
+            nominal_values[name] = evaluate(expression, nominal_values, nominal)
+            stochastic.append((name, expression))
+        else:
+            value = evaluate(expression, fixed, nominal)
+            fixed[name] = value
+            if stochastic_names:
+                nominal_values[name] = value
+    if remaining:
+        message = f"parameters read one another in a cycle: {', '.join(remaining)}"
+        raise SpiceError(message)
+    return _GlobalPlan(
+        temperature=temperature,
+        functions=functions_snapshot,
+        fixed=fixed,
+        nominal=nominal_values,
+        stochastic=tuple(stochastic),
+    )
+
+
 class Library:
     r"""The subcircuits, models and parameters of SPICE files.
 
@@ -255,8 +409,15 @@ class Library:
         """
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
+        self._parsed_models: dict[Statement, ModelCard] = {}
+        self._cache_lock = threading.Lock()
         self._parameters: list[tuple[str, Expression]] = []
+        self._global_plan: _GlobalPlan | None = None
+        self._scopes: OrderedDict[tuple[Sample, float], dict[str, float]] = (
+            OrderedDict()
+        )
         self._built: dict[str, Component] = {}
+        self._built_state: tuple[float, dict[str, Function]] | None = None
         self.temperature = temperature
         self.compatibility = compatibility
         self.options: dict[str, float] = {}
@@ -315,7 +476,7 @@ class Library:
         body: list[Statement] = []
         opened: Statement | None = None
         for statement in found:
-            keyword = statement.text.split()[0].casefold()
+            keyword = _keyword(statement)
             if opened is not None:
                 if keyword == ".ends":
                     self._define(opened, body)
@@ -334,6 +495,14 @@ class Library:
             message = "the subcircuit never ends"
             raise opened.fail(message)
 
+    def _invalidate_caches(self) -> None:
+        """Clears cached global plans, drawn scopes and built nominal components."""
+        with self._cache_lock:
+            self._global_plan = None
+            self._scopes.clear()
+            self._built.clear()
+            self._built_state = None
+
     def _global(self, statement: Statement, keyword: str) -> None:
         """Adds the model, parameters or options `statement`, of `keyword`, defines.
 
@@ -343,15 +512,19 @@ class Library:
         if keyword == ".model":
             card = models.read(statement, self._models)
             self._models[card.name.casefold()] = card
+            self._built.clear()
         elif keyword in PARAMETERS:
             self._parameters.extend(_assignments(statement))
+            self._invalidate_caches()
         elif keyword in OPTIONS:
             self.options |= {
                 name: evaluate(value, {}) for name, value in _options(statement).items()
             }
+            self._built.clear()
         elif keyword == FUNCTION:
             name, function = _function(statement)
             self.functions[name] = function
+            self._invalidate_caches()
         elif keyword in INITIAL:
             given = self.initial_conditions if keyword == ".ic" else self.nodesets
             given |= _voltages(statement, self.values(), self.functions)
@@ -521,7 +694,13 @@ class Library:
         if subcircuit is None:
             message = f"no subcircuit is named `{name}`"
             raise SpiceError(message)
-        scope = self._values(_Drawing(drawing.sample, ""))
+        if isinstance(drawing.sample, _Probe):
+            if drawing.sample.moved is None or drawing.sample.moved[0] == "":
+                scope = self._values(_Drawing(drawing.sample, ""))
+            else:
+                scope = self._scope(None)
+        else:
+            scope = self._scope(drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
         return self._component(subcircuit, scope, given, drawing)
 
@@ -539,6 +718,7 @@ class Library:
                 defaults |= dict(_assignments(statement))
         subcircuit = Subcircuit(name, tuple(pins), defaults, tuple(body), opened)
         self._subcircuits[name.casefold()] = subcircuit
+        self._built.clear()
 
     def values(self, sample: Sample | None = None) -> dict[str, float]:
         """The values of the parameters defined outside subcircuits, by name.
@@ -550,7 +730,52 @@ class Library:
             SpiceError: When parameters read one another in a cycle, or an expression is
                 wrong.
         """
-        return self._values(_Drawing(sample, ""))
+        return dict(self._scope(sample))
+
+    def _plan(self) -> _GlobalPlan:
+        """Cached partition of global parameters for `(self.temperature, functions)`."""
+        with self._cache_lock:
+            cached = self._global_plan
+            if (
+                cached is not None
+                and cached.temperature == self.temperature
+                and cached.functions == self.functions
+            ):
+                return cached
+        plan = _build_global_plan(self._parameters, self.temperature, self.functions)
+        with self._cache_lock:
+            if (
+                self._global_plan is None
+                or self._global_plan.temperature != plan.temperature
+                or self._global_plan.functions != plan.functions
+            ):
+                self._global_plan = plan
+                self._scopes.clear()
+            return self._global_plan
+
+    def _scope(self, sample: Sample | None) -> Mapping[str, float]:
+        """Cached global parameter scope for `(sample, self.temperature)`.
+
+        Deterministic parameters are evaluated once inside `_GlobalPlan`; per-sample
+        evaluation computes only the stochastic subset and its transitive dependents.
+        """
+        plan = self._plan()
+        if sample is None or not plan.stochastic:
+            return plan.nominal
+        key = (sample, plan.temperature)
+        with self._cache_lock:
+            cached = self._scopes.get(key)
+            if cached is not None:
+                self._scopes.move_to_end(key)
+                return cached
+        values = _evaluate_stochastic(plan, _Drawing(sample, ""))
+        with self._cache_lock:
+            if self._global_plan is plan:
+                self._scopes[key] = values
+                self._scopes.move_to_end(key)
+                while len(self._scopes) > _MAX_CACHED_SCOPES:
+                    self._scopes.popitem(last=False)
+        return values
 
     def _values(self, drawing: _Drawing) -> dict[str, float]:
         """The values of the parameters defined outside subcircuits, drawn by `drawing`.
@@ -559,13 +784,7 @@ class Library:
             SpiceError: When parameters read one another in a cycle, or an expression is
                 wrong.
         """
-        celsius_temperature = self.temperature - ZERO_CELSIUS
-        return _resolved(
-            dict(self._parameters),
-            {"temper": celsius_temperature},
-            drawing.draws,
-            self.functions,
-        )
+        return _evaluate_stochastic(self._plan(), drawing)
 
     def _component(
         self,
@@ -601,9 +820,11 @@ class Library:
             for parameter, default in subcircuit.defaults.items()
             if parameter not in given
         }
-        local = _resolved(
+        local = dict(scope)
+        local.update(given)
+        _resolve_into(
             defaults,
-            {**scope, **given},
+            local,
             drawing.draws,
             self.functions,
             partial=self.surveying,
@@ -620,11 +841,24 @@ class Library:
         listed = ",".join(f"{key}={value!r}" for key, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
         name = drawing.named(name)
-        if name not in self._built:
-            translation = _Translation(
-                self, subcircuit, (scope, local), drawing, multiplier
+        options = _TranslationOptions(
+            drawing=drawing,
+            multiplier=multiplier,
+            parsed_models=self._parsed_models,
+            lock=self._cache_lock,
+        )
+        if drawing.sample is not None:
+            return _Translation(self, subcircuit, (scope, local), options).component(
+                name
             )
-            self._built[name] = translation.component(name)
+        state = (self.temperature, self.functions)
+        if self._built_state is None or self._built_state != state:
+            self._built.clear()
+            self._built_state = (self.temperature, dict(self.functions))
+        if name not in self._built:
+            self._built[name] = _Translation(
+                self, subcircuit, (scope, local), options
+            ).component(name)
         return self._built[name]
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
@@ -864,15 +1098,23 @@ def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
     return found
 
 
-def _resolved(
+def _evaluate_stochastic(plan: _GlobalPlan, drawing: _Drawing) -> dict[str, float]:
+    """Evaluates only the stochastic subset of `plan` on top of `plan.fixed`."""
+    values = plan.fixed.copy()
+    for name, expression in plan.stochastic:
+        values[name] = evaluate(expression, values, drawing.draws(name))
+    return values
+
+
+def _resolve_into(
     definitions: Mapping[str, Expression],
-    scope: Mapping[str, float],
+    values: dict[str, float],
     draws: Callable[[str], Draw],
     functions: Mapping[str, Function],
     *,
     partial: bool = False,
 ) -> dict[str, float]:
-    """`scope` with each parameter `definitions` defines, evaluated.
+    """Evaluates each parameter `definitions` defines into `values` in place.
 
     Each definition calls the user's `functions` as SPICE's own.
 
@@ -886,25 +1128,22 @@ def _resolved(
         SpiceError: When parameters read one another in a cycle, or an expression is
             wrong.
     """
-    values = dict(scope)
+    if not definitions:
+        return values
     pending = {
         name: inlined(expression, functions) for name, expression in definitions.items()
     }
-    while pending:
-        ready = [
-            name
-            for name, expression in pending.items()
-            if not (names(expression) - {name}) & pending.keys()
-        ]
-        if not ready:
-            message = f"parameters read one another in a cycle: {', '.join(pending)}"
-            raise SpiceError(message)
-        for name in ready:
-            try:
-                values[name] = evaluate(pending.pop(name), values, draws(name))
-            except UndefinedError:
-                if not partial:
-                    raise
+    in_degree, dependents = _dependency_graph(pending)
+    ordered, remaining = _topological_order(pending, in_degree, dependents)
+    for name in ordered:
+        try:
+            values[name] = evaluate(pending[name], values, draws(name))
+        except UndefinedError:
+            if not partial:
+                raise
+    if remaining:
+        message = f"parameters read one another in a cycle: {', '.join(remaining)}"
+        raise SpiceError(message)
     return values
 
 
@@ -1057,15 +1296,16 @@ class _Translation:
         self,
         library: Library,
         subcircuit: Subcircuit,
-        scopes: tuple[Mapping[str, float], Mapping[str, float]],
-        drawing: _Drawing,
-        multiplier: float = 1.0,
+        scopes: tuple[Mapping[str, float], dict[str, float]],
+        options: _TranslationOptions,
     ) -> None:
         self.library = library
         self.subcircuit = subcircuit
         self.globals, self.scope = scopes
-        self.drawing = drawing
-        self.multiplier = multiplier
+        self.drawing = options.drawing
+        self.multiplier = options.multiplier
+        self._parsed_models = options.parsed_models
+        self._cache_lock = options.lock
         """The subcircuit's multiplier, which multiplies each element it holds."""
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
@@ -1098,9 +1338,10 @@ class _Translation:
                 self._define(statement)
             else:
                 elements.append(statement)
-        self.scope = _resolved(
-            self.parameters, self.scope, self.drawing.draws, self.library.functions
-        )
+        if self.parameters:
+            _resolve_into(
+                self.parameters, self.scope, self.drawing.draws, self.library.functions
+            )
         for statement in elements:
             if _letter(statement) in _SENSED:
                 self._source(statement)
@@ -1218,6 +1459,24 @@ class _Translation:
         positive, sense.positive = sense.positive, f"{sense.name}.sense{sense.count}"
         return positive, sense.positive
 
+    def _read_model(self, statement: Statement) -> ModelCard:
+        """Parses a local `.model`, reusing cached cards for non-`AKO:` definitions."""
+        if self._parsed_models is None or models.is_derived(statement):
+            return models.read(statement, self.models)
+        if self._cache_lock is not None:
+            with self._cache_lock:
+                card = self._parsed_models.get(statement)
+        else:
+            card = self._parsed_models.get(statement)
+        if card is None:
+            card = models.read(statement, self.models)
+            if self._cache_lock is not None:
+                with self._cache_lock:
+                    self._parsed_models[statement] = card
+            else:
+                self._parsed_models[statement] = card
+        return card
+
     def _define(self, statement: Statement) -> None:
         """Reads the model or the parameters `statement` defines.
 
@@ -1226,7 +1485,7 @@ class _Translation:
         """
         keyword = _keyword(statement)
         if keyword == ".model":
-            card = models.read(statement, self.models)
+            card = self._read_model(statement)
             self.models[card.name.casefold()] = card
         elif keyword in PARAMETERS:
             self.parameters.update(_assignments(statement))
@@ -1673,7 +1932,7 @@ def _letter(statement: Statement) -> str:
 
 def _keyword(statement: Statement) -> str:
     """A statement's first word, case-folded, such as ``.param``."""
-    return statement.text.split()[0].casefold()
+    return statement.text.split(maxsplit=1)[0].casefold()
 
 
 def _unconditional(body: Sequence[Statement]) -> list[Statement]:
