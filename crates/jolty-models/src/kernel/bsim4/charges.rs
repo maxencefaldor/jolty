@@ -11,7 +11,8 @@ use super::prepare::{Core, Overlaps};
 use super::{D, J};
 use crate::Real;
 use crate::kernel::bsim3::{
-    DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, depletion, flat_band, smooth_positive,
+    DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, depletion, effective_drain, flat_band,
+    smooth_positive,
 };
 
 /// The channel's charges at one bias, in the frame whose drain lies at or above its
@@ -152,21 +153,7 @@ impl<R: Real> Core<R> {
         let cox_wl_cen = coxeff.scale(cox_wl / self.coxe);
         let abulk_cv = operating.abulk0.scale(self.abulk_cv_factor);
         let vdsat_cv = vg_dp / abulk_cv;
-        let t0 = vdsat_cv - vds - DELTA;
-        let t1 = (t0 * t0 + vdsat_cv * (4.0 * DELTA)).sqrt();
-        let mut vdseff_cv = if t0.value.value() >= 0.0 {
-            vdsat_cv - (t0 + t1) * 0.5
-        } else {
-            let t3 = (t1 - t0).recip() * (DELTA + DELTA);
-            vdsat_cv * (1.0 - t3)
-        };
-        if vds.value.value() == 0.0 {
-            let [gate, drain, bulk] = vdseff_cv.gradient;
-            vdseff_cv = D {
-                value: vdseff_cv.value.with_value(0.0),
-                gradient: [gate.with_value(0.0), drain, bulk.with_value(0.0)],
-            };
-        }
+        let vdseff_cv = effective_drain(vds, vdsat_cv, R::constant(DELTA));
         let t0 = abulk_cv * vdseff_cv;
         let t1 = vg_dp;
         let t2 = (t1 - t0 * 0.5 + 1.0e-20) * 12.0;

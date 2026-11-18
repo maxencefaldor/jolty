@@ -68,10 +68,19 @@ type Alike = (&'static str, [&'static str; 2], &'static [f64]);
 /// for a transistor that claims no symmetry.
 const SYMMETRIES: &[(&str, Option<Alike>)] = &[
     ("bipolar_transistor", None),
-    // BSIM3 swaps its currents, but its charges, written against the source, are not
-    // smooth through `vds = 0`: there, its drain and source alike, its capacitances differ
-    // under the swap by 1.4e-4 of the largest at `capmod` 0, 2 and 3, and by 1.5 times it at
-    // `capmod` 1.
+    // BSIM3 swaps its currents, charges (`Q_d == Q_s`), and conductances across all bias
+    // points, but its source-referenced capacitances are not smooth through `vds = 0` in
+    // general (`b3ld.c`):
+    // - `capmod` 0 is symmetric at `vds = 0` in accumulation and depletion for `vbs <= 0`
+    //   (including `vbs = 0`, where `VbseffCV` is C1 smooth with slope 1), but differs by
+    //   `19.2%` of max `|C|` under forward body bias (`vb = 0.1 V`) and by `14.1%` in strong
+    //   inversion (`vg = 3 V, vb = 0 V`, where the gate row stays symmetric while the bulk
+    //   and drain/source rows jump).
+    // - `capmod` 1 jumps by `1.54x` of max `|C|` at `[0, 0, 0, 0]` (`1.47x` on `10u x 1u`
+    //   at `vg = 1.2 V`) because its linear branch stays active at `vds = 0`.
+    // - `capmod` 2 and 3 jump by `1.39e-4` and `1.38e-4` at `[0, 0, 0, 0]` because
+    //   `VbseffCV = Vbseff` has slope `|vbsc| / (|vbsc| + 0.001) = 1 - 1.485e-4` at
+    //   `vbs = 0`, and by `~30%` in strong inversion.
     ("bsim3", None),
     // BSIM4's charges, written against the source as BSIM3's are, are not smooth through
     // `vds = 0` either.
@@ -85,6 +94,13 @@ const SYMMETRIES: &[(&str, Option<Alike>)] = &[
             &[3.0, -0.5, 0.0],
         )),
     ),
+    // Both level 1 and level 3 MOSFETs swap drain and source cleanly at `vds != 0` and at
+    // `vds = 0` when displacement currents are zero (`w = 0`). When `w != 0` inside
+    // `-phi < vgst <= 0` at `vds = 0`, Meyer's capacitances (`DEVqmeyer`, `devsup.c` lines
+    // 698 to 720) introduce a conductance jump `|w| / phi * (1 - d(von)/d(vbs) + 2 * sigma)`
+    // (`1.67e-9` at `[1e-9; 7]` for default `vto = 0` at both levels 1 and 3). With
+    // `threshold_voltage: 0.8` (above `phi`), all `vds = 0` probes stay in deep accumulation
+    // or strong inversion; level 3 is checked with the same test below.
     (
         "mosfet",
         Some((
@@ -800,6 +816,51 @@ mod tests {
                 assert_swaps(&**model, parameters, pair, given);
             }
         }
+    }
+
+    /// Full symmetric level 3 MOSFETs (both with and without velocity saturation) pass the
+    /// complete drain-source swap law (`ROUNDING = 1024` eps) whenever `threshold_voltage`
+    /// exceeds the derived `phi` (~0.695 V at `substrate_doping = 1e22`), keeping every
+    /// `vds = 0` probe outside Meyer's `-phi < vgst <= 0` derivative kink.
+    #[test]
+    fn level_three_mosfet_swaps_its_drain_and_source() {
+        let library = Library::standard();
+        let model = library.get("mosfet").expect("mosfet model");
+        let base = r#""level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
+            "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+            "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+            "static_feedback": 0.5, "narrow_width_factor": 0.8, "mobility_modulation": 0.1,
+            "saturation_field_factor": 0.3, "fast_surface_state_density": 1e15,
+            "threshold_adjustment": 0.05, "drain_area": 2e-11, "source_area": 2e-11,
+            "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10"#;
+        for velocity in [1.5e5, 0.0] {
+            let parameters = format!(r#"{{{base}, "max_drift_velocity": {velocity}}}"#);
+            assert_swaps(
+                &**model,
+                &parameters,
+                ["drain", "source"],
+                &[3.0, 2.0, 0.0, -0.5],
+            );
+        }
+    }
+
+    /// BSIM3 `capmod` 0 passes the complete drain-source swap law (`ROUNDING = 1024` eps)
+    /// over all 38 probes around `[3.0, 2.0, 0.0, -0.5]`, exercising both the `vbs = 0`
+    /// `VbseffCV` fix (on the seven `[v; 4]` probes where `capmod_zero` previously lost
+    /// `1.4e-4`) and the `effective_drain` rationalization (on `[1e-9, 2.0, 0.0, -0.5]`,
+    /// which previously failed by `37,886` eps). Every `vds = 0` probe here lies in
+    /// depletion (`vgst < 0`, `vbs <= 0`), avoiding the inherent `b3ld.c` strong-inversion
+    /// and forward-body capacitance jumps tested in `bsim3::tests`.
+    #[test]
+    fn bsim3_capmod_zero_swaps_over_subthreshold_and_nonzero_vds_probes() {
+        let library = Library::standard();
+        let model = library.get("bsim3").expect("bsim3 model");
+        assert_swaps(
+            &**model,
+            r#"{"capacitance_model": 0}"#,
+            ["drain", "source"],
+            &[3.0, 2.0, 0.0, -0.5],
+        );
     }
 
     /// Meyer's capacitances, continuous across each boundary, change their slopes there

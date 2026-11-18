@@ -6,7 +6,7 @@
 //! Copyright 2004 Regents of the University of California. All rights reserved. Used
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
-use super::channel::Operating;
+use super::channel::{Operating, effective_drain};
 use super::prepare::{Core, Junction, Junctions, Overlaps};
 use super::{Charges, D, DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP};
 use crate::Real;
@@ -98,10 +98,14 @@ impl<R: Real> Core<R> {
     /// the channel is `channel`: the bulk-source voltage of the charges and their gate
     /// overdrive, which `noff` and `voffcv` shift.
     fn cv<'a>(&self, vds: D<R>, channel: &'a Operating<R>, partition: Partition) -> Cv<'a, R> {
-        let vbseff = if channel.vbseff.value.value() < 0.0 {
+        // For `vbseff > 0`, `phi - phis = phi - phi^2 / (phi + vbseff) =
+        // phi * vbseff / (phi + vbseff)`, eliminating `phi - phi` cancellation near zero.
+        // At `vbseff == 0`, keep `channel.vbseff` and its left slope `|vbsc| / (|vbsc| +
+        // 0.001)`, matching ngspice 47's `b3ld.c` lines 1585 to 1592.
+        let vbseff = if channel.vbseff.value.value() <= 0.0 {
             channel.vbseff
         } else {
-            (-channel.phis).plus(self.phi)
+            channel.vbseff.scale(self.phi) / channel.vbseff.plus(self.phi)
         };
         let noff = channel.n.scale(self.binned.noff);
         let t0 = noff.scale(self.vtm);
@@ -138,10 +142,17 @@ impl<R: Real> Core<R> {
         channel: &Operating<R>,
         partition: Partition,
     ) -> Intrinsic<R> {
-        let vbseff = if channel.vbseff.value.value() < 0.0 {
+        // In `capmod` 0, `VbseffCV` is `vbs` for `vbs <= 0` and
+        // `phi - phis = phi * vbs / (phi + vbs)` for `vbs > 0`. Both one-sided
+        // derivatives at `vbs = 0` equal `1`, so `VbseffCV` is C¹ smooth through zero,
+        // matching ngspice 47's `b3ld.c` lines 1267 to 1274. Testing `channel.vbseff < 0`
+        // previously sent `vbs = 0` into `phi - channel.phis`, which evaluated to
+        // `channel.vbseff` and inherited its left slope `|vbsc| / (|vbsc| + 0.001)`
+        // instead of `1`.
+        let vbseff = if vbs.value.value() <= 0.0 {
             vbs
         } else {
-            (-channel.phis).plus(self.phi)
+            vbs.scale(self.phi) / vbs.plus(self.phi)
         };
         let vfb = self.binned.vfbcv;
         let phi = self.phi;
@@ -307,12 +318,7 @@ impl<R: Real> Core<R> {
         );
         let abulk_cv = channel.abulk0.scale(self.abulk_cv_factor);
         let vdsat_cv = vgsteff / abulk_cv;
-        let v4 = vdsat_cv - vds - DELTA;
-        let t0 = (v4 * v4 + vdsat_cv * (4.0 * DELTA)).sqrt();
-        let mut vdseff_cv = vdsat_cv - (v4 + t0) * 0.5;
-        if vds.value.value() == 0.0 {
-            zero_at_zero_drain(&mut vdseff_cv);
-        }
+        let vdseff_cv = effective_drain(vds, vdsat_cv, R::constant(DELTA));
         let t0 = abulk_cv * vdseff_cv;
         let t1 = (vgsteff - t0 * 0.5 + 1.0e-20) * 12.0;
         let t3 = t0 * (vdseff_cv / t1);
@@ -400,17 +406,7 @@ impl<R: Real> Core<R> {
 
         let abulk_cv = channel.abulk0.scale(self.abulk_cv_factor);
         let vdsat_cv = vgdp / abulk_cv;
-        let t0 = vdsat_cv - vds - DELTA;
-        let t1 = (t0 * t0 + vdsat_cv * (4.0 * DELTA)).sqrt();
-        let mut vdseff_cv = if t0.value.value() >= 0.0 {
-            vdsat_cv - (t0 + t1) * 0.5
-        } else {
-            let t3 = D::number(2.0 * DELTA) / (t1 - t0);
-            vdsat_cv * (-t3 + 1.0)
-        };
-        if vds.value.value() == 0.0 {
-            zero_at_zero_drain(&mut vdseff_cv);
-        }
+        let vdseff_cv = effective_drain(vds, vdsat_cv, R::constant(DELTA));
         let t0 = abulk_cv * vdseff_cv;
         let t1 = vgdp;
         let t2 = (t1 - t0 * 0.5 + 1.0e-20) * 12.0;
@@ -449,15 +445,6 @@ struct Cv<'a, R: Real> {
     vgsteff: D<R>,
     channel: &'a Operating<R>,
     partition: Partition,
-}
-
-/// Sets an effective drain-source voltage of the charges at zero drain-source voltage to
-/// zero, with no derivative with respect to the gate and the bulk, as `b3ld.c` does.
-fn zero_at_zero_drain<R: Real>(vdseff: &mut D<R>) {
-    vdseff.value = vdseff.value.with_value(0.0);
-    let [gate, _, bulk] = &mut vdseff.gradient;
-    *gate = gate.with_value(0.0);
-    *bulk = bulk.with_value(0.0);
 }
 
 impl<R: Real> Overlaps<R> {

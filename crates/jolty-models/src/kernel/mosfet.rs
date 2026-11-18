@@ -1433,11 +1433,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        Bench, Evaluation, assert_close, assert_jacobians_match, assert_mirrors,
         assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
+    use crate::{Differentiable, Input};
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
         "body_effect": 0.5, "channel_length_modulation": 0.02, "width": 10e-6,
@@ -1845,5 +1845,225 @@ mod tests {
             );
             assert_eq!(sources.len(), 2);
         }
+    }
+
+    /// Evaluates `bench` at `x` without step limiting, using SPICE's default `gmin`.
+    fn unlimited(bench: &mut Bench, x: &[f64]) -> Evaluation {
+        const GMIN: f64 = 1e-12;
+        let mut input = Input::new(x, None, GMIN);
+        input.limiting = false;
+        bench.evaluate_with(&input)
+    }
+
+    /// Asserts that a single evaluation at equal drain and source voltages is symmetric
+    /// under `swap` across residuals, charges, conductances, and capacitances, within
+    /// `1024 · f64::EPSILON` of each quantity's scale (Higham 2002, §3.1, matching
+    /// `testing::laws::ROUNDING`).
+    fn assert_symmetric_at_zero_vds(
+        evaluation: &Evaluation,
+        x: &[f64],
+        swap: &[usize],
+        label: &str,
+    ) {
+        const ROUNDING: f64 = 1024.0;
+        let residual_scale = evaluation.scale.iter().copied().fold(0.0_f64, f64::max);
+        let charge_scale = evaluation
+            .charge
+            .iter()
+            .zip(&evaluation.capacitance)
+            .map(|(&charge, row)| {
+                let linear: f64 = row
+                    .iter()
+                    .zip(x)
+                    .map(|(&entry, &value)| (entry * value).abs())
+                    .sum();
+                charge.abs() + linear
+            })
+            .fold(0.0_f64, f64::max);
+        let matrix_max = |matrix: &[Vec<f64>]| {
+            matrix
+                .iter()
+                .flatten()
+                .fold(0.0_f64, |most, &entry| most.max(entry.abs()))
+        };
+        let mut worst_residual = 0.0_f64;
+        let mut worst_charge = 0.0_f64;
+        let mut worst_conductance = 0.0_f64;
+        let mut worst_capacitance = 0.0_f64;
+        for (row, &swapped_row) in swap.iter().enumerate() {
+            worst_residual = worst_residual
+                .max((evaluation.residual[row] - evaluation.residual[swapped_row]).abs());
+            worst_charge =
+                worst_charge.max((evaluation.charge[row] - evaluation.charge[swapped_row]).abs());
+            for (column, &swapped_column) in swap.iter().enumerate() {
+                worst_conductance = worst_conductance.max(
+                    (evaluation.conductance[row][column]
+                        - evaluation.conductance[swapped_row][swapped_column])
+                        .abs(),
+                );
+                worst_capacitance = worst_capacitance.max(
+                    (evaluation.capacitance[row][column]
+                        - evaluation.capacitance[swapped_row][swapped_column])
+                        .abs(),
+                );
+            }
+        }
+        assert!(
+            worst_residual <= ROUNDING * f64::EPSILON * residual_scale,
+            "{label}: residual diff {worst_residual:e} of {residual_scale:e}"
+        );
+        assert!(
+            worst_charge <= ROUNDING * f64::EPSILON * charge_scale,
+            "{label}: charge diff {worst_charge:e} of {charge_scale:e}"
+        );
+        let conductance_scale = matrix_max(&evaluation.conductance);
+        assert!(
+            worst_conductance <= ROUNDING * f64::EPSILON * conductance_scale,
+            "{label}: conductance diff {worst_conductance:e} of {conductance_scale:e}"
+        );
+        let capacitance_scale = matrix_max(&evaluation.capacitance);
+        assert!(
+            worst_capacitance <= ROUNDING * f64::EPSILON * capacitance_scale,
+            "{label}: capacitance diff {worst_capacitance:e} of {capacitance_scale:e}"
+        );
+    }
+
+    /// At `vds = 0`, both level 1 and level 3 MOSFETs swap drain and source cleanly across
+    /// every region when displacement currents are zero (`w = 0`), including with symmetric
+    /// drain and source series resistances.
+    #[test]
+    fn swaps_drain_and_source_at_zero_vds_without_displacement_currents() {
+        const SWAP_SEVEN: [usize; 7] = [2, 1, 0, 3, 5, 4, 6];
+        const SWAP_NINE: [usize; 9] = [2, 1, 0, 3, 5, 4, 7, 6, 8];
+
+        let cards = [
+            ("level 1 oxide", r#"{"oxide_thickness": 2e-8}"#),
+            ("level 3 default", r#"{"level": 3}"#),
+            (
+                "level 3 drift",
+                r#"{"level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
+                    "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+                    "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+                    "static_feedback": 0.5, "narrow_width_factor": 0.8,
+                    "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
+                    "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
+                    "max_drift_velocity": 1.5e5, "drain_area": 2e-11, "source_area": 2e-11,
+                    "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10}"#,
+            ),
+            (
+                "level 3 no drift",
+                r#"{"level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
+                    "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+                    "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+                    "static_feedback": 0.5, "narrow_width_factor": 0.8,
+                    "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
+                    "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
+                    "max_drift_velocity": 0.0, "drain_area": 2e-11, "source_area": 2e-11,
+                    "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10}"#,
+            ),
+        ];
+        let biases = [
+            (-2.0, 0.0),
+            (-0.4, 0.0),
+            (0.0, 0.0),
+            (0.5, -0.5),
+            (0.8, 0.0),
+            (2.0, 0.0),
+            (2.0, -0.5),
+            (-1.0, 0.2),
+            (2.0, 0.2),
+        ];
+        for (label, card) in cards {
+            let mut bench = Bench::new::<Mosfet>(card);
+            for (gate_voltage, bulk_voltage) in biases {
+                let point = [0.0, gate_voltage, 0.0, bulk_voltage, 0.0, 0.0, 0.0];
+                let evaluation = unlimited(&mut bench, &point);
+                assert_symmetric_at_zero_vds(&evaluation, &point, &SWAP_SEVEN, label);
+            }
+        }
+        let resistive = r#"{"level": 3, "drain_resistance": 10, "source_resistance": 10}"#;
+        let mut resistive_bench = Bench::new::<Mosfet>(resistive);
+        for (gate_voltage, bulk_voltage) in biases {
+            for inner_voltage in [0.0, 0.01] {
+                let point = [
+                    0.0,
+                    gate_voltage,
+                    0.0,
+                    bulk_voltage,
+                    inner_voltage,
+                    inner_voltage,
+                    0.0,
+                    0.0,
+                    0.0,
+                ];
+                let evaluation = unlimited(&mut resistive_bench, &point);
+                assert_symmetric_at_zero_vds(&evaluation, &point, &SWAP_NINE, "level 3 resistive");
+            }
+        }
+    }
+
+    /// When displacement currents flow (`w != 0`) inside `-phi < vgst <= 0` at `vds = 0`,
+    /// Meyer's capacitances (`DEVqmeyer`, `devsup.c` lines 698 to 720) depend on
+    /// `vgst = Vg - min(Vd, Vs) - Von(Vb - min(Vd, Vs), |Vd - Vs|)`, whose first derivative
+    /// jumps across `Vd = Vs` by `|w| / phi * (1 - d(Von)/d(vbs) + 2 * sigma)` (`1.6667e-9`
+    /// at `[1e-9; 7]` for default `vto = 0` at both levels 1 and 3).
+    #[test]
+    fn meyer_derivative_kink_matches_exact_formula_at_zero_vds() {
+        const ROUNDING: f64 = 1024.0;
+
+        // Exact Meyer kink at `[1e-9; 7]` (`vgst = 0`, weak-inversion boundary): both level 1
+        // and level 3 default cards jump by `1e-9 / 0.6 = 1.6666666667e-9`.
+        let expected_default = 1e-9 / 0.6;
+        for card in [r#"{"oxide_thickness": 2e-8}"#, r#"{"level": 3}"#] {
+            let mut bench = Bench::new::<Mosfet>(card);
+            let matrix = unlimited(&mut bench, &[1e-9; 7]).conductance;
+            let terminal_max = matrix[..4]
+                .iter()
+                .flat_map(|row| &row[..4])
+                .fold(0.0_f64, |most, &entry| most.max(entry.abs()));
+            let tolerance = ROUNDING * f64::EPSILON * terminal_max;
+            assert!((matrix[1][0] - matrix[1][2] - expected_default).abs() <= tolerance);
+            assert!((matrix[3][0] - matrix[3][2] - expected_default).abs() <= tolerance);
+            assert!((matrix[0][0] - matrix[2][2] + expected_default).abs() <= tolerance);
+            assert!((matrix[0][2] - matrix[2][0] - expected_default).abs() <= tolerance);
+        }
+
+        // Exact Meyer kink in depletion (`-phi < vgst <= -phi/2`, only `C_gb` active) at
+        // `[0.0, 0.5, 0.0, -0.5, 0.1, 0.1, 0.1]`: body effect at level 1, plus `2 * sigma`
+        // static feedback at level 3.
+        let depletion_point = [0.0, 0.5, 0.0, -0.5, 0.1, 0.1, 0.1];
+        let body_term = 1.0 + 0.5 / (2.0 * 1.1_f64.sqrt());
+        let expected_level_one = 0.1 / 0.6 * body_term;
+        let mut level_one_bench = Bench::new::<Mosfet>(
+            r#"{"threshold_voltage": 0.8, "body_effect": 0.5, "oxide_thickness": 2e-8}"#,
+        );
+        let level_one_matrix = unlimited(&mut level_one_bench, &depletion_point).conductance;
+        let level_one_tolerance = ROUNDING * f64::EPSILON * expected_level_one;
+        assert!(
+            (level_one_matrix[3][0] - level_one_matrix[3][2] - expected_level_one).abs()
+                <= level_one_tolerance
+        );
+        assert!(
+            (level_one_matrix[1][0] - level_one_matrix[1][2] + expected_level_one).abs()
+                <= level_one_tolerance
+        );
+
+        let oxide_per_area = OXIDE_PERMITTIVITY / 2e-8;
+        let sigma = 0.5 * 8.15e-22 / (oxide_per_area * (2e-6_f64).powi(3));
+        let expected_level_three = 0.1 / 0.6 * (body_term + 2.0 * sigma);
+        let mut level_three_bench = Bench::new::<Mosfet>(
+            r#"{"level": 3, "length": 2e-6, "width": 20e-6, "oxide_thickness": 2e-8,
+                "threshold_voltage": 0.8, "body_effect": 0.5, "static_feedback": 0.5}"#,
+        );
+        let level_three_matrix = unlimited(&mut level_three_bench, &depletion_point).conductance;
+        let level_three_tolerance = ROUNDING * f64::EPSILON * expected_level_three;
+        assert!(
+            (level_three_matrix[3][0] - level_three_matrix[3][2] - expected_level_three).abs()
+                <= level_three_tolerance
+        );
+        assert!(
+            (level_three_matrix[1][0] - level_three_matrix[1][2] + expected_level_three).abs()
+                <= level_three_tolerance
+        );
     }
 }

@@ -11,8 +11,8 @@ use super::prepare::Core;
 use crate::Real;
 use crate::kernel::bsim3::{
     EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, Q, above_half, above_tenth,
-    factor_above_tenth, non_saturation_excess, reciprocal_above_tenth, saturation_voltage,
-    smooth_positive,
+    effective_drain, factor_above_tenth, non_saturation_excess, reciprocal_above_tenth,
+    saturation_voltage, smooth_floor, smooth_positive,
 };
 
 /// The exponent of `b4v5ld.c`'s smoothing of the source end's velocity limit, `2 · MM`
@@ -104,11 +104,8 @@ impl<R: Real> Core<R> {
         let vtm = self.vtm;
 
         // The body's effective voltage, kept below 0.95 φ.
-        let t0 = (vbs - c(self.vbsc)) - 0.001;
-        let vbseff = smooth_positive(t0, c(self.vbsc * -0.004)) + c(self.vbsc);
-        let t9 = self.phi * 0.95;
-        let t0 = c(t9) - vbseff - 0.001;
-        let vbseff = c(t9) - smooth_positive(t0, c(t9 * 0.004));
+        let vbseff = smooth_floor(vbs, self.vbsc);
+        let vbseff = -smooth_floor(-vbseff, -(self.phi * 0.95));
         let phis = c(self.phi) - vbseff;
         let sqrt_phis = phis.sqrt();
         let xdep = sqrt_phis.scale(self.xdep0 / self.sqrt_phi);
@@ -240,22 +237,7 @@ impl<R: Real> Core<R> {
         let vdsat = saturation_voltage(vgst2vtm, esat_l, abulk, wv_cox_rds, excess);
 
         // The effective drain-source voltage.
-        let delta = p.delta;
-        let t1 = vdsat - vds - c(delta);
-        let t2 = (t1 * t1 + vdsat.scale(delta * 4.0)).sqrt();
-        let mut vdseff = if t1.value.value() >= 0.0 {
-            vdsat - (t1 + t2) * 0.5
-        } else {
-            let t4 = c(delta * 2.0) / (t2 - t1);
-            vdsat * (1.0 - t4)
-        };
-        if vds.value.value() == 0.0 {
-            let [gate, drain, bulk] = vdseff.gradient;
-            vdseff = D {
-                value: vdseff.value.with_value(0.0),
-                gradient: [gate.with_value(0.0), drain, bulk.with_value(0.0)],
-            };
-        }
+        let mut vdseff = effective_drain(vds, vdsat, p.delta);
         if vdseff.value.value() > vds.value.value() {
             vdseff = vds;
         }

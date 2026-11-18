@@ -22,8 +22,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use self::channel::{
-    above_half, above_tenth, factor_above_tenth, non_saturation_excess, reciprocal_above_tenth,
-    saturation_voltage, smooth_positive,
+    above_half, above_tenth, effective_drain, factor_above_tenth, non_saturation_excess,
+    reciprocal_above_tenth, saturation_voltage, smooth_floor, smooth_positive,
 };
 pub(crate) use self::charges::{depletion, flat_band};
 pub use self::parameters::Bsim3Parameters;
@@ -769,12 +769,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
-    use crate::REFERENCE_TEMPERATURE;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
+        Bench, Evaluation, assert_close, assert_jacobians_match, assert_mirrors,
         assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
     };
+    use crate::{Differentiable, Input, REFERENCE_TEMPERATURE};
 
     /// A short n-channel with every effect of the drain current switched on: the poly
     /// gate's depletion, the parasitic resistance, the non-saturation effect, the
@@ -1159,5 +1158,453 @@ mod tests {
             spread < 1e-5,
             "saturation_voltage slopes jittered by {spread:e}: {slopes:?}"
         );
+    }
+
+    /// Evaluates `bench` at `x` with step limiting disabled and junction leakage `gmin`.
+    fn unlimited(bench: &mut Bench, x: &[f64], gmin: f64) -> Evaluation {
+        let mut input = Input::new(x, None, gmin);
+        input.limiting = false;
+        bench.evaluate_with(&input)
+    }
+
+    /// Largest absolute entry in a dense square matrix.
+    fn matrix_max(matrix: &[Vec<f64>]) -> f64 {
+        matrix
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |most, &entry| most.max(entry.abs()))
+    }
+
+    /// Checks that two 4-element vectors agree under the drain-source swap `[2, 1, 0, 3]`
+    /// within `1024 · f64::EPSILON` of `magnitude` (Higham 2002, §3.1, matching
+    /// `testing::laws::ROUNDING`).
+    fn assert_vector_swaps(first: &[f64], second: &[f64], magnitude: f64, label: &str) {
+        const SWAP: [usize; 4] = [2, 1, 0, 3];
+        const ROUNDING: f64 = 1024.0;
+        let mut worst = 0.0_f64;
+        for (row, &swapped_row) in SWAP.iter().enumerate() {
+            worst = worst.max((first[row] - second[swapped_row]).abs());
+        }
+        assert!(
+            worst <= ROUNDING * f64::EPSILON * magnitude,
+            "{label} differed by {worst:e} of {magnitude:e}"
+        );
+    }
+
+    /// Largest difference between two 4x4 matrices under the drain-source swap `[2, 1, 0, 3]`.
+    fn max_matrix_swap_difference(first: &[Vec<f64>], second: &[Vec<f64>]) -> f64 {
+        const SWAP: [usize; 4] = [2, 1, 0, 3];
+        let mut worst = 0.0_f64;
+        for (row, &swapped_row) in SWAP.iter().enumerate() {
+            for (column, &swapped_column) in SWAP.iter().enumerate() {
+                worst = worst.max((first[row][column] - second[swapped_row][swapped_column]).abs());
+            }
+        }
+        worst
+    }
+
+    /// Checks that two 4x4 matrices agree under the drain-source swap `[2, 1, 0, 3]`
+    /// within `1024 · f64::EPSILON` of their largest entry (Higham 2002, §3.1, matching
+    /// `testing::laws::ROUNDING`).
+    fn assert_matrix_swaps(first: &[Vec<f64>], second: &[Vec<f64>], label: &str) {
+        const ROUNDING: f64 = 1024.0;
+        let magnitude = matrix_max(first).max(matrix_max(second));
+        let worst = max_matrix_swap_difference(first, second);
+        assert!(
+            worst <= ROUNDING * f64::EPSILON * magnitude,
+            "{label} differed by {worst:e} of {magnitude:e}"
+        );
+    }
+
+    /// Charge term magnitude bounding rounding error, matching `testing::laws::terms`.
+    fn charge_scale(evaluation: &Evaluation, x: &[f64]) -> f64 {
+        evaluation
+            .charge
+            .iter()
+            .zip(&evaluation.capacitance)
+            .map(|(&charge, row)| {
+                let linear: f64 = row
+                    .iter()
+                    .zip(x)
+                    .map(|(&entry, &voltage)| (entry * voltage).abs())
+                    .sum();
+                charge.abs() + linear
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Derived process constants of the default 5 um by 5 um BSIM3 card at 300.15 K,
+    /// matching `prepare.rs`.
+    struct DefaultBsim3Constants {
+        oxide_gate_capacitance: f64,
+        surface_potential: f64,
+        body_factor_one: f64,
+        bulk_clamp_voltage: f64,
+        depletion_depth_zero: f64,
+        bulk_cv_factor: f64,
+    }
+
+    impl DefaultBsim3Constants {
+        fn compute() -> Self {
+            const INTRINSIC: f64 = 1.45e10;
+            const OXIDE_THICKNESS: f64 = 1.5e-8;
+            const CHANNEL_LENGTH: f64 = 5e-6;
+            const CHANNEL_WIDTH: f64 = 5e-6;
+            const CHANNEL_DOPING: f64 = 1.7e17;
+            const SUBSTRATE_DOPING: f64 = 6.0e16;
+            const DOPING_DEPTH: f64 = 1.55e-7;
+            const MAX_BULK_BIAS: f64 = -3.0;
+
+            let nominal = REFERENCE_TEMPERATURE;
+            let thermal_volts = nominal * KBOQ;
+            let band_gap = -(nominal * nominal * 7.02e-4 / (nominal + 1108.0)) + 1.16;
+            let intrinsic = INTRINSIC * (-(band_gap / (thermal_volts * 2.0)) + 21.556_598_1).exp();
+            let oxide_per_area = EPSOX / OXIDE_THICKNESS;
+            let surface_potential = (CHANNEL_DOPING / intrinsic).ln() * thermal_volts * 2.0;
+            let root_potential = surface_potential.sqrt();
+            let depletion_depth_zero =
+                (2.0 * EPSSI / (CHANNEL_DOPING * (Q * 1e6))).sqrt() * root_potential;
+            let gamma_surface = 5.753e-12 * CHANNEL_DOPING.sqrt() / oxide_per_area;
+            let gamma_bulk = 5.753e-12 * SUBSTRATE_DOPING.sqrt() / oxide_per_area;
+            let transition =
+                surface_potential - 7.7348e-4 * CHANNEL_DOPING * DOPING_DEPTH * DOPING_DEPTH;
+            let body_factor_two = (gamma_surface - gamma_bulk)
+                * ((surface_potential - transition).sqrt() - root_potential)
+                / (2.0
+                    * ((surface_potential * (surface_potential - MAX_BULK_BIAS)).sqrt()
+                        - surface_potential)
+                    + MAX_BULK_BIAS);
+            let body_factor_one =
+                gamma_bulk - 2.0 * body_factor_two * (surface_potential - MAX_BULK_BIAS).sqrt();
+            let ratio = body_factor_one * 0.5 / body_factor_two;
+            let bulk_clamp_voltage = (surface_potential - ratio * ratio) * 0.9;
+            Self {
+                oxide_gate_capacitance: oxide_per_area * CHANNEL_WIDTH * CHANNEL_LENGTH,
+                surface_potential,
+                body_factor_one,
+                bulk_clamp_voltage,
+                depletion_depth_zero,
+                bulk_cv_factor: (1e-7 / CHANNEL_LENGTH).powf(0.6) + 1.0,
+            }
+        }
+
+        /// Analytical `C[b, d] - C[b, s]` jump in strong inversion at `vds = 0` for `capmod`
+        /// 0, `-CoxWL * ((AbulkCV - 1) + k1 * d(sqrt_phis)/d(vbs))`, from `b3ld.c`.
+        fn strong_inversion_bulk_jump(&self, bulk_voltage: f64) -> f64 {
+            const CHANNEL_LENGTH: f64 = 5e-6;
+            const JUNCTION_DEPTH: f64 = 1.5e-7;
+            const BULK_CURVATURE: f64 = -0.047;
+
+            let shifted = bulk_voltage - self.bulk_clamp_voltage - 0.001;
+            let root = (shifted * shifted - 0.004 * self.bulk_clamp_voltage).sqrt();
+            let denominator = root + (bulk_voltage - self.bulk_clamp_voltage + 0.001);
+            let effective_bulk = bulk_voltage - 0.002 * bulk_voltage / denominator;
+            let bulk_slope = f64::midpoint(1.0, shifted / root);
+            let surface_root = (self.surface_potential - effective_bulk).sqrt();
+            let surface_root_slope = (-0.5 / surface_root) * bulk_slope;
+            let depletion_depth =
+                surface_root * (self.depletion_depth_zero / self.surface_potential.sqrt());
+            let length_term =
+                CHANNEL_LENGTH / (2.0 * (depletion_depth * JUNCTION_DEPTH).sqrt() + CHANNEL_LENGTH);
+            let raw_bulk_factor = (self.body_factor_one * 0.5 / surface_root) * length_term + 1.0;
+            let capacitance_bulk_factor =
+                (raw_bulk_factor / (1.0 + effective_bulk * BULK_CURVATURE)) * self.bulk_cv_factor;
+            -self.oxide_gate_capacitance
+                * ((capacitance_bulk_factor - 1.0) + self.body_factor_one * surface_root_slope)
+        }
+    }
+
+    /// Regression test for two BSIM3 bugs at `vbs = 0`:
+    /// 1. `capmod_zero` previously tested `channel.vbseff < 0`, sending `vbs = 0` into
+    ///    `phi - channel.phis` and inheriting `channel.vbseff`'s left slope
+    ///    `|vbsc| / (|vbsc| + 0.001)` instead of `1` (`1.85e-18 F` / `1.4e-4` error).
+    /// 2. `channel::Core::evaluate` previously added `smooth_positive` to `vbsc` (`-6.73 V`),
+    ///    cancelling ~12 digits near `vbs = 0` and chattering the `vbseff < vbs` clamp
+    ///    within `~6e-12 V` of zero across `capmod` 0, 2, and 3.
+    #[test]
+    fn capmod_zero_vbseff_is_smooth_and_symmetric_at_zero_bulk() {
+        const GMIN: f64 = 1e-12;
+        const ROUNDING: f64 = 1024.0;
+        let card = r#"{"width": 10e-6, "length": 1e-6, "capacitance_model": 0}"#;
+        let mut bench = Bench::new::<Bsim3>(card);
+        let at_zero = unlimited(&mut bench, &[0.0, 1.2, 0.0, 0.0], GMIN);
+        assert_matrix_swaps(
+            &at_zero.conductance,
+            &at_zero.conductance,
+            "10u x 1u capmod 0 conductance at vbs = 0",
+        );
+        assert_matrix_swaps(
+            &at_zero.capacitance,
+            &at_zero.capacitance,
+            "10u x 1u capmod 0 capacitance at vbs = 0",
+        );
+
+        // One-sided finite differences of `Q_g` at `vbs = 0` with `h = 1e-6 V`:
+        // truncation error `0.5 * h * |d^2 Q_g / d V_b^2|` is `1.01e-21 F` on the left
+        // and `1.38e-20 F` on the right (`phi * vbs / (phi + vbs)` curvature); the pre-fix
+        // slope bug was `1.85e-18 F`.
+        let step = 1e-6;
+        let below = unlimited(&mut bench, &[0.0, 1.2, 0.0, -step], GMIN);
+        let above = unlimited(&mut bench, &[0.0, 1.2, 0.0, step], GMIN);
+        let left_difference = (at_zero.charge[1] - below.charge[1]) / step;
+        let right_difference = (above.charge[1] - at_zero.charge[1]) / step;
+        let analytic = at_zero.capacitance[1][3];
+        assert!(
+            (analytic - left_difference).abs() < 2e-20,
+            "left FD mismatch: analytic={analytic:e}, left={left_difference:e}"
+        );
+        assert!(
+            (analytic - right_difference).abs() < 5e-20,
+            "right FD mismatch: analytic={analytic:e}, right={right_difference:e}"
+        );
+
+        let mut default_bench = Bench::new::<Bsim3>(r#"{"capacitance_model": 0}"#);
+        for point in [[0.0, 0.0, 0.0, 0.0], [0.0, -2.0, 0.0, 0.0]] {
+            let evaluation = unlimited(&mut default_bench, &point, GMIN);
+            assert_matrix_swaps(
+                &evaluation.conductance,
+                &evaluation.conductance,
+                "default capmod 0 conductance",
+            );
+            assert_matrix_swaps(
+                &evaluation.capacitance,
+                &evaluation.capacitance,
+                "default capmod 0 capacitance",
+            );
+        }
+
+        // Branch-chatter check across `vbs = 0` on `10u x 1u, Vg = 1.2 V`.
+        let sweep = [-1e-9, -1e-12, -1e-15, 0.0, 1e-15, 1e-12, 1e-9];
+        for bulk_voltage in sweep {
+            let evaluation = unlimited(&mut bench, &[0.0, 1.2, 0.0, bulk_voltage], GMIN);
+            let maximum_capacitance = matrix_max(&evaluation.capacitance);
+            let difference = (evaluation.capacitance[1][0] - evaluation.capacitance[1][2]).abs();
+            let bound = if bulk_voltage <= 0.0 {
+                ROUNDING * f64::EPSILON * maximum_capacitance
+            } else {
+                // Forward body bias slope defect is `1 - (phi/(phi+vbs))^2 <= 2.5*vbs/0.8`.
+                ROUNDING * f64::EPSILON * maximum_capacitance
+                    + 2.5 * bulk_voltage * maximum_capacitance / 0.8
+            };
+            assert!(
+                difference <= bound,
+                "capmod 0 at vbs={bulk_voltage:e}: diff={difference:e} > {bound:e}"
+            );
+        }
+        for model_index in [2_u8, 3_u8] {
+            let parameters = format!(
+                r#"{{"width": 10e-6, "length": 1e-6, "capacitance_model": {model_index}}}"#
+            );
+            let mut sweep_bench = Bench::new::<Bsim3>(&parameters);
+            for bulk_voltage in sweep {
+                let evaluation = unlimited(&mut sweep_bench, &[0.0, 1.2, 0.0, bulk_voltage], GMIN);
+                let difference = evaluation.capacitance[1][0] - evaluation.capacitance[1][2];
+                if bulk_voltage <= 0.0 {
+                    // `b3ld.c` keeps `1 - |vbsc|/(|vbsc|+0.001)` (`1.92e-18` / `1.79e-18`).
+                    assert!(
+                        difference > 1.5e-18,
+                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: diff={difference:e}"
+                    );
+                } else {
+                    // For `vbs > 0`, `vbs` replaces the smooth floor; max asymmetry at `1e-9`
+                    // is `3.13e-22 F`, far below the pre-fix `1.79e-18 F` chatter.
+                    assert!(
+                        difference.abs() < 1e-20,
+                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: diff={difference:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Regression test for `effective_drain` catastrophic cancellation at small `vds`:
+    /// previously `vdsat - (t1 + t2) * 0.5` lost ~8 digits at `vds = 1e-9 V` (failing swap
+    /// symmetry by `8.58e-24 A`, `37,886` eps) and lost 5 to 14 digits on `Ids(vds) / vds`
+    /// at `1e-12` to `1e-15 V`.
+    #[test]
+    fn effective_drain_keeps_precision_at_small_vds() {
+        const GMIN: f64 = 1e-12;
+        let mut bench = Bench::new::<Bsim3>(r#"{"capacitance_model": 0}"#);
+        let forward_point = [1e-9, 2.0, 0.0, -0.5];
+        let swapped_point = [0.0, 2.0, 1e-9, -0.5];
+        let forward = unlimited(&mut bench, &forward_point, GMIN);
+        let reversed = unlimited(&mut bench, &swapped_point, GMIN);
+        let residual_scale = forward
+            .scale
+            .iter()
+            .chain(&reversed.scale)
+            .copied()
+            .fold(0.0_f64, f64::max);
+        assert_vector_swaps(
+            &forward.residual,
+            &reversed.residual,
+            residual_scale,
+            "small-vds residual",
+        );
+        let charge_magnitude =
+            charge_scale(&forward, &forward_point).max(charge_scale(&reversed, &swapped_point));
+        assert_vector_swaps(
+            &forward.charge,
+            &reversed.charge,
+            charge_magnitude,
+            "small-vds charge",
+        );
+        assert_matrix_swaps(
+            &forward.conductance,
+            &reversed.conductance,
+            "small-vds conductance",
+        );
+        assert_matrix_swaps(
+            &forward.capacitance,
+            &reversed.capacitance,
+            "small-vds capacitance",
+        );
+
+        let no_junction = r#"{"drain_area": 1e-12, "source_area": 1e-12, "js": 0, "jsw": 0}"#;
+        let mut quiet = Bench::new::<Bsim3>(no_junction);
+        for (gate_voltage, bulk_voltage) in [(3.0, 0.0), (2.0, -0.5)] {
+            let zero_slope = unlimited(&mut quiet, &[0.0, gate_voltage, 0.0, bulk_voltage], 0.0)
+                .conductance[0][0];
+            assert!(zero_slope > 0.0, "expected positive gds(0)");
+            for drain_voltage in [1e-15, 1e-12] {
+                let secant = unlimited(
+                    &mut quiet,
+                    &[drain_voltage, gate_voltage, 0.0, bulk_voltage],
+                    0.0,
+                )
+                .residual[0]
+                    / drain_voltage;
+                // Quadratic error `O(vds / vdsat)` is at most `~3e-11` at `vds = 1e-12`
+                // (`vdsat ~ 0.037 V`); pre-fix cancellation error was `~1e-5` to `1.5e-2`.
+                assert!(
+                    (secant - zero_slope).abs() <= 1e-9 * zero_slope,
+                    "vg={gate_voltage}, vb={bulk_voltage}, vds={drain_voltage:e}: secant={secant:e}, gds0={zero_slope:e}"
+                );
+            }
+        }
+    }
+
+    /// Asserts that `capmod` 0 in strong inversion has a symmetric gate row and matches the
+    /// exact analytical bulk and drain-source capacitance jumps of `b3ld.c` lines 1330 to
+    /// 1582 across all three charge partitions.
+    fn assert_capmod_zero_strong_inversion_jumps(constants: &DefaultBsim3Constants, gmin: f64) {
+        const ROUNDING: f64 = 1024.0;
+        for bulk_voltage in [0.0, -0.5] {
+            let expected_bulk = constants.strong_inversion_bulk_jump(bulk_voltage);
+            let expected_drain = -0.5 * expected_bulk;
+            for partition in [0.0, 0.5, 1.0] {
+                let card =
+                    format!(r#"{{"capacitance_model": 0, "charge_partition": {partition}}}"#);
+                let mut bench = Bench::new::<Bsim3>(&card);
+                let evaluation = unlimited(&mut bench, &[0.0, 3.0, 0.0, bulk_voltage], gmin);
+                let tolerance = ROUNDING * f64::EPSILON * matrix_max(&evaluation.capacitance);
+                assert!(
+                    (evaluation.capacitance[1][0] - evaluation.capacitance[1][2]).abs()
+                        <= tolerance,
+                    "capmod 0 gate row asymmetric at vb={bulk_voltage}, xpart={partition}"
+                );
+                let bulk_jump = evaluation.capacitance[3][0] - evaluation.capacitance[3][2];
+                assert!(
+                    (bulk_jump - expected_bulk).abs() <= tolerance,
+                    "bulk jump {bulk_jump:e} != expected {expected_bulk:e}"
+                );
+                let drain_jump = evaluation.capacitance[0][0] - evaluation.capacitance[2][2];
+                assert!(
+                    (drain_jump - expected_drain).abs() <= tolerance,
+                    "drain jump {drain_jump:e} != expected {expected_drain:e}"
+                );
+            }
+        }
+    }
+
+    /// Verifies that at `vds = 0`, currents, charges (`Q_d == Q_s`), and conductances swap
+    /// cleanly across all four `capmod`s, and bounds the exact remaining capacitance
+    /// asymmetries inherent in Berkeley BSIM3v3.3 (`b3ld.c`).
+    #[test]
+    fn swap_symmetry_at_zero_vds_matches_bsim3_equations() {
+        const GMIN: f64 = 1e-12;
+        const ROUNDING: f64 = 1024.0;
+        let constants = DefaultBsim3Constants::compute();
+
+        // Currents, charges, and conductances swap cleanly at `vds = 0` for all `capmod`s.
+        let biases = [
+            (-2.0, 0.0),
+            (0.0, 0.0),
+            (1.2, 0.0),
+            (3.0, 0.0),
+            (3.0, -0.5),
+            (-2.0, 0.1),
+        ];
+        for model_index in 0..=3_u8 {
+            let card = format!(r#"{{"capacitance_model": {model_index}}}"#);
+            let mut bench = Bench::new::<Bsim3>(&card);
+            for (gate_voltage, bulk_voltage) in biases {
+                let point = [0.0, gate_voltage, 0.0, bulk_voltage];
+                let evaluation = unlimited(&mut bench, &point, GMIN);
+                let residual_scale = evaluation.scale.iter().copied().fold(0.0_f64, f64::max);
+                assert_vector_swaps(
+                    &evaluation.residual,
+                    &evaluation.residual,
+                    residual_scale,
+                    "zero-vds residual",
+                );
+                assert_vector_swaps(
+                    &evaluation.charge,
+                    &evaluation.charge,
+                    charge_scale(&evaluation, &point),
+                    "zero-vds charge",
+                );
+                assert_matrix_swaps(
+                    &evaluation.conductance,
+                    &evaluation.conductance,
+                    "zero-vds conductance",
+                );
+            }
+        }
+
+        assert_capmod_zero_strong_inversion_jumps(&constants, GMIN);
+
+        // `capmod` 0 forward body bias (`b3ld.c` lines 1271 to 1274): `VbseffCV` has slope
+        // `(phi / (phi + vbs))^2 < 1`, giving `+1.157e-14 F` (`19.2%`) at `vbs = 0.1 V`.
+        let mut zero_bench = Bench::new::<Bsim3>(r#"{"capacitance_model": 0}"#);
+        let forward_body = unlimited(&mut zero_bench, &[0.0, -2.0, 0.0, 0.1], GMIN);
+        let expected_forward = constants.oxide_gate_capacitance
+            * (1.0 - (constants.surface_potential / (constants.surface_potential + 0.1)).powi(2));
+        let gate_jump = forward_body.capacitance[1][0] - forward_body.capacitance[1][2];
+        assert!(
+            (gate_jump - expected_forward).abs()
+                <= ROUNDING * f64::EPSILON * matrix_max(&forward_body.capacitance),
+            "forward-body jump {gate_jump:e} != {expected_forward:e}"
+        );
+
+        // `capmod` 1 (`b3ld.c` lines 1702 to 1788): linear branch remains active at `vds = 0`
+        // below threshold (`1.474x` of `max|C|` on `10u x 1u` at `vg = 1.2 V`).
+        let mut model_one_bench =
+            Bench::new::<Bsim3>(r#"{"width": 10e-6, "length": 1e-6, "capacitance_model": 1}"#);
+        let model_one = unlimited(&mut model_one_bench, &[0.0, 1.2, 0.0, 0.0], GMIN);
+        let model_one_max = matrix_max(&model_one.capacitance);
+        assert!(model_one.capacitance[1][0] < -1.4e-14 && model_one.capacitance[1][2] > 8.5e-15);
+        assert!(
+            (model_one.capacitance[1][0] - model_one.capacitance[1][2]).abs() / model_one_max > 1.1
+        );
+        assert!(
+            max_matrix_swap_difference(&model_one.capacitance, &model_one.capacitance)
+                / model_one_max
+                > 1.4
+        );
+
+        // `capmod` 2 and 3 (`b3ld.c` lines 1585 to 2239): `VbseffCV = Vbseff` has slope
+        // `1 - 1.485e-4` at `vbs = 0`, giving `1.391e-4` (`capmod` 2) and `1.385e-4` (`3`).
+        for model_index in [2_u8, 3_u8] {
+            let mut bench =
+                Bench::new::<Bsim3>(&format!(r#"{{"capacitance_model": {model_index}}}"#));
+            let evaluation = unlimited(&mut bench, &[0.0, 0.0, 0.0, 0.0], GMIN);
+            let ratio = (evaluation.capacitance[1][0] - evaluation.capacitance[1][2])
+                / matrix_max(&evaluation.capacitance);
+            assert!(
+                (1.3e-4..=1.5e-4).contains(&ratio),
+                "capmod {model_index} ratio {ratio:e} outside [1.3e-4, 1.5e-4]"
+            );
+        }
     }
 }

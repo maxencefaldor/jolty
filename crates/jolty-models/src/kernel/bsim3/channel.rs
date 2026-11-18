@@ -25,8 +25,7 @@ pub(super) struct Operating<R: Real> {
     /// The gate-source voltage the poly gate's depletion leaves, `Vgs_eff`.
     pub(super) vgs_eff: D<R>,
     pub(super) vbseff: D<R>,
-    /// The surface potential and its root at `vbseff`.
-    pub(super) phis: D<R>,
+    /// The surface potential's root at `vbseff`.
     pub(super) sqrt_phis: D<R>,
     /// The subthreshold swing factor, `n`.
     pub(super) n: D<R>,
@@ -96,6 +95,57 @@ pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
     }
 }
 
+/// The smooth lower clamp `bound + (shifted + √(shifted² − 0.004 · bound)) / 2` with
+/// `shifted = x − bound − 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
+///
+/// By `(shifted² − 0.004 · bound) − (x − bound + 0.001)² = −0.004 · x`, the curve passes
+/// through zero, lies strictly above `x` for `x < 0`, and lies strictly below `x` for
+/// `x > 0`. For `x >= bound / 2`, rationalizing it as
+/// `x − 0.002 · x / (root + x − bound + 0.001)` prevents `bound` and `smooth_positive`
+/// from cancelling near `x = 0` (losing ~12 digits and chattering BSIM3's `vbseff < vbs`
+/// clamp within ~6e-12 V of zero); below `bound / 2`, `smooth_positive(shifted, ...) + bound`
+/// stays exact through the knee and at large negative `x`.
+pub(crate) fn smooth_floor<R: Real>(x: D<R>, bound: R) -> D<R> {
+    let shifted = (x - 0.001).plus(-bound);
+    let spread = D::constant(bound * -0.004);
+    if x.value.value() >= 0.5 * bound.value() {
+        let root = (shifted * shifted + spread).sqrt();
+        let denominator = root + (x + 0.001).plus(-bound);
+        x - (x * 0.002) / denominator
+    } else {
+        smooth_positive(shifted, spread).plus(bound)
+    }
+}
+
+/// The smooth minimum of `vds >= 0` and `vdsat >= 0` with smoothing `delta >= 0`,
+/// `vdsat − (shifted + root) / 2` where `shifted = vdsat − vds − delta` and
+/// `root = √(shifted² + 4 · delta · vdsat)`, shared by BSIM3 and BSIM4 for both `Vdseff`
+/// and `VdseffCV`.
+///
+/// Rationalized on both sides of `vds = vdsat + delta`:
+/// - `vds <= vdsat + delta`: `2 · vdsat · vds / (vdsat + vds + delta + root)` eliminates
+///   cancellation of `vdsat` near `vds = 0` (even when `vdsat < delta`), gives exact zero
+///   with zero `gate` and `bulk` derivatives at `vds = 0`, and keeps full precision at
+///   small `vds` such as 1e-9 V where the raw difference loses ~8 digits;
+/// - `vds > vdsat + delta`: `vdsat · (1 − 2 · delta / (root − shifted))` keeps
+///   `2 · delta / (root − shifted) <= 0.5` and preserves full precision on `d/d(vds)` at
+///   large `vds`.
+pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R> {
+    let shifted = vdsat - vds - D::constant(delta);
+    let root = (shifted * shifted + vdsat.scale(delta * 4.0)).sqrt();
+    if vds.value.value() <= vdsat.value.value() + delta.value() {
+        let denominator = (vdsat + vds + root).plus(delta);
+        if denominator.value.value() <= 0.0 {
+            D::number(0.0)
+        } else {
+            (vdsat * vds * 2.0) / denominator
+        }
+    } else {
+        let ratio = D::constant(delta * 2.0) / (root - shifted);
+        vdsat * (-ratio + 1.0)
+    }
+}
+
 /// `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` written in its
 /// excess over unity so `1 − λ` and `1 / λ − 1` never cancel as `λ → 1`.
 pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R> {
@@ -158,21 +208,21 @@ impl<R: Real> Core<R> {
     pub(super) fn evaluate(&self, [vgs, vds, vbs]: [D<R>; 3]) -> Operating<R> {
         let p = &self.binned;
         let leff = self.leff;
-        // The effective bulk-source voltage, bounded below by `vbsc`.
-        let t0 = (vbs - 0.001).plus(-self.vbsc);
-        let mut vbseff = smooth_positive(t0, D::constant(self.vbsc * -0.004)).plus(self.vbsc);
-        if vbseff.value.value() < vbs.value.value() {
-            vbseff = vbs;
-        }
-        let (phis, sqrt_phis) = if vbseff.value.value() > 0.0 {
-            let t0 = D::constant(self.phi) / vbseff.plus(self.phi);
-            (
-                t0.scale(self.phi),
-                D::constant(self.phis3) / (vbseff * 0.5).plus(self.phi),
-            )
+        // The effective bulk-source voltage, bounded below by `vbsc <= -3` V and clamped
+        // above by `vbs`. By `smooth_floor`'s identity, the smooth curve lies strictly
+        // below `vbs` if and only if `vbs > 0`, equals `0` at `vbs = 0`, and lies in
+        // `(vbsc, 0)` strictly above `vbs` for every `vbs < 0`. Testing `vbs > 0`
+        // directly avoids floating-point chatter of `vbseff < vbs` near zero while
+        // keeping `b3ld.c`'s left slope `|vbsc| / (|vbsc| + 0.001)` at `vbs = 0`.
+        let vbseff = if vbs.value.value() > 0.0 {
+            vbs
         } else {
-            let phis = (-vbseff).plus(self.phi);
-            (phis, phis.sqrt())
+            smooth_floor(vbs, self.vbsc)
+        };
+        let sqrt_phis = if vbseff.value.value() > 0.0 {
+            D::constant(self.phis3) / (vbseff * 0.5).plus(self.phi)
+        } else {
+            (-vbseff).plus(self.phi).sqrt()
         };
         let xdep = sqrt_phis.scale(self.xdep0 / self.sqrt_phi);
 
@@ -295,22 +345,7 @@ impl<R: Real> Core<R> {
         let vdsat = saturation_voltage(vgst2vtm, esat_l, abulk, wv_cox_rds, excess);
 
         // The effective drain-source voltage, smooth through saturation.
-        let delta = p.delta;
-        let t1 = vdsat - vds - D::constant(delta);
-        let t2 = (t1 * t1 + vdsat.scale(delta * 4.0)).sqrt();
-        let mut vdseff = if t1.value.value() >= 0.0 {
-            vdsat - (t1 + t2) * 0.5
-        } else {
-            let t4 = D::constant(delta * 2.0) / (t2 - t1);
-            vdsat * (1.0 - t4)
-        };
-        if vds.value.value() == 0.0 {
-            // As `b3ld.c` does, with none of the rounding the smoothing leaves at zero.
-            vdseff.value = vdseff.value.with_value(0.0);
-            let [gate, _, bulk] = &mut vdseff.gradient;
-            *gate = gate.with_value(0.0);
-            *bulk = bulk.with_value(0.0);
-        }
+        let mut vdseff = effective_drain(vds, vdsat, p.delta);
 
         // The saturation's Early voltage.
         let tmp4 = -(abulk * vdsat / vgst2vtm * 0.5) + 1.0;
@@ -388,7 +423,6 @@ impl<R: Real> Core<R> {
             vdsat,
             vgs_eff,
             vbseff,
-            phis,
             sqrt_phis,
             n,
             vgsteff,
