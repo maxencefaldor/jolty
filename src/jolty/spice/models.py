@@ -27,8 +27,10 @@ from jolty.errors import SpiceError
 from jolty.spice.expressions import (
     Draw,
     Expression,
+    Function,
     Number,
     evaluate,
+    inlined,
     nominal,
     number,
     parse,
@@ -441,9 +443,19 @@ VDMOS_SELF_HEATING: Final = frozenset({"rthjc", "rthca", "cthj"})
 instance says ``thermal``: elsewhere it changes nothing, and jolty reads no such
 instance."""
 
-_WRAPPED: Final = re.compile(r"([\w\s=.+-]*)\((.*)\)", re.DOTALL)
-"""A card's parameters in parentheses that open after some of them, as in ``NPN
-Level=4(...)``, which ngspice reads as it reads them all in parentheses."""
+_NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
+"""Empty user-function mapping used when a caller supplies none."""
+
+_WRAPPED_PREFIX: Final = re.compile(r"[\w\s=.+-]*")
+"""The parameter assignments that may precede an enclosing ``(...)`` group, as in
+``NPN Level=4(...)``, which ngspice reads as it reads them all in parentheses."""
+
+_BARE_EQUALS: Final = re.compile(r"(?<![=!<>])=(?!=)")
+"""A bare assignment ``=``, distinguishing a card's parameter list from a call's
+arguments."""
+
+_CALL_PREFIX: Final = re.compile(r"=\s*[A-Za-z_][A-Za-z0-9_]*$")
+"""A function name immediately after ``=``, as in ``IS=scale()``."""
 
 _CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
 """A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
@@ -917,12 +929,15 @@ def geometric_values(
     scope: Mapping[str, float],
     draws: Callable[[str], Draw] = _nominal,
     statement: Statement | None = None,
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> dict[str, float]:
     """SPICE3's resistor or capacitor `card`'s parameters, by `GEOMETRIC`'s names.
 
-    Each is evaluated in `scope`, the statistical functions of each parameter's drawn
-    by `draws` of its name, at their nominal values unless given. ``BV_MAX``, which only
-    ngspice's checks of the safe operating area read, is left out.
+    Each is evaluated in `scope` with user `functions` inlined, the statistical
+    functions of each parameter's drawn by `draws` of its name, at their nominal values
+    unless given. ``BV_MAX``, which only ngspice's checks of the safe operating area
+    read, is left out.
 
     Raises:
         SpiceError: When the card gives a parameter ngspice's device has not, stated at
@@ -934,7 +949,8 @@ def geometric_values(
         if name not in table:
             raise unmatched(card, name, statement or card.statement)
         if table[name] != "bv_max":
-            values[table[name]] = evaluate(expression, scope, draws(name))
+            resolved = inlined(expression, functions)
+            values[table[name]] = evaluate(resolved, scope, draws(name))
     return values
 
 
@@ -1074,10 +1090,7 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     resolved = kind.casefold() or (base.kind if base else "")
     if resolved.startswith("vdmos"):
         resolved, body = _vdmos_card(resolved, body)
-    if body.startswith("(") and body.endswith(")"):
-        body = body[1:-1]
-    elif (wrapped := _WRAPPED.fullmatch(body)) is not None:
-        body = f"{wrapped[1]} {wrapped[2]}"
+    body = _unwrap_body(body)
     words = tokens(body)
     if resolved in VDMOS_KINDS:
         words = _annotations_removed(words)
@@ -1087,6 +1100,34 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     parameters = dict(base.parameters) if base else {}
     parameters |= assignments(statement, words)
     return ModelCard(name, resolved, MappingProxyType(parameters), statement, version)
+
+
+def _unwrap_body(body: str) -> str:
+    """Strips an enclosing parameter-list parenthesis group from a `.model` body."""
+    if not body.endswith(")"):
+        return body
+    depth = 0
+    opening: int | None = None
+    for position in range(len(body) - 1, -1, -1):
+        character = body[position]
+        if character == ")":
+            depth += 1
+        elif character == "(":
+            depth -= 1
+            if depth == 0:
+                opening = position
+                break
+    if opening is None:
+        return body
+    if opening == 0:
+        return body[1:-1]
+    prefix, inside = body[:opening], body[opening + 1 : -1]
+    is_list = (
+        not inside.strip() and _CALL_PREFIX.search(prefix) is None
+    ) or _BARE_EQUALS.search(inside) is not None
+    if _WRAPPED_PREFIX.fullmatch(prefix) is not None and is_list:
+        return f"{prefix} {inside}"
+    return body
 
 
 def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:
@@ -1157,24 +1198,26 @@ class Made:
     parameters: dict[str, JsonValue]
 
 
-def device(
+def device(  # noqa: PLR0913 - card, scope, instance, statement, draws and user functions
     card: ModelCard,
     scope: Mapping[str, float],
     instance: Mapping[str, float],
     statement: Statement,
     draws: Callable[[str], Draw] = _nominal,
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> Made:
     """The device a model card makes for an instance with `instance` parameters.
 
     An instance's parameters include its area. The card's expressions are evaluated in
-    `scope`, the statistical functions of each parameter's drawn by `draws` of its
-    name, at their nominal values unless given.
+    `scope` with user `functions` inlined, the statistical functions of each
+    parameter's drawn by `draws` of its name, at their nominal values unless given.
 
     Raises:
         SpiceError: When the model's type or a parameter has no jolty counterpart.
     """
     every = {
-        name: evaluate(expression, scope, draws(name))
+        name: evaluate(inlined(expression, functions), scope, draws(name))
         for name, expression in card.parameters.items()
     }
     own = own_temperature(every, instance, statement)
@@ -1620,17 +1663,22 @@ HiSIM_HV's (``INPgetModBin`` in ``inpgmod.c``)."""
 
 
 def holds(
-    card: ModelCard, scope: Mapping[str, float], size: tuple[float, float]
+    card: ModelCard,
+    scope: Mapping[str, float],
+    size: tuple[float, float],
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> bool:
     """Whether a MOSFET's `card` is a bin for an instance of `size`.
 
     As ngspice selects a bin, a card of a level it bins, `BINNED_LEVELS`, that gives
     ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX`` holds an instance whose length, the first
     of `size`, lies between the first two and whose width between the others, on a
-    bound counted in; its expressions are evaluated in `scope`. A card of a level jolty
-    does not model may be a bin too, which the device it makes then refuses.
+    bound counted in; its expressions are evaluated in `scope` with user `functions`
+    inlined. A card of a level jolty does not model may be a bin too, which the device
+    it makes then refuses.
     """
-    bounds = _bounds(card, scope)
+    bounds = _bounds(card, scope, functions)
     if bounds is None:
         return False
     lmin, lmax, wmin, wmax = bounds
@@ -1638,12 +1686,17 @@ def holds(
     return _within(length, lmin, lmax) and _within(width, wmin, wmax)
 
 
-def centre(card: ModelCard, scope: Mapping[str, float]) -> tuple[float, float] | None:
+def centre(
+    card: ModelCard,
+    scope: Mapping[str, float],
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> tuple[float, float] | None:
     """The length and the width at the middle of the ranges of a MOSFET's bin, `card`.
 
     None where the card is no bin, as [`holds`][jolty.spice.models.holds] reads one.
     """
-    bounds = _bounds(card, scope)
+    bounds = _bounds(card, scope, functions)
     if bounds is None:
         return None
     lmin, lmax, wmin, wmax = bounds
@@ -1651,19 +1704,23 @@ def centre(card: ModelCard, scope: Mapping[str, float]) -> tuple[float, float] |
 
 
 def _bounds(
-    card: ModelCard, scope: Mapping[str, float]
+    card: ModelCard,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float, float, float] | None:
     """A bin's ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX``, evaluated in `scope`.
 
     None where the card is of a level ngspice does not bin, or lacks one of them.
     """
     level = card.parameters.get("level")
-    if level is None or evaluate(level, scope) not in BINNED_LEVELS:
+    if level is None or evaluate(inlined(level, functions), scope) not in BINNED_LEVELS:
         return None
     bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
     if any(bound is None for bound in bounds):
         return None
-    lmin, lmax, wmin, wmax = (evaluate(bound, scope) for bound in bounds if bound)
+    lmin, lmax, wmin, wmax = (
+        evaluate(inlined(bound, functions), scope) for bound in bounds if bound
+    )
     return lmin, lmax, wmin, wmax
 
 
@@ -1956,7 +2013,11 @@ def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
 
 
 def vbic_heating(
-    card: ModelCard, scope: Mapping[str, float], instance: Mapping[str, float]
+    card: ModelCard,
+    scope: Mapping[str, float],
+    instance: Mapping[str, float],
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float] | None:
     """The thermal resistance and capacitance a VBIC's card heats it through, if any.
 
@@ -1967,7 +2028,7 @@ def vbic_heating(
     in joules per kelvin.
     """
     given = {
-        name: evaluate(card.parameters[name], scope)
+        name: evaluate(inlined(card.parameters[name], functions), scope)
         for name in VBIC_SELF_HEATING
         if name in card.parameters
     }

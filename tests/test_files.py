@@ -31,11 +31,14 @@ from jolty.files import (
     load_batches,
     load_circuit,
     load_provenance,
+    load_raw,
     load_results,
     plan_digest,
+    raw_path,
     results_path,
     save_batches,
     save_circuit,
+    save_raw,
     save_results,
 )
 from jolty.plan import Explicit, MonteCarlo, Plan, Product, Variant, decade
@@ -531,3 +534,564 @@ def test_results_files_round_trip_transient_without_charge_leak(
     assert loaded.statistics.charge_leak is None
     with pytest.raises(KeyError, match="no charge leak"):
         loaded.charge_leak("out")
+
+
+def _assert_bits_equal(actual: np.ndarray, expected: np.ndarray) -> None:
+    """Asserts two float64/complex128 arrays have identical IEEE-754 bit patterns."""
+    assert actual.dtype == expected.dtype
+    assert actual.shape == expected.shape
+    if np.iscomplexobj(expected):
+        np.testing.assert_array_equal(
+            actual.real.view(np.uint64), expected.real.view(np.uint64)
+        )
+        np.testing.assert_array_equal(
+            actual.imag.view(np.uint64), expected.imag.view(np.uint64)
+        )
+    else:
+        np.testing.assert_array_equal(actual.view(np.uint64), expected.view(np.uint64))
+
+
+def test_raw_path_uses_raw_suffix(tmp_path: Path) -> None:
+    assert raw_path(tmp_path / "filter.py") == tmp_path / "filter.raw"
+
+
+@pytest.mark.parametrize("binary", [True, False], ids=["binary", "ascii"])
+def test_save_raw_and_load_raw_round_trip_every_analysis_and_nature(
+    tmp_path: Path, *, binary: bool
+) -> None:
+    rich_unknowns = (
+        results.Unknown("out", "voltage"),
+        results.Unknown("X1/Mid", "voltage"),
+        results.Unknown("D1:anode", "voltage"),
+        results.Unknown("V1:current", "current"),
+        results.Unknown("X1/V1:current", "current"),
+        results.Unknown("K1:current1", "current"),
+        results.Unknown("Q1:junction", "temperature"),
+        results.Unknown("M1:state", "state"),
+    )
+    op = results.OperatingPointResult(
+        rich_unknowns,
+        np.array(
+            [2.5, -0.0, 0.7123456789012345, -1.25e-3, 3.5e-6, -0.0, 312.5, 0.42],
+            dtype=np.float64,
+        ),
+        strategy="direct",
+        iterations=3,
+    )
+    dc_v = results.DcSweepResult(
+        rich_unknowns,
+        source="V1",
+        nature="voltage",
+        swept=np.array([-1.0, -0.0, 2.5], dtype=np.float64),
+        values=np.arange(24, dtype=np.float64).reshape(3, 8) * 0.125,
+    )
+    dc_i = results.DcSweepResult(
+        rich_unknowns,
+        source="I1",
+        nature="current",
+        swept=np.array([0.0, 1e-3], dtype=np.float64),
+        values=np.ones((2, 8), dtype=np.float64) * -2.5,
+    )
+    dc_temp = results.DcSweepResult(
+        rich_unknowns,
+        source="TEMP",
+        nature="temperature",
+        swept=np.array([250.0, 300.15], dtype=np.float64),
+        values=np.zeros((2, 8), dtype=np.float64),
+    )
+    dc_param = results.DcSweepResult(
+        rich_unknowns,
+        source="R1",
+        nature=None,
+        swept=np.array([1e3, 2e3], dtype=np.float64),
+        values=np.full((2, 8), 1.5, dtype=np.float64),
+        parameter="resistance",
+    )
+    ac_values = np.empty((2, 8), dtype=np.complex128)
+    ac_values.real = np.array(
+        [
+            [0.5, -0.0, 1.0, -1e-3, 0.0, -0.0, 0.25, 0.1],
+            [0.125, -0.75, 0.0, 2e-3, -3e-6, 4.5, -0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+    ac_values.imag = np.array(
+        [
+            [-0.5, -0.0, 0.0, 1e-3, -2e-6, -0.0, 0.0, -0.25],
+            [-0.25, 0.5, -1.0, -0.0, 1e-6, -0.125, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    ac = results.AcResult(
+        rich_unknowns,
+        source="V1",
+        frequencies=np.array([1e3, 1e6], dtype=np.float64),
+        values=ac_values,
+        operating_point=op,
+    )
+    tran = results.TransientResult(
+        rich_unknowns,
+        times=np.array([0.0, 1e-9, 5e-9], dtype=np.float64),
+        values=np.linspace(-2.0, 3.0, 24, dtype=np.float64).reshape(3, 8),
+        statistics=STATISTICS,
+    )
+    pss = results.PeriodicSteadyStateResult(
+        rich_unknowns,
+        times=np.array([0.0, 5e-7, 1e-6], dtype=np.float64),
+        values=np.linspace(0.0, 1.0, 24, dtype=np.float64).reshape(3, 8),
+        statistics=STATISTICS,
+        period=1e-6,
+        periods=2,
+    )
+
+    written: dict[str, results.AnalysisResult] = {
+        "op": op,
+        "dc_v": dc_v,
+        "dc_i": dc_i,
+        "dc_temp": dc_temp,
+        "dc_param": dc_param,
+        "bode": ac,
+        "step": tran,
+        "steady": pss,
+    }
+    path = tmp_path / "subdir" / ("all_bin.raw" if binary else "all_ascii.raw")
+    save_raw(path, written, binary=binary)
+    loaded = load_raw(path)
+    assert list(loaded) == list(written)
+
+    loaded_op = loaded["op"]
+    assert isinstance(loaded_op, results.OperatingPointResult)
+    assert loaded_op.unknowns == rich_unknowns
+    assert loaded_op.strategy == "raw"
+    assert loaded_op.iterations is None
+    _assert_bits_equal(loaded_op.values, op.values)
+
+    for key, expected_dc, expected_scale in (
+        ("dc_v", dc_v, "v-sweep"),
+        ("dc_i", dc_i, "i-sweep"),
+        ("dc_temp", dc_temp, "temp-sweep"),
+        ("dc_param", dc_param, "v-sweep"),
+    ):
+        got = loaded[key]
+        assert isinstance(got, results.DcSweepResult)
+        assert got.unknowns == rich_unknowns
+        assert got.nature == expected_dc.nature
+        assert got.source == expected_scale
+        _assert_bits_equal(got.swept, expected_dc.swept)
+        _assert_bits_equal(got.values, expected_dc.values)
+
+    loaded_ac = loaded["bode"]
+    assert isinstance(loaded_ac, results.AcResult)
+    assert loaded_ac.unknowns == rich_unknowns
+    assert loaded_ac.source == ""
+    assert loaded_ac.operating_point.strategy == "raw"
+    assert np.all(np.isnan(loaded_ac.operating_point.values))
+    _assert_bits_equal(loaded_ac.frequencies, ac.frequencies)
+    _assert_bits_equal(loaded_ac.values, ac.values)
+
+    loaded_tran = loaded["step"]
+    assert isinstance(loaded_tran, results.TransientResult)
+    assert loaded_tran.unknowns == rich_unknowns
+    assert loaded_tran.statistics.accepted == 2
+    assert loaded_tran.statistics.rejected == 0
+    _assert_bits_equal(loaded_tran.times, tran.times)
+    _assert_bits_equal(loaded_tran.values, tran.values)
+
+    loaded_pss = loaded["steady"]
+    assert isinstance(loaded_pss, results.TransientResult)
+    _assert_bits_equal(loaded_pss.times, pss.times)
+    _assert_bits_equal(loaded_pss.values, pss.values)
+
+
+@pytest.mark.parametrize("binary", [True, False], ids=["binary", "ascii"])
+def test_save_raw_and_load_raw_handle_zero_points_and_zero_unknowns(
+    tmp_path: Path, *, binary: bool
+) -> None:
+    empty_op = results.OperatingPointResult((), np.empty(0, dtype=np.float64), "direct")
+    empty_ac = results.AcResult(
+        UNKNOWNS,
+        source="V1",
+        frequencies=np.empty(0, dtype=np.float64),
+        values=np.empty((0, 2), dtype=np.complex128),
+        operating_point=results.OperatingPointResult(
+            UNKNOWNS, np.zeros(2, dtype=np.float64), "direct"
+        ),
+    )
+    empty_tran = results.TransientResult(
+        (),
+        times=np.empty(0, dtype=np.float64),
+        values=np.empty((0, 0), dtype=np.float64),
+        statistics=STATISTICS,
+    )
+    ac_no_unknowns = results.AcResult(
+        (),
+        source="V1",
+        frequencies=np.array([1e3, 1e4], dtype=np.float64),
+        values=np.empty((2, 0), dtype=np.complex128),
+        operating_point=empty_op,
+    )
+    path = tmp_path / "edge.raw"
+    save_raw(
+        path,
+        {
+            "op": empty_op,
+            "ac0": empty_ac,
+            "tran0": empty_tran,
+            "ac_empty_cols": ac_no_unknowns,
+        },
+        binary=binary,
+    )
+    loaded = load_raw(path)
+    got_op = loaded["op"]
+    assert isinstance(got_op, results.OperatingPointResult)
+    assert got_op.unknowns == ()
+    assert got_op.values.shape == (0,)
+
+    got_ac = loaded["ac0"]
+    assert isinstance(got_ac, results.AcResult)
+    assert got_ac.frequencies.shape == (0,)
+    assert got_ac.values.shape == (0, 2)
+
+    got_tran = loaded["tran0"]
+    assert isinstance(got_tran, results.TransientResult)
+    assert got_tran.times.shape == (0,)
+    assert got_tran.values.shape == (0, 0)
+    assert got_tran.statistics.accepted == 0
+
+    got_ac_cols = loaded["ac_empty_cols"]
+    assert isinstance(got_ac_cols, results.AcResult)
+    assert got_ac_cols.unknowns == ()
+    np.testing.assert_array_equal(got_ac_cols.frequencies, [1e3, 1e4])
+    assert got_ac_cols.values.shape == (2, 0)
+
+
+def test_load_raw_parses_external_ngspice_conventions_and_duplicate_titles(
+    tmp_path: Path,
+) -> None:
+    raw_text = (
+        "Title: * RC circuit\r\n"
+        "Date: Mon Nov 18 12:00:00 2026\r\n"
+        "Plotname: Operating Point\r\n"
+        "Flags: real padded\r\n"
+        "No. Variables: 4\r\n"
+        "No. Points: 1\r\n"
+        "Command: op\r\n"
+        "Variables:\r\n"
+        "\t0\tv(out)\tvoltage\tgrid=1\r\n"
+        "\t1\tV(X1.Mid)\tvoltage\r\n"
+        "\t2\ti(V1)\tcurrent\r\n"
+        "\t3\tl1#branch\tcurrent\r\n"
+        "Values:\r\n"
+        " 0\t2.5\r\n"
+        "\t1.25\r\n"
+        "\t-1e-3\r\n"
+        "\t0.002\r\n"
+        "Title: * RC circuit\r\n"
+        "Plotname: Operating Point\r\n"
+        "Flags: real\r\n"
+        "No. Variables: 1\r\n"
+        "No. Points: 1\r\n"
+        "Variables:\r\n"
+        "\t0\tv(out)\tvoltage\r\n"
+        "Values:\r\n"
+        " 0\t5.0\r\n"
+        "Title:\r\n"
+        "Plotname: Transient Analysis\r\n"
+        "Flags: real\r\n"
+        "No. Variables: 2\r\n"
+        "No. Points: 2\r\n"
+        "Variables:\r\n"
+        "\t0\ttime\ttime\r\n"
+        "\t1\tv(out)\tvoltage\r\n"
+        "Values:\r\n"
+        " 0\t0.0\r\n"
+        "\t0.0\r\n"
+        " 1\t1e-6\r\n"
+        "\t3.0\r\n"
+    )
+    path = tmp_path / "external.raw"
+    path.write_bytes(raw_text.encode("utf-8"))
+    loaded = load_raw(path)
+    assert list(loaded) == ["* RC circuit", "* RC circuit#2", "transient"]
+    first = loaded["* RC circuit"]
+    assert isinstance(first, results.OperatingPointResult)
+    assert first.unknowns == (
+        results.Unknown("out", "voltage"),
+        results.Unknown("X1.Mid", "voltage"),
+        results.Unknown("V1:current", "current"),
+        results.Unknown("l1:current", "current"),
+    )
+    assert first.voltage("out") == 2.5
+    assert first.voltage("X1.Mid") == 1.25
+    assert first.current("V1") == -1e-3
+    assert first.current("l1") == 0.002
+
+    second = loaded["* RC circuit#2"]
+    assert isinstance(second, results.OperatingPointResult)
+    assert second.voltage("out") == 5.0
+
+    tran = loaded["transient"]
+    assert isinstance(tran, results.TransientResult)
+    np.testing.assert_array_equal(tran.times, [0.0, 1e-6])
+    np.testing.assert_array_equal(tran.voltage("out"), [0.0, 3.0])
+
+
+def test_save_raw_validation_errors(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="one or more analyses"):
+        save_raw(tmp_path / "empty.raw", {})
+    with pytest.raises(ValueError, match="line break"):
+        save_raw(tmp_path / "bad.raw", {"op\n2": every_kind()["op"]})
+    with pytest.raises(ValueError, match="NoiseResult"):
+        save_raw(tmp_path / "bad.raw", {"hiss": every_kind()["hiss"]})
+
+
+def test_load_raw_missing_file_raises_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_raw(tmp_path / "missing.raw")
+
+
+@pytest.mark.parametrize(
+    ("content", "pattern"),
+    [
+        (b"", "no SPICE raw plots"),
+        (b"   \n\t ", "no SPICE raw plots"),
+        (b"Not a raw file\n", "begins with `Title:`"),
+        (b"Title: x\nPlotname: Operating Point\n", "no `Values:` or `Binary:`"),
+        (
+            b"Title: \xff\xfe\nPlotname: Operating Point\nValues:\n",
+            "not valid UTF-8",
+        ),
+        (
+            (
+                b"Title: x\nFlags: real\nNo. Variables: 0\nNo. Points: 1\n"
+                b"Variables:\nValues:\n 0\n"
+            ),
+            "no `Plotname:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\n"
+                b"No. Variables: 0\nNo. Points: 1\n"
+                b"Variables:\nValues:\n 0\n"
+            ),
+            "exclusively in `Flags:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real complex\n"
+                b"No. Variables: 0\nNo. Points: 1\nVariables:\nValues:\n 0\n"
+            ),
+            "exclusively in `Flags:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\nNo. Points: 1\n"
+                b"Variables:\nValues:\n 0\n"
+            ),
+            "no `No. Variables:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: -1\nNo. Points: 1\nVariables:\nValues:\n 0\n"
+            ),
+            "negative `No. Variables:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: nope\nNo. Points: 1\nVariables:\nValues:\n 0\n"
+            ),
+            "invalid `No. Variables:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 0\nVariables:\nValues:\n"
+            ),
+            "no `No. Points:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\nValues:\n 0\t1.0\n"
+            ),
+            "declares 1 variables, but lists 0",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tonlytwo\nValues:\n"
+            ),
+            "malformed variable entry",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\tx\tout\tvoltage\nValues:\n"
+            ),
+            "non-integer variable index",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\t5\tout\tvoltage\nValues:\n"
+            ),
+            "lists variable index 5 at position 0",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Binary:\n\x00\x00\x00"
+            ),
+            "binary values end short",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\n"
+            ),
+            "values end short",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n bad\t1.0\n"
+            ),
+            "not an integer index",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: AC Analysis\nFlags: complex\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\t0\tfrequency\tfrequency\n"
+                b"Values:\n 0\t1000.0\n"
+            ),
+            "complex raw value is `real,imag`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\t1.0,2.0\n"
+            ),
+            "real raw value is a single number",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\tnotanumber\n"
+            ),
+            "is not a number",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\t1.0\ngarbage_after_plot\n"
+            ),
+            "begins with `Title:`",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Noise Spectral Density\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\t0\tfrequency\tfrequency\n"
+                b"Values:\n 0\t1e3\n"
+            ),
+            "unsupported SPICE raw plot",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: complex\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\t1.0,0.0\n"
+            ),
+            "holds complex values",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Operating Point\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 2\nVariables:\n\t0\tout\tvoltage\n"
+                b"Values:\n 0\t1.0\n 1\t2.0\n"
+            ),
+            "holds 2 points, not 1",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: DC transfer characteristic\nFlags: complex\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\tv-sweep\tvoltage\n"
+                b"Values:\n 0\t1.0,0.0\n"
+            ),
+            "holds complex values",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: DC transfer characteristic\nFlags: real\n"
+                b"No. Variables: 0\nNo. Points: 0\nVariables:\nValues:\n"
+            ),
+            "has no sweep variable",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: AC Analysis\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\t0\tfrequency\tfrequency\n"
+                b"Values:\n 0\t1e3\n"
+            ),
+            "holds real values, not complex",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: AC Analysis\nFlags: complex\n"
+                b"No. Variables: 0\nNo. Points: 0\nVariables:\nValues:\n"
+            ),
+            "has no frequency variable",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: AC Analysis\nFlags: complex\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\ttime\ttime\n"
+                b"Values:\n 0\t0.0,0.0\n"
+            ),
+            "not frequency",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Transient Analysis\nFlags: complex\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n\t0\ttime\ttime\n"
+                b"Values:\n 0\t0.0,0.0\n"
+            ),
+            "holds complex values",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Transient Analysis\nFlags: real\n"
+                b"No. Variables: 0\nNo. Points: 0\nVariables:\nValues:\n"
+            ),
+            "has no time variable",
+        ),
+        (
+            (
+                b"Title: x\nPlotname: Transient Analysis\nFlags: real\n"
+                b"No. Variables: 1\nNo. Points: 1\nVariables:\n"
+                b"\t0\tfrequency\tfrequency\n"
+                b"Values:\n 0\t1e3\n"
+            ),
+            "not time",
+        ),
+    ],
+)
+def test_load_raw_rejects_corrupt_files(
+    tmp_path: Path, content: bytes, pattern: str
+) -> None:
+    path = tmp_path / "corrupt.raw"
+    path.write_bytes(content)
+    with pytest.raises(JoltyError, match=pattern):
+        load_raw(path)

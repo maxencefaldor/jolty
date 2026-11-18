@@ -336,9 +336,20 @@ right=Number(value=1.0))
         SpiceError: When a function calls itself, naming the functions through which,
             or a call gives a function another number of arguments than it takes.
     """
+    if not functions:
+        return expression
+    return _inlined(expression, functions, calling)
+
+
+def _inlined(
+    expression: Expression,
+    functions: Mapping[str, Function],
+    calling: tuple[str, ...],
+) -> Expression:
+    """Inlines user `functions` within `expression` when `functions` is non-empty."""
 
     def inner(part: Expression) -> Expression:
-        return inlined(part, functions, calling)
+        return _inlined(part, functions, calling)
 
     match expression:
         case Call(function, arguments) if function in functions:
@@ -358,7 +369,7 @@ right=Number(value=1.0))
                 raise SpiceError(message)
             given = dict(zip(defined.parameters, map(inner, arguments), strict=True))
             body = _substituted(defined.body, given)
-            return inlined(body, functions, (*calling, function))
+            return _inlined(body, functions, (*calling, function))
         case Call(function, arguments):
             return Call(function, tuple(map(inner, arguments)))
         case Unary(operator, operand):

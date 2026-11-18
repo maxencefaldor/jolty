@@ -334,6 +334,156 @@ def runs(
     return tuple(replace(result, seconds=executed.seconds) for result in found)
 
 
+@dataclass(frozen=True, slots=True)
+class RawVariable:
+    """One variable declared in a SPICE raw file header, exact spelling preserved."""
+
+    name: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawPlot:
+    """One plot parsed verbatim from a SPICE raw file.
+
+    `title` is the text after ``Title:``, `plot` after ``Plotname:``, `variables` the
+    declared variables in column order, `complex_values` whether ``Flags:`` marks the
+    plot complex, and `values` a ``(points, len(variables))`` array of `float64` or
+    `complex128` preserving exact bits for binary files.
+    """
+
+    title: str
+    plot: str
+    variables: tuple[RawVariable, ...]
+    complex_values: bool
+    values: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedHeader:
+    """Parsed header fields of one SPICE raw plot."""
+
+    title: str
+    plot: str
+    variables: tuple[RawVariable, ...]
+    points: int
+    complex_values: bool
+
+
+def parse_raw(data: str | bytes) -> tuple[RawPlot, ...]:
+    """Parses every plot of the SPICE raw file `data`, preserving case and types.
+
+    Supports both ASCII (``Values:``) and binary (``Binary:``, little-endian IEEE-754
+    doubles) plots, including multi-plot files written with ``appendwrite`` or
+    [`save_raw`][jolty.files.save_raw].
+
+    Raises:
+        JoltyError: When `data` holds malformed headers, mismatched variable counts,
+            truncated binary or ASCII values, non-numeric ASCII tokens, or trailing
+            non-whitespace data outside plots.
+    """
+    raw = data.encode() if isinstance(data, str) else data
+    plots: list[RawPlot] = []
+    position = _skip_whitespace(raw, 0)
+    while position < len(raw):
+        if not raw.startswith(b"Title:", position):
+            message = "a raw file's plot begins with `Title:`"
+            raise JoltyError(message)
+        found = _VALUES.search(raw, position)
+        if found is None:
+            message = "a raw file's plot has no `Values:` or `Binary:`"
+            raise JoltyError(message)
+        try:
+            header_text = raw[position : found.start()].decode("utf-8")
+        except UnicodeDecodeError:
+            message = "a raw file's header is not valid UTF-8 text"
+            raise JoltyError(message) from None
+        parsed = _header(header_text)
+        variable_count = len(parsed.variables)
+        if found[1] == b"Binary":
+            table, position = _binary(
+                raw,
+                found.end(),
+                parsed.points,
+                variable_count,
+                complex_values=parsed.complex_values,
+            )
+        else:
+            table, position = _ascii(
+                raw,
+                found.end(),
+                parsed.points,
+                variable_count,
+                complex_values=parsed.complex_values,
+            )
+        values = _typed_values(
+            table, parsed.points, variable_count, complex_values=parsed.complex_values
+        )
+        plots.append(
+            RawPlot(
+                title=parsed.title,
+                plot=parsed.plot,
+                variables=parsed.variables,
+                complex_values=parsed.complex_values,
+                values=values,
+            )
+        )
+        position = _skip_whitespace(raw, position)
+    return tuple(plots)
+
+
+def _skip_whitespace(raw: bytes, position: int) -> int:
+    """First non-whitespace byte index in `raw` at or after `position`."""
+    match = _NON_WHITESPACE.search(raw, position)
+    return len(raw) if match is None else match.start()
+
+
+_NON_WHITESPACE: Final = re.compile(rb"\S")
+"""Matches the next non-whitespace byte in a raw file."""
+
+
+def _binary(
+    raw: bytes,
+    start: int,
+    points: int,
+    variable_count: int,
+    *,
+    complex_values: bool,
+) -> tuple[npt.NDArray[np.float64], int]:
+    """Reads `points` binary little-endian double rows from `raw` at `start`."""
+    width = variable_count * (2 if complex_values else 1)
+    count = points * width
+    expected_bytes = 8 * count
+    if start + expected_bytes > len(raw):
+        message = (
+            f"a raw file's binary values end short of its {points} points "
+            f"({len(raw) - start} bytes available, {expected_bytes} required)"
+        )
+        raise JoltyError(message)
+    table = (
+        np.frombuffer(raw, "<f8", count, start)
+        .reshape(points, width)
+        .astype(np.float64, copy=True)
+    )
+    return table, start + expected_bytes
+
+
+def _typed_values(
+    table: npt.NDArray[np.float64],
+    points: int,
+    variable_count: int,
+    *,
+    complex_values: bool,
+) -> npt.NDArray[np.float64] | npt.NDArray[np.complex128]:
+    """Packs flat real columns into `float64` or exact-bit `complex128` arrays."""
+    if not complex_values:
+        return table
+    packed = np.empty((points, variable_count), dtype=np.complex128)
+    packed.real = table[:, 0::2]
+    packed.imag = table[:, 1::2]
+    return packed
+
+
 def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
     """Each plot of the raw file `data`, with what ngspice `printed` as it ran.
 
@@ -348,72 +498,134 @@ def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
         JoltyError: When a plot's header lacks what it must state, or its values end
             short of its points.
     """
-    raw = data.encode() if isinstance(data, str) else data
     plots: list[Result] = []
-    position = raw.find(b"Title:")
-    while 0 <= position < len(raw):
-        found = _VALUES.search(raw, position)
-        if found is None:
-            message = "a raw file's plot has no `Values:` or `Binary:`"
-            raise JoltyError(message)
-        plot, names, points, complex_values = _header(
-            raw[position : found.start()].decode()
-        )
-        width = len(names) * (2 if complex_values else 1)
-        if found[1] == b"Binary":
-            count = points * width
-            table = np.frombuffer(raw, "<f8", count, found.end()).reshape(-1, width)
-            position = found.end() + 8 * count
-        else:
-            table, position = _ascii(raw, found.end(), points, width)
-        values = (
-            table[:, 0::2] + 1j * table[:, 1::2] if complex_values else table + 0j
-        ).astype(np.complex128)
-        plots.append(
-            Result(
-                plot,
-                {name: values[:, column] for column, name in enumerate(names)},
-                printed,
-            )
-        )
-        position = raw.find(b"Title:", position)
+    for raw_plot in parse_raw(data):
+        values = raw_plot.values.astype(np.complex128)
+        vectors = {
+            _spice_name(variable.name.lower()): values[:, column]
+            for column, variable in enumerate(raw_plot.variables)
+        }
+        plots.append(Result(raw_plot.plot, vectors, printed))
     return tuple(plots)
 
 
-_VALUES: Final = re.compile(rb"^(Values|Binary):[ \t]*\r?\n", re.MULTILINE)
+_VALUES: Final = re.compile(rb"^(Values|Binary):[ \t]*(?:\r?\n|$)", re.MULTILINE)
 """The line that ends a raw file's plot's header, saying how its values are written."""
 
 
-def _header(header: str) -> tuple[str, list[str], int, bool]:
-    """A plot's name, its vectors' names, its points and whether they are complex.
+def _parse_count(value: str, label: str, plot: str) -> int:
+    """Parses a non-negative integer header field, or raises `JoltyError`."""
+    try:
+        count = int(value.strip())
+    except ValueError:
+        message = f"a raw file's plot `{plot}` has invalid `{label}`: `{value.strip()}`"
+        raise JoltyError(message) from None
+    if count < 0:
+        message = f"a raw file's plot `{plot}` has negative `{label}`: {count}"
+        raise JoltyError(message)
+    return count
+
+
+def _parse_variable(line: str, plot: str, expected_index: int) -> RawVariable:
+    """Parses one line under ``Variables:``, ``index name type``."""
+    parts = line.split()
+    if len(parts) < 3:  # noqa: PLR2004 - index, name, type
+        message = (
+            f"a raw file's plot `{plot}` has a malformed variable entry: "
+            f"`{line.strip()}`"
+        )
+        raise JoltyError(message)
+    try:
+        index = int(parts[0])
+    except ValueError:
+        message = (
+            f"a raw file's plot `{plot}` has non-integer variable index `{parts[0]}`"
+        )
+        raise JoltyError(message) from None
+    if index != expected_index:
+        message = (
+            f"a raw file's plot `{plot}` lists variable index {index} at position "
+            f"{expected_index}"
+        )
+        raise JoltyError(message)
+    return RawVariable(name=parts[1], kind=parts[2].casefold())
+
+
+def _header(header: str) -> _ParsedHeader:
+    """Parses a plot's header, checking counts and flags.
 
     Raises:
-        JoltyError: When the header does not state its points.
+        JoltyError: When required fields are missing or counts disagree.
     """
-    names: list[str] = []
-    plot = ""
-    points: int | None = None
-    complex_values = False
-    within = False
-    for line in header.splitlines():
-        if line.startswith("Plotname:"):
-            plot = line.removeprefix("Plotname:").strip()
-        elif line.startswith("Flags:"):
-            complex_values = "complex" in line.casefold()
-        elif line.startswith("No. Points:"):
-            points = int(line.removeprefix("No. Points:"))
-        elif line.startswith("Variables:"):
-            within = True
-        elif within and line.strip():
-            names.append(_spice_name(line.split()[1].lower()))
-    if points is None:
+    fields, variables = _split_header(header)
+    plot = fields.get("plotname", "")
+    if not plot:
+        message = "a raw file's plot states no `Plotname:`"
+        raise JoltyError(message)
+    flag_text = fields.get("flags")
+    modes = (
+        set(flag_text.casefold().split()) & {"real", "complex"}
+        if flag_text is not None
+        else set()
+    )
+    if len(modes) != 1:
+        message = (
+            f"a raw file's plot `{plot}` states neither `real` nor `complex` "
+            "exclusively in `Flags:`"
+        )
+        raise JoltyError(message)
+    if "no. variables" not in fields:
+        message = f"a raw file's plot `{plot}` states no `No. Variables:`"
+        raise JoltyError(message)
+    expected_variables = _parse_count(fields["no. variables"], "No. Variables:", plot)
+    if "no. points" not in fields:
         message = f"a raw file's plot `{plot}` states no `No. Points:`"
         raise JoltyError(message)
-    return plot, names, points, complex_values
+    points = _parse_count(fields["no. points"], "No. Points:", plot)
+    parsed_variables = tuple(
+        _parse_variable(line, plot, index) for index, line in enumerate(variables)
+    )
+    if len(parsed_variables) != expected_variables:
+        message = (
+            f"a raw file's plot `{plot}` declares {expected_variables} variables, "
+            f"but lists {len(parsed_variables)}"
+        )
+        raise JoltyError(message)
+    return _ParsedHeader(
+        title=fields.get("title", ""),
+        plot=plot,
+        variables=parsed_variables,
+        points=points,
+        complex_values="complex" in modes,
+    )
+
+
+def _split_header(header: str) -> tuple[dict[str, str], list[str]]:
+    """Splits a raw header into key-value header lines and ``Variables:`` entries."""
+    fields: dict[str, str] = {}
+    variables: list[str] = []
+    within = False
+    for line in header.splitlines():
+        if within:
+            if line.strip():
+                variables.append(line)
+            continue
+        if line.startswith("Variables:"):
+            within = True
+            continue
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key.strip().casefold()] = value.strip()
+    return fields, variables
 
 
 def _ascii(
-    raw: bytes, start: int, points: int, width: int
+    raw: bytes,
+    start: int,
+    points: int,
+    variable_count: int,
+    *,
+    complex_values: bool,
 ) -> tuple[npt.NDArray[np.float64], int]:
     """The `points` an ASCII plot's values write from `start`, and where they end.
 
@@ -421,23 +633,68 @@ def _ascii(
     a complex one; the table has `width` columns, a complex value's parts two.
 
     Raises:
-        JoltyError: When the values end short of the points.
+        JoltyError: When the values end short of the points or hold invalid numbers.
     """
+    width = variable_count * (2 if complex_values else 1)
     numbers: list[float] = []
     position = start
-    for _ in range(points):
-        index = _TOKEN.search(raw, position)
-        position = len(raw) if index is None else index.end()
-        row: list[float] = []
-        while len(row) < width:
-            token = _TOKEN.search(raw, position)
-            if token is None:
-                message = f"a raw file's values end short of its {points} points"
-                raise JoltyError(message)
-            position = token.end()
-            row.extend(float(part) for part in token[0].split(b","))
+    for point_index in range(points):
+        index_token = _TOKEN.search(raw, position)
+        if index_token is None:
+            message = f"a raw file's values end short of its {points} points"
+            raise JoltyError(message)
+        try:
+            int(index_token[0])
+        except ValueError:
+            found_text = index_token[0].decode("utf-8", errors="replace")
+            message = (
+                f"a raw file's point {point_index} begins with `{found_text}`, "
+                "not an integer index"
+            )
+            raise JoltyError(message) from None
+        position = index_token.end()
+        row, position = _ascii_row(
+            raw, position, points, variable_count, complex_values=complex_values
+        )
         numbers.extend(row)
     return np.array(numbers, dtype=np.float64).reshape(points, width), position
+
+
+def _ascii_row(
+    raw: bytes,
+    position: int,
+    points: int,
+    variable_count: int,
+    *,
+    complex_values: bool,
+) -> tuple[list[float], int]:
+    """Reads one point's `variable_count` ASCII values from `raw` at `position`."""
+    row: list[float] = []
+    for _ in range(variable_count):
+        token = _TOKEN.search(raw, position)
+        if token is None:
+            message = f"a raw file's values end short of its {points} points"
+            raise JoltyError(message)
+        position = token.end()
+        word = token[0]
+        parts = word.split(b",")
+        if complex_values:
+            if len(parts) != 2:  # noqa: PLR2004 - real and imaginary parts
+                text = word.decode("utf-8", errors="replace")
+                message = f"a complex raw value is `real,imag`, not `{text}`"
+                raise JoltyError(message)
+        elif len(parts) != 1:
+            text = word.decode("utf-8", errors="replace")
+            message = f"a real raw value is a single number, not `{text}`"
+            raise JoltyError(message)
+        for part in parts:
+            try:
+                row.append(float(part))
+            except ValueError:
+                text = part.decode("utf-8", errors="replace")
+                message = f"a raw file's value `{text}` is not a number"
+                raise JoltyError(message) from None
+    return row, position
 
 
 _TOKEN: Final = re.compile(rb"\S+")

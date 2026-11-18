@@ -23,9 +23,11 @@ from jolty import (
     DownloadError,
     JoltyError,
     OperatingPoint,
+    Options,
     Role,
     Simulation,
     SpiceError,
+    Transient,
     _core,
     circuit,
     component,
@@ -63,6 +65,7 @@ from jolty.units import (
     kohm,
     m,
     mA,
+    ms,
     nF,
     nm,
     ns,
@@ -71,6 +74,7 @@ from jolty.units import (
     uF,
     uH,
     um,
+    us,
 )
 from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
@@ -2677,3 +2681,660 @@ def test_evaluate_fast_path_handles_literals_unary_and_shadowed_constants() -> N
         evaluate(Name("pi"), {"pi": float("inf")})
     with pytest.raises(SpiceError):
         evaluate(Number(float("nan")), {})
+
+
+# ---------------------------------------------------------------------------
+# Item 1: .include and .lib inside subcircuits
+# ---------------------------------------------------------------------------
+
+
+def test_include_and_lib_expand_inside_subcircuits_from_file_and_text(
+    tmp_path: Path,
+) -> None:
+    parts_dir = tmp_path / "my parts"
+    parts_dir.mkdir()
+    nested = parts_dir / "nested"
+    nested.mkdir()
+
+    (nested / "leaf.inc").write_text(
+        "* Nested relative include\n"
+        ".func boost(x) {x + 1k}\n"
+        ".param r_bottom = boost(2k)\n",
+        encoding="utf-8",
+    )
+    (parts_dir / "body.inc").write_text(
+        "* Body inside subcircuit\n"
+        ".include nested/leaf.inc\n"
+        ".model d_inc D(IS=1e-14 N=1.0)\n"
+        "R2 out 0 {r_bottom}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "sections.lib").write_text(
+        ".lib fast\n"
+        ".param r_top = 1k\n"
+        ".endl fast\n"
+        ".lib slow\n"
+        ".param r_top = 3k\n"
+        ".endl slow\n",
+        encoding="utf-8",
+    )
+    deck = tmp_path / "top.cir"
+    deck.write_text(
+        "* Top deck with .include and .lib inside subcircuits\n"
+        ".subckt fast_div in out\n"
+        ".lib sections.lib fast\n"
+        '.include "my parts/body.inc"\n'
+        "R1 in out {r_top}\n"
+        ".ends\n"
+        ".subckt slow_div in out\n"
+        '.lib "sections.lib" slow\n'
+        '.include "my parts/body.inc"\n'
+        "R1 in out {r_top}\n"
+        ".ends\n",
+        encoding="utf-8",
+    )
+
+    via_include = spice.load(deck)
+    assert output(via_include.component("fast_div"), 4.0) == pytest.approx(
+        3.0, rel=1e-12
+    )
+    assert output(via_include.component("slow_div"), 4.0) == pytest.approx(
+        2.0, rel=1e-12
+    )
+
+    via_read = spice.Library()
+    via_read.read(deck.read_text(encoding="utf-8"), str(deck))
+    assert output(via_read.component("fast_div"), 4.0) == pytest.approx(3.0, rel=1e-12)
+    assert output(via_read.component("slow_div"), 4.0) == pytest.approx(2.0, rel=1e-12)
+
+
+def test_include_inside_if_block_within_subcircuit(tmp_path: Path) -> None:
+    (tmp_path / "lo.inc").write_text("R2 out 0 1k\n", encoding="utf-8")
+    (tmp_path / "hi.inc").write_text("R2 out 0 3k\n", encoding="utf-8")
+    deck = tmp_path / "cond.cir"
+    deck.write_text(
+        ".subckt stage in out mode=0\n"
+        "R1 in out 1k\n"
+        ".if (mode == 0)\n"
+        ".include lo.inc\n"
+        ".else\n"
+        ".include hi.inc\n"
+        ".endif\n"
+        ".ends\n",
+        encoding="utf-8",
+    )
+    lib = spice.load(deck)
+    assert output(lib.component("stage", mode=0), 4.0) == pytest.approx(2.0, rel=1e-12)
+    assert output(lib.component("stage", mode=1), 4.0) == pytest.approx(3.0, rel=1e-12)
+
+
+def test_malformed_two_word_lib_inside_subcircuit_is_refused(tmp_path: Path) -> None:
+    deck = tmp_path / "bad.cir"
+    deck.write_text(
+        ".subckt stage in out\n.lib orphan_section\nR1 in out 1k\n.ends\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        SpiceError,
+        match="a file is included by its path, a section by the file's and name",
+    ):
+        spice.load(deck)
+    read_lib = spice.Library()
+    with pytest.raises(
+        SpiceError,
+        match="a file is included by its path, a section by the file's and name",
+    ):
+        read_lib.read(deck.read_text(encoding="utf-8"), str(deck))
+
+
+def test_include_and_lib_cycles_inside_subcircuits_are_refused(tmp_path: Path) -> None:
+    self_file = tmp_path / "self.cir"
+    self_file.write_text(
+        ".subckt loop a\n.include self.cir\nR1 a 0 1k\n.ends\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SpiceError, match="includes itself"):
+        spice.load(self_file)
+    read_lib = spice.Library()
+    with pytest.raises(SpiceError, match="includes itself"):
+        read_lib.read(self_file.read_text(encoding="utf-8"), str(self_file))
+
+    first = tmp_path / "a.inc"
+    second = tmp_path / "b.inc"
+    first.write_text(".include b.inc\n", encoding="utf-8")
+    second.write_text(".include a.inc\n", encoding="utf-8")
+    host = tmp_path / "host.cir"
+    host.write_text(".subckt top a\n.include a.inc\n.ends\n", encoding="utf-8")
+    with pytest.raises(SpiceError, match="includes itself"):
+        spice.load(host)
+
+    sec_lib = tmp_path / "cycle.lib"
+    sec_lib.write_text(
+        ".lib sec_a\n.lib cycle.lib sec_b\n.endl sec_a\n"
+        ".lib sec_b\n.lib cycle.lib sec_a\n.endl sec_b\n",
+        encoding="utf-8",
+    )
+    host_sec = tmp_path / "host_sec.cir"
+    host_sec.write_text(
+        ".subckt top a\n.lib cycle.lib sec_a\n.ends\n", encoding="utf-8"
+    )
+    with pytest.raises(SpiceError, match="includes itself"):
+        spice.load(host_sec)
+
+
+def test_coverage_lib_and_include_probe_decks_solve_in_subcircuit() -> None:
+    decks = Path(__file__).parents[1] / "benchmarks" / "coverage" / "decks"
+    lib_section = decks / "sections.lib"
+    inc_file = decks / "included.cir"
+
+    for directive in (f'.lib "{lib_section}" low', f'.include "{inc_file}"'):
+        lib = spice.Library()
+        lib.read(
+            f".subckt deck\n"
+            f"{directive}\n"
+            f"V1 in 0 4\n"
+            f"R1 in out 3k\n"
+            f"R2 out 0 {{lower}}\n"
+            f".ends\n",
+            "fixture.cir",
+        )
+        point = Simulation(circuit(lib.component("deck"))).run(OperatingPoint())
+        assert point.voltage("out") == pytest.approx(2.0, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Item 2: .func inside subcircuits and model cards
+# ---------------------------------------------------------------------------
+
+
+def test_local_func_scopes_in_subcircuits_and_elements() -> None:
+    lib = library(
+        ".func g(x) {x + 1}\n"
+        ".subckt inner a b k=1\n"
+        "R1 a b {g(k) * 1k}\n"
+        ".ends\n"
+        ".subckt outer in out base=100\n"
+        ".func g(x) {x * 10}\n"
+        ".func pick(flag) {flag > 0}\n"
+        ".param r_val = g(base)\n"
+        ".if (pick(base))\n"
+        "Rtop in mid {r_val}\n"
+        ".else\n"
+        "Rtop in mid 50k\n"
+        ".endif\n"
+        "E1 tbl 0 TABLE {V(in)} = (0, 0) (1, {g(0.2)})\n"
+        "Rtbl tbl 0 1k\n"
+        "B1 bnode 0 V = {g(0.5)}\n"
+        "Rb bnode 0 1k\n"
+        "X1 mid out inner k={g(0.2)}\n"
+        ".ends\n"
+        ".subckt sibling in out\n"
+        "R1 in out {g(1) * 1k}\n"
+        ".ends\n"
+    )
+    outer_devices = _devices(lib.component("outer"))
+    assert outer_devices["Rtop"][1]["resistance"] == pytest.approx(1000.0, rel=1e-15)
+    # Local shadow must NOT mutate global library.functions or leak to sibling or child.
+    sibling_devices = _devices(lib.component("sibling"))
+    assert sibling_devices["R1"][1]["resistance"] == pytest.approx(2000.0, rel=1e-15)
+    # In outer, X1 gets k = local g(0.2) = 2.0; inside inner, global g(2.0) = 3.0 -> 3k.
+    outer_comp = lib.component("outer")
+    inner_comp = next(c for c in outer_comp.children if c.name.startswith("inner"))
+    assert _devices(inner_comp)["R1"][1]["resistance"] == pytest.approx(
+        3000.0, rel=1e-15
+    )
+    assert set(lib.functions) == {"g"}
+
+
+def test_conditional_local_func_overrides_unconditional_in_any_order() -> None:
+    lib = library(
+        ".subckt cell a b mode=0\n"
+        ".if (mode == 1)\n"
+        ".func f(x) {x * 5}\n"
+        ".param r_cond = f(100)\n"
+        ".endif\n"
+        ".func f(x) {x * 2}\n"
+        "R1 a b {f(100)}\n"
+        ".ends\n"
+    )
+    assert _devices(lib.component("cell", mode=0))["R1"][1]["resistance"] == (
+        pytest.approx(200.0, rel=1e-15)
+    )
+    assert _devices(lib.component("cell", mode=1))["R1"][1]["resistance"] == (
+        pytest.approx(500.0, rel=1e-15)
+    )
+
+
+def test_model_cards_evaluate_global_and_local_func_and_bare_calls() -> None:
+    lib = library(
+        # Global .model defined BEFORE global .func.
+        ".model d_glob D IS=scale_is(1e-14) N=bump(1.0)\n"
+        ".func scale_is(x) {x * 2}\n"
+        ".func bump(x) {x + 0.25}\n"
+        ".option scale = {scale_is(0.5)}\n"
+        ".subckt use_bare a k\n"
+        ".func local_is(x) {x * 3}\n"
+        ".model d_bare1 D N=1.2 IS=local_is(1e-14)\n"
+        ".model d_bare2 D IS=local_is(2e-14) N=bump(0.5)\n"
+        ".model d_ako ako:d_glob D(RS=bump(4.75))\n"
+        ".model d_loc_ako ako:d_bare1 D(RS=local_is(2))\n"
+        "D1 a k d_glob\n"
+        "D2 a k d_bare1\n"
+        "D3 a k d_bare2\n"
+        "D4 a k d_ako\n"
+        "D5 a k d_loc_ako\n"
+        ".ends\n"
+    )
+    assert lib.options["scale"] == pytest.approx(1.0, rel=1e-15)
+    devs = _devices(lib.component("use_bare"))
+    assert devs["D1"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15)
+    assert devs["D1"][1]["emission_coefficient"] == pytest.approx(1.25, rel=1e-15)
+    assert devs["D2"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15)
+    assert devs["D2"][1]["emission_coefficient"] == pytest.approx(1.2, rel=1e-15)
+    assert devs["D3"][1]["saturation_current"] == pytest.approx(6e-14, rel=1e-15)
+    assert devs["D3"][1]["emission_coefficient"] == pytest.approx(0.75, rel=1e-15)
+    assert devs["D4"][1]["saturation_current"] == pytest.approx(2e-14, rel=1e-15)
+    assert devs["D4"][1]["series_resistance"] == pytest.approx(5.0, rel=1e-15)
+    assert devs["D5"][1]["saturation_current"] == pytest.approx(3e-14, rel=1e-15)
+    assert devs["D5"][1]["series_resistance"] == pytest.approx(6.0, rel=1e-15)
+    # survey_model also resolves global .func.
+    surveyed = lib.survey_model("d_glob")
+    assert surveyed.problem is None
+
+
+def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
+    lib = library(
+        ".func twice(x) {2 * x}\n"
+        ".model r_ps RES(R=twice(1.5) TC1=twice(1m))\n"
+        ".model r_geo R(RSH=twice(50))\n"
+        ".model c_geo C(CJ=twice(1e-3))\n"
+        ".model mbin.0 NMOS(LEVEL=49 VTH0=twice(0.35)"
+        " LMIN=twice(0.25u) LMAX=twice(1u) WMIN=twice(0.5u) WMAX=twice(5u))\n"
+        ".model qheat NPN(LEVEL=4 IS=1e-16 RTH=twice(50) CTH=twice(1u))\n"
+        ".subckt deck a b\n"
+        "R1 a b r_ps 1k\n"
+        "R2 a b r_geo W=2u L=4u\n"
+        "C1 a b c_geo W=10u L=10u\n"
+        "M1 a b 0 0 mbin W=2u L=1u\n"
+        "Q1 a b 0 0 t qheat\n"
+        ".ends\n"
+    )
+    devs = _devices(lib.component("deck"))
+    assert devs["R1"][1]["resistance"] == pytest.approx(3000.0, rel=1e-15)
+    assert devs["R2"][1]["resistance"] == pytest.approx(200.0, rel=1e-15)
+    assert devs["C1"][1]["capacitance"] == pytest.approx(2e-13, rel=1e-15)
+    assert devs["M1"][1]["vth0"] == pytest.approx(0.7, rel=1e-15)
+    assert "Q1.rth" in devs
+    assert devs["Q1.rth"][1]["resistance"] == pytest.approx(100.0, rel=1e-15)
+    assert devs["Q1.cth"][1]["capacitance"] == pytest.approx(2e-6, rel=1e-15)
+    bin_card = lib.card("mbin", {})
+    assert bin_card is not None
+    assert models.centre(bin_card, lib.values(), functions=lib.functions) == (
+        pytest.approx((1.25e-6, 5.5e-6), rel=1e-15)
+    )
+
+
+def test_recursive_local_func_and_wrong_arity_are_refused() -> None:
+    direct = library(".subckt a n\n.func f(x) {f(x) + 1}\nR1 n 0 {f(1)}\n.ends\n")
+    with pytest.raises(SpiceError, match="a function calls itself: `f` calls `f`"):
+        direct.component("a")
+
+    mutual = library(
+        ".subckt a n\n.func p(x) {q(x)}\n.func q(x) {p(x)}\nR1 n 0 {p(1)}\n.ends\n"
+    )
+    with pytest.raises(
+        SpiceError, match="a function calls itself: `p` calls `q` calls `p`"
+    ):
+        mutual.component("a")
+
+    cross_scope = library(
+        ".func g(x) {loc(x)}\n"
+        ".subckt a n\n"
+        ".func loc(x) {g(x)}\n"
+        "R1 n 0 {loc(1)}\n"
+        ".ends\n"
+    )
+    with pytest.raises(
+        SpiceError, match="a function calls itself: `loc` calls `g` calls `loc`"
+    ):
+        cross_scope.component("a")
+
+    in_model = library(
+        ".subckt a n\n"
+        ".func bad(x) {bad(x)}\n"
+        ".model dm D(IS=bad(1e-14))\n"
+        "D1 n 0 dm\n"
+        ".ends\n"
+    )
+    with pytest.raises(SpiceError, match="a function calls itself: `bad` calls `bad`"):
+        in_model.component("a")
+
+    arity = library(".subckt a n\n.func pair(x, y) {x + y}\nR1 n 0 {pair(1)}\n.ends\n")
+    with pytest.raises(SpiceError, match="`pair` takes 2 arguments, not 1"):
+        arity.component("a")
+
+
+def test_local_func_model_cache_has_no_crosstalk() -> None:
+    lib = library(
+        ".func scale(x) {x}\n"
+        ".model d_shared D(IS=scale(1e-14))\n"
+        ".subckt cell_a a k\n"
+        ".func scale(x) {x * 2}\n"
+        "D1 a k d_shared\n"
+        ".ends\n"
+        ".subckt cell_b a k\n"
+        ".func scale(x) {x * 7}\n"
+        "D1 a k d_shared\n"
+        ".ends\n"
+        ".subckt switched a k sel=0\n"
+        ".if (sel == 0)\n"
+        ".func gain(x) {x * 3}\n"
+        ".else\n"
+        ".func gain(x) {x * 9}\n"
+        ".endif\n"
+        ".model d_local D(IS=gain(1e-14))\n"
+        "D1 a k d_local\n"
+        ".ends\n"
+    )
+    assert _devices(lib.component("cell_a"))["D1"][1]["saturation_current"] == (
+        pytest.approx(2e-14, rel=1e-15)
+    )
+    assert _devices(lib.component("cell_b"))["D1"][1]["saturation_current"] == (
+        pytest.approx(7e-14, rel=1e-15)
+    )
+    assert _devices(lib.component("switched", sel=0))["D1"][1][
+        "saturation_current"
+    ] == pytest.approx(3e-14, rel=1e-15)
+    assert _devices(lib.component("switched", sel=1))["D1"][1][
+        "saturation_current"
+    ] == pytest.approx(9e-14, rel=1e-15)
+
+
+# ---------------------------------------------------------------------------
+# Item 3: .ic / .nodeset inside subcircuits and device IC= under UIC
+# ---------------------------------------------------------------------------
+
+
+def test_ic_and_nodeset_inside_subcircuits_remap_ports_and_hierarchy() -> None:
+    lib = library(
+        ".ic v(OUT)=9\n"
+        ".nodeset v(OUT)=8\n"
+        ".subckt leaf a b vinit=2\n"
+        ".func half(x) {x / 2}\n"
+        "R1 a mid 1k\n"
+        "R2 mid b 1k\n"
+        ".ic v(MID)={vinit} v(a)={half(vinit)}\n"
+        ".nodeset v(mid)={vinit + 0.5}\n"
+        ".ends\n"
+        ".subckt mid_stage in out\n"
+        "X1 in inner leaf vinit=2\n"
+        "X2 inner out leaf vinit=4\n"
+        ".ends\n"
+        ".subckt top out\n"
+        "Xleft p1 out mid_stage\n"
+        "Xright p2 0 leaf vinit=2\n"
+        "R1 p1 0 1k\n"
+        "R2 p2 0 1k\n"
+        ".ends\n"
+    )
+    ic_top = lib.initial_conditions_of("top")
+    assert ic_top == {
+        "Xleft/X1/mid": 2.0,
+        "p1": 1.0,
+        "Xleft/X2/mid": 4.0,
+        "Xleft/inner": 2.0,
+        "Xright/mid": 2.0,
+        "p2": 1.0,
+        # Top-level .ic v(OUT)=9 canonicalizes to `out` and overrides inner values.
+        "out": 9.0,
+    }
+    ns_top = lib.nodesets_of("top")
+    assert ns_top == {
+        "Xleft/X1/mid": 2.5,
+        "Xleft/X2/mid": 4.5,
+        "Xright/mid": 2.5,
+        "out": 8.0,
+    }
+
+    # Subcircuit instantiated with explicit path and connections mapping pins to parent
+    # nets and ground.
+    ic_placed = lib.initial_conditions_of(
+        "leaf", "U1", connections={"a": "bus", "b": "0"}, vinit=6
+    )
+    assert ic_placed == {"U1/mid": 6.0, "bus": 3.0}
+    with pytest.raises(SpiceError, match="has no pin `bogus`"):
+        lib.initial_conditions_of("leaf", "U1", connections={"bogus": "bus"})
+
+    # Non-zero ground .ic and .nodeset are refused (direct and via pin bound to ground).
+    with pytest.raises(SpiceError, match="ground"):
+        lib.initial_conditions_of("leaf", "U1", connections={"a": "0"})
+    bad_ns = library(".subckt s a\nR1 a 0 1k\n.nodeset v(0)=1\n.ends\n")
+    with pytest.raises(SpiceError, match="ground"):
+        bad_ns.nodesets_of("s")
+
+
+def test_identical_cached_subcircuit_instances_preserve_each_ic() -> None:
+    lib = library(
+        ".subckt cell a\n"
+        "R1 a mid 1k\n"
+        "C1 mid 0 1u IC=3.5\n"
+        ".ic v(mid)=3.5\n"
+        ".ends\n"
+        ".subckt top a b\n"
+        "X1 a cell\n"
+        "X2 b cell\n"
+        ".ends\n"
+    )
+    assert lib.initial_conditions_of("top") == {"X1/mid": 3.5, "X2/mid": 3.5}
+    assert lib.initial_conditions_of("top", operating_point=False) == {
+        "X1/mid": 3.5,
+        "X2/mid": 3.5,
+    }
+
+
+def test_capacitor_ic_topologies_under_uic_and_ignored_under_op() -> None:
+    lib = library(
+        ".subckt topologies a b c d e\n"
+        "Cpos a 0 1u IC=2.5\n"
+        "Cneg 0 b 1u IC=1.5\n"
+        "Cchain1 c d 1u IC=2.0\n"
+        "Cchain2 d 0 1u IC=1.0\n"
+        "Cfloat fpos fneg 1u IC=3.25\n"
+        "R1 fpos 0 10k\n"
+        "R2 fneg 0 10k\n"
+        "Canchor e anc 1u IC=1.25\n"
+        ".ic v(anc)=0.75\n"
+        "Cq qnode 0 Q={1u * V(qnode)} IC=4.0\n"
+        "Cexpr cnode 0 C={1u + 0.1u * V(cnode)} IC=-2.0\n"
+        ".ends\n"
+    )
+    # With operating_point=True, device IC= is ignored; only .ic remains.
+    assert lib.initial_conditions_of("topologies") == {"anc": 0.75}
+    # With operating_point=False (UIC), capacitor IC= voltages solve into node voltages.
+    uic = lib.initial_conditions_of("topologies", operating_point=False)
+    assert uic == {
+        "anc": 0.75,
+        "a": 2.5,
+        "b": -1.5,
+        "d": 1.0,
+        "c": 3.0,
+        "e": 2.0,
+        "qnode": 4.0,
+        "cnode": -2.0,
+        "fneg": 0.0,
+        "fpos": 3.25,
+    }
+
+
+def test_subcircuit_pin_capacitor_ic_grounded_at_instantiation() -> None:
+    lib = library(
+        ".subckt capcell p n\n"
+        "C1 p n 1u IC=2.5\n"
+        ".ends\n"
+        ".subckt top pos neg\n"
+        "X1 pos 0 capcell\n"
+        "X2 0 neg capcell\n"
+        ".ends\n"
+    )
+    uic = lib.initial_conditions_of("top", operating_point=False)
+    assert uic == {"pos": 2.5, "neg": -2.5}
+
+
+def test_consistent_parallel_and_loop_capacitor_ic_succeed() -> None:
+    lib = library(
+        ".subckt ok a b\n"
+        "C1 a 0 1u IC=3\n"
+        "C2 a 0 2u IC=3\n"
+        "C3 b a 1u IC=2\n"
+        "C4 b 0 1u IC=5\n"
+        "Cshort a a 1u IC=0\n"
+        ".ends\n"
+    )
+    assert lib.initial_conditions_of("ok", operating_point=False) == {
+        "a": 3.0,
+        "b": 5.0,
+    }
+
+
+def test_contradictory_and_malformed_ic_are_refused() -> None:
+    parallel = library(".subckt s a\nC1 a 0 1u IC=1\nC2 a 0 1u IC=2\n.ends\n")
+    with pytest.raises(SpiceError, match="contradictory initial conditions"):
+        parallel.initial_conditions_of("s", operating_point=False)
+
+    vs_dot_ic = library(".subckt s a\nC1 a 0 1u IC=1\n.ic v(a)=2\n.ends\n")
+    with pytest.raises(SpiceError, match="contradictory initial conditions"):
+        vs_dot_ic.initial_conditions_of("s", operating_point=False)
+
+    loop = library(
+        ".subckt s a b c\nC1 a b 1u IC=1\nC2 b c 1u IC=1\nC3 c a 1u IC=1\n.ends\n"
+    )
+    with pytest.raises(SpiceError, match="contradictory initial conditions"):
+        loop.initial_conditions_of("s", operating_point=False)
+
+    shorted = library(".subckt s a\nC1 a a 1u IC=1.5\n.ends\n")
+    with pytest.raises(SpiceError, match="shorted capacitor `C1`"):
+        shorted.initial_conditions_of("s", operating_point=False)
+
+    multi_val = library(".subckt s a\nC1 a 0 1u IC=1,2\n.ends\n")
+    with pytest.raises(SpiceError, match="`IC` has one value"):
+        multi_val.component("s")
+
+    resistor_ic = library(".subckt s a\nR1 a 0 1k IC=1\n.ends\n")
+    with pytest.raises(SpiceError, match="no `IC` here"):
+        resistor_ic.component("s")
+
+
+def test_inductor_ic_currents_multiplier_and_coupled_windings() -> None:
+    lib = library(
+        ".subckt coil a b\n"
+        "L1 a b 1m M=2 IC=0.25\n"
+        ".ends\n"
+        ".subckt top a b c d\n"
+        "X1 a b coil m=3\n"
+        "Lp a 0 1m IC=0.1\n"
+        "Ls c 0 1m IC=-0.2\n"
+        "K1 Lp Ls 0.9\n"
+        "Lzero d 0 1m IC=0\n"
+        ".ends\n"
+    )
+    currents = lib.initial_currents_of("top")
+    assert currents == {
+        "X1/L1:current": pytest.approx(1.5, rel=1e-15),
+        "K1:current1": pytest.approx(0.1, rel=1e-15),
+        "K1:current2": pytest.approx(-0.2, rel=1e-15),
+        "Lzero:current": 0.0,
+    }
+    prefixed = lib.initial_currents_of("top", "U1")
+    assert prefixed["U1/X1/L1:current"] == pytest.approx(1.5, rel=1e-15)
+    assert prefixed["U1/K1:current1"] == pytest.approx(0.1, rel=1e-15)
+
+    # Non-zero inductor IC= is refused under operating_point=False.
+    with pytest.raises(
+        SpiceError,
+        match=r"inductor initial current `X1/L1:current`.*accepts net voltages alone",
+    ):
+        lib.initial_conditions_of("top", operating_point=False)
+
+    # Zero inductor IC= is allowed under operating_point=False.
+    zero_ind = library(".subckt z a\nL1 a 0 1m IC=0\nC1 a 0 1u IC=2.0\n.ends\n")
+    assert zero_ind.initial_conditions_of("z", operating_point=False) == {"a": 2.0}
+
+
+def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
+    lib = library(
+        ".subckt rc_ic\n"
+        "R1 mid 0 1k\n"
+        "C1 mid 0 1u\n"
+        ".ic v(mid)=3.0\n"
+        ".ends\n"
+        ".subckt rc_cap_ic\n"
+        "R1 mid 0 1k\n"
+        "C1 mid 0 1u IC=4.0\n"
+        ".ends\n"
+        ".subckt wrapper\n"
+        "X1 rc_cap_ic\n"
+        ".ends\n"
+    )
+    tau = 1e-3  # R * C = 1k * 1u = 1 ms
+
+    # 1) Subcircuit .ic under UIC matches closed-form v(t) = 3 * exp(-t / tau).
+    ic_map = {
+        net: value * V
+        for net, value in lib.initial_conditions_of(
+            "rc_ic", operating_point=False
+        ).items()
+    }
+    res_ic = Simulation(circuit(lib.component("rc_ic"))).run(
+        Transient(
+            stop=2 * ms,
+            max_step=20 * us,
+            initial_conditions=ic_map,
+            operating_point=False,
+        ),
+        TIGHT,
+    )
+    assert res_ic.voltage("mid")[0] == pytest.approx(3.0, rel=1e-12)
+    assert res_ic.voltage("mid")[-1] == pytest.approx(
+        3.0 * math.exp(-2e-3 / tau), rel=1e-4
+    )
+
+    # 2) Nested subcircuit capacitor IC=4 under UIC matches 4 * exp(-t / tau).
+    cap_ic_map = {
+        net: value * V
+        for net, value in lib.initial_conditions_of(
+            "wrapper", operating_point=False
+        ).items()
+    }
+    assert cap_ic_map == {"X1/mid": 4.0 * V}
+    res_cap = Simulation(circuit(lib.component("wrapper"))).run(
+        Transient(
+            stop=2 * ms,
+            max_step=20 * us,
+            initial_conditions=cap_ic_map,
+            operating_point=False,
+        ),
+        TIGHT,
+    )
+    assert res_cap.voltage("X1/mid")[0] == pytest.approx(4.0, rel=1e-12)
+    assert res_cap.voltage("X1/mid")[-1] == pytest.approx(
+        4.0 * math.exp(-2e-3 / tau), rel=1e-4
+    )
+
+    # 3) Subcircuit .nodeset guides a bistable tanh circuit to its chosen root.
+    bistable = library(
+        ".subckt latch\n"
+        "R1 x 0 1\n"
+        "B1 0 x I = {2 * tanh(V(x))}\n"
+        ".nodeset v(x)=2\n"
+        ".ends\n"
+        ".subckt top\n"
+        "X1 latch\n"
+        ".ends\n"
+    )
+    nodesets = {net: value * V for net, value in bistable.nodesets_of("top").items()}
+    assert nodesets == {"X1/x": 2.0 * V}
+    op = Simulation(circuit(bistable.component("top"))).run(
+        OperatingPoint(), Options(nodesets=nodesets)
+    )
+    # Root of v = 2 * tanh(v) is ~1.915008 V.
+    assert op.voltage("X1/x") == pytest.approx(1.915008046, rel=1e-6)

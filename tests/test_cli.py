@@ -7,8 +7,8 @@ import pytest
 
 from jolty import __version__
 from jolty.cli import main
-from jolty.files import load_results
-from jolty.results import TransientResult
+from jolty.files import load_raw, load_results
+from jolty.results import AcResult, OperatingPointResult, TransientResult
 
 FILTER = """
 from jolty import Builder, Plan, Role, Transient, component, devices
@@ -218,3 +218,166 @@ def test_settings_come_from_pyproject(
     (tmp_path / "pyproject.toml").write_text("[tool.jolty]\nmax_unknowns = 1\n")
     assert run("simulate", script.name) == 0
     assert "  ... and 2 more in the results file" in capsys.readouterr().out
+
+
+def test_simulate_raw_binary_and_ascii_round_trip(
+    script: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw_binary = tmp_path / "out.raw"
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw",
+            str(raw_binary),
+            "--no-plot",
+            "--no-schematic",
+            "--output-format",
+            "json",
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["raw"] == str(raw_binary)
+    assert b"Binary:\n" in raw_binary.read_bytes()
+    expected = load_results(Path(payload["results"]))["step"]
+    loaded = load_raw(raw_binary)["step"]
+    assert isinstance(expected, TransientResult)
+    assert isinstance(loaded, TransientResult)
+    assert loaded.unknowns == expected.unknowns
+    assert (loaded.times.view("u8") == expected.times.view("u8")).all()
+    assert (loaded.values.view("u8") == expected.values.view("u8")).all()
+
+    raw_ascii = tmp_path / "nested" / "out_ascii.raw"
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw",
+            str(raw_ascii),
+            "--raw-format",
+            "ascii",
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert f"saved {raw_ascii}" in out
+    assert b"Values:\n" in raw_ascii.read_bytes()
+    loaded_ascii = load_raw(raw_ascii)["step"]
+    assert isinstance(loaded_ascii, TransientResult)
+    assert (loaded_ascii.times.view("u8") == expected.times.view("u8")).all()
+    assert (loaded_ascii.values.view("u8") == expected.values.view("u8")).all()
+
+
+def test_simulate_raw_skips_non_raw_analyses_and_refuses_empty_set(
+    script: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mixed = FILTER.replace(
+        'return Plan({"step": Transient(stop=5 * us)})',
+        "from jolty import Ac, Noise, OperatingPoint\n"
+        "    from jolty.plan import decade\n"
+        "    from jolty.units import kHz, MHz\n"
+        "    return Plan({\n"
+        '        "op": OperatingPoint(),\n'
+        '        "bode": Ac("V1", decade(1 * kHz, 1 * MHz, 2)),\n'
+        '        "step": Transient(stop=5 * us),\n'
+        '        "hiss": Noise("out", decade(1 * kHz, 1 * MHz, 2)),\n'
+        "    })",
+    )
+    script.write_text(mixed, encoding="utf-8")
+    raw_path = tmp_path / "mixed.raw"
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw",
+            str(raw_path),
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    loaded = load_raw(raw_path)
+    assert list(loaded) == ["op", "bode", "step"]
+    assert isinstance(loaded["op"], OperatingPointResult)
+    assert isinstance(loaded["bode"], AcResult)
+    assert isinstance(loaded["step"], TransientResult)
+
+    noise_only = FILTER.replace(
+        'return Plan({"step": Transient(stop=5 * us)})',
+        "from jolty import Noise\n"
+        "    from jolty.plan import decade\n"
+        "    from jolty.units import kHz, MHz\n"
+        '    return Plan({"hiss": Noise("out", decade(1 * kHz, 1 * MHz, 2))})',
+    )
+    script.write_text(noise_only, encoding="utf-8")
+    assert raw_path.is_file()
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw",
+            str(raw_path),
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "NoiseResult" in err
+    assert not raw_path.exists()
+
+
+def test_simulate_raw_removes_stale_file_on_elaboration_failure(
+    script: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw_path = tmp_path / "stale.raw"
+    raw_path.write_text("stale", encoding="utf-8")
+    script.write_text(FILTER.replace("1 * nF", "-1 * nF"), encoding="utf-8")
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw",
+            str(raw_path),
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 1
+    )
+    capsys.readouterr()
+    assert not raw_path.exists()
+
+
+def test_simulate_raw_option_validation_errors(
+    script: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--raw-format",
+            "ascii",
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 2
+    )
+    assert "--raw-format applies only when --raw is set" in capsys.readouterr().err
+    assert (
+        run(
+            "simulate",
+            str(script),
+            "--samples",
+            "0:2",
+            "--raw",
+            str(tmp_path / "shard.raw"),
+            "--no-plot",
+            "--no-schematic",
+        )
+        == 2
+    )
+    assert "writes no raw file" in capsys.readouterr().err

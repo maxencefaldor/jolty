@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Self, override
+from typing import Literal, Self, override
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import CliPositionalArg
@@ -304,6 +304,16 @@ class SimulateRequest(_Model):
         default=None,
         description="Where to save the results; defaults to <script>.results.npz.",
     )
+    raw: Path | None = Field(
+        default=None,
+        description="Where to save a SPICE raw file of completed operating point, "
+        "DC sweep, small-signal response and transient analyses; omitted when unset.",
+    )
+    raw_format: Literal["binary", "ascii"] = Field(
+        default="binary",
+        description="Encoding of the SPICE raw file named by --raw: 'binary' for "
+        "little-endian doubles, or 'ascii'.",
+    )
     check: bool = Field(default=True, description=_CHECK_DESCRIPTION)
     error: list[str] = Field(default_factory=list, description=_ERROR_DESCRIPTION)
     warn: list[str] = Field(default_factory=list, description=_WARN_DESCRIPTION)
@@ -338,10 +348,11 @@ class SimulateRequest(_Model):
 
     @model_validator(mode="after")
     def _sharded(self) -> Self:
-        """Checks that the samples run from a start up to a later stop, if named.
+        """Checks that shard and raw options agree with one another.
 
         Raises:
-            ValueError: When they do not, or a directory of shards takes no samples.
+            ValueError: When samples are empty, shards lack samples, raw is set on a
+                shard, or raw_format is changed without raw.
         """
         taken = self.taken()
         if taken is not None and taken.start >= taken.stop:
@@ -349,6 +360,12 @@ class SimulateRequest(_Model):
             raise ValueError(message)
         if self.shards is not None and taken is None:
             message = "a directory of shards holds samples, which --samples names"
+            raise ValueError(message)
+        if self.raw is not None and taken is not None:
+            message = "a shard runs Monte Carlo samples alone and writes no raw file"
+            raise ValueError(message)
+        if self.raw is None and self.raw_format != "binary":
+            message = "--raw-format applies only when --raw is set"
             raise ValueError(message)
         return self
 
@@ -370,6 +387,11 @@ class SimulateResult(CommandResult):
     )
     results: Path | None = Field(
         description="The saved results file; null when no analysis ran to its end."
+    )
+    raw: Path | None = Field(
+        default=None,
+        description="The saved SPICE raw file; null unless --raw was set and a "
+        "raw-writable analysis ran to its end.",
     )
     analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
@@ -460,7 +482,7 @@ class SimulateResult(CommandResult):
             self.report.describe() if self.report else "",
             self.output.describe(),
         ]
-        saved = (self.results, self.batches, self.shard_file)
+        saved = (self.results, self.raw, self.batches, self.shard_file)
         blocks.extend(f"saved {path}" for path in saved if path is not None)
         if self.shard is not None:
             blocks.append(self.shard.describe())
@@ -576,6 +598,17 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
     loaded = await asyncio.to_thread(_load, target) if saved else {}
+    saved_raw: Path | None = None
+    if request.raw is not None:
+        if saved:
+            saved_raw = await asyncio.to_thread(
+                _save_raw,
+                loaded,
+                request.raw,
+                binary=request.raw_format == "binary",
+            )
+        else:
+            await asyncio.to_thread(request.raw.unlink, missing_ok=True)
     saved_batches = await asyncio.to_thread(batched.is_file)
     drawn = (
         await asyncio.to_thread(
@@ -599,6 +632,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         circuit=circuit,
         report=report,
         results=target if saved else None,
+        raw=saved_raw,
         analyses=built.analyses,
         corners=built.corners,
         monte_carlo=built.monte_carlo,
@@ -1503,6 +1537,46 @@ def _place(source: Path, destination: Path) -> None:
     except BaseException:
         copy.unlink(missing_ok=True)
         raise
+
+
+def _save_raw(
+    loaded: Mapping[str, results.AnalysisResult],
+    target: Path,
+    *,
+    binary: bool,
+) -> Path:
+    """Writes every raw-writable analysis in `loaded` atomically to `target`.
+
+    Raises:
+        JoltyError: When `loaded` contains no operating point, DC sweep, small-signal
+            response or transient result; any earlier file at `target` is removed.
+    """
+    writable: dict[str, results.AnalysisResult] = {
+        name: result
+        for name, result in loaded.items()
+        if isinstance(
+            result,
+            results.OperatingPointResult
+            | results.DcSweepResult
+            | results.AcResult
+            | results.TransientResult,
+        )
+    }
+    if not writable:
+        target.unlink(missing_ok=True)
+        kinds = ", ".join(
+            f"{name} ({type(result).__name__})" for name, result in loaded.items()
+        )
+        message = (
+            "a SPICE raw file holds operating points, DC sweeps, small-signal "
+            f"responses and transients; none of the completed analyses match ({kinds})"
+        )
+        raise JoltyError(message)
+    with TemporaryDirectory(prefix="jolty-") as scratch:
+        written = Path(scratch) / target.name
+        files.save_raw(written, writable, binary=binary)
+        _place(written, target)
+    return target
 
 
 def _save(built: runner.Built, path: Path) -> CircuitSummary:

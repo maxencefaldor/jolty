@@ -56,7 +56,7 @@ def statements(text: str, file: str = "<text>") -> list[Statement]:
     return found
 
 
-_CLOSING: Final = {"(": ")", "{": "}", "'": "'"}
+_CLOSING: Final = {"(": ")", "{": "}", "'": "'", '"': '"'}
 
 
 def tokens(text: str) -> list[str]:
@@ -111,9 +111,10 @@ def _group_end(text: str, start: int) -> int:
     depth = 0
     for position in range(start, len(text)):
         character = text[position]
-        if opening == "'" and position > start and character == "'":
-            return position + 1
-        if opening != "'":
+        if opening in {"'", '"'}:
+            if position > start and character == opening:
+                return position + 1
+        else:
             depth += (character == opening) - (character == closing)
             if depth == 0:
                 return position + 1

@@ -60,6 +60,7 @@ from jolty import _core, ir, results
 from jolty.errors import JoltyError
 from jolty.plan import Plan
 from jolty.specs import Measure, MeasureError, Reading, Requirement, Specs
+from jolty.spice import ngspice
 from jolty.units import Dimension, Quantity
 
 CIRCUIT_SUFFIX: Final = ".jolty.json"
@@ -67,6 +68,9 @@ CIRCUIT_SUFFIX: Final = ".jolty.json"
 
 RESULTS_SUFFIX: Final = ".results.npz"
 """The suffix of results files, such as ``rc_filter.results.npz``."""
+
+RAW_SUFFIX: Final = ".raw"
+"""The suffix of SPICE raw files, such as ``rc_filter.raw``."""
 
 BATCHES_SUFFIX: Final = ".batches.npz"
 """The suffix of batch files, such as ``rc_filter.batches.npz``."""
@@ -484,6 +488,11 @@ def circuit_path(script: Path) -> Path:
 def results_path(script: Path) -> Path:
     """Where a script's results are saved by default: as ``<stem>.results.npz``."""
     return script.with_name(script.stem + RESULTS_SUFFIX)
+
+
+def raw_path(script: Path) -> Path:
+    """Where a script's SPICE raw file goes by default: as ``<stem>.raw``."""
+    return script.with_name(script.stem + RAW_SUFFIX)
 
 
 def shards_path(script: Path) -> Path:
@@ -1646,9 +1655,29 @@ def load_shard(path: Path) -> Shard:
         )
 
 
-_RAW_TYPES: Final = {"voltage": "voltage", "current": "current"}
+type RawAnalysisResult = (
+    results.OperatingPointResult
+    | results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult
+)
+"""An analysis result that SPICE's raw format represents."""
+
+_RAW_TYPES: Final[dict[results.Nature, str]] = {
+    "voltage": "voltage",
+    "current": "current",
+    "temperature": "temperature",
+}
 """The type a raw file gives an unknown of each nature it has one for; ``notype`` for
-the others, a temperature or a device's state."""
+a device's state."""
+
+_RAW_NATURES: Final[dict[str, results.Nature]] = {
+    "voltage": "voltage",
+    "current": "current",
+    "temperature": "temperature",
+}
+"""The unknown nature for each SPICE raw vector type; ``notype`` and any other maps to
+``state``."""
 
 
 def save_raw(
@@ -1662,18 +1691,28 @@ def save_raw(
     The file is ngspice's raw format, which other tools read: each plot a header, its
     title the analysis's name, its scale and its vectors' names and types, then its
     points, in `binary`, little-endian doubles, or ASCII, each plot named as ngspice 47
-    names its analysis's. An operating point is a plot
-    of one point and no scale, a DC sweep's scale is ``v-sweep`` or ``i-sweep``, a
-    small-signal response's ``frequency`` and its values complex, and a transient's
-    ``time``. A net's vector is named by its path, and a source's or an inductor's
-    current, such as ``V1:current``, as ngspice names it, ``V1#branch``; every other
-    unknown by its name. It holds no date, so the same results give the same bytes.
+    names its analysis's. An operating point is a plot of one point and no scale, a DC
+    sweep's scale is ``v-sweep``, ``i-sweep`` or ``temp-sweep`` (with type ``notype``
+    when the sweep has no nature, as for a parameter), a small-signal response's
+    ``frequency`` and its values complex, and a transient's ``time``. A net's vector is
+    named by its path, and a source's or an inductor's current, such as ``V1:current``,
+    as ngspice names it, ``V1#branch``; every other unknown by its name. A thermal
+    unknown carries type ``temperature`` and a state unknown ``notype``. It holds no
+    date, so the same results give the same bytes. [`load_raw`][jolty.files.load_raw]
+    reads the file back.
 
     Raises:
-        ValueError: When an analysis is of a kind a raw file holds no plot of.
+        ValueError: When `analyses` is empty, a name holds a line break, or an analysis
+            is of a kind a raw file holds no plot of.
     """
+    if not analyses:
+        message = "a raw file holds one or more analyses"
+        raise ValueError(message)
     written = bytearray()
     for name, result in analyses.items():
+        if "\n" in name or "\r" in name:
+            message = f"a raw file's analysis name holds no line break: {name!r}"
+            raise ValueError(message)
         match result:
             case results.TransientResult(times=times, values=values):
                 plot = "Transient Analysis"
@@ -1682,16 +1721,17 @@ def save_raw(
             case results.AcResult(frequencies=frequencies, values=values):
                 plot = "AC Analysis"
                 scale = ("frequency", "frequency", frequencies)
-                table = values
+                table = np.asarray(values, dtype=np.complex128)
             case results.DcSweepResult(swept=swept, values=values, nature=nature):
                 plot = "DC transfer characteristic"
-                kind = "current" if nature == "current" else "voltage"
-                scale = (f"{kind[0]}-sweep", kind, swept)
+                scale = (*_raw_sweep_scale(nature), swept)
                 table = values
             case results.OperatingPointResult(values=values):
                 plot = "Operating Point"
                 scale = None
-                table = np.asarray(values).reshape(1, -1)
+                table = np.asarray(values, dtype=np.float64).reshape(
+                    1, len(result.unknowns)
+                )
             case _:
                 message = (
                     "a raw file holds operating points, DC sweeps, small-signal "
@@ -1699,7 +1739,232 @@ def save_raw(
                 )
                 raise ValueError(message)
         written += _raw_plot(name, plot, result.unknowns, scale, table, binary=binary)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(bytes(written))
+
+
+def load_raw(path: Path) -> dict[str, RawAnalysisResult]:
+    """Reads the SPICE raw file at `path` as jolty analysis results, by plot title.
+
+    Supports both binary (little-endian IEEE-754 doubles) and ASCII raw files written by
+    [`save_raw`][jolty.files.save_raw] or by ngspice, including multi-plot files. Each
+    plot's ``Title:`` becomes its key in the returned mapping; an empty title falls back
+    to the analysis kind (``operating_point``, ``dc_sweep``, ``ac`` or ``transient``),
+    and duplicate titles receive ``#2``, ``#3`` and so on so no plot is dropped.
+
+    SPICE's raw format stores only headers and vector arrays: an operating point loaded
+    from raw carries ``strategy="raw"`` and ``iterations=None``, an AC analysis carries
+    ``source=""`` and an all-NaN ``operating_point`` placeholder, a DC sweep carries the
+    scale vector's name as ``source`` and ``parameter=None``, and a transient carries
+    step count ``max(len(times) - 1, 0)`` with zero rejected steps. Binary raw files
+    preserve exact IEEE-754 bits, including ``-0.0``.
+
+    Examples:
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> from jolty import results
+        >>> point = results.OperatingPointResult(
+        ...     (results.Unknown("out", "voltage"),), np.array([2.5]), "direct"
+        ... )
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     path = Path(directory) / "divider.raw"
+        ...     save_raw(path, {"op": point})
+        ...     load_raw(path)["op"].voltage("out")
+        2.5
+
+    Raises:
+        JoltyError: When the file holds no plots, malformed headers, truncated values,
+            invalid numbers, an unsupported ``Plotname:``, or mismatched real/complex
+            flags.
+    """
+    data = path.read_bytes()
+    try:
+        plots = ngspice.parse_raw(data)
+    except JoltyError as error:
+        message = f"{path}: {error}"
+        raise JoltyError(message) from None
+    if not plots:
+        message = f"{path} holds no SPICE raw plots"
+        raise JoltyError(message)
+    loaded: dict[str, RawAnalysisResult] = {}
+    for plot in plots:
+        default_name, result = _result_from_raw(path, plot)
+        base = plot.title or default_name
+        key = base
+        suffix = 2
+        while key in loaded:
+            key = f"{base}#{suffix}"
+            suffix += 1
+        loaded[key] = result
+    return loaded
+
+
+def _raw_sweep_scale(nature: results.Nature | None) -> tuple[str, str]:
+    """Scale vector name and SPICE type for a DC sweep of `nature`."""
+    if nature == "current":
+        return ("i-sweep", "current")
+    if nature == "voltage":
+        return ("v-sweep", "voltage")
+    if nature == "temperature":
+        return ("temp-sweep", "temperature")
+    return ("v-sweep", "notype")
+
+
+def _raw_sweep_nature(scale: ngspice.RawVariable) -> results.Nature | None:
+    """DC sweep nature inferred from its raw scale vector."""
+    if scale.kind == "current" or scale.name.casefold() == "i-sweep":
+        return "current"
+    if scale.kind == "voltage":
+        return "voltage"
+    if scale.kind == "temperature":
+        return "temperature"
+    return None
+
+
+def _result_from_raw(
+    path: Path, plot: ngspice.RawPlot
+) -> tuple[str, RawAnalysisResult]:
+    """Converts one parsed `RawPlot` into `(default_name, result)`."""
+    plot_kind = plot.plot.casefold()
+    if plot_kind == "operating point":
+        return "operating_point", _raw_operating_point(path, plot)
+    if plot_kind == "dc transfer characteristic":
+        return "dc_sweep", _raw_dc_sweep(path, plot)
+    if plot_kind == "ac analysis":
+        return "ac", _raw_ac(path, plot)
+    if plot_kind == "transient analysis":
+        return "transient", _raw_transient(path, plot)
+    message = f"{path}: unsupported SPICE raw plot `{plot.plot}`"
+    raise JoltyError(message)
+
+
+def _raw_operating_point(
+    path: Path, plot: ngspice.RawPlot
+) -> results.OperatingPointResult:
+    """Converts an ``Operating Point`` raw plot into `OperatingPointResult`."""
+    label = plot.title or plot.plot
+    if plot.complex_values:
+        message = f"{path}: operating point plot `{label}` holds complex values"
+        raise JoltyError(message)
+    if plot.values.shape[0] != 1:
+        message = (
+            f"{path}: operating point plot `{label}` holds "
+            f"{plot.values.shape[0]} points, not 1"
+        )
+        raise JoltyError(message)
+    unknowns = tuple(_unknown_from_raw(variable) for variable in plot.variables)
+    values = np.array(plot.values[0].real, dtype=np.float64, copy=True)
+    return results.OperatingPointResult(unknowns, values, strategy="raw")
+
+
+def _raw_dc_sweep(path: Path, plot: ngspice.RawPlot) -> results.DcSweepResult:
+    """Converts a ``DC transfer characteristic`` raw plot into `DcSweepResult`."""
+    label = plot.title or plot.plot
+    if plot.complex_values:
+        message = f"{path}: DC sweep plot `{label}` holds complex values"
+        raise JoltyError(message)
+    if not plot.variables:
+        message = f"{path}: DC sweep plot `{label}` has no sweep variable"
+        raise JoltyError(message)
+    scale = plot.variables[0]
+    unknowns = tuple(_unknown_from_raw(variable) for variable in plot.variables[1:])
+    swept = np.array(plot.values[:, 0].real, dtype=np.float64, copy=True)
+    values = np.array(plot.values[:, 1:].real, dtype=np.float64, copy=True)
+    return results.DcSweepResult(
+        unknowns,
+        source=scale.name,
+        nature=_raw_sweep_nature(scale),
+        swept=swept,
+        values=values,
+    )
+
+
+def _raw_ac(path: Path, plot: ngspice.RawPlot) -> results.AcResult:
+    """Converts an ``AC Analysis`` raw plot into `AcResult`."""
+    label = plot.title or plot.plot
+    if not plot.complex_values:
+        message = f"{path}: AC plot `{label}` holds real values, not complex"
+        raise JoltyError(message)
+    if not plot.variables:
+        message = f"{path}: AC plot `{label}` has no frequency variable"
+        raise JoltyError(message)
+    scale = plot.variables[0]
+    if scale.kind != "frequency" and scale.name.casefold() != "frequency":
+        message = (
+            f"{path}: AC plot `{label}` begins with `{scale.name}` ({scale.kind}), "
+            "not frequency"
+        )
+        raise JoltyError(message)
+    unknowns = tuple(_unknown_from_raw(variable) for variable in plot.variables[1:])
+    frequencies = np.array(plot.values[:, 0].real, dtype=np.float64, copy=True)
+    values = np.array(plot.values[:, 1:], dtype=np.complex128, copy=True)
+    operating_point = results.OperatingPointResult(
+        unknowns,
+        np.full(len(unknowns), np.nan, dtype=np.float64),
+        strategy="raw",
+    )
+    return results.AcResult(
+        unknowns,
+        source="",
+        frequencies=frequencies,
+        values=values,
+        operating_point=operating_point,
+    )
+
+
+def _raw_transient(path: Path, plot: ngspice.RawPlot) -> results.TransientResult:
+    """Converts a ``Transient Analysis`` raw plot into `TransientResult`."""
+    label = plot.title or plot.plot
+    if plot.complex_values:
+        message = f"{path}: transient plot `{label}` holds complex values"
+        raise JoltyError(message)
+    if not plot.variables:
+        message = f"{path}: transient plot `{label}` has no time variable"
+        raise JoltyError(message)
+    scale = plot.variables[0]
+    if scale.kind != "time" and scale.name.casefold() != "time":
+        message = (
+            f"{path}: transient plot `{label}` begins with `{scale.name}` "
+            f"({scale.kind}), not time"
+        )
+        raise JoltyError(message)
+    unknowns = tuple(_unknown_from_raw(variable) for variable in plot.variables[1:])
+    times = np.array(plot.values[:, 0].real, dtype=np.float64, copy=True)
+    values = np.array(plot.values[:, 1:].real, dtype=np.float64, copy=True)
+    statistics = results.Statistics(
+        initial=None,
+        accepted=max(len(times) - 1, 0),
+        rejected=0,
+        landed=0,
+        iterations=0,
+    )
+    return results.TransientResult(
+        unknowns, times=times, values=values, statistics=statistics
+    )
+
+
+def _unknown_from_raw(variable: ngspice.RawVariable) -> results.Unknown:
+    """The jolty unknown for a raw file's vector, reversing `_raw_name`."""
+    name = variable.name
+    nature = _RAW_NATURES.get(variable.kind, "state")
+    if name.endswith("#branch") and len(name) > len("#branch"):
+        return results.Unknown(f"{name.removesuffix('#branch')}:current", "current")
+    lowered = name.casefold()
+    if (
+        nature in {"voltage", "state"}
+        and lowered.startswith("v(")
+        and name.endswith(")")
+        and len(name) > 3  # noqa: PLR2004 - 'v(' plus a name plus ')'
+    ):
+        return results.Unknown(name[2:-1], "voltage")
+    if (
+        nature in {"current", "state"}
+        and lowered.startswith("i(")
+        and name.endswith(")")
+        and len(name) > 3  # noqa: PLR2004 - 'i(' plus a name plus ')'
+    ):
+        return results.Unknown(f"{name[2:-1]}:current", "current")
+    return results.Unknown(name, nature)
 
 
 def _raw_plot(  # noqa: PLR0913 - a plot's names, its scale, its values and its format
@@ -1721,7 +1986,7 @@ def _raw_plot(  # noqa: PLR0913 - a plot's names, its scale, its values and its 
         named.insert(0, scale[:2])
         columns.insert(0, np.asarray(scale[2]))
     complex_values = np.iscomplexobj(table)
-    points = len(columns[0]) if columns else 0
+    points = len(columns[0]) if columns else table.shape[0]
     lines = [
         f"Title: {title}",
         f"Plotname: {plot}",
@@ -1737,7 +2002,9 @@ def _raw_plot(  # noqa: PLR0913 - a plot's names, its scale, its values and its 
     if complex_values:
         matrix = matrix.astype(np.complex128)
         if binary:
-            parts = np.stack([matrix.real, matrix.imag], axis=-1).reshape(points, -1)
+            parts = np.stack([matrix.real, matrix.imag], axis=-1).reshape(
+                points, 2 * len(named)
+            )
             return header + parts.astype("<f8").tobytes()
         rows = (
             "\t".join(f"{value.real:.17e},{value.imag:.17e}" for value in row)

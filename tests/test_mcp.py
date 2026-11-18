@@ -12,6 +12,7 @@ from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp.types import CallToolResult, ImageContent, TextContent, Tool
 
+from jolty.files import load_raw
 from jolty.mcp import create_server, main
 from jolty.settings import Settings
 
@@ -87,6 +88,8 @@ def test_tools_mirror_the_service_requests() -> None:
         "plan",
         "output",
         "results",
+        "raw",
+        "raw_format",
         "check",
         "error",
         "warn",
@@ -198,3 +201,31 @@ def test_schematics_and_plots_come_back_as_images(script: Path) -> None:
     plotted = call("plot_results", {"results": str(results), "traces": ["out"]})
     assert "plotted sweep: " in text_of(plotted)
     assert isinstance(plotted.content[1], ImageContent)
+
+
+def test_simulate_circuit_writes_raw_file(script: Path, tmp_path: Path) -> None:
+    raw_binary = tmp_path / "divider.raw"
+    result = call(
+        "simulate_circuit",
+        {"script": str(script), "raw": str(raw_binary), "schematic": False},
+    )
+    assert not result.is_error, text_of(result)
+    assert f"saved {raw_binary}" in text_of(result)
+    assert result.structured_content is not None
+    assert result.structured_content["raw"] == str(raw_binary)
+    loaded = load_raw(raw_binary)
+    assert loaded["op"].voltage("out") == pytest.approx(2.5, rel=1e-15)
+
+    raw_ascii = tmp_path / "divider_ascii.raw"
+    ascii_result = call(
+        "simulate_circuit",
+        {
+            "script": str(script),
+            "raw": str(raw_ascii),
+            "raw_format": "ascii",
+            "schematic": False,
+        },
+    )
+    assert not ascii_result.is_error, text_of(ascii_result)
+    assert b"Values:\n" in raw_ascii.read_bytes()
+    assert load_raw(raw_ascii)["op"].voltage("out") == pytest.approx(2.5, rel=1e-15)

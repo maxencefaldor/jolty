@@ -25,6 +25,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from pydantic import JsonValue
@@ -221,15 +222,55 @@ class _Probe:
         return drawn
 
 
+_NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
+"""Empty user-function mapping used when a subcircuit defines no local ``.func``."""
+
+_VOLTAGE_ABSOLUTE_TOLERANCE: Final = 1e-12
+"""Absolute tolerance, in volts, when checking initial voltage conditions agree."""
+
+_VOLTAGE_RELATIVE_TOLERANCE: Final = 1e-9
+"""Relative tolerance when checking whether initial voltage conditions agree."""
+
+
 @dataclass(frozen=True, slots=True)
 class Subcircuit:
-    """A subcircuit's definition: its pins, its parameters' defaults, and its body."""
+    """A subcircuit's definition: its pins, its defaults, local functions, and body."""
 
     name: str
     pins: tuple[str, ...]
     defaults: Mapping[str, Expression]
     body: tuple[Statement, ...]
     statement: Statement = field(repr=False)
+    functions: Mapping[str, Function] = field(default_factory=lambda: _NO_FUNCTIONS)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeviceVoltage:
+    """A capacitor's initial voltage across two nets of a subcircuit (``IC=``)."""
+
+    element: str
+    positive: str
+    negative: str
+    voltage: float
+
+
+@dataclass(frozen=True, slots=True)
+class _InitialState:
+    """Initial conditions and nodesets collected inside one translated subcircuit."""
+
+    initial_conditions: tuple[tuple[str, float], ...] = ()
+    nodesets: tuple[tuple[str, float], ...] = ()
+    capacitors: tuple[_DeviceVoltage, ...] = ()
+    inductors: tuple[tuple[str, float], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Built:
+    """A translated subcircuit: component, net spellings, and initial state."""
+
+    component: Component
+    nets: Mapping[str, str]
+    initial: _InitialState
 
 
 _MAX_CACHED_SCOPES: Final = 8
@@ -416,7 +457,7 @@ class Library:
         self._scopes: OrderedDict[tuple[Sample, float], dict[str, float]] = (
             OrderedDict()
         )
-        self._built: dict[str, Component] = {}
+        self._built: dict[str, _Built] = {}
         self._built_state: tuple[float, dict[str, Function]] | None = None
         self.temperature = temperature
         self.compatibility = compatibility
@@ -452,10 +493,16 @@ class Library:
     def read(self, text: str, file: str) -> None:
         """Adds the definitions of `text`, the contents of `file`.
 
+        Any ``.include`` or ``.lib`` directive, outside or inside a subcircuit, expands
+        in place relative to the directory of `file`.
+
         Raises:
-            SpiceError: When a statement is not a definition jolty reads.
+            SpiceError: When a statement is not a definition jolty reads, an included
+                file is missing, a section is not in the file, or files include one
+                another in a cycle.
         """
-        self._read(statements(text, file))
+        found, _ = _expanded_text(text, Path(file).parent, file, None, ())
+        self._read(found)
 
     def include(self, path: Path, section: str | None = None) -> None:
         """Adds the definitions of the file at `path`, or of its section `section`.
@@ -518,7 +565,8 @@ class Library:
             self._invalidate_caches()
         elif keyword in OPTIONS:
             self.options |= {
-                name: evaluate(value, {}) for name, value in _options(statement).items()
+                name: evaluate(inlined(value, self.functions), {})
+                for name, value in _options(statement).items()
             }
             self._built.clear()
         elif keyword == FUNCTION:
@@ -544,7 +592,7 @@ class Library:
             SpiceError: When no subcircuit is named `name`, or it holds what jolty
                 cannot read.
         """
-        return self._placed(name, _Drawing(None, ""), parameters)
+        return self._placed(name, _Drawing(None, ""), parameters).component
 
     def drawn(
         self, name: str, sample: Sample, path: str, /, **parameters: float
@@ -559,7 +607,147 @@ class Library:
             SpiceError: When no subcircuit is named `name`, or it holds what jolty
                 cannot read.
         """
-        return self._placed(name, _Drawing(sample, path), parameters)
+        return self._placed(name, _Drawing(sample, path), parameters).component
+
+    def initial_conditions_of(
+        self,
+        name: str,
+        path: str = "",
+        /,
+        *,
+        operating_point: bool = True,
+        connections: Mapping[str, str] | None = None,
+        **parameters: float,
+    ) -> dict[str, float]:
+        """The initial node voltages of the subcircuit `name`, in volts, by net path.
+
+        It gathers every ``.ic`` statement inside `name` and inside the subcircuits it
+        instantiates, remapping subcircuit pins onto the nets they connect to and
+        prefixing internal nets with the instance hierarchy. When `path` is empty,
+        `name` is treated as the top circuit and top-level ``.ic`` statements
+        (`self.initial_conditions`) are merged on top, with outer declarations
+        overriding inner ones. When `path` is non-empty, internal nets are prefixed by
+        ``f"{path}/"`` and optional `connections` map pins of `name` to external nets
+        (``"0"`` or `GROUND` maps to ground).
+
+        When `operating_point` is True (the default), device ``IC=`` parameters are
+        omitted, matching SPICE when a transient solves its operating point. When
+        `operating_point` is False (SPICE's ``UIC``), capacitor ``IC=`` voltages are
+        solved alongside ``.ic`` into node voltages, and any non-zero inductor ``IC=``
+        current is refused because `Transient.initial_conditions` accepts net voltages
+        alone (inspect inductor currents via
+        [`initial_currents_of`][jolty.spice.Library.initial_currents_of]).
+
+        Raises:
+            SpiceError: When no subcircuit is named `name`, `connections` names an
+                unknown pin, an initial condition contradicts ground or another
+                initial condition, or `operating_point` is False with a non-zero
+                inductor initial current.
+        """
+        subcircuit = self._subcircuits.get(name.casefold())
+        if subcircuit is None:
+            message = f"no subcircuit is named `{name}`"
+            raise SpiceError(message)
+        built = self._placed(name, _Drawing(None, ""), parameters)
+        port_map = _port_map(subcircuit, built, connections)
+        prefix = f"{path}{ir.SEPARATOR}" if path else ""
+        entries: list[tuple[str, float]] = [
+            (_remap_net(net, port_map, prefix), voltage)
+            for net, voltage in built.initial.initial_conditions
+        ]
+        if not path:
+            for node, voltage in self.initial_conditions.items():
+                resolved = (
+                    GROUND if node == "0" else built.nets.get(node.casefold(), node)
+                )
+                entries.append((_remap_net(resolved, port_map, prefix), voltage))
+        if operating_point:
+            return _resolve_node_voltages(entries, "an initial condition")
+        inductors = self._prefixed_inductors(built.initial.inductors, prefix)
+        for unknown_name, current in inductors.items():
+            if current != 0.0:
+                message = (
+                    f"inductor initial current `{unknown_name}` is {current!r} A; "
+                    "`Transient.initial_conditions` accepts net voltages alone"
+                )
+                raise SpiceError(message)
+        capacitors = tuple(
+            _DeviceVoltage(
+                element=f"{prefix}{capacitor.element}",
+                positive=_remap_net(capacitor.positive, port_map, prefix),
+                negative=_remap_net(capacitor.negative, port_map, prefix),
+                voltage=capacitor.voltage,
+            )
+            for capacitor in built.initial.capacitors
+        )
+        return _solve_initial_voltages(entries, capacitors)
+
+    def nodesets_of(
+        self,
+        name: str,
+        path: str = "",
+        /,
+        *,
+        connections: Mapping[str, str] | None = None,
+        **parameters: float,
+    ) -> dict[str, float]:
+        """The nodeset voltages of the subcircuit `name`, in volts, by net path.
+
+        It gathers every ``.nodeset`` statement inside `name` and inside the
+        subcircuits it instantiates, remapping pins and prefixing internal nets as
+        [`initial_conditions_of`][jolty.spice.Library.initial_conditions_of] does.
+        When `path` is empty, top-level ``.nodeset`` statements (`self.nodesets`) are
+        merged on top.
+
+        Raises:
+            SpiceError: When no subcircuit is named `name`, `connections` names an
+                unknown pin, or a nodeset assigns a non-zero voltage to ground.
+        """
+        subcircuit = self._subcircuits.get(name.casefold())
+        if subcircuit is None:
+            message = f"no subcircuit is named `{name}`"
+            raise SpiceError(message)
+        built = self._placed(name, _Drawing(None, ""), parameters)
+        port_map = _port_map(subcircuit, built, connections)
+        prefix = f"{path}{ir.SEPARATOR}" if path else ""
+        entries: list[tuple[str, float]] = [
+            (_remap_net(net, port_map, prefix), voltage)
+            for net, voltage in built.initial.nodesets
+        ]
+        if not path:
+            for node, voltage in self.nodesets.items():
+                resolved = (
+                    GROUND if node == "0" else built.nets.get(node.casefold(), node)
+                )
+                entries.append((_remap_net(resolved, port_map, prefix), voltage))
+        return _resolve_node_voltages(entries, "a nodeset")
+
+    def initial_currents_of(
+        self, name: str, path: str = "", /, **parameters: float
+    ) -> dict[str, float]:
+        """The initial inductor currents (`IC=`) of the subcircuit `name`, in amperes.
+
+        Each key is the engine unknown name of the inductor branch current, such as
+        ``L1:current``, ``X1/L1:current``, or ``K1:current1`` for a coupled inductor
+        winding, prefixed with ``f"{path}/"`` when `path` is non-empty. Currents are
+        scaled by each inductor's parallel multiplier `M` and enclosing subcircuit
+        multipliers.
+
+        Raises:
+            SpiceError: When no subcircuit is named `name`, or it holds what jolty
+                cannot read.
+        """
+        built = self._placed(name, _Drawing(None, ""), parameters)
+        prefix = f"{path}{ir.SEPARATOR}" if path else ""
+        return self._prefixed_inductors(built.initial.inductors, prefix)
+
+    @staticmethod
+    def _prefixed_inductors(
+        inductors: tuple[tuple[str, float], ...], prefix: str
+    ) -> dict[str, float]:
+        return {
+            f"{prefix}{unknown_name}": current for unknown_name, current in inductors
+        }
 
     def random_variables(
         self, name: str, path: str, /, **parameters: float
@@ -592,7 +780,7 @@ class Library:
         def read(probe: _Probe) -> dict[str, dict[str, float]]:
             built, self._built = self._built, {}
             try:
-                placed = self._placed(name, _Drawing(probe, path), given)
+                placed = self._placed(name, _Drawing(probe, path), given).component
             finally:
                 self._built = built
             return _devices(placed, f"{path}{ir.SEPARATOR}")
@@ -674,13 +862,13 @@ class Library:
             message = f"no model is named `{name}`"
             raise SpiceError(message)
         scope = self.values()
-        model = _described(card, scope)
+        model = _described(card, scope, self.functions)
         try:
             if card.kind in models.GEOMETRIC:
-                read = models.geometric_values(card, scope)
+                read = models.geometric_values(card, scope, functions=self.functions)
                 models.geometric(card, read, {}, card.statement)
             else:
-                models.device(card, scope, {}, card.statement)
+                models.device(card, scope, {}, card.statement, functions=self.functions)
         except UndefinedError as error:
             return Use(card.name, model, str(error), error.name)
         except SpiceError as error:
@@ -689,7 +877,7 @@ class Library:
 
     def _placed(
         self, name: str, drawing: _Drawing, parameters: Mapping[str, float]
-    ) -> Component:
+    ) -> _Built:
         subcircuit = self._subcircuits.get(name.casefold())
         if subcircuit is None:
             message = f"no subcircuit is named `{name}`"
@@ -702,7 +890,7 @@ class Library:
         else:
             scope = self._scope(drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
-        return self._component(subcircuit, scope, given, drawing)
+        return self._build(subcircuit, scope, given, drawing)
 
     def _define(self, opened: Statement, body: list[Statement]) -> None:
         words = tokens(opened.text)
@@ -711,12 +899,24 @@ class Library:
             raise opened.fail(message)
         name, rest = words[1], words[2:]
         pins, defaults = _pins_and_parameters(opened, rest)
+        local_functions: dict[str, Function] = {}
         # ngspice moves a subcircuit's parameters onto its line, so an instance may
         # give any of them (`inp_reorder_params_subckt` in `inpcom.c`).
         for statement in _unconditional(body):
-            if _keyword(statement) in PARAMETERS:
+            keyword = _keyword(statement)
+            if keyword in PARAMETERS:
                 defaults |= dict(_assignments(statement))
-        subcircuit = Subcircuit(name, tuple(pins), defaults, tuple(body), opened)
+            elif keyword == FUNCTION:
+                function_name, function = _function(statement)
+                local_functions[function_name] = function
+        subcircuit = Subcircuit(
+            name,
+            tuple(pins),
+            defaults,
+            tuple(body),
+            opened,
+            MappingProxyType(local_functions) if local_functions else _NO_FUNCTIONS,
+        )
         self._subcircuits[name.casefold()] = subcircuit
         self._built.clear()
 
@@ -786,14 +986,14 @@ class Library:
         """
         return _evaluate_stochastic(self._plan(), drawing)
 
-    def _component(
+    def _build(
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
-    ) -> Component:
-        """The component of `subcircuit` with the `given` parameters, in `scope`.
+    ) -> _Built:
+        """The built `subcircuit` with the `given` parameters, in `scope`.
 
         Its statistical functions draw as `drawing` does. A multiplier `m` given to a
         subcircuit that has no parameter of that name multiplies every element it
@@ -822,11 +1022,16 @@ class Library:
         }
         local = dict(scope)
         local.update(given)
+        scoped_functions = (
+            {**self.functions, **subcircuit.functions}
+            if subcircuit.functions
+            else self.functions
+        )
         _resolve_into(
             defaults,
             local,
             drawing.draws,
-            self.functions,
+            scoped_functions,
             partial=self.surveying,
         )
         values = {
@@ -848,7 +1053,7 @@ class Library:
             lock=self._cache_lock,
         )
         if drawing.sample is not None:
-            return _Translation(self, subcircuit, (scope, local), options).component(
+            return _Translation(self, subcircuit, (scope, local), options).translate(
                 name
             )
         state = (self.temperature, self.functions)
@@ -858,8 +1063,12 @@ class Library:
         if name not in self._built:
             self._built[name] = _Translation(
                 self, subcircuit, (scope, local), options
-            ).component(name)
+            ).translate(name)
         return self._built[name]
+
+    def known_models(self, local: Mapping[str, ModelCard]) -> dict[str, ModelCard]:
+        """All models visible inside a subcircuit, local shadowing global."""
+        return {**self._models, **local}
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
         """The model `name`, defined in a subcircuit's body or globally."""
@@ -894,6 +1103,8 @@ class Library:
         local: Mapping[str, ModelCard],
         instance: Mapping[str, float],
         scope: Mapping[str, float],
+        *,
+        functions: Mapping[str, Function] = _NO_FUNCTIONS,
     ) -> ModelCard | None:
         """The bin of the model `name` an `instance` takes, as ngspice selects it.
 
@@ -909,7 +1120,9 @@ class Library:
         bins = _bins(name)
         for cards in (local, self._models):
             for key, card in reversed(list(cards.items())):
-                if bins.fullmatch(key) and models.holds(card, scope, size):
+                if bins.fullmatch(key) and models.holds(
+                    card, scope, size, functions=functions
+                ):
                     return card
         return None
 
@@ -942,7 +1155,17 @@ class Library:
 
         Its statistical functions draw as `drawing` does.
         """
-        return self._component(subcircuit, scope, given, drawing)
+        return self._build(subcircuit, scope, given, drawing).component
+
+    def place_built(
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        given: Mapping[str, float],
+        drawing: _Drawing,
+    ) -> _Built:
+        """The built subcircuit (component, nets, initial state) for an instance."""
+        return self._build(subcircuit, scope, given, drawing)
 
 
 def load(*paths: Path | str) -> Library:
@@ -967,10 +1190,11 @@ def _expanded(
     """The statements of the file at `path`, or of its section `section`, expanded.
 
     As ngspice reads them, each ``.include`` is replaced by its file's statements and
-    each ``.lib file section`` by that section's, a file's path read from the directory
-    of the file that names it; a file read whole holds its statements outside its
-    sections, which ``.lib name`` and ``.endl`` enclose. `within` lists the files and
-    sections being read already, which include this one.
+    each ``.lib file section`` by that section's, both outside and inside subcircuits,
+    a file's path read from the directory of the file that names it; a file read whole
+    holds its statements outside its sections, which ``.lib name`` and ``.endl``
+    enclose. `within` lists the files and sections being read already, which include
+    this one.
 
     Raises:
         SpiceError: When the file is missing, has no such section, or files include one
@@ -985,48 +1209,233 @@ def _expanded(
     except OSError as error:
         message = f"cannot read {path}: {error.strerror}"
         raise SpiceError(message) from None
-    found: list[Statement] = []
-    opened: str | None = None
-    seen = False
-    for statement in statements(text, path.name):
-        words = [word.strip("'\"") for word in tokens(statement.text)]
-        keyword = words[0].casefold()
-        if keyword == ".lib" and len(words) == 2:  # noqa: PLR2004 - `.lib` and a name
-            if opened is not None:
-                message = f"a section opens within section `{opened}`"
-                raise statement.fail(message)
-            opened = words[1].casefold()
-            seen |= opened == reading[1]
-        elif keyword == ".endl":
-            opened = None
-        elif opened == reading[1]:
-            found.extend(_included(statement, words, path, (*within, reading)))
+    found, seen = _expanded_text(
+        text, path.parent, path.name, section, (*within, reading)
+    )
     if section is not None and not seen:
         message = f"{path} has no section `{section}`"
         raise SpiceError(message)
     return found
 
 
+def _expanded_text(
+    text: str,
+    directory: Path,
+    label: str,
+    section: str | None,
+    within: tuple[tuple[Path, str | None], ...],
+) -> tuple[list[Statement], bool]:
+    """Expands ``.include`` and ``.lib`` directives in `text` relative to `directory`.
+
+    Returns the expanded statements of `section` (or outside sections when `section` is
+    None) and whether `section` was seen. Inside a ``.subckt ... .ends`` body, a
+    two-word ``.lib`` is never treated as opening a library section; it reaches
+    `_included` and fails with the malformed directive error.
+    """
+    target = None if section is None else section.casefold()
+    found: list[Statement] = []
+    opened: str | None = None
+    subcircuit_depth = 0
+    seen = False
+    for statement in statements(text, label):
+        words = [word.strip("'\"") for word in tokens(statement.text)]
+        keyword = words[0].casefold()
+        if (
+            subcircuit_depth == 0 and keyword == ".lib" and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
+        ):
+            if opened is not None:
+                message = f"a section opens within section `{opened}`"
+                raise statement.fail(message)
+            opened = words[1].casefold()
+            seen |= opened == target
+        elif subcircuit_depth == 0 and keyword == ".endl":
+            opened = None
+        elif opened == target:
+            expanded = _included(statement, words, directory, within)
+            for inner in expanded:
+                inner_keyword = _keyword(inner)
+                if inner_keyword == ".subckt":
+                    subcircuit_depth += 1
+                elif inner_keyword == ".ends":
+                    subcircuit_depth = max(subcircuit_depth - 1, 0)
+            found.extend(expanded)
+    return found, seen
+
+
 def _included(
     statement: Statement,
     words: Sequence[str],
-    path: Path,
+    directory: Path,
     within: tuple[tuple[Path, str | None], ...],
 ) -> list[Statement]:
-    """`statement` of the file at `path`, of `words`, or what it includes, expanded.
+    """`statement` in `directory`, of `words`, or what it includes, expanded.
 
     Raises:
         SpiceError: When it includes a file amiss.
     """
     keyword = words[0].casefold()
     if keyword == ".lib" and len(words) == 3:  # noqa: PLR2004 - a file and a section
-        return _expanded(path.parent / words[1], words[2], within)
+        return _expanded(directory / words[1], words[2], within)
     if keyword in _INCLUDES and len(words) == 2:  # noqa: PLR2004 - and a file
-        return _expanded(path.parent / words[1], None, within)
+        return _expanded(directory / words[1], None, within)
     if keyword in _INCLUDES or keyword == ".lib":
         message = "a file is included by its path, a section by the file's and name"
         raise statement.fail(message)
     return [statement]
+
+
+def _port_map(
+    subcircuit: Subcircuit,
+    built: _Built,
+    connections: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Maps `subcircuit`'s canonical pin names to the external nets in `connections`."""
+    if connections is None or not connections:
+        return {}
+    canonical = {pin.casefold(): built.nets[pin.casefold()] for pin in subcircuit.pins}
+    mapped: dict[str, str] = {}
+    for pin, target in connections.items():
+        pin_name = canonical.get(pin.casefold())
+        if pin_name is None:
+            message = f"`{subcircuit.name}` has no pin `{pin}`"
+            raise SpiceError(message)
+        mapped[pin_name] = GROUND if target in {"0", GROUND} else target
+    return mapped
+
+
+def _remap_net(net: str, port_map: Mapping[str, str], prefix: str) -> str:
+    """Remaps a net from a child subcircuit into its parent's namespace."""
+    if net == GROUND:
+        return GROUND
+    if net in port_map:
+        return port_map[net]
+    return f"{prefix}{net}"
+
+
+def _resolve_node_voltages(
+    entries: Sequence[tuple[str, float]],
+    what: str,
+) -> dict[str, float]:
+    """Resolves ``.ic`` or ``.nodeset`` entries, checking ground consistency.
+
+    Raises:
+        SpiceError: When ground is assigned a non-zero voltage.
+    """
+    known: dict[str, float] = {}
+    for net, voltage in entries:
+        if net == GROUND:
+            if not math.isclose(
+                voltage, 0.0, rel_tol=0.0, abs_tol=_VOLTAGE_ABSOLUTE_TOLERANCE
+            ):
+                message = (
+                    f"{what} on node `0`, SPICE's global ground, is {voltage!r} V, "
+                    "while ground is 0 V"
+                )
+                raise SpiceError(message)
+            continue
+        known[net] = voltage
+    return known
+
+
+def _capacitor_graph(
+    capacitors: Sequence[_DeviceVoltage],
+) -> tuple[dict[str, list[tuple[str, float, str]]], list[str]]:
+    """Builds the potential-difference graph across capacitor ``IC=`` edges."""
+    adjacency: dict[str, list[tuple[str, float, str]]] = {}
+    ordered_nodes: list[str] = []
+    seen_nodes: set[str] = set()
+    for capacitor in capacitors:
+        if capacitor.positive == capacitor.negative:
+            if not math.isclose(
+                capacitor.voltage,
+                0.0,
+                rel_tol=0.0,
+                abs_tol=_VOLTAGE_ABSOLUTE_TOLERANCE,
+            ):
+                message = (
+                    f"initial voltage of shorted capacitor `{capacitor.element}` is "
+                    f"{capacitor.voltage!r} V, while its terminals share "
+                    f"`{capacitor.positive}`"
+                )
+                raise SpiceError(message)
+            continue
+        adjacency.setdefault(capacitor.negative, []).append(
+            (capacitor.positive, capacitor.voltage, capacitor.element)
+        )
+        adjacency.setdefault(capacitor.positive, []).append(
+            (capacitor.negative, -capacitor.voltage, capacitor.element)
+        )
+        for node in (capacitor.negative, capacitor.positive):
+            if node not in seen_nodes:
+                seen_nodes.add(node)
+                ordered_nodes.append(node)
+    return adjacency, ordered_nodes
+
+
+def _propagate_voltages(
+    known: dict[str, float],
+    adjacency: Mapping[str, Sequence[tuple[str, float, str]]],
+    seeds: Sequence[str],
+    visited: set[str],
+) -> None:
+    """Propagates known node voltages across capacitor ``IC=`` edges, checking loops."""
+    queue = deque(seeds)
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        base = known[current]
+        for neighbor, delta, element in adjacency.get(current, ()):
+            proposed = base + delta
+            if neighbor not in known:
+                known[neighbor] = proposed
+                queue.append(neighbor)
+                continue
+            existing = known[neighbor]
+            if not math.isclose(
+                existing,
+                proposed,
+                rel_tol=_VOLTAGE_RELATIVE_TOLERANCE,
+                abs_tol=_VOLTAGE_ABSOLUTE_TOLERANCE,
+            ):
+                label = "node `0` (ground)" if neighbor == GROUND else f"`{neighbor}`"
+                message = (
+                    f"contradictory initial conditions on {label}: "
+                    f"{existing!r} V and {proposed!r} V across `{element}`"
+                )
+                raise SpiceError(message)
+
+
+def _solve_initial_voltages(
+    entries: Sequence[tuple[str, float]],
+    capacitors: Sequence[_DeviceVoltage],
+) -> dict[str, float]:
+    """Solves ``.ic`` node voltages and capacitor ``IC=`` voltage differences.
+
+    Propagates voltages from ground and every ``.ic`` node across capacitor edges
+    ``v(positive) - v(negative) = voltage``. Any floating capacitor component not
+    connected to ground or an ``.ic`` node is anchored with its first negative terminal
+    at 0 V, matching ``UIC`` default zero initialization of unassigned nets.
+
+    Raises:
+        SpiceError: When a shorted capacitor has a non-zero ``IC=``, ground is assigned
+            a non-zero voltage, or two paths disagree on a net's initial voltage.
+    """
+    known: dict[str, float] = {
+        GROUND: 0.0,
+        **_resolve_node_voltages(entries, "an initial condition"),
+    }
+    if not capacitors:
+        return {net: voltage for net, voltage in known.items() if net != GROUND}
+    adjacency, ordered_nodes = _capacitor_graph(capacitors)
+    visited: set[str] = set()
+    _propagate_voltages(known, adjacency, list(known), visited)
+    for node in ordered_nodes:
+        if node not in known:
+            known[node] = 0.0
+            _propagate_voltages(known, adjacency, [node], visited)
+    return {net: voltage for net, voltage in known.items() if net != GROUND}
 
 
 def _options(statement: Statement) -> dict[str, Expression]:
@@ -1310,12 +1719,23 @@ class _Translation:
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
         self.parameters: dict[str, Expression] = {}
+        self.functions: dict[str, Function] = {
+            **library.functions,
+            **subcircuit.functions,
+        }
         self.models: dict[str, ModelCard] = {}
         self.nets: dict[str, str] = {}
         self.instances: list[tuple[int, ir.Instance]] = []
         self.children: dict[str, Component] = {}
         self.senses: dict[str, _Sense] = {}
         self.couplings: list[_Coupling] = []
+        self.initial_statements: list[tuple[str, Statement]] = []
+        self.child_initial_conditions: list[tuple[str, float]] = []
+        self.child_nodesets: list[tuple[str, float]] = []
+        self.capacitor_initial_voltages: list[_DeviceVoltage] = []
+        self.inductor_initial_currents: dict[str, tuple[str, float]] = {}
+        self.coupled_initial_currents: list[tuple[str, float]] = []
+        self.child_initial_currents: list[tuple[str, float]] = []
         self.grounded = False
         for pin in subcircuit.pins:
             if pin == "0":
@@ -1323,16 +1743,17 @@ class _Translation:
                 raise subcircuit.statement.fail(message)
             self.net(pin)
 
-    def component(self, name: str) -> Component:
-        """The component, named `name`.
+    def translate(self, name: str) -> _Built:
+        """The component, named `name`, with its net spellings and initial state.
 
         Its ``.if`` blocks choose by its parameters, those defined outside them.
         """
         body = self.subcircuit.body
         unconditional = {id(statement) for statement in _unconditional(body)}
         elements: list[Statement] = []
-        for statement in _chosen(body, self.scope):
-            if id(statement) in unconditional and _keyword(statement) in PARAMETERS:
+        for statement in _chosen(body, self.scope, self.functions):
+            keyword = _keyword(statement)
+            if id(statement) in unconditional and keyword in {FUNCTION, *PARAMETERS}:
                 continue
             if statement.text.startswith("."):
                 self._define(statement)
@@ -1340,7 +1761,7 @@ class _Translation:
                 elements.append(statement)
         if self.parameters:
             _resolve_into(
-                self.parameters, self.scope, self.drawing.draws, self.library.functions
+                self.parameters, self.scope, self.drawing.draws, self.functions
             )
         for statement in elements:
             if _letter(statement) in _SENSED:
@@ -1360,7 +1781,42 @@ class _Translation:
             instance for _, instance in sorted(self.instances, key=lambda pair: pair[0])
         )
         definition = ir.Component(ports=tuple(ports), instances=instances)
-        return Component(name, definition, tuple(self.children.values()))
+        component = Component(name, definition, tuple(self.children.values()))
+        return _Built(
+            component, MappingProxyType(dict(self.nets)), self._initial_state()
+        )
+
+    def _initial_state(self) -> _InitialState:
+        """Evaluates local ``.ic`` / ``.nodeset`` lines and gathers device ``IC=``."""
+        initial_conditions = list(self.child_initial_conditions)
+        nodesets = list(self.child_nodesets)
+        for keyword, statement in self.initial_statements:
+            target = initial_conditions if keyword == ".ic" else nodesets
+            for node, voltage in _voltages(
+                statement, self.scope, self.functions
+            ).items():
+                resolved = (
+                    GROUND if node == "0" else self.nets.get(node.casefold(), node)
+                )
+                target.append((resolved, voltage))
+        inductors = (
+            *self.child_initial_currents,
+            *self.coupled_initial_currents,
+            *(
+                (f"{element_name}:current", current)
+                for element_name, current in self.inductor_initial_currents.values()
+            ),
+        )
+        return _InitialState(
+            initial_conditions=tuple(initial_conditions),
+            nodesets=tuple(nodesets),
+            capacitors=tuple(self.capacitor_initial_voltages),
+            inductors=inductors,
+        )
+
+    def component(self, name: str) -> Component:
+        """The component, named `name`."""
+        return self.translate(name).component
 
     def net(self, node: str) -> str:
         """The net of SPICE node `node`.
@@ -1411,7 +1867,7 @@ class _Translation:
             SpiceError: When `text` is not an expression, or calls a function that
                 calls itself.
         """
-        return inlined(parse(text), self.library.functions)
+        return inlined(parse(text), self.functions)
 
     def add(
         self,
@@ -1462,7 +1918,7 @@ class _Translation:
     def _read_model(self, statement: Statement) -> ModelCard:
         """Parses a local `.model`, reusing cached cards for non-`AKO:` definitions."""
         if self._parsed_models is None or models.is_derived(statement):
-            return models.read(statement, self.models)
+            return models.read(statement, self.library.known_models(self.models))
         if self._cache_lock is not None:
             with self._cache_lock:
                 card = self._parsed_models.get(statement)
@@ -1478,10 +1934,10 @@ class _Translation:
         return card
 
     def _define(self, statement: Statement) -> None:
-        """Reads the model or the parameters `statement` defines.
+        """Reads the model, parameter, function, initial condition, or nodeset defined.
 
         Raises:
-            SpiceError: When the statement defines neither.
+            SpiceError: When the statement defines none of them.
         """
         keyword = _keyword(statement)
         if keyword == ".model":
@@ -1489,8 +1945,16 @@ class _Translation:
             self.models[card.name.casefold()] = card
         elif keyword in PARAMETERS:
             self.parameters.update(_assignments(statement))
+        elif keyword == FUNCTION:
+            name, function = _function(statement)
+            self.functions[name] = function
+        elif keyword in INITIAL:
+            self.initial_statements.append((keyword, statement))
         else:
-            message = "a subcircuit holds elements, models and parameters only"
+            message = (
+                "a subcircuit holds elements, models, parameters, functions, "
+                "initial conditions and nodesets only"
+            )
             raise statement.fail(message)
 
     def _join_sensed(self) -> None:
@@ -1595,7 +2059,14 @@ class _Translation:
                 key=lambda name: inductors[name][0],
             )
             windings = [inductors[name][1] for name in names]
-            self.instances.append(_coupled(group, names, windings))
+            line, instance = _coupled(group, names, windings)
+            self.instances.append((line, instance))
+            for winding_index, name in enumerate(names, start=1):
+                entry = self.inductor_initial_currents.pop(name, None)
+                if entry is not None:
+                    self.coupled_initial_currents.append(
+                        (f"{instance.name}:current{winding_index}", entry[1])
+                    )
             coupled |= set(names)
         self.instances = [
             (line, instance)
@@ -1673,6 +2144,7 @@ class _Translation:
             instance,
             statement,
             lambda name: self.drawing.draws(f"{prefix}.{name}"),
+            functions=self.functions,
         )
 
 
@@ -1905,20 +2377,24 @@ def _needed(translation: _Translation, statement: Statement) -> str:
         return f"{kind} whose value reads a voltage" if reads else kind
     if letter == "n":
         return f"{VERILOG_A} `{found.kind}`"
-    return _described(found, translation.scope)
+    return _described(found, translation.scope, translation.functions)
 
 
-def _described(card: ModelCard, scope: Mapping[str, float]) -> str:
+def _described(
+    card: ModelCard,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> str:
     """The model `card` makes, by its type and level, and its version if it gives one.
 
     A MOSFET, a bipolar transistor and a diode are named with their levels, such as
-    ``BSIM4 4.5 (level 54)``, the level evaluated in `scope`.
+    ``BSIM4 4.5 (level 54)``, the level evaluated in `scope` with `functions` inlined.
     """
     family = _FAMILIES.get(card.kind, f"`{card.kind}`")
     if family not in {*_LEVELS, "diode"}:
         return family
     written = card.parameters.get("level")
-    level = 1.0 if written is None else evaluate(written, scope)
+    level = 1.0 if written is None else evaluate(inlined(written, functions), scope)
     named = _LEVELS.get(family, {}).get(int(level), family)
     version = None if card.version is None else number(card.version)
     given = f" {version:g}" if version is not None else ""
@@ -1958,7 +2434,11 @@ class _Block:
     taken: bool
 
 
-def _chosen(body: Sequence[Statement], scope: Mapping[str, float]) -> list[Statement]:
+def _chosen(
+    body: Sequence[Statement],
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> list[Statement]:
     """The statements of `body` its ``.if`` blocks choose, with `scope`'s values.
 
     A block holds the statements of its first branch whose condition, an expression
@@ -1978,7 +2458,7 @@ def _chosen(body: Sequence[Statement], scope: Mapping[str, float]) -> list[State
             raise statement.fail(message)
         match keyword:
             case ".if":
-                held = within and _condition(statement, scope)
+                held = within and _condition(statement, scope, functions)
                 blocks.append(_Block(chosen=held, taken=held))
             case ".elseif" | ".else":
                 block = blocks[-1]
@@ -1986,7 +2466,7 @@ def _chosen(body: Sequence[Statement], scope: Mapping[str, float]) -> list[State
                 held = (
                     outer
                     and not block.taken
-                    and (keyword == ".else" or _condition(statement, scope))
+                    and (keyword == ".else" or _condition(statement, scope, functions))
                 )
                 block.chosen, block.taken = held, block.taken or held
             case ".endif":
@@ -1999,10 +2479,14 @@ def _chosen(body: Sequence[Statement], scope: Mapping[str, float]) -> list[State
     return found
 
 
-def _condition(statement: Statement, scope: Mapping[str, float]) -> bool:
+def _condition(
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> bool:
     """Whether the condition of an ``.if`` or ``.elseif`` statement holds in `scope`."""
     _, _, condition = statement.text.partition(" ")
-    return evaluate(parse(condition), scope) != 0
+    return evaluate(inlined(parse(condition), functions), scope) != 0
 
 
 def _keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
@@ -2027,10 +2511,6 @@ def _keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
         position += 1
     return positional, assigned
 
-
-_IGNORED_KEYWORDS: Final = frozenset({"ic"})
-"""Element keywords that change nothing jolty computes: initial conditions, which only
-act when a transient skips its operating point."""
 
 _DRIFT: Final = {
     "tc1": "temperature_coefficient",
@@ -2075,19 +2555,32 @@ def _passive(
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
         stored = frozenset({"q"}) if model == "capacitor" else frozenset()
+        initial = (
+            frozenset({"ic"}) if model in {"capacitor", "inductor"} else frozenset()
+        )
         _check_keywords(
             statement,
             assigned,
-            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts, *sized, *stored}),
+            frozenset(
+                {letter, "m", "tc", "temp", "dtemp", *drifts, *sized, *stored, *initial}
+            ),
         )
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
             raise statement.fail(message)
-        _, a, b, *rest = positional
+        element_name, a, b, *rest = positional
         card, values = _card_and_values(translation, rest, {kind, letter} & _CARDS)
         if letter in assigned:
             values.extend(assigned[letter])
+        initial_value = _read_initial_keyword(translation, statement, assigned)
         if _behaves(translation, statement, (a, b), values, assigned):
+            _record_passive_initial(
+                translation,
+                model,
+                element_name,
+                (translation.net(a), translation.net(b)),
+                initial_value=initial_value,
+            )
             return
         geometric = card is not None and card.kind in models.GEOMETRIC
         if len(values) > 1 or not (values or geometric):
@@ -2127,14 +2620,56 @@ def _passive(
                 for name, amount in given.items()
                 if name in _FLICKER
             }
-        translation.add(
-            statement,
+        net_a, net_b = translation.net(a), translation.net(b)
+        translation.add(statement, model, parameters, {"a": net_a, "b": net_b})
+        _record_passive_initial(
+            translation,
             model,
-            parameters,
-            {"a": translation.net(a), "b": translation.net(b)},
+            element_name,
+            (net_a, net_b),
+            initial_value=initial_value,
+            copies=copies,
         )
 
     return translated
+
+
+def _record_passive_initial(  # noqa: PLR0913 - element identity, nets, IC and copies
+    translation: _Translation,
+    model: str,
+    element_name: str,
+    nets: tuple[str, str],
+    *,
+    initial_value: float | None,
+    copies: float = 1.0,
+) -> None:
+    """Records a capacitor ``IC=`` voltage or inductor ``IC=`` current."""
+    if initial_value is None:
+        return
+    if model == "capacitor":
+        translation.capacitor_initial_voltages.append(
+            _DeviceVoltage(element_name, nets[0], nets[1], initial_value)
+        )
+    elif model == "inductor":
+        translation.inductor_initial_currents[element_name.casefold()] = (
+            element_name,
+            initial_value * copies,
+        )
+
+
+def _read_initial_keyword(
+    translation: _Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+) -> float | None:
+    """Evaluates an element's ``IC=`` initial condition if present."""
+    words = assigned.get("ic")
+    if words is None:
+        return None
+    if len(words) != 1:
+        message = "`IC` has one value"
+        raise statement.fail(message)
+    return translation.value(words[0])
 
 
 def _behaves(
@@ -2403,6 +2938,7 @@ def _valued(
             translation.scope,
             lambda name: translation.drawing.draws(f"{prefix}.{name}"),
             statement,
+            functions=translation.functions,
         )
         made = models.geometric(card, values, own, statement)
         return made.value, made.drift
@@ -2410,11 +2946,20 @@ def _valued(
     if card is None:
         return value, {}
     drawing, prefix = translation.drawing, card.name.casefold()
+    functions = translation.functions
     factor = card.parameters.get(letter, Number(1.0))
-    value *= evaluate(factor, translation.scope, drawing.draws(f"{prefix}.{letter}"))
-    _check_model(card, translation.scope, read | {letter}, statement)
+    value *= evaluate(
+        inlined(factor, functions),
+        translation.scope,
+        drawing.draws(f"{prefix}.{letter}"),
+    )
+    _check_model(card, translation.scope, read | {letter}, statement, functions)
     given = {
-        name: evaluate(expression, translation.scope, drawing.draws(f"{prefix}.{name}"))
+        name: evaluate(
+            inlined(expression, functions),
+            translation.scope,
+            drawing.draws(f"{prefix}.{name}"),
+        )
         for name, expression in card.parameters.items()
         if name in read
     }
@@ -2471,9 +3016,9 @@ def _coefficients(
 def _check_keywords(
     statement: Statement, assigned: Mapping[str, list[str]], allowed: frozenset[str]
 ) -> None:
-    """Fails on any keyword neither `allowed` nor one that changes nothing."""
+    """Fails on any keyword not in `allowed`."""
     for keyword in assigned:
-        if keyword not in allowed and keyword not in _IGNORED_KEYWORDS:
+        if keyword not in allowed:
             message = f"jolty reads no `{keyword.upper()}` here"
             raise statement.fail(message)
 
@@ -2487,6 +3032,7 @@ def _check_model(
     scope: Mapping[str, float],
     allowed: frozenset[str],
     statement: Statement,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> None:
     """Checks a resistor's, capacitor's or inductor's model card.
 
@@ -2499,7 +3045,7 @@ def _check_model(
     for name, expression in card.parameters.items():
         if name in allowed or name == "af":
             continue
-        if evaluate(expression, scope) != 0:
+        if evaluate(inlined(expression, functions), scope) != 0:
             raise models.unmatched(card, name, statement)
 
 
@@ -2711,7 +3257,13 @@ def _semiconductor(
             instance["scale"] = library.options.get("scale", 1.0)
         card = library.model(rest[0], cards)
         if card is None and "nmos" in kinds:
-            card = library.binned(rest[0], cards, instance, translation.scope)
+            card = library.binned(
+                rest[0],
+                cards,
+                instance,
+                translation.scope,
+                functions=translation.functions,
+            )
             if card is None:
                 _unbinned(translation, statement, rest[0], instance)
         if card is None:
@@ -2749,7 +3301,11 @@ def _unbinned(
     """
     library = translation.library
     card = library.card(name, translation.models)
-    middle = None if card is None else models.centre(card, translation.scope)
+    middle = (
+        None
+        if card is None
+        else models.centre(card, translation.scope, functions=translation.functions)
+    )
     if middle is None:
         return
     length, width = middle
@@ -2932,7 +3488,9 @@ def _bipolar(translation: _Translation, statement: Statement) -> None:
         "substrate": translation.net(substrate),
     }
     heating = (
-        models.vbic_heating(card, translation.scope, instance)
+        models.vbic_heating(
+            card, translation.scope, instance, functions=translation.functions
+        )
         if len(nodes) == most == 5  # noqa: PLR2004 - a VBIC's thermal node, its fifth
         else None
     )
@@ -2972,7 +3530,7 @@ def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
         elif first == "value" and not by_current:
             expression = translation.parse(rest[2] if rest[1:2] == ["="] else rest[1])
         elif first == "table" and not by_current:
-            expression = _table(statement, rest)
+            expression = _table(translation, statement, rest)
         elif by_current and len(rest) == 2:  # noqa: PLR2004 - a source and a gain
             _linear_current(translation, statement, (positive, negative), rest, output)
             return
@@ -3037,7 +3595,9 @@ _ROUNDING: Final = 0.1
 rounds: its XSPICE ``pwl`` model's ``input_domain``."""
 
 
-def _table(statement: Statement, rest: list[str]) -> Expression:
+def _table(
+    translation: _Translation, statement: Statement, rest: list[str]
+) -> Expression:
     """``TABLE {x} = (x1, y1) …``, as ngspice reads it.
 
     It interpolates its points, holds beyond the ends, and rounds its corners. The
@@ -3051,7 +3611,9 @@ def _table(statement: Statement, rest: list[str]) -> Expression:
         message = "a TABLE's points come in pairs of numbers"
         raise statement.fail(message)
     points = [Number(value) for value in written if value is not None]
-    return Call("rounded_table", (parse(rest[1]), Number(_ROUNDING), *points))
+    return Call(
+        "rounded_table", (translation.parse(rest[1]), Number(_ROUNDING), *points)
+    )
 
 
 def _polynomial(
@@ -3260,7 +3822,7 @@ TRANSMISSION_LINE: Final = {
 gives them, each parameter's own name first."""
 
 _LINE_KEYWORDS: Final = frozenset(
-    {*TRANSMISSION_LINE, "f", "nl", "v1", "i1", "v2", "i2"}
+    {*TRANSMISSION_LINE, "f", "nl", "ic", "v1", "i1", "v2", "i2"}
 )
 """What a T element gives: its parameters, the frequency at which it is a normalized
 length, and initial conditions, as ``tra.c`` (lines 13 to 22) names them."""
@@ -3276,8 +3838,8 @@ def _transmission_line(translation: _Translation, statement: Statement) -> None:
     Its characteristic impedance is ``Z0``, or ``ZO``. Its delay is ``TD``, or else the
     normalized length ``NL`` over the frequency ``F``, either taking ngspice's default
     where it is not given (``tratemp.c``, lines 35 to 37). Its initial conditions,
-    ``IC`` or ``V1``, ``I1``, ``V2`` and ``I2``, change nothing jolty computes, as an
-    element's ``IC`` does not.
+    ``IC`` or ``V1``, ``I1``, ``V2`` and ``I2``, are accepted and not applied by
+    jolty's transmission line model.
     """
     positional, assigned = _keywords(tokens(statement.text))
     _check_keywords(statement, assigned, _LINE_KEYWORDS)
@@ -3350,7 +3912,7 @@ def _instance(translation: _Translation, statement: Statement) -> None:
             f"`{subcircuit.name}` has {len(subcircuit.pins)} pins, not {len(nodes)}"
         )
         raise statement.fail(message)
-    functions = translation.library.functions
+    functions = translation.functions
     given = translation.multiplied(
         {
             parameter: evaluate(
@@ -3359,15 +3921,38 @@ def _instance(translation: _Translation, statement: Statement) -> None:
             for parameter, expression in models.assignments(statement, assigned).items()
         }
     )
-    child = translation.library.place(
+    built = translation.library.place_built(
         subcircuit, translation.globals, given, translation.drawing.within(name)
     )
+    child = built.component
     ports = [port.name for port in child.definition.ports]
     terminals = {
         port: translation.net(node) for port, node in zip(ports, nodes, strict=False)
     }
     if GROUND in ports:
         terminals[GROUND] = translation.net("0")
+    prefix = f"{name}{ir.SEPARATOR}"
+    translation.child_initial_conditions.extend(
+        (_remap_net(net, terminals, prefix), voltage)
+        for net, voltage in built.initial.initial_conditions
+    )
+    translation.child_nodesets.extend(
+        (_remap_net(net, terminals, prefix), voltage)
+        for net, voltage in built.initial.nodesets
+    )
+    translation.capacitor_initial_voltages.extend(
+        _DeviceVoltage(
+            element=f"{prefix}{capacitor.element}",
+            positive=_remap_net(capacitor.positive, terminals, prefix),
+            negative=_remap_net(capacitor.negative, terminals, prefix),
+            voltage=capacitor.voltage,
+        )
+        for capacitor in built.initial.capacitors
+    )
+    translation.child_initial_currents.extend(
+        (f"{prefix}{unknown_name}", current)
+        for unknown_name, current in built.initial.inductors
+    )
     translation.children[child.name] = child
     translation.instances.append(
         (

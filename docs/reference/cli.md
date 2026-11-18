@@ -34,6 +34,8 @@ Build a script's circuit and run a plan's analyses on it.
 | `--plan` |  | Python file defining plan(), which returns a Plan; defaults to the script. |
 | `--output` |  | Where to save the circuit; defaults to &lt;script&gt;.jolty.json. |
 | `--results` |  | Where to save the results; defaults to &lt;script&gt;.results.npz. |
+| `--raw` |  | Where to save a SPICE raw file of completed operating point, DC sweep, small-signal response and transient analyses; omitted when unset. |
+| `--raw-format` | `binary` | Encoding of the SPICE raw file named by --raw: 'binary' for little-endian doubles, or 'ascii'. |
 | `--check`, `--no-check` | `True` | Check the circuit's structure after building it. |
 | `--error` |  | Rules to report as errors, such as 'shorted-device', or 'all' for every rule; overrides the configured levels. |
 | `--warn` |  | Rules to report as warnings, such as 'no-dc-path', or 'all' for every rule; overrides the configured levels. |

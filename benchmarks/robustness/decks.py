@@ -450,6 +450,8 @@ class DeckCircuit:
         try:
             built = circuit(library.component(name))
             unknowns = Simulation(built).unknowns
+            nodesets = library.nodesets_of(name)
+            initial_conditions = library.initial_conditions_of(name)
         except JoltyError as error:
             raise Unsupported(" ".join(str(error).split())) from None
         nets = tuple(
@@ -459,14 +461,14 @@ class DeckCircuit:
         )
         options = replace(
             self.deck.options(),
-            nodesets={node: volts * V for node, volts in library.nodesets.items()},
+            nodesets={node: volts * V for node, volts in nodesets.items()},
         )
         return Built(
             built,
             self.deck.temperature(),
             options,
             nets,
-            dict(library.initial_conditions),
+            initial_conditions,
         )
 
     def spice(self) -> Spiced:
