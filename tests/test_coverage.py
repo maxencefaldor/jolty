@@ -11,9 +11,9 @@ import typing
 import documented
 import matrix
 import pytest
-from capabilities import JOLTY_ANALYSES, Known, fixtures
+from capabilities import JOLTY_ANALYSES, Known, Read, fixtures, ngspice_only
 from measuring import load
-from simulators import Simulator
+from simulators import Simulator, Unsupported
 
 from jolty import plan
 
@@ -78,3 +78,33 @@ def test_a_number_beyond_the_tolerance_disagrees() -> None:
     assert evidence.startswith("i(v1)")
     within = {"v(out)": complex(1 + 5e-7), "i(v1)": complex(1e-3 + 5e-10)}
     assert matrix.judge(known, within, None)[0] is matrix.Status.AGREED
+
+
+def test_tline_agrees_with_closed_form() -> None:
+    """Lossless transmission line probes via Transient and agrees with closed form."""
+    fixture = FIXTURES["tline"]
+    cell = matrix.run(fixture, Simulator.JOLTY)
+    assert cell.found is not None
+    assert fixture.known is not None
+    found = {name: complex(real, imag) for name, (real, imag) in cell.found.items()}
+    status, evidence = matrix.judge(fixture.known, found, None)
+    assert status is matrix.Status.AGREED, evidence
+
+
+def test_ngspice_only_reads_declared_names() -> None:
+    """An `ngspice_only` row reads its declared keys instead of returning empty `{}`."""
+    row = ngspice_only(
+        "probe",
+        "Probe divider",
+        ("* divider", "V1 a 0 2", "R1 a out 1k", "R2 out 0 1k"),
+        ("op",),
+        {"v(out)": Read(ngspice="v(out)", xyce="V(OUT)")},
+        {"v(out)": 1.0},
+        "closed form: halving divider",
+        xyce=Unsupported("test"),
+    )
+    assert not isinstance(row.jolty, Unsupported)
+    values = row.jolty()
+    assert list(values) == ["v(out)"]
+    # Exact 1:1 divider ratio: 2 V / 2 = 1 V, within floating-point rounding (1e-12).
+    assert abs(values["v(out)"] - 1.0) < 1e-12

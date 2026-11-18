@@ -61,6 +61,7 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [Memristor, HP's linear ion drift](#memristor-hp) | agreed | no | no | no | ? | ? | ? | ? |
 | [Photocell](#photocell) | agreed | no | no | no | ? | ? | ? | ? |
 | [Thermal network](#thermal) | agreed | no | no | no | ? | ? | ? | ? |
+| [Lossless transmission line](#tline) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [MOSFET, level 2](#mos2) | no | solved | solved | solved | ? | ? | ? | ? |
 | [MOSFET, level 6](#mos6) | no | solved | solved | solved | ? | ? | ? | ? |
 | [MOSFET, level 9](#mos9) | no | solved | solved | documented | ? | ? | ? | ? |
@@ -69,7 +70,6 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [HICUM/L2](#hicum) | no | solved | solved | documented | ? | ? | ? | ? |
 | [MESFET, Statz](#mesfet) | no | solved | solved | documented | ? | ? | ? | ? |
 | [JFET, level 2 (Parker and Skellern)](#jfet2) | no | solved | solved | documented | ? | ? | ? | ? |
-| [Lossless transmission line](#tline) | **disagreed** | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Lossy transmission line (LTRA), lossless](#ltra) | no | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Distributed RC line (URC)](#urc) | no | agreed | agreed | no | ? | ? | ? | ? |
 | [XSPICE code models](#xspice) | no | agreed | agreed | no | ? | ? | ? | ? |
@@ -265,7 +265,7 @@ AC; the known answer: closed form: a low pass's 1/(1 + jωRC).
 
 Noise; the known answer: closed form: a resistor's 4kTR through a low pass.
 
-- jolty, agreed: largest error 1.9e-16 of the scale
+- jolty, agreed: largest error 2.4e-16 of the scale
 - ngspice-sparse, agreed: largest error 8.2e-09 of the scale
 - ngspice-klu, unsupported: `` Error: Noise simulation is not (yet) supported with 'option KLU'. / doAnalyses: operation not supported / Error: incomplete or empty netlist ``
 - xyce-serial, disagreed: onoise@1: 1.188444e-17 for 1.188433e-17, an error of 9.47e-06 of the scale
@@ -703,6 +703,19 @@ Thermal network; the known answer: closed form: P·R_th.
 - hspice, unknown: no document read says
 - afs, unknown: no document read says
 
+### tline
+
+Lossless transmission line; the known answer: closed form: a matched line delays half its source's pulse.
+
+- jolty, agreed: largest error 4.4e-16 of the scale
+- ngspice-sparse, agreed: largest error 1.1e-16 of the scale
+- ngspice-klu, agreed: largest error 0 of the scale
+- xyce-serial, agreed: largest error 5.6e-17 of the scale
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
 ### mos2
 
 MOSFET, level 2; the known answer: none yet: the model's QA reference results are to come.
@@ -802,19 +815,6 @@ JFET, level 2 (Parker and Skellern); the known answer: none yet: the model's QA 
 - ngspice-sparse, solved
 - ngspice-klu, solved
 - xyce-serial, documented: Xyce Reference Guide 7.10, JFET level 2 (Shockley), another model
-- ltspice, unknown: no document read says
-- spectre, unknown: no document read says
-- hspice, unknown: no document read says
-- afs, unknown: no document read says
-
-### tline
-
-Lossless transmission line; the known answer: closed form: a matched line delays half its source's pulse.
-
-- jolty, disagreed: read no v(out)@1.4e-08, v(out)@5.5e-09, v(out)@8e-09
-- ngspice-sparse, agreed: largest error 1.1e-16 of the scale
-- ngspice-klu, agreed: largest error 0 of the scale
-- xyce-serial, agreed: largest error 5.6e-17 of the scale
 - ltspice, unknown: no document read says
 - spectre, unknown: no document read says
 - hspice, unknown: no document read says

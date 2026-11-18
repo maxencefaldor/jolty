@@ -1597,8 +1597,61 @@ def built_devices() -> list[Fixture]:
             ),
         )
     )
+    rows.append(
+        _line_fixture(
+            "tline", "Lossless transmission line", "T1 in 0 out 0 Z0=50 TD=5n"
+        )
+    )
     rows.extend(missing_devices())
     return rows
+
+
+def _line_fixture(
+    key: str,
+    name: str,
+    element: str,
+    extra: tuple[str, ...] = (),
+) -> Fixture:
+    """A matched 50 ohm, 5 ns line driven by a pulse: half the pulse, 5 ns late."""
+
+    def pulse(t: float) -> float:
+        return (
+            min(max(t / 1e-9, 0.0), 1.0)
+            if t < 11e-9
+            else max(1 - (t - 11e-9) / 1e-9, 0.0)
+        )
+
+    times = (5.5e-9, 8e-9, 14e-9)
+    reads = {
+        f"v(out)@{t!r}": Read(ngspice="v(out)", xyce="V(OUT)", time=t) for t in times
+    }
+    known: Values = {f"v(out)@{t!r}": 0.5 * pulse(t - 5e-9) for t in times}
+    source = ("V1 s 0 PULSE(0 1 0 1n 1n 10n 100n)", "R1 s in 50", "R2 out 0 50")
+    deck = (f"* {name}", element, *source, *extra)
+
+    def run() -> Values:
+        waveforms = simulation(deck_circuit(deck)).run(
+            Transient(20 * ns, max_step=0.05 * ns), TIGHT
+        )
+        return sampled(waveforms, tuple(reads))
+
+    return Fixture(
+        key=key,
+        category=Category.DEVICE,
+        name=name,
+        known=Known(
+            values=known,
+            source="closed form: a matched line delays half its source's pulse",
+            tolerance=INTEGRATED,
+        ),
+        jolty=run,
+        spice=Spice(
+            deck=deck,
+            ngspice=("tran 0.05n 20n 0 0.05n",),
+            xyce=((".tran 0.05n 20n 0 0.05n",), "tran"),
+            reads=reads,
+        ),
+    )
 
 
 def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its answer, as a table of them reads
@@ -1615,6 +1668,7 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
     tolerance: float = SOLVED,
 ) -> Fixture:
     """A row jolty's reader is given the deck of, as ngspice and Xyce are."""
+    names = tuple(reads)
     return Fixture(
         key=key,
         category=category,
@@ -1622,7 +1676,7 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
         known=Known(values=known, source=source, tolerance=tolerance)
         if known is not None
         else Known(source=source),
-        jolty=lambda: solved(deck_circuit(deck), OperatingPoint(), ()),
+        jolty=lambda: solved(deck_circuit(deck), OperatingPoint(), names),
         spice=Spice(deck=deck, ngspice=ngspice_commands, xyce=xyce, reads=reads),
     )
 
@@ -1714,42 +1768,14 @@ def missing_devices() -> list[Fixture]:
             )
         )
 
-    # A pulse through a matched line of 50 Ω and 5 ns: half the pulse, 5 ns late.
-    def pulse(t: float) -> float:
-        return (
-            min(max(t / 1e-9, 0.0), 1.0)
-            if t < 11e-9
-            else max(1 - (t - 11e-9) / 1e-9, 0.0)
-        )
-
-    times = (5.5e-9, 8e-9, 14e-9)
-    line_reads = {
-        f"v(out)@{t!r}": Read(ngspice="v(out)", xyce="V(OUT)", time=t) for t in times
-    }
-    line_known: Values = {f"v(out)@{t!r}": 0.5 * pulse(t - 5e-9) for t in times}
-    source = ("V1 s 0 PULSE(0 1 0 1n 1n 10n 100n)", "R1 s in 50", "R2 out 0 50")
-    for key, name, element, extra in (
-        ("tline", "Lossless transmission line", "T1 in 0 out 0 Z0=50 TD=5n", ()),
-        (
+    rows.append(
+        _line_fixture(
             "ltra",
             "Lossy transmission line (LTRA), lossless",
             "O1 in 0 out 0 lmod",
             (".model lmod LTRA(R=0 G=0 L=250n C=100p LEN=1)",),
-        ),
-    ):
-        rows.append(
-            ngspice_only(
-                key,
-                name,
-                (f"* {name}", element, *source, *extra),
-                ("tran 0.05n 20n 0 0.05n",),
-                line_reads,
-                line_known,
-                "closed form: a matched line delays half its source's pulse",
-                xyce=((".tran 0.05n 20n 0 0.05n",), "tran"),
-                tolerance=INTEGRATED,
-            )
         )
+    )
     rows.append(
         ngspice_only(
             "urc",

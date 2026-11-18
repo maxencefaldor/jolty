@@ -808,7 +808,7 @@
       "cells": {
         "jolty": {
           "status": "agreed",
-          "evidence": "largest error 1.9e-16 of the scale",
+          "evidence": "largest error 2.4e-16 of the scale",
           "found": {
             "onoise@0": [
               1.6510889514871253e-17,
@@ -2811,6 +2811,99 @@
         }
       }
     },
+    "tline": {
+      "category": "device",
+      "name": "Lossless transmission line",
+      "source": "closed form: a matched line delays half its source's pulse",
+      "known": {
+        "v(out)@5.5e-09": [
+          0.24999999999999975,
+          0.0
+        ],
+        "v(out)@8e-09": [
+          0.5,
+          0.0
+        ],
+        "v(out)@1.4e-08": [
+          0.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 4.4e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999972,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.4999999999999998,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.4999999999999998,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.2499999999999998,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999975,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 5.6e-17 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999978,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        }
+      }
+    },
     "mos2": {
       "category": "device",
       "name": "MOSFET, level 2",
@@ -3122,86 +3215,6 @@
           "status": "documented",
           "evidence": "Xyce Reference Guide 7.10, JFET level 2 (Shockley), another model",
           "found": null
-        }
-      }
-    },
-    "tline": {
-      "category": "device",
-      "name": "Lossless transmission line",
-      "source": "closed form: a matched line delays half its source's pulse",
-      "known": {
-        "v(out)@5.5e-09": [
-          0.24999999999999975,
-          0.0
-        ],
-        "v(out)@8e-09": [
-          0.5,
-          0.0
-        ],
-        "v(out)@1.4e-08": [
-          0.5,
-          0.0
-        ]
-      },
-      "cells": {
-        "jolty": {
-          "status": "disagreed",
-          "evidence": "read no v(out)@1.4e-08, v(out)@5.5e-09, v(out)@8e-09",
-          "found": {}
-        },
-        "ngspice-sparse": {
-          "status": "agreed",
-          "evidence": "largest error 1.1e-16 of the scale",
-          "found": {
-            "v(out)@5.5e-09": [
-              0.2499999999999998,
-              0.0
-            ],
-            "v(out)@8e-09": [
-              0.5,
-              0.0
-            ],
-            "v(out)@1.4e-08": [
-              0.5,
-              0.0
-            ]
-          }
-        },
-        "ngspice-klu": {
-          "status": "agreed",
-          "evidence": "largest error 0 of the scale",
-          "found": {
-            "v(out)@5.5e-09": [
-              0.24999999999999975,
-              0.0
-            ],
-            "v(out)@8e-09": [
-              0.5,
-              0.0
-            ],
-            "v(out)@1.4e-08": [
-              0.5,
-              0.0
-            ]
-          }
-        },
-        "xyce-serial": {
-          "status": "agreed",
-          "evidence": "largest error 5.6e-17 of the scale",
-          "found": {
-            "v(out)@5.5e-09": [
-              0.24999999999999978,
-              0.0
-            ],
-            "v(out)@8e-09": [
-              0.5,
-              0.0
-            ],
-            "v(out)@1.4e-08": [
-              0.5,
-              0.0
-            ]
-          }
         }
       }
     },
