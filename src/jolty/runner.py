@@ -54,7 +54,13 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from jolty import checks, fidelity, files, ir, plots, report, shards, variation
 from jolty.builder import Component, circuit
-from jolty.errors import ElaborationError, JoltyError, ScriptError, SimulationError
+from jolty.errors import (
+    ElaborationError,
+    JoltyError,
+    PlanError,
+    ScriptError,
+    SimulationError,
+)
 from jolty.fidelity import FidelityReport
 from jolty.plan import (
     Analysis,
@@ -71,7 +77,15 @@ from jolty.plan import (
 )
 from jolty.results import AnalysisResult, BatchResult, Run
 from jolty.simulate import Simulation, kelvins
-from jolty.specs import Requirement, Specs, Verdict, evaluate, judge, reading
+from jolty.specs import (
+    Requirement,
+    Specs,
+    Verdict,
+    evaluate,
+    judge,
+    reading,
+    validate_specs,
+)
 from jolty.units import TEMPERATURE, Quantity
 
 JOB: Final = "job.json"
@@ -265,6 +279,59 @@ def run(job: Job, directory: Path) -> Outcome:
         return _failure(error, str(error))
 
 
+def _precheck_fidelity(
+    simulation: Simulation,
+    plan: Plan,
+    specs: Specs | None,
+) -> None:
+    """Checks fidelity scopes, process corners, and spec names before characterizing."""
+    problems: list[str] = []
+    try:
+        fidelity.scopes(simulation.circuit, plan.fidelity)
+    except PlanError as error:
+        problems.extend(error.problems)
+    if not simulation.foundry:
+        if plan.process is not None:
+            problems.append(
+                f"the process corner {plan.process} sets a foundry's devices, "
+                "and the circuit holds none"
+            )
+        for name, corner in plan.corners.items():
+            if corner.process is not None and not corner.arguments:
+                problems.append(
+                    f"corner `{name}`: the process corner {corner.process} sets "
+                    "a foundry's devices, and the circuit holds none"
+                )
+    if specs is not None:
+        problems.extend(validate_specs(specs, tuple(plan.analyses), {}))
+    if problems:
+        raise PlanError(problems)
+
+
+def _prepare_simulation(
+    simulation: Simulation,
+    plan: Plan,
+    specs: Specs | None,
+    *,
+    traces: Sequence[str],
+    cache: fidelity.Cache,
+) -> tuple[fidelity.Fidelity, Simulation]:
+    """Resolves `plan`'s fidelity and validates `plan`, `specs`, and `traces`."""
+    if plan.fidelity:
+        _precheck_fidelity(simulation, plan, specs)
+    elif plan.process is not None and not simulation.foundry:
+        # Report the invalid process corner alongside every other plan/spec problem.
+        simulation.validate_plan(plan, specs=specs, traces=traces)
+    chosen = fidelity.resolve(
+        simulation.circuit, plan, plan.temperature, cache, plan.process
+    )
+    active = simulation
+    if plan.temperature is not None or plan.process is not None or chosen.matched:
+        active = chosen.simulation()
+    active.validate_plan(plan, specs=specs, traces=traces)
+    return chosen, active
+
+
 def _run(job: Job, directory: Path) -> Built:
     namespaces: dict[Path, dict[str, object]] = {}
     built = _built(job.script, namespaces, {})
@@ -289,19 +356,23 @@ def _run(job: Job, directory: Path) -> Built:
     if given := job.parallelism.model_dump(exclude_none=True):
         spread = replace(plan.options.parallelism, **given)
         plan = replace(plan, options=replace(plan.options, parallelism=spread))
+    specs = _specs(job.plan, namespaces)
     cache: fidelity.Cache = {}
-    chosen = fidelity.resolve(built, plan, plan.temperature, cache, plan.process)
-    if plan.temperature is not None or plan.process is not None or chosen.matched:
-        try:
-            simulation = chosen.simulation()
-        except ElaborationError as error:
-            return Built(circuit=built, problems=error.problems)
+    try:
+        chosen, simulation = _prepare_simulation(
+            simulation,
+            plan,
+            specs,
+            traces=job.traces,
+            cache=cache,
+        )
+    except ElaborationError as error:
+        return Built(circuit=built, problems=error.problems)
     if job.samples is not None:
         # A shard runs none of the plan's analyses at its own conditions.
         conditions, _ = _corners(
             job, namespaces, built, plan, cache, chosen=chosen, solved={}
         )
-        specs = _specs(job.plan, namespaces)
         shard = _shard(
             job, directory, conditions, plan, specs=specs, simulation=simulation
         )
@@ -320,7 +391,6 @@ def _run(job: Job, directory: Path) -> Built:
     conditions, corners = _corners(
         job, namespaces, built, plan, cache, chosen=chosen, solved=solved
     )
-    specs = _specs(job.plan, namespaces)
     at_corners = {
         condition.corner: condition.solved
         for condition in conditions

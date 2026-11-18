@@ -11,7 +11,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Annotated, Final, Literal, override
+from typing import Annotated, Final, Literal, LiteralString, Never, override
 
 import numpy as np
 import numpy.typing as npt
@@ -21,12 +21,17 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    ValidationError,
+    ValidationInfo,
     WithJsonSchema,
+    field_validator,
 )
+from pydantic.dataclasses import dataclass as pydantic_dataclass
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from jolty import _core, ir, results
 from jolty.builder import caller
-from jolty.errors import DimensionError, JoltyError
+from jolty.errors import DimensionError, JoltyError, close_names
 from jolty.units import (
     DIMENSIONLESS,
     Dimension,
@@ -53,6 +58,53 @@ _SEVERITY: Final[dict[Status, int]] = {
     "passed": 3,
 }
 """How bad each status is, the worst first: the order a verdict picks its run by."""
+
+
+_CONFIG: Final = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+"""Shared Pydantic configuration for spec dataclasses."""
+
+_REQUIREMENT_CONFIG: Final = ConfigDict(
+    extra="forbid", arbitrary_types_allowed=True, validate_default=True
+)
+"""Pydantic configuration for `Requirement`, validating omitted default bounds."""
+
+
+def _fail(kind: LiteralString, message: str) -> Never:
+    """Raises a Pydantic custom error holding literal `message` safe from braces."""
+    raise PydanticCustomError(kind, "{message}", {"message": message})
+
+
+def _detail(
+    kind: LiteralString,
+    message: str,
+    value: object,
+    location: tuple[int | str, ...] = (),
+) -> InitErrorDetails:
+    """One structured validation error entry at `location` with literal `message`."""
+    return InitErrorDetails(
+        type=PydanticCustomError(kind, "{message}", {"message": message}),
+        loc=location,
+        input=value,
+    )
+
+
+def _format_bound(measure: Measure | None, bound: Quantity) -> str:
+    """Formats `bound` in `measure`'s plain unit when applicable."""
+    plain = None if measure is None else measure.plain
+    if plain is not None and bound.dimension == DIMENSIONLESS:
+        return _format(bound.value, plain)
+    return str(bound)
+
+
+def _check_bound_quantity(value: object, name: str) -> Quantity | None:
+    """Validates `value` is `None` or a finite `Quantity`."""
+    if value is None:
+        return None
+    if not isinstance(value, Quantity):
+        _fail("quantity_type", f"{name} is a Quantity, not {value!r}")
+    if not math.isfinite(value.value):
+        _fail("finite", f"{name} is finite, not {value}")
+    return value
 
 
 def _a_number(value: float) -> float:
@@ -194,6 +246,12 @@ class Measure:
     than the result's kind and unknowns, a sweep's source and quantity, and a noise
     analysis's output's and source's quantities; raises as `read` does when it cannot.
     None for a measure only Python reads, such as one a plan script writes."""
+    diagnose: Callable[[results.AnalysisResult], Sequence[str]] | None = field(
+        default=None, repr=False, compare=False
+    )
+    """Collects every static problem resolving the measure against a result shape,
+    such as every unknown signal, reference or divisor name and every dimension error.
+    None when only `resolved` or Python's `read` checks the measure."""
 
     def __ge__(self, minimum: Bound) -> Requirement:
         """The requirement that the measure be at least `minimum`."""
@@ -226,7 +284,7 @@ class Measure:
         return f"{self.description} in {self.analysis}"
 
 
-@dataclass(frozen=True, slots=True)
+@pydantic_dataclass(frozen=True, slots=True, config=_REQUIREMENT_CONFIG)
 class Requirement:
     """A measure and the bounds it must lie within.
 
@@ -242,29 +300,65 @@ class Requirement:
     source_location: ir.SourceLocation | None = field(default=None, compare=False)
     """The script line that stated the requirement."""
 
-    def __post_init__(self) -> None:
-        """Checks the bounds and the margin.
+    @field_validator("measure", mode="before")
+    @classmethod
+    def _validate_measure(cls, value: object) -> Measure:
+        if not isinstance(value, Measure):
+            _fail("measure_type", f"measure is a Measure, not {value!r}")
+        return value
 
-        Raises:
-            ValueError: When there is no bound, the minimum exceeds the maximum, or the
-                margin is negative.
-        """
-        if self.minimum is None and self.maximum is None:
-            message = f"a requirement on {self.measure} states a bound"
-            raise ValueError(message)
-        if (
-            self.minimum is not None
-            and self.maximum is not None
-            and self.minimum.value > self.maximum.value
-        ):
-            message = (
-                f"the minimum of {self.measure}, {self._text(self.minimum)}, "
-                f"exceeds its maximum, {self._text(self.maximum)}"
+    @field_validator("minimum", mode="before")
+    @classmethod
+    def _validate_minimum(cls, value: object) -> Quantity | None:
+        return _check_bound_quantity(value, "minimum")
+
+    @field_validator("maximum", mode="before")
+    @classmethod
+    def _validate_maximum(cls, value: object, info: ValidationInfo) -> Quantity | None:
+        checked = _check_bound_quantity(value, "maximum")
+        measure_raw = info.data.get("measure")
+        measure = measure_raw if isinstance(measure_raw, Measure) else None
+        subject = "the measure" if measure is None else str(measure)
+        if "minimum" in info.data:
+            minimum = info.data["minimum"]
+            if minimum is None and checked is None:
+                _fail("bound_missing", f"a requirement on {subject} states a bound")
+            if (
+                isinstance(minimum, Quantity)
+                and checked is not None
+                and minimum.dimension == checked.dimension
+                and minimum.value > checked.value
+            ):
+                message = (
+                    f"the minimum of {subject}, {_format_bound(measure, minimum)}, "
+                    f"exceeds its maximum, {_format_bound(measure, checked)}"
+                )
+                _fail("bound_order", message)
+        return checked
+
+    @field_validator("margin", mode="before")
+    @classmethod
+    def _validate_margin(cls, value: object, info: ValidationInfo) -> Quantity | None:
+        checked = _check_bound_quantity(value, "margin")
+        if checked is not None and checked.value < 0:
+            measure_raw = info.data.get("measure")
+            subject = (
+                str(measure_raw) if isinstance(measure_raw, Measure) else "the measure"
             )
-            raise ValueError(message)
-        if self.margin is not None and self.margin.value < 0:
-            message = f"the margin of {self.measure} is negative: {self.margin}"
-            raise ValueError(message)
+            _fail("non_negative", f"the margin of {subject} is negative: {checked}")
+        return checked
+
+    @field_validator("source_location", mode="before")
+    @classmethod
+    def _validate_source_location(cls, value: object) -> ir.SourceLocation | None:
+        if value is None:
+            return None
+        if not isinstance(value, ir.SourceLocation):
+            _fail(
+                "source_location_type",
+                f"source_location is a SourceLocation, not {value!r}",
+            )
+        return value
 
     def with_margin(self, margin: Bound) -> Requirement:
         """The requirement, marginal when it passes by less than `margin`."""
@@ -291,10 +385,7 @@ class Requirement:
         return ("marginal" if slack < margin else "passed"), slack
 
     def _text(self, bound: Quantity) -> str:
-        plain = self.measure.plain
-        if plain is not None and bound.dimension == DIMENSIONLESS:
-            return _format(bound.value, plain)
-        return str(bound)
+        return _format_bound(self.measure, bound)
 
     @override
     def __str__(self) -> str:
@@ -312,7 +403,7 @@ class Requirement:
         return f"{self.measure} {' and '.join(bounds)}{margin}"
 
 
-@dataclass(frozen=True, slots=True)
+@pydantic_dataclass(frozen=True, slots=True, config=_CONFIG)
 class Specs:
     """The requirements a circuit must meet, in the order a report lists them.
 
@@ -323,26 +414,50 @@ class Specs:
     requirements: Sequence[Requirement]
     yield_target: float | None = None
 
-    def __post_init__(self) -> None:
-        """Checks that there are requirements, only requirements, and a fair target.
-
-        Raises:
-            ValueError: When there is no requirement, or the yield target is not above
-                0 and at most 1.
-            TypeError: When one is not a requirement.
-        """
-        if self.yield_target is not None and not 0 < self.yield_target <= 1:
-            message = (
-                f"a yield target lies above 0 and at most 1, not {self.yield_target}"
+    @field_validator("requirements", mode="before")
+    @classmethod
+    def _validate_requirements(cls, value: object) -> tuple[Requirement, ...]:
+        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+            _fail(
+                "sequence_type",
+                f"specs is a sequence of requirements, not {value!r}",
             )
-            raise ValueError(message)
-        if not self.requirements:
-            message = "specs state at least one requirement"
-            raise ValueError(message)
-        for requirement in self.requirements:
+        listed = tuple(value)
+        if not listed:
+            _fail("empty", "specs state at least one requirement")
+        errors: list[InitErrorDetails] = []
+        checked: list[Requirement] = []
+        for index, requirement in enumerate(listed):
             if not isinstance(requirement, Requirement):
-                message = f"specs hold requirements, not {requirement!r}"
-                raise TypeError(message)
+                errors.append(
+                    _detail(
+                        "requirement_type",
+                        f"specs hold requirements, not {requirement!r}",
+                        requirement,
+                        (index,),
+                    )
+                )
+            else:
+                checked.append(requirement)
+        if errors:
+            title = "requirements"
+            raise ValidationError.from_exception_data(title, errors)
+        return tuple(checked)
+
+    @field_validator("yield_target", mode="before")
+    @classmethod
+    def _validate_yield_target(cls, value: object) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            _fail("float_type", f"yield_target is a real number, not {value!r}")
+        converted = float(value)
+        if not math.isfinite(converted):
+            _fail("finite", f"yield_target is finite, not {converted!r}")
+        if not 0 < converted <= 1:
+            message = f"a yield target lies above 0 and at most 1, not {converted}"
+            _fail("yield_range", message)
+        return converted
 
 
 class Verdict(BaseModel):
@@ -794,6 +909,116 @@ def _badness(verdict: Verdict) -> tuple[int, float]:
     return _SEVERITY[verdict.status], slack
 
 
+def _tag(requirement: Requirement, message: str) -> str:
+    """Formats `message` for `requirement`, appending its source line when known."""
+    head = f"{requirement}: {message}"
+    if requirement.source_location is None:
+        return head
+    return f"{head}\n  = {requirement.source_location}"
+
+
+def _bound_problems(requirement: Requirement, unit: Dimension | Plain) -> list[str]:
+    """Every bound or margin on `requirement` whose dimension differs from `unit`."""
+    expected = Reading(0.0, unit)
+    problems: list[str] = []
+    for bound, label in (
+        (requirement.minimum, "the minimum"),
+        (requirement.maximum, "the maximum"),
+        (requirement.margin, "the margin"),
+    ):
+        if bound is None:
+            continue
+        try:
+            _against(bound, expected, label)
+        except DimensionError as error:
+            problems.append(_tag(requirement, str(error.args[0])))
+    return problems
+
+
+def _validate_against_shape(
+    requirement: Requirement,
+    shape: results.AnalysisResult,
+    plain_problems: list[str],
+    *,
+    skip_unit: bool,
+) -> list[str]:
+    """Checks `requirement` against a resolved analysis `shape`."""
+    measure = requirement.measure
+    if measure.diagnose is not None:
+        measure_problems = list(measure.diagnose(shape))
+        if measure_problems:
+            return [
+                *(_tag(requirement, issue) for issue in measure_problems),
+                *plain_problems,
+            ]
+    if measure.resolved is None:
+        return plain_problems
+    try:
+        resolved = measure.resolved(shape)
+    except (JoltyError, KeyError) as error:
+        return [_tag(requirement, str(error.args[0])), *plain_problems]
+    return [] if skip_unit else _bound_problems(requirement, resolved.unit)
+
+
+def _validate_requirement(
+    requirement: Requirement,
+    planned: Sequence[str],
+    shapes: Mapping[str, results.AnalysisResult],
+    unknown_units: Collection[str],
+    defined: str,
+) -> list[str]:
+    """Checks one `requirement` against `planned` analyses and `shapes`."""
+    measure = requirement.measure
+    analysis = measure.analysis
+    if analysis not in planned:
+        close = close_names(planned, analysis)
+        listed = f"; defined analyses: {defined}" if defined else ""
+        return [
+            _tag(
+                requirement,
+                f"the plan runs no analysis named {analysis!r}{close}{listed}",
+            )
+        ]
+    plain_problems = (
+        [] if measure.plain is None else _bound_problems(requirement, measure.plain)
+    )
+    if analysis not in shapes:
+        return plain_problems
+    return _validate_against_shape(
+        requirement,
+        shapes[analysis],
+        plain_problems,
+        skip_unit=analysis in unknown_units,
+    )
+
+
+def validate_specs(
+    specs: Specs,
+    planned: Sequence[str],
+    shapes: Mapping[str, results.AnalysisResult],
+    *,
+    unknown_units: Collection[str] = (),
+) -> list[str]:
+    """Checks every requirement of `specs` against `planned` analyses and `shapes`.
+
+    Reports every unresolved analysis name (with close names), every unresolved
+    signal, reference, or divisor name (with close names), incompatible analysis
+    kinds, missing or wrongly dimensioned measure parameters, unreferred noise
+    measures, and mismatched bound or margin dimensions.
+
+    Analyses named in `unknown_units` still check kind, referral, and parameter
+    dimensions, skipping only the bound and margin dimension comparison because the
+    analysis's own output unit could not be determined.
+    """
+    defined = ", ".join(planned)
+    problems: list[str] = []
+    for requirement in specs.requirements:
+        problems.extend(
+            _validate_requirement(requirement, planned, shapes, unknown_units, defined)
+        )
+    return problems
+
+
 def _verdict(
     requirement: Requirement,
     planned: Collection[str],
@@ -808,7 +1033,8 @@ def _verdict(
     )
     analysis = requirement.measure.analysis
     if analysis not in planned:
-        reason = f"the plan runs no analysis named {analysis}"
+        close = close_names(tuple(planned), analysis)
+        reason = f"the plan runs no analysis named {analysis}{close}"
         return stated.model_copy(update={"reason": reason})
     if analysis not in solved:
         reason = f"the analysis {analysis} failed"

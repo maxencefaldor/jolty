@@ -32,7 +32,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from jolty import devices, ir, results
-from jolty.errors import CharacterizationError, JoltyError
+from jolty.errors import CharacterizationError, JoltyError, PlanError, close_names
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
 from jolty.results import AnalysisResult, Excursion
 from jolty.simulate import Elaborated, Simulation, kelvins
@@ -607,10 +607,12 @@ def scopes(
     Each path maps to its scope and its component.
 
     Raises:
-        JoltyError: When a scope matches no component instance.
+        PlanError: When any scope matches no component instance.
     """
     matched: dict[str, tuple[str, str]] = {}
     found = instances(built)
+    paths = [path for path, _ in found]
+    problems: list[str] = []
     for scope in fidelity:
         hits = [
             (path, component)
@@ -618,10 +620,16 @@ def scopes(
             if PurePosixPath(path).full_match(scope)
         ]
         if not hits:
-            message = f"the fidelity scope {scope!r} matches no component instance"
-            raise JoltyError(message)
+            has_wildcard = any(symbol in scope for symbol in "*?[")
+            close = "" if has_wildcard else close_names(paths, scope)
+            problems.append(
+                f"the fidelity scope {scope!r} matches no component instance{close}"
+            )
+            continue
         for path, component in hits:
             matched.setdefault(path, (scope, component))
+    if problems:
+        raise PlanError(problems)
     return {
         path: chosen
         for path, chosen in matched.items()

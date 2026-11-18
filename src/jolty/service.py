@@ -46,7 +46,13 @@ from jolty import (
     specs,
     viewer,
 )
-from jolty.errors import ElaborationError, JoltyError, NetlistError
+from jolty.errors import (
+    ElaborationError,
+    JoltyError,
+    NetlistError,
+    PlanError,
+    close_names,
+)
 from jolty.fidelity import FidelityReport
 from jolty.report import (
     AnalysisReport,
@@ -1468,8 +1474,12 @@ def _plot(
     """
     missing = [name for name in analyses if name not in loaded]
     if missing:
-        message = f"{path} holds no analysis named {', '.join(missing)}"
-        raise JoltyError(message)
+        known = tuple(loaded)
+        problems = [
+            f"{path} holds no analysis named {name!r}{close_names(known, name)}"
+            for name in missing
+        ]
+        raise PlanError(problems)
     drawn = []
     for name, result in loaded.items():
         if analyses and name not in analyses:

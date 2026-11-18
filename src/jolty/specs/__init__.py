@@ -83,6 +83,7 @@ from jolty.specs._requirements import (
     reading,
     spread,
     spread_of,
+    validate_specs,
     wilson,
     worst,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "solutions",
     "spread",
     "spread_of",
+    "validate_specs",
     "value",
     "wilson",
     "worst",

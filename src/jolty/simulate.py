@@ -54,7 +54,14 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from jolty import _core, checks, foundry, ir, results, specs
 from jolty.builder import Component, circuit
 from jolty.devices import Device
-from jolty.errors import ElaborationError, JoltyError, SimulationError
+from jolty.errors import (
+    DimensionError,
+    ElaborationError,
+    JoltyError,
+    PlanError,
+    SimulationError,
+    close_names,
+)
 from jolty.plan import (
     Ac,
     Analysis,
@@ -81,6 +88,7 @@ from jolty.plan import (
     differentiated,
 )
 from jolty.settings import Settings
+from jolty.specs import Specs, validate_specs
 from jolty.units import (
     CURRENT,
     DIMENSIONLESS,
@@ -209,6 +217,540 @@ def _log(analyses: Iterable[Analysis], runs: int) -> None:
 
 _WILDCARDS: Final = frozenset("*?[")
 """The characters that make a recorded path a pattern."""
+
+_INDEPENDENT_SOURCE_MODELS: Final = frozenset({"voltage_source", "current_source"})
+"""Device models representing independent electrical sources."""
+
+_LOGIC_MODELS: Final = frozenset({"logic_cell", "logic_source"})
+"""Device models handled by the discrete logic event scheduler."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Catalog:
+    """Every static name a circuit exposes, cached once per `Simulation`."""
+
+    devices: Mapping[str, ir.Instance]
+    device_paths: tuple[str, ...]
+    component_paths: tuple[str, ...]
+    independent_sources: tuple[str, ...]
+    voltage_sources: tuple[str, ...]
+    probes: tuple[str, ...]
+    unknowns: Mapping[str, results.Unknown]
+    unknown_names: tuple[str, ...]
+    reference_node: str | None
+    voltage_nets: tuple[str, ...]
+    has_logic_devices: bool
+    overrides: Mapping[str, Mapping[str, float]]
+
+    def parameters(self, path: str) -> tuple[str, ...]:
+        """Every real number parameter path written on the device at `path`."""
+        instance = self.devices[path]
+        return tuple(
+            dict.fromkeys(
+                (*ir.numbers(instance.parameters), *self.overrides.get(path, ()))
+            )
+        )
+
+
+def _walk_circuit(
+    built: ir.Circuit, substituted: Collection[str]
+) -> tuple[dict[str, ir.Instance], tuple[str, ...]]:
+    """Active device instances (skipping substituted subtrees) and component paths."""
+    devices: dict[str, ir.Instance] = {}
+    components: list[str] = []
+    pending: list[tuple[str, str, bool]] = [("", built.top, False)]
+    while pending:
+        prefix, name, inside_substituted = pending.pop(0)
+        for instance in built.components[name].instances:
+            path = f"{prefix}{instance.name}"
+            if isinstance(instance.of, ir.ComponentOf):
+                components.append(path)
+                pending.append(
+                    (
+                        f"{path}/",
+                        instance.of.component,
+                        inside_substituted or path in substituted,
+                    )
+                )
+            elif not inside_substituted:
+                devices[path] = instance
+    return devices, tuple(components)
+
+
+def _reference_node(built: ir.Circuit) -> str | None:
+    """The top component's single ground port name, if any."""
+    top = built.components.get(built.top)
+    if top is None:
+        return None
+    grounds = [port.name for port in top.ports if port.role == ir.Role.GROUND]
+    return grounds[0] if len(grounds) == 1 else None
+
+
+def _is_probe(
+    path: str,
+    unknowns: Mapping[str, results.Unknown],
+    joined: Callable[[str, str], Joined | None],
+) -> bool:
+    """Whether `path` is a voltage source with both terminals off the reference node."""
+    positive = joined(path, "positive")
+    negative = joined(path, "negative")
+    return (
+        positive is not None
+        and negative is not None
+        and positive.node is not None
+        and negative.node is not None
+        and f"{path}:current" in unknowns
+    )
+
+
+def _nodeset_problems(
+    mapping: Mapping[str, Quantity], what: str, catalog: _Catalog
+) -> list[str]:
+    """Every key in `mapping` that is not a circuit voltage net."""
+    valid = frozenset(catalog.voltage_nets)
+    problems: list[str] = []
+    for net in mapping:
+        if net in valid:
+            continue
+        close = close_names(catalog.voltage_nets, net)
+        if net in catalog.unknowns:
+            nature = catalog.unknowns[net].nature
+            problems.append(
+                f"the {what} names `{net}`, which is no net of the circuit "
+                f"({nature} unknown){close}"
+            )
+        elif net == catalog.reference_node:
+            problems.append(
+                f"the {what} names `{net}`, which is the reference node, "
+                f"not an electrical net{close}"
+            )
+        else:
+            problems.append(
+                f"the {what} names `{net}`, which is no net of the circuit{close}"
+            )
+    return problems
+
+
+def _source_problem(source: str, catalog: _Catalog) -> str | None:
+    """Returns a problem string when `source` is not an independent source."""
+    sources_list = (
+        f"; independent sources: {', '.join(catalog.independent_sources)}"
+        if catalog.independent_sources
+        else ""
+    )
+    if source not in catalog.devices:
+        close = close_names(catalog.independent_sources, source) or close_names(
+            catalog.device_paths, source
+        )
+        return f"there is no instance at `{source}`{close}{sources_list}"
+    if source not in catalog.independent_sources:
+        return f"`{source}` is not an independent source{sources_list}"
+    return None
+
+
+def _output_problem(
+    name: str, catalog: _Catalog, *, allow_reference: bool
+) -> str | None:
+    """Returns a problem string when `name` is not a valid output name."""
+    if name in catalog.unknowns:
+        return None
+    if allow_reference and name == catalog.reference_node:
+        return None
+    candidates = (
+        (*catalog.unknown_names, catalog.reference_node)
+        if allow_reference and catalog.reference_node is not None
+        else catalog.unknown_names
+    )
+    close = close_names(candidates, name)
+    if not allow_reference and name == catalog.reference_node:
+        return f"there is no unknown named `{name}` (it is the reference node){close}"
+    return f"there is no unknown named `{name}`{close}"
+
+
+def _differential_problems(
+    output: str,
+    reference: str | None,
+    catalog: _Catalog,
+    *,
+    allow_reference: bool,
+) -> list[str]:
+    """Checks both `output` and optional `reference`, collecting every problem."""
+    problems: list[str] = []
+    output_issue = _output_problem(output, catalog, allow_reference=allow_reference)
+    if output_issue is not None:
+        problems.append(output_issue)
+    if reference is None:
+        return problems
+    reference_issue = _output_problem(
+        reference, catalog, allow_reference=allow_reference
+    )
+    if reference_issue is not None:
+        problems.append(reference_issue)
+    if output_issue is None and reference_issue is None:
+        output_nature = (
+            "voltage"
+            if output == catalog.reference_node
+            else catalog.unknowns[output].nature
+        )
+        reference_nature = (
+            "voltage"
+            if reference == catalog.reference_node
+            else catalog.unknowns[reference].nature
+        )
+        if output_nature != "voltage" or reference_nature != "voltage":
+            problems.append(
+                f"an output over a node is a voltage, and `{output}` over "
+                f"`{reference}` is not"
+            )
+    return problems
+
+
+def _dc_sweep_problems(
+    analysis: DcSweep, catalog: _Catalog
+) -> tuple[list[str], DimensionError | None]:
+    """Checks `DcSweep` source, optional parameter, and level dimension."""
+    if analysis.parameter is not None:
+        if analysis.source not in catalog.devices:
+            close = close_names(catalog.device_paths, analysis.source)
+            return [f"there is no instance at `{analysis.source}`{close}"], None
+        parameters = catalog.parameters(analysis.source)
+        if analysis.parameter not in parameters:
+            close = close_names(parameters, analysis.parameter)
+            message = (
+                f"`{analysis.source}` writes no number `{analysis.parameter}` "
+                f"to sweep{close}"
+            )
+            return [message], None
+        return [], None
+    source_issue = _source_problem(analysis.source, catalog)
+    if source_issue is not None:
+        return [source_issue], None
+    device = catalog.devices[analysis.source]
+    expected = (
+        CURRENT
+        if isinstance(device.of, ir.DeviceOf) and device.of.model == "current_source"
+        else VOLTAGE
+    )
+    if analysis.values and analysis.values[0].dimension != expected:
+        message = (
+            f"a sweep level takes a quantity in {expected}, not {analysis.values[0]}"
+        )
+        error = DimensionError(message)
+        return [message], error
+    return [], None
+
+
+def _stability_problems(analysis: Stability, catalog: _Catalog) -> list[str]:
+    """Checks that `Stability.probe` is a voltage source off the reference node."""
+    probes_list = f"; probes: {', '.join(catalog.probes)}" if catalog.probes else ""
+    if analysis.probe not in catalog.devices:
+        candidates = catalog.probes or catalog.voltage_sources or catalog.device_paths
+        close = close_names(candidates, analysis.probe) or close_names(
+            catalog.device_paths, analysis.probe
+        )
+        return [f"there is no instance at `{analysis.probe}`{close}{probes_list}"]
+    if analysis.probe not in catalog.probes:
+        return [
+            f"`{analysis.probe}` is not a voltage source off the reference{probes_list}"
+        ]
+    return []
+
+
+def _transfer_function_output_problems(
+    analysis: TransferFunction, catalog: _Catalog
+) -> list[str]:
+    """Checks the nature and reference compatibility of `analysis.output`."""
+    nature = catalog.unknowns[analysis.output].nature
+    if nature == "voltage":
+        if (
+            analysis.reference is not None
+            and analysis.reference in catalog.unknowns
+            and catalog.unknowns[analysis.reference].nature != "voltage"
+        ):
+            message = (
+                f"an output over a node is a voltage, and `{analysis.output}` "
+                f"over `{analysis.reference}` is not"
+            )
+            return [message]
+        return []
+    if nature == "current":
+        problems: list[str] = []
+        if analysis.reference is not None:
+            problems.append(
+                f"a transfer function's current output, `{analysis.output}`, "
+                "has no reference"
+            )
+        source_name = (
+            analysis.output.removesuffix(":current")
+            if analysis.output.endswith(":current")
+            else ""
+        )
+        if source_name not in catalog.voltage_sources:
+            problems.append(
+                "a transfer function's current output is a voltage source's, "
+                f"not `{analysis.output}`"
+            )
+        return problems
+    message = (
+        "a transfer function's output is a node voltage or a voltage source's "
+        f"current, not `{analysis.output}`"
+    )
+    return [message]
+
+
+def _transfer_function_problems(
+    analysis: TransferFunction, catalog: _Catalog
+) -> list[str]:
+    """Checks `TransferFunction` source, output, and optional reference."""
+    problems: list[str] = []
+    source_issue = _source_problem(analysis.source, catalog)
+    if source_issue is not None:
+        problems.append(source_issue)
+    output_issue = _output_problem(analysis.output, catalog, allow_reference=False)
+    if output_issue is not None:
+        problems.append(output_issue)
+    if analysis.reference is not None:
+        reference_issue = _output_problem(
+            analysis.reference, catalog, allow_reference=False
+        )
+        if reference_issue is not None:
+            problems.append(reference_issue)
+    if output_issue is None:
+        problems.extend(_transfer_function_output_problems(analysis, catalog))
+    return problems
+
+
+def _parameter_pair_problems(
+    pairs: Iterable[tuple[str, str | None]], catalog: _Catalog
+) -> list[str]:
+    """Checks deduplicated `(device_path, parameter)` pairs against `catalog`."""
+    problems: list[str] = []
+    missing_devices: set[str] = set()
+    seen_pairs: set[tuple[str, str]] = set()
+    for path, parameter in pairs:
+        if path not in catalog.devices:
+            if path not in missing_devices:
+                missing_devices.add(path)
+                close = close_names(catalog.device_paths, path)
+                problems.append(f"no device at `{path}`{close}")
+            continue
+        if parameter is None or (path, parameter) in seen_pairs:
+            continue
+        seen_pairs.add((path, parameter))
+        parameters = catalog.parameters(path)
+        if parameter not in parameters:
+            close = close_names(parameters, parameter)
+            problems.append(f"`{path}` writes no number `{parameter}`{close}")
+    return problems
+
+
+def _variant_pairs(variants: Variants) -> list[tuple[str, str | None]]:
+    """Every `(instance, parameter)` pair referenced by `variants`."""
+    match variants:
+        case MonteCarlo():
+            return []
+        case Grid(axes=axes):
+            return [
+                (axis.instance, axis.parameter)
+                for axis in axes
+                if axis.instance is not None and axis.parameter is not None
+            ]
+        case Explicit(variants=listed):
+            pairs: list[tuple[str, str | None]] = []
+            for variant in listed:
+                for path, named in variant.overrides.items():
+                    if not named:
+                        pairs.append((path, None))
+                    else:
+                        pairs.extend((path, parameter) for parameter in named)
+            return pairs
+        case Product(first=first, second=second):
+            return [*_variant_pairs(first), *_variant_pairs(second)]
+
+
+def _mismatch_variable_pairs(
+    variables: Sequence[ir.RandomVariable],
+) -> list[tuple[str, str | None]]:
+    """Every `(instance, parameter)` derivative target in `variables`."""
+    pairs: list[tuple[str, str | None]] = []
+    for variable in variables:
+        for path, named in variable.derivatives.items():
+            if not named:
+                pairs.append((path, None))
+            else:
+                pairs.extend((path, parameter) for parameter in named)
+    return pairs
+
+
+def _transient_problems(analysis: Transient, catalog: _Catalog) -> list[str]:
+    """Checks `Transient` initial conditions and logic-circuit compatibility."""
+    problems = _nodeset_problems(
+        analysis.initial_conditions, "initial condition", catalog
+    )
+    if not analysis.operating_point and catalog.has_logic_devices:
+        problems.append(
+            "a transient from its initial conditions alone of a circuit "
+            "with logic, whose levels only an operating point settles"
+        )
+    return problems
+
+
+def _noise_problems(analysis: Noise, catalog: _Catalog) -> list[str]:
+    """Checks `Noise` output, reference, and optional referred source."""
+    problems = _differential_problems(
+        analysis.output, analysis.reference, catalog, allow_reference=True
+    )
+    if analysis.source is not None:
+        issue = _source_problem(analysis.source, catalog)
+        if issue is not None:
+            problems.append(issue)
+    return problems
+
+
+def _pole_zero_problems(analysis: PoleZero, catalog: _Catalog) -> list[str]:
+    """Checks `PoleZero` optional source, output, and reference."""
+    problems: list[str] = []
+    if analysis.source is not None:
+        issue = _source_problem(analysis.source, catalog)
+        if issue is not None:
+            problems.append(issue)
+    if analysis.output is not None:
+        problems.extend(
+            _differential_problems(
+                analysis.output,
+                analysis.reference,
+                catalog,
+                allow_reference=True,
+            )
+        )
+    return problems
+
+
+def _differentiated_problems(
+    analysis: Sensitivity | Mismatch,
+    catalog: _Catalog,
+    record_checker: Callable[[Sequence[str]], list[str]],
+    *,
+    has_logic_nets: bool,
+) -> tuple[list[str], DimensionError | None]:
+    """Checks `Sensitivity` or `Mismatch` outputs, random variables, and nested `of`."""
+    problems: list[str] = []
+    for output in analysis.outputs:
+        issue = _output_problem(output, catalog, allow_reference=False)
+        if issue is not None:
+            problems.append(issue)
+    if isinstance(analysis, Mismatch):
+        problems.extend(
+            _parameter_pair_problems(
+                _mismatch_variable_pairs(analysis.random_variables), catalog
+            )
+        )
+    dimension_error: DimensionError | None = None
+    if analysis.of is not None:
+        nested, dimension_error = _analysis_problems(
+            analysis.of,
+            catalog,
+            record_checker,
+            has_logic_nets=has_logic_nets,
+        )
+        problems.extend(nested)
+    return problems, dimension_error
+
+
+def _simple_analysis_problems(
+    analysis: Analysis, catalog: _Catalog, *, has_logic_nets: bool
+) -> list[str]:
+    """Checks analyses other than `DcSweep`, `Sensitivity`, and `Mismatch`."""
+    match analysis:
+        case Ac():
+            issue = _source_problem(analysis.source, catalog)
+            found = [] if issue is None else [issue]
+        case Transient():
+            found = _transient_problems(analysis, catalog)
+        case PeriodicSteadyState():
+            found = (
+                ["a periodic steady state is found for circuits without logic"]
+                if has_logic_nets
+                else []
+            )
+        case Stability():
+            found = _stability_problems(analysis, catalog)
+        case Noise():
+            found = _noise_problems(analysis, catalog)
+        case TransferFunction():
+            found = _transfer_function_problems(analysis, catalog)
+        case PoleZero():
+            found = _pole_zero_problems(analysis, catalog)
+        case _:
+            found = []
+    return found
+
+
+def _analysis_problems(
+    analysis: Analysis,
+    catalog: _Catalog,
+    record_checker: Callable[[Sequence[str]], list[str]],
+    *,
+    has_logic_nets: bool,
+) -> tuple[list[str], DimensionError | None]:
+    """Collects every static problem checking `analysis` against `catalog`."""
+    problems: list[str] = []
+    if isinstance(analysis, Recorded) and analysis.record is not None:
+        problems.extend(record_checker(analysis.record))
+    if isinstance(analysis, DcSweep):
+        found, dimension_error = _dc_sweep_problems(analysis, catalog)
+        return [*problems, *found], dimension_error
+    if isinstance(analysis, Sensitivity | Mismatch):
+        found, dimension_error = _differentiated_problems(
+            analysis, catalog, record_checker, has_logic_nets=has_logic_nets
+        )
+        return [*problems, *found], dimension_error
+    problems.extend(
+        _simple_analysis_problems(analysis, catalog, has_logic_nets=has_logic_nets)
+    )
+    return problems, None
+
+
+def _noise_unit_unknown(analysis: Noise, catalog: _Catalog) -> bool:
+    """Whether `analysis`'s output or referred input unit cannot be determined."""
+    output_known = (
+        analysis.output in catalog.unknowns or analysis.output == catalog.reference_node
+    )
+    if not output_known:
+        return True
+    return (
+        analysis.source is not None
+        and analysis.source not in catalog.independent_sources
+    )
+
+
+def _fidelity_scope_problems(
+    scopes: Mapping[str, object], component_paths: tuple[str, ...]
+) -> list[str]:
+    """Every fidelity scope that matches no component instance."""
+    problems: list[str] = []
+    for scope in scopes:
+        if any(PurePosixPath(path).full_match(scope) for path in component_paths):
+            continue
+        has_wildcard = not _WILDCARDS.isdisjoint(scope)
+        close = "" if has_wildcard else close_names(component_paths, scope)
+        problems.append(
+            f"the fidelity scope {scope!r} matches no component instance{close}"
+        )
+    return problems
+
+
+def _trace_problems(traces: Sequence[str], valid_names: tuple[str, ...]) -> list[str]:
+    """Every trace name in `traces` that is neither an unknown nor a logic net."""
+    valid = frozenset(valid_names)
+    problems: list[str] = []
+    for trace in dict.fromkeys(traces):
+        if trace not in valid:
+            close = close_names(valid_names, trace)
+            problems.append(
+                f"trace `{trace}` names no unknown or logic net of the circuit{close}"
+            )
+    return problems
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,6 +1104,175 @@ class Simulation:
         """
         return tuple(self._core.instances)
 
+    @functools.cached_property
+    def _catalog(self) -> _Catalog:
+        """Static catalog of devices, sources, probes, nets, and unknowns."""
+        devices, component_paths = _walk_circuit(self.circuit, self._substituted)
+        independent_sources = tuple(
+            path
+            for path, instance in devices.items()
+            if isinstance(instance.of, ir.DeviceOf)
+            and instance.of.model in _INDEPENDENT_SOURCE_MODELS
+        )
+        voltage_sources = tuple(
+            path
+            for path, instance in devices.items()
+            if isinstance(instance.of, ir.DeviceOf)
+            and instance.of.model == "voltage_source"
+        )
+        unknown_map = {unknown.name: unknown for unknown in self.unknowns}
+        probes = tuple(
+            path
+            for path in voltage_sources
+            if _is_probe(path, unknown_map, self.joined)
+        )
+        voltage_nets = tuple(
+            unknown.name
+            for unknown in self.unknowns
+            if unknown.nature == "voltage" and ":" not in unknown.name
+        )
+        has_logic_devices = (
+            bool(self._substituted)
+            or bool(self.nets)
+            or any(
+                isinstance(instance.of, ir.DeviceOf)
+                and instance.of.model in _LOGIC_MODELS
+                for instance in devices.values()
+            )
+        )
+        return _Catalog(
+            devices=devices,
+            device_paths=tuple(devices),
+            component_paths=component_paths,
+            independent_sources=independent_sources,
+            voltage_sources=voltage_sources,
+            probes=probes,
+            unknowns=unknown_map,
+            unknown_names=tuple(unknown_map),
+            reference_node=_reference_node(self.circuit),
+            voltage_nets=voltage_nets,
+            has_logic_devices=has_logic_devices,
+            overrides=self.conditions.overrides,
+        )
+
+    def validate_analysis(
+        self, analysis: Analysis, options: Options | None = None
+    ) -> None:
+        """Checks `analysis` and `options` against this circuit before running.
+
+        Collects and reports every unresolved name or incompatible setting at once:
+        nodesets, initial conditions, record paths or patterns, sources, probes,
+        outputs, references, swept parameters, and mismatch random variable targets.
+
+        Raises:
+            DimensionError: When the sole problem is a DC sweep level's dimension.
+            PlanError: With every problem found, each naming close valid names.
+        """
+        chosen = Options() if options is None else options
+        problems = _nodeset_problems(chosen.nodesets, "nodeset", self._catalog)
+        found, dimension_error = _analysis_problems(
+            analysis,
+            self._catalog,
+            self._record_problems,
+            has_logic_nets=bool(self.nets),
+        )
+        problems.extend(found)
+        if dimension_error is not None and len(problems) == 1:
+            raise dimension_error
+        if problems:
+            raise PlanError(problems)
+
+    def validate_plan(
+        self,
+        plan: Plan,
+        *,
+        specs: Specs | None = None,
+        traces: Sequence[str] = (),
+        check_temperature: bool = False,
+    ) -> None:
+        """Checks every name and setting `plan`, `specs`, and `traces` name upfront.
+
+        Collects and reports every problem found at once: temperature mismatch (when
+        `check_temperature`), process corners on a circuit without foundry devices,
+        unknown nodesets, unmatched fidelity scopes, unknown record paths or patterns,
+        every analysis's sources, probes, outputs, references, parameters, initial
+        conditions and random variables, every variant's instances and parameters,
+        every requirement's analysis, signals, parameters and bound dimensions, and
+        unknown trace names.
+
+        Raises:
+            PlanError: With every problem found, each naming close valid names.
+        """
+        catalog = self._catalog
+        problems = self._plan_condition_problems(
+            plan, check_temperature=check_temperature
+        )
+        problems.extend(_nodeset_problems(plan.options.nodesets, "nodeset", catalog))
+        problems.extend(
+            _fidelity_scope_problems(plan.fidelity, catalog.component_paths)
+        )
+        if plan.record is not None:
+            problems.extend(self._record_problems(plan.record))
+        shapes: dict[str, results.AnalysisResult] = {}
+        unknown_units: set[str] = set()
+        for name, analysis in plan.analyses.items():
+            found, _ = _analysis_problems(
+                analysis,
+                catalog,
+                self._record_problems,
+                has_logic_nets=bool(self.nets),
+            )
+            problems.extend(f"analysis `{name}`: {issue}" for issue in found)
+            shapes[name] = self._shape(analysis)
+            if isinstance(analysis, Noise) and _noise_unit_unknown(analysis, catalog):
+                unknown_units.add(name)
+        if plan.variants is not None:
+            problems.extend(
+                _parameter_pair_problems(_variant_pairs(plan.variants), catalog)
+            )
+        if specs is not None:
+            problems.extend(
+                validate_specs(
+                    specs,
+                    tuple(plan.analyses),
+                    shapes,
+                    unknown_units=unknown_units,
+                )
+            )
+        if traces:
+            problems.extend(
+                _trace_problems(traces, (*catalog.unknown_names, *self.nets))
+            )
+        if problems:
+            raise PlanError(problems)
+
+    def _plan_condition_problems(
+        self, plan: Plan, *, check_temperature: bool
+    ) -> list[str]:
+        """Checks `plan`'s temperature and process corners against this circuit."""
+        problems: list[str] = []
+        if check_temperature and plan.temperature is not None:
+            temperature = plan.temperature.to(TEMPERATURE, "a plan's temperature")
+            own = self.conditions.temperature
+            if temperature != own:
+                problems.append(
+                    f"the plan's temperature, {plan.temperature}, is not the "
+                    f"simulation's, {Quantity(own, TEMPERATURE)}"
+                )
+        if not self.foundry:
+            if plan.process is not None:
+                problems.append(
+                    f"the process corner {plan.process} sets a foundry's devices, "
+                    "and the circuit holds none"
+                )
+            for name, corner in plan.corners.items():
+                if corner.process is not None and not corner.arguments:
+                    problems.append(
+                        f"corner `{name}`: the process corner {corner.process} sets "
+                        "a foundry's devices, and the circuit holds none"
+                    )
+        return problems
+
     def joined(self, instance: str, terminal: str) -> Joined | None:
         """Where `terminal` of the device, component instance or logic device joins.
 
@@ -589,6 +1300,9 @@ class Simulation:
             SimulationError: When the circuit has no operating point.
         """
         chosen = Options() if options is None else options
+        problems = _nodeset_problems(chosen.nodesets, "nodeset", self._catalog)
+        if problems:
+            raise PlanError(problems)
         settings = json.dumps(chosen.to_json(), allow_nan=False)
         try:
             found = self._core.check_operating_point(settings, _engine())
@@ -714,6 +1428,7 @@ class Simulation:
                 written.
         """
         chosen = Options() if options is None else options
+        self.validate_analysis(analysis, chosen)
         if self.foundry:
             _log([analysis], 1)
             return foundry.run(
@@ -779,6 +1494,17 @@ class Simulation:
                 written.
         """
         chosen = Options() if options is None else options
+        problems = _nodeset_problems(chosen.nodesets, "nodeset", self._catalog)
+        for name, analysis in analyses.items():
+            found, _ = _analysis_problems(
+                analysis,
+                self._catalog,
+                self._record_problems,
+                has_logic_nets=bool(self.nets),
+            )
+            problems.extend(f"analysis `{name}`: {issue}" for issue in found)
+        if problems:
+            raise PlanError(problems)
         planned = _Planned.from_simulation(self, analyses, chosen, measures, traces)
         ran = self._variants(variants)
         taken = range(len(ran)) if runs is None else runs
@@ -802,23 +1528,29 @@ class Simulation:
         """
         return _labels(self._variants(variants).parameters)
 
-    def run_plan(self, plan: Plan) -> dict[str, results.AnalysisResult]:
+    def run_plan(
+        self, plan: Plan, *, specs: Specs | None = None
+    ) -> dict[str, results.AnalysisResult]:
         """Runs every analysis of `plan`, by name, with its options.
 
+        Checks `plan` (and `specs`, when provided) against this circuit before running
+        the first analysis.
+
         Raises:
-            ValueError: When the plan gives a temperature other than the simulation's.
+            PlanError: With every problem found in `plan` or `specs`, including a
+                temperature other than the simulation's.
+            SimulationError: When an analysis fails to solve.
         """
-        if plan.temperature is not None:
-            temperature = plan.temperature.to(TEMPERATURE, "a plan's temperature")
-            own = self.conditions.temperature
-            if temperature != own:
-                message = (
-                    f"the plan's temperature, {plan.temperature}, is not the "
-                    f"simulation's, {Quantity(own, TEMPERATURE)}"
-                )
-                raise ValueError(message)
+        self.validate_plan(plan, specs=specs, check_temperature=True)
         return {
-            name: self.run(analysis, plan.options)
+            name: self.run(
+                replace(analysis, record=plan.record)
+                if isinstance(analysis, Recorded)
+                and analysis.record is None
+                and plan.record is not None
+                else analysis,
+                plan.options,
+            )
             for name, analysis in plan.analyses.items()
         }
 
@@ -845,6 +1577,23 @@ class Simulation:
         instances: list[JsonValue] = [*sorted(found)]
         return {"instances": instances}
 
+    def _record_problems(self, record: Sequence[str]) -> list[str]:
+        """Every unknown instance path or unmatched wildcard pattern in `record`."""
+        problems: list[str] = []
+        for pattern in record:
+            body = pattern.removeprefix("!")
+            if _WILDCARDS.isdisjoint(body):
+                if body not in self._known:
+                    hint = close_names(self.instances, body)
+                    problems.append(
+                        f"the circuit has no instance named {body!r} to record{hint}"
+                    )
+            elif not any(
+                PurePosixPath(path).full_match(body) for path in self.instances
+            ):
+                problems.append(f"the record's pattern {body!r} matches no instance")
+        return problems
+
     def _resolve(self, record: tuple[str, ...]) -> frozenset[str]:
         """The paths of the instances `record` names.
 
@@ -852,19 +1601,16 @@ class Simulation:
         back, the last pattern that matches an instance deciding.
 
         Raises:
-            SimulationError: When the record names an instance the circuit does not
-                have, or holds a pattern that matches none.
+            PlanError: When the record names instances the circuit does not have, or
+                holds patterns that match none, listing every problem at once.
         """
+        problems = self._record_problems(record)
+        if problems:
+            raise PlanError(problems)
         named: set[str] = set()
         for pattern in record:
             body = pattern.removeprefix("!")
             if _WILDCARDS.isdisjoint(body):
-                if body not in self._known:
-                    hint = results.close_names(self.instances, body)
-                    message = (
-                        f"the circuit has no instance named {body!r} to record{hint}"
-                    )
-                    raise SimulationError(message)
                 matched = {body}
             else:
                 matched = {
@@ -872,9 +1618,6 @@ class Simulation:
                     for path in self.instances
                     if PurePosixPath(path).full_match(body)
                 }
-                if not matched:
-                    message = f"the record's pattern {body!r} matches no instance"
-                    raise SimulationError(message)
             if pattern.startswith("!"):
                 named -= matched
             else:
@@ -1185,6 +1928,9 @@ class Simulation:
             ElaborationError: When they name a number the circuit's devices do not
                 write.
         """
+        problems = _parameter_pair_problems(_variant_pairs(variants), self._catalog)
+        if problems:
+            raise ElaborationError(problems)
         elaborated = self._core.elaborated
         with _elaborating():
             match variants:
@@ -1374,7 +2120,10 @@ class Simulation:
         """Whether `sweep`'s levels are voltages or currents; None for a parameter's."""
         if sweep.parameter is not None:
             return None
-        return "current" if self._level(sweep) == CURRENT else "voltage"
+        source = self._source(sweep.source)
+        if source is None:
+            return None
+        return "current" if source == CURRENT else "voltage"
 
     def _view(self, core: _core.Simulator) -> Simulation:
         """The simulation of the same circuit that the engine's `core` runs.
@@ -1506,7 +2255,16 @@ class _Planned:
             planned.settings.append((encoded, json.dumps(settings, allow_nan=False)))
         for measure in measures:
             planned.readings.append(planned._reading(measure))
-        columns = [results.column(simulation.unknowns, name) for name in traces]
+        columns: list[int] = []
+        trace_errors: list[str] = []
+        for trace in traces:
+            try:
+                columns.append(results.column(simulation.unknowns, trace))
+            except KeyError as error:
+                trace_errors.append(str(error.args[0]))
+        if trace_errors:
+            message = "\n\n".join(trace_errors)
+            raise KeyError(message)
         planned.traces = [
             (name, columns)
             for name, analysis in analyses.items()
@@ -1526,7 +2284,8 @@ class _Planned:
         """How the batch reads `measure`."""
         name = measure.analysis
         if name not in self.analyses:
-            reason = f"the batch runs no analysis named {name}"
+            close = close_names(tuple(self.analyses), name)
+            reason = f"the batch runs no analysis named {name}{close}"
             return _Reading(measure, reason=reason, everywhere=True)
         if name in self.refused:
             reason = f"the analysis {name} failed"

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from jolty import (
     Ac,
@@ -294,8 +295,8 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
     simulation = Simulation(divider(5 * V, 1 * kohm, 1 * kohm))
     with pytest.raises(SimulationError, match="no unknown named `nowhere`"):
         simulation.run(Noise("nowhere", [1 * kHz]))
-    with pytest.raises(SimulationError, match="frequencies must be positive"):
-        simulation.run(Noise("out", [0 * Hz]))
+    with pytest.raises(ValidationError, match="noise frequencies are positive"):
+        Noise("out", [0 * Hz])
     with pytest.raises(SimulationError, match="`R1` is not an independent source"):
         simulation.run(Noise("out", [1 * kHz], source="R1"))
     with pytest.raises(DimensionError, match="a frequency"):
@@ -358,8 +359,8 @@ def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
     assert results.dampings(found.poles).tolist() == [1.0]
     alone = simulation.run(PoleZero())
     assert alone.zeros is None
-    with pytest.raises(SimulationError, match="both or neither"):
-        simulation.run(PoleZero(source="V1"))
+    with pytest.raises(ValidationError, match="both or neither"):
+        PoleZero(source="V1")
 
 
 def test_dense_matrices_past_the_memory_fail_before_they_are_made() -> None:
@@ -649,7 +650,7 @@ def test_a_record_names_instances_and_patterns_of_their_paths() -> None:
         simulation.run(OperatingPoint(record=["X1/R3"]))
     with pytest.raises(SimulationError, match=r"pattern 'X3/\*' matches no instance"):
         simulation.run(OperatingPoint(record=["X3/*"]))
-    with pytest.raises(TypeError, match="not the string 'X1'"):
+    with pytest.raises(ValidationError, match="not the string 'X1'"):
         OperatingPoint(record="X1")
 
 
@@ -706,8 +707,8 @@ def test_a_transient_steps_onto_the_times_it_is_given() -> None:
     np.testing.assert_allclose(
         waveforms.charge("C1", "a"), 1e-9 * waveforms.voltage("out")
     )
-    with pytest.raises(SimulationError, match="after 0 and at most the stop time"):
-        simulation.run(Transient(stop=5 * us, breakpoints=[6 * us]))
+    with pytest.raises(ValidationError, match="after 0 and at most the stop time"):
+        Transient(stop=5 * us, breakpoints=[6 * us])
 
 
 @component
@@ -985,7 +986,7 @@ def test_corners_are_named_by_identifiers_at_a_temperature() -> None:
     assert plan.temperature_at() == celsius(85)
     with pytest.raises(ValueError, match="a corner is named by a Python identifier"):
         Plan(analyses, corners={"cold 1": corner})
-    with pytest.raises(TypeError, match="not a Corner"):
+    with pytest.raises(ValidationError, match="not a Corner"):
         Plan(analyses, corners={"cold": celsius(-40)})  # ty: ignore[invalid-argument-type] - the wrong type is tested
     with pytest.raises(DimensionError, match="a corner's temperature"):
         Corner(temperature=5 * V)

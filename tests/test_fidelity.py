@@ -3,6 +3,7 @@
 from typing import Final
 
 import pytest
+from pydantic import ValidationError
 
 from jolty import (
     Builder,
@@ -119,7 +120,7 @@ def test_a_plan_s_characterizations_are_checked() -> None:
         Characterized(SUPPLY, slews=(0, 1))
     with pytest.raises(ValueError, match="the fanouts rise from zero or more"):
         Characterized(SUPPLY, fanouts=(2, 1))
-    with pytest.raises(TypeError, match="not a Characterized model"):
+    with pytest.raises(ValidationError, match="not a Characterized model"):
         Plan({"step": Transient(stop=1 * ns)}, fidelity={"X1": 1.0})  # ty: ignore[invalid-argument-type] - the wrong type is tested
 
 

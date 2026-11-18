@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, override
 
 from jolty import _core, checks, results
+from jolty.errors import DimensionError
 from jolty.specs._requirements import (
     Measure,
     MeasureError,
@@ -52,6 +53,9 @@ type _Explainer = Mapping[str, Callable[[Sequence[float]], str]]
 
 type _Resolve = Callable[[results.AnalysisResult], ResolvedMeasure]
 """Resolves a measure against a result for the engine to read."""
+
+type _Diagnose = Callable[[results.AnalysisResult], Sequence[str]]
+"""Collects every static problem resolving a measure against a result shape."""
 
 
 def diagnose(
@@ -95,6 +99,47 @@ def _diagnostic(rule: checks.Rule, message: str) -> checks.Diagnostic:
     return checks.Diagnostic(
         rule=rule.name, level=rule.level, message=message, instances=(), nets=()
     )
+
+
+def _check_value(
+    traces: _Signal, at: Quantity | None, result: results.AnalysisResult
+) -> list[str]:
+    """Every static problem resolving a `value` measure against `result`."""
+    match result:
+        case results.OperatingPointResult():
+            problems = traces.problems(result.unknowns)
+            if at is not None:
+                problems.append(f"an operating point holds one value, not one at {at}")
+            return problems
+        case (
+            results.AcResult()
+            | results.SensitivityResult()
+            | results.MismatchResult()
+            | results.StabilityResult()
+            | results.NoiseResult()
+            | results.PoleZeroResult()
+            | results.OperatingPointsResult()
+            | results.TransferFunctionResult()
+        ):
+            message = (
+                "a value reads an operating point, a transient or a DC sweep, "
+                f"not {_kind(result)}"
+            )
+            return [message]
+    try:
+        axis = _axis(result, "a value")
+    except MeasureError as error:
+        return [str(error.args[0])]
+    problems = traces.problems(result.unknowns)
+    if at is None:
+        problems.append(
+            f"{_kind(result)} holds a value per {axis.noun}, and at is unset"
+        )
+    else:
+        axis_error = axis.check(at, "at")
+        if axis_error is not None:
+            problems.append(axis_error)
+    return problems
 
 
 def value(
@@ -148,8 +193,11 @@ def value(
             measure, dimension, _explain(axis.outside({"at": ("at", at)}))
         )
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        return _check_value(traces, at, result)
+
     described = str(traces) if at is None else f"{traces} at {at}"
-    return _native(analysis, described, None, resolve)
+    return _native(analysis, described, None, resolve, check)
 
 
 def gain(
@@ -174,7 +222,14 @@ def gain(
         measure = _core.Measure.gain(resolved, _FREQUENCIES.convert(at, "at"))
         return ResolvedMeasure(measure, "dB", transfer.explain(at=at))
 
-    return _native(analysis, f"gain of {transfer} at {at}", "dB", resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = transfer.problems(result)
+        at_error = _FREQUENCIES.check(at, "at")
+        if at_error is not None:
+            problems.append(at_error)
+        return problems
+
+    return _native(analysis, f"gain of {transfer} at {at}", "dB", resolve, check)
 
 
 def phase(
@@ -199,7 +254,14 @@ def phase(
         measure = _core.Measure.phase(resolved, _FREQUENCIES.convert(at, "at"))
         return ResolvedMeasure(measure, "°", transfer.explain(at=at))
 
-    return _native(analysis, f"phase of {transfer} at {at}", "°", resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = transfer.problems(result)
+        at_error = _FREQUENCIES.check(at, "at")
+        if at_error is not None:
+            problems.append(at_error)
+        return problems
+
+    return _native(analysis, f"phase of {transfer} at {at}", "°", resolve, check)
 
 
 def bandwidth(
@@ -234,7 +296,13 @@ def bandwidth(
         measure = _core.Measure.bandwidth(transfer.resolve(result), drop)
         return ResolvedMeasure(measure, FREQUENCY, transfer.explain({"stays": stays}))
 
-    return _native(analysis, f"{drop:g} dB bandwidth of {transfer}", None, resolve)
+    return _native(
+        analysis,
+        f"{drop:g} dB bandwidth of {transfer}",
+        None,
+        resolve,
+        transfer.problems,
+    )
 
 
 def crossover(
@@ -256,7 +324,9 @@ def crossover(
         measure = _core.Measure.crossover(transfer.resolve(result))
         return ResolvedMeasure(measure, FREQUENCY, transfer.explain(transfer.unity))
 
-    return _native(analysis, f"crossover frequency of {transfer}", None, resolve)
+    return _native(
+        analysis, f"crossover frequency of {transfer}", None, resolve, transfer.problems
+    )
 
 
 def phase_margin(
@@ -278,7 +348,9 @@ def phase_margin(
         measure = _core.Measure.phase_margin(transfer.resolve(result))
         return ResolvedMeasure(measure, "°", transfer.explain(transfer.unity))
 
-    return _native(analysis, f"phase margin of {transfer}", "°", resolve)
+    return _native(
+        analysis, f"phase margin of {transfer}", "°", resolve, transfer.problems
+    )
 
 
 def gain_margin(
@@ -304,7 +376,9 @@ def gain_margin(
             measure, "dB", transfer.explain({"uncrossed": lambda _: inverted})
         )
 
-    return _native(analysis, f"gain margin of {transfer}", "dB", resolve)
+    return _native(
+        analysis, f"gain margin of {transfer}", "dB", resolve, transfer.problems
+    )
 
 
 def maximum(
@@ -418,7 +492,10 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
         explain = resolved.explain({"uncrossed": lambda _: unresolved})
         return ResolvedMeasure(measure, TIME, explain)
 
-    return _native(analysis, f"rise time of {window}", None, resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        return window.problems(result, "a rise time", transient=True)
+
+    return _native(analysis, f"rise time of {window}", None, resolve, check)
 
 
 def overshoot(
@@ -441,7 +518,10 @@ def overshoot(
         measure = _core.Measure.overshoot(resolved.signal, resolved.window)
         return ResolvedMeasure(measure, "%", resolved.explain())
 
-    return _native(analysis, f"overshoot of {window}", "%", resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        return window.problems(result, "an overshoot", transient=True)
+
+    return _native(analysis, f"overshoot of {window}", "%", resolve, check)
 
 
 def settling_time(  # noqa: PLR0913 - a window, its signal and the band
@@ -472,8 +552,11 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
         measure = _core.Measure.settling_time(resolved.signal, resolved.window, band)
         return ResolvedMeasure(measure, TIME, resolved.explain())
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        return window.problems(result, "a settling time", transient=True)
+
     described = f"{100 * band:g}% settling time of {window}"
-    return _native(analysis, described, None, resolve)
+    return _native(analysis, described, None, resolve, check)
 
 
 def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
@@ -501,9 +584,17 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
             measure, TIME, resolved.explain({"uncrossed": lambda _: uncrossed})
         )
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = window.problems(result, "a crossing", transient=True)
+        if isinstance(result, results.TransientResult):
+            level_error = _check_level(window.signal, result.unknowns, level)
+            if level_error is not None:
+                problems.append(level_error)
+        return problems
+
     way = "" if edge == "either" else f" {edge}"
     described = f"first{way} crossing of {level} by {window}"
-    return _native(analysis, described, None, resolve)
+    return _native(analysis, described, None, resolve, check)
 
 
 def frequency(  # noqa: PLR0913 - a window, its signal and the level
@@ -534,7 +625,15 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
 
         return ResolvedMeasure(measure, FREQUENCY, resolved.explain({"rises": rises}))
 
-    return _native(analysis, f"frequency of {window}", None, resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = window.problems(result, "a frequency", transient=True)
+        if level is not None and isinstance(result, results.TransientResult):
+            level_error = _check_level(window.signal, result.unknowns, level)
+            if level_error is not None:
+                problems.append(level_error)
+        return problems
+
+    return _native(analysis, f"frequency of {window}", None, resolve, check)
 
 
 def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the harmonics
@@ -586,8 +685,11 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
         )
         return ResolvedMeasure(measure, "dB", resolved.explain(explainer))
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        return window.problems(result, "a distortion", transient=True)
+
     described = f"distortion of {window} at {fundamental}"
-    return _native(analysis, described, "dB", resolve)
+    return _native(analysis, described, "dB", resolve, check)
 
 
 def noise_density(analysis: str, *, at: Quantity, referred: bool = False) -> Measure:
@@ -609,8 +711,15 @@ def noise_density(analysis: str, *, at: Quantity, referred: bool = False) -> Mea
             _core.Measure.noise_density(point, referred), unit, explain
         )
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = _spectrum_problems(result, "a noise density", referred=referred)
+        at_error = _FREQUENCIES.check(at, "at")
+        if at_error is not None:
+            problems.append(at_error)
+        return problems
+
     referral = " referred to the input" if referred else ""
-    return _native(analysis, f"noise density{referral} at {at}", None, resolve)
+    return _native(analysis, f"noise density{referral} at {at}", None, resolve, check)
 
 
 def integrated_noise(
@@ -652,11 +761,20 @@ def integrated_noise(
             measure, _noise_unit(spectrum, referred=referred), explain
         )
 
+    def check(result: results.AnalysisResult) -> list[str]:
+        problems = _spectrum_problems(result, "an integrated noise", referred=referred)
+        for point, name in ((start, "start"), (stop, "stop")):
+            if point is not None:
+                point_error = _FREQUENCIES.check(point, name)
+                if point_error is not None:
+                    problems.append(point_error)
+        return problems
+
     referral = " referred to the input" if referred else ""
     lowest = "the lowest frequency" if start is None else str(start)
     highest = "the highest" if stop is None else str(stop)
     described = f"RMS noise{referral} from {lowest} to {highest}"
-    return _native(analysis, described, None, resolve)
+    return _native(analysis, described, None, resolve, check)
 
 
 def solutions(analysis: str) -> Measure:
@@ -711,14 +829,34 @@ def dominant_pole(analysis: str) -> Measure:
 
 
 def _native(
-    analysis: str, description: str, plain: Plain | None, resolve: _Resolve
+    analysis: str,
+    description: str,
+    plain: Plain | None,
+    resolve: _Resolve,
+    check: _Diagnose | None = None,
 ) -> Measure:
     """The measure the engine reads once `resolve` resolves it against a result."""
 
     def read(result: results.AnalysisResult) -> Reading:
         return resolve(result).read(result)
 
-    return Measure(analysis, description, plain, read, resolve)
+    return Measure(analysis, description, plain, read, resolve, check)
+
+
+def _check_level(
+    signal: _Signal, unknowns: tuple[Unknown, ...], level: Quantity
+) -> str | None:
+    """Checks `level` against `signal`'s dimension when `signal` names an unknown."""
+    try:
+        index = results.column(unknowns, signal.name)
+    except KeyError:
+        return None
+    dimension = _DIMENSIONS[unknowns[index].nature]
+    try:
+        level.to(dimension, "the level")
+    except DimensionError as error:
+        return str(error.args[0])
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,6 +888,31 @@ class _Signal:
                 raise MeasureError(message)
         return (index, base), dimension
 
+    def problems(self, unknowns: tuple[Unknown, ...]) -> list[str]:
+        """Every problem resolving `self` against `unknowns`, checking both names."""
+        found: list[str] = []
+        index: int | None = None
+        try:
+            index = results.column(unknowns, self.name)
+        except KeyError as error:
+            found.append(str(error.args[0]))
+        if self.reference is None:
+            return found
+        base: int | None = None
+        try:
+            base = results.column(unknowns, self.reference)
+        except KeyError as error:
+            found.append(str(error.args[0]))
+        for position in (index, base):
+            if position is None:
+                continue
+            unknown = unknowns[position]
+            if unknown.nature != "voltage":
+                found.append(
+                    f"{self} names the {unknown.nature} {unknown.name}, not a voltage"
+                )
+        return found
+
     @override
     def __str__(self) -> str:
         """The signal, such as ``out`` or ``out relative to ref``."""
@@ -779,6 +942,14 @@ class _Axis:
         return point.to(
             point.dimension if self.dimension is None else self.dimension, name
         )
+
+    def check(self, point: Quantity, name: str) -> str | None:
+        """The dimension error of `point` against this axis, or `None` when valid."""
+        try:
+            self.convert(point, name)
+        except DimensionError as error:
+            return str(error.args[0])
+        return None
 
     def outside(self, points: Mapping[str, tuple[str, Quantity | None]]) -> _Explainer:
         """What a point past the axis says, of each of `points`.
@@ -877,6 +1048,24 @@ class _Window:
         }
         return _Resolved(signal, window, dimension, explainer)
 
+    def problems(
+        self, result: results.AnalysisResult, what: str, *, transient: bool
+    ) -> list[str]:
+        """Every static problem resolving this window against `result`."""
+        if transient and not isinstance(result, results.TransientResult):
+            return [f"{what} reads a transient, not {_kind(result)}"]
+        try:
+            axis = _axis(result, what)
+        except MeasureError as error:
+            return [str(error.args[0])]
+        found = self.signal.problems(result.unknowns)
+        for point, name in ((self.start, "the start"), (self.stop, "the stop")):
+            if point is not None:
+                point_error = axis.check(point, name)
+                if point_error is not None:
+                    found.append(point_error)
+        return found
+
     @override
     def __str__(self) -> str:
         """The signal and the window, such as ``out from 1 µs to 2 µs``."""
@@ -931,6 +1120,27 @@ class _Transfer:
                 )
         raise MeasureError(message)
 
+    def problems(self, result: results.AnalysisResult) -> list[str]:
+        """Every static problem resolving this transfer against `result`."""
+        match result:
+            case results.StabilityResult() if self.output is None:
+                return []
+            case results.AcResult() if self.output is not None:
+                found = self.output.problems(result.unknowns)
+                if self.divisor is not None:
+                    found.extend(self.divisor.problems(result.unknowns))
+                return found
+            case results.StabilityResult():
+                return [f"a loop gain is read without an output, not at {self.output}"]
+            case results.AcResult():
+                return ["a small-signal response is read at an output"]
+            case _:
+                message = (
+                    "a gain or a phase reads a small-signal response or a loop gain, "
+                    f"not {_kind(result)}"
+                )
+                return [message]
+
     def explain(
         self, *explainers: _Explainer, at: Quantity | None = None
     ) -> Callable[[_core.MeasureError], str]:
@@ -971,7 +1181,10 @@ def _statistic(
         measure = statistic(resolved.signal, resolved.window)
         return ResolvedMeasure(measure, resolved.dimension, resolved.explain())
 
-    return _native(analysis, f"{name} of {window}", None, resolve)
+    def check(result: results.AnalysisResult) -> list[str]:
+        return window.problems(result, f"a {name}", transient=False)
+
+    return _native(analysis, f"{name} of {window}", None, resolve, check)
 
 
 def _axis(result: results.AnalysisResult, what: str) -> _Axis:
@@ -1026,6 +1239,17 @@ def _spectrum(
         message = "the noise analysis names no source to refer its noise to"
         raise MeasureError(message)
     return result
+
+
+def _spectrum_problems(
+    result: results.AnalysisResult, what: str, *, referred: bool
+) -> list[str]:
+    """Static problems validating `result` as a noise analysis for `what`."""
+    try:
+        _spectrum(result, what, referred=referred)
+    except MeasureError as error:
+        return [str(error.args[0])]
+    return []
 
 
 def _poles(result: results.AnalysisResult, what: str) -> None:

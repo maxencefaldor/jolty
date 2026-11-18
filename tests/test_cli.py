@@ -123,11 +123,17 @@ def test_a_failed_analysis_exits_with_1(
     script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     script.write_text(
-        FILTER.replace("Transient(stop=5 * us)", "Transient(stop=-5 * us)"),
+        FILTER.replace(
+            "from jolty import Builder, Plan",
+            "from jolty import Builder, Options, Plan",
+        ).replace(
+            'Plan({"step": Transient(stop=5 * us)})',
+            'Plan({"step": Transient(stop=5 * us)}, options=Options(max_memory=1e-9))',
+        ),
         encoding="utf-8",
     )
     assert run("simulate", "low_pass.py") == 1
-    assert "step: failed: invalid analysis" in capsys.readouterr().out
+    assert "step: failed: the transient's results would pass" in capsys.readouterr().out
 
 
 def test_a_failed_requirement_exits_with_1(

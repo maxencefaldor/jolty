@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from jolty import results
 from jolty.runner import Built, Failure, Job, run
@@ -450,7 +451,7 @@ def test_impossible_requirements_and_specs_are_errors() -> None:
         _ = value("op", "out") >= math.inf
     with pytest.raises(ValueError, match="at least one requirement"):
         Specs([])
-    with pytest.raises(TypeError, match="hold requirements"):
+    with pytest.raises(ValidationError, match="hold requirements"):
         Specs([value("op", "out")])  # ty: ignore[invalid-argument-type] - the wrong type is tested
     with pytest.raises(ValueError, match="between 0 and 1"):
         rise_time("t", "out", low=0.9, high=0.1)

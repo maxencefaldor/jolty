@@ -26,7 +26,6 @@ what each measure read, and the values of some unknowns at every point of an
 analysis.
 """
 
-import difflib
 import functools
 import math
 from collections.abc import Iterable, Sequence
@@ -38,6 +37,7 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import _core, ir
+from jolty.errors import close_names
 from jolty.units import Dimension
 from jolty.unknowns import Nature, Unknown
 
@@ -381,17 +381,6 @@ def net_column(nets: tuple[str, ...], name: str) -> int:
         KeyError: When no logic net has that name; the message suggests the closest.
     """
     return _find(list(nets), name, "the circuit has no logic net")
-
-
-def close_names(names: Sequence[str], name: str) -> str:
-    """The names among `names` closest to `name`, as the end of a message, if any.
-
-    Examples:
-        >>> close_names(["out", "in"], "ou")
-        '; close names: out'
-    """
-    close = difflib.get_close_matches(name, names, n=3)
-    return f"; close names: {', '.join(close)}" if close else ""
 
 
 def _find(names: list[str], name: str, missing: str) -> int:

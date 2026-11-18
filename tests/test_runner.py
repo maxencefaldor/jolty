@@ -38,12 +38,13 @@ def plan():
 """
 
 
-NO_FREQUENCIES = """
-from jolty import Ac, Plan
+TOO_MUCH_MEMORY = """
+from jolty import Options, Plan, Transient
+from jolty.units import us
 
 
 def plan():
-    return Plan({"ac": Ac("V1", [])})
+    return Plan({"step": Transient(stop=1 * us)}, options=Options(max_memory=1e-9))
 """
 
 
@@ -215,12 +216,12 @@ def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
 
 def test_a_plan_may_live_in_its_own_script(tmp_path: Path) -> None:
     script = write(tmp_path, DIVIDER)
-    plan = write(tmp_path, NO_FREQUENCIES, "plan.py")
+    plan = write(tmp_path, TOO_MUCH_MEMORY, "plan.py")
     outcome = built(run(Job(script=script, plan=plan, max_unknowns=10), tmp_path))
     (failure,) = outcome.analyses
     assert isinstance(failure, report.FailureReport)
-    assert failure.name == "ac"
-    assert "frequenc" in failure.error
+    assert failure.name == "step"
+    assert "results would pass" in failure.error
     assert not (tmp_path / RESULTS).exists()
 
 
