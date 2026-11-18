@@ -15,6 +15,7 @@ transient stops, or leaps by chance to another solution, in one spelling and not
 another.
 """
 
+import dataclasses
 import math
 from collections.abc import Callable, Iterable
 
@@ -33,7 +34,7 @@ from jolty import (
     ir,
     results,
 )
-from jolty.plan import TIGHT, decade
+from jolty.plan import DEFAULTS, TIGHT, Options, decade
 from jolty.spice.ngspice import CURRENT_TOLERANCE
 from jolty.units import GHz, Hz, V, ohm, s
 from strategies import (
@@ -67,12 +68,14 @@ def _source(circuit: ir.Circuit) -> str:
     )
 
 
-def _transient(simulation: Simulation, step: float) -> dict[str, Values]:
+def _transient(
+    simulation: Simulation, step: float, options: Options = TIGHT
+) -> dict[str, Values]:
     """The waveform of every unknown with `step` the longest, read at `TIMES`."""
     plan = Transient(
         stop=STOP * s, max_step=step * s, breakpoints=[time * s for time in TIMES[1:]]
     )
-    waveforms = simulation.run(plan, TIGHT)
+    waveforms = simulation.run(plan, options)
     taken = nearest(waveforms.times, TIMES)
     # Breakpoint landing tolerance: 100 * SMALLEST_STEP_FRACTION (1e-11 * step).
     assert np.allclose(waveforms.times[taken], TIMES, rtol=0, atol=1e-9 * step)
@@ -82,7 +85,12 @@ def _transient(simulation: Simulation, step: float) -> dict[str, Values]:
     }
 
 
-def _simulated(circuit: ir.Circuit, loaded: ir.Circuit, source: str) -> Simulated:
+def _simulated(
+    circuit: ir.Circuit,
+    loaded: ir.Circuit,
+    source: str,
+    options: Options = TIGHT,
+) -> Simulated:
     """The operating point, the response to `source` and the transient of `circuit`.
 
     The transient is that of `loaded`, the same circuit with capacitance at its nets.
@@ -90,8 +98,8 @@ def _simulated(circuit: ir.Circuit, loaded: ir.Circuit, source: str) -> Simulate
     amplifies rounding, and two ways of writing the circuit round differently.
     """
     simulation = Simulation(circuit)
-    point = simulation.run(OperatingPoint(), TIGHT)
-    response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), TIGHT)
+    point = simulation.run(OperatingPoint(), options)
+    response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), options)
     found: Simulated = {
         "operating point": dict(
             zip((unknown.name for unknown in point.unknowns), point.values, strict=True)
@@ -103,7 +111,7 @@ def _simulated(circuit: ir.Circuit, loaded: ir.Circuit, source: str) -> Simulate
     }
     charged = Simulation(loaded)
     if not unstable(charged):
-        found["transient"] = _transient(charged, STEP)
+        found["transient"] = _transient(charged, STEP, options)
     return found
 
 
@@ -173,7 +181,22 @@ def _assert_same(
     except SimulationError:
         event("no simulation of the circuit as drawn")
         return {}
-    found = _simulated(written, parasitic(written, map(name, nets)), source)
+    loaded_written = parasitic(written, map(name, nets))
+    original_width = len(Simulation(loaded).unknowns)
+    written_width = len(Simulation(loaded_written).unknowns)
+    # Rewrites that insert extra unknowns (e.g. an ammeter adds a probe net and a
+    # branch current; splitting a resistor adds a midpoint net) store more floats per
+    # accepted step. Scale `max_memory` by `written_width / original_width` so both
+    # runs share the exact same step-count cap without loosening any numerical option.
+    written_options = (
+        dataclasses.replace(
+            TIGHT,
+            max_memory=DEFAULTS["max_memory"] * (written_width / original_width),
+        )
+        if written_width > original_width
+        else TIGHT
+    )
+    found = _simulated(written, loaded_written, source, written_options)
     if "transient" in expected and not _settled(loaded, expected):
         event("a waveform that shorter steps move")
         del expected["transient"]

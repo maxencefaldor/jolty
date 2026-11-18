@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/quality.md`, kept whole.
 
-Plan: ✅ 16 done · 🚧 1 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 21 done · 🚧 1 in progress · 📋 3 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -18,15 +18,14 @@ Every ruff and ty rule and clippy's pedantic lints are errors; rustdoc's warning
 
 - **One fact in several places:** one parameter lives in six places in four files (`models.md` 4).
 - **Guards that enumerate the library:** allocation, Jacobian, law suite and SPICE round-trip checks all enumerate `Library::standard()` (item 4).
-- **Numbers without a source:** engine constants, and up to 340 of 428 test tolerance sites (a 15 November scan's upper bound) (items 10 and 11).
+- **Numbers with their source:** all named constants across `jolty-engine`, `jolty-numerics`, and `jolty-checks` and all Python test tolerances cite their origin and are guarded by `tests/test_tolerances.py` (items 10 and 11, done).
 - **Names:** unified across the library (`8a4d80a` to `bc35702`, item 12; only `measure::Signal` waits on the owner) and across the benchmark suites (`092e86f`, item 13, done: `fixture` everywhere, one `benchmarks/simulators.py`).
 
 **One way to differentiate and one way to stamp,** since 17 November: every kernel composes dual numbers at each law's own width (item 6), and writes its matrix entries through summed derivatives (item 5).
 
 **Slop found and removed on 15 November:** mypy, brought in for its stubtest beside ty, the one type checker (`5ba0fb2`, replaced by a test of jolty's own); four ways to start ngspice and three to read its version (`5f69050`, now `jolty.spice.ngspice.execute` and `version`); three copies of the options as tight as ngspice's (now `jolty.plan.TIGHT`); the precision suite's restated defaults, option names and colours (`a43aa05`); the precision suite's committed 1.65 MB of results.
 
-**The Python API:** small, immutable and precisely typed, but only half carries units: options, overrides and variants are plain floats in SI units (item 7).
-The analyses a spec names are resolved only after every analysis has run (item 8).
+**The Python API:** small, immutable and precisely typed; upfront plan, analysis, option, and spec validation now resolves every name and reports all errors before simulation runs (items 8 and 9, done), while options, overrides and variants still take plain floats in SI units (item 7).
 
 **The guide:** precise, and its 84 keyword calls (counted 15 November) match the API; `tests/test_guide.py` now runs its Python blocks and checks its quoted outputs (item 14, done: currently 48 Python blocks, 38 run and 10 marked `not run`, and 18 quoted outputs), while its sentences still run long, a median of 27 words on 15 November (item 20).
 
@@ -34,8 +33,7 @@ The analyses a spec names are resolved only after every analysis has run (item 8
 
 - One fact in several places: a model's facts (the benchmarks' helpers are unified, item 13).
 - One concept under several names: `measure::Signal` still waits on the owner (item 12).
-- Numbers that do not say where they come from (items 10 and 11).
-- Units and names checked late on several user paths.
+- Units checked late on options, overrides, variants, axes, and sweeps (item 7; plan/spec name resolution and multi-error validation are done, items 8 and 9, and constant/tolerance sources are done, items 10 and 11).
 - No how-to pages; guide sentences still run long (executable blocks and quotes are done, item 14).
 
 ## 4. Plan
@@ -97,27 +95,32 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** `Axis("R1", "resistance", [1 * nF])` fails at construction.
 - **Source:** row 9.
 
-### 📋 8. Everything a plan names resolved before running
+### ✅ 8. Everything a plan names resolved before running
 
 - **What:** every analysis a spec names, every record path, sweep source and axis instance checked before the first analysis runs, each error naming its nearest valid name.
 - **Done when:** a misspelt analysis fails before simulating, naming its neighbour.
+- **Result** (18 November): `Simulation.validate_analysis`, `Simulation.validate_plan`, and `close_names()` validate every analysis name, sweep/AC/noise/stability/transfer-function source, output/reference/over signal, record pattern, initial condition/nodeset net, and axis instance/parameter before the first analysis executes, reporting the nearest valid names in `PlanError` (`tests/test_plan_validation.py`).
 - **Source:** row 10; `AGENTS.md`, "Resolve before running".
 
-### 📋 9. Plans validated as files are, every error at once
+### ✅ 9. Plans validated as files are, every error at once
 
 - **Done when:** a plan with two bad options reports both.
+- **Result** (18 November): Pydantic multi-error validation across `src/jolty/plan.py` and `specs`, collecting all bad options, analyses, and spec references in a single `PlanError` before simulation starts (`tests/test_plan_validation.py`).
     **Source:** row 14.
 
-### 📋 10. Every engine constant names its source
+### ✅ 10. Every engine constant names its source
 
 - **What:** each constant of the engine says where it comes from, a line of a reference, a paper, a derivation or a measurement; those a user could choose, such as gmin stepping's factor and source stepping's, become options.
 - **Done when:** each constant's doc cites its source.
+- **Result** (18 November): documented the source of all named `const` items across `crates/jolty-engine/src/`, `crates/jolty-numerics/src/`, and `crates/jolty-checks/src/` (91 constants including `PERIODIC_SENSITIVITY`), enforced by AST/doc-comment tests in `tests/test_tolerances.py`.
 - **Source:** row 15; `AGENTS.md`, "Constants".
 
-### 📋 11. Every test tolerance names its source
+### ✅ 11. Every test tolerance names its source
 
 - **What:** each tolerance a test compares with states where it comes from; a check flags a new literal tolerance without one.
 - **Done when:** none of the 428 sites left uncited.
+- **Result** (18 November): cited all 520 Python test tolerance sites (447 pre-existing plus 73 new Wave 2 sites) across `tests/**/*.py` and added an AST guard in `tests/test_tolerances.py` that fails on any uncited literal tolerance.
+    The audit exposed two real masked-assertion bugs, both fixed: `tests/test_specs.py` `noise_density`/`integrated_noise` had `pytest.approx`'s default `abs=1e-12` masking a `9.616e-5` relative discrepancy at `1.5 kHz` under `rel=1e-12` (tightened with explicit `abs=0` across all 5 assertions), and tiny sub-pA/sub-pF `pytest.approx` calls in `tests/test_spice.py` lacked `abs=0` (tightened with explicit `abs=0`).
 - **Source:** row 16.
 
 ### 🚧 12. One name for each concept
@@ -164,10 +167,12 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead.**
     **Source:** row 18.
 
-### 📋 18. Fuzzing the parsers
+### ✅ 18. Fuzzing the parsers
 
 - **What:** the expression parser, the circuit format, the SPICE reader and shard files fed generated inputs, all with Hypothesis, already a dependency, the Rust parsers through the extension; no `cargo-fuzz` (the owner, 15 November).
 - **Done when:** a Hypothesis netlist generator runs nightly over the Python readers.
+- **Result** (18 November): added 62 Hypothesis property and fuzz tests in `tests/test_fuzz_parsers.py` covering SPICE expressions, SPICE libraries/netlists, `jolty-expressions`, circuit format JSON, results/raw files, and shard files.
+    Uncovered and fixed 40 Python parser/loader bugs (including iterative `inlined()` with node budget, subcircuit cycle tracking, empty-token handling, finite overflow checks, and charge-leak array validation) plus 3 real Rust bugs: recursive cycle stack overflow in `crates/jolty-engine/src/variants.rs` (replaced with iterative DFS returning `TolerancedError::Recursive`), non-finite `table()` abscissae/ordinates bypassing `partial_cmp` in `crates/jolty-expressions/src/parser.rs`, and parser/compiler/drop stack overflow on deep nesting and 5,000-term variable binary chains (replaced recursive descent with an iterative type-state shunting-yard stack in `parser.rs`, boxed `Points` in `Node::Table` shrinking `Node` from 64 to 24 bytes, made `tape::compile`, `Node`/`Term` `Drop`, and `jolty-python::term_to_json_string` iterative, and made `Expression::tree()` O(N) via `Option::take`).
 - **Source:** row 20.
 
 ### 📋 19. A contributors' guide to adding a model

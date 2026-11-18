@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/benchmarks.md`, kept whole.
 
-Plan: ✅ 7 done · 🚧 2 in progress · 📋 6 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 9 done · 🚧 2 in progress · 📋 4 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -77,7 +77,7 @@ The intervals are wide: more cases narrow them (item 8b).
 **The precision suite's first diagrams** (`3525ac5`; 16 fixtures, exact answers in mpmath at 50 digits, 2,448 runs; this Mac, load 5.9 to 11.5; `benchmarks/precision/README.md`, results kept out of the repository per `.gitignore`): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1, ngspice held by its 2014 electron charge), poles (15.3 to 14.7) and stiff networks with every tolerance scaled (5.1 to 5.4 against 3.2 to 3.9); it loses where `accuracy.md` 4 and 16 to 18 say.
 At equal digits jolty is faster on the RC, RLC and tank, about twice as slow on the networks; at the defaults both get 1.2–3.8 digits on transients.
 
-**The coverage matrix** (`benchmarks/coverage/coverage.json`, 65 rows): jolty offers 51 rows (**50 agreed**, **1 solved** (`vbic`, no closed form yet), **0 disagreed** (`tline` now runs its transient probe and agrees to 4.4e-16 of the scale)), and **14 unsupported** (`mos2`, `mos6`, `mos9`, `bsimsoi`, `hisim2`, `hicum`, `mesfet`, `jfet2`, `ltra`, `urc`, `xspice`, `osdi`, plus `lib` and `include` whose matrix probes place `.lib`/`.include` inside a subcircuit); ngspice Sparse: 41 agreed, 9 solved, 3 reference, 1 disagreed (`sens-ac`), 2 documented, 9 unsupported; ngspice KLU: 42 agreed, 9 solved, 1 failed (`sens-ac`), 2 documented, 11 unsupported; Xyce serial: 35 agreed, 2 solved, 1 disagreed (`noise`, by its 1973 electron charge), 14 documented, 13 unsupported.
+**The coverage matrix** (`benchmarks/coverage/coverage.json`, 80 rows after v2): jolty offers **62 agreed** (`lib` and `include` now agree inside subcircuits, `vbic` agrees to 8.1e-8 against its exact coupled-KCL closed form, `bsim3` agrees to 3.3e-16 in strong-inversion saturation, plus `corners`, `worst-case`, `switch-voltage`, `switch-current`, `logic`, `ic`, `nodeset`, `pdk-library`, and `four`), **3 documented** (`kit-sky130`, `kit-gf180mcu`, `kit-sg13g2`), **0 failed**, **0 disagreed**, **0 unknown**, and **15 unsupported** (`disto`, `sp`, `trnoise`, `mos2`, `mos6`, `mos9`, `bsimsoi`, `hisim2`, `hicum`, `mesfet`, `jfet2`, `ltra`, `urc`, `xspice`, `osdi`); ngspice Sparse: 49 agreed, 3 reference, 9 solved, 2 disagreed (`sens-ac`, and `disto` whose `disto2` `HD3` returns `-Vt/12` instead of exact `+Vt/12`), 7 documented, 10 unsupported, 0 failed; ngspice KLU: 50 agreed, 9 solved, 1 failed (`sens-ac`), 7 documented, 13 unsupported (including `disto`, which KLU refuses); Xyce serial: 35 agreed, 2 solved, 1 disagreed (`noise`, by its 1973 electron charge), 26 documented, 16 unsupported (all 65 prior cells preserved identically).
 
 **Xyce's first column** (on `main` since `6047a2d` to `dd18fa0`, 15 November; measured on machine B, Ryzen 9 7950X, 16 cores, load 0.8 to 4.3; each simulator at its own defaults; raw logs not kept): on the two fixtures where both found the same solution, `bjt_amp` (jolty 1.0 ms, Xyce 68.4 ms end to end, 4.3 ms of analysis) and `ac_wide` (12.9 ms, 214 ms and 138 ms), jolty is faster.
 Elsewhere the work differs: the 500-inverter chain's edge lands 3.3% later in Xyce, mostly its own step error at its default tolerance; the meshes agree only to 1 to 2.5% at Xyce's defaults; Xyce stalls on the buck at 128.8 µs, where a body diode conducts; on the 300 × 300 mesh Xyce's MPI build takes 6.0 s on 16 ranks against jolty's 3.67 s on 16 threads.
@@ -88,8 +88,8 @@ Its agreement tests, 67 on machine B, pass at `test_ngspice.py`'s tolerances, wi
 ## 3. Gaps
 
 - Xyce has columns in the speed suite's views, precision suite and coverage matrix, but not yet in the robustness corpus, and is not installed on machine D (item 11); ngspice comparisons like with like (`--view`) are done (item 4).
-- The suites' second versions (items 7b, 8b, 9b).
-- No machine runs the nightly suite yet (item 5); nothing deterministic is checked per platform in CI (item 5b).
+- The precision suite's and corpus's second versions (items 7b, 8b); coverage matrix v2 is done (item 9b).
+- No machine runs the nightly suite yet (item 5); deterministic counts, digits, and fingerprints are now checked in CI (item 5b).
 
 ## 4. Plan
 
@@ -108,7 +108,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** the suite, ngspice on its fixtures, and the scaling on 1 to 64 threads, on a machine nothing else loads; then the break-evens there, and the guide's thresholds stated with that machine.
 - **State:** machine A's suite, ngspice and scaling done; its break-evens done (§2), and the guide and `jolty.plan.BREAK_EVENS` state them as the defaults (`speed.md` 4).
     On 18 November 2026 the full baseline at commit `430c75d` was measured and committed on machine D (`benchmarks/speed/results/430c75d6b0b402812924ebcfd22ed6c91fee6378.json`, 43 timing entries with individual run samples for 95% rank CIs, 7 transient profiles, machine system string scrubbed to `Linux-x86_64-with-glibc2.27`; shared-host load averages 145 to 224, raw view files kept out of the repository).
-    Summary on machine D (full tables in `benchmarks/speed/README.md`): speed (`bjt_amp` 1.532 ms Rust / 1.942 ms Python, `ac_wide` 3.069 ms / 9.691 ms, `buck` 1.518 s / 1.556 s, `inverter_chain_500` 7.825 s / 8.574 s, `rc_mesh_100` 1.340 s / 1.155 s, `monte_carlo` 57.92 µs/sample Rust on 24 threads and 59.72 µs/sample Python across 100,000 samples); scaling (`rc_mesh_300` 78.84 s serial to 11.08 s on 24 threads, 7.12×; `inverter_chain_5000` 250.3 s serial to 58.81 s on 16 threads, 4.26×, 70.78 s on 24 threads, 3.54×, bit-identical fingerprint `988bcd74633cb666` across all thread counts; `inverter_chain_50000` 1,001 s, 881.9 s profiled); `--view defaults` vs ngspice 47 completed (`bjt_amp` 2.029 ms vs 3.711/3.948 ms, `ac_wide` 12.42 vs 44.18/54.83 ms, `buck` 1.589 s vs 358.7/406.7 ms, `inverter_chain_500` 9.912 s vs 2.428/2.51 s [all 1.0× swing from matched reference], `rc_mesh_100` 1.497 s vs 51.39 s Sparse / 5.069 s KLU).
+    Summary on machine D (full tables in `benchmarks/speed/README.md`): speed (`bjt_amp` 1.532 ms Rust / 1.942 ms Python, `ac_wide` 3.069 ms / 9.691 ms, `buck` 1.518 s / 1.556 s, `inverter_chain_500` 7.825 s / 8.574 s, `rc_mesh_100` 1.340 s / 1.155 s, `monte_carlo` 57.92 µs/sample Rust on 24 threads and 59.72 µs/sample Python across 100,000 samples); scaling (`rc_mesh_300` 78.84 s serial to 11.08 s on 24 threads, 7.12×; `inverter_chain_5000` 250.3 s serial to 58.81 s on 16 threads, 4.26×, 70.78 s on 24 threads, 3.54×, bit-identical fingerprint `988bcd74633cb666` across all thread counts; `inverter_chain_50000` 1,001 s, 881.9 s profiled); `--view defaults` vs ngspice 47 completed (`bjt_amp` 2.029 ms vs 3.711/3.948 ms, `ac_wide` 12.42 vs 44.18/54.83 ms, `buck` 1.589 s vs 358.7/406.7 ms, `inverter_chain_500` 9.912 s vs 2.428/2.51 s [all 1.0× swing from matched reference], `rc_mesh_100` 1.497 s vs 51.39 s Sparse / 5.069 s KLU); `--view matched` (`430c75d`, 5,069 s) completed (`bjt_amp` 25.8 ms vs 8.116/8.724 ms; `ac_wide` 18.65 ms vs 62.28 ms Sparse [3.34× faster] / 77.39 ms KLU [4.15× faster]; `buck` 12.9 s where both ngspice Sparse and KLU failed with `Timestep too small` at `t = 9.87e-10` / `1.43e-09`; `inverter_chain_500` 127.7 s vs 56.86/59.04 s; `rc_mesh_100` 5.742 s vs Sparse timed out > 300 s and KLU 16.44 s [2.86× faster]).
     Still open for quiet dedicated machines: dedicated idle-machine re-run, break-evens on 24-core Zen 4, and Xyce on machine D (item 11).
 - **Source:** row B12.
 
@@ -145,10 +145,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **State** (`f61d0cd`, `4e5f0fc`, 16 November): `scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's and keeps each night's comparison, run from a crontab line the speed suite's page gives.
     **Not done:** no machine runs it each night yet; machine D, the fixed machine of the baselines, runs only on request.
 
-### 📋 5b. What is deterministic checked in CI
+### ✅ 5b. What is deterministic checked in CI
 
 - **What:** each fixture's iterations, steps, factorizations and error at the defaults, and the precision suite's digits on its 14 fixtures under 1,000 nodes, which are the same bits on one platform, recorded per platform and checked in `scripts/check`.
 - **Done when:** a change that moves them fails until it records the move.
+- **Result** (18 November): `benchmarks/deterministic.py` checks all 5 non-scale speed fixtures (`bjt_amp`, `ac_wide`, `buck`, `inverter_chain_500`, `rc_mesh_100`) and all 14 precision fixtures under 1,000 nodes (`rc_step` through `tree_100`), keying exact per-platform solver counts, significant digits, and SHA-256 result fingerprints by `platform_key()` in `benchmarks/deterministic.json` (wired into `scripts/check python` and unit-tested in `tests/test_deterministic.py`).
+    Unrecorded platforms check linear and analytic fixtures tightly and chaotic nonlinear transients (`buck`, `inverter_chain_500`) within the bounded cross-platform margin (`6%` counts, `0.05` digits) unless `--strict-platform` is passed.
+    Also fixed an exact zero-pivot division (`pivots[0] == 0`) in `benchmarks/precision/exact.py::_Elimination::newton` exposed while recording `ladder_100`.
 - **Source:** row B11; the precision suite's report.
 
 ### ✅ 6. Efficiency against concurrent copies, and peak memory
@@ -191,11 +194,17 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead:** no one publishes a coverage matrix whose cells ran.
     **Source:** row B8.
 
-### 📋 9b. The coverage matrix's second version
+### ✅ 9b. The coverage matrix's second version
 
 - **What:** rows for corners and worst case, `.disto`, `.sp`, transient noise, `.four`, `.ic`, `.nodeset`, switches, logic and the kits; VBIC's row judged (its closed form misses both simulators by 2e-6, unexplained); BSIM3's probe at a stronger bias; ngspice's column checked in the tests where ngspice is installed.
 - **Done when:** each in the matrix.
-    **Source:** the matrix's report.
+- **Result** (18 November): expanded the matrix from 65 to 80 offline-safe rows (`corners`, `worst-case`, `disto`, `sp`, `trnoise`, `switch-voltage`, `switch-current`, `logic`, `kit-sky130`, `kit-gf180mcu`, `kit-sg13g2`, `ic`, `nodeset`, `pdk-library`, `four`) and refreshed live on ngspice 47 (`Sparse 1.3` and `KLU`) with XSPICE codemodels loaded.
+    Traced the unexplained VBIC 2.114e-6 gap: VBIC 1.2 mandates non-zero default intrinsic resistances `RBI = RCI = RBP = 0.1 ohm`, dropping `Ib * RBI ~= 5.67e-8 V` (`-2.192e-6`), plus `q1` smoothing (`-2.50e-9`) and junction `gmin = 1e-12 S` (`+8.11e-8`).
+    Replaced the naive Ebers-Moll estimate with exact coupled-KCL `vbic_currents()`, agreeing with jolty to `-0.13 ULP` (`gmin=0`) and with both jolty and ngspice 47 to `8.1e-8` at default `gmin` (`same_kelvins(ROOM)` removes ngspice's 6.53e-6 Arrhenius offset); shifted BSIM3v3.3 from weak inversion (`1.95 pA`, 77% `gmin`) to strong-inversion saturation (`3.0 V / 3.0 V`, `0.328 mA`, agreeing to `3.3e-16` in jolty and `0` in ngspice KLU against ngspice Sparse).
+    With subcircuit `.lib`/`.include` support, both `lib` and `include` flipped `unsupported` to `agreed` (`0` error).
+    All 80 rows carry zero `unknown` cells and all 65 prior `xyce-serial` cells are preserved identically; live `ngspice-47` verification exposed three real quirks: `four` uses `.control` command `fourier`, `VSWITCH`/`ISWITCH` require whole-deck `ngbehavior=psa` with XSPICE codemodels, and `.disto` crashes with a `malloc` integer underflow at `lin 1 1k 1k`, is unsupported under KLU, and carries a global SPICE3f5 sign inversion on `disto2` `HD3` (`-Vt/12` instead of exact Volterra/Fourier `+Vt/12`, reported honestly as `disagreed` under `ngspice-sparse`).
+    Added gated `test_ngspice_column_is_what_its_fixture_finds` in `tests/test_coverage.py` (enforced when `JOLTY_REQUIRE_NGSPICE=1`).
+- **Source:** the matrix's report.
 
 ### 📋 10. The speed suite's fixtures widened
 

@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/agentic.md`, kept whole.
 
-Plan: ✅ 11 done · 🚧 1 in progress · 📋 11 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 13 done · 🚧 1 in progress · 📋 9 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -27,7 +27,7 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 **Where an agent's effort goes** (the discovery scripts, the guide and the MCP server):
 
 - **Harness code:** it writes bisections (50 steps to tune one resistor), Monte Carlo loops and measurements by hand, as jolty's sensitivities are of unknowns, not of specs, and nothing in jolty optimizes (items 9 and 11).
-- **Learning the API:** the MCP instructions (`src/jolty/mcp.py`, now 902 words) name 11 of the 33 device constructors, no transistor and no real part; they now mention `jolty.specs` measures and Monte Carlo sharding, but still never mention `specs()` or corners; in item 8's sandbox the agent can read jolty's source but not the guide (item 5).
+- **Learning the API:** resolved (item 5): MCP instructions are now derived programmatically from the code covering every device, real part, analysis, and measurement, and all 17 guide pages and 33 examples are bundled offline (`jolty docs`, `read_docs`, and MCP `jolty://docs/...` resources).
 - **Done since 15 November:** transistor operating-point regions and margins are reported in `OperatingPointResult.region` and `jolty simulate` (items 4 and 4b), and autonomous oscillators are solved by `PeriodicSteadyState(period=None)` (item 22).
 - **Images:** a plot costs 774 to 1,849 visual tokens, about 2,800 a simulation (item 6).
 
@@ -38,8 +38,7 @@ No published study gives the same agent two toolchains, which item 8 does.
 
 - What jolty gives an agent has never been measured on a real agent.
 - Feedback stops at facts about the circuit: no derivative of a spec, no numerical error of a measurement, no optimizer (transistor regions and margins are done, items 4 and 4b).
-- The reference is not inside the session; the MCP instructions cover a third of the devices.
-- Every command starts a fresh Python process, its time unmeasured (`speed.md` 8).
+- Every command starts a fresh Python process, its time unmeasured (`speed.md` 8); session queries against saved `.results.npz` files work without re-simulating (item 15), and the offline reference and programmatic MCP instructions are done (item 5).
 - An agent can still bypass the counting by calling a real program directly; the harness's sandbox is untested on Linux.
 
 ## 4. Plan
@@ -82,11 +81,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Result** (`8af6932`): PMOS and PNP margins flipped so positive means on or saturated for every transistor.
 - **Source:** the owner, 15 November.
 
-### 📋 5. The reference inside the session
+### ✅ 5. The reference inside the session
 
 - **What:** the MCP server's instructions derived from the code, naming every device, real part, analysis and measurement; the guide and the examples served as MCP resources and by a `jolty docs` command, so an agent reads them offline.
 - **Why:** an agent in item 8's sandbox cannot read the guide; the instructions name 11 of the 33 device constructors.
 - **Done when:** a test fails when a public constructor is missing from the instructions; the guide reads offline in item 8's sandbox.
+- **Result** (18 November): zero-dependency `crates/jolty-python/build.rs` generates `OUT_DIR/docs.json` packed into wheels as `jolty/assets/docs.json` (`428,613` bytes: 17 guide pages and 33 examples); added `jolty docs [TOPIC]` CLI command, `read_docs` MCP tool, 50 static MCP resources (`jolty://docs/guide/...`, `jolty://docs/examples/...`), and 2 URI templates.
+    Replaced the hand-written MCP instructions string with programmatic `build_instructions()` derived directly from `jolty.devices`, `jolty.parts`, `jolty.plan`, `jolty.specs`, `jolty.service`, and bundled doc summaries; unit tests fail if any public device constructor, part, analysis, or measurement is missing.
 - **Source:** row 15.
 
 ### 📋 6. An image budget
@@ -156,10 +157,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead:** no published study ablates a simulator's features.
     **Source:** rows 2, 3 and 4.
 
-### 📋 15. Session queries
+### ✅ 15. Session queries
 
 - **What:** any measurement of a saved result read without simulating again; only what changed run again.
 - **Done when:** a measurement of a results file works through MCP and the command line.
+- **Result** (18 November): added `MeasureRequest` and `measure_results()` in `jolty.service`, exposed uniformly as `jolty measure RESULTS --measure ...` on the command line and `measure_results` in the MCP server, reading any measurement (`value`, `dc`, `peak`, `trough`, `average`, `rms`, `ripple`, `gain`, `phase`, `bandwidth`, `crossover`, `phase_margin`, `gain_margin`, `rise_time`, `settling_time`, `crossing`, `frequency`, `distortion`, `period`, `noise_density`, `integrated_noise`, etc.) from a saved `.results.npz` file without invoking the simulator (`tests/test_service.py`, `tests/test_cli.py`, `tests/test_mcp.py`).
     **Source:** row 17.
 
 ### 📋 16. Progress for long runs over MCP
@@ -239,7 +241,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Two errors, `NoGrowingMode` and `Unsettled`.
     The period's sensitivity (`a0a9152`): `Sensitivity(outputs, of=PeriodicSteadyState(...))`, every output's derivative along the period and an oscillator's `period_derivative(instance, parameter)`, by the converged period's bordered system per parameter; a tank meets `L·∂T/∂L + C·∂T/∂C = T` to 5.7e-14 at `reltol` 1e-10, central differences to 1.24e-7.
     Shooting that converges onto the equilibrium fails with `Stationary`.
-    **Left:** `.pss` in the SPICE reader; a source that varies in time detected, not only stated; the sensitivity's columns held to `max_memory`.
+    Follow-ups completed (18 November): `.pss` cards in the SPICE reader (`PeriodicSteadyStateCard`, `PeriodicSteadyState.from_spice`), automatic detection of time-varying sources and behavioral `time` devices for autonomous shooting (`Waveform::varies_in_time`, `Kernel::varies_in_time`, `Runs::time_varying`, `check_periodic`), and `max_memory` enforcement across PSS sensitivity, JVP, and VJP (`DENSE_MATRICES`, `forward_period_numbers`, `pull_period_numbers`).
 - **Source:** row 20.
 
 **Elsewhere:** timing an agent's command end to end and a warm runner are `speed.md` 8; an exact cache of results is `speed.md` 16.

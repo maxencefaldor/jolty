@@ -1,61 +1,52 @@
 {
   "simulators": {
     "jolty": {
-      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
+      "commit": "6fb3276a8fd16f13c216dc695c6844f705859ce1",
       "machine": {
-        "cpu": "Apple M2 Max",
-        "cores": 12,
-        "kinds of core": {
-          "Performance": 8,
-          "Efficiency": 4
-        },
-        "sockets": 1,
-        "memory": 34359738368,
-        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "cpu": "AMD EPYC 9B14 96-Core Processor",
+        "cores": 24,
+        "kinds of core": {},
+        "sockets": 2,
+        "memory": 1622955708416,
+        "system": "Linux-x86_64-with-glibc2.27",
         "python": "3.15.2",
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "jolty 0.1.0",
-      "load": 3.04541015625,
-      "date": "2026-11-16"
+      "load": 146.11,
+      "date": "2026-11-18"
     },
     "ngspice-sparse": {
-      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
+      "commit": "6fb3276a8fd16f13c216dc695c6844f705859ce1",
       "machine": {
-        "cpu": "Apple M2 Max",
-        "cores": 12,
-        "kinds of core": {
-          "Performance": 8,
-          "Efficiency": 4
-        },
-        "sockets": 1,
-        "memory": 34359738368,
-        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "cpu": "AMD EPYC 9B14 96-Core Processor",
+        "cores": 24,
+        "kinds of core": {},
+        "sockets": 2,
+        "memory": 1622955708416,
+        "system": "Linux-x86_64-with-glibc2.27",
         "python": "3.15.2",
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 3.04541015625,
-      "date": "2026-11-16"
+      "load": 146.11,
+      "date": "2026-11-18"
     },
     "ngspice-klu": {
-      "commit": "7dad95a5ee62842ba354b3978209d2a08de79758",
+      "commit": "6fb3276a8fd16f13c216dc695c6844f705859ce1",
       "machine": {
-        "cpu": "Apple M2 Max",
-        "cores": 12,
-        "kinds of core": {
-          "Performance": 8,
-          "Efficiency": 4
-        },
-        "sockets": 1,
-        "memory": 34359738368,
-        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "cpu": "AMD EPYC 9B14 96-Core Processor",
+        "cores": 24,
+        "kinds of core": {},
+        "sockets": 2,
+        "memory": 1622955708416,
+        "system": "Linux-x86_64-with-glibc2.27",
         "python": "3.15.2",
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
-      "load": 3.04541015625,
-      "date": "2026-11-16"
+      "load": 146.11,
+      "date": "2026-11-18"
     },
     "xyce-serial": {
       "commit": "092e86f461070c479575c90ee88f587c93d238ea",
@@ -808,7 +799,7 @@
       "cells": {
         "jolty": {
           "status": "agreed",
-          "evidence": "largest error 2.4e-16 of the scale",
+          "evidence": "largest error 1.9e-16 of the scale",
           "found": {
             "onoise@0": [
               1.6510889514871253e-17,
@@ -1834,13 +1825,22 @@
           "found": null
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "disagreed",
+          "evidence": "v(hd3): -0.00215541 for 0.00215541, an error of 0.667 of the scale",
+          "found": {
+            "v(hd2)": [
+              -0.006466229259447173,
+              0.0
+            ],
+            "v(hd3)": [
+              -0.00215540975436961,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
+          "status": "unsupported",
+          "evidence": "Error: no such plot named disto1 / Error: no such plot named disto2 / Error: incomplete or empty netlist",
           "found": null
         },
         "xyce-serial": {
@@ -1879,14 +1879,48 @@
           "found": null
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 4.4e-16 of the scale",
+          "found": {
+            "s(1,1)": [
+              0.4999999999999999,
+              0.0
+            ],
+            "s(2,1)": [
+              0.5,
+              0.0
+            ],
+            "s(1,2)": [
+              0.5000000000000001,
+              0.0
+            ],
+            "s(2,2)": [
+              0.5000000000000002,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 4.4e-16 of the scale",
+          "found": {
+            "s(1,1)": [
+              0.5000000000000002,
+              0.0
+            ],
+            "s(2,1)": [
+              0.5000000000000001,
+              0.0
+            ],
+            "s(1,2)": [
+              0.5000000000000001,
+              0.0
+            ],
+            "s(2,2)": [
+              0.5000000000000002,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -1907,14 +1941,24 @@
           "found": null
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "v(out)@5e-07": [
+              -0.000908926638427176,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "v(out)@5e-07": [
+              0.0004108527464634419,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "unsupported",
@@ -2556,14 +2600,32 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 8.1e-08 of the scale",
+          "found": {
+            "i(vc)": [
+              -5.670022194337321e-05,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670009741720605e-07,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 8.1e-08 of the scale",
+          "found": {
+            "i(vc)": [
+              -5.670022194204094e-05,
+              0.0
+            ],
+            "i(vb)": [
+              -5.67000973769223e-07,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -2781,8 +2843,8 @@
       "known": null,
       "cells": {
         "jolty": {
-          "status": "solved",
-          "evidence": "",
+          "status": "agreed",
+          "evidence": "largest error 3.3e-16 of the scale",
           "found": {
             "i(vdrain)": [
               -0.000327952241254378,
@@ -2791,14 +2853,24 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)",
-          "found": null
+          "status": "reference",
+          "evidence": "",
+          "found": {
+            "i(vdrain)": [
+              -0.0003279522412543781,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -0.0003279522412543781,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -3133,14 +3205,40 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 5.2e-12 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454544,
+              0.0
+            ],
+            "v(out)@1": [
+              2.500000000023824,
+              0.0
+            ],
+            "v(out)@2": [
+              0.4545454545447055,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 5.2e-12 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454545,
+              0.0
+            ],
+            "v(out)@1": [
+              2.500000000023824,
+              0.0
+            ],
+            "v(out)@2": [
+              0.4545454545447056,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -3187,14 +3285,40 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454545,
+              0.0
+            ],
+            "v(out)@1": [
+              2.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.4545454545454541,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454545,
+              0.0
+            ],
+            "v(out)@1": [
+              2.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.4545454545454545,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -4089,9 +4213,14 @@
       },
       "cells": {
         "jolty": {
-          "status": "unsupported",
-          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.lib 'benchmarks/coverage/decks/sections.lib' low`",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
         },
         "ngspice-sparse": {
           "status": "agreed",
@@ -4137,9 +4266,14 @@
       },
       "cells": {
         "jolty": {
-          "status": "unsupported",
-          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.include 'benchmarks/coverage/decks/included.cir'`",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
         },
         "ngspice-sparse": {
           "status": "agreed",
@@ -4371,14 +4505,56 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 3.7e-06 of the scale",
+          "found": {
+            "v(out)@0.0": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5e-07": [
+              0.6065343109817593,
+              0.0
+            ],
+            "v(out)@1e-06": [
+              0.3678801229180804,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.1353344062288476,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.049786330840694205,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 3.7e-06 of the scale",
+          "found": {
+            "v(out)@0.0": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5e-07": [
+              0.6065343109817621,
+              0.0
+            ],
+            "v(out)@1e-06": [
+              0.367880122918083,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.1353344062288494,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.049786330840694996,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -4409,14 +4585,24 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 7.4e-08 of the scale",
+          "found": {
+            "v(x)": [
+              1.915008189089113,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 7.4e-08 of the scale",
+          "found": {
+            "v(x)": [
+              1.915008189089113,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -4455,14 +4641,32 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 2.5e-08 of the scale",
+          "found": {
+            "v(out)": [
+              3.749999904489296,
+              0.0
+            ],
+            "i(vd)": [
+              -0.0004225000030100002,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 2.5e-08 of the scale",
+          "found": {
+            "v(out)": [
+              3.749999904489296,
+              0.0
+            ],
+            "i(vd)": [
+              -0.0004225000030100002,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",
@@ -4594,14 +4798,24 @@
           }
         },
         "ngspice-sparse": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 9.2e-05 of the scale",
+          "found": {
+            "thd": [
+              4.99954,
+              0.0
+            ]
+          }
         },
         "ngspice-klu": {
-          "status": "unknown",
-          "evidence": "ngspice is not installed",
-          "found": null
+          "status": "agreed",
+          "evidence": "largest error 9.2e-05 of the scale",
+          "found": {
+            "thd": [
+              4.99954,
+              0.0
+            ]
+          }
         },
         "xyce-serial": {
           "status": "documented",

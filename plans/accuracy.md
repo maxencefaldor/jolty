@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and code, and audited on 18 November 2026; the research is `research/accuracy.md`, kept whole.
 
-Plan: ✅ 6 done · 🚧 3 in progress · 📋 10 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 8 done · 🚧 3 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -44,7 +44,7 @@ Item 1 measured ngspice's iteration limit; items 6 and 7 address the cause.
 - The charge tolerance now has SPICE's meaning `reltol·max(|q|, chgtol)` (item 4, done), but `chgtol` itself still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
 - Newton's iteration stops at a fixed count, and the junction limiter jumps at 2vt in both engines (items 6 and 7).
 - The cold start needs gmin stepping where SPICE3's would not (item 8).
-- No simulator reports the charge its solver leaks (item 12).
+- The solver's integrated charge leak is now reported per node on every transient (item 12, done), and lossless oscillations are distinguished from numerical trapezoidal ringing (item 16, done).
 - The bits differ between macOS and Linux (item 13).
 
 ## 4. Plan
@@ -162,10 +162,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead** over ngspice.
     **Source:** row 12.
 
-### 📋 12. The solver's charge leak reported
+### ✅ 12. The solver's charge leak reported
 
 - **What:** each node's residual integrated over a transient, reported with the statistics, and a property test that a closed system's charge stays within it.
 - **Done when:** every transient's statistics carry it.
+- **Result** (18 November): every transient integrates each node's residual over the accepted steps using Kundert and Clifford (1993) with Neumaier (1974) compensated summation, reported as `ChargeLeak` in Rust, PyO3, Python (`TransientResult.statistics.charge_leak`), text/JSON reports, and results files (version 20 of the format), with strict shape and floating-dtype validation on load plus property tests verifying closed-system charge conservation within the reported leak.
 - **Lead.**
     **Source:** row 13; Kundert and Clifford 1993.
 
@@ -190,10 +191,28 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** the owner decides on the precision suite's numbers.
 - **Source:** row 17.
 
-### 📋 16. A lossless oscillation told from numerical ringing
+### ✅ 16. A lossless oscillation told from numerical ringing
 
 - **What:** the trapezoidal rule's ringing test switches to backward Euler where a charge's derivative turns back and forth twice in a row; on a lossless LC tank, whose oscillation is real, it damps it: 2.7% of its energy left after 20 periods at `reltol` 1e-2, where ngspice keeps 3.6 digits.
 - **Done when:** the tank keeps its energy to the step's error at every tolerance, the ringing test still catching numerical ringing.
+- **Result** (18 November): implemented a two-stage ringing detector in `crates/jolty-engine/src/ringing.rs` (12 unit tests + 5 integration tests in `crates/jolty-engine/tests/analytic.rs`).
+    Stage 1 applies an O(1), zero-solve variable-step scalar restoring-force check; Stage 2 reuses the cached sparse LU factors (zero extra refactorizations) to isolate algebraic `R = -1` trapezoidal ringing from lossless physical oscillations.
+    Measured per §5's transient protocol on machine D (`0f60efc` before vs `5b44dc6` after, beside ngspice 47 Sparse 1.3; all 7 examples pass all specs):
+
+| Fixture (method) | Accepted (before / after) | Rejected (before / after) | Landed (before / after) | Work iters (before / after) | Refactorizations (before / after) | Reuses (before / after) | ngspice 47 (acc / rej / iters) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `buck` (`trapezoidal`) | 43,564 / 43,564 | 416 / 416 | 0 / 0 | 57,219 / 57,219 | 98,112 / 98,112 | 1,173 / 1,273 | 43,543 / 240 / 102,205 |
+| `boost` (`trapezoidal`) | 75,524 / 75,524 | 3,414 / 3,414 | 0 / 0 | 111,625 / 111,625 | 185,142 / 185,142 | 3,427 / 3,957 | 73,999 / 2,031 / 178,106 |
+| `ring` (`trapezoidal`) | 4,015 / 4,015 | 0 / 0 | 0 / 0 | 8,026 / 8,022 | 11,999 / 11,995 | 39 / 279 | 4,020 / 0 / 13,184 |
+| `relaxation` (`gear2`) | 4,106 / 4,106 | 89 / 89 | 0 / 0 | 5,011 / 5,011 | 9,180 / 9,180 | 7 / 7 | 4,029 / 0 / 8,239 |
+| `555` (`trapezoidal`) | 11,901 / 11,948 | 48 / 45 | 265 / 262 | 14,381 / 14,409 | 26,074 / 26,122 | 330 / 370 | skipped (`logic_cell`) |
+| `astable` (`trapezoidal`) | 8,927 / 8,897 | 396 / 407 | 0 / 0 | 21,454 / 21,567 | 30,465 / 30,569 | 0 / 2,378 | 8,809 / 302 / 41,921 |
+| `colpitts` (`trapezoidal`) | 10,017 / 10,017 | 7 / 7 | 0 / 0 | 19,992 / 19,992 | 30,005 / 30,005 | 7 / 7 | 10,016 / 1 / 20,032 |
+| `speed_buck` (`trapezoidal`) | 90,797 / 90,543 | 26,805 / 26,370 | 0 / 0 | 331,101 / 328,708 | 433,499 / 431,056 | 1,793 / 13,477 | 52,946 / 3,612 / 195,843 |
+
+- **Precision sweep (`lc_tank` on machine D):** at `reltol = 1e-2`, `E_end / E_0` rises from `0.040785` (`0.02` digits, 95.9% energy lost) to `0.999959` (`4.38` digits), with accepted `85 -> 67`, rejected `39 -> 3` (-92.3%), refactorizations `106 -> 28` (-73.6%); at `reltol = 3e-3`, `0.622130` (`0.42` digits) to `0.999950` (`4.30` digits), rejected `20 -> 3`; at `scaled = 1e-2`, `0.031746` (`0.01` digits) to `0.999957` (`4.37` digits), rejected `41 -> 1` (-97.6%), refactorizations `112 -> 23` (-79.5%); at `scaled = 3e-3`, `0.641889` (`0.45` digits) to `0.999961` (`4.41` digits), rejected `21 -> 3`.
+    From `1e-3` through `1e-6` (both `reltol` and `scaled`), `lc_tank` counts and digits (`4.20` to `4.47`) are bit-identical before and after.
+    `speed_buck` runs faster (`1.7667 s -> 1.7424 s`, -254 accepted, -435 rejected, -2,393 work iterations, -2,443 refactorizations), and `inverter_chain_500` takes fewer steps (`2,391 -> 2,312` accepted, `15,340 -> 14,884` refactorizations).
 - **Source:** the precision suite's first run (`benchmarks/precision/README.md`).
 
 ### ✅ 17. AC's lost digits near 650 MHz

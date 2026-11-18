@@ -1,6 +1,6 @@
 {
   "platforms": {
-    "linux-x86_64-glibc2.43": {
+    "linux-x86_64-glibc2.27": {
       "precision": {
         "butterworth_poles": {
           "counts": {},
@@ -165,7 +165,7 @@
             "landed": 0,
             "refactorizations": 159,
             "rejected": 0,
-            "reuses": 0,
+            "reuses": 12,
             "strategy": "gmin_stepping",
             "transient_iterations": 106,
             "work_iterations": 106
@@ -173,32 +173,32 @@
         },
         "buck": {
           "tran": {
-            "accepted": 90459,
+            "accepted": 90543,
             "factorizations": 1,
-            "fallbacks": 12346,
-            "fingerprint": "c1049d673cce29e4",
+            "fallbacks": 12340,
+            "fingerprint": "ef7809e5dfe965b4",
             "landed": 0,
-            "refactorizations": 430667,
-            "rejected": 26355,
-            "reuses": 1901,
+            "refactorizations": 431056,
+            "rejected": 26370,
+            "reuses": 13477,
             "strategy": "direct",
-            "transient_iterations": 234805,
-            "work_iterations": 328463
+            "transient_iterations": 234949,
+            "work_iterations": 328708
           }
         },
         "inverter_chain_500": {
           "tran": {
-            "accepted": 2391,
+            "accepted": 2312,
             "factorizations": 2,
-            "fallbacks": 33,
-            "fingerprint": "7d625f0e00be23d1",
+            "fallbacks": 30,
+            "fingerprint": "96768eacbec53795",
             "landed": 0,
-            "refactorizations": 15340,
-            "rejected": 844,
-            "reuses": 3,
+            "refactorizations": 14884,
+            "rejected": 838,
+            "reuses": 459,
             "strategy": "gmin_stepping",
-            "transient_iterations": 7939,
-            "work_iterations": 12189
+            "transient_iterations": 7743,
+            "work_iterations": 11797
           }
         },
         "rc_mesh_100": {
@@ -210,7 +210,7 @@
             "landed": 0,
             "refactorizations": 94,
             "rejected": 7,
-            "reuses": 247,
+            "reuses": 249,
             "strategy": "direct",
             "transient_iterations": 212,
             "work_iterations": 227
