@@ -28,7 +28,7 @@ Measured by the speed suite of `benchmarks.md`, fixture by fixture, against ngsp
 
 - **Evaluating devices:** about 200 ns a MOSFET, against 110 ns for ngspice's whole iteration per MOSFET.
 - **The linear algebra:** the matrix was 7× larger than ngspice's, as each MOSFET adds three displacement unknowns (the currents through its gate oxide); condensation now eliminates them before factoring (item 3), so the 500-inverter chain factors 504 unknowns, ngspice's count.
-    The buck still factors 17 against ngspice's 13: each 0.01 Ω switch resistance adds a node and a current (item 3c).
+    Since item 3c (`a73e889`, 16 November), each 0.01 Ω switch resistance's current is eliminated by its inner node's row too, so the buck factors **13 of its 23 unknowns**, ngspice's count.
 - **Fixed passes per iteration:** jolty keeps the conductance matrix `G` and the capacitance matrix `C` apart for the step control's error filter, which refactors at each judged step: 380,962 refactorizations for the buck's 299,616 iterations.
     These are costs of accuracy, heaviest on small systems (item 7).
 
@@ -43,7 +43,6 @@ On machine D (18 November), the mesh runs 7.07× faster on 24 threads than seria
 
 - A small run costs about three times ngspice's, in each iteration.
 - A large run reaches 2.8× on 16 cores, not 6×.
-- No run spreads over threads unless its options ask.
 - An agent's command is not timed from start to finish.
 - Memory and recording break first at ten million devices; nothing is measured above 350,004 unknowns.
 
@@ -65,7 +64,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
     On this Mac the 50,000-inverter chain, dissected, ran 3.40× faster on 8 threads; on machine A, undissected, 2.81× on 16.
     Each Newton iteration on 8 threads then took about 13 ms: 4.2 ms in the device kernels, 4.7 ms in passes bound by memory bandwidth (the rest of the gather 2.9 ms, forming `G + αC` 0.47 ms on any thread count, the solver's copy, permutations and update), 1.35 ms refactoring and 0.86 ms in the solves' tree.
     6× needs about 7.3 ms.
-- **Measured again** (16 November, machine A at load 0.2–1.1, `da286de`, the default parallelism with dissection chosen by its computed cost, raw logs, not kept A-chain-2026-11-16/`): the 50,000 chain takes 1,234 s serially, 1,188 s on 2 threads, 723 on 4, 606 on 8, 542.5 on 16 (2.27×) and 535.7 on 32 (2.30×), below 15 November's 2.81×.
+- **Measured again** (16 November, machine A at load 0.2 to 1.1, `da286de`, the default parallelism with dissection chosen by its computed cost, raw logs not kept): the 50,000 chain takes 1,234 s serially, 1,188 s on 2 threads, 723 on 4, 606 on 8, 542.5 on 16 (2.27×) and 535.7 on 32 (2.30×), below 15 November's 2.81×.
     Serially its time goes 72% to evaluating devices, 10% to assembling, 7% to factoring, 5% to solving and 5% to step control (12,252 iterations, 15,397 refactorizations), so evaluation, which spreads, is not spreading as it should: the first thing to trace.
     Its results passed the fixture's 4 GiB, from more steps since SPICE's charge tolerance; it ran with 16.
 - **Traced** (16 November, machine A, the 5,000 chain profiled at each thread count, `profile-5000-by-threads.txt`): evaluating takes 63.6 s serially, 64.5 on 2 threads (it does not spread there at all: the break-even table's least instances per task for 2 threads keeps it in one task), 34.0 on 4, 23.4 on 8 and 18.3 on 16, 3.5× where 16 would allow 16; and everything else stays serial: assembling 10.5 s, factoring 7.4 (the chain is not dissected), solving 3.6, step control 5.0, the rest 1.9, 28 s of the 47 on 16 threads, which bounds the run at 3.3× however fast evaluation becomes.
@@ -86,7 +85,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 ### ✅ 2. One run over threads measured, and each threshold's break-even
 
 - **What:** `scripts/bench --scale` runs the large fixtures serially and on 1 to 64 threads, checking that the results are bit-identical; `--break-even NAME` finds from which circuit size setting a threshold of `Parallelism` makes a run faster.
-- **Result:** both on `main` (`7d41cc0`); measured on this Mac under load and on machine A quiet (raw logs, not kept A-break-even-2026-11-15/`): dissection pays on meshes from about 4,900 unknowns on 4 threads and 10,000 on 2, and on chains barely, 1.7% on 2 threads at 35,004 unknowns and nothing on 4 or more up to that size.
+- **Result:** both on `main` (`7d41cc0`); measured on this Mac under load and on machine A quiet (raw logs not kept): dissection pays on meshes from about 4,900 unknowns on 4 threads and 10,000 on 2, and on chains barely, 1.7% on 2 threads at 35,004 unknowns and nothing on 4 or more up to that size.
 - **Source:** row L4's measurements; `benchmarks.md` items 1 and 2.
 
 ### ✅ 3. Each MOSFET's displacement unknowns eliminated before factoring
@@ -272,7 +271,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 
 - 15 Nov: Gear2's error control left the trapezoidal default 0.66 ms slower on the buck's 0.2 ms (step control 8.10 against 7.44 ms on machine B, 1% of the run): the bound each charge's step is held by and the unit steps a multistep formula keeps.
     Within item 4b's 5%, kept as Gear2's own cost.
-- 15 Nov: of the internal unknowns, only the MOSFET's displacements are eliminated, as only their pivots provably pass the threshold: a small series resistance's node and current pass only while the transistor's conductance stays under 11.1 S at 0.01 Ω, which the buck's switches break while they conduct (about 33 S, an estimate from their parameters); the BJT's base node's column holds the transconductance, 0.39 S against a pivot of 0.014 S at 10 mA; a heated MOSFET's displacements reach its thermal row, which nothing bounds.
+- 15 Nov (superseded 16 Nov by item 3c, `a73e889`, which also eliminates small series resistances' currents via off-diagonal pivots): of the internal unknowns, only the MOSFET's displacements were eliminated, as only their pivots provably pass the threshold: a small series resistance's node and current pass only while the transistor's conductance stays under 11.1 S at 0.01 Ω, which the buck's switches break while they conduct (about 33 S, an estimate from their parameters); the BJT's base node's column holds the transconductance, 0.39 S against a pivot of 0.014 S at 10 mA; a heated MOSFET's displacements reach its thermal row, which nothing bounds.
 - 15 Nov: the elimination lives in the sparse solver, not in the groups as first planned: every consumer reads the whole system as before and one mechanism serves every analysis; the groups' version is item 3b.
 - 15 Nov: the ngspice-style Meyer option waits behind condensation: ngspice's form needs each kernel to know which time points the transient accepts, would make transient sensitivities and the periodic analysis inexact (an archived note, not kept), and condensation already reaches ngspice's matrix size.
 - Phase 6's solves sum a row of more than 1,024 entries above a block in chunks, `reduce::fold`, the same bits on any thread count; the gather and `|J|·|x|` keep their order, chunked they measured slower or no faster.

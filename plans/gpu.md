@@ -45,7 +45,7 @@ For one circuit on a GPU, neighbouring instances of one model take that place.
 
 **Order:**
 
-1. The Verilog-A compiler, writing `Kernel` code (`models.md` 12).
+1. The Verilog-A compiler, writing `Kernel` code (`models.md` 12; resistor and diode on `main` at `5b0063b`, four CMC models compile whole pending QA).
 1. The numeric core behind the device interface, the CPU its first device.
 1. The GPU device: batches and single circuits, every analysis.
 

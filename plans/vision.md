@@ -15,8 +15,8 @@ A pillar is led when jolty beats every reference on its measure, not when it mat
 | Fastest | Any circuit finishes sooner in jolty than in any reference simulator on the same machine, on one core and on all of them, and many runs scale with cores and machines | The speed suite, per fixture | At each simulator's defaults on machine D: faster than ngspice on `bjt_amp` (1.9×), `ac_wide` (4.3×) and `rc_mesh_100` (2.4× against its KLU), 3.7× slower on the buck and the 500-inverter chain | `speed.md` |
 | Most accurate | Its error against exact answers is the smallest of any simulator's at equal cost | The precision suite, against closed forms and solutions converged far past any default tolerance | At equal correct digits of exact answers on machine D, fastest on the LC tank's energy, the Butterworth poles and the RC's noise; about twice as slow on large RC ladders and trees and slower on the diode | `accuracy.md` |
 | Most reliable | It finds the solution of every circuit that has one, and says so plainly of one that has none | The failure rate on a corpus of hard circuits | No failure in the corpus's 48 runs on machine D, where ngspice fails one; the intervals stay wide until the corpus grows | `accuracy.md` |
-| Most complete | It runs every analysis and device a designer needs, and every open process kit natively | The coverage matrix, against every reference | 30 analog models, BSIM3 and BSIM4.5 among them; a Verilog-A compiler, no CMC model in the library yet; natively SKY130's 251 of 263 devices, GF180MCU's 65 of 72, SG13G2's 36 of 53 | `models.md` |
-| Cleanest and most elegant | A newcomer reads, uses and extends it easily, and every convention of `AGENTS.md` holds everywhere | The code review's findings, the cost of adding a model, the API's consistency | Every check passes; not yet reviewed as a whole | `quality.md` |
+| Most complete | It runs every analysis and device a designer needs, and every open process kit natively | The coverage matrix, against every reference | 30 native analog models (31 in `Library::standard()` with `foundry_mosfet`), BSIM3 and BSIM4.5 among them; a Verilog-A compiler, no CMC model in the library yet; natively SKY130's 251 of 263 devices, GF180MCU's 65 of 72, SG13G2's 36 of 53 | `models.md` |
+| Cleanest and most elegant | A newcomer reads, uses and extends it easily, and every convention of `AGENTS.md` holds everywhere | The code review's findings, the cost of adding a model, the API's consistency | Every check passes; critical review of device derivatives and the JAX bridge completed on 18 November, remaining codebase not yet reviewed as a whole | `quality.md` |
 | Most agentic | An agent designs better circuits, in fewer tries, with jolty than with any other tool | Roadmap item 8's benchmark, its success and iterations | Harness built; not yet run | `agentic.md` |
 
 Every claim on this page rests on `benchmarks.md`, which keeps the suites, the protocol and the results.
@@ -44,6 +44,7 @@ A rule not yet adopted is proposed in the "Open principles" of the theme it come
 
 The six theme reports proposed 35 rules for `AGENTS.md`; merged by what they say, they are eleven, each with the lead's recommendation and, in its From column, the numbers of the research reports' proposed principles (§6 of each) it merges.
 The owner adopted all eleven on 15 November, written into `AGENTS.md`'s conventions (`444535f`).
+Later that day (`2e6fdaf`), the owner amended rules 7 and 8: results may differ by rounding across threads, machines and devices (`max_unknowns_per_interior` stays in `Parallelism`, and cross-platform bit identity is parked as `accuracy.md` 13).
 
 | # | Rule | From | The lead recommends |
 | --- | --- | --- | --- |

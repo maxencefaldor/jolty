@@ -1,6 +1,6 @@
 # Accuracy and reliability
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/accuracy.md`, kept whole.
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and code, and audited on 18 November 2026; the research is `research/accuracy.md`, kept whole.
 
 Plan: ✅ 6 done · 🚧 3 in progress · 📋 10 planned · ⏸️ 1 parked (§4).
 
@@ -24,7 +24,9 @@ Measured by the precision suite, against answers computed exactly, and by the fa
 
 - **Against exact answers** (the precision suite, 16 fixtures): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1), poles (15.3 to 14.7) and stiff networks (5.1–5.4 to 3.2–3.9); it loses on small RCs, held by the charge tolerance's floor (item 4), on a lossless LC tank its ringing test damps (item 16), on AC near 650 MHz (item 17) and on a 1,000-node ladder whose start needs a step below jolty's shortest (item 18).
     At the defaults both simulators get only 1.2–3.8 digits on transients.
-- **On hard circuits** (the corpus, 48 cases): jolty failed none of the 40 runs it supports, ngspice 1 of 48; jolty needs gmin stepping on one deck where ngspice's Newton iteration alone succeeds, and pseudo-transient continuation on `folded_sources` (items 8 and 9).
+- **On hard circuits** (the corpus, 48 cases): on 15 November jolty failed none of the 40 runs it then supported, ngspice 1 of 48.
+    Since `models.md` 7b (`.ic`, `.nodeset`, `EXP`), jolty runs all 48 cases (25 DC, 23 transient): on machine D (`5efde61`, 18 November), 0 failed (DC: 25 agreed; transient: 6 agreed, 16 solved, 1 disagreed on `impasse/tran`, the same disagreement as ngspice), while ngspice failed 1 (`folded_sources/op`) and disagreed on `vreg/dc` and `impasse/tran`.
+    jolty still needs gmin stepping on one deck where ngspice's Newton iteration alone succeeds, and pseudo-transient continuation on `folded_sources` (items 8 and 9).
 
 **What the research found weaker than the documentation said:**
 
@@ -39,7 +41,7 @@ Item 1 measured ngspice's iteration limit; items 6 and 7 address the cause.
 
 ## 3. Gaps
 
-- The charge tolerance's floor still holds small nets' error (item 4).
+- The charge tolerance now has SPICE's meaning `reltol·max(|q|, chgtol)` (item 4, done), but `chgtol` itself still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
 - Newton's iteration stops at a fixed count, and the junction limiter jumps at 2vt in both engines (items 6 and 7).
 - The cold start needs gmin stepping where SPICE3's would not (item 8).
 - No simulator reports the charge its solver leaks (item 12).
@@ -54,7 +56,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 1. ngspice's own iteration limit measured on the buck
 
-- **What:** `transient_iterations=100`, the limit ngspice 47 actually applies, run on the buck to see how much of jolty's extra work it explains.
+- **What:** `max_transient_iterations=100` (formerly `transient_iterations`), the limit ngspice 47 actually applies, run on the buck to see how much of jolty's extra work it explains.
 - **Result:** 35% fewer rejected steps, 19% fewer iterations, 15% less time; still 1.24× ngspice's iterations and 3× its time (raw logs, not kept).
     jolty keeps SPICE's 10 (§5); the measured runs are item 6's baseline.
 - **Source:** row 5.
@@ -69,7 +71,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 3. Every departure from ngspice stated in the guide
 
 - **What:** each place where jolty computes otherwise than ngspice, with ngspice's source line or a measurement as evidence, in one page.
-- **Result** (`1e3f31a`): `docs/guide/departures.md`, 39 departures in five tables, each beside the guide's description of jolty's side; two of the research's rows corrected on rereading ngspice's source.
+- **Result** (`1e3f31a`): `docs/guide/departures.md`, 39 departures in five tables then (now 55 departures in six tables), each beside the guide's description of jolty's side; two of the research's rows corrected on rereading ngspice's source.
 - **Source:** row 15.
 
 ### ✅ 4. `charge_tolerance` with SPICE's meaning
@@ -78,7 +80,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Result** (`f673b49`): every test passing, each failure the first attempt exposed fixed where it arose: the buck's stop at `reltol` 1e-5 came from a real 10 ps settling at a switch's internal source, below jolty's shortest step, now ngspice's (item 18); the NAND gate's, from a near double root at a node only gmin holds, which Newton's contraction rule now carries (item 6); a currents test's bound and the random circuits' charge tolerance derived again; the comparisons now run both engines at the shared default of 1e-14 C.
     Measured at the defaults: the 500-inverter chain takes 2,448 accepted steps instead of 749 and 5.2–5.4 s instead of 2.33 s, every extra rejection at a p-channel displacement, since jolty judges the whole oxide's charge where ngspice judges Meyer's; at equal error it still takes fewer points than ngspice (2,448 at 0.23 ns mean edge error against ngspice's 3,602 at 0.22 ns).
     The buck: 82,710 steps instead of 73,880, 0.77 s instead of 0.69 s, its settled output 3.6 mV off instead of 6.5 mV.
-- **Left:** the buck at `reltol` 3e-6 and 1e-6 still stops at 1.7 ns (item 6b); the gallery's ngspice comparisons, made at `chgtol` 1e-18, to regenerate.
+- **Since resolved:** the buck at `reltol` 3e-6 and 1e-6 was fixed by item 6b (`da286de`), and the gallery and discoveries were rebuilt on the new engine with ngspice 47 (`0552d20`, `c766183`, 16 November).
 - **Source:** row 2; raw logs, not kept.
 
 ### 📋 5. Error judged in the unknowns, free of any charge floor
@@ -94,7 +96,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 - **What:** instead of a fixed count of iterations per step (SPICE's 10), measure how fast the iteration contracts, `θ = ‖δₖ‖/‖δₖ₋₁‖`: go on while θ < 1 and the iterations it predicts still fit, stop at once when θ ≥ 1, and accept when `θ/(1−θ)·‖δ‖`, a bound on the remaining error, is within tolerance.
 - **Why:** no arbitrary limit: a hopeless iteration stops at once, a slowly converging one at a gate edge goes on.
-- **State** (`f673b49`): in a time step, the iteration goes on past `transient_iterations` while each step is shorter than the one before, and once it contracts by more than half accepts only when `θ/(1−θ)` times its step is within tolerance; the operating point keeps its count.
+- **State** (`f673b49`): in a time step, the iteration went on past `transient_iterations` (later renamed `max_transient_iterations` in `be0de7d`) while each step was shorter than the one before, and once it contracted by more than half accepted only when `θ/(1−θ)` times its step was within tolerance; the operating point kept its count.
     On the chain it trades accuracy for work (0.085 ns of mean edge error at 2,705 steps without it, 0.23 ns at 2,448 with it), an owner's call, listed in `README.md`'s open decisions.
 - **The owner's design** (15 November), simple and orthogonal: one option, `max_transient_iterations`, a true cap; within it the contraction tests are the convergence test itself, never switched off: accept when `θ/(1−θ)·‖δ‖` is within tolerance, cut the step when `θ ≥ 1` or when the iterations left at rate `θ` cannot reach it (Hairer and Wanner IV.8, as RADAU5).
     The cap's default is measured: SPICE's 10 if every suite passes with it, else the value found, stated.
@@ -133,7 +135,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** junctions initialized on the first DC iteration as SPICE3's `MODEINITJCT` does; the DC equations solved block by block in their order, any homotopy confined to the block that needs it; a start from a given point.
 - **Why:** fewer operating points falling back to gmin stepping; the corpus found jolty needing it on a deck where ngspice's Newton iteration alone succeeds.
 - **Done when:** every circuit of the corpus starts without gmin stepping where SPICE3's would.
-- **Source:** row 8; the scaling blueprint, an archived note, not kept §3.1.
+- **Source:** row 8; the scaling blueprint (archived note, not kept), §3.1.
 
 ### 📋 9. DC homotopies
 
@@ -192,7 +194,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 - **What:** the trapezoidal rule's ringing test switches to backward Euler where a charge's derivative turns back and forth twice in a row; on a lossless LC tank, whose oscillation is real, it damps it: 2.7% of its energy left after 20 periods at `reltol` 1e-2, where ngspice keeps 3.6 digits.
 - **Done when:** the tank keeps its energy to the step's error at every tolerance, the ringing test still catching numerical ringing.
-- **Source:** the precision suite's first run (`perf/precision/README.md`).
+- **Source:** the precision suite's first run (`benchmarks/precision/README.md`).
 
 ### ✅ 17. AC's lost digits near 650 MHz
 
@@ -236,7 +238,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - Meyer's capacitances conserve charge in neither engine; the notes no longer call jolty's form charge-conserving.
 - Every transient change follows one protocol: a probe of each rejected step first, explained before anything changes; before and after numbers of accepted, rejected and landed steps and Newton iterations on the buck, boost, ring, relaxation, 555 timer, astable and Colpitts examples at default options; ngspice on the same netlists side by side; accuracy unchanged, `test_ngspice.py`, `test_random_circuits.py`, `test_metamorphic.py` and the analytic tests passing with no tolerance loosened; and the guide's table of methods saying what changed and where it comes from.
 - The old roadmap's item 7, measured and set aside: bounding repeated rejections at one time point saves too little; a damped formula for the boost's stiff mode could act only on 36% of its steps, so item 14 measures TR-BDF2 there first.
-- `transient_iterations` keeps SPICE's `ITL4` of 10, though ngspice 47 raises any limit below 100 to 100, a departure the guide states: another count would be a constant picked for one fixture; the fix is item 6.
+- `max_transient_iterations` (formerly `transient_iterations`) keeps SPICE's `ITL4` of 10, though ngspice 47 raises any limit below 100 to 100, a departure the guide states: another count would be a constant picked for one fixture; the fix is item 6.
 
 ## 6. Open principles
 

@@ -17,7 +17,7 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 - **Every problem at once,** each naming the instance's path and the script line that placed it; 16 rules at configurable levels, each with its exact condition (`jolty explain`).
 - **Images on every run:** a schematic marking what the diagnostics name, a plot of every analysis, histograms and envelopes for batches.
 - **Specs and verdicts:** 23 measurements the engine reads, four verdicts with the value, its slack, its worst corner and its script line; yield with a Wilson interval; corners, Monte Carlo and worst case in the same command.
-- **Ten analyses,** batches across threads, shards across machines; bounds on every output (300 s a script, 40 unknowns, 20 diagnostics).
+- **Twelve analyses** (operating point, operating points, DC sweep, AC, transient, periodic steady state, sensitivity, mismatch, stability, noise, pole-zero and transfer function), batches across threads, shards across machines; bounds on every output (300 s a script, 40 unknowns, 20 diagnostics).
 - **Derivatives:** a JVP and a VJP of every analysis, exact, in Python as `jolty.function`, `jolty.jvp` and `jolty.vjp`, and inside JAX as `jolty.jax.function` (items 12b and 19).
 - **Discovery:** six hard design problems and the circuits an agent found for them with jolty alone (`docs/discovery`).
 - **Item 8's harness** (`benchmarks/compare.py`): both arms, a clean configuration and the platform's sandbox for each session, scorers run confined, failure kinds, Wilson intervals; every analysis counted whatever runs it (item 1); proven on a stub agent.
@@ -27,9 +27,8 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 **Where an agent's effort goes** (the discovery scripts, the guide and the MCP server):
 
 - **Harness code:** it writes bisections (50 steps to tune one resistor), Monte Carlo loops and measurements by hand, as jolty's sensitivities are of unknowns, not of specs, and nothing in jolty optimizes (items 9 and 11).
-- **Learning the API:** the MCP instructions (792 words) name 11 of the 30 device constructors, no transistor and no real part, and never mention `specs()`, corners or Monte Carlo; in item 8's sandbox the agent can read jolty's source but not the guide (item 5).
-- **Reading an operating point:** no report states a transistor's region (item 4).
-- **Oscillators:** no steady state for one that runs on its own, so the agent runs long transients; oscillators are where published agents fail most (item 22).
+- **Learning the API:** the MCP instructions (`src/jolty/mcp.py`, now 902 words) name 11 of the 33 device constructors, no transistor and no real part; they now mention `jolty.specs` measures and Monte Carlo sharding, but still never mention `specs()` or corners; in item 8's sandbox the agent can read jolty's source but not the guide (item 5).
+- **Done since 15 November:** transistor operating-point regions and margins are reported in `OperatingPointResult.region` and `jolty simulate` (items 4 and 4b), and autonomous oscillators are solved by `PeriodicSteadyState(period=None)` (item 22).
 - **Images:** a plot costs 774 to 1,849 visual tokens, about 2,800 a simulation (item 6).
 
 **What the literature shows** (2024 to 2026): simulator feedback with computed measurements lifts success most (SPICEAssistant from 14.8% to 53.0%, AnalogPortBench from 30% to 56%); sizing is handed to numerical optimizers; agents fail on oscillators, topology changes and infeasible specs.
@@ -38,7 +37,7 @@ No published study gives the same agent two toolchains, which item 8 does.
 ## 3. Gaps
 
 - What jolty gives an agent has never been measured on a real agent.
-- Feedback stops at facts about the circuit: no derivative of a spec, no transistor's region, no numerical error of a measurement, no optimizer.
+- Feedback stops at facts about the circuit: no derivative of a spec, no numerical error of a measurement, no optimizer (transistor regions and margins are done, items 4 and 4b).
 - The reference is not inside the session; the MCP instructions cover a third of the devices.
 - Every command starts a fresh Python process, its time unmeasured (`speed.md` 8).
 - An agent can still bypass the counting by calling a real program directly; the harness's sandbox is untested on Linux.
@@ -72,7 +71,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** whether each MOSFET is off, in weak inversion, linear or saturated, and each bipolar transistor cut off, active, saturated or reversed, with its distance from each boundary (`vgs − vth`, `vds − vdsat`, a bipolar transistor's `vce` over its saturation voltage), reported by each model as its own equations define it, readable from an operating point's result and listed in the report, nearest the boundary first.
 - **Why:** the first fact an analog designer reads; the published agents check it first.
 - **Done when:** the report lists each transistor's region, with a test per region of every transistor model.
-- **Result** (`05812c3`): each transistor model declares its regions and margins beside its kernel and reports them among its variables; `OperatingPoint.region(path)` reads one; `jolty simulate`'s report lists every transistor nearest a boundary first, as its JSON does; results files keep them (version 10).
+- **Result** (`05812c3`): each transistor model declares its regions and margins beside its kernel and reports them among its variables; `OperatingPointResult.region(path)` (formerly `OperatingPoint.region`) reads one; `jolty simulate`'s report lists every transistor nearest a boundary first, as its JSON does; results files keep them (version 10).
     Recording them costs an operating point of the 500-inverter chain 0.24 to 0.84 ms, so only `jolty simulate` records them by default, through `record`, which the owner kept (15 November).
     Since `adaedc9`, regions alone (`Recorded.regions`) cost a fresh operating point of the chain nothing measurable and a remembered one 9 to 10 µs; a remembered point is no longer evaluated twice.
 - **Source:** row 9.
@@ -80,12 +79,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 4b. Margins in the designer's sign
 
 - **What:** a PMOS's and a PNP's margins flipped, so a positive margin means on, or saturated, for every transistor, as designers write |VGS| − |VTH|; the region subagent had kept each device's signed voltages.
+- **Result** (`8af6932`): PMOS and PNP margins flipped so positive means on or saturated for every transistor.
 - **Source:** the owner, 15 November.
 
 ### 📋 5. The reference inside the session
 
 - **What:** the MCP server's instructions derived from the code, naming every device, real part, analysis and measurement; the guide and the examples served as MCP resources and by a `jolty docs` command, so an agent reads them offline.
-- **Why:** an agent in item 8's sandbox cannot read the guide; the instructions name 11 of 30 constructors.
+- **Why:** an agent in item 8's sandbox cannot read the guide; the instructions name 11 of the 33 device constructors.
 - **Done when:** a test fails when a public constructor is missing from the instructions; the guide reads offline in item 8's sandbox.
 - **Source:** row 15.
 

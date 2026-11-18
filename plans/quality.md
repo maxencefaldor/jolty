@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/quality.md`, kept whole.
 
-Plan: ✅ 14 done · 🚧 1 in progress · 📋 10 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 15 done · 🚧 1 in progress · 📋 9 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -18,8 +18,8 @@ Every ruff and ty rule and clippy's pedantic lints are errors; rustdoc's warning
 
 - **One fact in several places:** one parameter lives in six places in four files (`models.md` 4).
 - **Guards a new model can skip:** the SPICE round trip does not run over every model (item 4).
-- **Numbers without a source:** engine constants, and up to 340 of 428 test tolerance sites (a scan's upper bound) (items 10 and 11).
-- **Names:** three benchmark suites call the circuit they run a "fixture", a "case" and a "probe", and two named their module of simulators' runners alike, which collided on merging (items 12 and 13).
+- **Numbers without a source:** engine constants, and up to 340 of 428 test tolerance sites (a 15 November scan's upper bound) (items 10 and 11).
+- **Names:** unified across the library (`8a4d80a` to `bc35702`, item 12; only `measure::Signal` waits on the owner) and across the benchmark suites (`092e86f`, item 13, done: `fixture` everywhere, one `benchmarks/simulators.py`).
 
 **One way to differentiate and one way to stamp,** since 17 November: every kernel composes dual numbers at each law's own width (item 6), and writes its matrix entries through summed derivatives (item 5).
 
@@ -28,15 +28,15 @@ Every ruff and ty rule and clippy's pedantic lints are errors; rustdoc's warning
 **The Python API:** small, immutable and precisely typed, but only half carries units: options, overrides and variants are plain floats in SI units (item 7).
 The analyses a spec names are resolved only after every analysis has run (item 8).
 
-**The guide:** precise, and its 84 keyword calls all match the API; but nothing runs its 41 Python blocks or checks its 19 quoted outputs (item 14), and its sentences run long, a median of 27 words (item 20).
+**The guide:** precise, and its 84 keyword calls (counted 15 November) match the API; `tests/test_guide.py` now runs its Python blocks and checks its quoted outputs (item 14, done: currently 48 Python blocks, 38 run and 10 marked `not run`, and 18 quoted outputs), while its sentences still run long, a median of 27 words on 15 November (item 20).
 
 ## 3. Gaps
 
-- One fact in several places: a model's facts; the benchmarks' helpers.
-- One concept under several names.
-- Guards a new model can skip; numbers that do not say where they come from.
+- One fact in several places: a model's facts (the benchmarks' helpers are unified, item 13).
+- One concept under several names: `measure::Signal` still waits on the owner (item 12).
+- Guards a new model can skip (the SPICE round trip over every model, item 4); numbers that do not say where they come from.
 - Units and names checked late on several user paths.
-- Docs that nothing executes; no how-to pages.
+- No how-to pages; guide sentences still run long (executable blocks and quotes are done, item 14).
 
 ## 4. Plan
 
@@ -69,7 +69,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 4. Guards that enumerate the library
 
 - **What:** every test that should hold for all models iterates the standard library, so a new model cannot skip it.
-- **Result:** the allocation test and the Jacobian check run over one table of 35 cases covering all 28 analog models, and fail if a model has no case (`1235b50`); the kernels' lints are denied once, in `kernel.rs`, for every kernel beside it.
+- **Result:** the allocation test and the Jacobian check run over one table (`crates/jolty-models/src/testing/cases.rs`, 35 cases covering 28 analog models at `1235b50`; now 45 cases covering all 31 analog models in `Library::standard()`, 30 native plus `foundry_mosfet`), and fail if a model has no case; the kernels' lints are denied once, in `kernel.rs`, for every kernel beside it.
     **Not done:** the SPICE round trip over every model (a model written and read back as itself, as another element by design, or refused by name, each decided per model).
 - **Done when:** removing a model's case fails a test; one `deny` attribute in the crate.
 - **Source:** row 8.
@@ -130,19 +130,19 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     **Not done:** one name, which waits for the owner: `measure::Signal` (an output and a gain's denominator).
 - **Source:** row 13; a brief, not kept.
 
-### 📋 13. The benchmarks' code made one
+### ✅ 13. The benchmarks' code made one
 
 - **What:** the speed suite, the precision suite, the hard-circuit corpus and the coverage matrix share one module of measuring helpers (the load, the commit, the machine, results files), one runner per simulator (jolty, ngspice with Sparse and with KLU, Xyce), one command line (`scripts/bench`, precision brought into it), and one name for the circuit a benchmark runs.
 - **Why:** each suite grew its own copies: the corpus's and the matrix's modules of runners both named `simulators`, two load readings, two ways to name a results file.
-- **Done when:** no helper defined twice under `perf/`; one runner per simulator; one script.
-- **After:** the Xyce branch lands, as it adds Xyce's runner.
+- **Done when:** no helper defined twice under `benchmarks/`; one runner per simulator; one script.
+- **Result** (`092e86f`, 15 November): every suite moved under `benchmarks/<suite>` (`perf/` and `scripts/precision` deleted); shared helpers in `benchmarks/measuring.py` and one runner per simulator in `benchmarks/simulators.py`; `scripts/bench` runs all five suites (`--precision`, `--robustness`, `--coverage`, `--scale`, `--view`, `--compare`, `--nightly`); every suite calls its circuit a `fixture`.
 
 ### ✅ 14. The guide's code runs and its outputs are produced
 
 - **What:** every Python block of the guide and the README run by the tests, and each output the guide quotes produced by a run, so the guide cannot drift from the code.
 - **How:** a test of jolty's own reading the blocks, as `tests/test_plan_defaults.py` reads the guide's table of options; or, if the owner approves it, the plugin the research names.
 - **Done when:** CI runs the 41 blocks; each quoted output comes from a run.
-- **Result** (`dc5b2ef`, `f0c8f68`): `tests/test_guide.py` runs 30 of the guide's and the README's 40 blocks, each other one marked with its reason, and produces all 18 quoted outputs; 14 quotes and 5 blocks no longer matched the code and are corrected in the guide; a quoted number matches within one unit in its last printed digit plus 4 float ulps.
+- **Result** (`dc5b2ef`, `f0c8f68`): `tests/test_guide.py` ran 30 of the guide's and the README's 40 blocks then (now 38 of 48 blocks, 10 marked `not run`), each other one marked with its reason, and produces all 18 quoted outputs; 14 quotes and 5 blocks no longer matched the code and were corrected in the guide; a quoted number matches within one unit in its last printed digit plus 4 float ulps.
 - **Source:** row 17.
 
 ### ✅ 15. Coverage reported
@@ -191,7 +191,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 22. Every dependency's licence checked, in both languages
 
 - **What:** a test of jolty's own reads `cargo metadata` and `importlib.metadata` and holds every Rust and Python dependency's licence to one allow-list; `cargo-deny` and `deny.toml` leave.
-- **Result** (`d52e342`): `tests/test_licenses.py`; 174 crates and 55 distributions pass; the list grew by eight licences for Python (BSD-3-Clause, MPL-2.0 for Hypothesis, PSF-2.0, MIT-0, MIT-CMU, 0BSD, Zlib, CC0-1.0).
+- **Result** (`d52e342`): `tests/test_licenses.py`; 174 crates and 55 distributions passed at `d52e342` (plus optional `jax` and transitive crates/distributions added since); the list grew by eight licences for Python (BSD-3-Clause, MPL-2.0 for Hypothesis, PSF-2.0, MIT-0, MIT-CMU, 0BSD, Zlib, CC0-1.0).
     **Source:** the owner, 15 November.
 
 ### ✅ 23. Known vulnerabilities checked

@@ -4,7 +4,7 @@ The owner's rule (`AGENTS.md`, "Names", on `coverage` at `9a78eb2`): each concep
 This is the first step of `quality.md` item 12: a glossary of every concept, its one proposed name, its definition, the established term it follows, and every other name it has today with each place.
 It renames nothing; the owner reviews it first, as the API's names are his.
 
-Read from `main` at `5f69050`, in the worktree a worktree, and from the branches about to land: `coverage` (`9a78eb2`), `xyce` (`e44555f`), and the uncommitted work of `chgtol` and `regions`, which add no public name this glossary depends on.
+Read from `main` at `5f69050`, in the worktree a worktree, and from the branches about to land: `coverage` (`9a78eb2`), `xyce` (pre-rebase branch tip `e44555f`, now merged via `6047a2d` to `dd18fa0`), and the uncommitted work of `chgtol` and `regions`, which add no public name this glossary depends on.
 Written 15 November 2026.
 
 Status (18 November 2026): every rename the owner decided is on `main` (`8a4d80a` to `bc35702`, `quality.md` 12), so this glossary's "today" is 15 November, before them; one name still waits for the owner, `measure::Signal`.

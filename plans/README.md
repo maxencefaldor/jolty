@@ -15,7 +15,7 @@ A rule not yet adopted is proposed in a theme's "Open principles", and moves to 
 | `benchmarks.md` | The evidence: coverage, precision and speed suites, their protocol and results |
 | `naming.md` | The names chosen, and the ones still open |
 | `gpu.md` | What a GPU could do for jolty, and what it cannot |
-| `research/` | The research reports the theme documents are written from; a plan item's "Source: row N" is a row of its theme's report |
+| `research/` | Archival read-only research reports written on 15 November 2026, kept whole and pinned to their commits; a plan item's "Source: row N" is a row of its theme's report |
 | `derivatives.html` | How derivatives work in jolty, from a circuit's equations to the JVP and VJP, explained step by step |
 | `device-derivatives.md` | The implementation plan for each device's own derivatives: every kernel composed on dual numbers, every parameter derivative of a device in one evaluation, and the two deferred steps |
 
@@ -58,7 +58,7 @@ Each waits on the owner:
 
 - **The PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is done; `torch.autograd.Function` around the same batch pullback waits on approval of `torch` as an optional dependency.
 - **Device derivatives** (`device-derivatives.md`): whether Gummel-Poon's and the JFET's derivatives, exact by construction, are worth their 2 to 8% more instructions an evaluation (1.3); whether the largest chunk stays 8, as recommended, or becomes 16, which evaluates 5 to 24% faster than two twins of 8 but builds `jolty-models` 23% slower (2.3); and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
-- **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables`.
+- **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables` (landed on `main`, open for the owner's sign-off).
 - **Newton's two cuts** (`accuracy.md` 6): measured to misjudge (91% of the buck's iterations they would cut converged within ten anyway); the recommendation is to leave them out.
 - **`ln1p` and `expm1` in jolty's Verilog-A:** outside the Verilog-AMS standard; reversible.
 - **The generated kernels' parameters:** whether they may declare their parameters by a table rather than derived serialization, which would cut a third of PSP's 1.54 MB and its 122 s release build, but give generated and hand-written kernels two forms.
