@@ -63,6 +63,10 @@ jobs:
     env:
       # The differential tests fail, rather than skip, if ngspice is missing.
       JOLTY_REQUIRE_NGSPICE: "1"
+      # Parallel codegen without LTO keeps opt-level=3 test speed while cutting CI
+      # compile time; release.yml still builds published wheels with LTO and cgu=1.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -86,6 +90,9 @@ jobs:
     name: Python tests on free-threaded Python, without the GIL
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -102,10 +109,13 @@ jobs:
 
   coverage:
     name: Coverage of the Rust and Python tests, reported, never checked
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       JOLTY_REQUIRE_NGSPICE: "1"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -140,8 +150,8 @@ jobs:
 
   mutants:
     name: Mutants of the change, reported, never checked
-    # A change is a push or a pull request; cedar is to run every mutant weekly.
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # Run on main, weekly schedule, or manual dispatch so branch pushes finish quickly.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -163,7 +173,8 @@ jobs:
           BASE: >-
             ${{ github.event.pull_request.base.sha
             || (github.ref != 'refs/heads/main' && 'origin/main')
-            || github.event.before }}
+            || github.event.before
+            || 'HEAD~1' }}
         # A change of many mutants outlasts the job, which would end the run cancelled:
         # stopped 15 minutes short of the job's limit, cargo-mutants keeps the outcomes it
         # has, and the report says which mutants it reached.

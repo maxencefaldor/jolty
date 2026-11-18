@@ -16,6 +16,8 @@ concurrency:
 
 env:
   FORCE_COLOR: "1"
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   build:
