@@ -370,3 +370,43 @@ def test_a_stopped_run_says_each_kind_of_trouble_once_and_how_far_it_came() -> N
         "Xyce ran for more than 300 s; Netlist warning in file circuit.cir at or "
         "near line 4; 6% of its transient done"
     )
+
+
+def test_ladder_100_exact_root_pivot_does_not_divide_by_zero() -> None:
+    """`exact._Elimination` handles exact 50-digit roots (`pivots[0] == 0`) cleanly."""
+    import exact  # noqa: PLC0415 - importable only once the path holds it
+    from fixtures import (  # noqa: PLC0415 - importable only once the path holds it
+        fixtures,
+    )
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        run_jolty,
+        score,
+    )
+
+    with mp.workdps(exact.DIGITS):
+        # 3-node path A = [[2, -1, 0], [-1, 3, -1], [0, -1, 2]] has exact eigenvalue
+        # mu = 1 where d_2 = 1, d_1 = 1, and root pivot d_0 = 0 identically.
+        diagonal = [mpf(2), mpf(3), mpf(2)]
+        off = [mpf(0), mpf(-1), mpf(-1)]
+        elimination = exact._Elimination((0, 0, 1), diagonal, off)  # noqa: SLF001 - white-box zero-pivot check
+        assert elimination.newton(mpf(1)) == mpf(0)
+        eigenvector = elimination.vector(mpf(1))
+        expected = mpf(1) / mp.sqrt(3)
+        for component in eigenvector:
+            # 50-digit mpmath arithmetic precision: 1e-45 bound (< 1e5 * 10^-50).
+            assert abs(component - expected) < mpf("1e-45")
+
+    fixture = fixtures()["ladder_100"]
+    ran = run_jolty(
+        Prepared.of(fixture),
+        Setting("defaults", DEFAULTS["relative_tolerance"]),
+        1,
+    )
+    output = fixture.outputs[0]
+    compared = fixture.compare(ran.found)[output.name]
+    digits = score(compared, output)[output.score].digits
+    # Default-tolerance ladder_100 reaches ~2.74 digits vs 50-digit exact reference.
+    assert 2.0 < digits < 4.0

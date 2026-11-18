@@ -1,0 +1,223 @@
+{
+  "platforms": {
+    "linux-x86_64-glibc2.43": {
+      "precision": {
+        "butterworth_poles": {
+          "counts": {},
+          "digits": {
+            "poles": 15.3388
+          }
+        },
+        "diode": {
+          "counts": {},
+          "digits": {
+            "v(anode)": 5.2296
+          }
+        },
+        "ladder_10": {
+          "counts": {
+            "accepted": 93,
+            "iterations": 212,
+            "rejected": 13,
+            "transient iterations": 185
+          },
+          "digits": {
+            "v(nodes)": 2.2047
+          }
+        },
+        "ladder_100": {
+          "counts": {
+            "accepted": 123,
+            "iterations": 273,
+            "rejected": 13,
+            "transient iterations": 246
+          },
+          "digits": {
+            "v(nodes)": 2.7439
+          }
+        },
+        "lc_tank": {
+          "counts": {
+            "accepted": 186,
+            "iterations": 456,
+            "rejected": 45,
+            "transient iterations": 365
+          },
+          "digits": {
+            "energy": 4.2823,
+            "frequency": 1.3697
+          }
+        },
+        "rc_femto": {
+          "counts": {
+            "accepted": 64,
+            "iterations": 124,
+            "rejected": 0,
+            "transient iterations": 123
+          },
+          "digits": {
+            "v(out)": 3.7532
+          }
+        },
+        "rc_noise": {
+          "counts": {},
+          "digits": {
+            "noise": 15.155
+          }
+        },
+        "rc_periodic": {
+          "counts": {
+            "accepted": 53,
+            "iterations": 233,
+            "rejected": 0,
+            "transient iterations": 105
+          },
+          "digits": {
+            "v(out)": 3.0427
+          }
+        },
+        "rc_ramp": {
+          "counts": {
+            "accepted": 62,
+            "iterations": 129,
+            "rejected": 5,
+            "transient iterations": 119
+          },
+          "digits": {
+            "v(out)": 3.7333
+          }
+        },
+        "rc_step": {
+          "counts": {
+            "accepted": 69,
+            "iterations": 136,
+            "rejected": 3,
+            "transient iterations": 130
+          },
+          "digits": {
+            "v(out)": 3.7681
+          }
+        },
+        "rlc_ac": {
+          "counts": {},
+          "digits": {
+            "v(out)": 14.7059
+          }
+        },
+        "rlc_step": {
+          "counts": {
+            "accepted": 96,
+            "iterations": 249,
+            "rejected": 28,
+            "transient iterations": 192
+          },
+          "digits": {
+            "v(out)": 1.2864
+          }
+        },
+        "tree_10": {
+          "counts": {
+            "accepted": 76,
+            "iterations": 165,
+            "rejected": 6,
+            "transient iterations": 152
+          },
+          "digits": {
+            "v(nodes)": 2.671
+          }
+        },
+        "tree_100": {
+          "counts": {
+            "accepted": 92,
+            "iterations": 205,
+            "rejected": 10,
+            "transient iterations": 184
+          },
+          "digits": {
+            "v(nodes)": 2.4398
+          }
+        }
+      },
+      "speed": {
+        "ac_wide": {
+          "ac": {
+            "fingerprint": "275c12d231e95205",
+            "iterations": 146,
+            "strategy": "gmin_stepping"
+          }
+        },
+        "bjt_amp": {
+          "ac": {
+            "fingerprint": "60c598c3eeffa75d",
+            "iterations": 146,
+            "strategy": "gmin_stepping"
+          },
+          "op": {
+            "fingerprint": "33da14b44420b440",
+            "iterations": 146,
+            "strategy": "gmin_stepping"
+          },
+          "tran": {
+            "accepted": 53,
+            "factorizations": 0,
+            "fallbacks": 0,
+            "fingerprint": "cabfaa1971e76223",
+            "landed": 0,
+            "refactorizations": 159,
+            "rejected": 0,
+            "reuses": 0,
+            "strategy": "gmin_stepping",
+            "transient_iterations": 106,
+            "work_iterations": 106
+          }
+        },
+        "buck": {
+          "tran": {
+            "accepted": 90459,
+            "factorizations": 1,
+            "fallbacks": 12346,
+            "fingerprint": "c1049d673cce29e4",
+            "landed": 0,
+            "refactorizations": 430667,
+            "rejected": 26355,
+            "reuses": 1901,
+            "strategy": "direct",
+            "transient_iterations": 234805,
+            "work_iterations": 328463
+          }
+        },
+        "inverter_chain_500": {
+          "tran": {
+            "accepted": 2391,
+            "factorizations": 2,
+            "fallbacks": 33,
+            "fingerprint": "7d625f0e00be23d1",
+            "landed": 0,
+            "refactorizations": 15340,
+            "rejected": 844,
+            "reuses": 3,
+            "strategy": "gmin_stepping",
+            "transient_iterations": 7939,
+            "work_iterations": 12189
+          }
+        },
+        "rc_mesh_100": {
+          "tran": {
+            "accepted": 108,
+            "factorizations": 1,
+            "fallbacks": 0,
+            "fingerprint": "d5618c45466dea28",
+            "landed": 0,
+            "refactorizations": 94,
+            "rejected": 7,
+            "reuses": 247,
+            "strategy": "direct",
+            "transient_iterations": 212,
+            "work_iterations": 227
+          }
+        }
+      }
+    }
+  },
+  "version": 1
+}

@@ -410,6 +410,9 @@ class _Elimination:
     def newton(self, mu: _mpf) -> _mpf:
         """Newton's step for ``det(A - μI) = Πᵢ dᵢ(μ)``: one over its log's slope."""
         pivots, slopes = self.pivots(mu)
+        if pivots[0] == 0:
+            # Exact root: lim_{d_0 -> 0} 1 / (s_0 / d_0 + finite) = 0.
+            return mpf(0)  # ty: ignore[unsound-return] - mpmath is untyped
         logarithmic = sum(
             (slope / pivot for slope, pivot in zip(slopes, pivots, strict=True)), mpf(0)
         )
@@ -424,6 +427,15 @@ class _Elimination:
         """The unit eigenvector at the eigenvalue `mu`, by two inverse iterations."""
         pivots, _ = self.pivots(mu)
         count = len(pivots)
+        if pivots[0] == 0:
+            # Exact root of L D L^T with D_{0,0} = 0: nullspace solves L^T v = e_0.
+            solved = [mpf(0)] * count
+            solved[0] = mpf(1)
+            for node in range(1, count):
+                above = solved[self.parents[node]]
+                solved[node] = -self.off[node] * above / pivots[node]
+            norm = mpmath.sqrt(sum((value**2 for value in solved), mpf(0)))
+            return [value / norm for value in solved]  # ty: ignore[unsound-return] - mpmath is untyped
         vector = [mpf(1) + mpf(node % 7) / 7 for node in range(count)]
         for _ in range(2):
             rest = list(vector)
