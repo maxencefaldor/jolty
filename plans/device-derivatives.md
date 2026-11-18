@@ -1,6 +1,6 @@
 # Device derivatives: implementation plan
 
-Status (18 November 2026): steps 1, 2 and 2b done, on `main`; the largest chunk measured against a width of 16 (2.3), its choice put to the owner; not done: a whole VJP's time (2.6); steps 3 and 4 deferred; the measurement that would decide step 3 held for the owner.
+Status (18 November 2026): steps 1, 2 and 2b done, on `main`; the largest chunk measured against a width of 16 (2.3), its choice put to the owner; a whole VJP over a device's parameters timed with the alternating protocol (2.6); steps 3 and 4 deferred; the measurement that would decide step 3 held for the owner.
 This plan covers the first layer of jolty's derivatives: each device's own derivatives, from a device's law to the engine's JVP and VJP.
 
 ## Why
@@ -43,7 +43,7 @@ Each stage's "done when" measures its own effect; the table gives what each meas
 | 1.3 Gummel-Poon, JFET | Measured: an evaluation 2 to 8% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
 | 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
-| 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from compiler inlining and codegen choices | Measured: a twin of eight evaluates in 2.4 (BSIM4) to 3.5 (the diode, properly biased at 0.69 V) times fewer instructions than eight twins of one on machine D (below); a JVP evaluates each device once per tangent whatever the number of its parameters |
+| 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from compiler inlining and codegen choices | Measured: a twin of eight evaluates in 2.4 (BSIM4) to 3.5 (the diode, properly biased at 0.69 V) times fewer instructions than eight twins of one on machine D (below); whole `Simulator::vjp` + `pull_back` speeds up 1.28× to 2.16× total (1.51× to 2.45× `pull_back`) on chunk 8 vs chunk 1 with bit-identical results across all 25 cases (2.6); a JVP evaluates each device once per tangent whatever the number of its parameters |
 | 2b AC exact | At most +2 instructions (+0.07%) on Newton's `f64` kernels, −4 on VBIC and −10 on the photocell (`instructions.rs`, below) | Measured: AC VJP pullback 49.8× faster at 1,000 parameters on machine E (107.8 to 2.17 ms; total `vjp` + `pull_back` 28.7× faster, 109.9 to 3.83 ms); agrees with `61fa6e8`'s central difference within 9.74e-8 at 1,000 parameters (9.57e-10 on `loaded_amplifier`); AC dot-product residual 7.15e-17 |
 
 ## Step 1: every kernel composed on dual numbers
@@ -186,7 +186,41 @@ Seeding each parameter's single slot with its component of the tangent gives `(�
 **Result** (17 November): every kernel's gradient test checks that a twin along several of its real parameters at once finds along each, bit for bit, what a twin along that parameter alone does, in chunks of eight and of three, which pad to four (`testing.rs`, `assert_chunks_match_seeds_alone`), the heated kernels' included; a VJP along ten parameters of one diode, two chunks, pulls a cotangent back to each bit for bit as a VJP along that parameter alone does, at an operating point and at every step of a transient (`a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone`); the JVP along a tangent agrees with its columns combined within the dot-product test's bound at every analysis (`the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis`); every derivative test passes unchanged.
 Each chunk is one evaluation, its count of instructions in 2.3.
 Timed by `evaluation.rs`, criterion, on one pinned core of machine D (`5efde61`, 18 November), a twin of 1, 2, 4 and 8 seeds evaluates in 3.057, 4.132, 5.561 and 8.884 µs for BSIM4, 109.9, 168.2, 159.8 and 266.8 ns for the diode at 0.69 V, and 56.25, 54.92, 86.44 and 133.2 ns for the resistor: eight seeds in one twin take 2.75, 3.30 and 3.38 times less time than eight twins of one.
-**Not done:** a whole VJP over a device's parameters timed with the timing protocol.
+**Whole VJP, alternating protocol** (18 November, `a3c1d6c`, release build with `lto = "thin"` and `codegen-units = 1`, `chunk=8` (`Seeds::MOST`) against `chunk=1` (`chunks(1)` in `crates/jolty-engine/src/twins.rs`), 9 alternating rounds (AB/BA) of 5 repetitions each = 45 samples per arm, pinned to one core of machine D, AMD EPYC 9B14, host load 93.39 to 93.84 over 96 cores): bit-for-bit check passes across all 25 `(case, n)` combinations with 0 mismatched bits (`f64::to_bits`).
+Medians and exact 95% binomial rank intervals below (`total` is `vjp` + `pull_back`, `pull` is `pull_back` alone; transients use 200 fixed steps with `truncation_tolerance = ∞` so both arms traverse identical time grids):
+
+| Case | `n` | `chunk=1` total median [95% CI] | `chunk=8` total median [95% CI] | Total speedup | `chunk=1` `pull_back` median [95% CI] | `chunk=8` `pull_back` median [95% CI] | Pull speedup | Separated? |
+| --- | ---: | --- | --- | ---: | --- | --- | ---: | --- |
+| `bsim4_op` | 1 | 29.70 µs [29.49 to 30.33] | 30.02 µs [29.62 to 30.38] | 0.99× | 16.23 µs [16.08 to 16.56] | 16.20 µs [16.06 to 16.47] | 1.00× | no / no |
+| `bsim4_op` | 2 | 52.71 µs [52.18 to 53.01] | 37.63 µs [37.25 to 38.65] | 1.40× | 29.17 µs [29.04 to 29.36] | 20.77 µs [20.56 to 21.01] | 1.40× | yes / yes |
+| `bsim4_op` | 4 | 99.48 µs [98.92 to 102.00] | 57.28 µs [56.43 to 58.40] | 1.74× | 55.70 µs [55.38 to 56.15] | 31.08 µs [30.81 to 31.45] | 1.79× | yes / yes |
+| `bsim4_op` | 8 | 196.25 µs [192.64 to 198.48] | 96.02 µs [95.46 to 96.54] | 2.04× | 109.69 µs [108.96 to 111.13] | 52.83 µs [52.35 to 53.34] | 2.08× | yes / yes |
+| `bsim4_op` | 16 | 382.77 µs [377.51 to 399.33] | 177.01 µs [175.64 to 181.08] | 2.16× | 215.64 µs [213.21 to 226.76] | 97.70 µs [96.52 to 99.16] | 2.21× | yes / yes |
+| `bsim4_ac` | 1 | 61.22 µs [60.03 to 62.96] | 61.12 µs [59.81 to 61.91] | 1.00× | 38.49 µs [38.04 to 39.43] | 38.33 µs [38.00 to 38.93] | 1.00× | no / no |
+| `bsim4_ac` | 2 | 83.91 µs [83.12 to 87.76] | 62.83 µs [62.42 to 63.43] | 1.34× | 51.97 µs [51.57 to 53.47] | 40.49 µs [40.29 to 40.85] | 1.28× | yes / yes |
+| `bsim4_ac` | 4 | 130.47 µs [129.51 to 134.22] | 90.74 µs [89.14 to 92.89] | 1.44× | 78.13 µs [77.84 to 80.77] | 54.77 µs [54.32 to 56.82] | 1.43× | yes / yes |
+| `bsim4_ac` | 8 | 228.06 µs [223.45 to 232.60] | 132.81 µs [130.98 to 136.85] | 1.72× | 135.38 µs [132.36 to 137.30] | 79.03 µs [78.50 to 80.71] | 1.71× | yes / yes |
+| `bsim4_ac` | 16 | 421.26 µs [415.78 to 432.73] | 217.90 µs [213.59 to 234.25] | 1.93× | 244.03 µs [240.22 to 247.58] | 125.74 µs [123.94 to 128.89] | 1.94× | yes / yes |
+| `bsim4_tran` | 1 | 2.842 ms [2.835 to 2.864] | 2.768 ms [2.761 to 2.785] | 1.03× | 1.259 ms [1.249 to 1.265] | 1.236 ms [1.231 to 1.252] | 1.02× | yes / no |
+| `bsim4_tran` | 2 | 3.528 ms [3.517 to 3.548] | 3.022 ms [3.009 to 3.045] | 1.17× | 1.924 ms [1.920 to 1.942] | 1.482 ms [1.476 to 1.490] | 1.30× | yes / yes |
+| `bsim4_tran` | 4 | 4.909 ms [4.893 to 4.957] | 3.464 ms [3.443 to 3.535] | 1.42× | 3.271 ms [3.257 to 3.312] | 1.896 ms [1.880 to 1.932] | 1.73× | yes / yes |
+| `bsim4_tran` | 8 | 7.714 ms [7.689 to 7.798] | 4.290 ms [4.258 to 4.359] | 1.80× | 6.023 ms [5.994 to 6.080] | 2.661 ms [2.639 to 2.692] | 2.26× | yes / yes |
+| `bsim4_tran` | 16 | 13.342 ms [13.302 to 13.425] | 6.453 ms [6.370 to 6.571] | 2.07× | 11.536 ms [11.496 to 11.593] | 4.711 ms [4.685 to 4.828] | 2.45× | yes / yes |
+| `diode_op` | 1 | 7.61 µs [7.44 to 7.85] | 7.49 µs [7.42 to 7.56] | 1.02× | 3.83 µs [3.75 to 3.90] | 3.76 µs [3.72 to 3.80] | 1.02× | no / no |
+| `diode_op` | 2 | 11.23 µs [11.10 to 11.39] | 8.78 µs [8.70 to 9.05] | 1.28× | 5.76 µs [5.71 to 5.86] | 4.53 µs [4.45 to 4.67] | 1.27× | yes / yes |
+| `diode_op` | 4 | 19.16 µs [18.90 to 19.94] | 11.35 µs [11.19 to 11.52] | 1.69× | 10.35 µs [10.13 to 10.75] | 6.18 µs [6.05 to 6.27] | 1.67× | yes / yes |
+| `diode_op` | 8 | 37.00 µs [36.36 to 39.01] | 17.90 µs [17.60 to 18.04] | 2.07× | 19.58 µs [19.23 to 19.71] | 9.69 µs [9.63 to 9.90] | 2.02× | yes / yes |
+| `diode_op` | 10 | 44.52 µs [43.95 to 45.29] | 22.70 µs [22.50 to 22.99] | 1.96× | 23.64 µs [23.27 to 24.13] | 12.09 µs [12.01 to 12.27] | 1.96× | yes / yes |
+| `diode_tran` | 1 | 836.14 µs [829.76 to 845.79] | 820.91 µs [816.39 to 828.02] | 1.02× | 279.22 µs [275.61 to 295.01] | 269.77 µs [268.09 to 272.86] | 1.04× | yes / yes |
+| `diode_tran` | 2 | 900.80 µs [890.18 to 909.10] | 860.15 µs [851.87 to 864.28] | 1.05× | 352.13 µs [333.15 to 355.18] | 306.21 µs [301.98 to 311.35] | 1.15× | yes / yes |
+| `diode_tran` | 4 | 1.008 ms [1.002 to 1.016] | 892.88 µs [889.85 to 901.83] | 1.13× | 463.43 µs [458.52 to 467.70] | 339.12 µs [335.22 to 352.10] | 1.37× | yes / yes |
+| `diode_tran` | 8 | 1.296 ms [1.288 to 1.311] | 1.015 ms [1.010 to 1.044] | 1.28× | 737.22 µs [734.04 to 745.84] | 465.95 µs [454.59 to 472.85] | 1.58× | yes / yes |
+| `diode_tran` | 10 | 1.441 ms [1.430 to 1.461] | 1.121 ms [1.115 to 1.129] | 1.28× | 870.32 µs [865.99 to 887.12] | 576.64 µs [567.59 to 582.24] | 1.51× | yes / yes |
+
+At `n = 1`, both binaries execute identical `Gradient<1>` evaluations; the 2 to 4% gap on `bsim4_tran` and `diode_tran` is LTO code-layout variance between the two separately linked binaries.
+From `n = 2` up, every total and `pull_back` 95% interval separates cleanly in favor of `chunk=8`, scaling to 2.07× to 2.16× total (2.21× to 2.45× `pull_back`) on BSIM4 at 16 parameters and 1.28× to 2.07× total (1.51× to 2.02× `pull_back`) on the diode at 8 to 10 parameters.
+Notice `diode_op` (`n = 10` is 1.96× vs `n = 8` at 2.07×) and `diode_tran` (`pull_back` 1.51× vs 1.58×) dip slightly right past a full chunk of 8, where parameters 9 and 10 spill into a second chunk of width 2.
+All acceptance items for step 2 are done.
 
 ## Step 2b: AC's VJP exact and independent of the number of parameters
 
