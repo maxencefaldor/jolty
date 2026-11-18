@@ -468,7 +468,7 @@ impl Kernel for BehavioralCurrentSource {
         shape.choices(expression, memory, at, found);
     }
 
-    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
         shape.reads_time()
     }
 }
@@ -541,7 +541,7 @@ impl Kernel for BehavioralVoltageSource {
         shape.choices(expression, memory, at, found);
     }
 
-    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
         shape.reads_time()
     }
 }
@@ -612,7 +612,7 @@ impl Kernel for BehavioralCapacitor {
         shape.choices(expression, memory, at, found);
     }
 
-    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
         shape.reads_time()
     }
 }

@@ -93,7 +93,7 @@ impl Kernel for VoltageSource {
         waveform.breakpoints(start, stop, times);
     }
 
-    fn varies_in_time(_: &VoltageSourceShape, waveform: &Waveform) -> bool {
+    fn varies_in_time<R: Real>(_: &VoltageSourceShape, waveform: &Waveform<R>) -> bool {
         waveform.varies_in_time()
     }
 
@@ -162,7 +162,7 @@ impl Kernel for CurrentSource {
         waveform.breakpoints(start, stop, times);
     }
 
-    fn varies_in_time((): &(), waveform: &Waveform) -> bool {
+    fn varies_in_time<R: Real>((): &(), waveform: &Waveform<R>) -> bool {
         waveform.varies_in_time()
     }
 

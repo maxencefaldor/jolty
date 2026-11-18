@@ -412,7 +412,7 @@ class _Elimination:
         pivots, slopes = self.pivots(mu)
         if pivots[0] == 0:
             # Exact root: lim_{d_0 -> 0} 1 / (s_0 / d_0 + finite) = 0.
-            return mpf(0)  # ty: ignore[unsound-return] - mpmath is untyped
+            return mpf(0)
         logarithmic = sum(
             (slope / pivot for slope, pivot in zip(slopes, pivots, strict=True)), mpf(0)
         )
@@ -435,7 +435,7 @@ class _Elimination:
                 above = solved[self.parents[node]]
                 solved[node] = -self.off[node] * above / pivots[node]
             norm = mpmath.sqrt(sum((value**2 for value in solved), mpf(0)))
-            return [value / norm for value in solved]  # ty: ignore[unsound-return] - mpmath is untyped
+            return [value / norm for value in solved]
         vector = [mpf(1) + mpf(node % 7) / 7 for node in range(count)]
         for _ in range(2):
             rest = list(vector)

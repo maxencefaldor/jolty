@@ -405,3 +405,14 @@ Transient profile work counts on `430c75d` (machine D, glibc 2.27):
 | `buck` | 1.589 s (1.589 s analysis); tran 2.0e-03 | 358.7 ms (309.8 ms analysis); tran 2.5e-03 | 406.7 ms (359.6 ms analysis); tran 2.5e-03 |
 | `inverter_chain_500` | 9.912 s (9.897 s analysis); tran 1.0e+00 | 2.428 s (2.38 s analysis); tran 9.9e-01 | 2.51 s (2.46 s analysis); tran 9.9e-01 |
 | `rc_mesh_100` | 1.497 s (1.383 s analysis); tran 1.2e-02 | 51.39 s (51.22 s analysis); tran 3.7e-03 | 5.069 s (4.552 s analysis); tran 3.7e-03 |
+
+`--view matched` on machine D (`430c75d`, ngspice 47, measured in 5,069 s; same pre-Huynh `bjt_amp` note above):
+
+| Fixture | jolty | ngspice-sparse | ngspice-klu |
+| --- | --- | --- | --- |
+| options | `TIGHT`: `reltol=1e-06`, `vntol=1e-09`, `abstol=1e-14` | `.options reltol=1e-06 vntol=1e-09 abstol=1e-14` | `.options reltol=1e-06 vntol=1e-09 abstol=1e-14`; `.options klu` |
+| `bjt_amp` | 25.8 ms (24.91 ms analysis); op 0.0e+00, ac 0.0e+00, tran 0.0e+00 | 8.116 ms (3.095 ms analysis); op 2.0e-11, ac 7.5e-13, tran 3.8e-03 | 8.724 ms (3.737 ms analysis); op 1.1e-11, ac 4.1e-13, tran 3.8e-03 |
+| `ac_wide` | 18.65 ms (17.71 ms analysis); ac 0.0e+00 | 62.28 ms (21.84 ms analysis); ac 7.5e-13 | 77.39 ms (35.8 ms analysis); ac 4.4e-13 |
+| `buck` | 12.9 s (12.9 s analysis); tran 0.0e+00 | failed: timestep too small at `t = 9.87e-10 s` (`5e-17` on `mx1_m2`) | failed: timestep too small at `t = 1.43e-09 s` (`5e-17` on `mx1_m2`) |
+| `inverter_chain_500` | 127.7 s (127.6 s analysis); tran 0.0e+00 | 56.86 s (56.78 s analysis); tran 1.8e-01 | 59.04 s (58.95 s analysis); tran 1.7e-01 |
+| `rc_mesh_100` | 5.742 s (5.627 s analysis); tran 0.0e+00 | failed: timed out after 300 s | 16.44 s (16.07 s analysis); tran 2.6e-04 |

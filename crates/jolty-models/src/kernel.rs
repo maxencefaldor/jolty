@@ -222,7 +222,7 @@ pub trait Kernel: Send + Sync + 'static {
     /// time: `false` for every autonomous device, `true` for a source whose waveform varies
     /// with time or a behavioral device whose expression reads `time`.
     #[must_use]
-    fn varies_in_time(shape: &Self::Shape, prepared: &Self::Prepared<f64>) -> bool {
+    fn varies_in_time<R: Real>(shape: &Self::Shape, prepared: &Self::Prepared<R>) -> bool {
         let _ = (shape, prepared);
         false
     }
