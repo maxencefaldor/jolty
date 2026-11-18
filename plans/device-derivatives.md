@@ -1,7 +1,7 @@
 # Device derivatives: implementation plan
 
 Status (18 November 2026): steps 1, 2 and 2b done, on `main`; the largest chunk measured against a width of 16 (2.3), its choice put to the owner; not done: a whole VJP's time (2.6); steps 3 and 4 deferred; the measurement that would decide step 3 held for the owner.
-How derivatives flow through jolty, from a device's law to the JVP and VJP, is `derivatives.html`; this plan is about its first layer, each device's own derivatives.
+This plan covers the first layer of jolty's derivatives: each device's own derivatives, from a device's law to the engine's JVP and VJP.
 
 ## Why
 

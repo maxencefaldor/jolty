@@ -16,7 +16,6 @@ A rule not yet adopted is proposed in a theme's "Open principles", and moves to 
 | `naming.md` | The names chosen, and the ones still open |
 | `gpu.md` | What a GPU could do for jolty, and what it cannot |
 | `research/` | Archival read-only research reports written on 15 November 2026, kept whole and pinned to their commits; a plan item's "Source: row N" is a row of its theme's report |
-| `derivatives.html` | How derivatives work in jolty, from a circuit's equations to the JVP and VJP, explained step by step |
 | `device-derivatives.md` | The implementation plan for each device's own derivatives: every kernel composed on dual numbers, every parameter derivative of a device in one evaluation, and the two deferred steps |
 
 Every theme document has the same sections: goal and metric, where we stand, gaps, plan, decided, open principles.
