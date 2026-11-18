@@ -438,10 +438,12 @@ fn is_harmonic_scalar(times: [f64; 4], charges: [f64; 4], derivatives: [f64; 4])
     let product_1 = (acceleration_1 - acceleration_0) * charge_shift_1;
     let product_2 = (acceleration_2 - acceleration_1) * charge_shift_2;
     let floor_1 = rounding(
-        (acceleration_1.abs() + acceleration_0.abs()) * 0.5 * (charges[2].abs() + charges[0].abs()),
+        f64::midpoint(acceleration_1.abs(), acceleration_0.abs())
+            * (charges[2].abs() + charges[0].abs()),
     );
     let floor_2 = rounding(
-        (acceleration_2.abs() + acceleration_1.abs()) * 0.5 * (charges[3].abs() + charges[1].abs()),
+        f64::midpoint(acceleration_2.abs(), acceleration_1.abs())
+            * (charges[3].abs() + charges[1].abs()),
     );
     product_1 <= floor_1 && product_2 <= floor_2 && (product_1 < -floor_1 || product_2 < -floor_2)
 }
@@ -1480,7 +1482,7 @@ mod tests {
         assert_eq!(reuses_clean, 0);
 
         let omega = TAU * 1e3;
-        let phase = 0.5;
+        let phase: f64 = 0.5;
         let (damps_ringing, _) = simulate_linear(
             &conductance,
             &capacitance,
@@ -1542,7 +1544,7 @@ mod tests {
         assert_eq!(damps_clean, 0);
 
         let omega = TAU * 1e3;
-        let phase = 0.5;
+        let phase: f64 = 0.5;
         let (damps_ringing, _) = simulate_linear(
             &conductance,
             &capacitance,
@@ -1556,8 +1558,8 @@ mod tests {
 
     #[test]
     fn parallel_rlc_separates_underdamped_from_critically_and_overdamped() {
-        let capacitance = 1e-9;
-        let inductance = 1e-6;
+        let capacitance: f64 = 1e-9;
+        let inductance: f64 = 1e-6;
         let omega = 1.0 / (inductance * capacitance).sqrt();
         let impedance = (inductance / capacitance).sqrt();
         let capacitance_matrix = vec![vec![capacitance, 0.0], vec![0.0, -inductance]];

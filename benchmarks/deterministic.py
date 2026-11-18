@@ -56,17 +56,26 @@ for _path in (
     if _text not in sys.path:
         sys.path.insert(0, _text)
 
-from fixtures import fixtures as precision_fixtures  # noqa: E402
-from suite import (  # noqa: E402
+from fixtures import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
+    fixtures as precision_fixtures,
+)
+from suite import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
     DEFAULTS,
     Prepared,
     Setting,
     run_jolty,
     score,
 )
-from timing import load_fixture, planned  # noqa: E402
+from timing import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
+    load_fixture,
+    planned,
+)
 
-from jolty import Simulation, cli, results  # noqa: E402
+from jolty import (  # noqa: E402 - follows sys.path bootstrap for sibling modules
+    Simulation,
+    cli,
+    results,
+)
 
 BASELINE_PATH: Final = BENCHMARKS / "deterministic.json"
 """Committed per-platform baseline of deterministic counts, digits and fingerprints."""
