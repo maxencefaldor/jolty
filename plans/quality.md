@@ -1,8 +1,8 @@
 # Quality
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/quality.md`, kept whole.
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/quality.md`, kept whole.
 
-Plan: ✅ 13 done · 🚧 2 in progress · 📋 10 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 14 done · 🚧 1 in progress · 📋 10 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -16,12 +16,12 @@ Every ruff and ty rule and clippy's pedantic lints are errors; rustdoc's warning
 
 **Short of `AGENTS.md`'s spirit:**
 
-- **Two ways to differentiate:** the diode, the JFET and the Gummel-Poon transistor write their derivatives by hand; the MOSFET, BSIM3, VDMOS and VBIC use dual numbers (item 6).
-- **Two ways to stamp:** the MOSFET writes its matrix entries through summed derivatives; BSIM3, VDMOS and VBIC term by term (item 5).
 - **One fact in several places:** one parameter lives in six places in four files (`models.md` 4).
-- **Guards a new model can skip:** the SPICE round trip does not run over every model; the kernels' lints are pasted into 22 files (item 4).
+- **Guards a new model can skip:** the SPICE round trip does not run over every model (item 4).
 - **Numbers without a source:** engine constants, and up to 340 of 428 test tolerance sites (a scan's upper bound) (items 10 and 11).
 - **Names:** three benchmark suites call the circuit they run a "fixture", a "case" and a "probe", and two named their module of simulators' runners alike, which collided on merging (items 12 and 13).
+
+**One way to differentiate and one way to stamp,** since 17 November: every kernel composes dual numbers at each law's own width (item 6), and writes its matrix entries through summed derivatives (item 5).
 
 **Slop found and removed on 15 November:** mypy, brought in for its stubtest beside ty, the one type checker (`5ba0fb2`, replaced by a test of jolty's own); four ways to start ngspice and three to read its version (`5f69050`, now `jolty.spice.ngspice.execute` and `version`); three copies of the options as tight as ngspice's (now `jolty.plan.TIGHT`); the precision suite's restated defaults, option names and colours (`a43aa05`); the precision suite's committed 1.65 MB of results.
 
@@ -32,7 +32,6 @@ The analyses a spec names are resolved only after every analysis has run (item 8
 
 ## 3. Gaps
 
-- One job done several ways: derivatives and stamps.
 - One fact in several places: a model's facts; the benchmarks' helpers.
 - One concept under several names.
 - Guards a new model can skip; numbers that do not say where they come from.
@@ -70,8 +69,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 4. Guards that enumerate the library
 
 - **What:** every test that should hold for all models iterates the standard library, so a new model cannot skip it.
-- **State:** the allocation test and the Jacobian check run over one table of 35 cases covering all 28 analog models, and fail if a model has no case (`1235b50`).
-    Left: the SPICE round trip over every model (a model written and read back as itself, as another element by design, or refused by name, each decided per model), and the kernels' lints set once on a parent module instead of pasted into 22 files, after the charge tolerance's branch lands, as it edits `mosfet.rs`.
+- **Result:** the allocation test and the Jacobian check run over one table of 35 cases covering all 28 analog models, and fail if a model has no case (`1235b50`); the kernels' lints are denied once, in `kernel.rs`, for every kernel beside it.
+    **Not done:** the SPICE round trip over every model (a model written and read back as itself, as another element by design, or refused by name, each decided per model).
 - **Done when:** removing a model's case fails a test; one `deny` attribute in the crate.
 - **Source:** row 8.
 
@@ -83,15 +82,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Source:** row 3.
     This item replaces `speed.md`'s copy of it.
 
-### 🚧 6. Every kernel on dual numbers
+### ✅ 6. Every kernel on dual numbers
 
 - **What:** the diode, the JFET and the Gummel-Poon transistor computing their derivatives by automatic differentiation, as the others do, and the Jacobian check tightened to rounding.
 - **Done when:** no hand-written derivative left in a kernel.
-- **State** (`5421fdf`): every junction's current and depletion charge, the diode's breakdown included, on dual numbers.
-    The JFET's and the bipolar transistor's ports ran 7 to 18% slower and were stopped (kept in the scratchpad); hand-written derivatives also remain in the memristor, the passive voltage coefficients, the photocell, the switch and VDMOS's quasi-saturation.
-    The Jacobian check's 1e-5 stays: BSIM3's charge rows cancel, so a bound at rounding needs the magnitude of the terms each charge sums, which kernels do not report.
-    `departures.md:73` calls the bipolar base resistance's derivative automatic; it is hand-written.
-- **Plan:** `device-derivatives.md` step 1: VBIC composed (1.2), Gummel-Poon and the JFET on composed dual numbers measured against today's (1.3), the short laws when touched (1.4).
+- **Result** (`5421fdf`, then `device-derivatives.md` step 1, `938220a`, `7887dbe`, `ec04308`, 17 November): every kernel composes dual numbers at the width of each of its laws; no derivative is written by hand in any kernel, Gummel-Poon's, the JFET's, the memristor's, the switch's, the photocell's, VDMOS's quasi-saturation's and the passive voltage coefficients' included.
+    Gummel-Poon and the JFET cost 2 to 8% more instructions an evaluation, put to the owner (`device-derivatives.md` 1.3).
+    **Not done:** the Jacobian check's 1e-5 stays: BSIM3's charge rows cancel, so a bound at rounding needs the magnitude of the terms each charge sums, which kernels do not report.
 - **Source:** row 4.
 
 ### 📋 7. Quantities everywhere
@@ -128,8 +125,9 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** the owner's rule (`AGENTS.md`, "Names"): first a glossary of every concept, its one name, its definition, and every other name it has today with each place; the owner reviews it; then the renames, everywhere at once.
     It takes in the research's distinct names for analyses and results, a `PeriodicSteadyState` analysis and `batch(plan)`.
 - **Done when:** the glossary holds every concept once, the owner has reviewed it, and the renames are on `main`; the reference lists each class once.
-- **State:** every rename the owner decided is on `main` (`8a4d80a` to `bc35702`, by the table and script in `renames/`, 712 rows).
-    Left: the periodic steady state as its own analysis (choice 6), a task of its own; `Parallelism`'s names, with `speed.md` 4; and two names for the owner, `elaborate::Composite` (terminals, not instances) and `measure::Signal` (an output and a gain's denominator).
+- **State:** every rename the owner decided is on `main` (`8a4d80a` to `bc35702`, 712 renames by a table and a script, not kept); the periodic steady state is an analysis of its own (choice 6, `agentic.md` 22), and `Parallelism`'s names are the owner's (`speed.md` 4).
+    `elaborate::Composite` is `SummedTerminal`, the owner's name (16 November).
+    **Not done:** one name, which waits for the owner: `measure::Signal` (an output and a gain's denominator).
 - **Source:** row 13; a brief, not kept.
 
 ### 📋 13. The benchmarks' code made one
@@ -205,13 +203,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### ✅ 24. Rust's version the latest stable, stated once
 
 - **What:** the toolchain pinned at the latest stable (1.100.0 on 15 November), `rust-version` equal to it, a test holding the two equal; the pin moved at each release.
-- **State:** ready but for one clippy finding at 1.100 in `jolty-models/src/group.rs` (`map_or_default`), which the subagent could not edit.
+- **Result:** `rust-toolchain.toml` pins 1.100.0, every crate's `rust-version` claims it, and `tests/test_rust_version.py` holds the two equal.
     **Source:** the owner, 15 November.
 
 ### ✅ 25. cargo-nextest measured
 
 - **What:** `cargo test --workspace` against `cargo nextest run` and `cargo test --doc`, on this Mac and in CI; adopted only if it pays, with the numbers for the owner.
 - **Adopted** (`1e30843`): `scripts/check` and CI run nextest and the doctests, 117 s against 209.5 s.
+- **Then** (`ab2c08c`, 17 November): the three slow corpus tests sharded 16 ways and `jolty-numerics` built at `opt-level = 2` in tests; the whole suite from 302.4 s to 107.2 s on machine D; on 18 November, 655 tests took 197.5 s on 4 test threads, 81.5 s on 16 and 73.8 s on 64, flat past 16, where the slowest tests set the floor.
 - **Source:** the owner, 15 November.
 
 ### ✅ 26. Every message facts only

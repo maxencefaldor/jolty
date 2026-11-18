@@ -106,6 +106,7 @@ dl { margin: 8px 0; } dt { font-family: var(--font-display); font-weight: 600; m
 
 <h1>How derivatives work in jolty</h1>
 <p class="lede">One message, explained line by line: what a circuit's equations are, where every derivative in jolty comes from, why they are one process mathematically and several today in the API, and what would make them one in the API too.</p>
+<p class="note">Status (18 November 2026): written on 16 November, before its fix landed. Since 17 November every analysis has the jvp and vjp section 4 proposes (<code>agentic.md</code> 12b), and <code>Sensitivity</code>, <code>Mismatch</code>, the period derivative and <code>Objective</code> are users of them; the JAX bridge wraps the vjp alone, with no <code>custom_jvp</code> (<code>agentic.md</code> 19); every kernel is composed on dual numbers, and a twin carries up to eight seeds (<code>device-derivatives.md</code>). "Today" below means 16 November.</p>
 <div class="key"><span><span class="x">x</span>: unknowns (voltages, currents)</span><span><span class="p">p</span>: parameters (a resistance, a weight)</span><span><span class="L">L</span>: a loss, and anything JAX owns</span></div>
 
 <nav class="toc" aria-label="Contents">
@@ -311,7 +312,7 @@ e<sup>a + bε</sup> = e<sup>a</sup> + e<sup>a</sup>·b·ε                      
 <tr><td>Linear solves for the gradient</td><td class="num">1,000</td><td class="num">1</td></tr>
 <tr><td>Measured through a transient, a resistor crossbar on machine C (16 Nov)</td><td class="num">364 ms</td><td class="num">12 ms</td></tr>
 </tbody></table></div>
-<p>Which jolty features use which order today: DC and AC sensitivities, and mismatch (each output's spread from the process's random variations), use the adjoint. The transient adjoint was built today on a branch, not yet on main: it runs the time steps backwards, one transposed solve per step, so its cost stays 1.5 to 2.2 times the simulation whatever the number of weights.</p>
+<p>Which jolty features use which order today: DC and AC sensitivities, and mismatch (each output's spread from the process's random variations), use the adjoint. The transient adjoint was built that day on a branch, on main since: it runs the time steps backwards, one transposed solve per step, so its cost stays 1.5 to 2.2 times the simulation whatever the number of weights.</p>
 
 <blockquote>The boundary: everything outside the circuit, the loss and the network, is JAX's job. JAX asks jolty for exactly layer 2's vjp.</blockquote>
 <p>How <code>jax.grad</code> works: it runs your function forward, recording each operation. Then it walks backwards, and for each operation asks one question: "here is ∂L/∂(your output); give me ∂L/∂(your inputs)". That question is a VJP. JAX knows the answer for every <code>jnp</code> operation. It cannot look inside jolty's Rust solver, so jolty has to answer for its own operation, which is layer 2 run left to right.</p>
@@ -395,7 +396,7 @@ vjp(analysis, p, x̄)   → p̄    how a loss's sensitivity x̄ = ∂L/∂x reac
 <dt>Jacobian J = ∂F/∂x</dt><dd>The table of how each node's current changes with each node's voltage; Newton solves with it each step.</dd>
 <dt>Dual number</dt><dd><code>a + bε</code> with <code>ε² = 0</code>: a value that carries its exact derivative through arithmetic.</dd>
 <dt>Seeding</dt><dd>Starting a dual number's derivative at 1 to choose what it is the derivative with respect to.</dd>
-<dt>Twin</dt><dd>A device run on <code>Gradient</code> numbers seeded on one of its parameters, giving ∂F/∂p.</dd>
+<dt>Twin</dt><dd>A device run on <code>Gradient</code> numbers seeded on up to eight directions of its parameters, giving ∂F/∂p along each.</dd>
 <dt>Implicit function theorem</dt><dd>If F(x(p), p) = 0 for all p, then dx/dp = −J⁻¹ ∂F/∂p.</dd>
 <dt>JVP</dt><dd>Jacobian-vector product, J·v: push a parameter nudge forward to the outputs; one solve per direction.</dd>
 <dt>VJP, adjoint</dt><dd>Vector-Jacobian product, v·J: pull a loss's sensitivity back to every parameter; one transposed solve per loss.</dd>

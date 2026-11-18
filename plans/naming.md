@@ -7,6 +7,8 @@ It renames nothing; the owner reviews it first, as the API's names are his.
 Read from `main` at `5f69050`, in the worktree a worktree, and from the branches about to land: `coverage` (`9a78eb2`), `xyce` (`e44555f`), and the uncommitted work of `chgtol` and `regions`, which add no public name this glossary depends on.
 Written 15 November 2026.
 
+Status (18 November 2026): every rename the owner decided is on `main` (`8a4d80a` to `bc35702`, `quality.md` 12), so this glossary's "today" is 15 November, before them; one name still waits for the owner, `measure::Signal`.
+
 ## The owner's decisions, 15 November
 
 The owner answered each choice below (section "Choices the owner may disagree with"); every other row's proposal stands.

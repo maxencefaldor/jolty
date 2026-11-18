@@ -1,8 +1,8 @@
 # Agentic design
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/agentic.md`, kept whole.
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/agentic.md`, kept whole.
 
-Plan: ✅ 11 done · 📋 12 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 11 done · 🚧 1 in progress · 📋 11 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -18,6 +18,7 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 - **Images on every run:** a schematic marking what the diagnostics name, a plot of every analysis, histograms and envelopes for batches.
 - **Specs and verdicts:** 23 measurements the engine reads, four verdicts with the value, its slack, its worst corner and its script line; yield with a Wilson interval; corners, Monte Carlo and worst case in the same command.
 - **Ten analyses,** batches across threads, shards across machines; bounds on every output (300 s a script, 40 unknowns, 20 diagnostics).
+- **Derivatives:** a JVP and a VJP of every analysis, exact, in Python as `jolty.function`, `jolty.jvp` and `jolty.vjp`, and inside JAX as `jolty.jax.function` (items 12b and 19).
 - **Discovery:** six hard design problems and the circuits an agent found for them with jolty alone (`docs/discovery`).
 - **Item 8's harness** (`benchmarks/compare.py`): both arms, a clean configuration and the platform's sandbox for each session, scorers run confined, failure kinds, Wilson intervals; every analysis counted whatever runs it (item 1); proven on a stub agent.
 
@@ -135,7 +136,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** one transposed solve per scalar loss at DC and over frequency, the adjoint method, giving its gradient with respect to every parameter at once.
 - **Done when:** a loss's gradient costs one solve more than the analysis.
     **Source:** row 12.
-- **Result:** item 12b's VJP: at a DC point, one transposed solve per loss whatever the number of parameters; over frequency, the term through the operating point is still a central difference per parameter (`device-derivatives.md` 2b).
+- **Result:** item 12b's VJP: one transposed solve per loss at each point whatever the number of parameters, at a DC point and over frequency, where the term through the operating point is exact too, one transposed DC solve per cotangent (`device-derivatives.md` 2b).
 
 ### ✅ 13. A transient's gradient by the discrete adjoint
 
@@ -184,10 +185,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     `Sensitivity`, `Mismatch`, the period derivative and the transient adjoint (item 13) become thin users of them.
     In Python, `jolty.function(circuit, analysis)` gives `f(params) -> outputs`, and `jolty.vjp` and `jolty.jvp` mirror `jax.vjp` and `jax.jvp`: parameters and outputs plain nested dicts, the parameters given being those differentiated.
 - **Why:** the owner (16 November): one uniform process for all derivatives; today each feature exposes the same maths through its own API, added one analysis at a time, none in the shape JAX asks for.
-    The explainer `explainers/derivatives.html` sets out the three layers.
+    The explainer `derivatives.html` sets out the three layers.
 - **Done when:** every analysis's JVP and VJP agree with each other (the dot-product test `<v, J t> = <Jᵀ v, t>`) and with finite differences; the existing features' tests pass unchanged on top of them; a transient from initial conditions differentiates correctly (the bug the adjoint agent flagged); the guide documents `function`, `jvp` and `vjp`.
-- **Result** (`0820e3b`, `26b418c`, branch `derivatives`, 17 November, landing): `Simulator::jvp`, `vjp` and `pull_back` for the operating point, a DC sweep, AC, a transient and a periodic steady state (the period one more output, keyed `"the period"`); only named parameters get twins; `Sensitivity`, `Mismatch`, the period's derivatives and `Objective` are users of them, their own paths deleted; the dot-product test holds to 7.4e-16; a transient from initial conditions now differentiates correctly (it was wrong: `d out/dR` −1 mV/Ω at t = 0 for an RC from 0 V); Python `jolty.function`, `jvp`, `vjp`, parameters as floats in SI base units.
-    Left: AC's term through the operating point is still a central difference per parameter, so the AC VJP costs 2 evaluations and 1 DC solve per parameter, until kernels give second derivatives (`models.md` 6); the time and period VJPs refuse logic; delay lines refused both ways.
+- **Result** (`0820e3b`, `26b418c`, on `main` since 17 November): `Simulator::jvp`, `vjp` and `pull_back` for the operating point, a DC sweep, AC, a transient and a periodic steady state (the period one more output, keyed `"the period"`); only named parameters get twins; `Sensitivity`, `Mismatch`, the period's derivatives and `Objective` are users of them, their own paths deleted; the dot-product test holds to 7.4e-16; a transient from initial conditions now differentiates correctly (it was wrong: `d out/dR` −1 mV/Ω at t = 0 for an RC from 0 V); Python `jolty.function`, `jvp`, `vjp`, parameters as floats in SI base units.
+    AC's term through the operating point, a central difference per parameter at first, is exact since `1349a11` (`device-derivatives.md` 2b).
+    **Left:** the time and period VJPs refuse logic; delay lines are refused both ways.
 - **Lead.**
     **Source:** the owner's call, 16 November; replaces item 7's pattern selection (the parameters passed are the selection) and gives item 19 its door.
 
@@ -203,11 +205,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     - A `custom_vjp` function refuses `jax.jvp`; forward mode is not built until a use appears (the owner agreed, 16 November).
     - PyTorch, through `torch.autograd.Function` around the same pullback, once JAX's is done.
 - **Needs:** item 12b (on `main`); `jax` as an optional dependency, `jolty[jax]` (approved by the owner, 17 November); `torch` remains unapproved pending owner decision.
-- **Result (JAX done, PyTorch remaining):** `src/jolty/jax.py` exposes `jolty.jax.function(circuit, analysis, options=None)` with optional dependency `jax>=0.12` (`jolty[jax]`).
-    Covers all five differentiable analyses (`OperatingPoint`, `DcSweep`, `Ac` with exact complex Wirtinger cotangent convention, `Transient` with explicit validated `breakpoints`, and `PeriodicSteadyState` both driven with `breakpoints` and autonomous returning only `{PERIOD: scalar}`).
-    Uses a single packed `jax.pure_callback(..., vmap_method="broadcast_all")` dispatching `batch_size == 1` directly through `simulator.run`/`vjp` (bit-for-bit identical to `jolty.function`, preserving nested dissection) and `batch_size > 1` into one multi-threaded Rust `Simulator.batch` call with matching `max_unknowns_per_interior` and `max_threads` settings across forward and backward.
-    Handles empty batches (`batch_size == 0`), structural changes including dropped unknowns, `jax.remat`, `jax.jacrev`, `jax_enable_x64` (`True`/`False` via `canonicalize_dtype`) cleanly under `filterwarnings = ["error"]`, caches validated packed callbacks for eager and free-threaded `3.15t` execution without re-enabling the GIL, and locks `Elaborated._structures` narrowly in `simulate.py` (`tests/test_jax.py`).
-    PyTorch (`torch.autograd.Function`) remains planned.
+- **Done: JAX** (`8fd0b77`, reworked on 18 November): `jolty.jax.function(circuit, analysis, options=None, *, saved_pullbacks=16)`, behind the optional extra `jolty[jax]` (`jax>=0.12`), is thin glue over the public batch API of `jolty.simulate.Function`.
+    Every call, mapped by `jax.vmap` or not, is one `Function.batch` forward, one engine batch across its threads, and its backward is one `BatchPullback` call, the runs' pullbacks spread across the same threads; the engine's `Batch::map` runs both.
+    A derivative's forward pass keeps its runs' pullbacks for its backward pass (the latest `saved_pullbacks` forward passes), so `jax.grad` runs the circuit once; a dropped pullback runs its forward pass again, which finds the same bits.
+    All five differentiable analyses: `OperatingPoint`, `DcSweep`, `Ac` with complex cotangents, `Transient` and driven `PeriodicSteadyState` read at their `breakpoints`, which they need, and oscillators, whose outputs hold no point and whose period is under `PERIOD`.
+    `tests/test_jax.py`: `jax.grad` agrees with `jolty.vjp` bit for bit through each analysis and with finite differences; under `jit`, `remat`, `jacrev`, nested and empty `vmap`; `vmap` agrees with a loop bit for bit; `jax_enable_x64` on and off; free-threaded Python 3.15t with the GIL off.
+    A batch's runs dissect no matrix unless the options set the interiors, so on a circuit large enough for `jolty.function` to dissect, the two can differ in the last digits.
+- **Not done: PyTorch,** `torch.autograd.Function` around the same `BatchPullback`: waits on the owner's approval of `torch` as an optional dependency.
 - **Done when:** `jax.grad` of a loss through an operating point, a DC sweep and a transient agrees with `jolty.vjp` bit for bit and with finite differences; under `jit`; and `vmap` over a batch of inputs agrees with a loop over them.
 - **Source:** row 14; the owner's direction, 16 and 17 November.
 

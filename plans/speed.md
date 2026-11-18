@@ -1,6 +1,6 @@
 # Speed
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/speed.md`, kept whole.
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/speed.md`, kept whole.
 
 Plan: ✅ 6 done · 🚧 2 in progress · 📋 14 planned · ⏸️ 2 parked (§4).
 
@@ -33,6 +33,7 @@ Measured by the speed suite of `benchmarks.md`, fixture by fixture, against ngsp
     These are costs of accuracy, heaviest on small systems (item 7).
 
 **One large run on many cores** (machine A, 32 cores, 15 November, `benchmarks.md` §2): the 50,000-inverter chain reaches 2.81× on 16 threads, short of the 6× target (item 1), because it was run without dissection, the parallel factorization; the 300 × 300 mesh, dissected, runs 2.80× faster on 32 threads than on one, and 3.7× faster than undissected on one thread.
+On machine D (18 November), the mesh runs 7.07× faster on 24 threads than serially and the 5,000 chain 2.18× on 16 (item 1).
 
 **Not measured yet:** an agent's command end to end, which starts a fresh Python process (`import jolty.cli` alone took 0.31 s, item 8); anything above 350,004 unknowns.
 
@@ -75,6 +76,9 @@ A fixture that gets faster while another gets slower is a finding to explain, no
     Measured and not kept: each task kept on its own thread (rayon broadcast), −4% end to end on 16 threads only, and it would stall a batch's runs on one another; spreading over only as many threads as the work fills, 6–10% faster on 16 threads but 23% slower on 32 (locality lost, SMT siblings spinning), which needs a pool of exactly that size.
     The largest lever found: spreading the per-unknown passes (`min_unknowns_per_task`, never on by default) makes the 5,000 chain 21–28% faster on 4–16 threads (assembling 0.50 → 0.22 s, step control 0.32 → 0.11 s, evaluation 1.37 → 1.15 s as threads stay awake) but the 500 chain 23–40% slower on 16–32: its break-even is a few hundred to 1,000 unknowns per task, to be measured on large circuits (machine A's sweep reached 14,004 unknowns), not "never"; and a 64-thread run never spreads evaluation, since its break-even there is none.
     Open policy: a run confined to the threads its work fills.
+- **Measured on machine D** (18 November, `5efde61`, 24 cores, host load 124 to 315 over its 96): the 300 × 300 mesh runs 7.07× faster on 24 threads than serially (54.56 s to 7.713 s; 3.39× on 2, 5.18× on 4, 6.52× on 8, 6.90× on 16), the same bits on 8 threads and more; the 5,000 chain 2.18× on 16 threads (89.69 s to 41.21 s; 1.91× on 4, 2.11× on 8) and only 1.69× on 24, the same bits on every count; the 50,000 chain takes 489.7 s on 16 threads and 446.8 s on 24, not run serially there.
+    On 24 threads the 50,000 chain's time goes 28% to evaluating, 23% to assembling, 18% to factoring, 15% to solving and 12% to step control: the serial passes still bound it.
+- **Not done:** the target; 6× on 16 cores for the 50,000 chain is not reached on any machine.
 - **Next:** dissection chosen by computed cost for chains too (item 4); the memory-bound passes cut: 32-bit offsets in the gather's map, `G + αC` formed inside the gather (which needs `α` passed into evaluation), 32-bit row entries in the matrix pattern, the solver's copy of the values avoided, the finite-value check folded into the last permutation.
 - **Done when:** the 50,000 chain runs 6× faster on 16 cores of machine A than on one, bits unchanged.
 - **Source:** row L1; `benchmarks.md` §2 for the measurements.

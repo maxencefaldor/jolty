@@ -1,8 +1,8 @@
 # Benchmarks
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code; the research is `research/benchmarks.md`, kept whole.
+Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/benchmarks.md`, kept whole.
 
-Plan: ✅ 4 done · 🚧 3 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 6 done · 🚧 2 in progress · 📋 7 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -22,7 +22,7 @@ Every claim of the other documents rests on a measurement anyone can repeat: of 
 
 **The differential tests** compare jolty with ngspice 47 on a corpus of circuits, vendors' macromodels and random circuits of every device and size: agreement, which says nothing of accuracy.
 
-**The machines:** this Apple M2 Max, 8 performance and 4 efficiency cores, shared with other work, so its timings carry its load; three shared lab workstations, machine A (AMD Threadripper 3970X, 32 cores, 64 threads), machine B (Ryzen 9 7950X, 32 threads) and machine C (Ryzen 9 7950X3D, 32 threads), each 125 GB, shared with the lab, jolty's tools in `~/.jolty-tools`, Xyce 7.10.0 built on machine B; the institution's HPC, the cluster and the cluster, which need the owner's own login.
+**The machines:** this Apple M2 Max, 8 performance and 4 efficiency cores, shared with other work, so its timings carry its load; three shared lab workstations, machine A (AMD Threadripper 3970X, 32 cores, 64 threads), machine B (Ryzen 9 7950X, 32 threads) and machine C (Ryzen 9 7950X3D, 32 threads), each 125 GB, shared with the lab, jolty's tools in `~/.jolty-tools`, Xyce 7.10.0 built on machine B; machine D (AMD EPYC 9B14, 24 cores of a shared 96-core server), the fixed machine of the baselines since 18 November, ngspice 47 built on it; the institution's HPC, the cluster and the cluster, which need the owner's own login.
 
 **The final benchmark on machine A** (`444535f`, 15 November 15:02–16:27, raw logs, not kept A-2026-11-15/`; the loads beside each run, as the lab's other users loaded it at times):
 
@@ -77,18 +77,17 @@ The intervals are wide: more cases narrow them (item 8b).
 **The precision suite's first diagrams** (`3525ac5`; 16 fixtures, exact answers in mpmath at 50 digits, 2,448 runs; this Mac, load 5.9–11.5; `perf/precision/README.md`, results in raw logs, not kept): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1, ngspice held by its 2014 electron charge), poles (15.3 to 14.7) and stiff networks with every tolerance scaled (5.1–5.4 to 3.2–3.9); it loses where `accuracy.md` 4 and 16–18 say.
 At equal digits jolty is faster on the RC, RLC and tank, about twice as slow on the networks; at the defaults both get 1.2–3.8 digits on transients.
 
-**The coverage matrix's first version** (branch `coverage`, being merged; 65 rows): jolty agrees on all 46 rows it offers and lacks 18 (`models.md` §2); ngspice 41 agree, 1 disagrees (its AC sensitivity), 9 not offered; Xyce 35 agree, 1 disagrees (its noise, by its 1973 electron charge), 14 cells documented from its guide.
+**The coverage matrix's first version** (on `main` since 16 November; 65 rows): jolty agrees on all 46 rows it offers and lacks 18 (`models.md` §2); ngspice 41 agree, 1 disagrees (its AC sensitivity), 9 not offered; Xyce 35 agree, 1 disagrees (its noise, by its 1973 electron charge), 14 cells documented from its guide.
 
 **Xyce's first column** (branch `xyce`, machine B, Ryzen 9 7950X, 16 cores, load 0.8–4.3; each simulator at its own defaults; raw logs, not kept B-xyce-2026-11-15/`): on the two fixtures where both found the same solution, `bjt_amp` (jolty 1.0 ms, Xyce 68.4 ms end to end, 4.3 ms of analysis) and `ac_wide` (12.9 ms, 214 ms and 138 ms), jolty is faster. Elsewhere the work differs: the 500-inverter chain's edge lands 3.3% later in Xyce, mostly its own step error at its default tolerance; the meshes agree only to 1–2.5% at Xyce's defaults; Xyce stalls on the buck at 128.8 µs, where a body diode conducts; on the 300 × 300 mesh Xyce's MPI build takes 6.0 s on 16 ranks against jolty's 3.67 s on 16 threads. Its agreement tests, 67 on machine B, pass at `test_ngspice.py`'s tolerances, with five departures stated (`accuracy.md` 19).
 
-**How sound the speed suite is** (the research): timings spread up to 9.8%, and 19% for Monte Carlo on every core, where changes are flagged at 5%; the large fixtures run once; the baseline is not interleaved; no time carries an interval or the accuracy reached (item 3).
+**How sound the speed suite is** (the research): timings spread up to 9.8%, and 19% for Monte Carlo on every core, where changes are flagged at 5%; the large fixtures run once; the baseline is not interleaved; no time carried an interval or the accuracy reached, which `--compare` and the views now give (items 3 and 4).
 
 ## 3. Gaps
 
-- The timing protocol cannot yet decide a 5% change (item 3).
 - ngspice runs at Sparse 1.3 by its process time, not like with like (item 4); Xyce has no column in the speed suite yet (item 11).
 - The suites' second versions (items 7b, 8b, 9b).
-- No suite runs nightly (item 5); nothing deterministic is checked per platform in CI (item 5b).
+- No machine runs the nightly suite yet (item 5); nothing deterministic is checked per platform in CI (item 5b).
 
 ## 4. Plan
 
@@ -105,14 +104,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### 🚧 2. The final benchmark on quiet machines
 
 - **What:** the suite, ngspice on its fixtures, and the scaling on 1 to 64 threads, on a machine nothing else loads; then the break-evens there, and the guide's thresholds stated with that machine.
-- **State:** machine A's suite, ngspice and scaling done; its break-evens done (§2).
-    Left: `perf/README.md` and the guide state machine A's break-evens instead of this Mac's loaded ones, which `speed.md` 4 then makes the defaults.
+- **State:** machine A's suite, ngspice and scaling done; its break-evens done (§2), and the guide and `jolty.plan.BREAK_EVENS` state them as the defaults (`speed.md` 4).
 - **Source:** row B12.
 
-### 📋 3. A timing protocol that can decide a 5% change
+### ✅ 3. A timing protocol that can decide a 5% change
 
 - **What:** alternating rounds of the compared builds, medians with 95% rank intervals, wall and CPU time, the load before and after, a change flagged only when the intervals separate.
 - **Done when:** the suite prints intervals and flags only separated changes.
+- **Result** (`7f841ca` to `d38cd29`, 16 November): `scripts/bench --compare A,B` times two revisions' builds in alternating rounds, each median with its interval, and names a change only where the intervals separate (`benchmarks/speed/README.md`, "Deciding a change"); `cc48834` tests its intervals, rounds and verdicts.
 - **Source:** row B1.
 
 ### ✅ 4. ngspice compared like with like
@@ -125,13 +124,15 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     At matched options jolty alone finishes the buck (6.2 s; ngspice stops at 1 ns, Xyce at step 14,762).
     At equal error jolty is fastest on `rc_step`, `rc_ramp`, `lc_tank`, `butterworth_poles` and `rc_noise`, ngspice on the ladders and trees at 0.4–0.8 of jolty's time.
     **Not the same work:** on the 500 inverters every simulator at its defaults lies a whole swing from jolty's tight run, and 0.18 at matched options; on `bjt_amp` ngspice and jolty differ by 3.8e-3 at any tolerance, a model or source difference to trace.
-    Left: the views interleaved (item 3), `--scale`'s large fixtures.
+    **Not done:** the views interleaved as `--compare` interleaves builds, and `--scale`'s large fixtures in them.
 - **Source:** rows B2, B3 and B4; `research/speed.md` row R1.
 
 ### 📋 5. The suite nightly on a fixed machine
 
 - **What:** the speed suite run each night on machine A or machine B against the previous night's results.
 - **Done when:** each night's results stand beside the last's.
+- **State** (`f61d0cd`, `4e5f0fc`, 16 November): `scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's and keeps each night's comparison, run from a crontab line the speed suite's page gives.
+    **Not done:** no machine runs it each night yet; machine D, the fixed machine of the baselines, runs only on request.
 
 ### 📋 5b. What is deterministic checked in CI
 
@@ -171,10 +172,10 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** each of these in the corpus's table.
 - **Source:** the corpus's report.
 
-### 🚧 9. The coverage matrix
+### ✅ 9. The coverage matrix
 
 - **What:** a row for every analysis, device model and level, SPICE syntax feature and output; for each, a smallest circuit with a known answer run in jolty, ngspice and Xyce; each cell "agrees", "disagrees" with the numbers, "not offered" with the simulator's message, or "documented" from a manual's cited section for simulators that cannot run here.
-- **State:** the first version, 65 rows, on the branch `coverage`, being merged.
+- **Result:** the first version, 65 rows, on `main` since 16 November (`benchmarks/coverage`), run by `scripts/bench --coverage`.
 - **Lead:** no one publishes a coverage matrix whose cells ran.
     **Source:** row B8.
 
@@ -193,8 +194,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### 🚧 11. Xyce in the suites
 
 - **What:** Xyce 7.10, serial and MPI, as a third simulator in the speed suite, the corpus and the coverage matrix, at its own best configuration.
-- **State:** built on machine B by Spack (15 November, as the owner asked whether it was in); jolty's Xyce dialect, its 67 agreement tests and the speed suite's first column on the branch `xyce`, being merged (§2); the coverage matrix's Xyce probes run through the same library.
-    Left: the corpus's Xyce runner, the chain and the meshes timed at equal accuracy, the 50,000 chain, the buck's stall understood.
+- **State:** built on machine B by Spack (15 November, as the owner asked whether it was in); jolty's Xyce dialect, its 67 agreement tests (`tests/test_xyce.py`) and the speed suite's first column on `main` (§2); the coverage matrix's Xyce probes run through the same library.
+    **Not done:** the corpus's Xyce runner, the chain and the meshes timed at equal accuracy, the 50,000 chain, the buck's stall understood.
 - **The buck:** a row marked stalled at 128.8 µs, Xyce at its defaults, not dropped (the owner, 15 November).
 - **Done when:** its columns in the tables.
     **Source:** row B13.

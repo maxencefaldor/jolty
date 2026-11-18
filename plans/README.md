@@ -32,6 +32,9 @@ Measurements name the machine they ran on, with its load, since every one is sha
     Its clock source (HPET) costs 1.375 µs a read, 25 times machine B's, so ngspice's and Xyce's timings and any profile are taken elsewhere; jolty's wall-clock scaling is timed here.
 - **Machines B and C:** 32 threads each, 125 GB, Linux x86_64.
     Xyce is installed on machine B.
+- **Machine D:** AMD EPYC 9B14 (Zen 4), 24 cores of a shared 96-core server, 64 GB, Linux x86_64 with glibc 2.27; the fixed machine of the benchmarks' baselines since 18 November, ngspice 47 built on it.
+    Two such servers differ by up to 14% in single-threaded time, so times are compared on one server only.
+- **Machine E:** AMD EPYC 7B13 (Zen 3), one pinned core of a shared 128-core server, Linux x86_64.
 
 Raw measurement logs are not kept in the repository: each document states the numbers it relies on, with the machine, its load and the commit.
 
@@ -39,7 +42,7 @@ Raw measurement logs are not kept in the repository: each document states the nu
 
 ## State and next
 
-`main` holds, as of 17 November 2026: the diode of ngspice 47 in full, the process kits' capacitors of a charge or a voltage-dependent value, the timing protocol that can decide a 5% change, the transient's discrete adjoint, and one JVP and one VJP for every analysis (`agentic.md` 12b), with `jolty.function`, `jolty.jvp` and `jolty.vjp` in Python.
+`main` holds, as of 18 November 2026: the diode of ngspice 47 in full, the process kits' capacitors of a charge or a voltage-dependent value, the timing protocol that can decide a 5% change, the transient's discrete adjoint, one JVP and one VJP for every analysis (`agentic.md` 12b), with `jolty.function`, `jolty.jvp` and `jolty.vjp` in Python, every device's own derivatives on dual numbers and in chunks of up to eight parameters, AC's exact (`device-derivatives.md` steps 1, 2 and 2b), batches of a function's runs and their pullbacks, and the JAX bridge (`agentic.md` 19).
 
 **The order of the work** (the owner, 16 November):
 
@@ -53,7 +56,7 @@ Raw measurement logs are not kept in the repository: each document states the nu
 
 Each waits on the owner:
 
-- **The PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is complete; `torch.autograd.Function` around the same pullback waits on approval of `torch` as an optional dependency.
+- **The PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is done; `torch.autograd.Function` around the same batch pullback waits on approval of `torch` as an optional dependency.
 - **Device derivatives** (`device-derivatives.md`): whether Gummel-Poon's and the JFET's derivatives, exact by construction, are worth their 2 to 8% more instructions an evaluation (1.3); and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
 - **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables`.
 - **Newton's two cuts** (`accuracy.md` 6): measured to misjudge (91% of the buck's iterations they would cut converged within ten anyway); the recommendation is to leave them out.
