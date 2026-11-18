@@ -788,9 +788,9 @@ fn pure_logic_transient_has_empty_charge_leak() {
     let waveforms = simulator
         .transient(&transient, &Options::default())
         .expect("transient finishes");
-    assert!(simulator.unknowns().is_empty());
-    assert!(waveforms.statistics.charge_leak.signed.is_empty());
-    assert!(waveforms.statistics.charge_leak.absolute.is_empty());
+    assert_eq!(simulator.unknowns(), []);
+    assert_eq!(waveforms.statistics.charge_leak.signed, [] as [f64; 0]);
+    assert_eq!(waveforms.statistics.charge_leak.absolute, [] as [f64; 0]);
 }
 
 #[test]

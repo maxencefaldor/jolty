@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn toleranced_rejects_self_and_mutual_cycles_and_walks_diamonds_and_deep_chains() {
+    fn toleranced_rejects_self_and_mutual_cycles() {
         let version = jolty_ir::VERSION;
         let self_cycle = Circuit::from_json(
             &serde_json::json!({
@@ -667,7 +667,11 @@ mod tests {
             error.to_string(),
             "component `top` contains itself: top -> stage -> top"
         );
+    }
 
+    #[test]
+    fn toleranced_walks_diamonds_and_deep_chains() {
+        let version = jolty_ir::VERSION;
         // Diamond DAG: a shared subcircuit placed twice emits both instance paths.
         let diamond = Circuit::from_json(
             &serde_json::json!({
@@ -685,7 +689,7 @@ mod tests {
                         "instances": [
                             {
                                 "name": "R1",
-                                "of": {"device": "resistor"},
+                                "of": {"model": "resistor"},
                                 "parameters": {"resistance": 1000.0},
                                 "terminals": {"a": "a", "b": "b"},
                                 "tolerances": {
@@ -715,7 +719,7 @@ mod tests {
             } else {
                 serde_json::json!([{
                     "name": "R1",
-                    "of": {"device": "resistor"},
+                    "of": {"model": "resistor"},
                     "parameters": {"resistance": 50.0},
                     "terminals": {"a": "a", "b": "b"},
                     "tolerances": {

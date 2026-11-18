@@ -1236,7 +1236,8 @@ fn an_undamped_lc_tank_conserves_energy_at_every_tolerance() {
     // (20 periods), default max_step = stop / 50 = 80 ns (omega * h = 2.53 > 2).
     // At coarse tolerances (1e-2, 3e-3), the first difference of dq/dt alternates every step
     // even though the oscillation is physical; the ringing test must not damp it with BE.
-    let (inductance, capacitance, ramp_time, initial_current) = (1e-6, 1e-9, 1e-9, 1e-3);
+    let (inductance, capacitance, ramp_time, initial_current): (f64, f64, f64, f64) =
+        (1e-6, 1e-9, 1e-9, 1e-3);
     let omega = 1.0 / (inductance * capacitance).sqrt();
     let free_current = initial_current * (omega * ramp_time).sin() / (omega * ramp_time);
     let free_voltage =

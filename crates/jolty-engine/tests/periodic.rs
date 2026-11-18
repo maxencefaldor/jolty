@@ -1096,9 +1096,9 @@ fn a_periodic_vjp_pull_back_past_max_memory_fails_before_allocating() {
         .expect_err("pull_back exceeds tight memory");
     let waveforms = points_float * 3.0;
     let extra = 60.0;
-    let solve_phase = 15.0 * 9.0 + 3.0;
-    let step_peak = 8.0 * 3.0;
-    let dot_peak = 6.0 * 3.0 + 3.0 * 60.0;
+    let solve_phase: f64 = 15.0 * 9.0 + 3.0;
+    let step_peak: f64 = 8.0 * 3.0;
+    let dot_peak: f64 = 6.0 * 3.0 + 3.0 * 60.0;
     let backward_phase = 9.0 + step_peak.max(dot_peak);
     let expected_needed = (waveforms + extra + solve_phase.max(backward_phase)) / NUMBERS_PER_GIB;
     assert_eq!(
