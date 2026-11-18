@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/speed.md`, kept whole.
 
-Plan: ✅ 6 done · 🚧 2 in progress · 📋 14 planned · ⏸️ 2 parked (§4).
+Plan: ✅ 6 done · 🚧 3 in progress · 📋 13 planned · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -35,7 +35,8 @@ Measured by the speed suite of `benchmarks.md`, fixture by fixture, against ngsp
 **One large run on many cores** (machine A, 32 cores, 15 November, `benchmarks.md` §2): the 50,000-inverter chain reaches 2.81× on 16 threads, short of the 6× target (item 1), because it was run without dissection, the parallel factorization; the 300 × 300 mesh, dissected, runs 2.80× faster on 32 threads than on one, and 3.7× faster than undissected on one thread.
 On machine D (18 November), the mesh runs 7.07× faster on 24 threads than serially and the 5,000 chain 2.18× on 16 (item 1).
 
-**Not measured yet:** an agent's command end to end, which starts a fresh Python process (`import jolty.cli` alone took 0.31 s, item 8); anything above 350,004 unknowns.
+**An agent's command end to end** (machine D, 18 November, item 8): `jolty simulate bjt_amp.py` takes 951.7 ms without images, 1,336.9 ms with schematic only, and 2,101.0 ms with schematic and plots, against 3.8 ms for `ngspice -b` (553× slower at defaults); the engine itself takes 1.24 ms (0.13%), while cold `import jolty` takes 440 ms and runs twice because `jolty.runner` spawns a fresh child Python process.
+**Not measured yet:** anything above 350,004 unknowns.
 
 **Memory, the first wall at ten million devices** (counted from the code, estimates): about 1.4 KB of group state per MOSFET and 1–2 KB of global arrays; every unknown recorded at every time point, 2.1 GiB for the 50,000 chain; a heap string per unknown; 32-bit indices that cap the slab, the unknowns and the matrix entries at about 1.4 × 10⁸ MOSFETs (item 10).
 
@@ -43,7 +44,7 @@ On machine D (18 November), the mesh runs 7.07× faster on 24 threads than seria
 
 - A small run costs about three times ngspice's, in each iteration.
 - A large run reaches 2.8× on 16 cores, not 6×.
-- An agent's command is not timed from start to finish.
+- An agent's command takes 952 ms without images (2,101 ms with schematic and plots) against 3.8 ms for `ngspice -b`, dominated by Python startup running twice (`jolty.cli` plus the `jolty.runner` child process) and matplotlib plotting, not the engine (1.24 ms).
 - Memory and recording break first at ten million devices; nothing is measured above 350,004 unknowns.
 
 ## 4. Plan
@@ -170,11 +171,47 @@ A fixture that gets faster while another gets slower is a finding to explain, no
     Still 2.4× ngspice's, not 1.5×: evaluation (item 5) and the filter's factorization are what remain.
 - **Source:** row S4.
 
-### 📋 8. An agent's command timed from start to finish, then cut
+### 🚧 8. An agent's command timed from start to finish, then cut
 
-- **What:** what an agent waits for is `jolty simulate`, which starts a fresh Python process, imports jolty (0.31 s for `jolty.cli` alone), builds and elaborates the circuit, and runs it: no one has timed it.
+- **What:** what an agent waits for is `jolty simulate`, which starts a fresh Python process, imports jolty, builds and elaborates the circuit, and runs it.
     First measure it, through the command line and through MCP; then cut it with a runner kept warm between commands, each script still run in a process of its own.
-- **Why:** on `bjt_amp` the engine takes 1.3 ms and ngspice's whole batch run 13 ms; an agent sees neither, only the command's wall time.
+- **Why:** on `bjt_amp` the engine takes 1.24 ms and `ngspice -b` 3.8 ms on machine D; an agent sees neither, only the command's wall time.
+- **Measured** (18 November, `a3c1d6c`, machine D, AMD EPYC 9B14, ngspice 47 with KLU, host load 93.11 to 112.51 over 96 cores for cold runs and 64.87 to 89.22 for warm `service.simulate`):
+
+    Cold subprocess wall times (median and IQR over 7 runs):
+
+    | Command | Median | IQR | Share / notes |
+    | --- | ---: | --- | --- |
+    | `ngspice -b bjt_amp.cir` (`op`+`ac`+`tran`) | 3.8 ms | 3.7 to 4.0 ms | Reference batch run |
+    | `python -c pass` | 13.5 ms | 13.2 to 14.4 ms | Bare interpreter |
+    | `import jolty._core` | 447.6 ms | 415.7 to 460.1 ms | Executes `jolty/__init__.py` first (`_core` itself is 0.018 ms in `-X importtime`) |
+    | `import jolty` | 440.0 ms | 406.8 to 535.8 ms | `jolty` eager import |
+    | `import jolty.cli` | 522.4 ms | 474.0 to 565.1 ms | CLI entry point |
+    | `import jolty.plots` | 791.5 ms | 650.0 to 838.0 ms | Pulls in `matplotlib` |
+    | `jolty simulate bjt_amp.py --no-schematic --no-plot` | 951.7 ms | 926.3 to 975.3 ms | Spawns 2 Python processes: CLI plus `jolty.runner` child (250× `ngspice -b`) |
+    | `jolty simulate bjt_amp.py --no-check --no-schematic --no-plot` | 988.5 ms | 928.5 to 1,046.9 ms | Checks cost noise-level time on `bjt_amp` |
+    | `jolty simulate bjt_amp.py --no-plot` | 1,336.9 ms | 1,306.4 to 1,412.7 ms | Schematic only (+385 ms over no-images) |
+    | `jolty simulate bjt_amp.py` (default: schematic + plots) | 2,101.0 ms | 2,035.7 to 2,203.0 ms | 553× `ngspice -b` (+764 ms plotting over schematic only) |
+
+    Warm `service.simulate` (same path as an already-running MCP server, median of 5 runs):
+
+    | Call | Median | Samples (ms) | Delta |
+    | --- | ---: | --- | --- |
+    | `service.simulate` (`schematic=False, plot=False`) | 504.7 ms | `478.7, 487.4, 504.7, 509.7, 521.9` | Fresh `jolty.runner` child spawned per call |
+    | `service.simulate` (`schematic=True, plot=False`) | 631.7 ms | `582.5, 625.6, 631.7, 642.1, 841.3` | +127 ms warm schematic draw |
+    | `service.simulate` (`schematic=True, plot=True`) | 1,294.2 ms | `1,235.2, 1,252.5, 1,294.2, 1,339.0, 1,346.5` | +663 ms warm matplotlib plotting |
+
+    Warm in-process engine phases (median of 11 runs):
+
+    | Phase | Median | Min |
+    | --- | ---: | ---: |
+    | `build()` + `circuit()` | 0.006 ms | 0.004 ms |
+    | Elaborate + `Simulation()` | 0.212 ms | 0.204 ms |
+    | `run_plan` (`op`+`ac`+`tran`) | 1.024 ms | 1.009 ms |
+    | **Total engine work** | **1.242 ms** | 0.13% of `--no-schematic --no-plot` CLI time |
+
+    Top cumulative import times from `python -X importtime -c "import jolty.cli"` (total 371.8 ms in that run; `jolty` 322.1 ms, `jolty._core` itself 0.018 ms): `jolty.files` 209.0 ms (`numpy` 81.8 ms, `jolty.plan` 72.8 ms, `jolty.spice` 60.0 ms, `jolty.spice.download` 43.3 ms), `jolty.devices` 80.9 ms, `jolty.service` 41.1 ms (`jolty.settings` 30.6 ms via `pydantic_settings` 28.8 ms), `pydantic` 23.4 ms, `jolty.results` 23.1 ms, `jolty.ir` 19.4 ms.
+- **Not done:** cutting cold import cost (lazier imports in `jolty/__init__.py` and `jolty.files`), keeping a warm `jolty.runner` worker between MCP/CLI calls, and faster plotting or parallel image generation.
 - **Done when:** the speed suite reports `jolty simulate`'s wall time on `bjt_amp`, with and without images, below `ngspice -b`'s.
 - **Source:** row S5; `research/agentic.md` row 6; `research/benchmarks.md` row B15.
     This item replaces `agentic.md`'s and `benchmarks.md`'s copies of it.
