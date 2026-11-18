@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/quality.md`, kept whole.
 
-Plan: ✅ 15 done · 🚧 1 in progress · 📋 9 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 16 done · 🚧 1 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -182,10 +182,52 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** a median sentence under 25 words; how-to pages for the common tasks.
     **Source:** row 26.
 
-### 📋 21. The cost of a model measured
+### ✅ 21. The cost of a model measured
 
 - **What:** the number of shared files each new model touches, recorded per model.
 - **Done when:** recorded for every model; **Lead** once it is 1 (`models.md` 4).
+- **Result** (measured over all 33 models in `Library::standard()`, excluding each model's own kernel file/directory and inline `#[cfg(test)]` blocks): a model appears in **2 to 15** shared production files (**median 5**): `2` to `6` in Rust (`crates/jolty-models/src/kernel.rs` and `lib.rs`, plus checks/engine hooks for core passives, sources and diodes), `1` to `8` in Python (`devices.py`, `spice/export.py`, `spice/library.py`, `spice/models.py`, `kicad.py`, plus layout/schematic/catalog/foundry/fidelity where specialized), `0` or `1` in JavaScript (`src/jolty/assets/viewer.js` for 6 primitives), plus `1` to `3` shared guard tables (`testing/cases.rs`, `testing/laws.rs`, `tests/test_spice.py`).
+    In git history, recent compact-model additions touched **6 to 7** shared production wiring files excluding kernel-internal files and engine-wide features: `vbic` (`2017503`: 6), `bsim4` (`4fc8aac`: 6, plus `bsim3` helper exports), `bsim3` (`c60cb78`+`6fe8824`: 7), `behavioral_capacitor` (`04fb223`: 5), `transmission_line` (`a39a72f`: 5 wiring + 17 delay-history files).
+
+| Model | Shared prod | Rust | Python | JS | Guard tables | Shared production files |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `resistor` | 15 | 6 | 8 | 1 | 3 | `checks/src/rules.rs`, `engine/src/kernels.rs`, `engine/src/lib.rs`, `ir/src/lib.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:catalog.py`, `py:devices.py`, `py:files.py`, `py:kicad.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `capacitor` | 14 | 5 | 8 | 1 | 2 | `checks/src/lib.rs`, `checks/src/rules.rs`, `engine/src/kernels.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:catalog.py`, `py:devices.py`, `py:fidelity.py`, `py:kicad.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `voltage_source` | 14 | 5 | 8 | 1 | 3 | `engine/src/kernels.rs`, `engine/src/lib.rs`, `ir/src/lib.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:devices.py`, `py:fidelity.py`, `py:foundry.py`, `py:layout.py`, `py:schematic.py`, `py:simulate.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `current_source` | 11 | 3 | 7 | 1 | 2 | `checks/src/lib.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:devices.py`, `py:foundry.py`, `py:layout.py`, `py:schematic.py`, `py:simulate.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `diode` | 11 | 3 | 7 | 1 | 3 | `engine/src/kernels.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:devices.py`, `py:kicad.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py`, `py:spice/library.py`, `py:spice/models.py` |
+| `inductor` | 11 | 3 | 7 | 1 | 2 | `checks/src/rules.rs`, `models/src/kernel.rs`, `models/src/lib.rs`, `py:assets/viewer.js`, `py:catalog.py`, `py:devices.py`, `py:kicad.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `vbic` | 7 | 2 | 5 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/library.py`, `py:spice/models.py` |
+| `bipolar_transistor` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `bsim3` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `bsim4` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `coupled_inductors` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `jfet` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `mosfet` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `vdmos` | 6 | 2 | 4 | 0 | 3 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:kicad.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `voltage_controlled_current_source` | 6 | 2 | 4 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py` |
+| `voltage_controlled_voltage_source` | 6 | 2 | 4 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:layout.py`, `py:schematic.py`, `py:spice/export.py` |
+| `behavioral_capacitor` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `behavioral_current_source` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `current_controlled_switch` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `foundry_mosfet` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:foundry.py`, `py:spice/export.py`, `py:spice/sky130.py` |
+| `transmission_line` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py`, `py:spice/library.py` |
+| `voltage_controlled_switch` | 5 | 2 | 3 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py`, `py:spice/models.py` |
+| `behavioral_voltage_source` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `current_controlled_current_source` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `current_controlled_memristor` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `current_controlled_voltage_source` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `photocell` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `thermal_capacitance` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/library.py` |
+| `thermal_resistance` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/library.py` |
+| `voltage_controlled_memristor` | 4 | 2 | 2 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py`, `py:spice/export.py` |
+| `heat_source` | 3 | 2 | 1 | 0 | 2 | `models/src/kernel.rs`, `models/src/lib.rs`, `py:devices.py` |
+| `logic_cell` | 3 | 1 | 2 | 0 | 1 | `models/src/lib.rs`, `py:devices.py`, `py:fidelity.py` |
+| `logic_source` | 2 | 1 | 1 | 0 | 1 | `models/src/lib.rs`, `py:devices.py` |
+
+`py:` stands for `src/jolty/`, and Rust paths omit the leading `crates/jolty-` prefix.
+Guard tables count occurrences across `crates/jolty-models/src/testing/cases.rs`, `crates/jolty-models/src/testing/laws.rs`, and `tests/test_spice.py`.
+
 - **Source:** row 7.
 
 ### ✅ 22. Every dependency's licence checked, in both languages
