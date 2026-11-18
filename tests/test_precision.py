@@ -95,6 +95,7 @@ def test_the_tree_solver_agrees_with_the_general_one() -> None:
     inputs = [mpf(network.source) / mpf(capacitances[0]), *[mpf(0)] * (count - 1)]
     read = [[mpf(row == column) for column in range(count)] for row in range(count)]
     general = linear(solved.outputs, states, inputs, read, level)
+    # Tree eigen-rates vs mpmath state eigenvalues cast to f64 (~45 eps rounding).
     np.testing.assert_allclose(
         np.sort(solved.rates.real), np.sort(general.rates.real), rtol=1e-14
     )
@@ -133,6 +134,7 @@ def test_a_butterworth_ladder_s_poles_lie_on_its_circle() -> None:
     # amplifies by less than a thousand.
     assert len(found) == order
     for pole in found:
+        # 5th-order Butterworth pole rounding amplified <1000x (<= 1e-13 * cutoff).
         assert min(abs(pole - each) for each in circle) <= 1e-13 * cutoff
 
 
@@ -161,6 +163,7 @@ def test_a_score_counts_the_digits_of_the_worst_point_up_to_its_limit() -> None:
     simulated = exact + np.array([1e-6, 1e-4, 1e-3])
     compared = Compared(simulated, exact, np.full(3, 1e-12), np.arange(3.0))
     mixed = score(compared, ScoredOutput("v(out)", "mixed", 1.0, "V"))["mixed"]
+    # Exact -log10 of synthetic error counts (1e-3 -> 3, 1e-12 -> 12); float rounding.
     assert mixed.digits == pytest.approx(3.0)
     assert mixed.at == 2.0
     assert mixed.limit == pytest.approx(12.0)
@@ -168,6 +171,7 @@ def test_a_score_counts_the_digits_of_the_worst_point_up_to_its_limit() -> None:
     assert "relative" not in score(compared, ScoredOutput("v(out)", "mixed", 1.0, "V"))
     capped = Compared(exact[:2] + 1e-15, exact[:2], np.full(2, 1e-10), np.arange(2.0))
     relative = score(capped, ScoredOutput("v", "relative", 0.0, "V"))["relative"]
+    # Exact -log10(1e-10 / 0.5) = -log10(2e-10); default pytest.approx covers rounding.
     assert relative.digits == relative.limit == pytest.approx(-math.log10(2e-10))
 
 

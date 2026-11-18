@@ -232,6 +232,7 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
 
         value, eager_gradient = jax.value_and_grad(loss)(jax_weights)
         jitted_value, jitted_gradient = jax.jit(jax.value_and_grad(loss))(jax_weights)
+        # XLA JIT fusion vs eager f64 sum rounding (~4.5 eps).
         np.testing.assert_allclose(
             float(value), float(jitted_value), rtol=1e-15, atol=0.0
         )
@@ -264,6 +265,7 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
             abs(float(eager_gradient[instance]["resistance"])) for instance in WEIGHTS
         )
         for instance in WEIGHTS:
+            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
             assert (
                 abs(
                     float(eager_gradient[instance]["resistance"])
@@ -363,6 +365,7 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
                 float(gradient_magnitude[instance]["resistance"]),
                 float(np.real(expected_magnitude[instance]["resistance"])),
             )
+            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
             assert (
                 abs(
                     float(gradient_asymmetric[instance]["resistance"])
@@ -370,6 +373,7 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
                 )
                 <= 1e-6 * largest_asymmetric
             )
+            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
             assert (
                 abs(
                     float(gradient_magnitude[instance]["resistance"])
@@ -436,6 +440,8 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
             abs(float(gradient[instance]["resistance"])) for instance in WEIGHTS
         )
         for instance in WEIGHTS:
+            # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
+            # time-step shift noise, bounded by 1e-5 of largest gradient).
             assert (
                 abs(
                     float(gradient[instance]["resistance"])
@@ -480,6 +486,8 @@ def test_unsorted_and_duplicate_breakpoints_work_single_and_vmapped() -> None:
             abs(float(gradient[instance]["resistance"])) for instance in WEIGHTS
         )
         for instance in WEIGHTS:
+            # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
+            # time-step shift noise, bounded by 1e-5 of largest gradient).
             assert (
                 abs(
                     float(gradient[instance]["resistance"])
@@ -546,6 +554,7 @@ def test_driven_periodic_steady_state_gradient() -> None:
         )
         for instance, inner in parameters.items():
             for name in inner:
+                # Central difference (step=1e-4) over PSS shooting (reltol=1e-3).
                 assert abs(
                     float(gradient[instance][name]) - finite_difference[instance][name]
                 ) <= 1e-4 * abs(finite_difference[instance][name])
@@ -576,6 +585,7 @@ def test_autonomous_periodic_steady_state_period_gradient_and_scaling_law() -> N
         euler_sum = inductance * float(
             gradient["L1"]["inductance"]
         ) + capacitance * float(gradient["C1"]["capacitance"])
+        # Euler homogeneity identity for period at reltol=1e-6 (cf. test_periodic.py).
         assert abs(euler_sum - period_value) <= 1e-9 * period_value
 
 
@@ -650,6 +660,7 @@ def test_vmap_dispatches_single_engine_batch_and_matches_loop_bit_for_bit() -> N
             np.asarray(gradient_over_batch["W00"]["resistance"]),
             np.asarray(per_example_gradients["W00"]["resistance"]),
         )
+        # Shared-parameter batch sum vs per-example sum: f64 accumulation (~45 eps).
         np.testing.assert_allclose(
             float(gradient_over_batch["W10"]["resistance"]),
             float(jnp.sum(per_example_gradients["W10"]["resistance"])),
@@ -893,6 +904,7 @@ def test_nested_vmap_repeated_vjps_and_a_zero_cotangent() -> None:
             {**zeros, "out0": 3.0 * jnp.ones_like(primal["out0"])}
         )
         for instance in WEIGHTS:
+            # Exact VJP linearity under 3x cotangent scaling; f64 rounding (~45 eps).
             np.testing.assert_allclose(
                 float(gradient_second[instance]["resistance"]),
                 3.0 * float(gradient_first[instance]["resistance"]),
@@ -923,6 +935,7 @@ def test_remat_checkpoint_and_jacrev_across_analyses() -> None:
         plain_value, plain_gradient = jax.jit(jax.value_and_grad(plain_loss))(
             jax_weights
         )
+        # Rematerialized forward value vs plain JIT forward: f64 rounding (~4.5 eps).
         np.testing.assert_allclose(float(remat_value), float(plain_value), rtol=1e-15)
         for instance in WEIGHTS:
             np.testing.assert_array_equal(
@@ -992,6 +1005,7 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
             for instance in low_resistance
         )
         for instance in low_resistance:
+            # Central difference at step=1e-4 across sub-ohm MNA branch current switch.
             assert (
                 abs(
                     float(added_gradient[instance]["resistance"])
@@ -1147,6 +1161,7 @@ def test_empty_parameters_key_order_aliasing_and_runner_cache() -> None:
                 "W10": {"resistance": resistance_value},
             }
         )
+        # Chain-rule sum for tied vs separate gradients: f64 rounding (~45 eps).
         np.testing.assert_allclose(
             gradient_tied,
             float(gradient_separate["W00"]["resistance"])

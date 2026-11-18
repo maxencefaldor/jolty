@@ -45,6 +45,7 @@ def test_dimensions_print_as_symbols_or_base_units() -> None:
 def test_quantities_carry_their_dimension_through_arithmetic() -> None:
     current = 5 * V / (1 * kohm)
     assert current.dimension == CURRENT
+    # Exact decimal-scaled SI arithmetic; default pytest.approx covers rounding.
     assert current.to(CURRENT, "a current") == pytest.approx(5e-3)
     assert (1 * kohm * (1 * uF)).dimension == TIME
     assert (1 / (1 * ms)).to(FREQUENCY, "a frequency") == pytest.approx(1e3)
@@ -82,4 +83,5 @@ def test_format_si_keeps_four_significant_digits(value: float) -> None:
     mantissa, unit = text.split(" ")
     exponent = _PREFIXES.get(unit[:-1], 0)
     assert 1 <= abs(float(mantissa)) < 1000
+    # 4 significant digits bound rounding error to 0.5 ULP of 1.000 = 5e-4 relative.
     assert float(mantissa) * 10.0**exponent == pytest.approx(value, rel=5e-4)

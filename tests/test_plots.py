@@ -64,6 +64,7 @@ def test_a_response_plots_magnitude_and_phase() -> None:
     ]
     assert figure.axes[0].get_xscale() == "log"
     corner = np.asarray(figure.axes[0].get_lines()[0].get_ydata(), dtype=float)[1]
+    # Exact -10 * log10(2) ~= -3.0103 dB; rounding to -3.01 dB leaves 3e-4 dB error.
     assert corner == pytest.approx(-3.01, abs=0.01)
 
 
@@ -113,6 +114,7 @@ def test_a_noise_spectrum_plots_its_density_and_its_noisiest_sources() -> None:
         "D1 flicker",
     ]
     drawn = np.asarray(referred.get_lines()[0].get_ydata(), dtype=float)
+    # Default assert_allclose (rtol=1e-7) covers sqrt/division float rounding.
     np.testing.assert_allclose(drawn, np.sqrt(contributions.sum(axis=0)) / 1e3)
     assert referred.get_xlabel() == "frequency"
 
@@ -136,6 +138,8 @@ def test_poles_and_zeros_plot_at_their_frequency_and_damping() -> None:
         "log",
     )
     poles, zeros, boundary = axes.get_lines()
+    # Natural frequency |s| / (2*pi) and damping -Re(s)/|s| = 3/5 = 0.6; default
+    # tolerances (rtol=1e-7, pytest.approx rel=1e-6) cover float rounding.
     np.testing.assert_allclose(
         np.asarray(poles.get_xdata(), dtype=float),
         [5e3 / (2 * np.pi), 1e6 / (2 * np.pi)],

@@ -96,9 +96,11 @@ def test_simulate_saves_the_results_and_reports_each_analysis(
     (step,) = result["analyses"]
     assert step["kind"] == "transient"
     out = next(extent for extent in step["extents"] if extent["unknown"] == "out")
+    # Steady DC 1 V source; abs=1e-3 matches default engine reltol=1e-3 at 1 V.
     assert out["last"] == pytest.approx(1.0, abs=1e-3)
     waveforms = load_results(Path(result["results"]))["step"]
     assert isinstance(waveforms, TransientResult)
+    # Default pytest.approx (rel=1e-6) covers JSON text round-trip of the same value.
     assert waveforms.voltage("out")[-1] == pytest.approx(out["last"])
 
 

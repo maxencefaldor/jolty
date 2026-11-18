@@ -109,8 +109,10 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
 
     on = bench(sheet.on_gate, sheet.on_current * A).run(OperatingPoint())
     resistance = abs(on.voltage("drain")) / sheet.on_current
+    # Smooth triode DC solve fits datasheet Rds(on) within 1e-6 (Newton convergence).
     assert resistance == pytest.approx(sheet.on_resistance, rel=1e-6)
     drop = bench(None, -sheet.diode_current * A).run(OperatingPoint())
+    # Exponential body-diode drop fits datasheet Vsd within default reltol=1e-3.
     assert abs(drop.voltage("drain")) == pytest.approx(sheet.diode_drop, rel=1e-3)
     beta = parts.transconductance_parameter(sheet)
     overdrive = (2 * sheet.transconductance_current / beta) ** 0.5
@@ -122,6 +124,7 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
         )
         for step in (-1e-3, 1e-3)
     ]
+    # Central difference over 2 mV matches datasheet gm within 1e-3 (Newton reltol).
     assert (currents[1] - currents[0]) / 2e-3 >= sheet.transconductance * (1 - 1e-3)
     still = bench(0.0, sheet.capacitance_voltage * V)
     omega = 2 * math.pi * 1e6
@@ -134,6 +137,7 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
     }
     for kind, capacitance in found.items():
         stated = getattr(sheet, f"{kind}_capacitance")
+        # 1 MHz AC extraction vs datasheet capacitance at default reltol=1e-3.
         assert capacitance == pytest.approx(stated, rel=1e-3), kind
 
 
@@ -163,6 +167,7 @@ def test_a_component_is_held_to_its_ratings_at_its_ports() -> None:
         found[0].message,
     )
     assert current is not None
+    # Ideal 6 A source minus body-diode/gmin leakage (~1e-12 S * V) and rounding.
     assert float(current[1]) == pytest.approx(6.0, rel=1e-9)
     stated = re.search(r"dissipates reaches (\S+) W", found[1].message)
     assert stated is not None
@@ -174,6 +179,7 @@ def test_a_component_is_held_to_its_ratings_at_its_ports() -> None:
             ("X1/D1", "cathode", "drain"),
         )
     )
+    # Tellegen port power equals sum of internal terminal powers within f64 rounding.
     assert float(stated[1]) == pytest.approx(inside, rel=1e-12)
 
 

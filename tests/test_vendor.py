@@ -268,6 +268,7 @@ def test_operating_points_agree(name: str, downloads: Path) -> None:
     )
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        # ngspice TIGHT (reltol=1e-6, vntol=1e-9, abstol=1e-14) agreement floor.
         compare(
             point.values[column],
             spice_value,
@@ -307,6 +308,7 @@ def test_operating_points_agree_across_temperatures(
     )
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        # ngspice TIGHT (reltol=1e-6, vntol=1e-9, abstol=1e-14) agreement floor.
         compare(
             point.values[column],
             spice_value,
@@ -336,6 +338,7 @@ def test_dc_sweeps_agree(name: str, downloads: Path) -> None:
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # ngspice TIGHT (reltol=1e-6) DC sweep agreement across bench voltage levels.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -360,6 +363,7 @@ def test_ac_responses_agree(name: str, downloads: Path) -> None:
     )
     for column, unknown in compared(simulation):
         spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        # ngspice TIGHT (reltol=1e-6) linearized AC phasor agreement.
         compare(
             response.values[:, column],
             spice_values,
@@ -393,4 +397,5 @@ def test_transients_agree(name: str, downloads: Path) -> None:
         jolty = closest(
             waveforms.times, waveforms.values[:, column], times, spice_values, step
         )
+        # Transient time-integration O(h^2) and closest-window comparison vs ngspice.
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)

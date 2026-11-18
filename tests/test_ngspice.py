@@ -3,9 +3,13 @@
 
 Each circuit of the corpus is written once with the builder, simulated by jolty, and
 written as a SPICE netlist for ngspice, whose results come back as an ASCII raw file.
-Both engines run with tight tolerances. Operating points, DC sweeps and AC responses
-must agree to the Newton tolerance; transients, interpolated onto ngspice's time points,
-to a small fraction of their swing.
+Both engines run with `TIGHT` tolerances (`reltol=1e-6`, `vntol=1e-9`, `abstol=1e-14`).
+Operating points, DC sweeps, and AC responses agree to `1e-6` (matching `TIGHT` Newton
+`reltol=1e-6`); noise and `.tf` small-signal quantities agree to `1e-5` (covering
+operating-point linearization differences and CODATA 2014 vs 2019 SI `k_B` delta of
+`3.48e-7`); log-decade grids agree to `1e-9` (ngspice multiplies step-by-step); and
+transients agree to `1e-3` of swing (trapezoidal `O(h^2)` step error plus `closest()`
+windowed linear interpolation onto ngspice's time points).
 
 The corpus is flat: hierarchy is jolty's own, tested on its own, while these tests check
 the devices, the waveforms and the numerics against the reference simulator.
@@ -1764,6 +1768,7 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
 
 
@@ -1803,6 +1808,7 @@ def test_a_transistor_without_a_substrate_agrees_to_rounding(
     raw = ngspice.run(netlist(simulation.circuit), "op")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
+        # No substrate junction: engines agree to rounding (1e-10 vs ngspice).
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-10)
 
 
@@ -1841,6 +1847,7 @@ def test_operating_points_agree_across_temperatures(
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=temperature.value)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
 
 
@@ -1878,6 +1885,7 @@ def test_dc_sweeps_agree_across_temperatures(
     )
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
         )
@@ -1897,6 +1905,7 @@ def test_ac_responses_agree_across_temperatures(
     raw = ngspice.run(lines, "ac dec 20 10 10meg", temperature=temperature.value)
     for column, unknown in compared(simulation):
         spice = raw.vectors[vector(simulation.circuit, unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             response.values[:, column],
             spice,
@@ -1919,6 +1928,7 @@ def test_loop_gains_agree() -> None:
     u = entering - shunt.vectors[vector(circuit, current)]
     expected = -u / (1 + u)
     assert abs(expected[0]) > 1
+    # TIGHT (reltol=1e-6) loop-gain agreement vs ngspice double injection.
     compare(loop.gains, expected, current, scale=size(expected), tolerance=1e-6)
 
 
@@ -1980,6 +1990,7 @@ def test_dc_sweeps_agree(
     raw = ngspice.run(netlist(simulation.circuit), command)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
         )
@@ -2013,9 +2024,11 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
     raw = ngspice.run(lines, "ac dec 20 10 10meg")
+    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
     np.testing.assert_allclose(response.frequencies, raw.real("frequency"), rtol=1e-9)
     for column, unknown in compared(simulation):
         spice = raw.vectors[vector(simulation.circuit, unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             response.values[:, column],
             spice,
@@ -2048,10 +2061,13 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     )
     lines = netlist(simulation.circuit, excited=source)
     raw = ngspice.run(lines, f"noise v(out) V{source} dec 5 1 100meg\nsetplot noise1")
+    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
     np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
     )
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
     )
@@ -2089,6 +2105,7 @@ def test_transfer_functions_agree(top: Callable[[], Component]) -> None:
         read("input_impedance"),
         read("output_impedance"),
     )
+    # Linearized at TIGHT (1e-6) operating points; rel=1e-5 covers 10x reltol spread.
     assert (
         found.gain,
         found.input_resistance,
@@ -2128,6 +2145,8 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         spice = roots[kind]
         assert jolty.size == spice.size, (kind, jolty, spice)
         scale = max(np.abs(spice).max(initial=0.0), 1.0)
+        # TIGHT (reltol=1e-6) linearized pencil root agreement; atol=1e-9*scale for QZ
+        # noise.
         np.testing.assert_allclose(
             _ordered(jolty), spice, rtol=1e-6, atol=1e-9 * scale, err_msg=kind
         )
@@ -2176,6 +2195,7 @@ def test_transients_agree(
         jolty = closest(
             waveforms.times, waveforms.values[:, column], times, spice, step.value
         )
+        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
         compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
 
 
@@ -2214,6 +2234,7 @@ def test_transients_from_initial_conditions_agree(
     ]
     raw = ngspice.run(deck, command)
     times = raw.real("time")
+    # Initial condition .ic v(out)=0.5 V held at t=0 within LU rounding (abs=1e-12).
     assert waveforms.voltage("out")[0] == pytest.approx(0.5, abs=1e-12)
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
@@ -2224,6 +2245,7 @@ def test_transients_from_initial_conditions_agree(
             spice_values,
             step.value,
         )
+        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
 
 
@@ -2256,9 +2278,11 @@ def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> Non
     raw = ngspice.run(deck, "op")
     for column, unknown in compared(simulation):
         found = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(point.values[column], found, unknown, scale=abs(found), tolerance=1e-6)
     found = point.voltage("x")
     if nodeset is None:
+        # Trivial root v = 0 matches within TIGHT vntol=1e-9 V.
         assert abs(found) < 1e-9
     else:
         # The root of v = 2 tanh(v) of the nodeset's sign, 1.915 V away from zero.
@@ -2327,6 +2351,7 @@ def test_raw_files_read_back_as_ngspices_own(tmp_path: Path, *, binary: bool) ->
         theirs_vector = theirs.vectors[vector(rc.circuit, unknown)]
         scale = float(np.max(np.abs(theirs_vector)))
         ours_vector = bode.vectors[ngspice_name(unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(ours_vector, theirs_vector, unknown, scale=scale, tolerance=1e-6)
 
 
@@ -2406,6 +2431,7 @@ def test_vendors_cards_sweep_as_in_ngspice(
     raw = ngspice.run(netlist(simulation.circuit), command, libraries=(vendor_cards,))
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -2440,6 +2466,7 @@ def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
             spice_values,
             step.value,
         )
+        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
 
 
@@ -2627,6 +2654,7 @@ def _bsim_sweep(
     raw = ngspice.run(netlist(simulation.circuit), command, temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -2754,6 +2782,7 @@ def test_bsim4_noise_agrees(name: str, decades: int) -> None:
     lines = netlist(simulation.circuit, excited="V1")
     command = f"noise v(out) VV1 dec 5 1 {stop!r}\nsetplot noise1"
     raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
     )
@@ -2798,6 +2827,7 @@ def test_bsim4_gate_networks_agree(name: str) -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(
             point.values[column],
             spice_value,
@@ -2810,6 +2840,7 @@ def test_bsim4_gate_networks_agree(name: str) -> None:
     raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             response.values[:, column],
             spice_values,
@@ -2861,6 +2892,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             point.values[column],
             spice_value,
@@ -2873,6 +2905,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
     raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             response.values[:, column],
             spice_values,
@@ -2899,10 +2932,13 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
     lines = netlist(simulation.circuit, excited="V1")
     command = "noise v(out) VV1 dec 5 1 100meg\nsetplot noise1"
     raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
+    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
     np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
     )
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
     )
@@ -2944,6 +2980,7 @@ def test_bsim3_transients_agree(
             spice_values,
             step.value,
         )
+        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
 
 
@@ -3081,6 +3118,7 @@ def test_published_bsim3_cards_sweep_as_in_ngspice(
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -3144,6 +3182,7 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -3319,6 +3358,7 @@ def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) ->
     )
     for column, unknown in compared(simulation):
         spice_values = raw.real(vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,
@@ -3336,6 +3376,7 @@ def test_vbic_ac_response_agrees() -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             point.values[column],
             spice_value,
@@ -3348,6 +3389,7 @@ def test_vbic_ac_response_agrees() -> None:
     raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
         compare(
             response.values[:, column],
             spice_values,
@@ -3382,9 +3424,12 @@ def test_vbic_noise_agrees() -> None:
     densities = spectrum.densities - spectrum.contributions[misplaced]
     spice = raw.real("onoise_spectrum") ** 2
     left = 1 - raw.real("onoise_qq1_rbp") ** 2 / spice
+    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
     np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(np.sqrt(densities), np.sqrt(spice * left), rtol=1e-5)
     gains = np.abs(spectrum.input.gains) ** 2 if spectrum.input else 1.0
+    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(densities / gains),
         np.sqrt(raw.real("inoise_spectrum") ** 2 * left),
@@ -3413,6 +3458,7 @@ def test_vbic_transient_agrees() -> None:
             spice_values,
             step.value,
         )
+        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
 
 
@@ -3476,6 +3522,7 @@ def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
         # The netlist places the library's subcircuit as `XX1`, its thermal node in it.
         name = "v(xx1.dt)" if unknown.nature == "temperature" else None
         spice_values = raw.real(name or vector(simulation.circuit, unknown))
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column],
             spice_values,

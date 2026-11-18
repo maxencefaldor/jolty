@@ -75,6 +75,7 @@ def test_logic_settles_then_follows_each_change_after_its_delay() -> None:
     point = simulation.run(OperatingPoint())
     assert [point.logic_level(net) for net in simulation.nets] == [0.0, 1.0, 1.0, 0.0]
     waveforms = simulation.run(Transient(stop=10 * ns))
+    # Pure event-scheduled gate delays (2 ns, 4 ns); pytest.approx covers f64 rounding.
     assert waveforms.logic_level("n").times.tolist() == pytest.approx([0, 2e-9])
     assert waveforms.logic_level("y").times.tolist() == pytest.approx([0, 4e-9])
     assert waveforms.logic_level("y").levels.tolist() == [0.0, 1.0]
@@ -86,6 +87,7 @@ def test_a_logic_pin_joins_an_electrical_net_through_a_connect_element() -> None
     simulation = Simulation(inverter())
     assert simulation.nets == ("U1:a", "U1:y")
     waveforms = simulation.run(Transient(stop=5 * ns))
+    # Linear ramp midpoint threshold crossing at 1.5 ns; default pytest.approx rounding.
     assert waveforms.logic_level("U1:a").times.tolist() == pytest.approx([0, 1.5e-9])
     out = waveforms.voltage("out")
     falling = np.flatnonzero((out[:-1] > 0.9) & (out[1:] <= 0.9))[0]
@@ -93,6 +95,8 @@ def test_a_logic_pin_joins_an_electrical_net_through_a_connect_element() -> None
     crossing = times[falling] + (times[falling + 1] - times[falling]) * (
         out[falling] - 0.9
     ) / (out[falling] - out[falling + 1])
+    # Linear interpolation of exact 0.5 ns propagation delay (1.5 ns + 0.5 ns = 2 ns);
+    # abs=1e-14 covers step-endpoint rounding (~50 eps of 2e-9 s).
     assert crossing == pytest.approx(2e-9, abs=1e-14)
 
 
@@ -115,6 +119,7 @@ def test_a_sweep_settles_the_logic_at_each_level() -> None:
     simulation = Simulation(inverter())
     sweep = simulation.run(DcSweep("V1", [0 * V, 1.8 * V]))
     assert sweep.logic_level("U1:y").tolist() == [1.0, 0.0]
+    # Ideal supply rail driver outputs (1.8 V, 0 V); default pytest.approx rounding.
     assert sweep.voltage("out").tolist() == pytest.approx([1.8, 0.0])
 
 
@@ -132,6 +137,7 @@ def test_results_files_keep_the_logic() -> None:
     assert isinstance(point, results.OperatingPointResult)
     assert point.nets == simulation.nets
     assert isinstance(step, results.TransientResult)
+    # Round-tripped event timestamp (4 ns) through .npz archive; float rounding.
     assert step.logic_level("y").times.tolist() == pytest.approx([0, 4e-9])
 
 

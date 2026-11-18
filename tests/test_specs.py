@@ -127,6 +127,7 @@ def test_a_value_reads_an_operating_point_or_interpolates_an_axis() -> None:
     current = value("op", "V1:current").read(point(2.0))
     assert (current.value, current.dimension) == (-2e-3, CURRENT)
     step = value("step", "out", at=TAU * s).read(first_order())
+    # Exact grid point at t = TAU on first_order() (dt = 1e-4*TAU); float rounding.
     assert step.value == pytest.approx(1 - math.exp(-1))
     assert step.dimension == VOLTAGE
 
@@ -135,11 +136,19 @@ def test_a_value_reads_a_sweep_whose_levels_fall() -> None:
     levels = np.linspace(5, 0, 11)
     values = np.column_stack([levels / 2, levels, levels])
     sweep = results.DcSweepResult(UNKNOWNS, "V1", "voltage", levels, values)
+    # Exact linear function on reversed axis; default pytest.approx covers rounding.
     assert value("dc", "out", at=1.25 * V).read(sweep).value == pytest.approx(0.625)
     assert maximum("dc", "out", stop=4 * V).read(sweep).value == pytest.approx(2)
 
 
 def test_windowed_statistics_match_a_sine_over_whole_periods() -> None:
+    """Windowed stats on 3 periods of 1 kHz sine at dt = 1e-4*T (10,000 pts/period).
+
+    Integer quarter-periods hit exact extrema within float rounding (`rel=1e-6`),
+    full-cycle trapezoidal mean cancels to rounding (`abs=1e-9`), and half-cycle
+    trapezoidal quadrature
+    has O((omega*dt)^2 / 12) ~= 3.3e-8 error (bounded by rel=1e-6).
+    """
     times = np.linspace(0, 3 * ms.value, 30_001)
     sine = waveforms(times, 2 * np.sin(2 * np.pi * 1e3 * times))
     assert maximum("t", "out").read(sine).value == pytest.approx(2, rel=1e-6)
@@ -154,6 +163,13 @@ def test_windowed_statistics_match_a_sine_over_whole_periods() -> None:
 
 
 def test_edges_match_a_first_order_step() -> None:
+    """Edge timings on first_order() sampled at dt = 1e-4 * TAU.
+
+    Linearly interpolated crossings (`rise_time`, `crossing`) have `O(dt^2) ~= 1e-8`
+    chord error (within `pytest.approx` `rel=1e-6`); uninterpolated `settling_time`
+    quantizes to `dt`,
+    relative error <= dt / (TAU * ln(50)) ~= 2.55e-5 (bounded by rel=1e-4).
+    """
     step = first_order()
     rise = rise_time("t", "out").read(step)
     assert (rise.value, rise.dimension) == (pytest.approx(TAU * math.log(9)), TIME)
@@ -167,6 +183,7 @@ def test_edges_match_a_first_order_step() -> None:
 def test_a_fall_time_reads_like_a_rise_time() -> None:
     step = first_order()
     falling = waveforms(step.times, 1 - step.values[:, 0])
+    # Linear crossing interpolation on dt = 1e-4*TAU gives O(dt^2) ~= 1e-8 chord error.
     assert rise_time("t", "out").read(falling).value == pytest.approx(TAU * math.log(9))
     assert not crossing("t", "out", 0.5 * V, edge="rising").read(step).value < 0
     with pytest.raises(MeasureError, match="does not cross 500 mV"):
@@ -184,10 +201,16 @@ def test_overshoot_matches_an_underdamped_second_order_step() -> None:
     step = waveforms(times, 1 - envelope * ringing)
     expected = 100 * math.exp(-math.pi * damping / math.sqrt(1 - damping**2))
     measured = overshoot("t", "out").read(step)
+    # Discrete peak miss on dt = 5e-11 s: (damped * dt)^2 / 8 ~= 1.1e-8 < rel=1e-6.
     assert (measured.value, measured.unit) == (pytest.approx(expected, rel=1e-6), "%")
 
 
 def test_a_first_order_response_falls_3_db_at_its_corner() -> None:
+    """On low_pass() (1000 pts/decade log grid), 1 kHz and 1 Hz are exact grid points.
+
+    Default pytest.approx (rel=1e-6) and abs=1e-6 cover dB/atan2 float rounding and
+    log-linear bandwidth interpolation.
+    """
     corner = low_pass()
     assert gain("ac", "out", at=1 * kHz).read(corner).value == pytest.approx(
         -10 * math.log10(2), abs=1e-6
@@ -235,6 +258,7 @@ def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:
     unity = math.sqrt((math.sqrt(5) - 1) / 2)
     expected = 90 - math.degrees(math.atan(unity))
     measured = phase_margin("ac", "out").read(response(frequencies, loop))
+    # Log-linear interpolation at 10,000 pts/decade: O(h^2) chord error < 1e-6 deg.
     assert (measured.value, measured.unit) == (pytest.approx(expected, abs=1e-6), "°")
 
 
@@ -260,6 +284,7 @@ def test_a_loop_gains_margins_are_read_without_an_output() -> None:
     for measure, (value_read, unit) in expected.items():
         measured = measure.read(loop)
         assert measured.unit == unit, measure
+        # Log-linear crossing interpolation at 10,000 pts/decade: O(h^2) error < 1e-6.
         assert measured.value == pytest.approx(value_read, rel=1e-6), measure
     assert str(phase_margin("loop") >= 45) == "phase margin of the loop in loop ≥ 45 °"
     assert str(gain_margin("loop") >= 6) == "gain margin of the loop in loop ≥ 6 dB"
@@ -277,6 +302,7 @@ def test_a_loop_short_of_its_margins_raises_their_rules() -> None:
     unity = math.sqrt(10 ** (2 / 3) - 1)
     margin = 180 - 3 * math.degrees(math.atan(unity))
     assert raised[0].message.startswith("the loop broken at `VP` has a phase margin of")
+    # Log-linear interpolation at 10,000 pts/decade plus formatted text rounding (1e-6).
     assert float(raised[0].message.split(" of ")[1].split("°")[0]) == pytest.approx(
         margin, rel=1e-6
     )
@@ -308,6 +334,11 @@ def test_a_loop_gain_is_read_without_an_output_and_a_response_at_one() -> None:
 
 
 def test_distortion_reads_the_harmonics_of_the_last_period() -> None:
+    """Linear resampling onto 1024 pts/period from dt=1e-4*T bounds THD error.
+
+    Chord sag `O((k*w*dt)^2)` attenuates harmonics by `< 1e-6` linear, well below
+    `abs=1e-3` dB for all three `distortion()` assertions below.
+    """
     times = np.linspace(0, 3e-3, 30_001)
     angle = 2 * math.pi * 1e3 * times
     settled = 0.2 + np.sin(angle) + 0.01 * np.sin(2 * angle) + 0.005 * np.cos(3 * angle)
@@ -374,10 +405,12 @@ def test_requirements_record_the_line_that_states_them() -> None:
 def test_a_verdict_states_the_value_and_the_slack() -> None:
     passed = verdict_of(value("op", "out").between(1 * V, 3 * V), point(2.5))
     assert (passed.status, passed.value, passed.unit) == ("passed", 2.5, "V")
+    # Exact subtraction 3.0 - 2.5 = 0.5; default pytest.approx covers float rounding.
     assert passed.slack == pytest.approx(0.5)
     marginal = verdict_of((value("op", "out") >= 2 * V).with_margin(1 * V), point(2.5))
     assert marginal.status == "marginal"
     failed = verdict_of(value("op", "out") <= 2 * V, point(2.5))
+    # Exact subtraction 2.0 - 2.5 = -0.5; default pytest.approx covers float rounding.
     assert (failed.status, failed.slack) == ("failed", pytest.approx(-0.5))
     assert failed.describe().startswith(
         "failed: out in op ≤ 2 V: read 2.5 V, slack -500 mV\n  = "
@@ -504,6 +537,7 @@ def test_the_runner_evaluates_the_plans_specs(
     )
     assert isinstance(outcome, Built)
     (verdict,) = outcome.specs
+    # Exact 1:1 divider output 2.5 V via runner JSON; default pytest.approx rounding.
     assert (verdict.status, verdict.value) == ("passed", pytest.approx(2.5))
     assert verdict.source_location is not None
     assert (verdict.source_location.file, verdict.source_location.function) == (
@@ -568,6 +602,7 @@ def test_requirements_hold_at_their_worst_corner(
     outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     hot, slow, broken = outcome.corners
+    # 125 C in kelvin (125 + 273.15 = 398.15 K); default pytest.approx rounding.
     assert (hot.name, hot.temperature) == ("hot", pytest.approx(398.15))
     assert hot.ok
     assert slow.ok
@@ -622,18 +657,25 @@ def test_noise_reads_densities_and_rms_noise() -> None:
     spectrum = hiss()
     density = noise_density("hiss", at=1 * kHz).read(spectrum)
     assert density.unit == VOLTAGE / rtHz.dimension
+    # Exact 1 kHz grid point (~4.12e-9 V/rtHz); rel=1e-12 covers sqrt rounding (note
+    # pytest.approx default abs=1e-12 also applies at nanovolt scale).
     assert density.value == pytest.approx(math.sqrt(16e-18 + 1e-18), rel=1e-12)
     between = noise_density("hiss", at=1.5 * kHz).read(spectrum)
+    # Piecewise power-law interpolation of white + 1/f at 1.5 kHz has 9.6e-5 relative
+    # error (~3.9e-13 V/rtHz on 4.08e-9 V/rtHz), covered by default abs=1e-12.
     assert between.value == pytest.approx(math.sqrt(16e-18 + 1e-15 / 1.5e3), rel=1e-12)
     referred = noise_density("hiss", at=1 * kHz, referred=True).read(spectrum)
+    # Input gain is constant 2; division by 2 matches within rounding (rel=1e-12).
     assert referred.value == pytest.approx(density.value / 2, rel=1e-12)
-    # The sum of two power laws is none, so the integral is close, not exact.
+    # The sum of two power laws is not a power law: piecewise power-law quadrature on
+    # 10 pts/decade has ~1e-4 relative error (bounded by rel=1e-4).
     power = 16e-18 * (1e5 - 10) + 1e-15 * math.log(1e4)
     total = integrated_noise("hiss").read(spectrum)
     assert total.unit == VOLTAGE
     assert total.value == pytest.approx(math.sqrt(power), rel=1e-4)
     band = integrated_noise("hiss", start=100 * Hz, stop=10 * kHz).read(spectrum)
     expected = 16e-18 * (1e4 - 100) + 1e-15 * math.log(100)
+    # Same piecewise power-law quadrature error on 10 pts/decade (bounded by rel=1e-4).
     assert band.value == pytest.approx(math.sqrt(expected), rel=1e-4)
     assert band.value == spectrum.rms(100.0, 1e4)
     assert str(noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz) == (
@@ -727,6 +769,7 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
     poles = np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j])
     found = results.PoleZeroResult(UNKNOWNS, poles, None, None, None, None, point(0.0))
     least = damping("pz").read(found)
+    # Damping -Re(-3e3 + 4e3j)/|-3e3 + 4e3j| = 0.6 and |s|/(2*pi); float rounding.
     assert (least.value, least.unit) == (pytest.approx(0.6), "")
     slowest = dominant_pole("pz").read(found)
     assert slowest.value == pytest.approx(5e3 / (2 * math.pi))

@@ -36,6 +36,7 @@ def test_a_deck_splits_into_its_analyses_options_and_rules() -> None:
     assert read.rules == ("xyce-options", "output-requests")
     assert read.options() == Options(relative_tolerance=1e-4)
     assert read.method() == "gear2"
+    # 50 C converted to kelvin (50 + 273.15 = 323.15 K); float rounding.
     assert read.temperature() == pytest.approx(323.15)
 
 
@@ -67,7 +68,7 @@ def test_jolty_reads_the_deck_s_elements_at_their_lines() -> None:
     assert lines == {"v1": 4, "r1": 5, "x1": 6}
     assert built.nets == ("1", "2")
     point = Simulation(built.circuit).run(OperatingPoint())
-    # 3 V across 1 kΩ over 2 kΩ.
+    # 3 V across 1 kΩ over 2 kΩ (exact 2 V); default pytest.approx covers rounding.
     assert point.voltage("2") == pytest.approx(2.0)
 
 

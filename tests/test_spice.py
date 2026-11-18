@@ -144,6 +144,7 @@ def test_tokens_keep_groups_whole() -> None:
     ],
 )
 def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
     assert number(text) == pytest.approx(value)
 
 
@@ -167,6 +168,7 @@ def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
     ],
 )
 def test_expressions_mean_what_pspice_and_ngspice_mean(text: str, value: float) -> None:
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers expression arithmetic rounding.
     assert evaluate(parse(text), {"gain": 3.0}) == pytest.approx(value)
 
 
@@ -204,6 +206,7 @@ def test_a_subcircuit_becomes_a_component_with_its_parameters() -> None:
     )
     part = parts.component("Divider")
     assert [port.name for port in part.definition.ports] == ["in", "out", "ground"]
+    # Linear DC divider solve; default pytest.approx (rel=1e-6) covers LU rounding.
     assert output(part, 3.0) == pytest.approx(1.0)
     assert output(parts.component("divider", top=1e3), 3.0) == pytest.approx(1.5)
 
@@ -214,6 +217,7 @@ def test_subcircuits_place_one_another() -> None:
         ".subckt quarter in out\nX1 in mid half\nX2 mid out half\n.ends"
     )
     # The second divider loads the first: 4 V across 1k + (1k ∥ 2k).
+    # Linear DC solve; default pytest.approx (rel=1e-6) covers LU rounding.
     assert output(parts.component("quarter"), 5.0) == pytest.approx(1.0)
 
 
@@ -233,6 +237,7 @@ def test_controlled_sources_read_polynomials_values_and_currents() -> None:
     )
     part = parts.component("gains")
     point = Simulation(driven(part, 2.0, ("in", "out"))).run(OperatingPoint())
+    # Default pytest.approx (rel=1e-6) matches Newton voltage tolerance (vntol=1e-6 V).
     assert point.voltage("U1/a") == pytest.approx(5.0)
     assert point.voltage("U1/b") == pytest.approx(2.0)
     assert point.voltage("U1/c") == pytest.approx(10.0)
@@ -372,10 +377,12 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
     }
     # ngspice multiplies the saturation current, 1e-16 A unless the card gives one,
     # by the area (bjttemp.c:168), and a diode's 1e-14 A, a JFET's 1e-14 A and its
-    # transconductance parameter, 1e-4 A/V², alike.
+    # transconductance parameter, 1e-4 A/V², alike. Default pytest.approx (rel=1e-6,
+    # abs=1e-12) covers scaling rounding; note abs=1e-12 dominates currents below 1e-12.
     assert read["Q1"]["saturation_current"] == pytest.approx(1e-15)
     assert read["Q2"]["saturation_current"] == pytest.approx(2e-16)
     assert "saturation_current" not in read["Q3"]
+    # Default pytest.approx (rel=1e-6, abs=1e-12) for area-scaled IEEE-754 products.
     assert read["D1"]["saturation_current"] == pytest.approx(3e-14)
     assert read["J1"]["saturation_current"] == pytest.approx(4e-14)
     assert read["J1"]["transconductance_parameter"] == pytest.approx(4e-4)
@@ -399,7 +406,8 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
     # Level 3: an area of (1.5 + 0.5)(3.5 + 0.5) µm², a perimeter of 2·2 + 2·4 µm,
     # each times the copies once (`diosetup.c`, lines 336 and 337, where ngspice
     # multiplies them again, as the guide's departures state); `IKR` of 0 is off, and
-    # the breakdown current scales with the area.
+    # the breakdown current scales with the area. Default pytest.approx (rel=1e-6,
+    # abs=1e-12) covers geometry scaling rounding (abs dominates entries below 1e-12).
     area, perimeter = 8e-12 * 2, 12e-6 * 2
     assert read["D1"] == pytest.approx(
         {
@@ -419,6 +427,7 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
     )
     # Level 1: the card's area and perimeter where the element gives no size, and 1 and
     # 0 where it gives a width; the breakdown current scales with the copies alone.
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers float scaling rounding.
     assert read["D2"] == pytest.approx(
         {
             "saturation_current": 1e-14 * 6,
@@ -427,6 +436,7 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
             "breakdown_voltage": 5.0,
         }
     )
+    # Same default pytest.approx (rel=1e-6, abs=1e-12) for area/copies scaling rounding.
     assert read["D3"] == pytest.approx(
         {
             "saturation_current": 1e-14,
@@ -473,6 +483,7 @@ def test_a_bipolar_card_reads_hspices_temperature_terms_as_ngspice_does() -> Non
         "substrate": "lateral",
         "temperature_model": 1,
         "capacitance_temperature_model": 1,
+        # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
         "nominal_temperature": pytest.approx(298.15),
         "high_injection_exponent": 1.0,
         "collector_resistance_temperature_coefficient": -0.01,
@@ -603,6 +614,7 @@ def test_a_grounded_capacitors_value_reads_its_node_as_its_voltage() -> None:
     parts = library(".subckt cap p\nC1 p 0 c='1e-12 * (2 + v(p))'\n.ends")
     part = parts.component("cap")
     expected = 2j * math.pi * 1e6 * 1e-12 * (2 + 0.5)
+    # AC linearization at TIGHT options (vntol=1e-9 V), far above float rounding.
     assert admittance(part, 0.5, 1e6) == pytest.approx(expected, rel=1e-9)
 
 
@@ -640,6 +652,7 @@ def test_a_behavioral_capacitor_is_written_back_as_a_charge() -> None:
     read = library(f".subckt a p\n{element.replace('CB1', 'C1', 1)}\n.ends")
     capacitance = 1e-12 + 5e-13 * 2 * (1 - math.tanh(2 * 0.3) ** 2)
     expected = 2j * math.pi * 1e6 * capacitance
+    # AC linearization at TIGHT options (vntol=1e-9 V) plus netlist decimal rounding.
     assert admittance(read.component("a"), 0.3, 1e6) == pytest.approx(
         expected, rel=1e-9
     )
@@ -648,6 +661,7 @@ def test_a_behavioral_capacitor_is_written_back_as_a_charge() -> None:
 def test_a_table_source_holds_beyond_its_ends() -> None:
     parts = library(".subckt clamp in out\nE1 out 0 TABLE {V(in)} = (0,0) (1,2)\n.ends")
     part = parts.component("clamp")
+    # Piecewise-linear DC solve; default pytest.approx (rel=1e-6) covers LU rounding.
     assert output(part, 0.5) == pytest.approx(1.0)
     assert output(part, 3.0) == pytest.approx(2.0)
 
@@ -804,6 +818,7 @@ def test_transmission_lines_read_their_delay_as_ngspice_does() -> None:
         "negative2": spice.GROUND,
     }
     # A half wavelength at 100 MHz, and ngspice's quarter wavelength at 1 GHz.
+    # rel=1e-15 (~4.5 eps) covers single floating-point division nl / f rounding.
     assert normalized.parameters["delay"] == pytest.approx(5e-9, rel=1e-15)
     assert defaulted.parameters["delay"] == pytest.approx(0.25e-9, rel=1e-15)
 
@@ -1090,6 +1105,7 @@ def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
     )
     first, second = parts.component("a").definition.instances
     assert first.of == second.of == ir.DeviceOf(model="bsim3")
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
     assert first.parameters == pytest.approx(
         {
             "channel": "n",
@@ -1161,6 +1177,7 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
     )
     (instance,) = parts.component("a").definition.instances
     assert instance.of == ir.DeviceOf(model="bsim4")
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
     assert instance.parameters == pytest.approx(
         {
             "channel": "n",
@@ -1257,6 +1274,7 @@ def test_a_bsim4_is_written_for_ngspice_as_its_card_reads_back() -> None:
         f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
     )
     (instance,) = read.component("a").definition.instances
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal round-trip rounding.
     assert instance.parameters == pytest.approx(
         {
             "channel": "p",
@@ -1365,6 +1383,8 @@ def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
 
     A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
     and between its fingers, as `b4v5par.c` scales them, all in micrometres here.
+    `rel=1e-15` (~4.5 eps) covers single `scale` and `scale**2` rounding (note default
+    `abs=1e-12` matches `drain_area=1e-12`).
     """
     parts = spice.Library()
     parts.read(
@@ -1438,6 +1458,7 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
         f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
     )
     (instance,) = read.component("a").definition.instances
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal round-trip rounding.
     assert instance.parameters == pytest.approx(
         {
             "channel": "p",
@@ -1524,6 +1545,7 @@ def test_temperature_parameters_come_in_kelvins() -> None:
         "saturation_current": 1e-14,
         "saturation_current_temperature_exponent": 2.0,
         "energy_gap": 1.2,
+        # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
         "nominal_temperature": pytest.approx(323.15),
     }
     assert first.parameters == {
@@ -1552,6 +1574,7 @@ def test_devices_take_their_own_temperatures() -> None:
     quiet, warm, hot, capacitor, transistor = parts.component("a").definition.instances
     assert quiet.parameters == {"resistance": 1e3, "temperature": 0.0}
     assert warm.parameters == {"temperature_offset": 15.0}
+    # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
     assert hot.parameters == {"temperature": pytest.approx(353.15)}
     assert capacitor.parameters == {"capacitance": 1e-9, "temperature_offset": -10.0}
     assert transistor.parameters["temperature"] == pytest.approx(323.15)
@@ -1637,6 +1660,7 @@ def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
     current = point.values[
         simulation.unknowns.index(results.Unknown("V1:current", "current"))
     ]
+    # Single-iteration solve at fixed V=2 V; rel=1e-12 (~4500 eps) covers rounding.
     assert -current == pytest.approx(4 / (1.2e3 * 1.05), rel=1e-12)
 
 
@@ -1646,6 +1670,7 @@ def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
         ".subckt a x\nR1 x 0 1k VC1=2u VC2=3n\nC1 x 0 CX 1n VC2=4u\n.ends"
     )
     resistor, capacitor = parts.component("a").definition.instances
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
     assert resistor.parameters == pytest.approx(
         {
             "resistance": 1e3,
@@ -1653,6 +1678,7 @@ def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
             "quadratic_voltage_coefficient": 3e-9,
         }
     )
+    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
     assert capacitor.parameters == pytest.approx(
         {
             "capacitance": 1e-9,
@@ -1872,7 +1898,9 @@ def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
     capacitor and its diode by 3, its resistor's own 2 copies times 3, whose flicker
     noise is `m KF (I / m)^AF` (`resnoise.c`), and its instance's 2 copies of `inner`
     times 3; a subcircuit with a parameter `m` reads it as its own, and a current
-    source under a multiplier is refused.
+    source under a multiplier is refused. Default `pytest.approx` (`rel=1e-6`,
+    `abs=1e-12`) covers IEEE-754 multiplier scaling rounding (note `abs=1e-12`
+    dominates `1e-12 / 6` and `3e-14`).
     """
     parts = library(MULTIPLIED)
     cell = parts.component("cell", m=3)
@@ -1921,8 +1949,10 @@ def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
         for instance in parts.component("cards").definition.instances
     }
     resistances = [found[f"R{index}"]["resistance"] for index in range(1, 6)]
+    # rel=1e-14 (~45 eps) covers geometry-formula floating-point arithmetic rounding.
     assert resistances == pytest.approx([2e3 / 3, 900 / 9.5, 5e3, 7, 1e-3], rel=1e-14)
     assert found["R1"]["temperature_coefficient"] == 1e-3
+    # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
     assert found["R1"]["nominal_temperature"] == pytest.approx(303.15)
     epsilon = 7.8 / (4e-7 * math.pi * 299792458.0**2)
     capacitances = [found[f"C{index}"]["capacitance"] for index in range(1, 4)]
@@ -1931,6 +1961,7 @@ def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
         epsilon / 1e-8 * 2e-6 * 5e-6,
         3e-12,
     ]
+    # rel=1e-14 (~45 eps) covers geometry-formula and vacuum-permittivity rounding.
     assert capacitances == pytest.approx(expected, rel=1e-14)
 
 
@@ -1962,6 +1993,7 @@ def test_an_instance_gives_its_subcircuits_own_parameters() -> None:
 def test_temper_is_the_temperature_a_library_reads_at() -> None:
     hot = spice.Library(celsius(127).value)
     hot.read(".subckt warm a b\nR1 a b {1k * (1 + temper / 100)}\n.ends", "kit.lib")
+    # Default pytest.approx (rel=1e-6) covers Celsius conversion and float rounding.
     assert _devices(hot.component("warm"))["R1"][1]["resistance"] == pytest.approx(
         2.27e3
     )
@@ -2544,13 +2576,17 @@ def test_every_model_spice_round_trip(model_name: str) -> None:
             Simulation(round_trip_bench).run(OperatingPoint(), TIGHT).voltage(probe_net)
         )
     scale = max(abs(expected), abs(actual), 1e-12)
+    # 1e-9 relative covers SPICE decimal serialization rounding and TIGHT convergence.
     assert abs(expected - actual) <= 1e-9 * scale, (
         f"{model_name}: expected {expected!r}, round-tripped {actual!r}"
     )
 
 
 def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
-    """Global parameter plan, drawn scopes and built components stay coherent."""
+    """Global parameter plan, drawn scopes and built components stay coherent.
+
+    Every `rel=1e-15` (~4.5 eps) check covers exact expression arithmetic rounding.
+    """
     lib = library(
         ".param base=1k\n"
         ".param scaled={base + 10 * temper}\n"
@@ -2608,7 +2644,11 @@ def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
 
 
 def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
-    """Derived AKO: `.model` cards resolve against the active local base card."""
+    """Derived AKO: `.model` cards resolve against the active local base card.
+
+    `rel=1e-15` (~4.5 eps) covers IEEE-754 decimal literal parsing rounding (note
+    `pytest.approx` default `abs=1e-12` dominates `1e-14` and matches `1e-12`).
+    """
     lib = library(
         ".subckt switched a k sel=0\n"
         ".if (sel == 0)\n"

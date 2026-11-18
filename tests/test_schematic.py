@@ -179,6 +179,7 @@ def test_a_simulation_writes_its_operating_point_on_the_schematic(
     (options,) = drawn
     point = options["point"]
     assert isinstance(point, results.OperatingPointResult)
+    # Ideal 1 V source node voltage; default pytest.approx covers LU rounding.
     assert point.voltage("in") == pytest.approx(1.0)
 
 

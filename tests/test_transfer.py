@@ -63,6 +63,7 @@ def test_a_dividers_transfer_function_is_its_ratio_and_its_resistances() -> None
 def test_a_current_input_gains_in_ohms_and_an_idle_source_sees_no_load() -> None:
     simulation = Simulation(driven())
     through = simulation.run(TransferFunction("I1", "load"))
+    # Linear DC solve of 1 mA into 2 kΩ: LU rounding within ~4500 eps (rel=1e-12).
     assert (through.input, through.gain) == ("current", pytest.approx(2e3, rel=1e-12))
     assert report("tf", through, 8).describe().splitlines()[1] == "  gain 2000 V/A"
     idle = simulation.run(TransferFunction("V1", "alone"))

@@ -153,12 +153,13 @@ def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -
 def _agree(
     jolty: np.ndarray, spice: np.ndarray, unknown: Unknown, allowance: float
 ) -> None:
-    """Asserts both agree within a millionth of the signal.
+    """Asserts both agree within a millionth of the signal (TIGHT reltol=1e-6).
 
     A current agrees within the `allowance` of Xyce's junctions' departures too.
     """
     current = unknown.nature == "current"
     noise = CURRENT_TOLERANCE if current else VOLTAGE_TOLERANCE
+    # TIGHT (reltol=1e-6) cross-simulator tolerance plus noise floor and allowance.
     np.testing.assert_allclose(
         jolty,
         spice,
@@ -204,6 +205,7 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     allowance = _allowance(simulation, point.values, REFERENCE)
     for column, unknown in compared(simulation):
         spice = found.real(vector(simulation.circuit, unknown, XYCE))[0]
+        # TIGHT (reltol=1e-6) cross-simulator agreement plus Xyce junction allowance.
         _agree(point.values[column], spice, unknown, allowance)
 
 
@@ -221,6 +223,7 @@ def test_operating_points_agree_across_temperatures(
     allowance = _allowance(simulation, point.values, temperature.value)
     for column, unknown in compared(simulation):
         spice = found.real(vector(simulation.circuit, unknown, XYCE))[0]
+        # TIGHT (reltol=1e-6) cross-simulator agreement plus Xyce junction allowance.
         _agree(point.values[column], spice, unknown, allowance)
 
 
@@ -253,6 +256,7 @@ def test_dc_sweeps_agree(
     allowance = _allowance(simulation, sweep.values, REFERENCE)
     for column, unknown in compared(simulation):
         spice = found.real(vector(simulation.circuit, unknown, XYCE))
+        # TIGHT (reltol=1e-6) cross-simulator sweep agreement plus junction allowance.
         _agree(sweep.values[:, column], spice, unknown, allowance)
 
 
@@ -275,9 +279,11 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     simulation = Simulation(top())
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     found = xyce.run(_lines(simulation, excited="V1"), ".ac dec 20 10 10meg")
+    # Log-decade grid stepping rounding across Xyce raw output vs jolty (rtol=1e-9).
     np.testing.assert_allclose(response.frequencies, found.real("frequency"), rtol=1e-9)
     for column, unknown in compared(simulation):
         spice = found.vectors[vector(simulation.circuit, unknown, XYCE)]
+        # TIGHT (reltol=1e-6) AC phasor agreement vs Xyce.
         compare(
             response.values[:, column],
             spice,
@@ -309,6 +315,8 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     )
     lines = _lines(simulation, excited=source)
     found = xyce.run(lines, f".noise v(out) V{source} dec 5 1 100meg")
+    # Log-decade frequency grid rounding (1e-9) and squared noise spectral density
+    # agreement (1e-5, ~10x TIGHT reltol=1e-6 covering k_B/operating-point spread).
     np.testing.assert_allclose(spectrum.frequencies, found.real("frequency"), rtol=1e-9)
     np.testing.assert_allclose(spectrum.densities, found.real("onoise"), rtol=1e-5)
     np.testing.assert_allclose(spectrum.referred(), found.real("inoise"), rtol=1e-5)
@@ -343,6 +351,7 @@ def test_transients_agree(
         jolty = closest(
             waveforms.times, waveforms.values[:, column], times, spice, step.value
         )
+        # Transient O(h^2) integration and window comparison vs Xyce (1e-3 of swing).
         compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
 
 

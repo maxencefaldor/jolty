@@ -211,6 +211,8 @@ def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
     (point,) = outcome.analyses
     assert isinstance(point, report.OperatingPointReport)
     factor = 1 + 1e-2 * (400 - 300.15)
+    # Linear divider with thermal resistor coefficient; default pytest.approx (rel=1e-6)
+    # covers DC solve rounding and JSON serialization through the runner process.
     assert point.values[1].value == pytest.approx(5 * factor / (1 + factor))
 
 

@@ -164,6 +164,8 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
         "overdrive_voltage",
         "saturation_margin",
     )
+    # Fixed gate/drain diffs (3 - 1 = 2 V, 5 - 2 = 3 V); default pytest.approx
+    # (rel=1e-6, abs=1e-12) covers operating-point Newton rounding.
     assert (m1_overdrive.value, m1_margin.value) == pytest.approx((2, 3))
     assert summary.describe().splitlines()[-3:] == [
         "  regions, nearest a boundary first:",

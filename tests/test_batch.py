@@ -310,6 +310,7 @@ def test_a_grid_steps_its_last_axis_fastest_and_a_product_its_second() -> None:
     # Run 9 is the grid's run 2, then the samples' run 1, whose R1 replaces the grid's.
     drawn = sample(toleranced(circuit(clipper())), 0, 1)
     assert found.parameter("R1 resistance")[9] == drawn["R1"]["resistance"]
+    # 0 C converted to kelvin (273.15 K); default pytest.approx covers float rounding.
     assert found.parameter("temperature")[9] == pytest.approx(273.15)
 
 
@@ -420,8 +421,9 @@ def test_a_sweep_of_a_parameter_names_it() -> None:
     levels = [1 * kohm, 2 * kohm, 4 * kohm]
     sweep = Simulation(divider()).run(DcSweep("R2", levels, parameter="resistance"))
     assert (sweep.source, sweep.parameter, sweep.nature) == ("R2", "resistance", None)
-    # The divider's output, 5 V times R2 over R1 and R2, within a part in 10¹⁵.
+    # The divider's output, 5 V times R2 over R1 and R2: LU rounding (~5 eps).
     expected = [5 * lower / (1e3 + lower) for lower in (1e3, 2e3, 4e3)]
     assert sweep.voltage("out") == pytest.approx(expected, rel=1e-15)
     at = value("sweep", "out", at=3 * kohm).read(sweep).value
+    # Linear midpoint interpolation between 2 kΩ and 4 kΩ: float rounding (~5 eps).
     assert at == pytest.approx((expected[1] + expected[2]) / 2, rel=1e-15)

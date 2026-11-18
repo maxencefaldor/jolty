@@ -57,6 +57,7 @@ def test_a_cheaper_design_that_meets_the_specs_meets_the_task(tmp_path: Path) ->
     design(tmp_path, "0.01")
     verdict = score(COST_DOWN, tmp_path)
     assert verdict.met, verdict.reasons
+    # Exact catalog BOM cost sums; default pytest.approx covers binary float addition.
     assert verdict.measurements == {
         "baseline": pytest.approx(0.2),
         "cost": pytest.approx(0.016),
@@ -179,6 +180,7 @@ def test_the_patented_cubic_generator_scores_one(tmp_path: Path) -> None:
     )
     verdict = score(CUBIC, tmp_path)
     assert verdict.met, verdict.reasons
+    # All cubic sweep points hit within tolerance (score = 1.0); default float rounding.
     assert verdict.measurements["score"] == pytest.approx(1.0)
     assert verdict.measurements["devices"] == 9
 
@@ -325,6 +327,7 @@ def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> Non
         "    c.connect(source.negative, output)\n",
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
+    # Ideal linear VCCS has zero structural error; abs=1e-9 bounds DC sweep LU rounding.
     assert verdict.measurements["fitness"] == pytest.approx(0.0, abs=1e-9)
     assert verdict.reasons == (
         "G1 is a voltage_controlled_current_source, which the task forbids",
@@ -393,6 +396,7 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
     )
     verdict = score(BALUN, tmp_path)
     for error in ("difference gain", "worst in-phase gain", "worst difference phase"):
+        # Ideal linear VCVS balun has exact 0 error; abs=1e-6 covers AC solve rounding.
         assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-6)
     assert verdict.measurements["distortion"] < -150
     assert verdict.reasons == (
@@ -558,6 +562,7 @@ def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
         ("X1/C1", "capacitance", 1e-9, 0.05),
     ):
         strays = [abs(board.parts[path][parameter] / nominal - 1) for board in drawn]
+        # Uniform draws on [-tol, tol] with BOARDS=100: P(max <= 0.9*tol) = 0.9^100.
         assert 0.9 * tolerance < max(strays) <= tolerance
     assert boards(circuit(loaded()), parts) == drawn
 
@@ -583,6 +588,7 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
     first = np.array([board.parts["X1/R1"]["resistance"] / 1e3 for board in drawn])
     second = np.array([board.parts["X1/R2"]["resistance"] / 3e3 for board in drawn])
     assert np.abs(first - 1).max() > 0.15
+    # Normal 3*sigma=0.001 cancels shared lot: ratio sigma ~= 4.7e-4 (~5.3 sigma).
     assert np.abs(first / second - 1).max() <= 0.0025
 
 
@@ -687,8 +693,10 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
     corner = Corner(temperature=70.0, supply=0.95)
     board = Board({"R2": {"resistance": 3e3}}, corner)
     simulation = board.simulation(circuit(divider()), ["VCC"])
+    # 70 C converted to kelvin (70 + 273.15 = 343.15 K); default pytest.approx rounding.
     assert simulation.conditions.temperature == pytest.approx(343.15)
     point = simulation.run(OperatingPoint())
+    # Linear divider at 0.95 * 2 V and 3/4; default pytest.approx covers rounding.
     assert point.voltage("out") == pytest.approx(2 * 0.95 * 3 / 4)
     assert corner.describe() == "at 70 °C with the supplies 5 % low"
     with pytest.raises(KeyError, match="R1 is no DC source"):
@@ -708,6 +716,7 @@ def test_too_few_boards_that_meet_the_task_fall_short() -> None:
 
     spread, reasons = tolerate(circuit(loaded()), measure, below(1005), parts)
     assert 0.6 < spread["yield"] < 0.9
+    # Uniform +-1% (+-10 ohm) over BOARDS=100 draws: median standard error is ~1 ohm.
     assert spread["median resistance"] == pytest.approx(1000, abs=2)
     (reason,) = reasons
     assert (reason.kind, reason.spec) == (Kind.SPEC, "yield")
@@ -848,6 +857,7 @@ def test_a_cheaper_netlist_that_meets_the_specs_meets_the_task(tmp_path: Path) -
     verdict = score(COST_DOWN, tmp_path, Arm.NGSPICE)
     assert verdict.met, verdict.reasons
     # The same parts as the cheaper script's, so the same prices.
+    # Exact catalog BOM cost sums; default pytest.approx covers binary float addition.
     assert verdict.measurements == {
         "baseline": pytest.approx(0.2),
         "cost": pytest.approx(0.016),
@@ -1092,6 +1102,7 @@ def test_timing_server_drops_peak_memory_when_reused_for_second_fixture() -> Non
 
 
 def test_throughput_efficiency_math_and_edge_cases() -> None:
+    """Exact rational speedup ratios; default pytest.approx covers float rounding."""
     # N == 1 baseline case.
     single = bench.throughput_efficiency(
         threads=1,
@@ -1218,6 +1229,7 @@ def test_concurrent_copies_runs_real_workers_and_respects_memory_budget() -> Non
     assert measured.per_copy_peak_memory_bytes > 0
     wall_median = measured.wall_median()
     assert wall_median is not None
+    # Median of 2 identical wall times matches measured.wall_seconds within rounding.
     assert wall_median.value == pytest.approx(measured.wall_seconds)
 
     # Budget check skips without launching subprocesses when copies * single > budget.
@@ -1561,6 +1573,7 @@ def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> N
         / 2.0
     )
     assert linear_error > 3.5e-3
+    # Huynh cubic Hermite O(h^4) error on 10 kHz sine sampled at 4 us (~1.8e-5 < 5e-5).
     assert cubic_error < 5e-5
 
     # 2. Sharp switching edge with 100x step-size jump: strictly zero overshoot.
@@ -1582,11 +1595,13 @@ def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> N
     # 4. Duplicate breakpoint timestamps and tiny arrays (< 4 points) stay finite.
     dup_times = np.array([0.0, 1.0, 1.0, 2.0, 3.0, 4.0])
     dup_values = np.array([0.0, 1.0, 1.0, 4.0, 9.0, 16.0])
+    # Quadratic f(x) = x^2 at x = 1.5 is exact (2.25) within f64 rounding (abs=1e-12).
     assert bench.interpolate_transient(np.array([1.5]), dup_times, dup_values)[
         0
     ] == pytest.approx(2.25, abs=1e-12)
     short_times = np.array([0.0, 1.0, 2.0])
     short_values = np.array([0.0, 1.0, 2.0])
+    # Linear fallback on 3-point array reproduces y = x within f64 rounding (~4.5 eps).
     assert bench.interpolate_transient(
         np.array([0.5, 1.5]), short_times, short_values
     ) == pytest.approx([0.5, 1.5], abs=1e-15)
@@ -1597,6 +1612,7 @@ def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> N
     interior = np.linspace(1.5, 2.9, 50)
     expected_interior = 0.2 * interior**3 - 1.1 * interior**2 + 2.5 * interior - 0.7
     reconstructed = bench.interpolate_transient(interior, poly_times, poly_values)
+    # Cubic Hermite reconstructs cubics exactly up to f64 rounding (~4500 eps).
     assert reconstructed == pytest.approx(expected_interior, abs=1e-12)
 
 
@@ -1615,6 +1631,6 @@ def test_deviations_bjt_amp_transient_has_no_chord_sag() -> None:
     cand = {"tran": bench.jolty_voltages(fine, ("out",))}
     # Self-comparison on identical grid is exactly 0.
     assert bench.deviations({"tran": plan_tran}, ref, ref)["tran"] == 0.0
-    # Against 0.1 us fine grid, linear np.interp gave 3.9e-3; Huynh cubic gives ~1.8e-5.
+    # Against 0.1 us fine grid, linear interpolation gave 3.9e-3; Huynh cubic ~1.8e-5.
     found_deviation = bench.deviations({"tran": plan_tran}, ref, cand)["tran"]
     assert found_deviation < 5e-5

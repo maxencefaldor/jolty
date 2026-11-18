@@ -182,11 +182,13 @@ def test_an_inverter_switches_in_ngspice() -> None:
     assert out.name == "out"
     point = simulation.run(OperatingPoint())
     assert point.strategy == "ngspice"
-    # The input pulse starts low, so the output starts high.
+    # Input pulse starts low, so output starts high; abs=1e-6 matches default vntol.
     assert point.voltage("out") == pytest.approx(1.8, abs=1e-6)
     sweep = simulation.run(DcSweep("VIN", linear(0 * V, 1.8 * V, 37)))
     transfer = sweep.values[:, results.column(sweep.unknowns, "out")]
+    # Monotonic falling inverter; 1e-9 allows ngspice default Newton noise on rails.
     assert np.all(np.diff(transfer) <= 1e-9)
+    # CMOS rail endpoints at ngspice default reltol=1e-3 (off-device leakage << 1 mV).
     assert transfer[0] == pytest.approx(1.8, abs=1e-3)
     assert transfer[-1] == pytest.approx(0, abs=1e-3)
     threshold = np.interp(0.9, transfer[::-1], sweep.swept[::-1])
@@ -194,9 +196,11 @@ def test_an_inverter_switches_in_ngspice() -> None:
     transient = simulation.run(Transient(stop=10 * ns, max_step=0.05 * ns))
     assert transient.statistics.accepted == len(transient.times)
     output = transient.values[:, results.column(transient.unknowns, "out")]
+    # Initial operating point rail at default ngspice reltol=1e-3 (abs=1e-3).
     assert output[0] == pytest.approx(1.8, abs=1e-3)
     during = (transient.times > 3e-9) & (transient.times < 6e-9)
     assert np.all(output[during] < 0.05)
+    # Output recovers near 1.8 V rail after falling edge (RC residual < 10 mV).
     assert output[-1] == pytest.approx(1.8, abs=1e-2)
     with pytest.raises(SimulationError, match=r"runs no Sensitivity analysis"):
         simulation.run(Sensitivity(["out"]))
@@ -233,8 +237,11 @@ def test_the_small_signal_gain_is_the_transfer_curves_slope() -> None:
     response = simulation.run(Ac("VIN", [1 * kHz]))
     gain = response.values[0, results.column(response.unknowns, "out")]
     assert slope < -0.5
+    # Central difference at step=1 mV: O(step^2) curvature truncation & Newton rounding.
     assert gain.real == pytest.approx(slope, rel=1e-4)
+    # Quasi-static 1 kHz AC excitation: reactive capacitance shift << 1e-6 of real gain.
     assert abs(gain.imag) < 1e-6 * abs(gain.real)
+    # Operating point matches DC sweep midpoint at 0.7 V within ngspice vntol rounding.
     assert response.operating_point.voltage("out") == pytest.approx(out[1], abs=1e-9)
 
 
@@ -249,6 +256,7 @@ def test_corners_temperatures_and_overrides_reach_ngspice() -> None:
     fast, slow = (current(Simulation(built, process=corner)) for corner in ("ff", "ss"))
     assert fast < typical < slow < 0
     hot = current(Simulation(built, celsius(125)))
+    # Distinctness guard: 125 C bias current must shift well past default reltol=1e-3.
     assert hot != pytest.approx(typical, rel=1e-3)
     loaded = current(Simulation(built, overrides={"RL": {"resistance": 20e3}}))
     assert abs(loaded) < abs(typical)
@@ -342,6 +350,7 @@ def test_a_nested_source_is_swept_and_excited_with_overrides() -> None:
     response = simulation.run(Ac("X1/VIN", [1 * kHz]))
     gain = response.values[0, results.column(response.unknowns, "X1/out")]
     assert gain.real < 0
+    # Operating point matches DC sweep midpoint at 0.7 V; pytest.approx covers rounding.
     assert response.operating_point.voltage("X1/out") == pytest.approx(out[1])
     loaded = response.operating_point.current("X1/VDD")
     alone = Simulation(holder()).run(DcSweep("X1/VIN", linear(0.6 * V, 0.8 * V, 3)))
@@ -382,18 +391,22 @@ def test_the_noise_of_a_divider_is_its_resistances_in_parallel() -> None:
     spectrum = Simulation(quiet()).run(Noise("out", [1 * kHz, 1 * MHz], source="V1"))
     four_kt = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
     expected = four_kt * 2e3 / 3
+    # ngspice default reltol=1e-3 plus CODATA 2014 vs 2019 SI k_B delta (3.48e-7).
     np.testing.assert_allclose(spectrum.densities, expected, rtol=1e-4)
     assert spectrum.sources == (
         results.NoiseSource("R1", "thermal"),
         results.NoiseSource("R2", "thermal"),
     )
+    # Same ngspice thermal noise margin (reltol=1e-3 + k_B constant diff) per resistor.
     np.testing.assert_allclose(
         spectrum.contributions,
         [[four_kt * 1e3 * 4 / 9] * 2, [four_kt * 2e3 / 9] * 2],
         rtol=1e-4,
     )
     assert spectrum.input is not None
+    # Linear divider AC transfer gain 2/3 from ngspice raw output; rounding (rtol=1e-9).
     np.testing.assert_allclose(spectrum.input.gains, 2 / 3, rtol=1e-9)
+    # Referred density divides output density by gain^2; same rtol=1e-4 thermal margin.
     np.testing.assert_allclose(spectrum.referred(), expected * 9 / 4, rtol=1e-4)
 
 
@@ -405,6 +418,7 @@ def test_a_transistors_noise_adds_its_channels_and_its_flicker() -> None:
     named = {(source.instance, source.name) for source in spectrum.sources}
     assert {("M1", "id"), ("M1", "1overf"), ("RL", "thermal")} <= named
     assert spectrum.input is None
+    # Sum of uncorrelated noise densities equals total density (rtol=1e-6 rounding).
     np.testing.assert_allclose(
         spectrum.contributions.sum(axis=0), spectrum.densities, rtol=1e-6
     )
@@ -423,6 +437,7 @@ def test_a_seed_draws_the_kits_mismatch() -> None:
 
     first, again, other, nominal = current(1), current(1), current(2), current(None)
     assert first == again
+    # Distinctness guard: different mismatch seeds shift VDD current past rel=1e-6.
     assert first != pytest.approx(other, rel=1e-6)
     assert first != pytest.approx(nominal, rel=1e-6)
     assert Simulation(divider(), mismatch=1).conditions.mismatch == 1

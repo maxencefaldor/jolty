@@ -101,6 +101,7 @@ def test_a_bill_prices_each_device_instance_or_says_why_not() -> None:
         ("X1/R1", 0.01),
         ("X1/C1", 0.02),
     ]
+    # Default pytest.approx (rel=1e-6) covers binary float sum 0.01 + 0.02.
     assert found.total == pytest.approx(0.03)
     assert [(each.instance, each.reason) for each in found.unpriced] == [
         ("X1/R2", "no resistor of 4.7 kΩ within 0.001 is in the catalog"),

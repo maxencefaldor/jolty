@@ -73,10 +73,11 @@ def test_a_resistor_heats_itself_to_where_its_power_balances_the_sink() -> None:
     simulation = Simulation(_warmed(devices.voltage_source(10 * V)))
     point = simulation.run(OperatingPoint(record=["**"]))
     rise = _rise(10.0)
+    # Quadratic Newton operating-point solve converges below reltol=1e-3 (rel=1e-9).
     assert point.rise("junction") == pytest.approx(rise, rel=1e-9)
     hot = RESISTANCE * (1 + COEFFICIENT * rise)
     assert point.current("R1", "a") == pytest.approx(10.0 / hot, rel=1e-9)
-    # The heat into its thermal terminal is the power it dissipates, out of it.
+    # Heat into the thermal terminal equals power dissipated out of it (rel=1e-9).
     assert point.current("R1", "thermal") == pytest.approx(-100.0 / hot, rel=1e-9)
     assert point.recording.thermal == {
         "R1.thermal",
@@ -95,6 +96,8 @@ def test_a_heated_device_warms_through_its_thermal_time_constant() -> None:
     tau = SINK * STORE
     waveforms = simulation.run(Transient(stop=5 * tau * s, max_step=tau / 200 * s))
     expected = _rise(10.0, 0.0) * (1 - np.exp(-waveforms.times / tau))
+    # 1 us finite rise time (~5e-4 K shift at 50 K peak) plus trapezoidal O((h/tau)^2)
+    # discretization at max_step = tau/200 (~1e-4 K), bounded by abs=2e-3 K.
     assert waveforms.rise("junction") == pytest.approx(expected, abs=2e-3)
 
 
@@ -113,7 +116,8 @@ def test_heating_slows_a_resistors_small_signal_response_below_its_thermal_pole(
     mount = SINK / (1 + 2j * np.pi * frequencies * tau)
     warming = 2 * bias * hot * mount / (1 - bias**2 * slope * mount)
     expected = hot + bias * slope * warming
-    # The source drives its current out of its negative terminal.
+    # The source drives its current out of its negative terminal; linearized AC solve
+    # around the converged electro-thermal operating point agrees within rel=1e-9.
     assert -response.voltage("top") == pytest.approx(expected, rel=1e-9)
     slow, fast = np.abs(expected)
     assert slow > 1.4 * fast
@@ -132,6 +136,7 @@ def test_sensitivities_carry_through_the_heat() -> None:
     found = simulation.run(Sensitivity(["junction"]))
     step = 1e-4
     expected = (rise(RESISTANCE + step) - rise(RESISTANCE - step)) / (2 * step)
+    # Central difference at step=1e-4 ohm: truncation O(step^2) plus Newton rounding.
     assert found.derivative("junction", "R1", "resistance") == pytest.approx(
         expected, rel=1e-6
     )
@@ -174,6 +179,7 @@ def test_a_heated_transistor_is_the_transistor_at_the_temperature_it_reaches() -
         follower(heated=False, sink=200.0, emitter=20.0),
         temperature=celsius(27) + rise * K,
     ).run(OperatingPoint())
+    # Both runs converge independently under Newton reltol=1e-3 (within rel=1e-6).
     assert hot.voltage("e") == pytest.approx(plain.voltage("e"), rel=1e-6)
     assert hot.current("Q1", "collector") == pytest.approx(
         plain.current("Q1", "collector"), rel=1e-6
@@ -264,6 +270,7 @@ def test_a_heated_parts_power_is_what_its_electrical_terminals_take() -> None:
     # Rated 0.625 W: derated past 0.5 W, with nothing of the heat that flows.
     (derated,) = _diagnosed(simulation, "dissipates")
     stated = float(derated.split(" reaches ")[1].split(" W ")[0])
+    # Electrical power formatted in message vs terminal sum; f64 rounding (~4500 eps).
     assert stated == pytest.approx(power, rel=1e-12)
     assert derated.endswith("past 80% of its rating of 0.625 W")
 
@@ -289,6 +296,7 @@ def test_a_heated_power_mosfet_heats_its_channel_and_body_diode_together() -> No
     # The part is rated for a power, so the point records its ports by default.
     assert "X1.thermal" in point.recording.thermal
     power = point.voltage("d") * point.current("X1", "drain")
+    # Steady DC thermal balance: T_rise = R_th * P (2 K/W * P); Newton rounding.
     assert point.rise("junction") == pytest.approx(2.0 * power, rel=1e-9)
     assert point.current("X1", "thermal") == pytest.approx(-power, rel=1e-9)
 
@@ -313,7 +321,7 @@ def test_a_port_on_the_ground_sums_its_electrical_terminals_only() -> None:
         c.connect(source.negative, inner.ground, ground)
 
     point = Simulation(board()).run(OperatingPoint(record=["X1"]))
-    # 0.1 A in at the top and out at the ground, whatever heat flows to the ambient.
+    # 0.1 A in at the top and out at ground, 0.1 W * 20 K/W = 2 K; Newton rounding.
     assert point.current("X1", "ground") == pytest.approx(-0.1, rel=1e-9)
     assert point.rise("X1/junction") == pytest.approx(2.0, rel=1e-9)
 

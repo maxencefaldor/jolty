@@ -74,6 +74,7 @@ def _transient(simulation: Simulation, step: float) -> dict[str, Values]:
     )
     waveforms = simulation.run(plan, TIGHT)
     taken = nearest(waveforms.times, TIMES)
+    # Breakpoint landing tolerance: 100 * SMALLEST_STEP_FRACTION (1e-11 * step).
     assert np.allclose(waveforms.times[taken], TIMES, rtol=0, atol=1e-9 * step)
     return {
         unknown.name: waveforms.values[taken, column]
@@ -307,6 +308,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     reading = point.current("ammeter")
     into = point.current(probed.name, terminal)
     scale = max(abs(current) for current in _currents(point)) or 1.0
+    # TIGHT Newton convergence (reltol=1e-6) plus current floor across both readings.
     assert abs(reading - into) <= 1e-6 * scale + 2 * CURRENT_TOLERANCE, (
         f"the ammeter reads {reading} A, the terminal takes {into} A"
     )

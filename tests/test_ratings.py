@@ -130,6 +130,7 @@ def test_a_stress_beyond_its_rating_is_an_error() -> None:
         "beyond its rating of 16.0 V",
         found[1][1],
     )
+    # Exact linear pulse peak (20 V, 20^2 / 100 = 4 W) at breakpoint; LU rounding.
     assert power == pytest.approx(4.0, rel=1e-12)
     assert voltage == pytest.approx(20.0, rel=1e-12)
 
@@ -143,6 +144,7 @@ def test_a_stress_past_its_derating_is_a_warning() -> None:
         "past 80% of its rating of 4.5 W",
         found[0][1],
     )
+    # Exact linear pulse peak power (20^2 / 100 = 4 W) at breakpoint; LU rounding.
     assert power == pytest.approx(4.0, rel=1e-12)
     assert raised(supply(rated_power=10, rated_voltage=50)) == []
 

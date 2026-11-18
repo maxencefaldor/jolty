@@ -81,6 +81,7 @@ def test_a_kit_reads_at_each_of_its_sections(
     values = library.values()
     assert library.subcircuits or library.models
     assert all(math.isfinite(value) for value in values.values())
+    # Default SPICE nominal temperature 27 C (300.15 - 273.15); float rounding.
     assert values["temper"] == pytest.approx(27.0)
 
 
@@ -93,12 +94,13 @@ def test_sky130_scales_its_sizes_to_micrometres(kept: Settings) -> None:
 def test_temper_is_the_temperature_a_kit_reads_at(kept: Settings) -> None:
     """SG13G2's transit time reads `temper`, the temperature the reader reads at."""
     hot = kits.read(sg13g2.KIT, settings=kept, temperature=celsius(85).value)
+    # Celsius round-trip (85 + 273.15 - 273.15); default pytest.approx covers rounding.
     assert hot.values()["temper"] == pytest.approx(85.0)
     times = [
         _parameters(library.component("npn13G2"), "vbic")["forward_transit_time"]
         for library in (kits.read(sg13g2.KIT, settings=kept), hot)
     ]
-    # The card's `tf` is 2.08e-13 s times ((temper + 273) / 300) ** 0.7.
+    # Card's `tf` is 2.08e-13 s * ((temper + 273) / 300) ** 0.7; f64 power rounding.
     expected = [2.08e-13 * ((temper + 273) / 300) ** 0.7 for temper in (27.0, 85.0)]
     assert times == pytest.approx(expected, rel=1e-12)
 
@@ -160,6 +162,7 @@ def test_statistical_functions_draw_as_ngspice_defines_them() -> None:
             ]
         )
         spread = deviation.get(function, 0.1)
+        # 5 standard errors of mean (sigma/sqrt(N)) and std (sqrt(2/N)) over SAMPLES.
         assert abs(values.mean() - 2.0) < 5 * spread / SAMPLES**0.5
         assert abs(values.std() / spread - 1) < 5 * (2 / SAMPLES) ** 0.5
         if function == "limit":
@@ -454,6 +457,7 @@ def test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice(
             found = sweep.values[:, simulation.unknowns.index(unknown)]
             scale = float(np.abs(spice).max())
             tolerance = junction_tolerance(0.9, temperature.value)
+            # Derived thermal-voltage tolerance covering CODATA kT/q and diode stepping.
             compare(found, spice, unknown, scale=scale, tolerance=tolerance)
 
 
@@ -951,6 +955,7 @@ def test_a_sky130_inverter_switches_as_in_ngspice(kept: Settings, corner: str) -
         spice,
         step.value,
     )
+    # Transient O(h^2) integration and window comparison vs ngspice (1e-3 of rail).
     compare(found, spice, unknown, scale=SUPPLY, tolerance=1e-3)
 
 
@@ -1211,6 +1216,8 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
             (response.current(path, "positive") * lag / (1 + lag))
             for path in delayed.get(number, ())
         )
+        # Cross-engine AC agreement using AGREEMENT (2 * ngspice reltol) plus junction
+        # tolerance plus absolute current floor FLOOR.
         np.testing.assert_allclose(
             found_ac,
             spice_ac,
@@ -1414,6 +1421,7 @@ def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) ->
         if diode is not None and response_departed(diode):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
+        # Cross-engine AC agreement using AGREEMENT (+ JUNCTION for diodes) + FLOOR.
         np.testing.assert_allclose(
             response.values[:, column],
             spice_ac,

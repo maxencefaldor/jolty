@@ -154,6 +154,7 @@ def test_a_losss_gradient_over_the_weights_is_its_finite_differences() -> None:
             for sign in (1, -1)
         ]
         finite = (moved[0] - moved[1]) / (2 * step * value)
+        # Central difference O(step^2) = 1e-8 plus rounding eps / step ~ 1e-12.
         assert abs(gradient[path]["resistance"] - finite) <= 1e-6 * largest, path
 
 

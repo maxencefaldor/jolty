@@ -56,6 +56,7 @@ def test_each_placement_of_a_component_varies_apart() -> None:
     assert drawn != sample(varied, 3, 1)
     point = Simulation(pair(), overrides=drawn).run(OperatingPoint())
     expected = 1 / drawn["X1/R1"]["resistance"] + 1 / drawn["X2/R1"]["resistance"]
+    # Parallel resistor current 1/R1 + 1/R2; default pytest.approx covers LU rounding.
     assert -point.current("V1") == pytest.approx(expected)
 
 
@@ -68,6 +69,9 @@ def test_values_spread_within_their_tolerance() -> None:
     drawn = [sample(varied, 0, index) for index in range(4000)]
     uniform = np.array([d["X1/R1"]["resistance"] for d in drawn]) / 1e3 - 1
     normal = np.array([d["R1"]["resistance"] for d in drawn]) / 1e3 - 1
+    # Uniform support is exactly [-0.05, 0.05]; at N=4000 draws, relative std SE is
+    # sqrt(0.8/(4*4000)) ~= 0.71% (~7 SE) uniform and 1/sqrt(2*4000) ~= 1.12% (~4.5 SE)
+    # for normal, both bounded by rel=0.05.
     assert np.abs(uniform).max() <= 0.05
     assert uniform.std() == pytest.approx(0.05 / math.sqrt(3), rel=0.05)
     assert normal.std() == pytest.approx(0.01, rel=0.05)
@@ -148,6 +152,7 @@ def test_the_yield_matches_an_independent_monte_carlo_run(
     (spread,) = report.spreads
     assert spread.passing == report.yield_.passing
     assert spread.values is not None
+    # Monte Carlo mean over 2000 samples: SE ~= 1.86e-4 V, so abs=1e-3 is ~5.4 SE.
     assert spread.values.mean == pytest.approx(2.5, abs=1e-3)
 
     # The same divider, sampled by numpy alone with another seed.
@@ -208,6 +213,7 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
     level = drawn["V1"]["waveform.dc"]
     assert 4.75 <= level <= 5.25
     point = Simulation(built, overrides=drawn).run(OperatingPoint())
+    # Equal-resistor divider ratio level / 2; default pytest.approx covers rounding.
     assert point.voltage("out") == pytest.approx(level / 2)
     with pytest.raises(ValueError, match=r"gives waveform\.sine no number"):
         devices.voltage_source(5 * V).toleranced("waveform.sine", 0.05)
@@ -237,6 +243,9 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
         np.array([d[id]["resistance"] for d in drawn]) / 1e3 - 1 for id in ("R1", "R2")
     )
     capacitance = np.array([d["C1"]["capacitance"] for d in drawn]) / 1e-9 - 1
+    # Shared lot cancels: max independent +-0.001 ratio error is 1.001/0.999 - 1
+    # ~= 0.002002 <= 0.0021; at N=2000, uniform std SE is ~1% (rel=0.05 is 5 SE) and
+    # independent correlation SE is 1/sqrt(2000) ~= 0.0224 (< 0.1 is ~4.5 SE).
     assert np.abs((1 + first) / (1 + second) - 1).max() <= 0.0021
     assert first.std() == pytest.approx(0.2 / math.sqrt(3), rel=0.05)
     assert abs(np.corrcoef(first, capacitance)[0, 1]) < 0.1
@@ -273,9 +282,11 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
         np.log(np.array([d[id]["saturation_current"] for d in drawn]) / nominal)
         for id in ("Q1", "Q2")
     )
+    # Support is exact log(36) lot + 1 mV/Vt mismatch (+ 1e-12 f64 log rounding);
+    # at N=2000 draws, uniform std SE is ~1%, so rel=0.05 is ~5 standard errors.
     assert np.abs(first).max() <= math.log(36) + 1e-3 / 0.02585 + 1e-12
     assert first.std() == pytest.approx(math.log(36) / math.sqrt(3), rel=0.05)
-    # Base-emitter voltages within 2 mV of each other, at 0.02585 V per neper.
+    # Shared lot cancels: base-emitter voltages within 2 mV (+ 1e-12 f64 log rounding).
     assert np.abs(first - second).max() * 0.02585 <= 2e-3 + 1e-12
     with pytest.raises(ValueError, match="only a logarithmic one may exceed it"):
         ir.Tolerance(relative=1.5)
@@ -343,6 +354,7 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
         4.9 * d["R2"]["resistance"] / (d["R1"]["resistance"] + d["R2"]["resistance"])
         for d in drawn
     ]
+    # Linear divider extrema (50 samples); rel=1e-6 covers runner JSON & LU rounding.
     assert spread.values.minimum == pytest.approx(min(low), rel=1e-6)
     assert spread.values.maximum == pytest.approx(max(low), rel=1e-6)
 
@@ -414,10 +426,10 @@ def test_a_worst_case_sets_each_tolerance_at_the_extreme_that_worsens_it(
     # Four parameters moved at each of two conditions, then each bound's extremes.
     assert (report.toleranced, report.corners, report.runs) == (4, ("low",), 16)
     divided, matched = report.verdicts
-    # R1 up and R2 down by their whole tolerance, at the low supply.
+    # R1 up and R2 down by their whole tolerance at 4.9 V; linear DC solve rounding.
     assert divided.value == pytest.approx(4.9 * 0.99 / 2, rel=1e-9)
     assert (divided.status, divided.corner) == ("failed", "low")
-    # The die's spread cancels in the ratio, so only the parts' own tolerances count.
+    # Shared die spread cancels in ratio; linear DC solve rounding (rel=1e-9).
     assert matched.value == pytest.approx(4.9 * 0.999 / 2, rel=1e-9)
     assert not report.ok
     assert report.describe().startswith(
@@ -442,6 +454,7 @@ def test_a_worst_case_moves_a_step_of_its_tolerance() -> None:
             ),
         ),
     ]
+    # Shifted/extreme tolerance values; default pytest.approx covers float rounding.
     assert moved(varied, 0, 0.5) == {"R1": {"resistance": pytest.approx(1050.0)}}
     assert extreme(varied, [-1.0, 1.0], {("die", "resistance"): -1.0}) == {
         "R1": {"resistance": pytest.approx(900.0)},
@@ -508,6 +521,7 @@ def test_a_plans_variants_run_at_its_conditions_and_every_corner(
     lower = [800.0, 900.0, 1000.0, 1100.0, 1200.0]
     hot = [5 * each / (1100 + each) for each in lower]
     assert spread.values is not None
+    # Linear divider extrema at 127 C (R1 = 1.1 kΩ); LU rounding (~45 eps, rel=1e-14).
     assert spread.values.minimum == pytest.approx(min(hot), rel=1e-14)
     assert spread.values.maximum == pytest.approx(max(hot), rel=1e-14)
     assert spread.passing == sum(each >= 2.3 for each in hot)

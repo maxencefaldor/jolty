@@ -59,4 +59,5 @@ def test_simulations_from_many_python_threads_find_what_one_finds() -> None:
     with ThreadPoolExecutor(THREADS) as pool:
         together = list(pool.map(run, range(4 * THREADS)))
     assert all(found == alone for found in together)
+    # At stop = 5 us (tau = 1 us), 1 - exp(-5) ~= 0.99326; tail exp(-5) = 6.74e-3.
     assert np.frombuffer(alone[1])[-1] == pytest.approx(1, abs=1e-2)

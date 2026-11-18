@@ -170,6 +170,7 @@ def test_one_elaboration_serves_each_structure() -> None:
     above = Simulation.from_elaborated(elaborated, {"R1": {"resistance": 4.0}})
     assert "R1:current" not in (unknown.name for unknown in above.unknowns)
     point = above.run(OperatingPoint())
+    # Linear divider ratio 3 / (4 + 3): LU rounding within ~4500 eps (rel=1e-12).
     assert point.voltage("out") == pytest.approx(3 / 7, rel=1e-12)
     with pytest.raises(ElaborationError, match="names no number among the parameters"):
         Simulation.from_elaborated(elaborated, {"R1": {"inductance": 1.0}})

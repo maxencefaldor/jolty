@@ -88,7 +88,9 @@ def test_a_characterization_measures_tables_capacitances_and_its_error() -> None
     assert model.input_capacitances[0] > 0
     assert [arc.before for arc in model.arcs] == ["0", "1"]
     assert model.loads[0] == 0
+    # Fanout-1 load equals mean input capacitance within default pytest.approx rounding.
     assert model.loads[1] == pytest.approx(model.input_capacitances[0])
+    # Lookup-table interpolation delay error stays positive and under 10% of mean delay.
     assert 0 < model.delay_error < 0.1 * model.mean_delay()
     assert model.device().terminals == ("a", "y", "vdd", "gnd")
 

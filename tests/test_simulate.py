@@ -114,6 +114,7 @@ def test_an_operating_point_solves_kirchhoffs_laws() -> None:
     ]
     point = simulation.run(OperatingPoint())
     assert point.strategy == "direct"
+    # Linear DC divider solve; default pytest.approx (rel=1e-6) covers LU rounding.
     assert point.voltage("out") == pytest.approx(4.0)
     assert point.voltage("in", reference="out") == pytest.approx(1.0)
     assert point.current("V1") == pytest.approx(-1e-3)
@@ -131,10 +132,15 @@ def test_a_divider_divides_at_any_scale(
     circuit = divider(level * V, upper * ohm, lower * ohm)
     point = Simulation(circuit).run(OperatingPoint())
     expected = level * lower / (upper + lower)
+    # Up to 1e12 resistance ratio; rel=1e-6, abs=1e-9 covers LU scaling and vntol=1e-6.
     assert point.voltage("out") == pytest.approx(expected, rel=1e-6, abs=1e-9)
 
 
 def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
+    """Linear divider sensitivities match closed-form partial derivatives.
+
+    `rel=1e-6` / `rtol=1e-6` and default `pytest.approx` cover linear LU rounding.
+    """
     simulation = Simulation(divider(5 * V, 1 * kohm, 4 * kohm))
     found = simulation.run(Sensitivity(["out", "V1:current"]))
     assert [(p.instance, p.name, p.value) for p in found.parameters] == [
@@ -225,8 +231,10 @@ def test_a_stability_analysis_finds_the_loop_gain_and_its_margins() -> None:
     simulation = Simulation(follower())
     loop = simulation.run(Stability("VP", decade(1 * Hz, 1 * GHz, 200)))
     expected = np.array([open_loop(frequency) for frequency in loop.frequencies])
+    # Exact linear Middlebrook AC loop gain; rtol=1e-6 covers complex LU rounding.
     np.testing.assert_allclose(loop.gains, expected, rtol=1e-6)
     assert loop.probe == "VP"
+    # Closed-loop DC gain is A0 / (1 + A0) = 1000 / 1001; relative error is 9.99e-4.
     assert loop.operating_point.voltage("out") == pytest.approx(1.0, rel=1e-3)
 
     def phase_of(frequency: float) -> float:
@@ -240,6 +248,7 @@ def test_a_stability_analysis_finds_the_loop_gain_and_its_margins() -> None:
         gain_margin("loop"): -20 * math.log10(abs(open_loop(inverted))),
     }
     for measure, wanted in margins.items():
+        # Log-grid interpolation at 200 pts/decade errs <= 2e-6 rel, bounded by 1e-3.
         assert measure.read(loop).value == pytest.approx(wanted, rel=1e-3)
 
 
@@ -255,6 +264,11 @@ FOUR_KT = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
 
 
 def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> None:
+    """White thermal noise across a resistive divider agrees with `4kT * R_parallel`.
+
+    Every `rtol=1e-9` / `rel=1e-9` bound covers linear adjoint-solve and flat-spectrum
+    power-law quadrature rounding.
+    """
     upper, lower = 1e3, 3e3
     simulation = Simulation(divider(5 * V, upper * ohm, lower * ohm))
     spectrum = simulation.run(Noise("out", decade(10 * Hz, 100 * kHz, 10), source="V1"))
@@ -288,6 +302,7 @@ def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> Non
 def test_a_capacitor_holds_its_resistors_noise_to_kt_over_c() -> None:
     spectrum = Simulation(low_pass()).run(Noise("out", decade(1 * Hz, 100 * GHz, 50)))
     capacitance = 1e-9
+    # Finite band truncates 5.01e-6; 50 pts/decade power-law quadrature errs -9.34e-5.
     assert spectrum.rms() ** 2 == pytest.approx(FOUR_KT / 4 / capacitance, rel=1e-3)
 
 
@@ -334,6 +349,7 @@ def latch(c: Builder) -> None:
 
 
 def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
+    """Symmetric CMOS latch states match default Newton `voltage_tolerance` (1e-6 V)."""
     found = Simulation(latch()).run(OperatingPoints())
     assert len(found.points) == 3
     assert sorted(found.voltages("a").tolist()) == [
@@ -353,6 +369,7 @@ def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
 def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
     simulation = Simulation(low_pass())
     found = simulation.run(PoleZero(source="V1", output="out"))
+    # Dense generalized-eigenvalue (QZ) rounding; rtol=1e-9 well above ~1e-15.
     np.testing.assert_allclose(found.poles, [-1e6], rtol=1e-9)
     assert found.zeros is not None
     assert found.zeros.size == 0
@@ -405,6 +422,7 @@ def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> Non
     simulation = Simulation(held())
     poles = simulation.run(PoleZero()).poles
     expected = (-3 + np.array([-1, 1]) * 1j * math.sqrt(3)) / (2 * delay)
+    # Dense generalized-eigenvalue (QZ) rounding; rtol=1e-9 well above machine eps.
     np.testing.assert_allclose(np.sort_complex(poles), expected, rtol=1e-9)
     point = simulation.run(OperatingPoint())
     thermal_voltage = 1.380649e-23 * 300.15 / 1.602176634e-19
@@ -413,6 +431,7 @@ def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> Non
     response = simulation.run(Ac("VB", frequencies))
     s = 2j * np.pi * np.array([frequency.value for frequency in frequencies])
     bessel = 3 / ((s * delay) ** 2 + 3 * s * delay + 3)
+    # Default gmin=1e-12 S junction shunt shifts gm by 4.1e-9 relative, bounded by 1e-6.
     np.testing.assert_allclose(
         -response.current("VC"), transconductance * bessel, rtol=1e-6
     )
@@ -425,11 +444,13 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
         Sensitivity(["out"], of=DcSweep("V1", levels))
     )
     assert isinstance(swept.result, results.DcSweepResult)
+    # Linear DC sweep sensitivity solve; rtol=1e-6 covers linear LU rounding.
     np.testing.assert_allclose(
         swept.derivative("out", "R1", "resistance"),
         -swept.result.swept * lower / (upper + lower) ** 2,
         rtol=1e-6,
     )
+    # Exact zero sensitivity to overridden swept DC value; atol=1e-12 covers rounding.
     np.testing.assert_allclose(
         swept.derivative("out", "V1", "waveform.dc"), np.zeros(5), atol=1e-12
     )
@@ -441,6 +462,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     assert isinstance(filtered.result, results.AcResult)
     omega = 2 * np.pi * filtered.result.frequencies
     corner = 1 + 1j * omega * resistance * capacitance
+    # Linear AC sensitivity solve; rtol=1e-6 covers complex LU rounding.
     np.testing.assert_allclose(
         filtered.derivative("out", "C1", "capacitance"),
         -1j * omega * resistance / corner**2,
@@ -461,6 +483,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     expected = -capacitance * (k_slope + k * times[after] / tau**2) * decay
     found = charging.derivative("out", "R1", "resistance")
     assert isinstance(found, np.ndarray)
+    # Trapezoidal sensitivity discretization at max_step=1 ns errs 4.2e-7 rel max.
     np.testing.assert_allclose(
         found[after], expected, atol=1e-4 * np.abs(expected).max()
     )
@@ -481,6 +504,7 @@ def test_results_read_the_current_into_every_terminal() -> None:
         "R2.a",
         "R2.b",
     )
+    # Linear DC divider terminal currents; default pytest.approx covers LU rounding.
     assert point.current("R1", "a") == pytest.approx(1e-3)
     assert point.current("R2", "b") == pytest.approx(-1e-3)
     assert point.current("V1", "positive") == pytest.approx(-1e-3)
@@ -492,6 +516,7 @@ def test_results_read_the_current_into_every_terminal() -> None:
     ):
         point.current("R1", "aa")
     sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 3), record=EVERYTHING))
+    # Linear DC sweep; default rtol=1e-7 and atol=1e-15 (~4.5 eps at 0 V) cover LU.
     np.testing.assert_allclose(sweep.current("R2", "a"), [0, 5e-4, 1e-3], atol=1e-15)
 
 
@@ -519,6 +544,11 @@ def common_source(c: Builder) -> None:
 
 
 def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
+    """Small-signal entries and device variables match analytical Level-1 MOSFET values.
+
+    Default `pytest.approx` (`rel=1e-6`) and `assert_allclose` (`rtol=1e-7`,
+    `atol=1e-12` at cutoff zero) cover default Newton convergence (`vntol=1e-6 V`).
+    """
     simulation = Simulation(common_source())
     recorded = ["M1", "RD"]
     point = simulation.run(OperatingPoint(record=recorded))
@@ -583,6 +613,7 @@ def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
         "X2.bottom",
     )
     assert point.recording.devices == ()
+    # Linear DC parallel dividers; default pytest.approx (rel=1e-6) covers LU rounding.
     assert point.current("X1", "top") == pytest.approx(2e-3)
     assert point.current("X2", "bottom") == pytest.approx(-2e-3)
     with pytest.raises(
@@ -597,6 +628,7 @@ def test_a_result_records_nothing_beyond_the_unknowns_by_default() -> None:
         point = simulation.run(OperatingPoint(record=record))
         assert point.recording == results.Recording()
         assert point.currents.size == point.conductances.size == 0
+        # Linear DC divider; default pytest.approx (rel=1e-6) covers LU rounding.
         assert point.current("V1") == pytest.approx(-1e-3)
         with pytest.raises(
             KeyError,
@@ -629,6 +661,7 @@ def test_a_record_names_instances_and_patterns_of_their_paths() -> None:
     point = simulation.run(OperatingPoint(record=["X1/**", "X2"]))
     assert [device.path for device in point.recording.devices] == ["X1/R1", "X1/R2"]
     assert point.recording.summed_terminals == ("X2.top", "X2.bottom")
+    # Linear DC parallel dividers; default pytest.approx (rel=1e-6) covers LU rounding.
     assert point.current("X1/R1", "a") == pytest.approx(2e-3)
     assert point.current("X2", "top") == pytest.approx(2e-3)
     starred = simulation.run(OperatingPoint(record=["X?/R1"]))
@@ -703,7 +736,9 @@ def test_a_transient_steps_onto_the_times_it_is_given() -> None:
         assert time.value in waveforms.times
     capacitor = waveforms.current("C1", "a")
     resistor = waveforms.current("R1", "b")
+    # KCL at out under default transient tolerances (reltol=1e-3, abstol=1e-12 A).
     np.testing.assert_allclose(capacitor + resistor, 0, atol=1e-9)
+    # Constitutive Q = C * V; default assert_allclose (rtol=1e-7) covers float rounding.
     np.testing.assert_allclose(
         waveforms.charge("C1", "a"), 1e-9 * waveforms.voltage("out")
     )
@@ -731,6 +766,7 @@ def test_a_periodic_steady_state_is_found_at_once() -> None:
     assert (steady.period, steady.periods) == (1e-3, 2)
     lag = 2 * math.pi * 1e3 * 1e3 * 10e-6
     expected = np.sin(2 * math.pi * 1e3 * steady.times - math.atan(lag))
+    # Trapezoidal discretization at max_step=T/200 errs 1.71e-6 V on 0.0159 V peak.
     np.testing.assert_allclose(
         steady.voltage("out"), expected / math.hypot(1, lag), atol=1e-5
     )
@@ -739,6 +775,7 @@ def test_a_periodic_steady_state_is_found_at_once() -> None:
 def test_a_dc_sweep_solves_each_level() -> None:
     simulation = Simulation(divider(0 * V, 1 * kohm, 1 * kohm))
     sweep = simulation.run(DcSweep("V1", linear(-1 * V, 1 * V, 5)))
+    # Uniform sweep grid and linear 1:1 divider; default rtol=1e-7, atol=1e-12 for 0 V.
     np.testing.assert_allclose(sweep.swept, [-1, -0.5, 0, 0.5, 1])
     np.testing.assert_allclose(sweep.voltage("out"), sweep.swept / 2, atol=1e-12)
 
@@ -747,9 +784,11 @@ def test_a_diode_conducts_forward_and_blocks_in_reverse() -> None:
     sweep = Simulation(diode_load()).run(DcSweep("V1", linear(-5 * V, 5 * V, 101)))
     anode = sweep.voltage("anode")
     assert np.all(np.diff(anode) > 0)
+    # Reverse leakage + gmin shunt (~5e-12 A * 1 kohm = 5e-9 V); matches vntol=1e-6.
     assert anode[0] == pytest.approx(-5.0, abs=1e-6)
     assert 0.6 < anode[-1] < 0.8
     current = -sweep.current("V1")
+    # Ohm's law on R1; default pytest.approx (rel=1e-6) covers Newton KCL residual.
     assert current[-1] == pytest.approx((5 - anode[-1]) / 1e3)
 
 
@@ -781,6 +820,7 @@ def test_a_resistance_drifts_with_its_temperature_coefficients() -> None:
         c.connect(source.negative, load.b, ground)
 
     point = Simulation(drifting(), celsius(75)).run(OperatingPoint())
+    # Linear resistor temperature polynomial; default pytest.approx covers rounding.
     assert -point.current("V1") == pytest.approx(1e-3 / (1 + 50e-3 + 2.5e-3))
 
 
@@ -803,6 +843,7 @@ def test_a_device_drifts_to_a_temperature_of_its_own() -> None:
     ):
         simulation = Simulation(apart(warmed, quiet), temperature)
         point = simulation.run(OperatingPoint())
+        # Linear divider with +50 K drift; rel=1e-12 (~4500 eps) covers LU rounding.
         assert point.voltage("out") == pytest.approx(1 / 2.05, rel=1e-12)
     # Held at 0 K, the lower resistor makes no noise: the upper one's alone reaches out.
     spectrum = simulation.run(Noise("out", [1 * kHz]))
@@ -820,6 +861,7 @@ def test_the_ac_response_of_a_low_pass_filter() -> None:
     frequencies = [*decade(1 * kHz, 1e5 * kHz, 10), cutoff * kHz / 1e3]
     response = Simulation(low_pass()).run(Ac("V1", frequencies))
     expected = 1 / (1 + 1j * response.frequencies / cutoff)
+    # Linear RC complex AC solve; rtol=1e-9 and default pytest.approx cover LU rounding.
     np.testing.assert_allclose(response.voltage("out"), expected, rtol=1e-9)
     assert abs(response.voltage("out")[-1]) == pytest.approx(1 / math.sqrt(2))
     assert response.operating_point.voltage("out") == pytest.approx(0.0)
@@ -858,6 +900,7 @@ def test_a_transformer_steps_its_voltage_by_its_coupled_inductances() -> None:
     # v1 = s·L1·i1 + s·M·i2 and out = s·M·i1 + s·L2·i2, with i2 = -out / R.
     gain = 1 / (primary * (1 + s * secondary / load) / mutual - s * mutual / load)
     stepped_up = response.voltage("out") / response.voltage("primary")
+    # Linear AC coupled-inductor solve; rtol=1e-9 covers complex LU rounding.
     np.testing.assert_allclose(stepped_up, gain, rtol=1e-9)
 
 
@@ -867,6 +910,7 @@ def test_coupled_inductances_take_overrides_and_sensitivities_by_path() -> None:
     replaced = {"T1": {"windings.0.inductance": 1.2e-3, "couplings.0.coefficient": 0.9}}
     overridden = Simulation(stepped(1e-3, 4e-3, 0.95), overrides=replaced)
     rebuilt = Simulation(stepped(1.2e-3, 4e-3, 0.9))
+    # Identical linear AC circuits; rtol=1e-12 (~4500 eps) covers complex LU rounding.
     np.testing.assert_allclose(
         overridden.run(Ac("V1", frequencies)).voltage("out"),
         rebuilt.run(Ac("V1", frequencies)).voltage("out"),
@@ -881,6 +925,7 @@ def test_coupled_inductances_take_overrides_and_sensitivities_by_path() -> None:
 
     expected = (out(0.95 + step) - out(0.95 - step)) / (2 * step)
     exact = found.derivative("out", "T1", "couplings.0.coefficient")
+    # Central difference at step=1e-6: truncation O(step^2) + cancellation O(eps/step).
     np.testing.assert_allclose(exact, expected, rtol=1e-6)
 
 
@@ -909,7 +954,9 @@ def test_the_step_response_of_a_low_pass_filter() -> None:
     )
     late = waveforms.times > 0.1e-6
     exact = 1 - np.exp(-(waveforms.times[late] - 0.5e-9) / 1e-6)
+    # Adaptive transient at reltol=1e-6 (85 steps) accumulates max 1.49e-4 V LTE error.
     np.testing.assert_allclose(waveforms.voltage("out")[late], exact, atol=2e-4)
+    # Stop-time landing; default pytest.approx (rel=1e-6) covers float accumulation.
     assert waveforms.times[-1] == pytest.approx(5e-6)
     assert waveforms.statistics.accepted == len(waveforms.times) - 1
 
@@ -956,6 +1003,7 @@ def test_a_small_signal_response_is_the_slope_of_the_dc_transfer(
     sweep = simulation.run(DcSweep("V1", levels), tight)
     slopes = (sweep.values[1] - sweep.values[0]) / (2 * step)
     response = simulation.run(Ac("V1", [1 * Hz]), tight)
+    # Central difference at step=1e-4 V errs ~1e-5 (see above); atol=1e-12 for zeros.
     np.testing.assert_allclose(response.values[0].real, slopes, rtol=1e-4, atol=1e-12)
     assert abs(response.voltage("out")[0]) > 10  # The stage amplifies.
 
@@ -1041,6 +1089,7 @@ def test_a_current_source_sweeps_in_amperes() -> None:
         c.connect(source.positive, resistor.b, ground)
 
     simulation = Simulation(biased())
+    # Linear I * R DC solve; default pytest.approx / assert_allclose cover LU rounding.
     assert simulation.run(OperatingPoint()).voltage("top") == pytest.approx(1.0)
     sweep = simulation.run(DcSweep("I1", [2 * mA, 1 * A]))
     np.testing.assert_allclose(sweep.voltage("top"), [2.0, 1000.0])

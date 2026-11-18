@@ -182,6 +182,8 @@ def test_a_loop_gain_states_its_margins() -> None:
     loop = results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point)
     summary = report.report("loop", loop, max_unknowns=10)
     assert isinstance(summary, report.StabilityReport)
+    # Log-linear crossover at 1000 pts/decade (ratio 10^1e-3 ~= 1.0023);
+    # O(h^2) chord error is bounded by rel=1e-4.
     assert summary.crossover == pytest.approx(math.sqrt(5 ** (2 / 3) - 1), rel=1e-4)
     assert summary.describe() == (
         "loop: loop gain through VP at 4001 frequencies from 10 mHz to 100 Hz\n"
@@ -328,14 +330,17 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
     )
     summary = report.report("hiss", spectrum, max_unknowns=1)
     assert isinstance(summary, report.NoiseReport)
-    # Each source's noise is a power law, integrated exactly; their sum is none.
+    # Each source's noise is a power law, integrated exactly; their sum is not, so
+    # piecewise power-law quadrature across 3 points (2 decades/segment) has ~1% error.
     white_power = 16e-18 * (1e5 - 10)
     flicker_power = 1e-15 * math.log(1e4)
     assert summary.rms == spectrum.rms()
     assert summary.rms == pytest.approx(math.sqrt(white_power + flicker_power), 1e-2)
+    # Input gain is constant 0.5, so referred RMS = 2 * rms (pytest.approx rounding).
     assert summary.referred == pytest.approx(2 * spectrum.rms())
     (noisiest,) = summary.contributions
     assert (noisiest.instance, noisiest.name) == ("R1", "thermal")
+    # Single power-law thermal noise integrates exactly; pytest.approx covers rounding.
     assert noisiest.rms == pytest.approx(math.sqrt(white_power))
     assert noisiest.share == pytest.approx(white_power / (white_power + flicker_power))
     assert summary.unlisted == 1
@@ -371,6 +376,7 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
     )
     summary = report.report("pz", found, max_unknowns=10)
     assert isinstance(summary, report.PoleZeroReport)
+    # Pole damping ratio -Re(-3e3 + 4e3j) / |-3e3 + 4e3j| = 3/5 = 0.6; float rounding.
     assert [root.damping for root in summary.poles] == [pytest.approx(0.6), 1.0]
     assert summary.zeros is not None
     assert summary.zeros[0].damping is None

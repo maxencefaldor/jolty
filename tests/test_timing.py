@@ -81,6 +81,7 @@ def test_intervals_apart_are_separated_and_a_resolution_is_their_inner_widths() 
     assert slower.separated(before)
     assert not before.separated(touching)
     # Above: 0.02 of the first's and 0.02 of the second's; below: 0.01 and 0.01.
+    # Default pytest.approx (rel=1e-6) covers binary float subtraction rounding.
     assert before.resolution(slower) == pytest.approx(0.04)
 
 

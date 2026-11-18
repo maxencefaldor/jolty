@@ -32,10 +32,12 @@ def test_heat_raises_a_net_by_its_flow_through_the_resistance_to_the_ambient() -
     simulation = Simulation(heated())
     assert [(u.name, u.nature) for u in simulation.unknowns] == [("hot", "temperature")]
     point = simulation.run(OperatingPoint())
+    # Linear DC thermal solve (1 W * 50 K/W = 50 K): LU rounding (~4500 eps).
     assert point.rise("hot") == pytest.approx(50.0, rel=1e-12)
     with pytest.raises(KeyError, match="'hot' holds a temperature, not a voltage"):
         point.voltage("hot")
     waveforms = simulation.run(Transient(stop=100 * ms))
+    # Steady DC thermal state held across transient steps; rel=1e-9 covers accumulation.
     assert waveforms.rise("hot")[-1] == pytest.approx(50.0, rel=1e-9)
     assert default_traces(simulation.unknowns) == ("hot",)
     figure = plot("warm", waveforms, ["hot"])

@@ -174,12 +174,15 @@ def test_vteams_loop_is_the_closed_form_of_its_thresholds(
     waveforms = _run(_vteam(exponent, law))
     times = waveforms.times
     state = _vteam_state(times, exponent)
+    # TIGHT transient (max_step = 1e-4 / f): threshold quadrature error O(h^2).
     np.testing.assert_allclose(waveforms.state("M1:state"), state, rtol=0, atol=1e-6)
     voltage = AMPLITUDE * np.sin(2 * math.pi * FREQUENCY * times)
     expected = voltage / _resistance(state, law)
+    # State error atol=1e-6 mapped to current via peak conductance 1 / ON.
     np.testing.assert_allclose(
         waveforms.current("M1", "positive"), expected, rtol=0, atol=1e-6 * ON**-1
     )
+    # Exponential R(x) amplifies state error by ln(OFF/ON) ~= 4.6 -> rtol=1e-5.
     np.testing.assert_allclose(
         waveforms.variable("M1", "resistance"), _resistance(state, law), rtol=1e-5
     )
@@ -196,8 +199,10 @@ def test_below_its_thresholds_vteams_memristor_is_a_resistor() -> None:
         state=START,
     )
     waveforms = _run(quiet)
+    # Zero drift below thresholds; atol=1e-9 matches TIGHT vntol/state floor.
     np.testing.assert_allclose(waveforms.state("M1:state"), START, rtol=0, atol=1e-9)
     voltage = waveforms.voltage("in")
+    # Constant current V / R(START); rtol=1e-9, atol=1e-15 cover rounding & floor.
     np.testing.assert_allclose(
         waveforms.current("M1", "positive"),
         voltage / _resistance(np.array(START), "linear"),
@@ -239,10 +244,12 @@ def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
         PeriodicSteadyState(period * s, max_step=5e-3 * period * s)
     )
     assert steady.periods == 2
+    # Neutral state stays fixed across shooting steps within f64 rounding (~4.5 eps).
     np.testing.assert_allclose(steady.state("M1:state"), START, rtol=0, atol=1e-15)
     omega = 2 * math.pi * FREQUENCY
     lag = omega * float(_resistance(np.array(START), "linear")) * 100e-9
     expected = np.sin(omega * steady.times - math.atan(lag)) / math.hypot(1, lag)
+    # Trapezoidal O(h^2) phase/amplitude error at max_step = 5e-3 * T (default reltol).
     np.testing.assert_allclose(steady.voltage("out"), AMPLITUDE * expected, atol=1e-3)
 
 
@@ -326,10 +333,13 @@ def test_hps_resistance_is_the_square_root_of_a_line_in_the_flux() -> None:
     flux = AMPLITUDE / omega * (1 - np.cos(omega * waveforms.times))
     start = float(_resistance(np.array(START), "linear", HP_ON, HP_OFF))
     resistance = np.sqrt(start**2 + 2 * (HP_OFF - HP_ON) * flux / _hp_charge())
+    # TIGHT transient (reltol=1e-6) integration of flux ODE at max_step = 1e-4 / f:
+    # Trapezoidal O(h^2) error bounded by rtol=1e-5 in resistance, current, and state.
     np.testing.assert_allclose(
         waveforms.variable("M1", "resistance"), resistance, rtol=1e-5
     )
     voltage = AMPLITUDE * np.sin(omega * waveforms.times)
+    # Resistance error rtol=1e-5 mapped to current peak AMPLITUDE / start.
     np.testing.assert_allclose(
         waveforms.current("M1", "positive"),
         voltage / resistance,
@@ -337,6 +347,7 @@ def test_hps_resistance_is_the_square_root_of_a_line_in_the_flux() -> None:
         atol=1e-5 * AMPLITUDE / start,
     )
     state = (resistance - HP_ON) / (HP_OFF - HP_ON)
+    # Discrete spacing around peak flux (1e-4 of period) bounds peak error < 1e-5.
     assert state.max() == pytest.approx(START + SWING, abs=1e-5)
 
 
@@ -370,12 +381,15 @@ def test_an_operating_point_holds_the_state_and_shows_its_rate() -> None:
     sweep = simulation.run(
         DcSweep("V1", [level * V for level in levels], record=MEMRISTOR)
     )
+    # DC sweep leaves state fixed; linear/algebraic variables match within LU rounding.
     np.testing.assert_allclose(sweep.state("M1:state"), START, rtol=0, atol=1e-12)
     resistance = ON + (OFF - ON) * START
+    # Default assert_allclose (rtol=1e-7) covers linear state-to-resistance rounding.
     np.testing.assert_allclose(sweep.variable("M1", "resistance"), resistance)
     cell = np.array(levels) * resistance / (resistance + 1e3)
     overdrive = np.maximum(np.abs(cell) / THRESHOLD - 1, 0)
     expected = np.sign(cell) * _vteam_rate(1) * overdrive
+    # Analytic piecewise-linear rate vs closed-form divider: LU rounding (1e-12).
     np.testing.assert_allclose(sweep.variable("M1", "rate"), expected, rtol=1e-12)
 
 
@@ -387,6 +401,7 @@ def test_held_past_a_threshold_its_state_runs_to_the_bound(
     waveforms = simulation.run(Transient(1e-3 * s, record=MEMRISTOR), TIGHT)
     state = waveforms.state("M1:state")
     assert state[0] == START
+    # TIGHT transient (reltol=1e-6) saturating at hard window bound 0 or 1.
     assert state[-1] == pytest.approx(bound, abs=1e-6)
     assert np.all((state >= -1e-6) & (state <= 1 + 1e-6))
 
@@ -405,6 +420,7 @@ def test_its_small_signal_resistance_is_the_one_its_state_sets() -> None:
     simulation = Simulation(divider())
     response = simulation.run(Ac("V1", [1.0 * Hz, 1e6 * Hz]))
     cell = ON + (OFF - ON) * START
+    # Linearized AC divider gain cell / (cell + ON): complex LU rounding (rtol=1e-9).
     np.testing.assert_allclose(
         np.abs(response.voltage("out")), cell / (cell + ON), rtol=1e-9
     )
@@ -438,6 +454,7 @@ def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
     for name, difference in differences.items():
         derivatives = np.asarray(found.derivative("M1:state", "M1", name), dtype=float)
         derivative = float(derivatives[-1])
+        # Central difference (step=1e-5) over TIGHT transient (truncation + shifts).
         assert derivative == pytest.approx(difference, rel=1e-5), name
 
 
@@ -459,4 +476,5 @@ def test_a_spec_reads_a_state_as_a_plain_number() -> None:
     (verdict,) = evaluate(Specs([requirement]), ["point"], {"point": point})
     assert str(requirement) == "M1:state in point ≥ 0.29 and ≤ 0.31"
     assert (verdict.status, verdict.unit) == ("passed", "")
+    # DC operating point holds initial state START; default pytest.approx rounding.
     assert verdict.value == pytest.approx(START)

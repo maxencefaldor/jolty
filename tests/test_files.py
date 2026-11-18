@@ -341,6 +341,7 @@ def test_results_files_hold_sensitivities_mismatches_and_what_they_differentiate
     spread = read["spread"]
     assert isinstance(spread, results.MismatchResult)
     assert spread.random_variables == (SPREAD,)
+    # Exact float round-trip through .npz archive plus quadrature (~5 eps rounding).
     assert spread.standard_deviation("out") == pytest.approx(0.004, rel=1e-15)
     assert isinstance(spread.result, results.OperatingPointResult)
     loop = read["loop"]
