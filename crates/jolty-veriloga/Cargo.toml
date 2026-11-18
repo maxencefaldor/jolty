@@ -13,15 +13,15 @@ categories.workspace = true
 [features]
 default = ["kernels"]
 # The kernels compiled from Verilog-A, which the compiler itself does not need.
-kernels = []
+kernels = ["dep:schemars", "dep:serde"]
 # The tests of the models compiled from sources the repository does not hold, which
 # `tests/test_veriloga.py` fetches and compiles into `tests/fetched/kernels/` first.
 fetched = []
 
 [dependencies]
 jolty-models.workspace = true
-schemars.workspace = true
-serde.workspace = true
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 allocation-counter.workspace = true
@@ -29,6 +29,8 @@ criterion.workspace = true
 jolty-engine.workspace = true
 jolty-ir.workspace = true
 jolty-models = { workspace = true, features = ["testing"] }
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [[bench]]

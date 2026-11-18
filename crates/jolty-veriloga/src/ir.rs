@@ -2014,6 +2014,9 @@ impl Stmt {
                 }
                 for noise in noise {
                     visit(&noise.power);
+                    if let Some(exponent) = &noise.exponent {
+                        visit(exponent);
+                    }
                 }
             }
             Self::If(_, condition, then, otherwise) => {
@@ -3529,6 +3532,54 @@ mod tests {
         assert_eq!(
             refusal("x = 2.0;\nI(a, b) <+ x * white_noise(1.0);"),
             "white_noise is not compiled yet"
+        );
+    }
+
+    #[test]
+    fn stmt_walk_visits_flicker_noise_exponent() {
+        let reassigned_module = resolve_source(
+            "real e;\n\
+             analog begin\n\
+                 e = 1.0;\n\
+                 I(a, b) <+ V(a, b) / 100.0;\n\
+                 I(a, b) <+ flicker_noise(1e-20, e, \"flicker\");\n\
+                 e = 2.0;\n\
+             end",
+        );
+        let e_index = reassigned_module
+            .variables
+            .iter()
+            .position(|(name, _)| name == "e")
+            .expect("variable e");
+        assert!(
+            reassigned_module.dynamic[e_index],
+            "reassigned variable read by flicker_noise exponent must be marked dynamic"
+        );
+        assert_eq!(
+            refusal(
+                "x = 1.0;\n\
+                 I(a, b) <+ V(a, b) / 100.0;\n\
+                 I(a, b) <+ flicker_noise(1e-20, x, \"flicker\");\n\
+                 x = 2.0;"
+            ),
+            "a flicker exponent that depends on the probes is not compiled yet"
+        );
+
+        let probed_module = resolve_source(
+            "branch (a, b) br;\n\
+             analog begin\n\
+                 V(br) <+ 1.0;\n\
+                 I(a, b) <+ flicker_noise(1e-20, I(br), \"flicker\");\n\
+             end",
+        );
+        let br_index = probed_module
+            .branches
+            .iter()
+            .position(|branch| branch.name == "br")
+            .expect("branch br");
+        assert!(
+            probed_currents(&probed_module).contains(&br_index),
+            "probed current inside flicker_noise exponent must be discovered by Stmt::walk"
         );
     }
 }

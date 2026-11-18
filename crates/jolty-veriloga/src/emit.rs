@@ -363,8 +363,10 @@ impl Activity {
 struct Facts<'m> {
     module: &'m Module,
     /// The conditionals whose conditions are static and that hold a contribution to a
-    /// branch's flow or potential, by number, with their index among the shape's.
+    /// branch's flow or potential, by number, with their index among `conditions`.
     shaped: BTreeMap<usize, usize>,
+    /// The distinct static conditions that shape the kernel, in order of first appearance.
+    conditions: Vec<Expr>,
     /// Whether each branch adds to the equations only under some of the shape's
     /// conditions, with its index among the shape's flags, for its flow or potential and
     /// for its collapse.
@@ -784,6 +786,7 @@ impl<'m> Facts<'m> {
         let mut facts = Self {
             module,
             shaped: BTreeMap::new(),
+            conditions: Vec::new(),
             flags: BTreeMap::new(),
             warned: Vec::new(),
             probed: probed_currents(module),
@@ -796,14 +799,25 @@ impl<'m> Facts<'m> {
         Ok(facts)
     }
 
-    /// Numbers the conditionals of `statements` that shape the kernel.
+    /// Numbers the conditionals of `statements` that shape the kernel, sharing an index
+    /// among identical condition expressions.
     fn find_shapes(&mut self, statements: &[Stmt]) {
         for statement in statements {
             match statement {
                 Stmt::If(id, condition, then, otherwise) => {
                     let holds = then.iter().chain(otherwise).any(stamps);
                     if holds && !self.module.is_dynamic(condition) {
-                        let index = self.shaped.len();
+                        let index = if let Some(index) = self
+                            .conditions
+                            .iter()
+                            .position(|existing| existing == condition)
+                        {
+                            index
+                        } else {
+                            let index = self.conditions.len();
+                            self.conditions.push(condition.clone());
+                            index
+                        };
                         self.shaped.insert(*id, index);
                     }
                     self.find_shapes(then);
@@ -901,16 +915,6 @@ impl<'m> Facts<'m> {
         }
         // An unconditional site makes its branch always active: no flag.
         if !shaped {
-            let always: Vec<_> = self
-                .flags
-                .iter()
-                .filter(|(_, index)| **index == usize::MAX)
-                .map(|(key, _)| *key)
-                .collect();
-            for key in always {
-                self.flags.remove(&key);
-                self.flags.insert(key, usize::MAX);
-            }
             let mut index = 0;
             for value in self.flags.values_mut() {
                 if *value != usize::MAX {
@@ -1207,7 +1211,7 @@ impl<'m> Facts<'m> {
         } else {
             ""
         };
-        if prepared.fields.is_empty() && self.shaped.is_empty() {
+        if prepared.fields.is_empty() && self.conditions.is_empty() {
             return format!(
                 "/// A [`{}`]'s numbers at its temperature: what depends on no probe.\n#[derive(Debug, Clone, Copy)]\npub struct {}{type_parameters} {{}}\n\n",
                 names.kernel, names.prepared
@@ -1220,10 +1224,10 @@ impl<'m> Facts<'m> {
         for (name, kind, _) in &prepared.fields {
             out.push(format!("    {name}: {},\n", rust_type(kind)));
         }
-        if !self.shaped.is_empty() {
+        if !self.conditions.is_empty() {
             out.push(format!(
                 "    /// The conditions that shape the kernel.\n    conditions: [bool; {}],\n",
-                self.shaped.len()
+                self.conditions.len()
             ));
         }
         out.push("}\n\n".to_owned());
@@ -1250,8 +1254,8 @@ impl<'m> Facts<'m> {
         for key in entries.keys() {
             out.push(format!("    {}: usize,\n", self.entry_name(*key)));
         }
-        if !self.shaped.is_empty() {
-            out.push(format!("    conditions: [bool; {}],\n", self.shaped.len()));
+        if !self.conditions.is_empty() {
+            out.push(format!("    conditions: [bool; {}],\n", self.conditions.len()));
         }
         if self.flag_count() > 0 {
             out.push(format!("    active: [bool; {}],\n", self.flag_count()));
@@ -1380,7 +1384,7 @@ impl<'m> Facts<'m> {
         if flags > 0 {
             lines.push(format!("    let mut active = [false; {flags}];"));
             let mut walked = Vec::new();
-            self.walk_layout(&module.analog, &mut walked);
+            self.walk_layout(&module.analog, &mut walked, &mut BTreeSet::new());
             print(&walked, 1, &mut lines);
         }
         let active = |(branch, site): (usize, Site)| {
@@ -1418,7 +1422,7 @@ impl<'m> Facts<'m> {
                 self.entry_claim(*key, users)
             ));
         }
-        if !self.shaped.is_empty() {
+        if !self.conditions.is_empty() {
             fields.push("conditions: prepared.conditions".to_owned());
         }
         if flags > 0 {
@@ -1429,7 +1433,7 @@ impl<'m> Facts<'m> {
             names.shape,
             fields.join(", ")
         ));
-        let prepared = if self.shaped.is_empty() {
+        let prepared = if self.conditions.is_empty() {
             "_"
         } else {
             "prepared"
@@ -1628,9 +1632,9 @@ impl<'m> Facts<'m> {
         lines
     }
 
-    /// The layout's walk of `statements`: each flag set where the shape's conditions
+    /// The layout's walk of `statements`: each flag set once where the shape's conditions
     /// make its branch active.
-    fn walk_layout(&self, statements: &[Stmt], out: &mut Vec<Rust>) {
+    fn walk_layout(&self, statements: &[Stmt], out: &mut Vec<Rust>, active: &mut BTreeSet<usize>) {
         for statement in statements {
             match statement {
                 Stmt::Contribute {
@@ -1642,29 +1646,33 @@ impl<'m> Facts<'m> {
                 } if resistive.is_some() || reactive.is_some() => {
                     let site =
                         self.site(*branch, *potential, resistive.as_ref(), reactive.as_ref());
-                    if let Activity::Flag(index) = self.flag(*branch, site) {
+                    if let Activity::Flag(index) = self.flag(*branch, site)
+                        && active.insert(index)
+                    {
                         out.push(Rust::Line(format!("active[{index}] = true;")));
                     }
                 }
-                Stmt::If(id, _, then, otherwise) => {
-                    let (mut inner_then, mut inner_otherwise) = (Vec::new(), Vec::new());
-                    self.walk_layout(then, &mut inner_then);
-                    self.walk_layout(otherwise, &mut inner_otherwise);
-                    match self.shaped.get(id) {
-                        Some(index) if !(inner_then.is_empty() && inner_otherwise.is_empty()) => {
+                Stmt::If(id, _, then, otherwise) => match self.shaped.get(id) {
+                    Some(index) => {
+                        let (mut inner_then, mut inner_otherwise) = (Vec::new(), Vec::new());
+                        let mut then_active = active.clone();
+                        let mut otherwise_active = active.clone();
+                        self.walk_layout(then, &mut inner_then, &mut then_active);
+                        self.walk_layout(otherwise, &mut inner_otherwise, &mut otherwise_active);
+                        if !(inner_then.is_empty() && inner_otherwise.is_empty()) {
                             out.push(Rust::If(
                                 (format!("prepared.conditions[{index}]"), ATOM),
                                 inner_then,
                                 inner_otherwise,
                             ));
                         }
-                        _ => {
-                            out.extend(inner_then);
-                            out.extend(inner_otherwise);
-                        }
                     }
-                }
-                Stmt::While(_, body) => self.walk_layout(body, out),
+                    None => {
+                        self.walk_layout(then, out, active);
+                        self.walk_layout(otherwise, out, active);
+                    }
+                },
+                Stmt::While(_, body) => self.walk_layout(body, out, active),
                 Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
             }
         }
@@ -1749,7 +1757,6 @@ impl<'m> Facts<'m> {
         (mode, fields): (Mode, &[(String, Kind, Expr)]),
         body: &mut Vec<Rust>,
     ) -> Result<Vec<String>, Error> {
-        let module = self.module;
         let mut values = Vec::new();
         for (name, kind, expr) in fields {
             let operand = emitter.expression(expr, body)?;
@@ -1760,13 +1767,11 @@ impl<'m> Facts<'m> {
                 format!("{name}: {}", operand.code)
             });
         }
-        if mode == Mode::Prepare && !self.shaped.is_empty() {
-            let mut conditions = vec![String::new(); self.shaped.len()];
-            let mut found = BTreeMap::new();
-            collect_conditions(&module.analog, &self.shaped, &mut found);
-            for (index, condition) in found {
-                let operand = emitter.expression(&condition, body)?;
-                conditions[index] = emitter.truth(operand).0;
+        if mode == Mode::Prepare && !self.conditions.is_empty() {
+            let mut conditions = Vec::with_capacity(self.conditions.len());
+            for condition in &self.conditions {
+                let operand = emitter.expression(condition, body)?;
+                conditions.push(emitter.truth(operand).0);
             }
             values.push(format!("conditions: [{}]", conditions.join(", ")));
         }
@@ -1791,8 +1796,8 @@ impl<'m> Facts<'m> {
             reads(expr, module, &mut roots);
         }
         if mode == Mode::Prepare {
-            for statement in &module.analog {
-                conditions_of_shapes(statement, &self.shaped, module, &mut roots);
+            for condition in &self.conditions {
+                reads(condition, module, &mut roots);
             }
         }
         emitter.analog = prune(&module.analog, module, mode, &mut roots.clone());
@@ -2073,53 +2078,6 @@ fn static_tasks(statements: &[Stmt], module: &Module, dynamic: bool) -> Result<(
     Ok(())
 }
 
-/// The condition of each conditional of `statements` that shapes the kernel, by its
-/// index among the shape's.
-fn collect_conditions(
-    statements: &[Stmt],
-    shaped: &BTreeMap<usize, usize>,
-    found: &mut BTreeMap<usize, Expr>,
-) {
-    for statement in statements {
-        match statement {
-            Stmt::If(id, condition, then, otherwise) => {
-                if let Some(&index) = shaped.get(id) {
-                    found.insert(index, condition.clone());
-                }
-                collect_conditions(then, shaped, found);
-                collect_conditions(otherwise, shaped, found);
-            }
-            Stmt::While(_, body) => collect_conditions(body, shaped, found),
-            Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
-        }
-    }
-}
-
-/// Adds the variables the conditions that shape the kernel read to `roots`.
-fn conditions_of_shapes(
-    statement: &Stmt,
-    shaped: &BTreeMap<usize, usize>,
-    module: &Module,
-    roots: &mut BTreeSet<usize>,
-) {
-    match statement {
-        Stmt::If(id, condition, then, otherwise) => {
-            if shaped.contains_key(id) {
-                reads(condition, module, roots);
-            }
-            for inner in then.iter().chain(otherwise) {
-                conditions_of_shapes(inner, shaped, module, roots);
-            }
-        }
-        Stmt::While(_, body) => {
-            for inner in body {
-                conditions_of_shapes(inner, shaped, module, roots);
-            }
-        }
-        Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
-    }
-}
-
 /// Adds the variables `expr` reads, and those the arguments of its limited probes read,
 /// to `found`.
 fn reads(expr: &Expr, module: &Module, found: &mut BTreeSet<usize>) {
@@ -2266,6 +2224,9 @@ fn mark(
                 if mode == Mode::Noise {
                     for noise in noise {
                         reads(&noise.power, module, found);
+                        if let Some(exponent) = &noise.exponent {
+                            reads(exponent, module, found);
+                        }
                     }
                 } else {
                     for expr in resistive.iter().chain(reactive) {
@@ -2542,10 +2503,65 @@ fn too_long(lines: &[String], indent: &str) -> String {
     }
 }
 
+/// Simplifies conditionals in `statements`: drops empty conditionals and inverts empty
+/// `if cond {} else { body }` to `if !cond { body }`.
+fn simplify(statements: &[Rust]) -> Vec<Rust> {
+    let mut out = Vec::with_capacity(statements.len());
+    for statement in statements {
+        match statement {
+            Rust::Line(_) => out.push(statement.clone()),
+            Rust::While(condition, body) => {
+                out.push(Rust::While(condition.clone(), simplify(body)));
+            }
+            Rust::If((condition, precedence), then, otherwise) => {
+                let then = simplify(then);
+                let otherwise = simplify(otherwise);
+                if then.is_empty() && otherwise.is_empty() {
+                    continue;
+                }
+                if then.is_empty() {
+                    out.push(Rust::If(
+                        negate_condition(condition, *precedence),
+                        otherwise,
+                        Vec::new(),
+                    ));
+                } else {
+                    out.push(Rust::If((condition.clone(), *precedence), then, otherwise));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Returns the logical negation of `condition` at `precedence` and its resulting precedence.
+fn negate_condition(condition: &str, precedence: u8) -> (String, u8) {
+    if let Some(positive) = positive(condition) {
+        return positive;
+    }
+    if let Some((left, right)) = condition.split_once(" == ")
+        && single(left)
+        && single(right)
+    {
+        return (format!("{left} != {right}"), COMPARE);
+    }
+    if precedence >= UNARY {
+        (format!("!{condition}"), UNARY)
+    } else {
+        (format!("!({condition})"), UNARY)
+    }
+}
+
 /// Prints `statements` at `depth` levels of indentation to `out`, line by line, as
 /// clippy's style asks: nested conditions without branches of their own joined, an
 /// `else` that holds only a conditional written `else if`.
 fn print(statements: &[Rust], depth: usize, out: &mut Vec<String>) {
+    let simplified = simplify(statements);
+    print_simplified(&simplified, depth, out);
+}
+
+/// Prints pre-simplified `statements` at `depth` levels of indentation to `out`.
+fn print_simplified(statements: &[Rust], depth: usize, out: &mut Vec<String>) {
     let indent = "    ".repeat(depth);
     for statement in statements {
         match statement {
@@ -2556,7 +2572,7 @@ fn print(statements: &[Rust], depth: usize, out: &mut Vec<String>) {
             }
             Rust::While(condition, body) => {
                 out.push(format!("{indent}while {condition} {{"));
-                print(body, depth + 1, out);
+                print_simplified(body, depth + 1, out);
                 out.push(format!("{indent}}}"));
             }
             Rust::If(..) => print_if(statement, depth, out, false),
@@ -2646,7 +2662,7 @@ fn print_if(statement: &Rust, depth: usize, out: &mut Vec<String>, chained: bool
     } else {
         out.push(format!("{indent}if {} {{", condition.0));
     }
-    print(&then, depth + 1, out);
+    print_simplified(&then, depth + 1, out);
     match otherwise.as_slice() {
         [] => out.push(format!("{indent}}}")),
         [inner @ Rust::If(..)] => {
@@ -2655,7 +2671,7 @@ fn print_if(statement: &Rust, depth: usize, out: &mut Vec<String>, chained: bool
         }
         _ => {
             out.push(format!("{indent}}} else {{"));
-            print(otherwise, depth + 1, out);
+            print_simplified(otherwise, depth + 1, out);
             out.push(format!("{indent}}}"));
         }
     }
@@ -2699,6 +2715,47 @@ impl<'f, 'm> Emitter<'f, 'm> {
             accumulators: BTreeMap::new(),
         }
     }
+}
+
+/// Returns the compile-time integer value of `expr` when it is built from integer literals
+/// and wrapping `+`, `-`, `*`, and unary signs (never integer division).
+fn integer_constant(expr: &Expr) -> Option<i32> {
+    match expr {
+        Expr::Integer(value) => Some(*value),
+        Expr::Unary("-", operand) => integer_constant(operand).map(i32::wrapping_neg),
+        Expr::Unary("+", operand) => integer_constant(operand),
+        Expr::Binary("+", left, right) => {
+            Some(integer_constant(left)?.wrapping_add(integer_constant(right)?))
+        }
+        Expr::Binary("-", left, right) => {
+            Some(integer_constant(left)?.wrapping_sub(integer_constant(right)?))
+        }
+        Expr::Binary("*", left, right) => {
+            Some(integer_constant(left)?.wrapping_mul(integer_constant(right)?))
+        }
+        _ => None,
+    }
+}
+
+/// Returns the positive counterpart of `expr` when `expr` is a strictly negative numeric
+/// literal (excluding `-0.0`, `NaN`, and `i32::MIN`).
+fn negative_literal(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Real(value) if *value < 0.0 => Some(Expr::Real(-*value)),
+        Expr::Integer(value) if *value < 0 && *value != i32::MIN => Some(Expr::Integer(-*value)),
+        Expr::Unary("-", inner) => match inner.as_ref() {
+            Expr::Real(value) if *value > 0.0 => Some(Expr::Real(*value)),
+            Expr::Integer(value) if *value > 0 => Some(Expr::Integer(*value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Returns whether `expr` is a numeric literal factor for canonicalizing `literal * expr` to
+/// `expr * literal`.
+const fn is_literal_factor(expr: &Expr) -> bool {
+    matches!(expr, Expr::Real(_) | Expr::Integer(_))
 }
 
 /// Whether `code` names a value, so that reading it again costs nothing.
@@ -2809,18 +2866,36 @@ impl Emitter<'_, '_> {
             | Expr::Shape(_)
             | Expr::Unary("!", _)
             | Expr::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => Kind::Bool,
-            Expr::Unary(_, operand) => match self.static_kind(operand) {
-                Kind::Float(Some(value)) => Kind::Float(Some(-value)),
+            Expr::Unary(operator, operand) => match self.static_kind(operand) {
+                Kind::Float(Some(value)) if *operator == "-" => Kind::Float(Some(-value)),
+                Kind::Float(Some(value)) if *operator == "+" => Kind::Float(Some(value)),
                 kind => kind,
             },
-            Expr::Binary(operator, left, right) => {
+            Expr::Binary(operator @ ("+" | "-" | "*" | "/"), left, right) => {
+                let fold_finite = |a: f64, b: f64| {
+                    let value = fold(operator, a, b);
+                    if value.is_finite() {
+                        Kind::Float(Some(value))
+                    } else {
+                        Kind::Float(None)
+                    }
+                };
                 match (self.static_kind(left), self.static_kind(right)) {
-                    (Kind::Float(Some(left)), Kind::Float(Some(right))) => {
-                        Kind::Float(Some(fold(operator, left, right)))
+                    (Kind::Float(Some(left)), Kind::Float(Some(right))) => fold_finite(left, right),
+                    (Kind::Float(Some(value)), Kind::Integer) => {
+                        integer_constant(right).map_or(Kind::Float(None), |right| {
+                            fold_finite(value, f64::from(right))
+                        })
+                    }
+                    (Kind::Integer, Kind::Float(Some(value))) => {
+                        integer_constant(left).map_or(Kind::Float(None), |left| {
+                            fold_finite(f64::from(left), value)
+                        })
                     }
                     (left, right) => join(&left, &right),
                 }
             }
+            Expr::Binary(_, left, right) => join(&self.static_kind(left), &self.static_kind(right)),
             Expr::Conditional(_, then, otherwise) => {
                 join(&self.static_kind(then), &self.static_kind(otherwise))
             }
@@ -2844,16 +2919,49 @@ impl Emitter<'_, '_> {
         if let Kind::Float(Some(value)) = kind {
             return float(value);
         }
+        if kind == Kind::Integer
+            && let Some(value) = integer_constant(expr)
+        {
+            return Operand::new(
+                value.to_string(),
+                if value < 0 { UNARY } else { ATOM },
+                Kind::Integer,
+            );
+        }
         match expr {
-            Expr::Integer(value) => {
-                return Operand::new(
-                    value.to_string(),
-                    if *value < 0 { UNARY } else { ATOM },
-                    Kind::Integer,
-                );
-            }
             Expr::SmallResistance => {
                 return Operand::new("SMALL_RESISTANCE", ATOM, Kind::Float(None));
+            }
+            Expr::Unary("-", inner)
+                if matches!(
+                    self.static_kind(inner),
+                    Kind::Real | Kind::Float(_) | Kind::Integer
+                ) =>
+            {
+                return negate(self.static_operand(inner));
+            }
+            Expr::Binary("*", left, right)
+                if matches!(kind, Kind::Real | Kind::Float(_) | Kind::Integer) =>
+            {
+                if let Some(positive) = negative_literal(left) {
+                    let product = Expr::Binary("*", Box::new(positive), right.clone());
+                    return negate(self.static_operand(&product));
+                }
+                if let Some(positive) = negative_literal(right) {
+                    let product = Expr::Binary("*", left.clone(), Box::new(positive));
+                    return negate(self.static_operand(&product));
+                }
+                if is_literal_factor(left) && !is_literal_factor(right) {
+                    let swapped = Expr::Binary("*", right.clone(), left.clone());
+                    return self.static_operand(&swapped);
+                }
+                if matches!(kind, Kind::Real | Kind::Float(_))
+                    && let Expr::Integer(value) = right.as_ref()
+                {
+                    let normalized =
+                        Expr::Binary("*", left.clone(), Box::new(Expr::Real(f64::from(*value))));
+                    return self.static_operand(&normalized);
+                }
             }
             _ => {}
         }
@@ -2898,11 +3006,19 @@ impl Emitter<'_, '_> {
                     Kind::Float(None),
                 ),
             },
-            Kind::Real => Operand::new(
-                format!("{}.value()", operand.at(ATOM)),
-                ATOM,
-                Kind::Float(None),
-            ),
+            Kind::Real => {
+                if let Some(inner) = operand.code.strip_prefix('-')
+                    && operand.precedence == UNARY
+                {
+                    Operand::new(format!("-{inner}.value()"), UNARY, Kind::Float(None))
+                } else {
+                    Operand::new(
+                        format!("{}.value()", operand.at(ATOM)),
+                        ATOM,
+                        Kind::Float(None),
+                    )
+                }
+            }
             Kind::Dual(_) => Operand::new(
                 format!("{}.value.value()", operand.at(ATOM)),
                 ATOM,
@@ -3532,7 +3648,7 @@ impl Emitter<'_, '_> {
             (Kind::Dual(_), Kind::Real) => {
                 let code = match operator {
                     "+" => format!("{}.plus({})", left.at(ATOM), right.code),
-                    "-" => format!("{}.plus(-{})", left.at(ATOM), right.at(ATOM)),
+                    "-" => format!("{}.plus({})", left.at(ATOM), negate(right).code),
                     "*" => format!("{}.scale({})", left.at(ATOM), right.code),
                     _ => format!("{}.divide({})", left.at(ATOM), right.code),
                 };
@@ -4706,7 +4822,7 @@ fn compare(operator: &str, left: &Operand, right: &Operand) -> Operand {
             let test = format!(
                 "matches!({}.partial_cmp(&{}), Some(Ordering::Equal))",
                 left.at(ATOM),
-                right.code
+                right.at(UNARY)
             );
             if operator == "==" {
                 Operand::new(test, ATOM, Kind::Bool)
@@ -4719,5 +4835,204 @@ fn compare(operator: &str, left: &Operand, right: &Operand) -> Operand {
             COMPARE,
             Kind::Bool,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile;
+    use crate::ir::resolve;
+    use crate::lexer::tokens;
+    use crate::parser::parse;
+
+    /// Returns the body of `pub struct {name}` up to its closing brace.
+    fn struct_body<'a>(code: &'a str, header: &str) -> &'a str {
+        let start = code
+            .find(header)
+            .unwrap_or_else(|| panic!("missing {header} in:\n{code}"));
+        let rest = &code[start..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("unterminated {header} in:\n{rest}"));
+        &rest[..end]
+    }
+
+    #[test]
+    fn integer_real_product_folds_without_prepared_field() {
+        let source = "\
+`include \"disciplines.vams\"
+module m(a, b);
+    inout a, b;
+    electrical a, b;
+    parameter real g = 1.0;
+    analog begin
+        I(a, b) <+ V(a, b) * g;
+        I(a, b) <+ white_noise(2 * 1.602176634e-19 * abs(V(a, b)), \"shot\");
+    end
+endmodule
+";
+        let code = compile(source, "m.va", &|_| None).expect("compile");
+        let prepared = struct_body(&code, "pub struct PreparedM<R: Real> {");
+        assert!(
+            !prepared.contains(": f64,"),
+            "expected folded constant instead of hoisted f64 field:\n{prepared}"
+        );
+        assert!(
+            code.contains("3.204_353_268e-19"),
+            "expected folded constant inline in:\n{code}"
+        );
+    }
+
+    #[test]
+    fn negations_and_signed_products_reuse_one_prepared_field() {
+        let source = "\
+`include \"disciplines.vams\"
+module m(a, b);
+    inout a, b;
+    electrical a, b;
+    parameter real g = 1.0;
+    real s;
+    analog begin
+        s = g * 2.0;
+        if (V(a, b) < -3 * s)
+            I(a, b) <+ -s * V(a, b);
+        else if (V(a, b) >= -(s * 3))
+            I(a, b) <+ (s * -3) * V(a, b);
+        else
+            I(a, b) <+ (s * 3) * V(a, b);
+    end
+endmodule
+";
+        let code = compile(source, "m.va", &|_| None).expect("compile");
+        let prepared = struct_body(&code, "pub struct PreparedM<R: Real> {");
+        let real_fields = prepared
+            .lines()
+            .filter(|line| line.trim_end().ends_with(": R,"))
+            .count();
+        assert_eq!(
+            real_fields, 2,
+            "expected only `s` and one shared `s * 3.0` field:\n{prepared}"
+        );
+        assert!(!code.contains("-v.s"), "unexpected negated field:\n{code}");
+        assert!(
+            !code.contains("v.s * -3.0"),
+            "unexpected negatively-signed product field:\n{code}"
+        );
+        assert!(
+            !code.contains("-(v.s * 3.0)"),
+            "unexpected negated product field:\n{code}"
+        );
+    }
+
+    #[test]
+    fn deduplicates_shaped_conditions_and_active_flags_and_inverts_empty_if() {
+        let source = "\
+`include \"disciplines.vams\"
+module m(a, b);
+    inout a, b;
+    electrical a, b, n;
+    parameter integer mode = 0;
+    analog begin
+        if (mode != 0)
+            V(a, n) <+ 0;
+        else
+            I(a, n) <+ V(a, n) / 10.0;
+        if (mode != 0) begin
+            I(n, b) <+ V(n, b) / 100.0;
+            I(n, b) <+ ddt(1e-12 * V(n, b));
+        end else begin
+            I(n, b) <+ V(n, b) / 200.0;
+        end
+    end
+endmodule
+";
+        let code = compile(source, "m.va", &|_| None).expect("compile");
+        assert!(
+            code.contains("conditions: [bool; 1],"),
+            "identical shaped conditions must share one slot:\n{code}"
+        );
+        assert!(
+            !code.contains("{\n        } else"),
+            "empty if-then branch must be inverted:\n{code}"
+        );
+        assert!(
+            code.contains("if !shape.conditions[0] {"),
+            "expected inverted condition in evaluate:\n{code}"
+        );
+        let lines: Vec<&str> = code.lines().map(str::trim).collect();
+        for pair in lines.windows(2) {
+            assert!(
+                !(pair[0].starts_with("active[") && pair[0] == pair[1]),
+                "duplicate consecutive active flag assignment `{}`:\n{code}",
+                pair[0]
+            );
+        }
+    }
+
+    #[test]
+    fn diode_model_folds_constant_deduplicates_conditions_and_inverts_empty_if() {
+        let source = include_str!("../models/diode.va");
+        let code = compile(source, "crates/jolty-veriloga/models/diode.va", &|_| None)
+            .expect("diode compiles");
+        let prepared = struct_body(&code, "pub struct PreparedDiode<R: Real> {");
+        assert!(
+            prepared.contains("conditions: [bool; 5],"),
+            "expected 5 deduplicated conditions in diode:\n{prepared}"
+        );
+        assert!(
+            !prepared.contains(": f64,"),
+            "expected 2 * P_Q folded without f64 prepared field:\n{prepared}"
+        );
+        assert!(
+            !code.contains("{\n        } else"),
+            "expected no empty if blocks in diode"
+        );
+        let lines: Vec<&str> = code.lines().map(str::trim).collect();
+        for pair in lines.windows(2) {
+            assert!(
+                !(pair[0].starts_with("active[") && pair[0] == pair[1]),
+                "duplicate consecutive active flag assignment `{}` in diode",
+                pair[0]
+            );
+        }
+    }
+
+    #[test]
+    fn mark_visits_noise_exponent_variables() {
+        let source = "\
+`include \"disciplines.vams\"
+module m(a, b);
+    inout a, b;
+    electrical a, b;
+    parameter real p = 1.0;
+    real e;
+    analog begin
+        e = p + 0.5;
+        I(a, b) <+ V(a, b) / 100.0;
+        I(a, b) <+ flicker_noise(1e-20, e, \"flicker\");
+    end
+endmodule
+";
+        let stream = tokens(source, &|_| None).expect("tokens");
+        let parsed = parse(&stream).expect("parse");
+        let module = resolve(&parsed).expect("resolve");
+        let e_index = module
+            .variables
+            .iter()
+            .position(|(name, _)| name == "e")
+            .expect("variable e");
+        let mut found = BTreeSet::new();
+        mark(
+            &module.analog,
+            &module,
+            Mode::Noise,
+            &vec![false; module.variables.len()],
+            &mut found,
+        );
+        assert!(
+            found.contains(&e_index),
+            "mark in Mode::Noise must visit variables in flicker_noise exponent"
+        );
     }
 }
