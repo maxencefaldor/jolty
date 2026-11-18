@@ -24,8 +24,12 @@ use jolty_ir::numbers;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::derivative::{Cotangent, Forward, Saved, Start, points, units};
+use crate::derivative::{
+    Cotangent, Forward, PERIODIC_SENSITIVITY, Saved, Start, float_count, points,
+    pull_period_numbers, units, waveforms_numbers,
+};
 use crate::elaborated::{Origin, Origins};
+use crate::periodic::DENSE_MATRICES;
 use crate::twins::Twins;
 use crate::{
     Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
@@ -130,8 +134,9 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
-    /// [`SimulationError::Singular`] when a Jacobian is, and the errors of the analysis
-    /// differentiated.
+    /// [`SimulationError::TooMuchMemory`] when a periodic steady state's sensitivity would
+    /// hold more than the options' `max_memory`, [`SimulationError::Singular`] when a
+    /// Jacobian is, and the errors of the analysis differentiated.
     pub fn sensitivity(
         &mut self,
         sensitivity: &Sensitivity,
@@ -158,8 +163,9 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
-    /// [`SimulationError::Singular`] when a Jacobian is, and the errors of the analysis
-    /// differentiated.
+    /// [`SimulationError::TooMuchMemory`] when a periodic steady state's sensitivity would
+    /// hold more than the options' `max_memory`, [`SimulationError::Singular`] when a
+    /// Jacobian is, and the errors of the analysis differentiated.
     pub(crate) fn differentiate(
         &mut self,
         outputs: &[String],
@@ -205,6 +211,21 @@ impl Simulator {
                 period_derivatives: pushed.period,
                 result: pushed.result,
             });
+        }
+        if let Differentiated::PeriodicSteadyState(analysis) = of {
+            self.check_periodic(analysis)?;
+            options.check()?;
+            if parameters > 0 && (!kept.is_empty() || analysis.period.is_none()) {
+                let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
+                let rows_float = float_count(rows);
+                // Whichever direction shooting's converged step count later selects, the
+                // bordered solve holds at least `DENSE_MATRICES * rows^2` plus either
+                // `parameters * rows` columns (forward) or `rows^2` inverse columns
+                // (backward).
+                let columns = float_count(parameters.min(rows)) * rows_float;
+                let least = DENSE_MATRICES * rows_float * rows_float + columns;
+                options.hold(PERIODIC_SENSITIVITY, rows, least)?;
+            }
         }
         let (result, saved) = self.run_saving(of, options)?;
         let points = points(&result);
@@ -281,6 +302,26 @@ impl Simulator {
                 period_derivatives: None,
                 result,
             });
+        }
+        if let (
+            Saved::Period(_, (_, tolerances, scale)),
+            AnalysisResult::PeriodicSteadyState(found),
+        ) = (&saved, &result)
+            && ((!kept.is_empty() && points > 0) || oscillator)
+        {
+            let rows = tolerances.len() + usize::from(scale.is_some());
+            let outputs_points = float_count(kept.len()) * float_count(points);
+            let cotangent_count = outputs_points + if oscillator { 1.0 } else { 0.0 };
+            let unit_rows_numbers = outputs_points * float_count(unknowns);
+            let pulled_numbers = cotangent_count * float_count(parameters);
+            let needed = pull_period_numbers(
+                (unknowns, rows),
+                waveforms_numbers(&found.waveforms),
+                (cotangent_count, parameters),
+                oscillator,
+                unit_rows_numbers + pulled_numbers,
+            );
+            options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
         }
         let mut cotangents = unit_rows(kept, points, unknowns, 1.0);
         if oscillator {

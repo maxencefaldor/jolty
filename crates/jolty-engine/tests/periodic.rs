@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Conditions, Differentiated, Method, Options, PeriodicSteadyState,
-    PeriodicSteadyStateResult, Sensitivity, SimulationError, Simulator, Transient, TransientResult,
-    Values,
+    Analysis, AnalysisResult, Conditions, Cotangent, Cotangents, Differentiated, Method, Options,
+    PeriodicSteadyState, PeriodicSteadyStateResult, Sensitivity, SimulationError, Simulator,
+    Transient, TransientResult, Values,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -798,4 +798,376 @@ fn resetting_a_sine_amplitude_updates_autonomous_time_varying_check() {
         .expect("reset back to zero amplitude");
     let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
     assert!((found.period / expected - 1.0).abs() < 1e-2);
+}
+
+/// The `f64` count per GiB used by `max_memory` (`2^27`).
+const NUMBERS_PER_GIB: f64 = 134_217_728.0;
+
+/// A sine-driven RC low-pass filter whose resistance is split across `resistors` parallel
+/// resistors of `resistors * 1 kΩ` each, keeping three unknowns (`in`, `out`, `V1:current`)
+/// and the same transfer function while scaling parameter count linearly.
+fn parallel_resistor_rc(resistors: usize) -> Value {
+    let resistance = f64::from(u32::try_from(resistors).expect("small resistor count")) * 1e3;
+    let mut instances = vec![
+        sine("V1", "in", (0.0, 1.0, 1e3)),
+        two_terminal("C1", ("capacitor", "capacitance", 1e-6), "out", "0"),
+    ];
+    for number in 1..=resistors {
+        instances.push(two_terminal(
+            &format!("R{number}"),
+            ("resistor", "resistance", resistance),
+            "in",
+            "out",
+        ));
+    }
+    Value::Array(instances)
+}
+
+#[test]
+fn a_forward_periodic_sensitivity_past_max_memory_fails_before_replaying() {
+    let instances = parallel_resistor_rc(1);
+    let analysis = PeriodicSteadyState {
+        period: Some(1e-3),
+        max_step: Some(1e-5),
+        ..PeriodicSteadyState::default()
+    };
+    let unbounded = Options {
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let mut probe = simulator(&instances);
+    let baseline = probe
+        .periodic_steady_state(&analysis, &unbounded)
+        .expect("baseline periodic steady state");
+    let points = baseline.waveforms.values.len();
+    let points_float = f64::from(u32::try_from(points).expect("small point count"));
+    // Five parameters (sine offset/amplitude/frequency, C1, R1) and >100 points: shooting
+    // selects forward mode (`along_period`).
+    assert!(points * (points + 1) / 2 + points * points >= 2 * 5 * points);
+
+    let tight_memory = (14.0 * 9.0 + (points_float + 2.0) * 3.0) / NUMBERS_PER_GIB;
+    let tight = Options {
+        max_memory: tight_memory,
+        ..unbounded.clone()
+    };
+    let mut plain = simulator(&instances);
+    plain
+        .periodic_steady_state(&analysis, &tight)
+        .expect("plain periodic steady state fits in tight memory");
+
+    let sensitivity = Sensitivity {
+        outputs: vec!["out".to_owned()],
+        of: Differentiated::PeriodicSteadyState(analysis),
+    };
+    let mut candidate = simulator(&instances);
+    let error = candidate
+        .sensitivity(&sensitivity, &tight)
+        .expect_err("forward periodic sensitivity exceeds tight memory");
+    let waveforms = points_float * 3.0;
+    let solve_phase = 14.0 * 9.0 + 5.0 * 3.0 + waveforms;
+    let replay_phase = 9.0 + 4.0 * 5.0 * 3.0 + points_float * 5.0 + waveforms;
+    let expected_needed = solve_phase.max(replay_phase) / NUMBERS_PER_GIB;
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 3,
+            needed: expected_needed,
+            max_memory: tight_memory,
+        }
+    );
+
+    let sufficient = Options {
+        max_memory: expected_needed * 1.05,
+        ..unbounded
+    };
+    candidate
+        .sensitivity(&sensitivity, &sufficient)
+        .expect("forward periodic sensitivity succeeds once memory covers it");
+}
+
+#[test]
+fn a_backward_periodic_sensitivity_past_max_memory_fails_before_allocating() {
+    let instances = parallel_resistor_rc(60);
+    let analysis = PeriodicSteadyState {
+        period: Some(1e-3),
+        max_step: Some(5e-5),
+        ..PeriodicSteadyState::default()
+    };
+    let unbounded = Options {
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let mut probe = simulator(&instances);
+    let baseline = probe
+        .periodic_steady_state(&analysis, &unbounded)
+        .expect("baseline periodic steady state");
+    let points = baseline.waveforms.values.len();
+    let points_float = f64::from(u32::try_from(points).expect("small point count"));
+    // 64 parameters (3 sine + C1 + 60 resistors) and ~24 points: shooting selects backward
+    // mode (`by_rows`).
+    assert!(points * (points + 1) / 2 + points * points < 2 * 64 * points);
+
+    let tight_memory = (14.0 * 9.0 + (points_float + 2.0) * 3.0) / NUMBERS_PER_GIB;
+    let tight = Options {
+        max_memory: tight_memory,
+        ..unbounded.clone()
+    };
+    let mut plain = simulator(&instances);
+    plain
+        .periodic_steady_state(&analysis, &tight)
+        .expect("plain periodic steady state fits in tight memory");
+
+    let sensitivity = Sensitivity {
+        outputs: vec!["out".to_owned()],
+        of: Differentiated::PeriodicSteadyState(analysis),
+    };
+    let mut candidate = simulator(&instances);
+    let error = candidate
+        .sensitivity(&sensitivity, &tight)
+        .expect_err("backward periodic sensitivity exceeds tight memory");
+    let waveforms = points_float * 3.0;
+    let extra = points_float * 3.0 + points_float * 64.0;
+    let solve_phase = 15.0 * 9.0 + points_float * 3.0;
+    let step_peak = 8.0 * points_float * 3.0;
+    let dot_peak = 6.0 * points_float * 3.0 + 3.0 * points_float * 64.0;
+    let backward_phase = 9.0 + step_peak.max(dot_peak);
+    let expected_needed = (waveforms + extra + solve_phase.max(backward_phase)) / NUMBERS_PER_GIB;
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 3,
+            needed: expected_needed,
+            max_memory: tight_memory,
+        }
+    );
+
+    let sufficient = Options {
+        max_memory: expected_needed * 1.05,
+        ..unbounded
+    };
+    candidate
+        .sensitivity(&sensitivity, &sufficient)
+        .expect("backward periodic sensitivity succeeds once memory covers it");
+}
+
+#[test]
+fn a_periodic_jvp_whose_columns_pass_max_memory_fails_before_shooting() {
+    let instances = parallel_resistor_rc(1);
+    let analysis = PeriodicSteadyState {
+        period: Some(1e-3),
+        max_step: Some(5e-5),
+        ..PeriodicSteadyState::default()
+    };
+    let unbounded = Options {
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let max_memory = 500.0 / NUMBERS_PER_GIB;
+    let tight = Options {
+        max_memory,
+        ..unbounded.clone()
+    };
+    let mut plain = simulator(&instances);
+    let baseline = plain
+        .periodic_steady_state(&analysis, &tight)
+        .expect("plain periodic steady state fits in tight memory");
+    let points = baseline.waveforms.values.len();
+    let points_float = f64::from(u32::try_from(points).expect("small point count"));
+
+    let parameters = vec![("R1".to_owned(), "resistance".to_owned())];
+    let tangents = vec![vec![1.0]; 200];
+    let mut candidate = simulator(&instances);
+    let error = candidate
+        .jvp(
+            &Differentiated::PeriodicSteadyState(analysis.clone()),
+            &parameters,
+            &tangents,
+            &tight,
+        )
+        .expect_err("jvp columns exceed tight memory upfront");
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 3,
+            needed: (14.0 * 9.0 + 200.0 * 3.0) / NUMBERS_PER_GIB,
+            max_memory,
+        }
+    );
+    assert_eq!(candidate.operating_point_solves(), 0);
+
+    // Allowing the bordered solve (726) plus waveforms, but not the replay output matrix
+    // (points * 3 unknowns * 200 directions), fails inside `along_period` before replaying.
+    let mid_memory = 1000.0 / NUMBERS_PER_GIB;
+    let mid = Options {
+        max_memory: mid_memory,
+        ..unbounded.clone()
+    };
+    let replay_error = candidate
+        .jvp(
+            &Differentiated::PeriodicSteadyState(analysis.clone()),
+            &parameters,
+            &tangents,
+            &mid,
+        )
+        .expect_err("jvp replay outputs exceed mid memory");
+    let expected_replay =
+        (9.0 + 4.0 * 200.0 * 3.0 + points_float * 3.0 * 200.0 + points_float * 3.0)
+            / NUMBERS_PER_GIB;
+    assert_eq!(
+        replay_error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 3,
+            needed: expected_replay,
+            max_memory: mid_memory,
+        }
+    );
+
+    let sufficient = Options {
+        max_memory: expected_replay * 1.05,
+        ..unbounded
+    };
+    candidate
+        .jvp(
+            &Differentiated::PeriodicSteadyState(analysis),
+            &parameters,
+            &tangents,
+            &sufficient,
+        )
+        .expect("jvp succeeds once memory covers replay outputs");
+}
+
+#[test]
+fn a_periodic_vjp_pull_back_past_max_memory_fails_before_allocating() {
+    let instances = parallel_resistor_rc(60);
+    let analysis = PeriodicSteadyState {
+        period: Some(1e-3),
+        max_step: Some(5e-5),
+        ..PeriodicSteadyState::default()
+    };
+    let unbounded = Options {
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let mut probe = simulator(&instances);
+    let baseline = probe
+        .periodic_steady_state(&analysis, &unbounded)
+        .expect("baseline periodic steady state");
+    let points = baseline.waveforms.values.len();
+    let points_float = f64::from(u32::try_from(points).expect("small point count"));
+    let tight_memory = (14.0 * 9.0 + (points_float + 2.0) * 3.0) / NUMBERS_PER_GIB;
+    let tight = Options {
+        max_memory: tight_memory,
+        ..unbounded.clone()
+    };
+
+    let parameters: Vec<(String, String)> = (1..=60)
+        .map(|number| (format!("R{number}"), "resistance".to_owned()))
+        .collect();
+    let mut candidate = simulator(&instances);
+    let pullback = candidate
+        .vjp(
+            &Differentiated::PeriodicSteadyState(analysis),
+            &parameters,
+            &tight,
+        )
+        .expect("vjp fits within tight memory");
+    let out = index(&candidate, "out");
+    let mut weight = vec![0.0; 3];
+    weight[out] = 1.0;
+    let cotangents = Cotangents::Real(vec![Cotangent {
+        points: BTreeMap::from([(points - 1, weight)]),
+        period: 0.0,
+    }]);
+    let error = candidate
+        .pull_back(&pullback, &cotangents, &tight)
+        .expect_err("pull_back exceeds tight memory");
+    let waveforms = points_float * 3.0;
+    let extra = 60.0;
+    let solve_phase = 15.0 * 9.0 + 3.0;
+    let step_peak = 8.0 * 3.0;
+    let dot_peak = 6.0 * 3.0 + 3.0 * 60.0;
+    let backward_phase = 9.0 + step_peak.max(dot_peak);
+    let expected_needed = (waveforms + extra + solve_phase.max(backward_phase)) / NUMBERS_PER_GIB;
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 3,
+            needed: expected_needed,
+            max_memory: tight_memory,
+        }
+    );
+
+    let sufficient = Options {
+        max_memory: expected_needed * 1.05,
+        ..unbounded
+    };
+    candidate
+        .pull_back(&pullback, &cotangents, &sufficient)
+        .expect("pull_back succeeds once memory covers it");
+}
+
+#[test]
+fn an_autonomous_periodic_sensitivity_checks_validity_and_upfront_memory() {
+    let tiny = Options {
+        max_memory: 1e-9,
+        ..Options::default()
+    };
+    let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
+    let impedance = (inductance / capacitance).sqrt();
+    let regulation = (0.2 / impedance, impedance);
+    let mut oscillator = simulator(&regulated_tank((inductance, capacitance), regulation, 1.0));
+    let error = oscillator
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec!["t".to_owned()],
+                of: Differentiated::PeriodicSteadyState(PeriodicSteadyState::default()),
+            },
+            &tiny,
+        )
+        .expect_err("bordered oscillator sensitivity exceeds tiny memory");
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state sensitivity",
+            rows: 5,
+            needed: (14.0 * 25.0 + 2.0 * 5.0) / NUMBERS_PER_GIB,
+            max_memory: 1e-9,
+        }
+    );
+    assert_eq!(oscillator.operating_point_solves(), 0);
+
+    let mut driven = simulator(&json!([
+        sine("V1", "n", (0.0, 1.0, 1e3)),
+        two_terminal("R1", ("resistor", "resistance", 1e3), "n", "0"),
+    ]));
+    let expected = SimulationError::InvalidAnalysis(
+        "an autonomous periodic steady state takes no source or behavioral device \
+         that varies with time: `V1`"
+            .to_owned(),
+    );
+    let sensitivity_error = driven
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec!["n".to_owned()],
+                of: Differentiated::PeriodicSteadyState(PeriodicSteadyState::default()),
+            },
+            &tiny,
+        )
+        .expect_err("time-varying source check runs before memory check in sensitivity");
+    assert_eq!(sensitivity_error, expected);
+    let jvp_error = driven
+        .jvp(
+            &Differentiated::PeriodicSteadyState(PeriodicSteadyState::default()),
+            &[("R1".to_owned(), "resistance".to_owned())],
+            &[vec![1.0]],
+            &tiny,
+        )
+        .expect_err("time-varying source check runs before memory check in jvp");
+    assert_eq!(jvp_error, expected);
+    assert_eq!(driven.operating_point_solves(), 0);
 }

@@ -65,6 +65,7 @@ use jolty_numerics::{Complex64, Pattern, solve_each_in_range};
 
 use crate::ac::over_frequencies;
 use crate::newton::{add_product, force_row, step_matrix};
+use crate::periodic::DENSE_MATRICES;
 use crate::sensitivity::{Derivatives, Differentiated, Parameter};
 use crate::transient::{Carried, Tangent};
 use crate::twins::{Part, Twins};
@@ -81,6 +82,8 @@ const LEFT_OUT_OVER_FREQUENCY: &str = "it leaves out those of the terms its line
 const OVER_TIME: &str = "derivative over time";
 /// Why a derivative over time takes no delay line.
 const LEFT_OUT_OVER_TIME: &str = "it leaves out those of the past its lines read";
+/// A periodic steady state's sensitivity, as [`SimulationError::TooMuchMemory`] names it.
+pub(crate) const PERIODIC_SENSITIVITY: &str = "periodic steady state sensitivity";
 
 /// What a pullback says of cotangents of the wrong kind.
 const KINDS: &str =
@@ -177,6 +180,79 @@ pub(crate) enum Start {
     Solved(Vec<UnknownIndex>),
     /// At a state held, given: its derivatives along each direction, or none, zero.
     Held(Option<Vec<Vec<f64>>>),
+}
+
+/// `size` as a floating-point count, clamped at `u32::MAX`, matching shooting's dense-matrix
+/// memory accounting.
+pub(crate) fn float_count(size: usize) -> f64 {
+    f64::from(u32::try_from(size).unwrap_or(u32::MAX))
+}
+
+/// The total `f64` numbers held inside a transient's recorded waveforms and observations.
+pub(crate) fn waveforms_numbers(waveforms: &TransientResult) -> f64 {
+    let values = float_count(waveforms.values.len())
+        * float_count(waveforms.values.first().map_or(0, Vec::len));
+    let recorded = &waveforms.observations;
+    let observations = float_count(recorded.currents.len())
+        + float_count(recorded.charges.len())
+        + float_count(recorded.conductances.len())
+        + float_count(recorded.capacitances.len())
+        + float_count(recorded.variables.len());
+    values + observations
+}
+
+/// The peak `f64` numbers held during [`Simulator::along_period`], across the bordered solve
+/// (`DENSE_MATRICES` square matrices plus `directions` columns) and the replay passes (the
+/// saved waveforms, the bordered matrix, each direction's three charge-history vectors and
+/// step solution, an oscillator's charge tangent, and the recorded output derivatives).
+fn forward_period_numbers(
+    (unknowns, rows): (usize, usize),
+    (points, waveforms): (usize, f64),
+    (directions, kept): (usize, usize),
+    oscillator: bool,
+) -> f64 {
+    let rows_float = float_count(rows);
+    let unknowns_float = float_count(unknowns);
+    let directions_float = float_count(directions);
+    let solve_phase =
+        DENSE_MATRICES * rows_float * rows_float + directions_float * rows_float + waveforms;
+    let charges = if oscillator { 3.0 * unknowns_float } else { 0.0 };
+    let replay_phase = rows_float * rows_float
+        + 4.0 * directions_float * unknowns_float
+        + charges
+        + float_count(points) * float_count(kept) * directions_float
+        + waveforms;
+    solve_phase.max(replay_phase)
+}
+
+/// The peak `f64` numbers held during [`Simulator::pull_period`] together with caller buffers
+/// of `extra` numbers (`unit_rows` and `pulled` in `Simulator::by_rows`, or `found` in
+/// [`Simulator::pull_back`]).
+pub(crate) fn pull_period_numbers(
+    (unknowns, rows): (usize, usize),
+    waveforms: f64,
+    (cotangents, parameters): (f64, usize),
+    oscillator: bool,
+    extra: f64,
+) -> f64 {
+    let rows_float = float_count(rows);
+    let unknowns_float = float_count(unknowns);
+    // During `solve_each_in_range(matrix, &mut map)`, `map` adds one `rows × rows` matrix
+    // beside `DENSE_MATRICES`, and `ends` holds one vector per cotangent.
+    let solve_phase =
+        (DENSE_MATRICES + 1.0) * rows_float * rows_float + cotangents * unknowns_float;
+    // In `backward`, each cotangent keeps 3 vectors (`charge`, `before`, `rate`, plus 2 for
+    // an oscillator's stretch charges) and builds up to 4 temporary vectors per step (`held`,
+    // `onward`, `solution`, `shifted`), with `ended` adding 1 vector in the second pass;
+    // `twins.dots` and its transpose hold up to `3 * cotangents * parameters` beside `6` (or
+    // `7`) vectors of unknowns.
+    let step_vectors = if oscillator { 9.0 } else { 8.0 };
+    let step_peak = step_vectors * cotangents * unknowns_float;
+    let dot_vectors = if oscillator { 7.0 } else { 6.0 };
+    let dot_peak =
+        dot_vectors * cotangents * unknowns_float + 3.0 * cotangents * float_count(parameters);
+    let backward_phase = rows_float * rows_float + step_peak.max(dot_peak);
+    waveforms + extra + solve_phase.max(backward_phase)
 }
 
 /// The unit directions, one along each of `count` parameters.
@@ -361,8 +437,10 @@ impl Simulator {
     ///
     /// Returns [`SimulationError::UnknownParameters`] for every parameter no device holds
     /// as a real number, [`SimulationError::InvalidAnalysis`] for a tangent that is not a
-    /// finite number per parameter, [`SimulationError::Singular`] when a Jacobian is, and
-    /// the errors of the analysis.
+    /// finite number per parameter, [`SimulationError::TooMuchMemory`] when a periodic
+    /// steady state's bordered system and tangent columns would hold more than the options'
+    /// `max_memory`, [`SimulationError::Singular`] when a Jacobian is, and the errors of the
+    /// analysis.
     pub fn jvp(
         &mut self,
         analysis: &Differentiated,
@@ -434,7 +512,9 @@ impl Simulator {
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for cotangents of another kind than
     /// the analysis's outputs, or at a point it does not have, or of another number of
-    /// unknowns, or not finite; [`SimulationError::Singular`] when a Jacobian is.
+    /// unknowns, or not finite; [`SimulationError::TooMuchMemory`] when a periodic steady
+    /// state's pullback would hold more than the options' `max_memory`;
+    /// [`SimulationError::Singular`] when a Jacobian is.
     pub fn pull_back(
         &mut self,
         pullback: &Pullback,
@@ -447,7 +527,7 @@ impl Simulator {
             let names = named_of(&pullback.parameters);
             let mut twins = self.named_twins(&names)?;
             self.checked(&pullback.result, cotangents)?;
-            let count = twins.len();
+            let parameter_count = twins.len();
             match (&pullback.saved, &pullback.result, cotangents) {
                 (_, AnalysisResult::Ac(response), Cotangents::Complex(cotangents)) => {
                     Ok(ParameterCotangents::Complex(self.pull_frequencies(
@@ -455,7 +535,26 @@ impl Simulator {
                     )?))
                 }
                 (saved, result, Cotangents::Real(cotangents)) => {
-                    let mut found = vec![vec![0.0; count]; cotangents.len()];
+                    if let (
+                        Saved::Period(_, (_, tolerances, scale)),
+                        AnalysisResult::PeriodicSteadyState(steady),
+                    ) = (saved, result)
+                        && !cotangents.is_empty()
+                    {
+                        let unknowns = tolerances.len();
+                        let rows = unknowns + usize::from(scale.is_some());
+                        let cotangent_count = float_count(cotangents.len());
+                        let extra = cotangent_count * float_count(parameter_count);
+                        let needed = pull_period_numbers(
+                            (unknowns, rows),
+                            waveforms_numbers(&steady.waveforms),
+                            (cotangent_count, parameter_count),
+                            scale.is_some(),
+                            extra,
+                        );
+                        options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
+                    }
+                    let mut found = vec![vec![0.0; parameter_count]; cotangents.len()];
                     let mut fold = |index: usize, terms: &[f64]| {
                         for (total, term) in found[index].iter_mut().zip(terms) {
                             *total += term;
@@ -604,6 +703,16 @@ impl Simulator {
                 )
             }
             Differentiated::PeriodicSteadyState(analysis) => {
+                self.check_periodic(analysis)?;
+                options.check()?;
+                if !directions.is_empty() {
+                    let rows =
+                        self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
+                    let rows_float = float_count(rows);
+                    let dense = DENSE_MATRICES * rows_float * rows_float
+                        + float_count(directions.len()) * rows_float;
+                    options.hold(PERIODIC_SENSITIVITY, rows, dense)?;
+                }
                 let (found, mut shot) = self.shot_steady_state(analysis, options)?;
                 let steps = shot.take_steps();
                 let system = shot.system();
@@ -1112,25 +1221,44 @@ impl Simulator {
         mut forward: Forward,
         options: &Options,
     ) -> Result<Forward, SimulationError> {
+        let (matrix, tolerances, scale) = system;
+        if forward.directions.is_empty() {
+            forward.found =
+                vec![vec![Vec::new(); forward.kept.len()]; found.waveforms.values.len()];
+            forward.stretch = scale.map(|_| (found.period, Vec::new()));
+            return Ok(forward);
+        }
         let waveforms = (&found.waveforms, steps);
         let unknowns = self.elaborated.unknowns.len();
+        let rows = unknowns + usize::from(scale.is_some());
+        let needed = forward_period_numbers(
+            (unknowns, rows),
+            (
+                found.waveforms.values.len(),
+                waveforms_numbers(&found.waveforms),
+            ),
+            (forward.directions.len(), forward.kept.len()),
+            scale.is_some(),
+        );
+        options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
         forward.ends = Some(Vec::new());
         self.replay(&mut forward, waveforms, options)?;
+        forward.tangents.clear();
+        forward.tangents.shrink_to_fit();
         // (Φ − I) ẋ₀ + ∂φ/∂T Ṫ = −∂φ/∂p t, in shooting's units, bordered for an
         // oscillator by the phase condition's row.
-        let (matrix, tolerances, scale) = system;
         let mut columns: Vec<Vec<f64>> = forward
             .ends
             .take()
             .unwrap_or_default()
             .into_iter()
-            .map(|end| {
-                let mut column: Vec<f64> = end
-                    .iter()
-                    .zip(tolerances)
-                    .map(|(derivative, tolerance)| -derivative / tolerance)
-                    .collect();
-                column.extend(scale.map(|_| 0.0));
+            .map(|mut column| {
+                for (derivative, tolerance) in column.iter_mut().zip(tolerances) {
+                    *derivative = -*derivative / *tolerance;
+                }
+                if scale.is_some() {
+                    column.push(0.0);
+                }
                 column
             })
             .collect();
@@ -1139,18 +1267,13 @@ impl Simulator {
             let derivatives = columns.iter().map(|column| column[unknowns] * scale);
             (found.period, derivatives.collect())
         });
-        forward.start = Start::Held(Some(
-            columns
-                .iter()
-                .map(|column| {
-                    column
-                        .iter()
-                        .zip(tolerances)
-                        .map(|(scaled, tolerance)| scaled * tolerance)
-                        .collect()
-                })
-                .collect(),
-        ));
+        for column in &mut columns {
+            column.truncate(unknowns);
+            for (scaled, tolerance) in column.iter_mut().zip(tolerances) {
+                *scaled *= *tolerance;
+            }
+        }
+        forward.start = Start::Held(Some(columns));
         self.replay(&mut forward, waveforms, options)?;
         Ok(forward)
     }
@@ -1183,7 +1306,20 @@ impl Simulator {
         fold: Fold<'_>,
         options: &Options,
     ) -> Result<(), SimulationError> {
+        if cotangents.is_empty() {
+            return Ok(());
+        }
         let (matrix, tolerances, scale) = system;
+        let unknowns = tolerances.len();
+        let rows = unknowns + usize::from(scale.is_some());
+        let needed = pull_period_numbers(
+            (unknowns, rows),
+            waveforms_numbers(&found.waveforms),
+            (float_count(cotangents.len()), twins.len()),
+            scale.is_some(),
+            0.0,
+        );
+        options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
         let waveforms = (&found.waveforms, steps);
         let seeds: Vec<&BTreeMap<usize, Vec<f64>>> = cotangents
             .iter()
@@ -1194,12 +1330,11 @@ impl Simulator {
         let ends = self.backward(twins, waveforms, &seeds, (&held, stretch), fold, options)?;
         // The bordered solve's map, column by column, whose transpose carries each
         // cotangent on the start and the period to the period's end.
-        let rows = tolerances.len() + usize::from(scale.is_some());
         let mut map = units(rows);
         solve_each_in_range(matrix, &mut map).map_err(|error| self.state.solver.name(error))?;
         let last = found.waveforms.values.len() - 1;
         let ended: Vec<BTreeMap<usize, Vec<f64>>> = ends
-            .iter()
+            .into_iter()
             .zip(cotangents)
             .map(|((start, period), cotangent)| {
                 let mut scaled: Vec<f64> = start
@@ -1221,6 +1356,7 @@ impl Simulator {
                 BTreeMap::from([(last, end)])
             })
             .collect();
+        drop(map);
         let seeds: Vec<&BTreeMap<usize, Vec<f64>>> = ended.iter().collect();
         self.backward(twins, waveforms, &seeds, (&held, None), fold, options)?;
         Ok(())
@@ -1236,14 +1372,15 @@ impl Simulator {
         x: &[f64],
         options: &Options,
     ) -> Result<(), SimulationError> {
-        let shifts = match &forward.start {
-            Start::Held(Some(shifts)) => shifts.clone(),
-            Start::Held(None) => vec![vec![0.0; x.len()]; forward.directions.len()],
+        let shifts = match &mut forward.start {
+            Start::Held(shifts) => shifts
+                .take()
+                .unwrap_or_else(|| vec![vec![0.0; x.len()]; forward.directions.len()]),
             Start::Solved(forced) => {
                 self.dc_shifts(&mut forward.twins, x, &forward.directions, forced, options)?
             }
         };
-        let at = forward.keep(&shifts);
+        let at = forward.ends.is_none().then(|| forward.keep(&shifts));
         // A state that only time moves holds at the operating point, and has a charge
         // only once time passes.
         self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
@@ -1267,7 +1404,11 @@ impl Simulator {
             );
             forward.tangents.push(Tangent::new(charge));
         }
-        forward.found = vec![at];
+        if let Some(at) = at {
+            forward.found = vec![at];
+        } else {
+            forward.found.clear();
+        }
         Ok(())
     }
 
@@ -1304,6 +1445,9 @@ impl Simulator {
         forward
             .twins
             .evaluate(x, Some(time), options.gmin, &options.parallelism);
+        if let Some(ends) = &mut forward.ends {
+            ends.clear();
+        }
         let mut solutions = Vec::with_capacity(forward.directions.len());
         for (index, (direction, tangent)) in forward
             .directions
@@ -1343,9 +1487,10 @@ impl Simulator {
             let charge = self.state.workspace.contributions.charge.clone();
             charges.advance(charge, &history, formula, restarted);
         }
-        forward.found.push(forward.keep(&solutions));
         if forward.ends.is_some() {
             forward.ends = Some(solutions);
+        } else {
+            forward.found.push(forward.keep(&solutions));
         }
         Ok(())
     }

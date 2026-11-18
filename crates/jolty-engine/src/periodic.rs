@@ -80,7 +80,7 @@ const MOST_PERIODS: usize = 40;
 /// faer's. Before, the first decomposition holds a copy of the system and a workspace of
 /// its own instead of the reduced system and its factors, and a period four: its tangents,
 /// three vectors per unknown, and `Φ`.
-const DENSE_MATRICES: f64 = 14.0;
+pub(crate) const DENSE_MATRICES: f64 = 14.0;
 
 /// A periodic steady state: one period of the state a circuit repeats, found by shooting.
 ///
