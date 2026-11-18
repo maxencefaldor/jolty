@@ -24,6 +24,7 @@ from jolty import (
     JoltyError,
     OperatingPoint,
     Options,
+    PeriodicSteadyState,
     Role,
     Simulation,
     SpiceError,
@@ -3338,3 +3339,210 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
     )
     # Root of v = 2 * tanh(v) is ~1.915008 V.
     assert op.voltage("X1/x") == pytest.approx(1.915008046, rel=1e-6)
+
+
+def test_library_reads_driven_pss_statements() -> None:
+    read = library(
+        ".param f0=1meg\n"
+        ".func half(x) {x / 2}\n"
+        ".pss 1meg\n"
+        ".pss {f0} {half(20u)}\n"
+        ".pss period=1u max_step=5n method=gear2\n"
+        ".pss fund=1k points=100 method=be\n"
+        ".pss freq=10k tstep=1u uic\n"
+    )
+    cards = read.periodic_steady_states
+    assert len(cards) == 5
+
+    # .pss 1meg -> driven at 1 MHz
+    assert cards[0].autonomous is False
+    assert cards[0].frequency == pytest.approx(1e6)
+    assert cards[0].period == pytest.approx(1e-6)
+    assert cards[0].stabilization is None
+    assert cards[0].statement is not None
+    assert cards[0].statement.line == 3
+
+    # Parameterized driven .pss with user function
+    assert cards[1].autonomous is False
+    assert cards[1].frequency == pytest.approx(1e6)
+    assert cards[1].period == pytest.approx(1e-6)
+    assert cards[1].stabilization == pytest.approx(10e-6)
+
+    # Keyword driven with period, max_step, method
+    assert cards[2].autonomous is False
+    assert cards[2].period == pytest.approx(1e-6)
+    assert cards[2].frequency == pytest.approx(1e6)
+    assert cards[2].max_step == pytest.approx(5e-9)
+    assert cards[2].method == "gear2"
+
+    # Keyword driven with fund, points, method alias
+    assert cards[3].autonomous is False
+    assert cards[3].period == pytest.approx(1e-3)
+    assert cards[3].points == 100
+    assert cards[3].method == "backward_euler"
+
+    # Keyword driven with freq, tstep, uic
+    assert cards[4].autonomous is False
+    assert cards[4].period == pytest.approx(1e-4)
+    assert cards[4].max_step == pytest.approx(1e-6)
+    assert cards[4].uic is True
+
+
+def test_library_reads_autonomous_pss_statements() -> None:
+    read = library(
+        ".pss\n"
+        ".pss 1meg 10u out\n"
+        ".pss 1meg 10u V(out) 1024 10 50 5e-3 uic\n"
+        ".pss 1meg 0 2 512\n"
+        ".pss fund=2meg tstab=5u oscnode=v(tank) harms=8 sc_iter=40 steady_coeff=1e-3\n"
+        ".pss autonomous max_step=2n\n"
+        ".pss oscnob=node_a\n"
+    )
+    cards = read.periodic_steady_states
+    assert len(cards) == 7
+
+    # Bare .pss -> autonomous
+    assert cards[0].autonomous is True
+    assert cards[0].period is None
+    assert cards[0].frequency is None
+    assert cards[0].statement is not None
+    assert cards[0].statement.line == 1
+
+    # ngspice 3-arg autonomous .pss
+    assert cards[1].autonomous is True
+    assert cards[1].period is None
+    assert cards[1].frequency == pytest.approx(1e6)
+    assert cards[1].stabilization == pytest.approx(10e-6)
+    assert cards[1].oscillator_node == "out"
+
+    # ngspice full positional autonomous .pss with V(out) and uic
+    assert cards[2].autonomous is True
+    assert cards[2].period is None
+    assert cards[2].frequency == pytest.approx(1e6)
+    assert cards[2].stabilization == pytest.approx(10e-6)
+    assert cards[2].oscillator_node == "out"
+    assert cards[2].points == 1024
+    assert cards[2].harmonics == 10
+    assert cards[2].shooting_iterations == 50
+    assert cards[2].steady_coefficient == pytest.approx(5e-3)
+    assert cards[2].uic is True
+
+    # Numeric non-ground node name
+    assert cards[3].autonomous is True
+    assert cards[3].oscillator_node == "2"
+    assert cards[3].stabilization == 0.0
+    assert cards[3].points == 512
+
+    # Keyword autonomous with oscnode=v(tank)
+    assert cards[4].autonomous is True
+    assert cards[4].period is None
+    assert cards[4].frequency == pytest.approx(2e6)
+    assert cards[4].stabilization == pytest.approx(5e-6)
+    assert cards[4].oscillator_node == "tank"
+    assert cards[4].harmonics == 8
+    assert cards[4].shooting_iterations == 40
+    assert cards[4].steady_coefficient == pytest.approx(1e-3)
+
+    # Explicit autonomous flag and ngspice oscnob spelling alias
+    assert cards[5].autonomous is True
+    assert cards[5].period is None
+    assert cards[5].max_step == pytest.approx(2e-9)
+    assert cards[6].autonomous is True
+    assert cards[6].oscillator_node == "node_a"
+
+
+def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
+    driven_deck = library(
+        ".subckt rc_driven\n"
+        "V1 in 0 SIN(0 1 1meg)\n"
+        "R1 in out 1k\n"
+        "C1 out 0 1n\n"
+        ".ends\n"
+        ".pss 1meg points=100\n"
+    )
+    (driven_card,) = driven_deck.periodic_steady_states
+    driven_analysis = PeriodicSteadyState.from_spice(driven_card)
+    assert driven_analysis.period is not None
+    assert driven_analysis.period.value == pytest.approx(1e-6)
+    assert driven_analysis.max_step is not None
+    assert driven_analysis.max_step.value == pytest.approx(1e-8)
+    assert driven_analysis.method == "trapezoidal"
+    driven_result = Simulation(circuit(driven_deck.component("rc_driven"))).run(
+        driven_analysis
+    )
+    assert isinstance(driven_result, results.PeriodicSteadyStateResult)
+    assert driven_result.period == pytest.approx(1e-6)
+
+    # Autonomous regulated LC tank: L=1uH, C=1nF -> f0 ~ 5.033 MHz, T ~ 198.7 ns.
+    inductance, capacitance = 1e-6, 1e-9
+    impedance = math.sqrt(inductance / capacitance)
+    conductance = 0.2 / impedance
+    regulation = f"-{conductance} * V(t) * (1 - (V(t)^2 + ({impedance} * I(V1))^2))"
+    osc_deck = library(
+        ".subckt tank\n"
+        f"C1 t 0 {capacitance}\n"
+        f"L1 t l {inductance}\n"
+        "V1 l 0 0\n"
+        f"B1 t 0 I={{{regulation}}}\n"
+        ".ends\n"
+        ".pss 5meg 0 t\n"
+    )
+    (osc_card,) = osc_deck.periodic_steady_states
+    osc_analysis = PeriodicSteadyState.from_spice(osc_card)
+    assert osc_analysis.period is None
+    assert osc_analysis.max_step is None
+    assert osc_analysis.method == "trapezoidal"
+    osc_result = Simulation(circuit(osc_deck.component("tank"))).run(osc_analysis)
+    assert isinstance(osc_result, results.PeriodicSteadyStateResult)
+    expected_period = 2.0 * math.pi * math.sqrt(inductance * capacitance)
+    assert osc_result.period == pytest.approx(expected_period, rel=1e-2)
+
+
+@pytest.mark.parametrize(
+    ("card", "fragment"),
+    [
+        (".pss 0", "frequency must be positive"),
+        (".pss -1meg", "frequency must be positive"),
+        (".pss period=0", "period must be positive"),
+        (".pss period=-1u", "period must be positive"),
+        (".pss 1meg -1u", "stabilization time must be at least 0"),
+        (".pss max_step=0", "max_step must be positive"),
+        (".pss max_step=-1n", "max_step must be positive"),
+        (".pss 1meg 0 out 0", "points must be a positive integer"),
+        (".pss 1meg 0 out 10.5", "points must be a positive integer"),
+        (".pss 1meg 0 out 64 0", "harmonics must be a positive integer"),
+        (".pss 1meg 0 out 64 5 0", "shooting iterations must be a positive integer"),
+        (".pss 1meg 0 out 64 5 10 0", "steady coefficient must be positive"),
+        (".pss 1meg 0 0", "ground node `0`"),
+        (".pss 1meg 0 V(0)", "ground node `0`"),
+        (".pss 1meg 0 V(a,b)", "written `node` or `V(node)`"),
+        (".pss 1meg 0 V()", "written `node` or `V(node)`"),
+        (".pss 1meg 0 a/b", "separates the levels"),
+        (".pss 1meg period=1u", "sets period or frequency, not both"),
+        (".pss fund=1meg period=1u", "sets period or frequency, not both"),
+        (".pss autonomous period=1u", "takes no period"),
+        (".pss oscnode=out period=1u", "takes no period"),
+        (".pss period=1u period=2u", "duplicate .pss option"),
+        (".pss 1meg fund=2meg", "duplicate .pss option"),
+        (".pss 1meg 10u tstab=20u", "duplicate .pss option"),
+        (".pss foo=1", "unknown .pss option `foo`"),
+        (".pss method=rk4", "unknown .pss method `rk4`"),
+        (".pss 1meg 0 out 64 5 10 1e-3 extra", "at most 7 positional"),
+        (".pss =", "unexpected `=`"),
+        (".pss period=", "missing value after `period=`"),
+        (".pss period==1u", "missing value after `period=`"),
+        (".pss {missing_param}", "invalid .pss frequency"),
+        (".pss bogus", "invalid .pss frequency"),
+    ],
+)
+def test_malformed_pss_statements_raise_factual_spice_errors(
+    card: str, fragment: str
+) -> None:
+    advice = ("use ", "pass ", "try ", "instead", "should", "give ", "did you mean")
+    with pytest.raises(SpiceError) as raised:
+        library(card)
+    message = str(raised.value)
+    assert fragment in message, message
+    lowered = message.casefold()
+    for word in advice:
+        assert word not in lowered, f"advice word {word!r} in {message}"

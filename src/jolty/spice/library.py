@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import JsonValue
 
@@ -85,6 +85,57 @@ conditions, ``.ic``, and an operating point's nodesets, ``.nodeset``."""
 
 CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
 """The statements of a subcircuit's ``.if`` blocks."""
+
+PERIODIC_STEADY_STATE: Final = ".pss"
+"""The statement that specifies a periodic steady-state analysis."""
+
+type IntegrationMethod = Literal["trapezoidal", "gear2", "backward_euler"]
+"""An integration method named on a SPICE analysis statement."""
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodicSteadyStateCard:
+    """A ``.pss`` periodic steady-state statement read from a SPICE file.
+
+    Follows ngspice 47's ``.pss`` syntax (§11.3.12) and keyword forms:
+
+    - ``.pss``: autonomous oscillator, period unknown.
+    - ``.pss <freq> [<tstab>]``: driven at period ``1 / freq``.
+    - ``.pss <freq> <tstab> <oscnode> [points [harms [sc_iter [steady_coeff]]]] [uic]``:
+      autonomous oscillator with guessed frequency ``freq`` and oscillator node
+      ``oscnode`` (ngspice form).
+    - Keyword options: ``period=``, ``fund=`` / ``freq=`` / ``fguess=``, ``tstab=``,
+      ``oscnode=`` / ``oscnob=``, ``points=`` / ``psspoints=``, ``harms=`` /
+      ``harmonics=``, ``sc_iter=``, ``steady_coeff=``, ``max_step=`` / ``tstep=``,
+      ``method=``; bare flags ``autonomous`` and ``uic``.
+    """
+
+    autonomous: bool
+    """True for an autonomous oscillator whose period shooting finds."""
+    period: float | None = None
+    """Driven period in seconds; None for an autonomous oscillator."""
+    frequency: float | None = None
+    """Fundamental frequency, or autonomous initial guess ``fguess``, in hertz."""
+    stabilization: float | None = None
+    """Stabilization time ``tstab``, in seconds."""
+    oscillator_node: str | None = None
+    """Oscillator output node ``oscnode``, if named."""
+    points: int | None = None
+    """Time-domain grid points per period (``psspoints``), if given."""
+    harmonics: int | None = None
+    """Harmonics requested for spectral output (``harms``), if given."""
+    shooting_iterations: int | None = None
+    """Shooting iteration limit (``sc_iter``), if given."""
+    steady_coefficient: float | None = None
+    """Steady-state convergence coefficient (``steady_coeff``), if given."""
+    max_step: float | None = None
+    """Longest time step allowed, in seconds, if given."""
+    method: IntegrationMethod | None = None
+    """Integration method requested, if given."""
+    uic: bool = False
+    """Whether initial conditions alone start the transient (``uic``)."""
+    statement: Statement | None = None
+    """The source statement with its file and line number."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +555,8 @@ class Library:
         """The voltage, in volts, its files' ``.nodeset`` statements give each node, by
         name as they write it: where a plan's operating points start from, its options'
         `nodesets`."""
+        self.periodic_steady_states: list[PeriodicSteadyStateCard] = []
+        """The ``.pss`` periodic steady-state analyses its files define, in order."""
         self._uses: list[Use] | None = None
 
     @property
@@ -606,10 +659,14 @@ class Library:
         elif keyword in INITIAL:
             given = self.initial_conditions if keyword == ".ic" else self.nodesets
             given |= _voltages(statement, self.values(), self.functions)
+        elif keyword == PERIODIC_STEADY_STATE:
+            self.periodic_steady_states.append(
+                _periodic_steady_state(statement, self.values(), self.functions)
+            )
         elif keyword != ".end":
             message = (
                 "a library defines subcircuits, models, parameters, functions, "
-                "options, initial conditions and nodesets only"
+                "options, initial conditions, nodesets and periodic steady states only"
             )
             raise statement.fail(message)
 
@@ -1675,6 +1732,310 @@ def _node_of(written: str) -> str | None:
         return None
     inside = written[2:-1].strip()
     return inside if inside and "," not in inside else None
+
+
+_PSS_POSITIONALS: Final[tuple[str, ...]] = (
+    "frequency",
+    "stabilization",
+    "oscillator_node",
+    "points",
+    "harmonics",
+    "shooting_iterations",
+    "steady_coefficient",
+)
+"""Positional slots of ngspice's ``.pss`` statement (§11.3.12), in order."""
+
+_PSS_ALIASES: Final[dict[str, str]] = {
+    "period": "period",
+    "fund": "frequency",
+    "freq": "frequency",
+    "fguess": "frequency",
+    "tstab": "stabilization",
+    "oscnode": "oscillator_node",
+    "oscnob": "oscillator_node",
+    "points": "points",
+    "psspoints": "points",
+    "harms": "harmonics",
+    "harmonics": "harmonics",
+    "sc_iter": "shooting_iterations",
+    "steady_coeff": "steady_coefficient",
+    "max_step": "max_step",
+    "tstep": "max_step",
+    "method": "method",
+}
+"""Keyword option aliases accepted on ``.pss`` statements, by canonical field."""
+
+_PSS_METHODS: Final[dict[str, IntegrationMethod]] = {
+    "trap": "trapezoidal",
+    "trapezoidal": "trapezoidal",
+    "gear": "gear2",
+    "gear2": "gear2",
+    "backward_euler": "backward_euler",
+    "euler": "backward_euler",
+    "be": "backward_euler",
+}
+"""Integration methods accepted by ``.pss method=...``."""
+
+_PSS_FLAGS: Final = frozenset({"uic", "autonomous"})
+"""Bare flag keywords accepted on ``.pss`` statements."""
+
+
+def _pss_fields(statement: Statement) -> tuple[dict[str, str], set[str]]:
+    """Maps a ``.pss`` statement's arguments to canonical field names and flags."""
+    positionals, keywords, flags = _split_pss_tokens(statement)
+    if len(positionals) > len(_PSS_POSITIONALS):
+        message = (
+            f"a .pss statement takes at most {len(_PSS_POSITIONALS)} positional "
+            f"arguments, not {len(positionals)}"
+        )
+        raise statement.fail(message)
+    raw = dict(zip(_PSS_POSITIONALS, positionals, strict=False))
+    for key, value in keywords:
+        canonical = _PSS_ALIASES.get(key)
+        if canonical is None:
+            known = ", ".join(_PSS_ALIASES)
+            message = f"unknown .pss option `{key}`; known options are {known}"
+            raise statement.fail(message)
+        if canonical in raw:
+            message = f"duplicate .pss option for {canonical}: `{key}`"
+            raise statement.fail(message)
+        raw[canonical] = value
+    return raw, flags
+
+
+def _periodic_steady_state(
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> PeriodicSteadyStateCard:
+    """Parses a ``.pss`` statement into a [`PeriodicSteadyStateCard`].
+
+    Raises:
+        SpiceError: When tokens, options, expressions or values are invalid.
+    """
+    raw, flags = _pss_fields(statement)
+
+    period = (
+        _pss_positive(raw["period"], "period", statement, scope, functions)
+        if "period" in raw
+        else None
+    )
+    frequency = (
+        _pss_positive(raw["frequency"], "frequency", statement, scope, functions)
+        if "frequency" in raw
+        else None
+    )
+    if period is not None and frequency is not None:
+        message = "a .pss statement sets period or frequency, not both"
+        raise statement.fail(message)
+
+    oscillator_node = (
+        _pss_node(raw["oscillator_node"], statement)
+        if "oscillator_node" in raw
+        else None
+    )
+    autonomous = (
+        "autonomous" in flags
+        or oscillator_node is not None
+        or (period is None and frequency is None)
+    )
+    if autonomous and period is not None:
+        message = (
+            "an autonomous .pss statement finds its own period and takes no period"
+        )
+        raise statement.fail(message)
+    if not autonomous:
+        if period is not None:
+            frequency = 1.0 / period
+        elif frequency is not None:
+            period = 1.0 / frequency
+
+    return PeriodicSteadyStateCard(
+        autonomous=autonomous,
+        period=period,
+        frequency=frequency,
+        stabilization=(
+            _pss_non_negative(
+                raw["stabilization"], "stabilization time", statement, scope, functions
+            )
+            if "stabilization" in raw
+            else None
+        ),
+        oscillator_node=oscillator_node,
+        points=(
+            _pss_positive_int(raw["points"], "points", statement, scope, functions)
+            if "points" in raw
+            else None
+        ),
+        harmonics=(
+            _pss_positive_int(
+                raw["harmonics"], "harmonics", statement, scope, functions
+            )
+            if "harmonics" in raw
+            else None
+        ),
+        shooting_iterations=(
+            _pss_positive_int(
+                raw["shooting_iterations"],
+                "shooting iterations",
+                statement,
+                scope,
+                functions,
+            )
+            if "shooting_iterations" in raw
+            else None
+        ),
+        steady_coefficient=(
+            _pss_positive(
+                raw["steady_coefficient"],
+                "steady coefficient",
+                statement,
+                scope,
+                functions,
+            )
+            if "steady_coefficient" in raw
+            else None
+        ),
+        max_step=(
+            _pss_positive(raw["max_step"], "max_step", statement, scope, functions)
+            if "max_step" in raw
+            else None
+        ),
+        method=_pss_method(raw["method"], statement) if "method" in raw else None,
+        uic="uic" in flags,
+        statement=statement,
+    )
+
+
+def _split_pss_tokens(
+    statement: Statement,
+) -> tuple[list[str], list[tuple[str, str]], set[str]]:
+    """Splits a ``.pss`` statement into positionals, ``k=v`` pairs and bare flags."""
+    words = tokens(statement.text)[1:]
+    positionals: list[str] = []
+    keywords: list[tuple[str, str]] = []
+    flags: set[str] = set()
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "=":
+            message = "unexpected `=` without an option name"
+            raise statement.fail(message)
+        if index + 1 < len(words) and words[index + 1] == "=":
+            if index + 2 >= len(words) or words[index + 2] == "=":
+                message = f"missing value after `{word}=`"
+                raise statement.fail(message)
+            keywords.append((word.casefold(), words[index + 2]))
+            index += 3
+            continue
+        folded = word.casefold()
+        if folded in _PSS_FLAGS:
+            flags.add(folded)
+        else:
+            positionals.append(word)
+        index += 1
+    return positionals, keywords, flags
+
+
+def _pss_number(
+    word: str,
+    name: str,
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> float:
+    """Evaluates a numeric ``.pss`` token against `scope` and `functions`."""
+    given = number(word)
+    if given is None:
+        try:
+            given = evaluate(inlined(parse(word), functions), scope)
+        except SpiceError as error:
+            message = f"invalid .pss {name} `{word}`: {error}"
+            raise statement.fail(message) from None
+    if not math.isfinite(given):
+        message = f"a .pss {name} must be finite, not `{word}`"
+        raise statement.fail(message)
+    return given
+
+
+def _pss_positive(
+    word: str,
+    name: str,
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> float:
+    """Evaluates a strictly positive ``.pss`` floating-point parameter."""
+    value = _pss_number(word, name, statement, scope, functions)
+    if not value > 0.0:
+        message = f"a .pss {name} must be positive, not {value!r}"
+        raise statement.fail(message)
+    return value
+
+
+def _pss_non_negative(
+    word: str,
+    name: str,
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> float:
+    """Evaluates a non-negative ``.pss`` floating-point parameter."""
+    value = _pss_number(word, name, statement, scope, functions)
+    if value < 0.0:
+        message = f"a .pss {name} must be at least 0, not {value!r}"
+        raise statement.fail(message)
+    return value
+
+
+def _pss_positive_int(
+    word: str,
+    name: str,
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> int:
+    """Evaluates a strictly positive integer ``.pss`` parameter."""
+    value = _pss_number(word, name, statement, scope, functions)
+    if not (value > 0.0 and value.is_integer()):
+        message = f"a .pss {name} must be a positive integer, not `{word}`"
+        raise statement.fail(message)
+    return int(value)
+
+
+def _pss_node(word: str, statement: Statement) -> str:
+    """Validates an oscillator node token (`node` or `V(node)`)."""
+    if word[:2].casefold() == "v(":
+        extracted = _node_of(word)
+        if extracted is None:
+            message = f"an oscillator node is written `node` or `V(node)`, not `{word}`"
+            raise statement.fail(message)
+        node = extracted
+    else:
+        node = word
+    if not node or "(" in node or ")" in node or "," in node:
+        message = f"invalid oscillator node `{word}`"
+        raise statement.fail(message)
+    if node == "0":
+        message = "an oscillator node cannot be the ground node `0`"
+        raise statement.fail(message)
+    if ir.SEPARATOR in node:
+        message = (
+            f"a node named `{node}`, whose `{ir.SEPARATOR}` separates the levels "
+            "of jolty's paths"
+        )
+        raise statement.fail(message)
+    return node
+
+
+def _pss_method(word: str, statement: Statement) -> IntegrationMethod:
+    """Maps a SPICE integration method name on ``.pss`` to jolty's method name."""
+    method = _PSS_METHODS.get(word.casefold())
+    if method is None:
+        known = ", ".join(_PSS_METHODS)
+        message = f"unknown .pss method `{word}`; known methods are {known}"
+        raise statement.fail(message)
+    return method
 
 
 def _assignments(statement: Statement) -> list[tuple[str, Expression]]:

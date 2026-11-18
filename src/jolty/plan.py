@@ -31,7 +31,7 @@ from typing import Final, Literal
 from pydantic import JsonValue
 
 from jolty import _core, ir
-from jolty.spice import ngspice
+from jolty.spice import PeriodicSteadyStateCard, ngspice
 from jolty.units import (
     FREQUENCY,
     TEMPERATURE,
@@ -40,6 +40,7 @@ from jolty.units import (
     Dimension,
     Quantity,
     finite,
+    s,
 )
 
 DECADE_DIGITS: Final = 40
@@ -256,6 +257,30 @@ class PeriodicSteadyState(Recorded):
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
     breakpoints: Sequence[Quantity] = ()
+
+    @classmethod
+    def from_spice(cls, card: PeriodicSteadyStateCard) -> PeriodicSteadyState:
+        """Converts a SPICE ``.pss`` card into a [`PeriodicSteadyState`] analysis.
+
+        An autonomous card leaves `period` as ``None`` so shooting solves for the
+        oscillator's period; a driven card sets `period` in seconds. When `max_step`
+        is omitted on a driven card with `points` set, `max_step` is
+        ``period / points``.
+        """
+        period = None if card.autonomous or card.period is None else card.period * s
+        if card.max_step is not None:
+            max_step = card.max_step * s
+        elif (
+            not card.autonomous and card.period is not None and card.points is not None
+        ):
+            max_step = (card.period / card.points) * s
+        else:
+            max_step = None
+        return cls(
+            period=period,
+            max_step=max_step,
+            method=card.method or "trapezoidal",
+        )
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
