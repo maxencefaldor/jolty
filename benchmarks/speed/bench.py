@@ -1466,6 +1466,172 @@ def spice_voltages(
     )
 
 
+_MIN_CUBIC_POINTS: Final = 4
+"""Minimum distinct grid points required for fourth-order cubic Hermite slopes."""
+
+_EXTREMUM_STEP_RATIO_LIMIT: Final = 4.0
+"""Maximum adjacent step-size ratio where smooth extrema relax monotonicity."""
+
+
+def _minmod(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    """Component-wise minmod: smaller magnitude when signs agree, else zero."""
+    return np.where(
+        first * second > 0.0,
+        np.sign(first) * np.minimum(np.abs(first), np.abs(second)),
+        0.0,
+    )
+
+
+def _median_of_three(
+    first: np.ndarray, second: np.ndarray, third: np.ndarray
+) -> np.ndarray:
+    """Component-wise median of three arrays."""
+    return np.maximum(
+        np.minimum(first, second), np.minimum(np.maximum(first, second), third)
+    )
+
+
+def _cubic_slopes(
+    steps: np.ndarray,
+    secants: np.ndarray,
+    curvatures: np.ndarray,
+) -> np.ndarray:
+    """Fourth-order non-uniform divided-difference slopes (exact on degree-3 curves)."""
+    count = len(steps) + 1
+    parabolic = np.empty(count, dtype=np.float64)
+    parabolic[1:-1] = (steps[1:] * secants[:-1] + steps[:-1] * secants[1:]) / (
+        steps[:-1] + steps[1:]
+    )
+    parabolic[0] = (
+        (2.0 * steps[0] + steps[1]) * secants[0] - steps[0] * secants[1]
+    ) / (steps[0] + steps[1])
+    parabolic[-1] = (
+        (2.0 * steps[-1] + steps[-2]) * secants[-1] - steps[-1] * secants[-2]
+    ) / (steps[-1] + steps[-2])
+    third_differences = (curvatures[1:] - curvatures[:-1]) / (
+        steps[:-2] + steps[1:-1] + steps[2:]
+    )
+    slopes = parabolic.copy()
+    if count >= 5:
+        weight_left = steps[3:] + steps[2:-1]
+        weight_right = steps[:-3] + steps[1:-2]
+        averaged_third = (
+            weight_left * third_differences[:-1] + weight_right * third_differences[1:]
+        ) / (weight_left + weight_right)
+        slopes[2:-2] = parabolic[2:-2] - steps[1:-2] * steps[2:-1] * averaged_third
+    slopes[1] = parabolic[1] - steps[0] * steps[1] * third_differences[0]
+    slopes[-2] = parabolic[-2] - steps[-2] * steps[-1] * third_differences[-1]
+    slopes[0] = parabolic[0] + steps[0] * (steps[0] + steps[1]) * third_differences[0]
+    slopes[-1] = (
+        parabolic[-1] + steps[-1] * (steps[-1] + steps[-2]) * third_differences[-1]
+    )
+    return slopes
+
+
+def _limit_slopes(
+    steps: np.ndarray,
+    secants: np.ndarray,
+    curvatures: np.ndarray,
+    slopes: np.ndarray,
+) -> np.ndarray:
+    """Applies the Huynh (1993) monotonicity-preserving limiter with extremum check.
+
+    Monotone segments and flat shelves clamp to `[0, 3 * minmod(s_left, s_right)]`
+    so sharp corners and step edges never overshoot. Smooth extrema where three
+    adjacent divided-difference curvatures share sign (and adjacent steps stay within
+    `_EXTREMUM_STEP_RATIO_LIMIT`) relax within the local parabolic bounds so smooth
+    sine peaks reconstruct to fourth order instead of suffering linear chord sag.
+    """
+    limited = slopes.copy()
+    padded_curvatures = np.empty(len(slopes), dtype=np.float64)
+    padded_curvatures[1:-1] = curvatures
+    padded_curvatures[0] = curvatures[0]
+    padded_curvatures[-1] = curvatures[-1]
+
+    left_secants = secants[:-1]
+    right_secants = secants[1:]
+    left_extrapolated = left_secants + padded_curvatures[:-2] * steps[:-1]
+    right_extrapolated = right_secants - padded_curvatures[2:] * steps[1:]
+
+    bounded = _minmod(left_secants, right_secants)
+    monotone_slopes = _median_of_three(
+        slopes[1:-1], np.zeros_like(bounded), 3.0 * bounded
+    )
+
+    smooth = (padded_curvatures[:-2] * padded_curvatures[1:-1] > 0.0) & (
+        padded_curvatures[1:-1] * padded_curvatures[2:] > 0.0
+    )
+    step_ratio = np.maximum(steps[:-1], steps[1:]) / np.minimum(steps[:-1], steps[1:])
+    lower_bound = np.minimum(
+        np.minimum(left_secants, right_secants),
+        np.minimum(left_extrapolated, right_extrapolated),
+    )
+    upper_bound = np.maximum(
+        np.maximum(left_secants, right_secants),
+        np.maximum(left_extrapolated, right_extrapolated),
+    )
+    smooth_slopes = np.clip(
+        slopes[1:-1],
+        np.minimum(lower_bound, 1.5 * lower_bound),
+        np.maximum(upper_bound, 1.5 * upper_bound),
+    )
+    limited[1:-1] = np.where(
+        smooth & (step_ratio <= _EXTREMUM_STEP_RATIO_LIMIT),
+        smooth_slopes,
+        monotone_slopes,
+    )
+    limited[0] = float(_median_of_three(slopes[0], np.array(0.0), 3.0 * secants[0]))
+    limited[-1] = float(_median_of_three(slopes[-1], np.array(0.0), 3.0 * secants[-1]))
+    return limited
+
+
+def interpolate_transient(
+    query: np.ndarray, times: np.ndarray, values: np.ndarray
+) -> np.ndarray:
+    """Interpolates a transient waveform with Huynh (1993) cubic Hermite interpolation.
+
+    Reference: H. T. Huynh, "Accurate Monotone Cubic Interpolation",
+    SIAM J. Numer. Anal. 30(1):57-100, 1993.
+
+    Deduplicates repeated breakpoint timestamps by keeping the last sample at each
+    distinct time. Falls back to piecewise linear `np.interp` when fewer than four
+    distinct time points exist. Out-of-range queries clamp to endpoint values.
+    """
+    sample_times = np.asarray(times, dtype=np.float64)
+    sample_values = np.asarray(values, dtype=np.float64)
+    query_times = np.asarray(query, dtype=np.float64)
+    if len(sample_times) == 0:
+        return np.interp(query_times, sample_times, sample_values)
+    keep = np.ones(len(sample_times), dtype=bool)
+    keep[:-1] = sample_times[:-1] < sample_times[1:]
+    sample_times = sample_times[keep]
+    sample_values = sample_values[keep]
+    if len(sample_times) < _MIN_CUBIC_POINTS:
+        return np.interp(query_times, sample_times, sample_values)
+
+    steps = np.diff(sample_times)
+    secants = np.diff(sample_values) / steps
+    curvatures = (secants[1:] - secants[:-1]) / (steps[:-1] + steps[1:])
+    raw_slopes = _cubic_slopes(steps, secants, curvatures)
+    slopes = _limit_slopes(steps, secants, curvatures, raw_slopes)
+
+    clamped = np.clip(query_times, sample_times[0], sample_times[-1])
+    interval_index = np.clip(
+        np.searchsorted(sample_times, clamped, side="right") - 1,
+        0,
+        len(sample_times) - 2,
+    )
+    interval_width = steps[interval_index]
+    offset = clamped - sample_times[interval_index]
+    left_value = sample_values[interval_index]
+    left_slope = slopes[interval_index]
+    right_slope = slopes[interval_index + 1]
+    secant = secants[interval_index]
+    quadratic = (3.0 * secant - 2.0 * left_slope - right_slope) / interval_width
+    cubic = (left_slope + right_slope - 2.0 * secant) / (interval_width**2)
+    return left_value + offset * (left_slope + offset * (quadratic + offset * cubic))
+
+
 def deviations(
     analyses: Mapping[str, Analysis],
     reference: Mapping[str, Voltages],
@@ -1474,21 +1640,31 @@ def deviations(
     """How far each analysis `found` lies from the `reference`, as a fraction of it.
 
     For each analysis, the largest difference over the nets, each over the largest
-    magnitude of the reference's voltage or, in a transient, its swing, the reference
-    interpolated at the points found.
+    magnitude of the reference's voltage or, in a transient, its swing. Transient
+    references are evaluated at the points found with Huynh (1993) cubic Hermite
+    interpolation so coarse chords across smooth extrema do not inject linear chord
+    sag while sharp switch corners remain free of overshoot.
     """
     worst: dict[str, float] = {}
     for name, voltages in found.items():
         expected = reference[name]
+        swing = isinstance(analyses[name], Transient)
+        same_grid = (
+            voltages.points is not None
+            and expected.points is not None
+            and np.array_equal(voltages.points, expected.points)
+        )
         largest = 0.0
         for net, values in voltages.nets.items():
             ours = expected.nets[net]
-            there = (
-                ours
-                if voltages.points is None or expected.points is None
-                else np.interp(voltages.points, expected.points, ours)
-            )
-            swing = isinstance(analyses[name], Transient)
+            if voltages.points is None or expected.points is None or same_grid:
+                there = ours
+            elif swing:
+                there = interpolate_transient(
+                    voltages.points, expected.points, ours.real
+                )
+            else:
+                there = np.interp(voltages.points, expected.points, ours)
             scale = float(np.ptp(ours.real) if swing else np.abs(ours).max())
             largest = max(largest, float(np.abs(values - there).max()) / (scale or 1.0))
         worst[name] = largest

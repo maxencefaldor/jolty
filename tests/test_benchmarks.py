@@ -23,14 +23,15 @@ from jolty import (
     OperatingPoint,
     Role,
     Simulation,
+    Transient,
     circuit,
     component,
     devices,
     ir,
     spice,
 )
-from jolty.plan import linear
-from jolty.units import V, kohm, mA, nF, um
+from jolty.plan import TIGHT, linear
+from jolty.units import V, kohm, mA, nF, um, us
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -1527,3 +1528,93 @@ def test_bench_cli_flags_and_python_single_shot_memory_probe() -> None:
         ["bjt_amp"], found, scale=True, measure_memory=False
     )
     assert measured_without_memory["python/bjt_amp"].peak_memory_bytes is None
+
+
+def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> None:
+    """Huynh (1993) cubic Hermite eliminates sine-peak sag and avoids step overshoot."""
+    # 1. Synthetic 10 kHz sine sampled at 4 us straddling the midpoint peak at 125 us:
+    # linear interpolation sags by A * omega^2 * h^2 / 8 = 3.94e-3 of the 2 V swing;
+    # cubic Hermite cuts this error by >100x.
+    coarse_times = np.arange(0.0, 200e-6 + 1e-12, 4e-6) + 1e-6
+    coarse_values = np.sin(2.0 * np.pi * 1e4 * coarse_times)
+    fine_times = np.linspace(coarse_times[0], coarse_times[-1], 2001)
+    exact_values = np.sin(2.0 * np.pi * 1e4 * fine_times)
+    linear_error = (
+        float(
+            np.max(
+                np.abs(
+                    np.interp(fine_times, coarse_times, coarse_values) - exact_values
+                )
+            )
+        )
+        / 2.0
+    )
+    cubic_error = (
+        float(
+            np.max(
+                np.abs(
+                    bench.interpolate_transient(fine_times, coarse_times, coarse_values)
+                    - exact_values
+                )
+            )
+        )
+        / 2.0
+    )
+    assert linear_error > 3.5e-3
+    assert cubic_error < 5e-5
+
+    # 2. Sharp switching edge with 100x step-size jump: strictly zero overshoot.
+    step_times = np.array([0.0, 1.0, 2.0, 2.01, 2.02, 3.0, 4.0, 5.0])
+    step_values = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0])
+    step_query = np.linspace(0.0, 5.0, 5001)
+    step_interp = bench.interpolate_transient(step_query, step_times, step_values)
+    assert float(step_interp.min()) == 0.0
+    assert float(step_interp.max()) == 1.0
+
+    # 3. Sharp triangle corner (switching inductor current): strictly zero overshoot.
+    tri_times = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    tri_values = np.array([0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0])
+    tri_query = np.linspace(0.0, 6.0, 6001)
+    tri_interp = bench.interpolate_transient(tri_query, tri_times, tri_values)
+    assert float(tri_interp.min()) == 0.0
+    assert float(tri_interp.max()) == 3.0
+
+    # 4. Duplicate breakpoint timestamps and tiny arrays (< 4 points) stay finite.
+    dup_times = np.array([0.0, 1.0, 1.0, 2.0, 3.0, 4.0])
+    dup_values = np.array([0.0, 1.0, 1.0, 4.0, 9.0, 16.0])
+    assert bench.interpolate_transient(np.array([1.5]), dup_times, dup_values)[
+        0
+    ] == pytest.approx(2.25, abs=1e-12)
+    short_times = np.array([0.0, 1.0, 2.0])
+    short_values = np.array([0.0, 1.0, 2.0])
+    assert bench.interpolate_transient(
+        np.array([0.5, 1.5]), short_times, short_values
+    ) == pytest.approx([0.5, 1.5], abs=1e-15)
+
+    # 5. Exact interior reconstruction of a non-uniform cubic polynomial.
+    poly_times = np.array([0.0, 0.3, 0.8, 1.5, 2.1, 2.9, 3.5, 4.2, 5.0])
+    poly_values = 0.2 * poly_times**3 - 1.1 * poly_times**2 + 2.5 * poly_times - 0.7
+    interior = np.linspace(1.5, 2.9, 50)
+    expected_interior = 0.2 * interior**3 - 1.1 * interior**2 + 2.5 * interior - 0.7
+    reconstructed = bench.interpolate_transient(interior, poly_times, poly_values)
+    assert reconstructed == pytest.approx(expected_interior, abs=1e-12)
+
+
+def test_deviations_bjt_amp_transient_has_no_chord_sag() -> None:
+    """`deviations()` agrees on `bjt_amp` within 5e-5 vs 0.1 us fine reference."""
+    loaded = timing.load_fixture(timing.planned()["bjt_amp"])
+    plan_tran = loaded.plan.analyses["tran"]
+    assert isinstance(plan_tran, Transient)
+    simulation = Simulation(loaded.circuit)
+    tight = simulation.run(plan_tran, TIGHT)
+    fine = simulation.run(
+        Transient(stop=plan_tran.stop, max_step=0.1 * us),
+        TIGHT,
+    )
+    ref = {"tran": bench.jolty_voltages(tight, ("out",))}
+    cand = {"tran": bench.jolty_voltages(fine, ("out",))}
+    # Self-comparison on identical grid is exactly 0.
+    assert bench.deviations({"tran": plan_tran}, ref, ref)["tran"] == 0.0
+    # Against 0.1 us fine grid, linear np.interp gave 3.9e-3; Huynh cubic gives ~1.8e-5.
+    found_deviation = bench.deviations({"tran": plan_tran}, ref, cand)["tran"]
+    assert found_deviation < 5e-5

@@ -125,7 +125,13 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     At defaults on machine B: `bjt_amp` 1.06 ms against ngspice's 4.82 ms; `ac_wide` 13.3 against 31.0 ms; the buck 770 against 227 ms (3.4× slower); the 500 inverters 4.59 against 1.17 s; `rc_mesh_100` 645 ms against 12.6 s (Sparse) and 1.60 s (KLU); Xyce slowest on each, past 300 s on the buck.
     At matched options jolty alone finishes the buck (6.2 s; ngspice stops at 1 ns, Xyce at step 14,762).
     At equal error jolty is fastest on `rc_step`, `rc_ramp`, `lc_tank`, `butterworth_poles` and `rc_noise`, ngspice on the ladders and trees at 0.4–0.8 of jolty's time.
-    **Not the same work:** on the 500 inverters every simulator at its defaults lies a whole swing from jolty's tight run, and 0.18 at matched options; on `bjt_amp` ngspice and jolty differ by 3.8e-3 at any tolerance, a model or source difference to trace.
+    **Not the same work:** on the 500 inverters every simulator at its defaults lies a whole swing from jolty's tight run, and 0.18 at matched options.
+    **Traced and fixed (`bjt_amp` 3.8e-3, 18 November, machine D, ngspice 47 KLU at `TIGHT` / 300.15 K):** not a model or source difference, purely linear chord sag in `deviations()`'s `np.interp`.
+    OP agrees to `2.0e-11` relative (`+3.17e-12 V` on `out`) and AC to `7.5e-13` relative across all 71 frequencies.
+    In transient, `bjt_amp` leaves `max_step = None`, so jolty's `TIGHT` reference defaults to `stop / 50 = 4.00 µs`; at the 10 kHz sine peak (`125 µs`), `q''' = 0`, so adaptive step control never shrinks below `4.00 µs`.
+    At jolty's own 790 accepted points vs fine ngspice (`0.1 µs`), `max_abs = 3.288e-5 V` (`1.652e-5` of the `1.99 V` swing); cubic-spline interpolation gives `2.686e-5 V` (`1.349e-5`); and fine jolty (`0.1 µs`) vs fine ngspice (`0.1 µs`) gives `3.573e-5 V` (`1.795e-5`).
+    Linearly interpolating jolty's `4.00 µs` chord `[122.490 µs, 126.479 µs]` across the sine peak produced exact sag `A ω² h² / 8 = 7.86 mV` (`7.794e-3 V` measured at `t = 124.518 µs`, `3.916e-3` of swing, `3.8e-3` in `--view matched`).
+    Replaced `np.interp` on transient references in `benchmarks/speed/bench.py` (`deviations()`) with vectorized Huynh (1993) non-oscillatory fourth-order cubic Hermite interpolation (`interpolate_transient`): `bjt_amp` transient deviation drops from `3.916e-3` to `1.813e-5` against fine jolty (`0.1 µs`), and live `--view matched bjt_amp` against ngspice 47 drops from `3.8e-3` to `5.9e-5` on both Sparse and KLU (exact `0.0` overshoot on sharp switching steps and triangle corners).
     **Not done:** the views interleaved as `--compare` interleaves builds, and `--scale`'s large fixtures in them.
 - **Source:** rows B2, B3 and B4; `research/speed.md` row R1.
 
