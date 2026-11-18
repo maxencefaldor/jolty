@@ -17,31 +17,97 @@ pub(crate) enum Instruction {
     Table(usize, Points),
 }
 
-/// The instructions of `node`, its root last.
-pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
-    let mut tape = Vec::new();
-    emit(node, &mut tape);
-    tape
+/// The kind of three-operand instruction emitted by [`compile`].
+#[derive(Clone, Copy)]
+enum Ternary {
+    Limit,
+    Conditional,
 }
 
-/// Appends the instructions of `node` to `tape` and returns its root's index.
-fn emit(node: &Node, tape: &mut Vec<Instruction>) -> usize {
-    let instruction = match node {
-        Node::Constant(value) => Instruction::Constant(*value),
-        Node::Variable(index) => Instruction::Variable(*index),
-        Node::Unary(operation, x) => Instruction::Unary(*operation, emit(x, tape)),
-        Node::Binary(operation, a, b) => {
-            let a = emit(a, tape);
-            Instruction::Binary(*operation, a, emit(b, tape))
+/// Explicit continuation frame for iterative post-order compilation of [`Node`].
+enum Build<'a> {
+    Unary(Unary),
+    BinaryLeft(Binary, &'a Node),
+    BinaryRight(Binary, usize),
+    TernaryFirst(Ternary, &'a Node, &'a Node),
+    TernarySecond(Ternary, usize, &'a Node),
+    TernaryThird(Ternary, usize, usize),
+    Table(&'a Points),
+}
+
+/// The instructions of `node`, its root last, compiled iteratively in constant stack space.
+pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
+    let mut tape = Vec::new();
+    let mut frames: Vec<Build<'_>> = Vec::new();
+    let mut current = node;
+    'visit: loop {
+        let mut index = loop {
+            match current {
+                Node::Constant(value) => {
+                    tape.push(Instruction::Constant(*value));
+                    break tape.len() - 1;
+                }
+                Node::Variable(variable) => {
+                    tape.push(Instruction::Variable(*variable));
+                    break tape.len() - 1;
+                }
+                Node::Unary(operation, operand) => {
+                    frames.push(Build::Unary(*operation));
+                    current = operand;
+                }
+                Node::Binary(operation, left, right) => {
+                    frames.push(Build::BinaryLeft(*operation, right));
+                    current = left;
+                }
+                Node::Limit(arguments) => {
+                    let [first, second, third] = arguments.as_ref();
+                    frames.push(Build::TernaryFirst(Ternary::Limit, second, third));
+                    current = first;
+                }
+                Node::Conditional(arguments) => {
+                    let [first, second, third] = arguments.as_ref();
+                    frames.push(Build::TernaryFirst(Ternary::Conditional, second, third));
+                    current = first;
+                }
+                Node::Table(table) => {
+                    let (input, points) = table.as_ref();
+                    frames.push(Build::Table(points));
+                    current = input;
+                }
+            }
+        };
+        while let Some(frame) = frames.pop() {
+            let instruction = match frame {
+                Build::Unary(operation) => Instruction::Unary(operation, index),
+                Build::BinaryLeft(operation, right) => {
+                    frames.push(Build::BinaryRight(operation, index));
+                    current = right;
+                    continue 'visit;
+                }
+                Build::BinaryRight(operation, left) => Instruction::Binary(operation, left, index),
+                Build::TernaryFirst(kind, second, third) => {
+                    frames.push(Build::TernarySecond(kind, index, third));
+                    current = second;
+                    continue 'visit;
+                }
+                Build::TernarySecond(kind, first, third) => {
+                    frames.push(Build::TernaryThird(kind, first, index));
+                    current = third;
+                    continue 'visit;
+                }
+                Build::TernaryThird(Ternary::Limit, first, second) => {
+                    Instruction::Limit([first, second, index])
+                }
+                Build::TernaryThird(Ternary::Conditional, first, second) => {
+                    Instruction::Conditional([first, second, index])
+                }
+                Build::Table(points) => Instruction::Table(index, points.clone()),
+            };
+            tape.push(instruction);
+            index = tape.len() - 1;
         }
-        Node::Limit(arguments) => Instruction::Limit(arguments.each_ref().map(|x| emit(x, tape))),
-        Node::Conditional(arguments) => {
-            Instruction::Conditional(arguments.each_ref().map(|x| emit(x, tape)))
-        }
-        Node::Table(x, points) => Instruction::Table(emit(x, tape), points.clone()),
-    };
-    tape.push(instruction);
-    tape.len() - 1
+        return tape;
+    }
 }
 
 /// Evaluates `tape` at `variables` in `workspace`, then, backwards, the derivatives of its

@@ -73,6 +73,37 @@ pub enum Term {
     },
 }
 
+impl Drop for Term {
+    fn drop(&mut self) {
+        if matches!(self, Self::Constant(_) | Self::Variable(_)) {
+            return;
+        }
+        let mut stack = Vec::new();
+        detach_term_children(self, &mut stack);
+        while let Some(mut term) = stack.pop() {
+            detach_term_children(&mut term, &mut stack);
+        }
+    }
+}
+
+fn push_term_if_nested(slot: &mut Term, stack: &mut Vec<Term>) {
+    if !matches!(slot, Term::Constant(_) | Term::Variable(_)) {
+        stack.push(std::mem::replace(slot, Term::Constant(0.0)));
+    }
+}
+
+fn detach_term_children(term: &mut Term, stack: &mut Vec<Term>) {
+    match term {
+        Term::Constant(_) | Term::Variable(_) => {}
+        Term::Operation(_, operands) => {
+            for operand in operands {
+                push_term_if_nested(operand, stack);
+            }
+        }
+        Term::Table { input, .. } => push_term_if_nested(input, stack),
+    }
+}
+
 /// A parsed expression, ready to evaluate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
@@ -146,35 +177,45 @@ impl Expression {
     /// simulator's language needs to write it in its own.
     #[must_use]
     pub fn tree(&self) -> Term {
-        let mut terms: Vec<Term> = Vec::with_capacity(self.tape.len());
+        let mut terms: Vec<Option<Term>> = Vec::with_capacity(self.tape.len());
+        let take_term = |terms: &mut [Option<Term>], index: usize| {
+            terms[index].take().unwrap_or(Term::Constant(f64::NAN))
+        };
         for instruction in &self.tape {
             let term = match instruction {
                 Instruction::Constant(value) => Term::Constant(*value),
                 Instruction::Variable(index) => Term::Variable(self.variables[*index].clone()),
                 Instruction::Unary(operation, x) => {
-                    Term::Operation(operation.name(), vec![terms[*x].clone()])
+                    Term::Operation(operation.name(), vec![take_term(&mut terms, *x)])
                 }
-                Instruction::Binary(operation, a, b) => {
-                    Term::Operation(operation.name(), vec![terms[*a].clone(), terms[*b].clone()])
-                }
+                Instruction::Binary(operation, a, b) => Term::Operation(
+                    operation.name(),
+                    vec![take_term(&mut terms, *a), take_term(&mut terms, *b)],
+                ),
                 Instruction::Limit(operands) => Term::Operation(
                     "limit",
-                    operands.iter().map(|&index| terms[index].clone()).collect(),
+                    operands
+                        .iter()
+                        .map(|&index| take_term(&mut terms, index))
+                        .collect(),
                 ),
                 Instruction::Conditional(operands) => Term::Operation(
                     "if",
-                    operands.iter().map(|&index| terms[index].clone()).collect(),
+                    operands
+                        .iter()
+                        .map(|&index| take_term(&mut terms, index))
+                        .collect(),
                 ),
                 Instruction::Table(x, points) => Term::Table {
-                    input: Box::new(terms[*x].clone()),
+                    input: Box::new(take_term(&mut terms, *x)),
                     abscissae: points.abscissae().to_vec(),
                     ordinates: points.ordinates().to_vec(),
                     rounding: points.rounding(),
                 },
             };
-            terms.push(term);
+            terms.push(Some(term));
         }
-        terms.pop().unwrap_or(Term::Constant(f64::NAN))
+        terms.pop().flatten().unwrap_or(Term::Constant(f64::NAN))
     }
 
     /// Appends to `found` the choices the expression's value turned on at its last
@@ -706,9 +747,51 @@ mod tests {
         let deep_calls = format!("{}0{}", "sin(".repeat(300), ")".repeat(300));
         assert!(deep_calls.parse::<Expression>().is_err());
 
-        // Flat binary chains use iterative `level()` loops and do not hit MAX_DEPTH.
+        // Right-associative power with unary signs and chained ternary expressions match
+        // the exact boundary at MAX_DEPTH, and worst-case mixed precedence inside every
+        // parenthesized level runs in constant call-stack space.
+        let at_limit_mixed = format!("{}1{}", "1||1&&1==1<1+1*(".repeat(limit), ")".repeat(limit));
+        assert_eq!(value(&at_limit_mixed).to_bits(), 1.0_f64.to_bits());
+        assert_eq!(
+            value("2 ^ -3 ^ 2").to_bits(),
+            (2.0_f64.powf(-9.0)).to_bits()
+        );
+        assert_eq!(value("-2 ^ -1").to_bits(), (-0.5_f64).to_bits());
+        assert_eq!(value("1 ? 2 ? 3 : 4 : 5").to_bits(), 3.0_f64.to_bits());
+        assert_eq!(value("0 ? 1 ? 2 : 3 : 4").to_bits(), 4.0_f64.to_bits());
+        for (bad, expected_fragment) in [
+            ("1 : 2", "expected an operator, not `:`"),
+            ("(1 : 2)", "expected `)`, not `:`"),
+            ("1 ? 2", "expected `:`, not the end"),
+            ("(1 ? 2)", "expected `:`, not `)`"),
+            ("max(1 ? 2, 3)", "expected `:`, not `,`"),
+            ("(1, 2)", "expected `)`, not `,`"),
+            ("sin()", "expected an operand, not `)`"),
+        ] {
+            let error = bad.parse::<Expression>().expect_err(bad);
+            assert!(
+                error.to_string().contains(expected_fragment),
+                "`{bad}` gave `{error}`"
+            );
+        }
+
+        // Flat binary chains use the iterative operator stack and do not hit MAX_DEPTH.
         let wide_sum = format!("1{}", " + 1".repeat(500));
         assert_eq!(value(&wide_sum).to_bits(), 501.0_f64.to_bits());
+
+        // Long variable binary chains cannot be constant-folded; parsing, compilation,
+        // evaluation, tree construction, and dropping must all stay iterative on a 2 MiB
+        // debug stack.
+        let terms = 5_000;
+        let long_variable_sum = format!("v(a){}", " + v(a)".repeat(terms - 1));
+        let expression: Expression = long_variable_sum.parse().expect("valid");
+        let mut workspace = Workspace::new(&expression);
+        let mut gradient = [0.0];
+        let evaluated = expression.evaluate(&[2.0], &mut workspace, &mut gradient);
+        assert_eq!(evaluated.to_bits(), 10_000.0_f64.to_bits());
+        assert_eq!(gradient[0].to_bits(), 5_000.0_f64.to_bits());
+        let tree = expression.tree();
+        drop(tree);
     }
 
     #[test]

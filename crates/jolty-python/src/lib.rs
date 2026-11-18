@@ -1307,7 +1307,7 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     let parsed: jolty_expressions::Expression = expression
         .parse()
         .map_err(|error| PyValueError::new_err(format!("`{expression}`: {error}")))?;
-    Ok(term_to_json(&parsed.tree()).to_string())
+    Ok(term_to_json_string(&parsed.tree()))
 }
 
 /// The level of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
@@ -1335,33 +1335,69 @@ fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
     Ok(serde_json::Value::Object(defaulted).to_string())
 }
 
-/// A term of an expression's tree as JSON, as [`expression_tree`] writes it.
-fn term_to_json(term: &jolty_expressions::Term) -> serde_json::Value {
+/// Serializes a term of an expression's tree to JSON iteratively, as [`expression_tree`]
+/// writes it, avoiding call-stack recursion on deep left-leaning binary chains.
+fn term_to_json_string(root: &jolty_expressions::Term) -> String {
     use jolty_expressions::{Term, Variable};
     use serde_json::json;
-    match term {
-        Term::Constant(value) => json!(value),
-        Term::Variable(Variable::Time) => json!("time"),
-        Term::Variable(Variable::Voltage(positive, negative)) => {
-            json!({"voltage": [positive, negative]})
-        }
-        Term::Variable(Variable::Current(port)) => json!({"current": port}),
-        Term::Operation(name, operands) => json!({
-            "operation": name,
-            "operands": operands.iter().map(term_to_json).collect::<Vec<_>>(),
-        }),
-        Term::Table {
-            input,
-            abscissae,
-            ordinates,
-            rounding,
-        } => json!({
-            "table": term_to_json(input),
-            "abscissae": abscissae,
-            "ordinates": ordinates,
-            "rounding": rounding,
-        }),
+
+    enum Segment<'a> {
+        Term(&'a Term),
+        Literal(&'static str),
+        OperationTail(&'static str),
     }
+
+    let mut output = String::new();
+    let mut stack = vec![Segment::Term(root)];
+    while let Some(segment) = stack.pop() {
+        match segment {
+            Segment::Literal(text) => output.push_str(text),
+            Segment::OperationTail(name) => {
+                output.push_str("],\"operation\":");
+                output.push_str(&json!(name).to_string());
+                output.push('}');
+            }
+            Segment::Term(Term::Constant(value)) => {
+                output.push_str(&json!(value).to_string());
+            }
+            Segment::Term(Term::Variable(Variable::Time)) => {
+                output.push_str("\"time\"");
+            }
+            Segment::Term(Term::Variable(Variable::Voltage(positive, negative))) => {
+                output.push_str(&json!({"voltage": [positive, negative]}).to_string());
+            }
+            Segment::Term(Term::Variable(Variable::Current(port))) => {
+                output.push_str(&json!({"current": port}).to_string());
+            }
+            Segment::Term(Term::Operation(name, operands)) => {
+                output.push_str("{\"operands\":[");
+                stack.push(Segment::OperationTail(name));
+                for (index, operand) in operands.iter().enumerate().rev() {
+                    stack.push(Segment::Term(operand));
+                    if index > 0 {
+                        stack.push(Segment::Literal(","));
+                    }
+                }
+            }
+            Segment::Term(Term::Table {
+                input,
+                abscissae,
+                ordinates,
+                rounding,
+            }) => {
+                output.push_str("{\"abscissae\":");
+                output.push_str(&json!(abscissae).to_string());
+                output.push_str(",\"ordinates\":");
+                output.push_str(&json!(ordinates).to_string());
+                output.push_str(",\"rounding\":");
+                output.push_str(&json!(rounding).to_string());
+                output.push_str(",\"table\":");
+                stack.push(Segment::Literal("}"));
+                stack.push(Segment::Term(input));
+            }
+        }
+    }
+    output
 }
 
 /// Every rule of the structural checks, in the order a check reports them: its name, its

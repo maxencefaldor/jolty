@@ -8,16 +8,16 @@ use crate::lexer::{Kind, Symbol, Token, tokenize};
 use crate::operations::{Binary, Unary};
 use crate::tape::{Beyond, Points};
 
-/// Maximum nesting depth accepted by the recursive-descent parser.
+/// Maximum nesting depth accepted by the expression parser.
 ///
-/// Matches `_MAX_CORE_DEPTH` in `src/jolty/spice/expressions.py`: recursive descent
-/// overflows an 8 MiB Linux thread stack around 750 nested parentheses (`tests/test_fuzz_parsers.py`),
-/// so capping at 256 keeps both parsing and recursive `Drop` well inside Linux, macOS,
-/// and Windows default thread stacks.
+/// Origin: matches `_MAX_CORE_DEPTH` in `src/jolty/spice/expressions.py` (`256`).
+/// The parser uses an explicit operator stack rather than call-stack recursion, so any
+/// nesting up to `MAX_DEPTH` runs in constant call-stack space across Linux, macOS, and
+/// Windows debug and release threads while rejecting pathological nesting deterministically.
 pub(crate) const MAX_DEPTH: usize = 256;
 
 /// An expression's tree. Every part without a variable is folded into a constant.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum Node {
     Constant(f64),
     Variable(usize),
@@ -29,7 +29,43 @@ pub(crate) enum Node {
     Conditional(Box<[Node; 3]>),
     /// `table(x, x1, y1, …)`, `pwl(x, x1, y1, …)` or `rounded_table(x, r, x1, y1, …)`:
     /// the points' interpolation at `x`.
-    Table(Box<Node>, Points),
+    Table(Box<(Node, Points)>),
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        if matches!(self, Self::Constant(_) | Self::Variable(_)) {
+            return;
+        }
+        let mut stack = Vec::new();
+        detach_children(self, &mut stack);
+        while let Some(mut node) = stack.pop() {
+            detach_children(&mut node, &mut stack);
+        }
+    }
+}
+
+fn push_if_nested(slot: &mut Node, stack: &mut Vec<Node>) {
+    if !matches!(slot, Node::Constant(_) | Node::Variable(_)) {
+        stack.push(std::mem::replace(slot, Node::Constant(0.0)));
+    }
+}
+
+fn detach_children(node: &mut Node, stack: &mut Vec<Node>) {
+    match node {
+        Node::Constant(_) | Node::Variable(_) => {}
+        Node::Unary(_, operand) => push_if_nested(operand, stack),
+        Node::Binary(_, left, right) => {
+            push_if_nested(left, stack);
+            push_if_nested(right, stack);
+        }
+        Node::Limit(arguments) | Node::Conditional(arguments) => {
+            for argument in arguments.as_mut() {
+                push_if_nested(argument, stack);
+            }
+        }
+        Node::Table(table) => push_if_nested(&mut table.0, stack),
+    }
 }
 
 impl Node {
@@ -50,14 +86,7 @@ pub(crate) fn parse(text: &str) -> Result<(Node, Vec<Variable>), SyntaxError> {
         variables: Vec::new(),
         depth: 0,
     };
-    let node = parser.expression()?;
-    let token = parser.peek();
-    if token.kind != Kind::End {
-        return Err(SyntaxError::new(
-            format!("expected an operator, not {}", describe(&token.kind)),
-            token.column,
-        ));
-    }
+    let node = parser.parse_all()?;
     Ok((node, parser.variables))
 }
 
@@ -68,29 +97,122 @@ struct Parser {
     depth: usize,
 }
 
-/// The binary operators at each level of precedence, loosest first, above the conditional.
-const LEVELS: [&[(Symbol, Binary)]; 6] = [
-    &[(Symbol::Or, Binary::Or)],
-    &[(Symbol::And, Binary::And)],
-    &[
-        (Symbol::Equal, Binary::Equal),
-        (Symbol::NotEqual, Binary::NotEqual),
-    ],
-    &[
-        (Symbol::Less, Binary::Less),
-        (Symbol::LessEqual, Binary::LessEqual),
-        (Symbol::Greater, Binary::Greater),
-        (Symbol::GreaterEqual, Binary::GreaterEqual),
-    ],
-    &[
-        (Symbol::Plus, Binary::Add),
-        (Symbol::Minus, Binary::Subtract),
-    ],
-    &[
-        (Symbol::Times, Binary::Multiply),
-        (Symbol::Divide, Binary::Divide),
-    ],
-];
+/// An open construct on the explicit shunting-yard stack, holding its already-parsed
+/// left operand(s) so reductions require no separate value stack or fallible pops.
+enum Pending {
+    /// A prefix unary operator (`-`, `!`, or `+` as `None`); binds tighter than `*`/`/`
+    /// and looser than `^`.
+    Unary(Option<Unary>),
+    /// A left-associative binary operator (`||` through `/`) at precedence `1..=6`.
+    Binary(u8, Binary, Node),
+    /// Right-associative exponentiation `^` (binds tighter than unary prefix signs).
+    Power(Node),
+    /// An open parenthesized group `(`.
+    Group,
+    /// An open function call `name(`, accumulating its already-completed arguments.
+    Call {
+        name: String,
+        column: usize,
+        arguments: Vec<Node>,
+    },
+    /// The `?` of `condition ? then : otherwise`, awaiting its matching `:`.
+    Question(Node),
+    /// The `:` of `condition ? then : otherwise`, awaiting its `otherwise` branch.
+    Colon { condition: Node, then: Node },
+}
+
+/// Transition returned by [`Parser::step_operator`].
+enum Step {
+    NextOperand,
+    Continue(Node),
+    Done(Node),
+}
+
+/// Precedence (`1..=6`, loosest first) and operation for left-associative binary operators.
+const fn binary_operator(kind: &Kind) -> Option<(u8, Binary)> {
+    let Kind::Symbol(symbol) = kind else {
+        return None;
+    };
+    match symbol {
+        Symbol::Or => Some((1, Binary::Or)),
+        Symbol::And => Some((2, Binary::And)),
+        Symbol::Equal => Some((3, Binary::Equal)),
+        Symbol::NotEqual => Some((3, Binary::NotEqual)),
+        Symbol::Less => Some((4, Binary::Less)),
+        Symbol::LessEqual => Some((4, Binary::LessEqual)),
+        Symbol::Greater => Some((4, Binary::Greater)),
+        Symbol::GreaterEqual => Some((4, Binary::GreaterEqual)),
+        Symbol::Plus => Some((5, Binary::Add)),
+        Symbol::Minus => Some((5, Binary::Subtract)),
+        Symbol::Times => Some((6, Binary::Multiply)),
+        Symbol::Divide => Some((6, Binary::Divide)),
+        _ => None,
+    }
+}
+
+/// Reduces pending operators whose precedence is at least `min_precedence` against `current`.
+///
+/// Unary (`7`) and power (`8`) always reduce here because `min_precedence <= 6`.
+/// `Colon` (precedence `0`) reduces only when `min_precedence == 0`, preserving right
+/// associativity of chained `a ? b : c ? d : e`.
+fn reduce(
+    stack: &mut Vec<Pending>,
+    mut current: Node,
+    depth: &mut usize,
+    min_precedence: u8,
+) -> Node {
+    while let Some(pending) = stack.pop() {
+        match pending {
+            Pending::Unary(operation) => {
+                *depth -= 1;
+                if let Some(operation) = operation {
+                    current = unary(operation, current);
+                }
+            }
+            Pending::Power(base) => {
+                *depth -= 1;
+                current = binary(Binary::Power, base, current);
+            }
+            Pending::Binary(precedence, operation, left) if precedence >= min_precedence => {
+                current = binary(operation, left, current);
+            }
+            Pending::Colon { condition, then } if min_precedence == 0 => {
+                *depth -= 1;
+                current = conditional([condition, then, current]);
+            }
+            barrier => {
+                stack.push(barrier);
+                break;
+            }
+        }
+    }
+    current
+}
+
+fn depth_error(column: usize) -> SyntaxError {
+    SyntaxError::new(
+        format!("expression nests more than {MAX_DEPTH} levels deep"),
+        column,
+    )
+}
+
+fn expected_symbol(symbol: Symbol, token: &Token) -> SyntaxError {
+    SyntaxError::new(
+        format!(
+            "expected `{}`, not {}",
+            symbol.text(),
+            describe(&token.kind)
+        ),
+        token.column,
+    )
+}
+
+fn expected_operator(token: &Token) -> SyntaxError {
+    SyntaxError::new(
+        format!("expected an operator, not {}", describe(&token.kind)),
+        token.column,
+    )
+}
 
 impl Parser {
     fn peek(&self) -> &Token {
@@ -118,163 +240,196 @@ impl Parser {
         if self.accept(symbol) {
             Ok(())
         } else {
-            let token = self.peek();
-            Err(SyntaxError::new(
-                format!(
-                    "expected `{}`, not {}",
-                    symbol.text(),
-                    describe(&token.kind)
-                ),
-                token.column,
-            ))
+            Err(expected_symbol(symbol, self.peek()))
         }
     }
 
-    fn descend<T>(
+    fn push_nested(
         &mut self,
+        stack: &mut Vec<Pending>,
+        pending: Pending,
         column: usize,
-        parse: impl FnOnce(&mut Self) -> Result<T, SyntaxError>,
-    ) -> Result<T, SyntaxError> {
+    ) -> Result<(), SyntaxError> {
         if self.depth >= MAX_DEPTH {
-            return Err(SyntaxError::new(
-                format!("expression nests more than {MAX_DEPTH} levels deep"),
-                column,
-            ));
+            return Err(depth_error(column));
         }
         self.depth += 1;
-        let result = parse(self);
-        self.depth -= 1;
-        result
+        stack.push(pending);
+        Ok(())
     }
 
-    /// `condition ? then : otherwise`, which groups to the right, or a looser operand.
-    fn expression(&mut self) -> Result<Node, SyntaxError> {
-        let condition = self.level(0)?;
-        let question_column = self.peek().column;
-        if !self.accept(Symbol::Question) {
-            return Ok(condition);
+    /// Iteratively parses the complete token stream using an explicit operator stack.
+    fn parse_all(&mut self) -> Result<Node, SyntaxError> {
+        let mut stack: Vec<Pending> = Vec::new();
+        loop {
+            let mut current = self.read_operand(&mut stack)?;
+            loop {
+                match self.step_operator(&mut stack, current)? {
+                    Step::NextOperand => break,
+                    Step::Continue(node) => current = node,
+                    Step::Done(node) => return Ok(node),
+                }
+            }
         }
-        let then = self.descend(question_column, Self::expression)?;
-        let colon_column = self.peek().column;
-        self.expect(Symbol::Colon)?;
-        let otherwise = self.descend(colon_column, Self::expression)?;
-        Ok(conditional([condition, then, otherwise]))
     }
 
-    /// The operands of the binary operators at `level` and tighter, grouped to the left.
-    fn level(&mut self, level: usize) -> Result<Node, SyntaxError> {
-        let Some(operators) = LEVELS.get(level) else {
-            return self.unary();
-        };
-        let mut node = self.level(level + 1)?;
-        while let Some(&(_, operation)) = operators
-            .iter()
-            .find(|(symbol, _)| self.peek().kind == Kind::Symbol(*symbol))
-        {
+    /// Processes the next operator or delimiter after `current`.
+    fn step_operator(
+        &mut self,
+        stack: &mut Vec<Pending>,
+        mut current: Node,
+    ) -> Result<Step, SyntaxError> {
+        if let Some((precedence, operation)) = binary_operator(&self.peek().kind) {
+            current = reduce(stack, current, &mut self.depth, precedence);
             self.position += 1;
-            let right = self.level(level + 1)?;
-            node = binary(operation, node, right);
+            stack.push(Pending::Binary(precedence, operation, current));
+            return Ok(Step::NextOperand);
         }
-        Ok(node)
-    }
-
-    /// A signed or negated operand.
-    fn unary(&mut self) -> Result<Node, SyntaxError> {
-        let column = self.peek().column;
-        if self.accept(Symbol::Minus) {
-            Ok(unary(Unary::Negate, self.descend(column, Self::unary)?))
-        } else if self.accept(Symbol::Plus) {
-            self.descend(column, Self::unary)
-        } else if self.accept(Symbol::Not) {
-            Ok(unary(Unary::Not, self.descend(column, Self::unary)?))
-        } else {
-            self.power()
-        }
-    }
-
-    /// `base ^ exponent`, which groups to the right and binds tighter than a sign.
-    fn power(&mut self) -> Result<Node, SyntaxError> {
-        let base = self.primary()?;
-        let column = self.peek().column;
-        if self.accept(Symbol::Power) {
-            let exponent = self.descend(column, Self::unary)?;
-            Ok(binary(Binary::Power, base, exponent))
-        } else {
-            Ok(base)
-        }
-    }
-
-    fn primary(&mut self) -> Result<Node, SyntaxError> {
-        let token = self.next();
-        match token.kind {
-            Kind::Number(value) => Ok(Node::Constant(value)),
-            Kind::Symbol(Symbol::Open) => {
-                let node = self.descend(token.column, Self::expression)?;
-                self.expect(Symbol::Close)?;
-                Ok(node)
+        match &self.peek().kind {
+            Kind::Symbol(Symbol::Power) => {
+                let column = self.peek().column;
+                self.push_nested(stack, Pending::Power(current), column)?;
+                self.position += 1;
+                Ok(Step::NextOperand)
             }
-            Kind::Name(name) if self.accept(Symbol::Open) => self.call(&name, token.column),
-            Kind::Name(name) => match name.as_str() {
-                "time" => Ok(self.variable(Variable::Time)),
-                "pi" => Ok(Node::Constant(std::f64::consts::PI)),
-                _ => Err(SyntaxError::new(
-                    format!("unknown name `{name}`"),
-                    token.column,
-                )),
-            },
-            kind => Err(SyntaxError::new(
-                format!("expected an operand, not {}", describe(&kind)),
-                token.column,
-            )),
+            Kind::Symbol(Symbol::Question) => {
+                current = reduce(stack, current, &mut self.depth, 1);
+                let column = self.peek().column;
+                self.push_nested(stack, Pending::Question(current), column)?;
+                self.position += 1;
+                Ok(Step::NextOperand)
+            }
+            Kind::Symbol(Symbol::Colon) => {
+                current = reduce(stack, current, &mut self.depth, 0);
+                match stack.pop() {
+                    Some(Pending::Question(condition)) => {
+                        self.position += 1;
+                        stack.push(Pending::Colon {
+                            condition,
+                            then: current,
+                        });
+                        Ok(Step::NextOperand)
+                    }
+                    Some(Pending::Group | Pending::Call { .. }) => {
+                        Err(expected_symbol(Symbol::Close, self.peek()))
+                    }
+                    _ => Err(expected_operator(self.peek())),
+                }
+            }
+            Kind::Symbol(Symbol::Comma) => {
+                current = reduce(stack, current, &mut self.depth, 0);
+                match stack.last_mut() {
+                    Some(Pending::Call { arguments, .. }) => {
+                        self.position += 1;
+                        arguments.push(current);
+                        Ok(Step::NextOperand)
+                    }
+                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, self.peek())),
+                    Some(Pending::Group) => Err(expected_symbol(Symbol::Close, self.peek())),
+                    _ => Err(expected_operator(self.peek())),
+                }
+            }
+            Kind::Symbol(Symbol::Close) => {
+                current = reduce(stack, current, &mut self.depth, 0);
+                match stack.pop() {
+                    Some(Pending::Group) => {
+                        self.position += 1;
+                        self.depth -= 1;
+                        Ok(Step::Continue(current))
+                    }
+                    Some(Pending::Call {
+                        name,
+                        column,
+                        mut arguments,
+                    }) => {
+                        self.position += 1;
+                        self.depth -= 1;
+                        arguments.push(current);
+                        Ok(Step::Continue(finish_call(&name, arguments, column)?))
+                    }
+                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, self.peek())),
+                    _ => Err(expected_operator(self.peek())),
+                }
+            }
+            _ => {
+                current = reduce(stack, current, &mut self.depth, 0);
+                let token = self.peek();
+                match stack.last() {
+                    None if token.kind == Kind::End => Ok(Step::Done(current)),
+                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, token)),
+                    Some(Pending::Group | Pending::Call { .. }) => {
+                        Err(expected_symbol(Symbol::Close, token))
+                    }
+                    _ => Err(expected_operator(token)),
+                }
+            }
         }
     }
 
-    /// The call of `name`, whose opening parenthesis is read.
-    fn call(&mut self, name: &str, column: usize) -> Result<Node, SyntaxError> {
-        match name {
-            "v" => {
-                let positive = self.name()?;
-                let negative = if self.accept(Symbol::Comma) {
-                    Some(self.name()?)
-                } else {
-                    None
-                };
-                self.expect(Symbol::Close)?;
-                return Ok(self.variable(Variable::Voltage(positive, negative)));
+    /// Consumes any leading prefix operators and opening delimiters, pushing them onto
+    /// `stack`, then returns the primary operand node.
+    fn read_operand(&mut self, stack: &mut Vec<Pending>) -> Result<Node, SyntaxError> {
+        loop {
+            let token = self.next();
+            match token.kind {
+                Kind::Symbol(Symbol::Minus) => {
+                    self.push_nested(stack, Pending::Unary(Some(Unary::Negate)), token.column)?;
+                }
+                Kind::Symbol(Symbol::Plus) => {
+                    self.push_nested(stack, Pending::Unary(None), token.column)?;
+                }
+                Kind::Symbol(Symbol::Not) => {
+                    self.push_nested(stack, Pending::Unary(Some(Unary::Not)), token.column)?;
+                }
+                Kind::Symbol(Symbol::Open) => {
+                    self.push_nested(stack, Pending::Group, token.column)?;
+                }
+                Kind::Number(value) => return Ok(Node::Constant(value)),
+                Kind::Name(name) if self.accept(Symbol::Open) => match name.as_str() {
+                    "v" => {
+                        let positive = self.name()?;
+                        let negative = if self.accept(Symbol::Comma) {
+                            Some(self.name()?)
+                        } else {
+                            None
+                        };
+                        self.expect(Symbol::Close)?;
+                        return Ok(self.variable(Variable::Voltage(positive, negative)));
+                    }
+                    "i" => {
+                        let port = self.name()?;
+                        self.expect(Symbol::Close)?;
+                        return Ok(self.variable(Variable::Current(port)));
+                    }
+                    _ => {
+                        self.push_nested(
+                            stack,
+                            Pending::Call {
+                                name,
+                                column: token.column,
+                                arguments: Vec::new(),
+                            },
+                            token.column,
+                        )?;
+                    }
+                },
+                Kind::Name(name) => match name.as_str() {
+                    "time" => return Ok(self.variable(Variable::Time)),
+                    "pi" => return Ok(Node::Constant(std::f64::consts::PI)),
+                    _ => {
+                        return Err(SyntaxError::new(
+                            format!("unknown name `{name}`"),
+                            token.column,
+                        ));
+                    }
+                },
+                kind => {
+                    return Err(SyntaxError::new(
+                        format!("expected an operand, not {}", describe(&kind)),
+                        token.column,
+                    ));
+                }
             }
-            "i" => {
-                let port = self.name()?;
-                self.expect(Symbol::Close)?;
-                return Ok(self.variable(Variable::Current(port)));
-            }
-            _ => {}
-        }
-        let mut arguments = vec![self.descend(column, Self::expression)?];
-        while self.accept(Symbol::Comma) {
-            arguments.push(self.descend(column, Self::expression)?);
-        }
-        self.expect(Symbol::Close)?;
-        if let Some(operation) = Unary::named(name) {
-            let [x] = take(arguments, name, column)?;
-            Ok(unary(operation, x))
-        } else if let Some(operation) = Binary::named(name) {
-            let [a, b] = take(arguments, name, column)?;
-            Ok(binary(operation, a, b))
-        } else if name == "limit" {
-            Ok(limit(take(arguments, name, column)?))
-        } else if name == "if" {
-            Ok(conditional(take(arguments, name, column)?))
-        } else if name == "table" {
-            table(arguments, Beyond::Hold, false, column)
-        } else if name == "pwl" {
-            table(arguments, Beyond::Extend, false, column)
-        } else if name == "rounded_table" {
-            table(arguments, Beyond::Hold, true, column)
-        } else {
-            Err(SyntaxError::new(
-                format!("unknown function `{name}`"),
-                column,
-            ))
         }
     }
 
@@ -301,6 +456,32 @@ impl Parser {
                 self.variables.len() - 1
             });
         Node::Variable(index)
+    }
+}
+
+/// Builds the node for a completed function call `name(arguments...)` at `column`.
+fn finish_call(name: &str, arguments: Vec<Node>, column: usize) -> Result<Node, SyntaxError> {
+    if let Some(operation) = Unary::named(name) {
+        let [x] = take(arguments, name, column)?;
+        Ok(unary(operation, x))
+    } else if let Some(operation) = Binary::named(name) {
+        let [a, b] = take(arguments, name, column)?;
+        Ok(binary(operation, a, b))
+    } else if name == "limit" {
+        Ok(limit(take(arguments, name, column)?))
+    } else if name == "if" {
+        Ok(conditional(take(arguments, name, column)?))
+    } else if name == "table" {
+        table(arguments, Beyond::Hold, false, column)
+    } else if name == "pwl" {
+        table(arguments, Beyond::Extend, false, column)
+    } else if name == "rounded_table" {
+        table(arguments, Beyond::Hold, true, column)
+    } else {
+        Err(SyntaxError::new(
+            format!("unknown function `{name}`"),
+            column,
+        ))
     }
 }
 
@@ -413,7 +594,7 @@ fn table(
     let points = Points::new(&points, beyond, rounding);
     Ok(match x.constant() {
         Some(x) => Node::Constant(points.interpolate(x).0),
-        None => Node::Table(Box::new(x), points),
+        None => Node::Table(Box::new((x, points))),
     })
 }
 
