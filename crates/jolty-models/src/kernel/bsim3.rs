@@ -1607,4 +1607,30 @@ mod tests {
             );
         }
     }
+
+    /// Verifies that deep-subthreshold `capmod` 3 preserves the exact logarithmic slope
+    /// `1 / (n * vtm)` of inversion charge using `ln_1p` and rationalized `smooth_positive`
+    /// instead of collapsing under `1 + x` and `t0 + sqrt(t0^2 + spread)` cancellation.
+    #[test]
+    fn capmod_three_preserves_subthreshold_inversion_slope() {
+        let parameters = Bsim3Parameters::<f64>::default();
+        let prepared = Bsim3::prepare(&parameters, REFERENCE_TEMPERATURE).expect("valid");
+        let probe = prepared.core.evaluate(Dual::variables([0.0, 1.0, 0.0]));
+        let n_vtm = probe.n.value * prepared.core.vtm;
+        let gate = probe.vth.value - 28.0 * n_vtm;
+        let inversion = |vgs: f64| {
+            let vars = Dual::variables([vgs, 1.0, 0.0]);
+            let channel = prepared.core.evaluate(vars);
+            prepared.core.intrinsic(vars[1], vars[2], &channel).inversion
+        };
+        let step = 1e-6;
+        let center = inversion(gate);
+        assert!(center < 0.0, "expected negative inversion charge, got {center:e}");
+        let slope = (inversion(gate + step) - inversion(gate - step)) / (2.0 * step * center);
+        let expected = 1.0 / n_vtm;
+        assert!(
+            ((slope - expected) / expected).abs() < 1e-4,
+            "capmod 3 deep-subthreshold log slope {slope:e} differed from {expected:e}"
+        );
+    }
 }

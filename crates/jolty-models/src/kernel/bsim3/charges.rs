@@ -6,7 +6,7 @@
 //! Copyright 2004 Regents of the University of California. All rights reserved. Used
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
-use super::channel::{Operating, effective_drain};
+use super::channel::{Operating, effective_drain, smooth_positive};
 use super::prepare::{Core, Junction, Junctions, Overlaps};
 use super::{Charges, D, DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP};
 use crate::Real;
@@ -115,9 +115,9 @@ impl<R: Real> Core<R> {
         let vgsteff = if vgst_nvt.value.value() > EXP_THRESHOLD {
             vgst.plus(-voffcv)
         } else if vgst_nvt.value.value() < -EXP_THRESHOLD {
-            t0 * (1.0 + MIN_EXP).ln()
+            t0 * MIN_EXP.ln_1p()
         } else {
-            t0 * (vgst_nvt.exp() + 1.0).ln()
+            t0 * vgst_nvt.exp().ln_1p()
         };
         Cv {
             vds,
@@ -387,10 +387,9 @@ impl<R: Real> Core<R> {
             )
         };
         let t1 = vgsteff.plus(t0 * 2.0);
-        let delta_phi = ((t1 * vgsteff).divide(denominator) + 1.0).ln().scale(vtm);
+        let delta_phi = (t1 * vgsteff).divide(denominator).ln_1p().scale(vtm);
         let t0 = vgsteff - delta_phi - 0.001;
-        let t1 = (t0 * t0 + vgsteff * 0.004).sqrt();
-        let vgdp = (t0 + t1) * 0.5;
+        let vgdp = smooth_positive(t0, vgsteff * 0.004);
 
         // The inversion charge's centroid.
         let t3 = (channel.vth.plus(-(vfbzb + self.phi))) * 4.0;

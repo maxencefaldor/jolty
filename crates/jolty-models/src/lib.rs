@@ -141,7 +141,7 @@ impl Library {
         library.add(Differentiable::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
         library.add(Thermal::<Bsim3>::new());
-        library.add(Differentiable::<Bsim4>::new());
+        library.add(Thermal::<Bsim4>::new());
         library.add(Thermal::<Resistor>::new());
         library.add(Differentiable::<Capacitor>::new());
         library.add(Differentiable::<Inductor>::new());

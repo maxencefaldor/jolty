@@ -331,28 +331,22 @@ impl<R: Real> Bsim4Parameters<R> {
             self.jswd.unwrap_or(self.jsws),
             self.jswgd.unwrap_or(self.jswgs),
         ];
-        let source_emission = self.njs;
-        let drain_emission = self.njd.unwrap_or(self.njs);
+        let source_emission = ParameterError::positive("njs", self.njs)?;
+        let drain_emission = match self.njd {
+            Some(njd) => ParameterError::positive("njd", njd)?,
+            None => source_emission,
+        };
         let source_exponent = self.xtis;
         let drain_exponent = self.xtid.unwrap_or(self.xtis);
-        #[expect(
-            clippy::float_cmp,
-            reason = "b4v5temp.c scales the densities wherever the two differ at all"
-        )]
-        let at_nominal = temperature.value() == tnom.value();
         let heated = |densities: [R; 3], exponent: R, emission: R| {
-            let scaled = if at_nominal {
-                densities
-            } else {
-                let t0 = eg0 / vtm0 - eg / vtm;
-                let t3 = ((t0 + exponent * ratio.ln()) / emission).exp();
-                densities.map(|density| density * t3)
-            };
-            scaled.map(|density| {
-                if density.value() < 0.0 {
+            let t0 = eg0 / vtm0 - eg / vtm;
+            let t3 = ((t0 + exponent * ratio.ln()) / emission).exp();
+            densities.map(|density| {
+                let scaled = density * t3;
+                if scaled.value() < 0.0 {
                     R::constant(0.0)
                 } else {
-                    density
+                    scaled
                 }
             })
         };

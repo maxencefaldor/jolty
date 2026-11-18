@@ -1360,12 +1360,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes,
-        assert_unknown_derivatives_match, source,
+        Bench, assert_close, assert_jacobians_match, assert_mirrors, assert_model_jacobians_match,
+        assert_model_parameter_gradients_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, assert_unknown_derivatives_match, source,
     };
+    use crate::{REFERENCE_TEMPERATURE, Thermal};
 
     /// A short n-channel with every effect of the drain current and the charges switched
     /// on: the poly gate's depletion, the pocket implant, the parasitic resistance, the
@@ -1504,7 +1504,7 @@ mod tests {
             [-1.0, 1.5, 0.0, -1.5],
             [1.0, 0.3, 0.0, 0.2],
         ] {
-            assert_mirrors(&Differentiable::<Bsim4>::new(), SHORT, &x);
+            assert_mirrors(&Thermal::<Bsim4>::new(), SHORT, &x);
         }
     }
 
@@ -1555,6 +1555,8 @@ mod tests {
             error(r#"{"ngcon": 0.5}"#),
             "ngcon must be at least 1, not 0.5"
         );
+        assert_eq!(error(r#"{"njs": 0}"#), "njs must be positive, not 0.0");
+        assert_eq!(error(r#"{"njd": -1}"#), "njd must be positive, not -1.0");
     }
 
     #[test]
@@ -1773,11 +1775,46 @@ mod tests {
         }
     }
 
+    /// Checks that a heated BSIM4 matches the isothermal device at its raised temperature,
+    /// reports dissipated power on the thermal terminal, and differentiates exact Jacobians
+    /// (including at nominal temperature where `T == Tnom`) and parameter gradients.
+    #[test]
+    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
+        let model = Thermal::<Bsim4>::new();
+        // Without the substrate current, whose derivatives below saturation central
+        // differences no longer resolve.
+        let smooth = SHORT.replace(r#""alpha0": 1e-6, "#, "");
+        for every in [smooth.clone(), p_channel(&smooth)] {
+            let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
+            let heated = every.replace('{', r#"{"thermal": true, "#);
+            let mut bench =
+                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+            for rise in [0.0, 40.0] {
+                let mut plain = Bench::at::<Bsim4>(&every, REFERENCE_TEMPERATURE + rise);
+                let [d, g, b] = [1.5, 1.2, -0.5].map(|v| sign * v);
+                let hot = bench.settle(&[d, g, 0.0, b, rise]);
+                let reference = plain.settle(&[d, g, 0.0, b]);
+                assert_close(&hot.residual[..4], &reference.residual);
+                let power = d * hot.residual[0] + g * hot.residual[1] + b * hot.residual[3];
+                assert_close(&[-hot.residual[4]], &[power]);
+            }
+            // Forward-biased junctions at `rise = 0.0` (`T == Tnom`) verify that saturation
+            // current temperature scaling preserves `d/dT` at the nominal temperature.
+            let [d, g, b] = [0.05, -0.2, 0.45].map(|v| sign * v);
+            assert_model_jacobians_match(&model, &heated, &[d, g, 0.0, b, 0.0]);
+            for [d, g, b, rise] in [[1.5, 1.2, -0.5, 20.0], [0.3, 0.9, -0.2, 60.0]] {
+                let x = [sign * d, sign * g, 0.0, sign * b, rise];
+                assert_model_jacobians_match(&model, &heated, &x);
+                assert_model_parameter_gradients_match(&model, &heated, &x, None);
+            }
+        }
+    }
+
     /// Second derivatives in the unknowns match finite differences across BSIM4's external
     /// drain/source, gate, and body resistance networks.
     #[test]
     fn unknown_derivatives_match_across_resistance_models() {
-        let model = Differentiable::<Bsim4>::new();
+        let model = Thermal::<Bsim4>::new();
         for (gate_model, body_model, external_model, x) in [
             (
                 2,

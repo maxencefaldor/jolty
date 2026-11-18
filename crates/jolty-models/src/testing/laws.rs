@@ -62,7 +62,7 @@ const SIGNED: &[(&str, &[&str])] = &[
 type Alike = (&'static str, [&'static str; 2], &'static [f64]);
 
 /// A device of each transistor that claims its drain and source alike, the two named, as
-/// Gummel's symmetry test takes one (McAndrew, "Validation of MOSFET model source–drain
+/// Gummel's symmetry test takes one (McAndrew, "Validation of MOSFET model source-drain
 /// symmetry", IEEE Transactions on Electron Devices 53, 2006), by its model's name, its
 /// parameters, alike at the drain and the source, and the values of its terminals; `None`
 /// for a transistor that claims no symmetry.
@@ -714,7 +714,7 @@ mod tests {
             ("vbic", r#"{"polarity": "pnp", "thermal": true}"#),
             ("bsim3", r#"{"channel": "p", "thermal": true}"#),
             ("vdmos", r#"{"channel": "p", "thermal": true}"#),
-            ("bsim4", r#"{"channel": "p"}"#),
+            ("bsim4", r#"{"channel": "p", "thermal": true}"#),
         ];
         for &(name, parameters) in extra {
             let model = library.get(name).expect("a model of the library");
