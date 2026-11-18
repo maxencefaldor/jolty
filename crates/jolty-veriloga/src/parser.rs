@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use crate::Error;
-use crate::ast::{Expression, Function, Module, Parameter, Range, Statement, Type};
+use crate::ast::{
+    Declaration, Expression, Function, LocalParameter, Module, Parameter, Range, Statement, Type,
+};
 use crate::lexer::{Spanned, Token};
 
 /// The disciplines the compiler knows, as the standard `disciplines.vams` declares them.
@@ -155,6 +157,8 @@ impl Parser<'_> {
             nodes: Vec::new(),
             branches: Vec::new(),
             parameters: Vec::new(),
+            local_parameters: Vec::new(),
+            declarations: Vec::new(),
             aliases: Vec::new(),
             variables: Vec::new(),
             outputs: Vec::new(),
@@ -165,68 +169,93 @@ impl Parser<'_> {
         while !self.keyword("endmodule") {
             let attributes = self.attributes()?;
             let keyword = self.name()?;
-            match keyword.as_str() {
-                "inout" | "input" | "output" => {
-                    self.names()?;
-                }
-                "branch" => {
-                    self.expect("(")?;
-                    let plus = self.name()?;
-                    // A branch of one node runs from it to the ground.
-                    let minus = if self.eat(",") {
-                        self.name()?
-                    } else {
-                        String::new()
-                    };
-                    self.expect(")")?;
-                    for branch in self.names()? {
-                        module.branches.push((branch, plus.clone(), minus.clone()));
-                    }
-                }
-                "parameter" => self.parameters(&attributes, &mut module.parameters)?,
-                "aliasparam" => {
-                    let alias = self.name()?;
-                    self.expect("=")?;
-                    let parameter = self.name()?;
-                    self.expect(";")?;
-                    module.aliases.push((alias, parameter));
-                }
-                "real" | "integer" => {
-                    let kind = if keyword == "real" {
-                        Type::Real
-                    } else {
-                        Type::Integer
-                    };
-                    for variable in self.names()? {
-                        if let Some(description) = attributes.get("desc") {
-                            let units = attributes.get("units").cloned();
-                            module
-                                .outputs
-                                .push((variable.clone(), description.clone(), units));
-                        }
-                        module.variables.push((variable, kind));
-                    }
-                }
-                "analog" if self.keyword("function") => module.functions.push(self.function()?),
-                "analog" => {
-                    if analog.is_some() {
-                        return Err(self.error("a second analog block"));
-                    }
-                    analog = Some(self.statement()?);
-                }
-                discipline if DISCIPLINES.contains(&discipline) => {
-                    for node in self.names()? {
-                        module.nodes.push((node, keyword.clone()));
-                    }
-                }
-                _ => {
-                    self.at -= 1;
-                    return Err(self.error("expected a declaration or `analog`"));
-                }
-            }
+            self.module_item(&keyword, &attributes, &mut module, &mut analog)?;
         }
         module.analog = analog.ok_or_else(|| self.error("the module has no analog block"))?;
         Ok(module)
+    }
+
+    /// Reads one module-level declaration or the `analog` block into `module`.
+    fn module_item(
+        &mut self,
+        keyword: &str,
+        attributes: &BTreeMap<String, String>,
+        module: &mut Module,
+        analog: &mut Option<Statement>,
+    ) -> Result<(), Error> {
+        match keyword {
+            "inout" | "input" | "output" => {
+                self.names()?;
+            }
+            "branch" => {
+                self.expect("(")?;
+                let plus = self.name()?;
+                // A branch of one node runs from it to the ground.
+                let minus = if self.eat(",") {
+                    self.name()?
+                } else {
+                    String::new()
+                };
+                self.expect(")")?;
+                for branch in self.names()? {
+                    module.branches.push((branch, plus.clone(), minus.clone()));
+                }
+            }
+            "parameter" => {
+                let start = module.parameters.len();
+                self.parameters(attributes, &mut module.parameters)?;
+                module
+                    .declarations
+                    .extend((start..module.parameters.len()).map(Declaration::Parameter));
+            }
+            "localparam" => {
+                let start = module.local_parameters.len();
+                self.local_parameters(&mut module.local_parameters)?;
+                module.declarations.extend(
+                    (start..module.local_parameters.len()).map(Declaration::LocalParameter),
+                );
+            }
+            "aliasparam" => {
+                let alias = self.name()?;
+                self.expect("=")?;
+                let parameter = self.name()?;
+                self.expect(";")?;
+                module.aliases.push((alias, parameter));
+            }
+            "real" | "integer" => {
+                let kind = if keyword == "real" {
+                    Type::Real
+                } else {
+                    Type::Integer
+                };
+                for variable in self.names()? {
+                    if let Some(description) = attributes.get("desc") {
+                        let units = attributes.get("units").cloned();
+                        module
+                            .outputs
+                            .push((variable.clone(), description.clone(), units));
+                    }
+                    module.variables.push((variable, kind));
+                }
+            }
+            "analog" if self.keyword("function") => module.functions.push(self.function()?),
+            "analog" => {
+                if analog.is_some() {
+                    return Err(self.error("a second analog block"));
+                }
+                *analog = Some(self.statement()?);
+            }
+            discipline if DISCIPLINES.contains(&discipline) => {
+                for node in self.names()? {
+                    module.nodes.push((node, keyword.to_owned()));
+                }
+            }
+            _ => {
+                self.at -= 1;
+                return Err(self.error("expected a declaration or `analog`"));
+            }
+        }
+        Ok(())
     }
 
     /// The attributes `(* name = "value", ... *)` before a declaration, if any.
@@ -294,6 +323,73 @@ impl Parser<'_> {
         self.expect(";")
     }
 
+    /// The constants of one `localparam` declaration:
+    /// `[real|integer] name = expr [, name2 = expr2 ...];`.
+    fn local_parameters(
+        &mut self,
+        local_parameters: &mut Vec<LocalParameter>,
+    ) -> Result<(), Error> {
+        let type_line = self.line();
+        if self.keyword("string") {
+            return Err(Error::at(
+                type_line,
+                "a string localparam is not compiled yet".into(),
+            ));
+        }
+        if self.keyword("signed") || self.keyword("unsigned") {
+            return Err(Error::at(
+                type_line,
+                "a signed or unsigned localparam is not compiled yet".into(),
+            ));
+        }
+        let kind = if self.keyword("integer") {
+            Some(Type::Integer)
+        } else if self.keyword("real") {
+            Some(Type::Real)
+        } else {
+            None
+        };
+        let modifier_line = self.line();
+        if self.keyword("signed") || self.keyword("unsigned") {
+            return Err(Error::at(
+                modifier_line,
+                "a signed or unsigned localparam is not compiled yet".into(),
+            ));
+        }
+        if self.eat("[") {
+            return Err(Error::at(
+                modifier_line,
+                "a vector range on a localparam is not compiled yet".into(),
+            ));
+        }
+        loop {
+            let line = self.line();
+            let name = self.name()?;
+            if self.eat("[") {
+                return Err(Error::at(
+                    line,
+                    "an array localparam is not compiled yet".into(),
+                ));
+            }
+            self.expect("=")?;
+            let value = self.expression()?;
+            let range_line = self.line();
+            if self.keyword("from") || self.keyword("exclude") {
+                return Err(Error::at(range_line, "a localparam takes no range".into()));
+            }
+            local_parameters.push(LocalParameter {
+                name,
+                kind,
+                value,
+                line,
+            });
+            if !self.eat(",") {
+                break;
+            }
+        }
+        self.expect(";")
+    }
+
     /// A range `[a:b]`, `(a:b)` or the like, or for `exclude` a single value.
     fn range(&mut self, exclude: bool) -> Result<Range, Error> {
         let opened = if self.eat("[") {
@@ -348,14 +444,18 @@ impl Parser<'_> {
         }
         let name = self.name()?;
         self.expect(";")?;
-        let (mut inputs, mut variables) = (Vec::new(), Vec::new());
+        let (mut inputs, mut local_parameters, mut variables) =
+            (Vec::new(), Vec::new(), Vec::new());
         loop {
+            let _ = self.attributes()?;
             if self.keyword("input") {
                 inputs.extend(self.names()?);
             } else if self.keyword("real") {
                 variables.extend(self.names()?.into_iter().map(|name| (name, Type::Real)));
             } else if self.keyword("integer") {
                 variables.extend(self.names()?.into_iter().map(|name| (name, Type::Integer)));
+            } else if self.keyword("localparam") {
+                self.local_parameters(&mut local_parameters)?;
             } else {
                 break;
             }
@@ -365,6 +465,7 @@ impl Parser<'_> {
         Ok(Function {
             name,
             inputs,
+            local_parameters,
             variables,
             body,
         })
@@ -382,16 +483,27 @@ impl Parser<'_> {
             } else {
                 None
             };
+            let mut local_parameters = Vec::new();
             let mut variables = Vec::new();
             while name.is_some() {
-                let kind = if self.keyword("real") {
-                    Type::Real
+                let _ = self.attributes()?;
+                if self.keyword("real") {
+                    variables.extend(
+                        self.names()?
+                            .into_iter()
+                            .map(|variable| (variable, Type::Real)),
+                    );
                 } else if self.keyword("integer") {
-                    Type::Integer
+                    variables.extend(
+                        self.names()?
+                            .into_iter()
+                            .map(|variable| (variable, Type::Integer)),
+                    );
+                } else if self.keyword("localparam") {
+                    self.local_parameters(&mut local_parameters)?;
                 } else {
                     break;
-                };
-                variables.extend(self.names()?.into_iter().map(|variable| (variable, kind)));
+                }
             }
             let mut statements = Vec::new();
             while !self.keyword("end") {
@@ -400,6 +512,7 @@ impl Parser<'_> {
             return Ok(match name {
                 Some(name) => Statement::Named {
                     name,
+                    local_parameters,
                     variables,
                     statements,
                 },
@@ -499,6 +612,13 @@ impl Parser<'_> {
                 value,
                 line,
             });
+        }
+        if self.keyword("localparam") {
+            return Err(Error::at(
+                line,
+                "a localparam is valid only at module scope, in a function, or at the start of a named block"
+                    .into(),
+            ));
         }
         let assignment = self.assignment()?;
         self.expect(";")?;
@@ -654,5 +774,139 @@ mod tests {
             Some("The resistance")
         );
         assert!(matches!(module.analog, Statement::Contribute { .. }));
+    }
+
+    fn parse_module(source: &str) -> Result<Module, Error> {
+        let tokens = tokens(source, &|_| None).expect("tokens");
+        parse(&tokens)
+    }
+
+    #[test]
+    fn localparams_parse_typed_untyped_lists_and_scopes() {
+        let source = r#"
+            module m(a, b);
+                inout a, b;
+                electrical a, b;
+                (* desc = "Fixed scale" *)
+                localparam real alpha = 1.5, beta = 2.5;
+                parameter real r = 10.0 from (0:inf);
+                localparam integer count = 4;
+                localparam untyped = 3;
+                analog function real scale;
+                    input x;
+                    (* desc = "Gain" *)
+                    localparam real factor = 2.0;
+                    real x;
+                    scale = x * factor;
+                endfunction
+                analog begin : main_block
+                    (* desc = "Block constant" *)
+                    localparam integer shift = 1;
+                    real local_value;
+                    local_value = scale(V(a, b));
+                    I(a, b) <+ local_value / r;
+                end
+            endmodule
+        "#;
+        let module = parse_module(source).expect("module parses");
+        assert_eq!(module.local_parameters.len(), 4);
+        assert_eq!(module.local_parameters[0].name, "alpha");
+        assert_eq!(module.local_parameters[0].kind, Some(Type::Real));
+        assert_eq!(module.local_parameters[1].name, "beta");
+        assert_eq!(module.local_parameters[1].kind, Some(Type::Real));
+        assert_eq!(module.local_parameters[2].name, "count");
+        assert_eq!(module.local_parameters[2].kind, Some(Type::Integer));
+        assert_eq!(module.local_parameters[3].name, "untyped");
+        assert_eq!(module.local_parameters[3].kind, None);
+        assert_eq!(
+            module.declarations,
+            vec![
+                Declaration::LocalParameter(0),
+                Declaration::LocalParameter(1),
+                Declaration::Parameter(0),
+                Declaration::LocalParameter(2),
+                Declaration::LocalParameter(3),
+            ]
+        );
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].local_parameters.len(), 1);
+        assert_eq!(module.functions[0].local_parameters[0].name, "factor");
+        let Statement::Named {
+            name,
+            local_parameters,
+            ..
+        } = &module.analog
+        else {
+            panic!("expected a named analog block");
+        };
+        assert_eq!(name, "main_block");
+        assert_eq!(local_parameters.len(), 1);
+        assert_eq!(local_parameters[0].name, "shift");
+        assert_eq!(local_parameters[0].kind, Some(Type::Integer));
+    }
+
+    #[test]
+    fn localparam_syntax_errors_report_facts() {
+        let cases = [
+            ("localparam real missing_init;", "expected `=`, not `;`"),
+            ("localparam ;", "expected a name, not `;`"),
+            ("localparam real ;", "expected a name, not `;`"),
+            ("localparam real = 1.0;", "expected a name, not `=`"),
+            (
+                "localparam real ranged = 1.0 from (0:inf);",
+                "a localparam takes no range",
+            ),
+            (
+                "localparam real excluded = 1.0 exclude 0;",
+                "a localparam takes no range",
+            ),
+            (
+                "localparam string label = \"x\";",
+                "a string localparam is not compiled yet",
+            ),
+            (
+                "localparam signed width = 4;",
+                "a signed or unsigned localparam is not compiled yet",
+            ),
+            (
+                "localparam integer unsigned width = 4;",
+                "a signed or unsigned localparam is not compiled yet",
+            ),
+            (
+                "localparam [3:0] mask = 1;",
+                "a vector range on a localparam is not compiled yet",
+            ),
+            (
+                "localparam integer [3:0] mask = 1;",
+                "a vector range on a localparam is not compiled yet",
+            ),
+            (
+                "localparam real table[0:1] = 1.0;",
+                "an array localparam is not compiled yet",
+            ),
+        ];
+        for (declaration, expected) in cases {
+            let source = format!(
+                "module m(a, b); inout a, b; electrical a, b; {declaration} analog I(a, b) <+ V(a, b); endmodule"
+            );
+            let error = parse_module(&source).expect_err(declaration);
+            assert_eq!(error.message, expected, "{declaration}");
+        }
+
+        let unnamed_block = "module m(a, b); inout a, b; electrical a, b; analog begin localparam real k = 1.0; I(a, b) <+ V(a, b); end endmodule";
+        assert_eq!(
+            parse_module(unnamed_block)
+                .expect_err("unnamed block")
+                .message,
+            "a localparam is valid only at module scope, in a function, or at the start of a named block"
+        );
+
+        let after_statement = "module m(a, b); inout a, b; electrical a, b; real x; analog begin : blk x = 1.0; localparam real k = 1.0; I(a, b) <+ V(a, b); end endmodule";
+        assert_eq!(
+            parse_module(after_statement)
+                .expect_err("after statement")
+                .message,
+            "a localparam is valid only at module scope, in a function, or at the start of a named block"
+        );
     }
 }

@@ -12,7 +12,7 @@
 //!    macros with and without arguments, and the conditionals.
 //! 1. **The parser** reads one module of the CMC's subset by recursive descent: its
 //!    ports, disciplines, named branches, parameters with their ranges and attributes,
-//!    variables, analog functions and analog block.
+//!    `localparam` constants, variables, analog functions and analog block.
 //! 1. **The resolver** binds each name, splits each contribution into its resistive,
 //!    `ddt` and noise parts, and decides by dependence what the kernel prepares and what
 //!    it evaluates: a variable is dynamic when its value or a condition it is assigned

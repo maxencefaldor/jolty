@@ -16,8 +16,8 @@ use jolty_models::Nature;
 use crate::Error;
 use crate::ast::Type;
 use crate::ir::{
-    Branch, Builtin, Expr, GROUND, Limiter, Module, Probe, Stmt, constant, fold, probed_currents,
-    visit_contributions,
+    Branch, Builtin, Expr, GROUND, Limiter, Module, Parameter, Probe, Stmt, apart, constant, fold,
+    probed_currents, visit_contributions,
 };
 use crate::lexer::CONSTANTS;
 use crate::linear::{Form, Linearity};
@@ -325,12 +325,16 @@ struct Prepared {
 }
 
 impl Prepared {
-    /// The field for `expr`, added once.
+    /// The field for `expr`, added once, named apart from earlier fields and
+    /// `conditions`.
     fn field(&mut self, name: impl FnOnce(usize) -> String, kind: Kind, expr: &Expr) -> String {
         if let Some((name, _, _)) = self.fields.iter().find(|(_, _, found)| found == expr) {
             return name.clone();
         }
-        let name = name(self.fields.len());
+        let base = name(self.fields.len());
+        let name = apart(&base, |taken| {
+            taken == "conditions" || self.fields.iter().any(|(existing, _, _)| existing == taken)
+        });
         self.fields.push((name.clone(), kind, expr.clone()));
         name
     }
@@ -396,9 +400,23 @@ struct Emitter<'f, 'm> {
     extended: BTreeSet<usize>,
     /// The parameters read, in preparation.
     parameters_read: BTreeSet<usize>,
+    /// The non-constant `localparam`s read, in preparation.
+    locals_read: BTreeSet<usize>,
+    /// Whether `$temperature` was read, in preparation.
+    uses_temperature: bool,
     /// The kind of each branch's accumulated flow or potential, and of its charge or
     /// flux, by the branch and whether it is the latter.
     accumulators: BTreeMap<(usize, Site, bool), Kind>,
+}
+
+/// The rendered body of a generated `evaluate` or `noise` method, before its signature
+/// is formatted with the finalized `Prepared` type.
+struct MethodBody {
+    shape: &'static str,
+    prepared: &'static str,
+    at: &'static str,
+    memory: String,
+    lines: Vec<String>,
 }
 
 /// The kernel of `module`, compiled from `source`, as the text of a Rust module.
@@ -410,48 +428,34 @@ pub(crate) fn emit(module: &Module, (source, header): (&str, &str)) -> Result<St
     let facts = Facts::new(module)?;
     let mut prepared = Prepared::default();
     let mut entries = BTreeMap::new();
-    let evaluate = Emitter::new(&facts, Mode::Evaluate, &mut prepared, &mut entries).evaluate()?;
-    let noise = if module.analog.iter().any(makes_noise) {
-        Some(Emitter::new(&facts, Mode::Noise, &mut prepared, &mut entries).noise()?)
+    let evaluate_body =
+        Emitter::new(&facts, Mode::Evaluate, &mut prepared, &mut entries).evaluate_body()?;
+    let noise_body = if module.analog.iter().any(makes_noise) {
+        Some(Emitter::new(&facts, Mode::Noise, &mut prepared, &mut entries).noise_body()?)
     } else {
         None
     };
-    let names = Names::from_module(&module.name);
+    let linear_body =
+        Emitter::new(&facts, Mode::Evaluate, &mut prepared, &mut entries).linear_body();
+    let parameters_generic = module
+        .parameters
+        .iter()
+        .any(|parameter| parameter.kind == Type::Real);
+    let prepared_generic = prepared
+        .fields
+        .iter()
+        .any(|(_, kind, _)| matches!(kind, Kind::Real | Kind::Dual(_)));
+    let names = Names::from_module(&module.name, parameters_generic, prepared_generic);
+    let evaluate = format_evaluate(&evaluate_body, &names);
+    let noise = noise_body.as_ref().map(|body| format_noise(body, &names));
+    let linear = linear_body
+        .as_deref()
+        .map_or_else(String::new, |body| format_linear(body, &names));
     let mut out = vec![facts.header((source, header), &names)];
     out.push(facts.parameters(&names));
     let layout = facts.layout(&entries, &names);
-    let linear = Emitter::new(&facts, Mode::Evaluate, &mut prepared, &mut entries).linear(&names);
     let prepare = facts.prepare(Mode::Prepare, &prepared, &names)?;
-    let mut inherent = Vec::new();
-    if module.analog.iter().any(warns) {
-        inherent.push(facts.prepare(Mode::Warnings, &prepared, &names)?);
-    }
-    if !facts.warned.is_empty() {
-        let mut messages = Vec::new();
-        let mut offset = 0;
-        for (message, count) in &facts.warned {
-            let values: Vec<String> = (offset..offset + count)
-                .map(|index| format!("memory.warned_values[{index}]"))
-                .collect();
-            offset += count;
-            messages.push(format_message(message, &values));
-        }
-        inherent.push(format!(
-            "    /// The message of each warning that depends on the probes that an evaluation\n    /// of an instance, whose memory is `memory`, has found since the memory was made,\n    /// with the values the last evaluation that found it read.\n    pub fn warned(memory: &{}) -> impl Iterator<Item = String> {{\n        [{}].into_iter().zip(memory.warned).filter_map(|(message, found)| found.then_some(message))\n    }}\n\n",
-            names.memory,
-            messages.join(", ")
-        ));
-    }
-    let warnings = if inherent.is_empty() {
-        String::new()
-    } else {
-        let warnings = inherent.concat();
-        format!(
-            "impl {} {{\n{}}}\n",
-            names.kernel,
-            warnings.trim_end_matches('\n').to_owned() + "\n"
-        )
-    };
+    let warnings = facts.warnings_impl(&prepared, &names)?;
     out.push(facts.prepared_struct(&prepared, &names));
     out.push(facts.shape_struct(&entries, &names));
     out.push(facts.memory_struct(&names));
@@ -462,13 +466,13 @@ pub(crate) fn emit(module: &Module, (source, header): (&str, &str)) -> Result<St
         module.name
     ));
     out.push(format!(
-        "    type Parameters<R: Real> = {}<R>;\n",
-        names.parameters
+        "    type Parameters<R: Real> = {};\n",
+        names.parameters_type("R")
     ));
     out.push(format!("    type Shape = {};\n", names.shape));
     out.push(format!(
-        "    type Prepared<R: Real> = {}<R>;\n",
-        names.prepared
+        "    type Prepared<R: Real> = {};\n",
+        names.prepared_type("R")
     ));
     let memory = if facts.remembers() {
         names.memory.clone()
@@ -490,6 +494,50 @@ pub(crate) fn emit(module: &Module, (source, header): (&str, &str)) -> Result<St
         out.push(format!("\n{warnings}"));
     }
     Ok(imports(&out.concat()))
+}
+
+fn format_linear(body: &str, names: &Names) -> String {
+    let shape = if mentions(body, "shape") {
+        "shape"
+    } else {
+        "_"
+    };
+    let prepared = if mentions(body, "prepared") {
+        "prepared"
+    } else {
+        "_"
+    };
+    format!(
+        "    fn linear({shape}: &{}, {prepared}: &{}) -> bool {{\n        {body}\n    }}\n\n",
+        names.shape,
+        names.prepared_type("f64")
+    )
+}
+
+fn format_evaluate(body: &MethodBody, names: &Names) -> String {
+    format!(
+        "{}    fn evaluate<R: Real>(\n        {}: &{},\n        {}: &{},\n        {},\n        at: &Local<'_>,\n        stamp: &mut Stamp<'_, R>,\n    ) {{\n{}\n    }}\n\n",
+        too_long(&body.lines, "    "),
+        body.shape,
+        names.shape,
+        body.prepared,
+        names.prepared_type("R"),
+        body.memory,
+        body.lines.join("\n")
+    )
+}
+
+fn format_noise(body: &MethodBody, names: &Names) -> String {
+    format!(
+        "{}    fn noise<R: Real>(\n        {}: &{},\n        {}: &{},\n        {}: &Local<'_>,\n        sources: &mut Vec<NoiseSource>,\n    ) {{\n{}\n    }}\n",
+        too_long(&body.lines, "    "),
+        body.shape,
+        names.shape,
+        body.prepared,
+        names.prepared_type("R"),
+        body.at,
+        body.lines.join("\n")
+    )
 }
 
 /// `text` with the imports its code uses, after its module documentation.
@@ -515,14 +563,14 @@ fn imports(text: &str) -> String {
         "limit_gate",
         "limit_junction",
     ];
-    let used: Vec<&str> = candidates
-        .into_iter()
-        .filter(|name| mentions(text, name))
-        .collect();
     let end = ")]\n\n";
     let (documentation, rest) = text.split_at(text.find(end).map_or(0, |at| at + end.len()));
+    let used: Vec<&str> = candidates
+        .into_iter()
+        .filter(|name| mentions(rest, name))
+        .collect();
     let mut out = vec![documentation.to_owned()];
-    if mentions(text, "Ordering") {
+    if mentions(rest, "Ordering") {
         out.push("use std::cmp::Ordering;\n\n".to_owned());
     }
     out.push(format!("use jolty_models::{{{}}};\n", used.join(", ")));
@@ -606,13 +654,15 @@ struct Names {
     shape: String,
     prepared: String,
     memory: String,
+    parameters_generic: bool,
+    prepared_generic: bool,
 }
 
 impl Names {
     /// The names of the kernel of `module`, in upper camel case, each word of the
     /// module's name, which its underscores part, capitalized as Rust capitalizes an
     /// acronym.
-    fn from_module(module: &str) -> Self {
+    fn from_module(module: &str, parameters_generic: bool, prepared_generic: bool) -> Self {
         let kernel: String = module
             .split('_')
             .map(|word| {
@@ -631,6 +681,24 @@ impl Names {
             prepared: format!("Prepared{kernel}"),
             memory: format!("{kernel}Memory"),
             kernel,
+            parameters_generic,
+            prepared_generic,
+        }
+    }
+
+    fn parameters_type(&self, number: &str) -> String {
+        if self.parameters_generic {
+            format!("{}<{number}>", self.parameters)
+        } else {
+            self.parameters.clone()
+        }
+    }
+
+    fn prepared_type(&self, number: &str) -> String {
+        if self.prepared_generic {
+            format!("{}<{number}>", self.prepared)
+        } else {
+            self.prepared.clone()
         }
     }
 }
@@ -929,73 +997,64 @@ impl<'m> Facts<'m> {
     }
 
     fn parameters(&self, names: &Names) -> String {
+        let derive_default = !names.parameters_generic
+            && self.module.parameters.iter().all(|parameter| {
+                parameter.optional
+                    || matches!(constant(&parameter.default), Some(value) if value == 0.0)
+            });
+        let derives = if derive_default {
+            "Debug, Clone, Default, Deserialize, Serialize, JsonSchema, Lift"
+        } else {
+            "Debug, Clone, Deserialize, Serialize, JsonSchema, Lift"
+        };
+        let serde_attribute = if self.module.parameters.is_empty() {
+            "#[serde(deny_unknown_fields)]"
+        } else {
+            "#[serde(default, deny_unknown_fields)]"
+        };
+        let schemars_attribute = if names.parameters_generic {
+            "#[schemars(bound = \"R: Serialize + JsonSchema\")]\n"
+        } else {
+            ""
+        };
+        let type_parameters = if names.parameters_generic {
+            "<R: Real = f64>"
+        } else {
+            ""
+        };
+        if self.module.parameters.is_empty() {
+            return format!(
+                "/// The parameters of a [`{}`], with its Verilog-A source's defaults.\n#[derive({derives})]\n{serde_attribute}\n{schemars_attribute}pub struct {}{type_parameters} {{}}\n\n",
+                names.kernel, names.parameters
+            );
+        }
         let mut out = vec![format!(
-            "/// The parameters of a [`{}`], with its Verilog-A source's defaults.\n#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]\n#[serde(default, deny_unknown_fields)]\n#[schemars(bound = \"R: Serialize + JsonSchema\")]\npub struct {}<R: Real = f64> {{\n",
+            "/// The parameters of a [`{}`], with its Verilog-A source's defaults.\n#[derive({derives})]\n{serde_attribute}\n{schemars_attribute}pub struct {}{type_parameters} {{\n",
             names.kernel, names.parameters
         )];
         let mut defaults = Vec::new();
         for parameter in &self.module.parameters {
-            let mut documentation = parameter
-                .description
-                .as_deref()
-                .map_or_else(|| format!("The parameter `{}`", parameter.external), prose);
-            if let Some(units) = parameter.units.as_deref().filter(|units| !units.is_empty()) {
-                documentation = format!("{documentation}, in {}", prose(units));
-            }
-            let default = match constant(&parameter.default) {
-                Some(value) => format!("default {value}"),
-                None => {
-                    "by default, as its source computes it from the parameters before it".to_owned()
-                }
-            };
-            documentation = format!("{documentation}; {default}.");
-            let number = if parameter.kind == Type::Integer {
-                "i32"
-            } else {
-                "R"
-            };
-            let kind = if parameter.optional {
-                format!("Option<{number}>")
-            } else {
-                number.to_owned()
-            };
-            let aliases = parameter
-                .aliases
-                .iter()
-                .map(|alias| format!("    #[serde(alias = {alias:?})]\n"))
-                .collect::<Vec<_>>()
-                .concat();
-            let renamed = if parameter.name == parameter.external {
-                String::new()
-            } else {
-                format!("    #[serde(rename = {:?})]\n", parameter.external)
-            };
-            out.push(format!(
-                "    /// {documentation}\n{renamed}{aliases}    pub {}: {kind},\n",
-                parameter.name
-            ));
-            let value = match (
-                parameter.optional,
-                parameter.kind,
-                constant(&parameter.default),
-            ) {
-                (true, _, _) | (false, _, None) => "None".to_owned(),
-                (false, Type::Integer, Some(value)) => format!("{value}"),
-                (false, Type::Real, Some(value)) => format!("R::constant({})", literal(value)),
-            };
-            defaults.push(format!("            {}: {value},\n", parameter.name));
+            let (field, default_entry) = parameter_field(parameter);
+            out.push(field);
+            defaults.push(default_entry);
         }
         out.push("}\n\n".to_owned());
-        // The function's lines, as clippy counts them: its struct's two and a default each.
-        let long = too_long(
-            &[defaults.clone(), vec!["Self {".to_owned(), "}".to_owned()]].concat(),
-            "    ",
-        );
-        out.push(format!(
-            "impl<R: Real> Default for {}<R> {{\n{long}    fn default() -> Self {{\n        Self {{\n{}        }}\n    }}\n}}\n\n",
-            names.parameters,
-            defaults.concat()
-        ));
+        if !derive_default {
+            // The function's lines, as clippy counts them: its struct's two and a default each.
+            let long = too_long(
+                &[defaults.clone(), vec!["Self {".to_owned(), "}".to_owned()]].concat(),
+                "    ",
+            );
+            let impl_header = if names.parameters_generic {
+                format!("impl<R: Real> Default for {}<R>", names.parameters)
+            } else {
+                format!("impl Default for {}", names.parameters)
+            };
+            out.push(format!(
+                "{impl_header} {{\n{long}    fn default() -> Self {{\n        Self {{\n{}        }}\n    }}\n}}\n\n",
+                defaults.concat()
+            ));
+        }
         out.concat()
     }
 
@@ -1006,7 +1065,8 @@ impl<'m> Facts<'m> {
         for (index, branch) in self.module.branches.iter().enumerate() {
             let collapses = self.flags.contains_key(&(index, Site::Collapse));
             let stamps = self.carries_flow(index) || self.holds_potential(index);
-            let conducts = collapses || (stamps && self.conducts(index));
+            let conducts =
+                collapses || self.holds_potential(index) || (stamps && self.conducts(index));
             let joins = stamps || collapses;
             if joins && branch.minus != GROUND {
                 edges.push((branch.plus, branch.minus, conducts));
@@ -1052,8 +1112,8 @@ impl<'m> Facts<'m> {
             )
         };
         format!(
-            "    fn interface<R: Real>(_: &{}<R>) -> Interface {{\n        {interface}\n    }}\n\n",
-            names.parameters
+            "    fn interface<R: Real>(_: &{}) -> Interface {{\n        {interface}\n    }}\n\n",
+            names.parameters_type("R")
         )
     }
 
@@ -1142,8 +1202,19 @@ impl<'m> Facts<'m> {
         } else {
             ""
         };
+        let type_parameters = if names.prepared_generic {
+            "<R: Real>"
+        } else {
+            ""
+        };
+        if prepared.fields.is_empty() && self.shaped.is_empty() {
+            return format!(
+                "/// A [`{}`]'s numbers at its temperature: what depends on no probe.\n#[derive(Debug, Clone, Copy)]\npub struct {}{type_parameters} {{}}\n\n",
+                names.kernel, names.prepared
+            );
+        }
         let mut out = vec![format!(
-            "/// A [`{}`]'s numbers at its temperature: what depends on no probe.\n#[derive(Debug, Clone, Copy)]\n{excused}pub struct {}<R: Real> {{\n",
+            "/// A [`{}`]'s numbers at its temperature: what depends on no probe.\n#[derive(Debug, Clone, Copy)]\n{excused}pub struct {}{type_parameters} {{\n",
             names.kernel, names.prepared
         )];
         for (name, kind, _) in &prepared.fields {
@@ -1368,10 +1439,10 @@ impl<'m> Facts<'m> {
             .map(|line| format!("    {line}"))
             .collect();
         format!(
-            "{}    fn layout<R: Real>(\n        _: &{}<R>,\n        {prepared}: &{}<R>,\n        layout: &mut Layout,\n    ) -> Result<{}, ParameterError> {{\n{}\n    }}\n\n",
+            "{}    fn layout<R: Real>(\n        _: &{},\n        {prepared}: &{},\n        layout: &mut Layout,\n    ) -> Result<{}, ParameterError> {{\n{}\n    }}\n\n",
             too_long(&lines, "    "),
-            names.parameters,
-            names.prepared,
+            names.parameters_type("R"),
+            names.prepared_type("R"),
             names.shape,
             lines.join("\n")
         )
@@ -1606,6 +1677,7 @@ impl<'m> Facts<'m> {
         let mut checks = Vec::new();
         for (index, parameter) in module.parameters.iter().enumerate() {
             for (exclude, lower, upper) in &parameter.ranges {
+                let mut check_body = Vec::new();
                 let mut bound = |bound: &Option<(Expr, bool)>| -> Result<Option<Bound>, Error> {
                     let Some((expr, included)) = bound else {
                         return Ok(None);
@@ -1613,7 +1685,7 @@ impl<'m> Facts<'m> {
                     let constant = constant(expr);
                     let code = match constant {
                         Some(value) => literal(value),
-                        None => Emitter::value_of(&emitter.expression(expr, &mut Vec::new())?).code,
+                        None => Emitter::value_of(&emitter.expression(expr, &mut check_body)?).code,
                     };
                     Ok(Some(Bound {
                         code,
@@ -1622,7 +1694,8 @@ impl<'m> Facts<'m> {
                     }))
                 };
                 let (lower, upper) = (bound(lower)?, bound(upper)?);
-                let value = emitter.expression(&Expr::Parameter(index), &mut Vec::new())?;
+                let value = emitter.expression(&Expr::Parameter(index), &mut check_body)?;
+                print(&check_body, 0, &mut checks);
                 checks.push(check(
                     (&value.code, &parameter.external),
                     parameter.kind,
@@ -1631,9 +1704,41 @@ impl<'m> Facts<'m> {
                 ));
             }
         }
-        let mut lines = Vec::new();
-        lines.extend(checks);
-        Ok(lines)
+        Ok(checks)
+    }
+
+    /// The inherent `impl` holding `warnings` and `warned`, when the module defines any.
+    fn warnings_impl(&self, prepared: &Prepared, names: &Names) -> Result<String, Error> {
+        let mut inherent = Vec::new();
+        if self.module.analog.iter().any(warns) {
+            inherent.push(self.prepare(Mode::Warnings, prepared, names)?);
+        }
+        if !self.warned.is_empty() {
+            let mut messages = Vec::new();
+            let mut offset = 0;
+            for (message, count) in &self.warned {
+                let values: Vec<String> = (offset..offset + count)
+                    .map(|index| format!("memory.warned_values[{index}]"))
+                    .collect();
+                offset += count;
+                messages.push(format_message(message, &values));
+            }
+            inherent.push(format!(
+                "    /// The message of each warning that depends on the probes that an evaluation\n    /// of an instance, whose memory is `memory`, has found since the memory was made,\n    /// with the values the last evaluation that found it read.\n    pub fn warned(memory: &{}) -> impl Iterator<Item = String> {{\n        [{}].into_iter().zip(memory.warned).filter_map(|(message, found)| found.then_some(message))\n    }}\n\n",
+                names.memory,
+                messages.join(", ")
+            ));
+        }
+        if inherent.is_empty() {
+            Ok(String::new())
+        } else {
+            let warnings = inherent.concat();
+            Ok(format!(
+                "impl {} {{\n{}}}\n",
+                names.kernel,
+                warnings.trim_end_matches('\n').to_owned() + "\n"
+            ))
+        }
     }
 
     /// The fields of the prepared numbers, as `prepare` writes them at its end, in
@@ -1696,78 +1801,193 @@ impl<'m> Facts<'m> {
         let analog = emitter.analog.clone();
         emitter.statements(&analog, &mut body)?;
         let values = self.prepared_values(&mut emitter, (mode, fields), &mut body)?;
-        let locals: Vec<(String, Kind)> = module
-            .variables
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| emitter.live[*index] && !module.dynamic[*index])
-            .map(|(_, (name, kind))| {
-                (
-                    name.clone(),
-                    if *kind == Type::Integer {
-                        Kind::Integer
-                    } else {
-                        Kind::Real
-                    },
-                )
-            })
-            .collect();
+        let checks = self.parameter_lines(&mut emitter)?;
+        let (constant_fields, constant_body) = emit_local_parameters(&mut emitter)?;
+        let locals = static_locals(module, &emitter.live);
+        let declared_constants = fields_struct("Constants", "c", &constant_fields);
+        let (constants_struct, constants_init) =
+            declared_constants.split_at(declared_constants.len().saturating_sub(1));
         let declared = locals_struct(&locals);
         let (structure, initial) = declared.split_at(declared.len().saturating_sub(1));
-        let mut lines = structure.to_vec();
-        lines.extend(self.parameter_lines(&mut emitter)?);
+        let mut lines = constants_struct.to_vec();
+        lines.extend(structure.iter().cloned());
+        lines.extend(constants_init.iter().cloned());
+        print(&constant_body, 0, &mut lines);
+        lines.extend(checks);
         lines.extend(initial.iter().cloned());
         if mode == Mode::Warnings {
             lines.push("let mut found = Vec::new();".to_owned());
         }
-        let mut printed = Vec::new();
-        print(&body, 0, &mut printed);
-        lines.extend(printed);
+        print(&body, 0, &mut lines);
         lines.push(if mode == Mode::Prepare {
-            format!("Ok({} {{ {} }})", names.prepared, values.join(", "))
+            if values.is_empty() {
+                format!("Ok({} {{}})", names.prepared)
+            } else {
+                format!("Ok({} {{ {} }})", names.prepared, values.join(", "))
+            }
         } else {
             "Ok(found)".to_owned()
         });
-        let temperature = if mentions(&lines.join("\n"), "temperature") {
-            "temperature"
-        } else {
-            "_"
-        };
-        let parameters = if mentions(&lines.join("\n"), "parameters") {
-            "parameters"
-        } else {
-            "_"
-        };
-        let lines: Vec<String> = lines
-            .into_iter()
-            .map(|line| {
-                if line.is_empty() {
-                    line
-                } else {
-                    format!("        {line}")
-                }
-            })
-            .collect();
-        let (documentation, name, result) = if mode == Mode::Prepare {
-            (
-                String::new(),
-                "fn prepare",
-                format!("{}<R>", names.prepared),
-            )
-        } else {
-            (
-                "    /// The facts the `$warning`s of the Verilog-A source, and their like, state of an\n    /// instance with `parameters` at `temperature`, in kelvins, in the order it states\n    /// them.\n    ///\n    /// # Errors\n    ///\n    /// Returns [`ParameterError`] when a parameter is out of range.\n".to_owned(),
-                "pub fn warnings",
-                "Vec<String>".to_owned(),
-            )
-        };
-        Ok(format!(
-            "{documentation}{}    {name}<R: Real>(\n        {parameters}: &{}<R>,\n        {temperature}: R,\n    ) -> Result<{result}, ParameterError> {{\n{}\n    }}\n\n",
-            too_long(&lines, "    "),
-            names.parameters,
-            lines.join("\n")
+        Ok(format_prepare(
+            mode,
+            names,
+            &lines,
+            !emitter.parameters_read.is_empty(),
+            emitter.uses_temperature,
         ))
     }
+}
+
+/// Renders one struct field declaration and its `Default` initializer entry for `parameter`.
+fn parameter_field(parameter: &Parameter) -> (String, String) {
+    let mut documentation = parameter
+        .description
+        .as_deref()
+        .map_or_else(|| format!("The parameter `{}`", parameter.external), prose);
+    if let Some(units) = parameter.units.as_deref().filter(|units| !units.is_empty()) {
+        documentation = format!("{documentation}, in {}", prose(units));
+    }
+    let default = match constant(&parameter.default) {
+        Some(value) => format!("default {value}"),
+        None => "by default, as its source computes it from the parameters before it".to_owned(),
+    };
+    documentation = format!("{documentation}; {default}.");
+    let number = if parameter.kind == Type::Integer {
+        "i32"
+    } else {
+        "R"
+    };
+    let kind = if parameter.optional {
+        format!("Option<{number}>")
+    } else {
+        number.to_owned()
+    };
+    let aliases = parameter
+        .aliases
+        .iter()
+        .map(|alias| format!("    #[serde(alias = {alias:?})]\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let renamed = if parameter.name == parameter.external {
+        String::new()
+    } else {
+        format!("    #[serde(rename = {:?})]\n", parameter.external)
+    };
+    let field = format!(
+        "    /// {documentation}\n{renamed}{aliases}    pub {}: {kind},\n",
+        parameter.name
+    );
+    let value = match (
+        parameter.optional,
+        parameter.kind,
+        constant(&parameter.default),
+    ) {
+        (true, _, _) | (false, _, None) => "None".to_owned(),
+        (false, Type::Integer, Some(value)) => format!("{value}"),
+        (false, Type::Real, Some(value)) => format!("R::constant({})", literal(value)),
+    };
+    (field, format!("            {}: {value},\n", parameter.name))
+}
+
+/// The static variables kept for preparation, each with its emitted kind.
+fn static_locals(module: &Module, live: &[bool]) -> Vec<(String, Kind)> {
+    module
+        .variables
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| live[*index] && !module.dynamic[*index])
+        .map(|(_, (name, kind))| {
+            (
+                name.clone(),
+                if *kind == Type::Integer {
+                    Kind::Integer
+                } else {
+                    Kind::Real
+                },
+            )
+        })
+        .collect()
+}
+
+/// Formats `prepare` or `warnings` with its signature, doc comment, and indented `lines`.
+fn format_prepare(
+    mode: Mode,
+    names: &Names,
+    lines: &[String],
+    uses_parameters: bool,
+    uses_temperature: bool,
+) -> String {
+    let temperature = if uses_temperature { "temperature" } else { "_" };
+    let parameters = if uses_parameters { "parameters" } else { "_" };
+    let indented: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("        {line}")
+            }
+        })
+        .collect();
+    let (documentation, name, result) = if mode == Mode::Prepare {
+        (String::new(), "fn prepare", names.prepared_type("R"))
+    } else {
+        (
+            "    /// The facts the `$warning`s of the Verilog-A source, and their like, state of an\n    /// instance with `parameters` at `temperature`, in kelvins, in the order it states\n    /// them.\n    ///\n    /// # Errors\n    ///\n    /// Returns [`ParameterError`] when a parameter is out of range.\n".to_owned(),
+            "pub fn warnings",
+            "Vec<String>".to_owned(),
+        )
+    };
+    format!(
+        "{documentation}{}    {name}<R: Real>(\n        {parameters}: &{},\n        {temperature}: R,\n    ) -> Result<{result}, ParameterError> {{\n{}\n    }}\n\n",
+        too_long(&indented, "    "),
+        names.parameters_type("R"),
+        indented.join("\n")
+    )
+}
+
+/// Field descriptors and initialization statements emitted for live `localparam` constants.
+type EmittedLocals = (Vec<(String, Kind)>, Vec<Rust>);
+
+/// Emits the field descriptors and initialization statements for every non-constant
+/// `localparam` read during preparation, in ascending declaration order.
+///
+/// Every non-constant `localparam` only references strictly earlier `localparam` indices,
+/// so a single reverse pass captures transitive dependencies (including through optional
+/// parameter defaults) with zero unread fields.
+fn emit_local_parameters(emitter: &mut Emitter<'_, '_>) -> Result<EmittedLocals, Error> {
+    let count = emitter.facts.module.local_parameters.len();
+    let mut entries: Vec<(String, Kind, Vec<Rust>)> = Vec::new();
+    for index in (0..count).rev() {
+        if !emitter.locals_read.contains(&index) {
+            continue;
+        }
+        let (name, kind, value) = {
+            let local = &emitter.facts.module.local_parameters[index];
+            (
+                local.name.clone(),
+                if local.kind == Type::Integer {
+                    Kind::Integer
+                } else {
+                    Kind::Real
+                },
+                local.value.clone(),
+            )
+        };
+        let mut statements = Vec::new();
+        let operand = emitter.expression(&value, &mut statements)?;
+        let operand = emitter.convert(operand, &kind, &mut statements)?;
+        statements.push(Rust::Line(format!("c.{name} = {};", operand.code)));
+        entries.push((name, kind, statements));
+    }
+    entries.reverse();
+    let mut fields = Vec::with_capacity(entries.len());
+    let mut body = Vec::new();
+    for (name, kind, statements) in entries {
+        fields.push((name, kind));
+        body.extend(statements);
+    }
+    Ok((fields, body))
 }
 
 /// Checks that no contribution reads a `ddx`, whose own derivative would be a second
@@ -2127,28 +2347,37 @@ fn zero(kind: &Kind) -> String {
     }
 }
 
+/// The lines that declare a function's struct named `struct_name` bound to `binding`,
+/// with `fields` each initialized to zero.
+fn fields_struct(struct_name: &str, binding: &str, fields: &[(String, Kind)]) -> Vec<String> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let generic = fields
+        .iter()
+        .any(|(_, kind)| matches!(kind, Kind::Real | Kind::Dual(_)));
+    let parameters = if generic { "<R: Real>" } else { "" };
+    let mut lines = vec![format!("struct {struct_name}{parameters} {{")];
+    for (name, kind) in fields {
+        lines.push(format!("    {name}: {},", rust_type(kind)));
+    }
+    lines.push("}".to_owned());
+    let values: Vec<String> = fields
+        .iter()
+        .map(|(name, kind)| format!("{name}: {}", zero(kind)))
+        .collect();
+    lines.push(format!(
+        "let mut {binding} = {struct_name} {{ {} }};",
+        values.join(", ")
+    ));
+    lines
+}
+
 /// The lines that declare the function's variables, `locals`, each at zero, as
 /// Verilog-A's variables start: a struct of them, so that one a branch leaves
 /// unassigned reads zero.
 fn locals_struct(locals: &[(String, Kind)]) -> Vec<String> {
-    if locals.is_empty() {
-        return Vec::new();
-    }
-    let generic = locals
-        .iter()
-        .any(|(_, kind)| matches!(kind, Kind::Real | Kind::Dual(_)));
-    let parameters = if generic { "<R: Real>" } else { "" };
-    let mut lines = vec![format!("struct Locals{parameters} {{")];
-    for (name, kind) in locals {
-        lines.push(format!("    {name}: {},", rust_type(kind)));
-    }
-    lines.push("}".to_owned());
-    let values: Vec<String> = locals
-        .iter()
-        .map(|(name, kind)| format!("{name}: {}", zero(kind)))
-        .collect();
-    lines.push(format!("let mut v = Locals {{ {} }};", values.join(", ")));
-    lines
+    fields_struct("Locals", "v", locals)
 }
 
 /// A bound of a parameter's range, as the check reads it: its code, its value when it is
@@ -2465,6 +2694,8 @@ impl<'f, 'm> Emitter<'f, 'm> {
             entries,
             extended: BTreeSet::new(),
             parameters_read: BTreeSet::new(),
+            locals_read: BTreeSet::new(),
+            uses_temperature: false,
             accumulators: BTreeMap::new(),
         }
     }
@@ -2558,6 +2789,13 @@ impl Emitter<'_, '_> {
                     Kind::Real
                 }
             }
+            Expr::LocalParameter(local) => {
+                if module.local_parameters[*local].kind == Type::Integer {
+                    Kind::Integer
+                } else {
+                    Kind::Real
+                }
+            }
             Expr::Variable(variable) => {
                 if module.variables[*variable].1 == Type::Integer {
                     Kind::Integer
@@ -2625,6 +2863,10 @@ impl Emitter<'_, '_> {
                 let name = module.parameters[*parameter].name.clone();
                 self.prepared.field(|_| name, kind.clone(), expr)
             }
+            Expr::LocalParameter(local) => {
+                let name = module.local_parameters[*local].name.clone();
+                self.prepared.field(|_| name, kind.clone(), expr)
+            }
             Expr::Given(parameter) => {
                 let name = format!("{}_given", module.parameters[*parameter].name);
                 self.prepared.field(|_| name, kind.clone(), expr)
@@ -2679,7 +2921,9 @@ impl Emitter<'_, '_> {
         let _ = self;
         match operand.kind {
             Kind::Bool => (operand.code, operand.precedence),
+            Kind::Integer if operand.code == "0" => ("false".to_owned(), ATOM),
             Kind::Integer => (format!("{} != 0", operand.at(SUM)), COMPARE),
+            Kind::Float(Some(0.0)) => ("false".to_owned(), ATOM),
             _ => (
                 format!("{} != 0.0", Self::value_of(&operand).at(SUM)),
                 COMPARE,
@@ -2700,6 +2944,10 @@ impl Emitter<'_, '_> {
             (Kind::Float(_), Kind::Float(None)) => operand,
             (Kind::Bool, Kind::Integer) => {
                 Operand::new(format!("i32::from({})", operand.code), ATOM, Kind::Integer)
+            }
+            (Kind::Bool, Kind::Float(_) | Kind::Real | Kind::Dual(_)) => {
+                let floated = Self::value_of(&operand);
+                return self.convert(floated, kind, out);
             }
             (Kind::Integer, Kind::Float(_) | Kind::Real | Kind::Dual(_)) => {
                 let floated = match operand.code.parse::<i32>() {
@@ -2784,14 +3032,39 @@ impl Emitter<'_, '_> {
                 };
                 Operand::new(code, ATOM, kind)
             }
-            Expr::Given(parameter) => Operand::new(
-                format!(
-                    "parameters.{}.is_some()",
-                    module.parameters[*parameter].name
-                ),
-                ATOM,
-                Kind::Bool,
-            ),
+            Expr::LocalParameter(local) => {
+                if self.mode == Mode::Function {
+                    let external = module
+                        .local_parameters
+                        .get(*local)
+                        .map_or("unknown", |entry| entry.external.as_str());
+                    return Err(Error::at(
+                        0,
+                        format!(
+                            "the limiting function reads localparam {external}, which depends on parameters and is not compiled yet"
+                        ),
+                    ));
+                }
+                self.locals_read.insert(*local);
+                let local = &module.local_parameters[*local];
+                let kind = if local.kind == Type::Integer {
+                    Kind::Integer
+                } else {
+                    Kind::Real
+                };
+                Operand::new(format!("c.{}", local.name), ATOM, kind)
+            }
+            Expr::Given(parameter) => {
+                self.parameters_read.insert(*parameter);
+                Operand::new(
+                    format!(
+                        "parameters.{}.is_some()",
+                        module.parameters[*parameter].name
+                    ),
+                    ATOM,
+                    Kind::Bool,
+                )
+            }
             Expr::Variable(variable) => {
                 let kind = self.variable_kind(*variable);
                 match self.function {
@@ -2812,7 +3085,10 @@ impl Emitter<'_, '_> {
                     }
                 }
             }
-            Expr::Temperature => Operand::new("temperature", ATOM, Kind::Real),
+            Expr::Temperature => {
+                self.uses_temperature = true;
+                Operand::new("temperature", ATOM, Kind::Real)
+            }
             Expr::Gmin => Operand::new("at.gmin", ATOM, Kind::Float(None)),
             Expr::SmallResistance => Operand::new("SMALL_RESISTANCE", ATOM, Kind::Float(None)),
             Expr::Probe(probe) => self.probe(*probe, out)?,
@@ -2909,7 +3185,9 @@ impl Emitter<'_, '_> {
                     let mut lines = vec![format!("let {name} = if {condition} {{")];
                     let (statements, value) = block_value(first, then.code);
                     print(&statements, 1, &mut lines);
-                    lines.push(format!("    {value}"));
+                    for part in value.lines() {
+                        lines.push(format!("    {part}"));
+                    }
                     let (statements, value) = block_value(second, otherwise.code);
                     if statements.is_empty() && value.starts_with("if ") {
                         // `else { if .. }` is `else if ..`.
@@ -2917,7 +3195,9 @@ impl Emitter<'_, '_> {
                     } else {
                         lines.push("} else {".to_owned());
                         print(&statements, 1, &mut lines);
-                        lines.push(format!("    {value}"));
+                        for part in value.lines() {
+                            lines.push(format!("    {part}"));
+                        }
                         lines.push("};".to_owned());
                     }
                     out.push(Rust::Line(lines.join("\n")));
@@ -3010,6 +3290,7 @@ impl Emitter<'_, '_> {
     /// compared with zero, or the truth negated.
     fn negation(&mut self, operand: &Expr, out: &mut Vec<Rust>) -> Result<Operand, Error> {
         if let Expr::Given(parameter) = operand {
+            self.parameters_read.insert(*parameter);
             let name = &self.facts.module.parameters[*parameter].name;
             return Ok(Operand::new(
                 format!("parameters.{name}.is_none()"),
@@ -3188,6 +3469,25 @@ impl Emitter<'_, '_> {
                     ));
                 }
             };
+            if let Ok(left_value) = left.code.parse::<i32>() {
+                if let Ok(right_value) = right.code.parse::<i32>() {
+                    let value = match operator {
+                        "+" => left_value.wrapping_add(right_value),
+                        "-" => left_value.wrapping_sub(right_value),
+                        _ => left_value.wrapping_mul(right_value),
+                    };
+                    return Ok(Operand::new(
+                        value.to_string(),
+                        if value < 0 { UNARY } else { ATOM },
+                        Kind::Integer,
+                    ));
+                }
+                return Ok(Operand::new(
+                    format!("i32::{method}({}, {})", left.code, right.code),
+                    ATOM,
+                    Kind::Integer,
+                ));
+            }
             return Ok(Operand::new(
                 format!("{}.{method}({})", left.at(ATOM), right.code),
                 ATOM,
@@ -3537,6 +3837,7 @@ impl Emitter<'_, '_> {
                     resistive,
                     reactive,
                     noise,
+                    ..
                 } => match self.mode {
                     Mode::Evaluate => {
                         let site = self.facts.site(
@@ -4044,36 +4345,20 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The function `linear`, unless no instance is: whether the contributions of an
+    /// The body of `linear`, unless no instance is: whether the contributions of an
     /// instance's shape are each zero or linear in the probes, the static numbers each
     /// requires zero. An instance whose memory keeps what depends on the probes, a warning
     /// found or an output variable, is not, as a linear one is evaluated once a run.
-    fn linear(&mut self, names: &Names) -> String {
+    fn linear_body(&mut self) -> Option<String> {
         let module = self.facts.module;
         let remembers = !self.facts.warned.is_empty()
             || module.outputs.iter().any(|&output| module.dynamic[output]);
-        let Some(linearity) = Linearity::new(module).filter(|_| !remembers) else {
-            return String::new();
-        };
-        let body = match self.linear_requirement(&module.analog, &linearity) {
-            Requirement::Never => return String::new(),
-            Requirement::Always => "true".to_owned(),
-            Requirement::When(code, _) => code,
-        };
-        let shape = if mentions(&body, "shape") {
-            "shape"
-        } else {
-            "_"
-        };
-        let prepared = if mentions(&body, "prepared") {
-            "prepared"
-        } else {
-            "_"
-        };
-        format!(
-            "    fn linear({shape}: &{}, {prepared}: &{}<f64>) -> bool {{\n        {body}\n    }}\n\n",
-            names.shape, names.prepared
-        )
+        let linearity = Linearity::new(module).filter(|_| !remembers)?;
+        match self.linear_requirement(&module.analog, &linearity) {
+            Requirement::Never => None,
+            Requirement::Always => Some("true".to_owned()),
+            Requirement::When(code, _) => Some(code),
+        }
     }
 
     /// What the contributions of `statements` require to be linear.
@@ -4263,7 +4548,7 @@ impl Emitter<'_, '_> {
     }
 
     /// The body of `evaluate`.
-    fn evaluate(&mut self) -> Result<String, Error> {
+    fn evaluate_body(&mut self) -> Result<MethodBody, Error> {
         self.find_accumulators();
         let module = self.facts.module;
         let mut body = Vec::new();
@@ -4293,27 +4578,28 @@ impl Emitter<'_, '_> {
             "_"
         };
         let memory = if self.facts.remembers() {
-            format!("memory: &mut {}", Names::from_module(&module.name).memory)
+            format!(
+                "memory: &mut {}",
+                Names::from_module(&module.name, false, false).memory
+            )
         } else {
             "(): &mut ()".to_owned()
         };
-        let names = Names::from_module(&module.name);
         let lines: Vec<String> = lines
             .into_iter()
             .map(|line| format!("        {line}"))
             .collect();
-        Ok(format!(
-            "{}    fn evaluate<R: Real>(\n        {shape}: &{},\n        {prepared}: &{}<R>,\n        {memory},\n        at: &Local<'_>,\n        stamp: &mut Stamp<'_, R>,\n    ) {{\n{}\n    }}\n\n",
-            too_long(&lines, "    "),
-            names.shape,
-            names.prepared,
-            lines.join("\n")
-        ))
+        Ok(MethodBody {
+            shape,
+            prepared,
+            at: "at",
+            memory,
+            lines,
+        })
     }
 
     /// The body of `noise`.
-    fn noise(&mut self) -> Result<String, Error> {
-        let module = self.facts.module;
+    fn noise_body(&mut self) -> Result<MethodBody, Error> {
         let mut body = Vec::new();
         let analog = self.analog.clone();
         self.statements(&analog, &mut body)?;
@@ -4332,18 +4618,17 @@ impl Emitter<'_, '_> {
             "_"
         };
         let at = if mentions(&text, "at") { "at" } else { "_" };
-        let names = Names::from_module(&module.name);
         let lines: Vec<String> = lines
             .into_iter()
             .map(|line| format!("        {line}"))
             .collect();
-        Ok(format!(
-            "{}    fn noise<R: Real>(\n        {shape}: &{},\n        {prepared}: &{}<R>,\n        {at}: &Local<'_>,\n        sources: &mut Vec<NoiseSource>,\n    ) {{\n{}\n    }}\n",
-            too_long(&lines, "    "),
-            names.shape,
-            names.prepared,
-            lines.join("\n")
-        ))
+        Ok(MethodBody {
+            shape,
+            prepared,
+            at,
+            memory: String::new(),
+            lines,
+        })
     }
 }
 
@@ -4352,7 +4637,6 @@ impl Emitter<'_, '_> {
 fn block_value(mut statements: Vec<Rust>, value: String) -> (Vec<Rust>, String) {
     let bound = format!("let {value} = ");
     if let Some(Rust::Line(last)) = statements.last()
-        && !last.contains('\n')
         && let Some(expression) = last
             .strip_prefix(&bound)
             .and_then(|rest| rest.strip_suffix(';'))
@@ -4369,7 +4653,14 @@ fn negate(operand: Operand) -> Operand {
     match operand.kind {
         Kind::Float(Some(value)) => float(-value),
         Kind::Integer => match operand.code.parse::<i32>() {
-            Ok(value) => Operand::new((-value).to_string(), UNARY, Kind::Integer),
+            Ok(value) => {
+                let negated = value.wrapping_neg();
+                Operand::new(
+                    negated.to_string(),
+                    if negated < 0 { UNARY } else { ATOM },
+                    Kind::Integer,
+                )
+            }
             Err(_) => Operand::new(
                 format!("{}.wrapping_neg()", operand.at(ATOM)),
                 ATOM,

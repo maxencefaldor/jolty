@@ -15,6 +15,10 @@ pub(crate) struct Module {
     pub(crate) branches: Vec<(String, String, String)>,
     /// The parameters, in their order.
     pub(crate) parameters: Vec<Parameter>,
+    /// The module-scope `localparam` constants, in their order.
+    pub(crate) local_parameters: Vec<LocalParameter>,
+    /// The `parameter` and `localparam` declarations in exact source order.
+    pub(crate) declarations: Vec<Declaration>,
     /// Each `aliasparam`: another name and the parameter it names.
     pub(crate) aliases: Vec<(String, String)>,
     /// The variables, each with its type.
@@ -52,6 +56,25 @@ pub(crate) struct Parameter {
     pub(crate) line: usize,
 }
 
+/// A module-level constant declaration in source order: either a `parameter` or a
+/// `localparam`, by its index in [`Module::parameters`] or [`Module::local_parameters`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Declaration {
+    Parameter(usize),
+    LocalParameter(usize),
+}
+
+/// A `localparam` declaration: an immutable named constant, not exposed as a model
+/// parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalParameter {
+    pub(crate) name: String,
+    /// Its declared type, or `None` when omitted so the initializer decides it.
+    pub(crate) kind: Option<Type>,
+    pub(crate) value: Expression,
+    pub(crate) line: usize,
+}
+
 /// A range of `from` or `exclude`, each bound included or not, `None` for an infinite one.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Range {
@@ -61,12 +84,13 @@ pub(crate) struct Range {
     pub(crate) upper: Option<(Expression, bool)>,
 }
 
-/// An analog function: its name, its inputs in order, its local variables with their
-/// types, and its body, which assigns its result to its name.
+/// An analog function: its name, its inputs in order, its local constants and variables
+/// with their types, and its body, which assigns its result to its name.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) inputs: Vec<String>,
+    pub(crate) local_parameters: Vec<LocalParameter>,
     pub(crate) variables: Vec<(String, Type)>,
     pub(crate) body: Statement,
 }
@@ -75,9 +99,10 @@ pub(crate) struct Function {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Statement {
     Block(Vec<Statement>),
-    /// A named block, its own variables declared within it, each with its type.
+    /// A named block, its own constants and variables declared within it.
     Named {
         name: String,
+        local_parameters: Vec<LocalParameter>,
         variables: Vec<(String, Type)>,
         statements: Vec<Statement>,
     },

@@ -7,6 +7,7 @@
 //! are prepared once; dynamic ones are evaluated at every iteration, with their exact
 //! derivatives with respect to each probe they depend on.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE, Nature};
@@ -101,6 +102,8 @@ pub(crate) enum Expr {
     Real(f64),
     Integer(i32),
     Parameter(usize),
+    /// A non-constant `localparam` at that index among the module's.
+    LocalParameter(usize),
     /// Whether the parameter at that index was given.
     Given(usize),
     Variable(usize),
@@ -146,6 +149,10 @@ pub(crate) enum Stmt {
         resistive: Option<Expr>,
         /// The charge or flux whose time derivative it adds.
         reactive: Option<Expr>,
+        /// Expressions factored from outside `ddt(...)` (`k * ddt(x)` folded into
+        /// `ddt(k * x)`), each with its source line; verified static after analysis so
+        /// reactive contributions stay charge-conserving.
+        reactive_factors: Vec<(Expr, usize)>,
         noise: Vec<Noise>,
     },
     /// A conditional, numbered in the order the analog block holds them, its condition
@@ -215,20 +222,346 @@ pub(crate) fn identifier(name: &str) -> String {
     }
 }
 
-/// The parameters of `module`, resolved, each named apart from those before it.
-fn resolve_parameters(
+/// Rejects duplicate `localparam` names and collisions between a `localparam` and a
+/// `parameter`, `variable`, or `aliasparam` in the module scope.
+fn check_duplicates(module: &ast::Module) -> Result<(), Error> {
+    let mut seen_locals: BTreeSet<&str> = BTreeSet::new();
+    for local in &module.local_parameters {
+        if !seen_locals.insert(local.name.as_str()) {
+            return Err(Error::at(
+                local.line,
+                format!("the localparam {} is declared more than once", local.name),
+            ));
+        }
+        if module
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == local.name)
+        {
+            return Err(Error::at(
+                local.line,
+                format!(
+                    "{} is declared as both a parameter and a localparam",
+                    local.name
+                ),
+            ));
+        }
+        if module
+            .variables
+            .iter()
+            .any(|(variable, _)| *variable == local.name)
+        {
+            return Err(Error::at(
+                local.line,
+                format!(
+                    "{} is declared as both a localparam and a variable",
+                    local.name
+                ),
+            ));
+        }
+        if module.aliases.iter().any(|(alias, _)| *alias == local.name) {
+            return Err(Error::at(
+                local.line,
+                format!(
+                    "{} is declared as both a localparam and an aliasparam",
+                    local.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects duplicate `localparam` names and collisions with variables declared in the
+/// same named block.
+fn check_block_duplicates(
+    local_parameters: &[ast::LocalParameter],
+    variables: &[(String, Type)],
+) -> Result<(), Error> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for local in local_parameters {
+        if !seen.insert(local.name.as_str()) {
+            return Err(Error::at(
+                local.line,
+                format!("the localparam {} is declared more than once", local.name),
+            ));
+        }
+        if variables
+            .iter()
+            .any(|(variable, _)| *variable == local.name)
+        {
+            return Err(Error::at(
+                local.line,
+                format!(
+                    "{} is declared as both a localparam and a variable",
+                    local.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects duplicate `localparam` names and collisions with inputs, variables, or the
+/// result name of an analog function.
+fn check_function_duplicates(function: &ast::Function) -> Result<(), Error> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for local in &function.local_parameters {
+        if !seen.insert(local.name.as_str()) {
+            return Err(Error::at(
+                local.line,
+                format!("the localparam {} is declared more than once", local.name),
+            ));
+        }
+        if local.name == function.name
+            || function.inputs.contains(&local.name)
+            || function
+                .variables
+                .iter()
+                .any(|(variable, _)| *variable == local.name)
+        {
+            return Err(Error::at(
+                local.line,
+                format!(
+                    "{} is declared as both a localparam and a variable",
+                    local.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that every `aliasparam` targets a declared `parameter`, not a `localparam` or
+/// an undeclared name.
+fn check_aliases(module: &ast::Module) -> Result<(), Error> {
+    for (alias, parameter) in &module.aliases {
+        if module
+            .parameters
+            .iter()
+            .any(|declared| declared.name == *parameter)
+        {
+            continue;
+        }
+        if module
+            .local_parameters
+            .iter()
+            .any(|local| local.name == *parameter)
+        {
+            return Err(Error::at(
+                0,
+                format!("the alias {alias} targets localparam {parameter}, not a parameter"),
+            ));
+        }
+        return Err(Error::at(
+            0,
+            format!("the alias {alias} names no parameter, {parameter}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolved module `parameter` declarations and module-scope `localparam` bindings.
+type ResolvedDeclarations = (Vec<Parameter>, Vec<(String, LocalValue)>);
+
+/// Resolves `module`'s `parameter` and `localparam` declarations in source order,
+/// returning the resolved parameters and the module-scope `localparam` bindings.
+fn resolve_declarations(
     module: &ast::Module,
     (nodes, thermal): (&[String], &[bool]),
-) -> Result<Vec<Parameter>, Error> {
-    let given = given_parameters(&module.analog);
-    let mut parameters: Vec<Parameter> = Vec::new();
-    for (index, parameter) in module.parameters.iter().enumerate() {
-        let mut resolved = resolve_parameter(module, (nodes, thermal), (index, parameter), &given)?;
-        // Two parameters whose names meet in snake case keep apart.
-        if parameters.iter().any(|other| other.name == resolved.name) {
-            resolved.name = format!("{}_{index}", resolved.name);
+    sink: &mut Sink,
+) -> Result<ResolvedDeclarations, Error> {
+    let given = given_parameters(module);
+    let mut seen_parameters: BTreeSet<usize> = BTreeSet::new();
+    let mut module_locals: Vec<(String, LocalValue)> = Vec::new();
+    let mut resolved_defaults: Vec<Option<Expr>> = vec![None; module.parameters.len()];
+
+    for (position, declaration) in module.declarations.iter().enumerate() {
+        let later_locals: Vec<String> = module.declarations[position..]
+            .iter()
+            .filter_map(|later| match *later {
+                ast::Declaration::LocalParameter(index) => {
+                    Some(module.local_parameters[index].name.clone())
+                }
+                ast::Declaration::Parameter(_) => None,
+            })
+            .collect();
+        let bindings: Vec<(String, Binding)> = module_locals
+            .iter()
+            .map(|(name, value)| (name.clone(), Binding::LocalParameter(*value)))
+            .collect();
+        match *declaration {
+            ast::Declaration::Parameter(index) => {
+                let parameter = &module.parameters[index];
+                let scope = Scope {
+                    module,
+                    nodes,
+                    thermal,
+                    bindings,
+                    module_locals: module_locals.clone(),
+                    allowed_parameters: Some(seen_parameters.clone()),
+                    later_locals,
+                    constant_owner: Some(format!("{}'s default", parameter.name)),
+                    probes: false,
+                    initial: false,
+                };
+                let mut default = scope.expression(&parameter.default, parameter.line, sink)?;
+                if !sink.prelude.is_empty() {
+                    return Err(Error::at(
+                        parameter.line,
+                        format!("{}'s default calls a function", parameter.name),
+                    ));
+                }
+                fold_parameter_default(&mut default, parameter, module, &sink.local_parameters)?;
+                resolved_defaults[index] = Some(default);
+                seen_parameters.insert(index);
+            }
+            ast::Declaration::LocalParameter(index) => {
+                let local = &module.local_parameters[index];
+                let scope = Scope {
+                    module,
+                    nodes,
+                    thermal,
+                    bindings,
+                    module_locals: module_locals.clone(),
+                    allowed_parameters: Some(seen_parameters.clone()),
+                    later_locals,
+                    constant_owner: Some(local.name.clone()),
+                    probes: false,
+                    initial: false,
+                };
+                let value = resolve_local_parameter(&scope, local, sink)?;
+                module_locals.push((local.name.clone(), value));
+            }
         }
-        parameters.push(resolved);
+    }
+
+    let parameters = resolve_parameter_ranges(
+        module,
+        (nodes, thermal),
+        &module_locals,
+        &given,
+        &mut resolved_defaults,
+        sink,
+    )?;
+    Ok((parameters, module_locals))
+}
+
+/// Constant-folds a non-trivial parameter default expression when it has no runtime
+/// dependence, propagating any integer overflow, divide-by-zero, or non-finite error.
+fn fold_parameter_default(
+    default: &mut Expr,
+    parameter: &ast::Parameter,
+    module: &ast::Module,
+    local_parameters: &[LocalParameter],
+) -> Result<(), Error> {
+    if constant(default).is_some() {
+        return Ok(());
+    }
+    let wrap = |message: String| {
+        Error::at(
+            parameter.line,
+            format!("{}'s default {message}", parameter.name),
+        )
+    };
+    if parameter.kind == Type::Integer {
+        if let Some(folded) = fold_integer(default, module, local_parameters).map_err(wrap)? {
+            *default = Expr::Integer(folded);
+        }
+    } else if let Some(folded) = fold_real(default, module, local_parameters).map_err(wrap)? {
+        *default = Expr::Real(folded);
+    }
+    Ok(())
+}
+
+/// Resolves every parameter's `from`/`exclude` ranges once all module-scope
+/// `parameter` and `localparam` declarations are known.
+fn resolve_parameter_ranges(
+    module: &ast::Module,
+    (nodes, thermal): (&[String], &[bool]),
+    module_locals: &[(String, LocalValue)],
+    given: &BTreeSet<String>,
+    resolved_defaults: &mut [Option<Expr>],
+    sink: &mut Sink,
+) -> Result<Vec<Parameter>, Error> {
+    let range_bindings: Vec<(String, Binding)> = module_locals
+        .iter()
+        .map(|(name, value)| (name.clone(), Binding::LocalParameter(*value)))
+        .collect();
+    let mut parameters: Vec<Parameter> = Vec::with_capacity(module.parameters.len());
+    for (index, parameter) in module.parameters.iter().enumerate() {
+        let default = resolved_defaults[index].take().ok_or_else(|| {
+            Error::at(
+                parameter.line,
+                format!("{} lacks a default", parameter.name),
+            )
+        })?;
+        let scope = Scope {
+            module,
+            nodes,
+            thermal,
+            bindings: range_bindings.clone(),
+            module_locals: module_locals.to_vec(),
+            allowed_parameters: None,
+            later_locals: Vec::new(),
+            constant_owner: Some(format!("{}'s range", parameter.name)),
+            probes: false,
+            initial: false,
+        };
+        let mut ranges = Vec::new();
+        for range in &parameter.ranges {
+            let mut bound = |bound: &Option<(Expression, bool)>| -> Result<_, Error> {
+                bound
+                    .as_ref()
+                    .map(|(value, included)| {
+                        let mut resolved = scope.expression(value, parameter.line, sink)?;
+                        if constant(&resolved).is_none()
+                            && let Some(folded) =
+                                fold_real(&resolved, module, &sink.local_parameters).map_err(
+                                    |message| {
+                                        Error::at(
+                                            parameter.line,
+                                            format!("{}'s range {message}", parameter.name),
+                                        )
+                                    },
+                                )?
+                        {
+                            resolved = Expr::Real(folded);
+                        }
+                        Ok((resolved, *included))
+                    })
+                    .transpose()
+            };
+            let (lower, upper) = (bound(&range.lower)?, bound(&range.upper)?);
+            ranges.push((range.exclude, lower, upper));
+        }
+        if !sink.prelude.is_empty() {
+            return Err(Error::at(
+                parameter.line,
+                format!("{}'s range calls a function", parameter.name),
+            ));
+        }
+        let mut name = identifier(&parameter.name);
+        // Two parameters whose names meet in snake case keep apart.
+        if parameters.iter().any(|other| other.name == name) {
+            name = format!("{name}_{index}");
+        }
+        parameters.push(Parameter {
+            name,
+            external: parameter.name.clone(),
+            kind: parameter.kind,
+            optional: constant(&default).is_none() || given.contains(&parameter.name),
+            default,
+            ranges,
+            description: parameter.description.clone(),
+            units: parameter.units.clone(),
+            aliases: module
+                .aliases
+                .iter()
+                .filter(|(_, named)| *named == parameter.name)
+                .map(|(alias, _)| alias.clone())
+                .collect(),
+        });
     }
     Ok(parameters)
 }
@@ -256,7 +589,7 @@ fn rust_names(names: &[String]) -> Vec<String> {
 }
 
 /// `name`, or the first of `name2`, `name3` and on that `taken` says is not taken.
-fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
     let mut unique = name.to_owned();
     let mut count = 1;
     while taken(&unique) {
@@ -264,6 +597,36 @@ fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
         unique = format!("{name}{count}");
     }
     unique
+}
+
+/// A non-constant `localparam`, resolved: evaluated once during preparation in
+/// declaration order so its value and parameter derivatives propagate everywhere it is
+/// read.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalParameter {
+    /// Its name in the kernel's code.
+    pub(crate) name: String,
+    /// Its name in the source.
+    pub(crate) external: String,
+    pub(crate) kind: Type,
+    pub(crate) value: Expr,
+}
+
+/// What a resolved `localparam` evaluates to: either a compile-time constant folded
+/// directly into expressions, or an index into [`Sink::local_parameters`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LocalValue {
+    Real(f64),
+    Integer(i32),
+    Prepared(usize),
+}
+
+/// A lexical binding in a [`Scope`]: either a mutable variable or an immutable
+/// `localparam`.
+#[derive(Debug, Clone, Copy)]
+enum Binding {
+    Variable(usize),
+    LocalParameter(LocalValue),
 }
 
 /// A parameter, resolved.
@@ -324,6 +687,8 @@ pub(crate) struct Module {
     pub(crate) ports: usize,
     pub(crate) branches: Vec<Branch>,
     pub(crate) parameters: Vec<Parameter>,
+    /// Non-constant `localparam`s prepared before range checks and the analog block.
+    pub(crate) local_parameters: Vec<LocalParameter>,
     pub(crate) variables: Vec<(String, Type)>,
     /// The variables that are output variables, by index.
     pub(crate) outputs: Vec<usize>,
@@ -342,6 +707,7 @@ pub(crate) struct Module {
 struct Sink {
     limits: Vec<Limit>,
     branches: Vec<Branch>,
+    local_parameters: Vec<LocalParameter>,
     variables: Vec<(String, Type)>,
     /// The statements the expression being read needs before it: the bodies of the
     /// analog functions it calls, inlined.
@@ -361,6 +727,22 @@ impl Sink {
         self.variables.push((unique, kind));
         self.variables.len() - 1
     }
+
+    /// A new non-constant `localparam` of `kind`, named `name` unless that is taken.
+    fn local_parameter(&mut self, name: &str, kind: Type, value: Expr) -> usize {
+        let unique = apart(&identifier(name), |taken| {
+            self.local_parameters
+                .iter()
+                .any(|existing| existing.name == taken)
+        });
+        self.local_parameters.push(LocalParameter {
+            name: unique,
+            external: name.to_owned(),
+            kind,
+            value,
+        });
+        self.local_parameters.len() - 1
+    }
 }
 
 /// The names a module's expressions may read, in a scope: the module's, a named
@@ -371,9 +753,19 @@ struct Scope<'a> {
     nodes: &'a [String],
     /// Whether each node is thermal rather than electrical.
     thermal: &'a [bool],
-    /// The variables the scope names, each by its index among the sink's, the innermost
-    /// last.
-    names: Vec<(String, usize)>,
+    /// Lexical bindings in scope, the innermost last.
+    bindings: Vec<(String, Binding)>,
+    /// Module-scope `localparam` bindings, available to inlined analog functions.
+    module_locals: Vec<(String, LocalValue)>,
+    /// Parameters visible when resolving a constant declaration (`None` means all module
+    /// parameters are visible).
+    allowed_parameters: Option<BTreeSet<usize>>,
+    /// Later `localparam` names in the current declaration sequence, for forward
+    /// reference diagnostics.
+    later_locals: Vec<String>,
+    /// Owner label when resolving a constant expression (`Some` rejects variables and
+    /// probes).
+    constant_owner: Option<String>,
     /// Whether the scope reads probes, as the analog block does and a function does not.
     probes: bool,
     /// Whether the scope lies under an initial event, whose code runs at an analysis's
@@ -389,59 +781,46 @@ struct Scope<'a> {
 /// compiler does not compile yet.
 pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
     let (nodes, thermal) = nodes_of(module)?;
-    // The module's variables first, in order, each named apart from those before it,
-    // as two whose names meet in snake case are.
-    let mut sink = Sink::default();
-    for (name, kind) in &module.variables {
-        sink.variable(name, *kind);
-    }
-    for (name, plus, minus) in &module.branches {
-        let plus = node_index(&nodes, plus, 0)?;
-        let minus = if minus.is_empty() {
-            GROUND
-        } else {
-            node_index(&nodes, minus, 0)?
-        };
-        sink.branches.push(Branch {
-            name: name.clone(),
-            plus,
-            minus,
-        });
-    }
-    let mut functions = Vec::new();
+    check_duplicates(module)?;
+    check_aliases(module)?;
+    let mut sink = initialize_sink(module, &nodes)?;
+    let (parameters, module_locals) = resolve_declarations(module, (&nodes, &thermal), &mut sink)?;
+    let mut functions = Vec::with_capacity(module.functions.len());
     for function in &module.functions {
-        functions.push(resolve_function(module, (&nodes, &thermal), function)?);
+        functions.push(resolve_function(
+            module,
+            (&nodes, &thermal),
+            &module_locals,
+            &mut sink.local_parameters,
+            function,
+        )?);
     }
-    for (alias, parameter) in &module.aliases {
-        if !module
-            .parameters
+    let mut bindings: Vec<(String, Binding)> = module_locals
+        .iter()
+        .map(|(name, value)| (name.clone(), Binding::LocalParameter(*value)))
+        .collect();
+    bindings.extend(
+        module
+            .variables
             .iter()
-            .any(|declared| declared.name == *parameter)
-        {
-            return Err(Error::at(
-                0,
-                format!("the alias {alias} names no parameter, {parameter}"),
-            ));
-        }
-    }
-    let parameters = resolve_parameters(module, (&nodes, &thermal))?;
+            .enumerate()
+            .map(|(index, (name, _))| (name.clone(), Binding::Variable(index))),
+    );
     let scope = Scope {
         module,
         nodes: &nodes,
         thermal: &thermal,
-        names: module
-            .variables
-            .iter()
-            .enumerate()
-            .map(|(index, (name, _))| (name.clone(), index))
-            .collect(),
+        bindings,
+        module_locals,
+        allowed_parameters: None,
+        later_locals: Vec::new(),
+        constant_owner: None,
         probes: true,
         initial: false,
     };
     let mut analog = scope.statements(&module.analog, &mut sink)?;
     number(&mut analog, &mut 0);
     let (versions, origins) = version(&mut analog, &mut sink.variables);
-    // An output variable is its last version, the value it ends the evaluation with.
     let outputs = module
         .outputs
         .iter()
@@ -454,8 +833,8 @@ pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
         labels: nodes.clone(),
         natures: thermal
             .iter()
-            .map(|&thermal| {
-                if thermal {
+            .map(|&is_thermal| {
+                if is_thermal {
                     Nature::Temperature
                 } else {
                     Nature::Voltage
@@ -464,6 +843,7 @@ pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
             .collect(),
         branches: named_apart(sink.branches),
         parameters,
+        local_parameters: sink.local_parameters,
         variables: sink.variables,
         outputs,
         functions,
@@ -473,17 +853,47 @@ pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
         probes: Vec::new(),
     };
     analyse(&mut resolved);
-    // A probe of the current of a branch that carries a flow reads what is contributed
-    // to it, which the analysis decides the shapes of; then everything again.
     if flow_currents(&mut resolved)? {
         analyse(&mut resolved);
     }
-    // Code under an initial event runs at an analysis's first step only, and so is
-    // compiled as the preparation's, which it is when it depends on no probe: it reads
-    // only the parameters, the temperature, and what initial code assigned before; and
-    // no other code makes what it assigns depend on one, which it would then read.
-    let initial = (0..resolved.variables.len())
-        .find(|&variable| resolved.dynamic[variable] && sink.initial.contains(&origins[variable]));
+    check_reactive_factors(&resolved)?;
+    check_initial_variables(&resolved, &sink.initial, &origins)?;
+    let analog = std::mem::take(&mut resolved.analog);
+    resolved.analog = dynamic_warnings(&resolved, analog, false);
+    Ok(resolved)
+}
+
+/// Creates a [`Sink`] pre-populated with `module`'s declared variables and named branches.
+fn initialize_sink(module: &ast::Module, nodes: &[String]) -> Result<Sink, Error> {
+    let mut sink = Sink::default();
+    for (name, kind) in &module.variables {
+        sink.variable(name, *kind);
+    }
+    for (name, plus, minus) in &module.branches {
+        let plus = node_index(nodes, plus, 0)?;
+        let minus = if minus.is_empty() {
+            GROUND
+        } else {
+            node_index(nodes, minus, 0)?
+        };
+        sink.branches.push(Branch {
+            name: name.clone(),
+            plus,
+            minus,
+        });
+    }
+    Ok(sink)
+}
+
+/// Checks that no variable assigned under an initial event depends on the probes.
+fn check_initial_variables(
+    resolved: &Module,
+    initial_variables: &BTreeSet<usize>,
+    origins: &[usize],
+) -> Result<(), Error> {
+    let initial = (0..resolved.variables.len()).find(|&variable| {
+        resolved.dynamic[variable] && initial_variables.contains(&origins[variable])
+    });
     if let Some(variable) = initial {
         return Err(Error::at(
             0,
@@ -493,9 +903,37 @@ pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
             ),
         ));
     }
-    let analog = std::mem::take(&mut resolved.analog);
-    resolved.analog = dynamic_warnings(&resolved, analog, false);
-    Ok(resolved)
+    Ok(())
+}
+
+/// Checks that every expression factored from outside `ddt(...)` (`k * ddt(x)` folded
+/// into `ddt(k * x)`) is static, so every reactive contribution conserves charge or flux.
+fn check_reactive_factors(module: &Module) -> Result<(), Error> {
+    let mut failure = None;
+    visit_contributions(&module.analog, &mut |statement| {
+        if failure.is_some() {
+            return;
+        }
+        if let Stmt::Contribute {
+            reactive_factors, ..
+        } = statement
+        {
+            for (factor, line) in reactive_factors {
+                if module.is_dynamic(factor) {
+                    failure = Some(Error::at(
+                        *line,
+                        "ddt scaled by a dynamic expression is not charge-conserving and is not compiled yet"
+                            .into(),
+                    ));
+                    return;
+                }
+            }
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// `statements` with each warning marked dynamic that depends on the probes, through
@@ -731,16 +1169,9 @@ pub(crate) fn probed_currents(module: &Module) -> BTreeSet<usize> {
     read
 }
 
-/// Gives each branch whose current is probed and whose flow carries noise its current as
-/// an unknown, so that what reads the current reads its noise too, as PSP's drain does
-/// its induced gate noise's: a node of the branch's name, of a current's nature, whose
-/// equation is its value less the branch's flow, the noise entering it, and through which
-/// the branch's flow then passes. Returns whether it gave any.
-///
-/// The noise enters the equation as the branch's flow does, with the opposite sign, which
-/// changes no response's power or correlation: a noise source and its negative are the
-/// same random process.
-fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
+/// Finds each noisy branch whose current is probed, verifying none holds a potential,
+/// and creates a current-unknown node and auxiliary equation branch for each.
+fn collect_noisy_branches(module: &mut Module) -> Result<BTreeMap<usize, (usize, usize)>, Error> {
     let mut noisy = BTreeSet::new();
     visit_contributions(&module.analog, &mut |statement| {
         if let Stmt::Contribute {
@@ -788,6 +1219,20 @@ fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
         });
         rewritten.insert(branch, (node, module.branches.len() - 1));
     }
+    Ok(rewritten)
+}
+
+/// Gives each branch whose current is probed and whose flow carries noise its current as
+/// an unknown, so that what reads the current reads its noise too, as PSP's drain does
+/// its induced gate noise's: a node of the branch's name, of a current's nature, whose
+/// equation is its value less the branch's flow, the noise entering it, and through which
+/// the branch's flow then passes. Returns whether it gave any.
+///
+/// The noise enters the equation as the branch's flow does, with the opposite sign, which
+/// changes no response's power or correlation: a noise source and its negative are the
+/// same random process.
+fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
+    let rewritten = collect_noisy_branches(module)?;
     if rewritten.is_empty() {
         return Ok(false);
     }
@@ -833,6 +1278,7 @@ fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
                 potential: false,
                 resistive: Some(current.clone()),
                 reactive: None,
+                reactive_factors: Vec::new(),
                 noise: Vec::new(),
             });
         }
@@ -958,69 +1404,296 @@ fn nodes_of(module: &ast::Module) -> Result<(Vec<String>, Vec<bool>), Error> {
     Ok((nodes, thermal))
 }
 
-/// The parameter `parameter`, at `index` among the module's, resolved: its default read,
-/// optional when `given` names it or its default reads another, and its ranges made
-/// constant.
-fn resolve_parameter(
-    module: &ast::Module,
-    (nodes, thermal): (&[String], &[bool]),
-    (index, parameter): (usize, &ast::Parameter),
-    given: &BTreeSet<String>,
-) -> Result<Parameter, Error> {
-    let scope = Scope {
-        module,
-        nodes,
-        thermal,
-        names: Vec::new(),
-        probes: false,
-        initial: false,
-    };
-    let line = parameter.line;
-    let mut sink = Sink::default();
-    let default = scope.expression(&parameter.default, line, &mut sink)?;
-    let reads_others = mentions_parameter(&default);
-    if let Some(later) = first_parameter(&default).filter(|&read| read >= index) {
+/// Resolves one `localparam` declaration: checks type compatibility, constant-folds
+/// compile-time values into `LocalValue::Real` or `LocalValue::Integer`, and records
+/// parameter- or temperature-dependent ones in `sink.local_parameters`.
+fn resolve_local_parameter(
+    scope: &Scope<'_>,
+    local: &ast::LocalParameter,
+    sink: &mut Sink,
+) -> Result<LocalValue, Error> {
+    let value = scope.expression(&local.value, local.line, sink)?;
+    if !sink.prelude.is_empty() {
         return Err(Error::at(
-            line,
+            local.line,
             format!(
-                "{}'s default reads {}, which is not declared before it",
-                parameter.name, module.parameters[later].name
+                "{} calls an analog function, which is not compiled yet",
+                local.name
             ),
         ));
     }
-    let mut ranges = Vec::new();
-    for range in &parameter.ranges {
-        let mut bound = |bound: &Option<(Expression, bool)>| -> Result<_, Error> {
-            bound
-                .as_ref()
-                .map(|(value, included)| Ok((scope.expression(value, line, &mut sink)?, *included)))
-                .transpose()
-        };
-        let (lower, upper) = (bound(&range.lower)?, bound(&range.upper)?);
-        ranges.push((range.exclude, lower, upper));
+    let inferred = expr_type(&value, scope.module, &sink.local_parameters);
+    let kind = match local.kind {
+        Some(Type::Integer) => {
+            if inferred == Type::Real {
+                return Err(Error::at(
+                    local.line,
+                    format!(
+                        "the integer localparam {} has a real initializer",
+                        local.name
+                    ),
+                ));
+            }
+            Type::Integer
+        }
+        Some(Type::Real) => Type::Real,
+        None => inferred,
+    };
+    if kind == Type::Integer {
+        match fold_integer(&value, scope.module, &sink.local_parameters) {
+            Ok(Some(folded)) => Ok(LocalValue::Integer(folded)),
+            Ok(None) => Ok(LocalValue::Prepared(sink.local_parameter(
+                &local.name,
+                Type::Integer,
+                value,
+            ))),
+            Err(message) => Err(Error::at(
+                local.line,
+                format!("the integer localparam {} {message}", local.name),
+            )),
+        }
+    } else {
+        match fold_real(&value, scope.module, &sink.local_parameters) {
+            Ok(Some(folded)) => Ok(LocalValue::Real(folded)),
+            Ok(None) => Ok(LocalValue::Prepared(sink.local_parameter(
+                &local.name,
+                Type::Real,
+                value,
+            ))),
+            Err(message) => Err(Error::at(
+                local.line,
+                format!("the localparam {} {message}", local.name),
+            )),
+        }
     }
-    if !sink.prelude.is_empty() {
-        return Err(Error::at(
-            line,
-            format!("{}'s default calls a function", parameter.name),
-        ));
+}
+
+/// The Verilog-A numeric type of `expr` (boolean expressions count as `Type::Integer`).
+fn expr_type(expr: &Expr, module: &ast::Module, local_parameters: &[LocalParameter]) -> Type {
+    match expr {
+        Expr::Integer(_)
+        | Expr::Given(_)
+        | Expr::Shape(_)
+        | Expr::Unary("!", _)
+        | Expr::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => Type::Integer,
+        Expr::Real(_)
+        | Expr::Variable(_)
+        | Expr::Temperature
+        | Expr::Gmin
+        | Expr::SmallResistance
+        | Expr::Probe(_)
+        | Expr::Ddx(..)
+        | Expr::Call(..) => Type::Real,
+        Expr::Parameter(index) => module
+            .parameters
+            .get(*index)
+            .map_or(Type::Real, |parameter| parameter.kind),
+        Expr::LocalParameter(index) => local_parameters
+            .get(*index)
+            .map_or(Type::Real, |local| local.kind),
+        Expr::Unary(_, operand) => expr_type(operand, module, local_parameters),
+        Expr::Binary(_, left, right) | Expr::Conditional(_, left, right) => {
+            if expr_type(left, module, local_parameters) == Type::Real
+                || expr_type(right, module, local_parameters) == Type::Real
+            {
+                Type::Real
+            } else {
+                Type::Integer
+            }
+        }
     }
-    Ok(Parameter {
-        name: identifier(&parameter.name),
-        external: parameter.name.clone(),
-        kind: parameter.kind,
-        optional: reads_others || given.contains(&parameter.name),
-        default,
-        ranges,
-        description: parameter.description.clone(),
-        units: parameter.units.clone(),
-        aliases: module
-            .aliases
-            .iter()
-            .filter(|(_, named)| *named == parameter.name)
-            .map(|(alias, _)| alias.clone())
-            .collect(),
+}
+
+/// Evaluates a built-in function on constant `f64` arguments.
+fn eval_builtin(builtin: Builtin, arguments: &[f64]) -> Option<f64> {
+    Some(match (builtin, arguments) {
+        (Builtin::Exp, &[x]) => x.exp(),
+        (Builtin::Expm1, &[x]) => x.exp_m1(),
+        (Builtin::Ln, &[x]) => x.ln(),
+        (Builtin::Ln1p, &[x]) => x.ln_1p(),
+        (Builtin::Log, &[x]) => x.log10(),
+        (Builtin::Sqrt, &[x]) => x.sqrt(),
+        (Builtin::Pow, &[base, exponent]) => base.powf(exponent),
+        (Builtin::Abs, &[x]) => x.abs(),
+        (Builtin::Min, &[first, second]) => first.min(second),
+        (Builtin::Max, &[first, second]) => first.max(second),
+        (Builtin::Sin, &[x]) => x.sin(),
+        (Builtin::Cos, &[x]) => x.cos(),
+        (Builtin::Tan, &[x]) => x.tan(),
+        (Builtin::Sinh, &[x]) => x.sinh(),
+        (Builtin::Cosh, &[x]) => x.cosh(),
+        (Builtin::Tanh, &[x]) => x.tanh(),
+        (Builtin::Asin, &[x]) => x.asin(),
+        (Builtin::Acos, &[x]) => x.acos(),
+        (Builtin::Atan, &[x]) => x.atan(),
+        (Builtin::Floor, &[x]) => x.floor(),
+        (Builtin::Ceil, &[x]) => x.ceil(),
+        _ => return None,
     })
+}
+
+/// Checks that `value` is finite, returning an error phrase otherwise.
+fn finite(value: f64) -> Result<Option<f64>, String> {
+    if value.is_finite() {
+        Ok(Some(value))
+    } else {
+        Err("evaluates to a non-finite value".to_owned())
+    }
+}
+
+/// Evaluates `expr` as a compile-time truth value (`Ok(None)` when non-constant).
+fn fold_truth(
+    expr: &Expr,
+    module: &ast::Module,
+    local_parameters: &[LocalParameter],
+) -> Result<Option<bool>, String> {
+    match expr {
+        Expr::Integer(value) => Ok(Some(*value != 0)),
+        Expr::Real(value) => Ok(Some(*value != 0.0)),
+        Expr::Unary("!", operand) => {
+            Ok(fold_truth(operand, module, local_parameters)?.map(|truth| !truth))
+        }
+        Expr::Binary("&&", left, right) => match fold_truth(left, module, local_parameters)? {
+            Some(false) => Ok(Some(false)),
+            Some(true) => fold_truth(right, module, local_parameters),
+            None => Ok(None),
+        },
+        Expr::Binary("||", left, right) => match fold_truth(left, module, local_parameters)? {
+            Some(true) => Ok(Some(true)),
+            Some(false) => fold_truth(right, module, local_parameters),
+            None => Ok(None),
+        },
+        Expr::Binary(operator @ ("<" | "<=" | ">" | ">=" | "==" | "!="), left, right) => {
+            let (Some(left), Some(right)) = (
+                fold_real(left, module, local_parameters)?,
+                fold_real(right, module, local_parameters)?,
+            ) else {
+                return Ok(None);
+            };
+            let order = left.partial_cmp(&right);
+            Ok(Some(match *operator {
+                "==" => order == Some(Ordering::Equal),
+                "!=" => order != Some(Ordering::Equal),
+                "<" => order == Some(Ordering::Less),
+                "<=" => matches!(order, Some(Ordering::Less | Ordering::Equal)),
+                ">" => order == Some(Ordering::Greater),
+                _ => matches!(order, Some(Ordering::Greater | Ordering::Equal)),
+            }))
+        }
+        _ => Ok(fold_real(expr, module, local_parameters)?.map(|value| value != 0.0)),
+    }
+}
+
+/// Evaluates `expr` as a compile-time integer constant (`Ok(None)` when non-constant).
+fn fold_integer(
+    expr: &Expr,
+    module: &ast::Module,
+    local_parameters: &[LocalParameter],
+) -> Result<Option<i32>, String> {
+    match expr {
+        Expr::Integer(value) => Ok(Some(*value)),
+        Expr::Unary("-", operand) => {
+            let Some(value) = fold_integer(operand, module, local_parameters)? else {
+                return Ok(None);
+            };
+            value
+                .checked_neg()
+                .map(Some)
+                .ok_or_else(|| "overflows an integer".to_owned())
+        }
+        Expr::Unary("!", operand) => {
+            Ok(fold_truth(operand, module, local_parameters)?.map(|truth| i32::from(!truth)))
+        }
+        Expr::Binary("&&" | "||" | "<" | "<=" | ">" | ">=" | "==" | "!=", ..) => {
+            Ok(fold_truth(expr, module, local_parameters)?.map(i32::from))
+        }
+        Expr::Binary(operator @ ("+" | "-" | "*" | "/"), left, right) => {
+            let (Some(left), Some(right)) = (
+                fold_integer(left, module, local_parameters)?,
+                fold_integer(right, module, local_parameters)?,
+            ) else {
+                return Ok(None);
+            };
+            if *operator == "/" && right == 0 {
+                return Err("divides by zero".to_owned());
+            }
+            let value = match *operator {
+                "+" => left.checked_add(right),
+                "-" => left.checked_sub(right),
+                "*" => left.checked_mul(right),
+                _ => left.checked_div(right),
+            };
+            value
+                .map(Some)
+                .ok_or_else(|| "overflows an integer".to_owned())
+        }
+        Expr::Conditional(condition, then, otherwise) => {
+            match fold_truth(condition, module, local_parameters)? {
+                Some(true) => fold_integer(then, module, local_parameters),
+                Some(false) => fold_integer(otherwise, module, local_parameters),
+                None => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Evaluates `expr` as a compile-time real constant (`Ok(None)` when non-constant).
+fn fold_real(
+    expr: &Expr,
+    module: &ast::Module,
+    local_parameters: &[LocalParameter],
+) -> Result<Option<f64>, String> {
+    match expr {
+        Expr::Real(value) => finite(*value),
+        Expr::Integer(value) => Ok(Some(f64::from(*value))),
+        Expr::Unary("-", operand) => {
+            let Some(value) = fold_real(operand, module, local_parameters)? else {
+                return Ok(None);
+            };
+            finite(-value)
+        }
+        Expr::Unary("!", _)
+        | Expr::Binary("&&" | "||" | "<" | "<=" | ">" | ">=" | "==" | "!=", ..) => {
+            Ok(fold_truth(expr, module, local_parameters)?.map(|truth| f64::from(u8::from(truth))))
+        }
+        Expr::Binary(operator @ ("+" | "-" | "*" | "/"), left, right) => {
+            if *operator == "/"
+                && expr_type(left, module, local_parameters) == Type::Integer
+                && expr_type(right, module, local_parameters) == Type::Integer
+            {
+                return Ok(fold_integer(expr, module, local_parameters)?.map(f64::from));
+            }
+            let (Some(left), Some(right)) = (
+                fold_real(left, module, local_parameters)?,
+                fold_real(right, module, local_parameters)?,
+            ) else {
+                return Ok(None);
+            };
+            finite(fold(operator, left, right))
+        }
+        Expr::Conditional(condition, then, otherwise) => {
+            match fold_truth(condition, module, local_parameters)? {
+                Some(true) => fold_real(then, module, local_parameters),
+                Some(false) => fold_real(otherwise, module, local_parameters),
+                None => Ok(None),
+            }
+        }
+        Expr::Call(builtin, arguments) => {
+            let mut evaluated = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                let Some(value) = fold_real(argument, module, local_parameters)? else {
+                    return Ok(None);
+                };
+                evaluated.push(value);
+            }
+            let Some(value) = eval_builtin(*builtin, &evaluated) else {
+                return Ok(None);
+            };
+            finite(value)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The index of the node `name` among `nodes`.
@@ -1056,26 +1729,43 @@ fn function_variables(function: &ast::Function) -> Vec<(String, Type)> {
 fn resolve_function(
     module: &ast::Module,
     (nodes, thermal): (&[String], &[bool]),
+    module_locals: &[(String, LocalValue)],
+    local_parameters: &mut Vec<LocalParameter>,
     function: &ast::Function,
 ) -> Result<Function, Error> {
+    check_function_duplicates(function)?;
     let variables = function_variables(function);
-    let scope = Scope {
+    let mut bindings: Vec<(String, Binding)> = module_locals
+        .iter()
+        .map(|(name, value)| (name.clone(), Binding::LocalParameter(*value)))
+        .collect();
+    bindings.extend(
+        variables
+            .iter()
+            .enumerate()
+            .map(|(index, (name, _))| (name.clone(), Binding::Variable(index))),
+    );
+    let mut sink = Sink {
+        variables,
+        local_parameters: std::mem::take(local_parameters),
+        ..Sink::default()
+    };
+    let mut scope = Scope {
         module,
         nodes,
         thermal,
-        names: variables
-            .iter()
-            .enumerate()
-            .map(|(index, (name, _))| (name.clone(), index))
-            .collect(),
+        bindings,
+        module_locals: module_locals.to_vec(),
+        allowed_parameters: None,
+        later_locals: Vec::new(),
+        constant_owner: None,
         probes: false,
         initial: false,
     };
-    let mut sink = Sink {
-        variables,
-        ..Sink::default()
-    };
-    let body = scope.statements(&function.body, &mut sink)?;
+    let resolved = resolve_scoped_locals(&mut scope, &function.local_parameters, &mut sink)
+        .and_then(|()| scope.statements(&function.body, &mut sink));
+    *local_parameters = sink.local_parameters;
+    let body = resolved?;
     Ok(Function {
         name: function.name.clone(),
         inputs: function.inputs.len(),
@@ -1084,8 +1774,35 @@ fn resolve_function(
     })
 }
 
-/// The names of the parameters `$param_given` reads in `statement`.
-fn given_parameters(statement: &ast::Statement) -> BTreeSet<String> {
+/// Resolves a sequence of `localparam` declarations inside a named block or analog
+/// function, appending each binding into `scope`.
+fn resolve_scoped_locals(
+    scope: &mut Scope<'_>,
+    local_parameters: &[ast::LocalParameter],
+    sink: &mut Sink,
+) -> Result<(), Error> {
+    for (position, local) in local_parameters.iter().enumerate() {
+        let later_locals = local_parameters[position..]
+            .iter()
+            .map(|later| later.name.clone())
+            .collect();
+        let constant_scope = Scope {
+            later_locals,
+            constant_owner: Some(local.name.clone()),
+            probes: false,
+            initial: false,
+            ..scope.clone()
+        };
+        let value = resolve_local_parameter(&constant_scope, local, sink)?;
+        scope
+            .bindings
+            .push((local.name.clone(), Binding::LocalParameter(value)));
+    }
+    Ok(())
+}
+
+/// The names of the parameters `$param_given` reads across `module`.
+fn given_parameters(module: &ast::Module) -> BTreeSet<String> {
     let mut given = BTreeSet::new();
     let mut visit = |expression: &Expression| {
         expression.walk(&mut |inner| {
@@ -1097,7 +1814,27 @@ fn given_parameters(statement: &ast::Statement) -> BTreeSet<String> {
             }
         });
     };
-    statement.walk(&mut visit);
+    module.analog.walk(&mut visit);
+    for local in &module.local_parameters {
+        visit(&local.value);
+    }
+    for function in &module.functions {
+        for local in &function.local_parameters {
+            visit(&local.value);
+        }
+        function.body.walk(&mut visit);
+    }
+    for parameter in &module.parameters {
+        visit(&parameter.default);
+        for range in &parameter.ranges {
+            if let Some((lower, _)) = &range.lower {
+                visit(lower);
+            }
+            if let Some((upper, _)) = &range.upper {
+                visit(upper);
+            }
+        }
+    }
     given
 }
 
@@ -1105,7 +1842,19 @@ impl ast::Statement {
     /// Calls `visit` on each expression of the statement and of those within it.
     fn walk(&self, visit: &mut impl FnMut(&Expression)) {
         match self {
-            Self::Block(statements) | Self::Named { statements, .. } => {
+            Self::Block(statements) => {
+                for inner in statements {
+                    inner.walk(visit);
+                }
+            }
+            Self::Named {
+                local_parameters,
+                statements,
+                ..
+            } => {
+                for local in local_parameters {
+                    visit(&local.value);
+                }
                 for inner in statements {
                     inner.walk(visit);
                 }
@@ -1172,6 +1921,7 @@ impl Expr {
             Self::Real(_)
             | Self::Integer(_)
             | Self::Parameter(_)
+            | Self::LocalParameter(_)
             | Self::Given(_)
             | Self::Variable(_)
             | Self::Temperature
@@ -1211,11 +1961,15 @@ impl Stmt {
             Self::Contribute {
                 resistive,
                 reactive,
+                reactive_factors,
                 noise,
                 ..
             } => {
                 for expr in resistive.iter_mut().chain(reactive.iter_mut()) {
                     visit(expr);
+                }
+                for (factor, _) in reactive_factors {
+                    visit(factor);
                 }
                 for noise in noise {
                     visit(&mut noise.power);
@@ -1281,22 +2035,6 @@ impl Stmt {
     }
 }
 
-/// Whether `expr` reads a parameter.
-fn mentions_parameter(expr: &Expr) -> bool {
-    first_parameter(expr).is_some()
-}
-
-/// The last-declared parameter `expr` reads, if any.
-fn first_parameter(expr: &Expr) -> Option<usize> {
-    let mut found = None;
-    expr.walk(&mut |inner| {
-        if let Expr::Parameter(index) | Expr::Given(index) = inner {
-            found = Some(found.map_or(*index, |other: usize| other.max(*index)));
-        }
-    });
-    found
-}
-
 /// `left operator right`, of two constants, as Rust computes it at run time.
 pub(crate) fn fold(operator: &str, left: f64, right: f64) -> f64 {
     match operator {
@@ -1341,15 +2079,20 @@ impl Scope<'_> {
                 resolved
             }
             ast::Statement::Named {
+                local_parameters,
                 variables,
                 statements,
                 ..
             } => {
+                check_block_duplicates(local_parameters, variables)?;
                 let mut inner = self.clone();
                 for (variable, kind) in variables {
                     let index = sink.variable(variable, *kind);
-                    inner.names.push((variable.clone(), index));
+                    inner
+                        .bindings
+                        .push((variable.clone(), Binding::Variable(index)));
                 }
+                resolve_scoped_locals(&mut inner, local_parameters, sink)?;
                 let mut resolved = Vec::new();
                 for statement in statements {
                     resolved.extend(inner.statements(statement, sink)?);
@@ -1456,12 +2199,20 @@ impl Scope<'_> {
     }
 
     fn variable(&self, name: &str, line: usize) -> Result<usize, Error> {
-        self.names
+        match self
+            .bindings
             .iter()
             .rev()
-            .find(|(variable, _)| variable == name)
-            .map(|&(_, index)| index)
-            .ok_or_else(|| Error::at(line, format!("{name} is not a variable")))
+            .find(|(bound, _)| bound == name)
+            .map(|(_, binding)| *binding)
+        {
+            Some(Binding::Variable(index)) => Ok(index),
+            Some(Binding::LocalParameter(_)) => Err(Error::at(
+                line,
+                format!("{name} is a localparam, not a variable"),
+            )),
+            None => Err(Error::at(line, format!("{name} is not a variable"))),
+        }
     }
 
     /// The branch an access function reads or contributes to: a named one, or the
@@ -1558,9 +2309,11 @@ impl Scope<'_> {
             }
         };
         let branch = self.branch(nature, operands, line, sink)?;
+        let mut factors = Vec::new();
         let mut terms = Vec::new();
-        split(value, false, &mut terms);
-        let (mut resistive, mut reactive, mut noise) = (None, None, Vec::new());
+        split_contribution(value, false, &mut factors, &mut terms);
+        let (mut resistive, mut reactive, mut reactive_factors, mut noise) =
+            (None, None, Vec::new(), Vec::new());
         let add = |sum: &mut Option<Expr>, negative: bool, term: Expr| {
             *sum = Some(match (sum.take(), negative) {
                 (None, false) => term,
@@ -1569,20 +2322,23 @@ impl Scope<'_> {
                 (Some(sum), true) => Expr::Binary("-", Box::new(sum), Box::new(term)),
             });
         };
-        for (negative, term) in terms {
+        for (negative, term, term_factors) in terms {
             match term {
                 Expression::Call(name, arguments) if name == "ddt" => {
                     let [argument] = arguments.as_slice() else {
                         return Err(Error::at(line, "ddt takes one argument".into()));
                     };
-                    add(
-                        &mut reactive,
-                        negative,
-                        self.expression(argument, line, sink)?,
-                    );
+                    let mut resolved = self.expression(argument, line, sink)?;
+                    for factor in term_factors.iter().rev() {
+                        let scale = self.expression(factor.expression(), line, sink)?;
+                        reactive_factors.push((scale.clone(), line));
+                        resolved = factor.apply(scale, resolved);
+                    }
+                    add(&mut reactive, negative, resolved);
                 }
                 Expression::Call(name, arguments)
-                    if name == "white_noise" || name == "flicker_noise" =>
+                    if term_factors.is_empty()
+                        && (name == "white_noise" || name == "flicker_noise") =>
                 {
                     if negative {
                         return Err(Error::at(
@@ -1592,7 +2348,14 @@ impl Scope<'_> {
                     }
                     noise.push(self.noise(name, arguments, line, sink)?);
                 }
-                term => add(&mut resistive, negative, self.expression(term, line, sink)?),
+                term => {
+                    let mut resolved = self.expression(term, line, sink)?;
+                    for factor in term_factors.iter().rev() {
+                        let scale = self.expression(factor.expression(), line, sink)?;
+                        resolved = factor.apply(scale, resolved);
+                    }
+                    add(&mut resistive, negative, resolved);
+                }
             }
         }
         Ok(Stmt::Contribute {
@@ -1600,6 +2363,7 @@ impl Scope<'_> {
             potential,
             resistive,
             reactive,
+            reactive_factors,
             noise,
         })
     }
@@ -1667,8 +2431,31 @@ impl Scope<'_> {
                 Box::new(recurse(then)?),
                 Box::new(recurse(otherwise)?),
             ),
-            Expression::Name(name) => {
-                if let Ok(variable) = self.variable(name, line) {
+            Expression::Name(name) => return self.resolve_name(name, line, sink),
+            Expression::Call(name, arguments) => return self.call(name, arguments, line, sink),
+        })
+    }
+
+    /// Resolves an identifier `name` against the lexical scope, module parameters, and
+    /// constant-context diagnostics.
+    fn resolve_name(&self, name: &str, line: usize, sink: &Sink) -> Result<Expr, Error> {
+        if let Some(owner) = &self.constant_owner
+            && self.later_locals.iter().any(|later| later == name)
+        {
+            return Err(Error::at(
+                line,
+                format!("{owner} reads {name}, which is not declared before it"),
+            ));
+        }
+        if let Some((_, binding)) = self.bindings.iter().rev().find(|(bound, _)| bound == name) {
+            return match *binding {
+                Binding::Variable(variable) => {
+                    if let Some(owner) = &self.constant_owner {
+                        return Err(Error::at(
+                            line,
+                            format!("{owner} reads the variable {name}, which is not a constant"),
+                        ));
+                    }
                     if self.initial && !sink.initial.contains(&variable) {
                         return Err(Error::at(
                             line,
@@ -1677,20 +2464,45 @@ impl Scope<'_> {
                             ),
                         ));
                     }
-                    Expr::Variable(variable)
-                } else if let Some(parameter) = self
-                    .module
-                    .parameters
-                    .iter()
-                    .position(|parameter| parameter.name == *name)
-                {
-                    Expr::Parameter(parameter)
-                } else {
-                    return Err(Error::at(line, format!("{name} is not declared")));
+                    Ok(Expr::Variable(variable))
                 }
+                Binding::LocalParameter(LocalValue::Real(value)) => Ok(Expr::Real(value)),
+                Binding::LocalParameter(LocalValue::Integer(value)) => Ok(Expr::Integer(value)),
+                Binding::LocalParameter(LocalValue::Prepared(index)) => {
+                    Ok(Expr::LocalParameter(index))
+                }
+            };
+        }
+        if let Some(parameter) = self
+            .module
+            .parameters
+            .iter()
+            .position(|parameter| parameter.name == name)
+        {
+            if let Some(allowed) = &self.allowed_parameters
+                && !allowed.contains(&parameter)
+            {
+                let owner = self.constant_owner.as_deref().unwrap_or("declaration");
+                return Err(Error::at(
+                    line,
+                    format!("{owner} reads {name}, which is not declared before it"),
+                ));
             }
-            Expression::Call(name, arguments) => return self.call(name, arguments, line, sink),
-        })
+            return Ok(Expr::Parameter(parameter));
+        }
+        if let Some(owner) = &self.constant_owner
+            && self
+                .module
+                .variables
+                .iter()
+                .any(|(variable, _)| variable == name)
+        {
+            return Err(Error::at(
+                line,
+                format!("{owner} reads the variable {name}, which is not a constant"),
+            ));
+        }
+        Err(Error::at(line, format!("{name} is not declared")))
     }
 
     /// The probe `nature(arguments)`: a potential or a flow.
@@ -1741,9 +2553,22 @@ impl Scope<'_> {
             .iter()
             .find(|function| function.name == name)
         {
+            if let Some(owner) = &self.constant_owner {
+                return Err(Error::at(
+                    line,
+                    format!("{owner} calls the analog function {name}, which is not compiled yet"),
+                ));
+            }
             return self.inline(function, arguments, line, sink);
         }
         match name {
+            "V" | "I" | "Temp" | "Pwr" | "ddx" | "$limit" if self.constant_owner.is_some() => {
+                let owner = self.constant_owner.as_deref().unwrap_or("declaration");
+                Err(Error::at(
+                    line,
+                    format!("{owner} reads the probes through {name}, which is not a constant"),
+                ))
+            }
             "V" | "I" | "Temp" | "Pwr" | "ddx" | "$limit" if self.initial => Err(Error::at(
                 line,
                 format!(
@@ -1751,27 +2576,7 @@ impl Scope<'_> {
                 ),
             )),
             "V" | "I" | "Temp" | "Pwr" if self.probes => self.access(name, arguments, line, sink),
-            "ddx" if self.probes => {
-                let [operand, Expression::Call(nature, node)] = arguments else {
-                    return Err(Error::at(
-                        line,
-                        "ddx takes a value and a node's potential".into(),
-                    ));
-                };
-                let (true, [Expression::Name(node)]) =
-                    (matches!(nature.as_str(), "V" | "Temp"), node.as_slice())
-                else {
-                    return Err(Error::at(
-                        line,
-                        "ddx differentiates by one node's potential".into(),
-                    ));
-                };
-                let operand = self.expression(operand, line, sink)?;
-                Ok(Expr::Ddx(
-                    Box::new(operand),
-                    node_index(self.nodes, node, line)?,
-                ))
-            }
+            "ddx" if self.probes => self.resolve_ddx(arguments, line, sink),
             "$temperature" if arguments.is_empty() => Ok(Expr::Temperature),
             // jolty's circuits place each instance once: none has a multiplicity but 1.
             "$mfactor" if arguments.is_empty() => Ok(Expr::Real(1.0)),
@@ -1796,32 +2601,91 @@ impl Scope<'_> {
                     Box::new(Expr::Real(ELEMENTARY_CHARGE)),
                 ))
             }
-            "$param_given" => match arguments {
-                [Expression::Name(parameter)] => self
+            "$param_given" => self.resolve_param_given(arguments, line),
+            "$simparam" => self.resolve_simparam(arguments, line, sink),
+            "$limit" if self.probes => self.limit(arguments, line, sink),
+            _ => Err(Error::at(line, format!("{name} is not compiled yet"))),
+        }
+    }
+
+    fn resolve_ddx(
+        &self,
+        arguments: &[Expression],
+        line: usize,
+        sink: &mut Sink,
+    ) -> Result<Expr, Error> {
+        let [operand, Expression::Call(nature, node)] = arguments else {
+            return Err(Error::at(
+                line,
+                "ddx takes a value and a node's potential".into(),
+            ));
+        };
+        let (true, [Expression::Name(node)]) =
+            (matches!(nature.as_str(), "V" | "Temp"), node.as_slice())
+        else {
+            return Err(Error::at(
+                line,
+                "ddx differentiates by one node's potential".into(),
+            ));
+        };
+        let operand = self.expression(operand, line, sink)?;
+        Ok(Expr::Ddx(
+            Box::new(operand),
+            node_index(self.nodes, node, line)?,
+        ))
+    }
+
+    fn resolve_param_given(&self, arguments: &[Expression], line: usize) -> Result<Expr, Error> {
+        match arguments {
+            [Expression::Name(parameter)] => {
+                let index = self
                     .module
                     .parameters
                     .iter()
                     .position(|declared| declared.name == *parameter)
-                    .map(Expr::Given)
-                    .ok_or_else(|| Error::at(line, format!("{parameter} is not a parameter"))),
-                _ => Err(Error::at(line, "$param_given takes one parameter".into())),
-            },
-            "$simparam" => match arguments {
-                [Expression::Text(simparam), ..] if simparam == "gmin" => Ok(Expr::Gmin),
-                [Expression::Text(simparam), ..] if simparam == "small_resistance" => {
-                    Ok(Expr::SmallResistance)
+                    .ok_or_else(|| Error::at(line, format!("{parameter} is not a parameter")))?;
+                if let Some(allowed) = &self.allowed_parameters
+                    && !allowed.contains(&index)
+                {
+                    let owner = self.constant_owner.as_deref().unwrap_or("declaration");
+                    return Err(Error::at(
+                        line,
+                        format!("{owner} reads {parameter}, which is not declared before it"),
+                    ));
                 }
-                // A name the simulator does not define reads as the default given, as the
-                // standard has it; jolty defines no other.
-                [Expression::Text(_), default] => self.expression(default, line, sink),
-                [Expression::Text(simparam)] => Err(Error::at(
-                    line,
-                    format!("jolty defines no $simparam {simparam:?}"),
-                )),
-                _ => Err(Error::at(line, "$simparam takes a name".into())),
-            },
-            "$limit" if self.probes => self.limit(arguments, line, sink),
-            _ => Err(Error::at(line, format!("{name} is not compiled yet"))),
+                Ok(Expr::Given(index))
+            }
+            _ => Err(Error::at(line, "$param_given takes one parameter".into())),
+        }
+    }
+
+    fn resolve_simparam(
+        &self,
+        arguments: &[Expression],
+        line: usize,
+        sink: &mut Sink,
+    ) -> Result<Expr, Error> {
+        match arguments {
+            [Expression::Text(simparam), ..] if simparam == "gmin" => {
+                if let Some(owner) = &self.constant_owner {
+                    return Err(Error::at(
+                        line,
+                        format!("{owner} reads $simparam(\"gmin\"), which is not a constant"),
+                    ));
+                }
+                Ok(Expr::Gmin)
+            }
+            [Expression::Text(simparam), ..] if simparam == "small_resistance" => {
+                Ok(Expr::SmallResistance)
+            }
+            // A name the simulator does not define reads as the default given, as the
+            // standard has it; jolty defines no other.
+            [Expression::Text(_), default] => self.expression(default, line, sink),
+            [Expression::Text(simparam)] => Err(Error::at(
+                line,
+                format!("jolty defines no $simparam {simparam:?}"),
+            )),
+            _ => Err(Error::at(line, "$simparam takes a name".into())),
         }
     }
 
@@ -1900,21 +2764,35 @@ impl Scope<'_> {
                 ),
             ));
         }
+        check_function_duplicates(function)?;
         sink.calls += 1;
         let call = sink.calls;
+        let module_bindings: Vec<(String, Binding)> = self
+            .module_locals
+            .iter()
+            .map(|(name, value)| (name.clone(), Binding::LocalParameter(*value)))
+            .collect();
         let mut scope = Scope {
-            names: Vec::new(),
+            bindings: module_bindings,
+            allowed_parameters: None,
+            later_locals: Vec::new(),
+            constant_owner: None,
             probes: false,
             initial: false,
             ..self.clone()
         };
-        for (variable, kind) in function_variables(function) {
+        let mut input_indices = Vec::with_capacity(function.inputs.len());
+        for (position, (variable, kind)) in function_variables(function).into_iter().enumerate() {
             let index = sink.variable(&format!("{}{call}_{variable}", function.name), kind);
-            scope.names.push((variable, index));
+            if position < function.inputs.len() {
+                input_indices.push(index);
+            }
+            scope.bindings.push((variable, Binding::Variable(index)));
         }
+        resolve_scoped_locals(&mut scope, &function.local_parameters, sink)?;
         let mut inputs = Vec::new();
-        for (argument, (_, index)) in arguments.iter().zip(&scope.names) {
-            inputs.push(Stmt::Assign(*index, self.expression(argument, line, sink)?));
+        for (argument, index) in arguments.iter().zip(input_indices) {
+            inputs.push(Stmt::Assign(index, self.expression(argument, line, sink)?));
         }
         let outer = std::mem::take(&mut sink.prelude);
         let body = scope.statements(&function.body, sink)?;
@@ -1926,21 +2804,83 @@ impl Scope<'_> {
     }
 }
 
-/// The terms of `expression`, a sum, each with whether it is subtracted.
-fn split<'a>(expression: &'a Expression, negative: bool, terms: &mut Vec<(bool, &'a Expression)>) {
+/// One multiplicative or divisive factor wrapped around a contribution term.
+#[derive(Clone, Copy)]
+enum Factor<'a> {
+    LeftMul(&'a Expression),
+    RightMul(&'a Expression),
+    RightDiv(&'a Expression),
+}
+
+impl<'a> Factor<'a> {
+    const fn expression(self) -> &'a Expression {
+        match self {
+            Self::LeftMul(expression) | Self::RightMul(expression) | Self::RightDiv(expression) => {
+                expression
+            }
+        }
+    }
+
+    fn apply(self, scale: Expr, inner: Expr) -> Expr {
+        match self {
+            Self::LeftMul(_) => Expr::Binary("*", Box::new(scale), Box::new(inner)),
+            Self::RightMul(_) => Expr::Binary("*", Box::new(inner), Box::new(scale)),
+            Self::RightDiv(_) => Expr::Binary("/", Box::new(inner), Box::new(scale)),
+        }
+    }
+}
+
+/// Whether `expression` holds a `ddt(...)` call anywhere within it.
+fn contains_ddt(expression: &Expression) -> bool {
+    let mut found = false;
+    expression.walk(&mut |inner| {
+        if let Expression::Call(name, _) = inner
+            && name == "ddt"
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Splits `expression` into additive terms, each with whether it is subtracted and any
+/// multiplicative/divisive factors wrapped around a `ddt(...)` subexpression.
+fn split_contribution<'a>(
+    expression: &'a Expression,
+    negative: bool,
+    factors: &mut Vec<Factor<'a>>,
+    terms: &mut Vec<(bool, &'a Expression, Vec<Factor<'a>>)>,
+) {
     match expression {
         Expression::Binary("+", left, right) => {
-            split(left, negative, terms);
-            split(right, negative, terms);
+            split_contribution(left, negative, factors, terms);
+            split_contribution(right, negative, factors, terms);
         }
         Expression::Binary("-", left, right) => {
-            split(left, negative, terms);
-            split(right, !negative, terms);
+            split_contribution(left, negative, factors, terms);
+            split_contribution(right, !negative, factors, terms);
         }
-        Expression::Unary("-", operand) if matches!(**operand, Expression::Call(..)) => {
-            split(operand, !negative, terms);
+        Expression::Unary("-", operand)
+            if matches!(**operand, Expression::Call(..)) || contains_ddt(operand) =>
+        {
+            split_contribution(operand, !negative, factors, terms);
         }
-        _ => terms.push((negative, expression)),
+        Expression::Binary("*", left, right) if contains_ddt(left) != contains_ddt(right) => {
+            if contains_ddt(left) {
+                factors.push(Factor::RightMul(right));
+                split_contribution(left, negative, factors, terms);
+            } else {
+                factors.push(Factor::LeftMul(left));
+                split_contribution(right, negative, factors, terms);
+            }
+            factors.pop();
+        }
+        Expression::Binary("/", left, right) if contains_ddt(left) && !contains_ddt(right) => {
+            factors.push(Factor::RightDiv(right));
+            split_contribution(left, negative, factors, terms);
+            factors.pop();
+        }
+        _ => terms.push((negative, expression, factors.clone())),
     }
 }
 
@@ -2113,6 +3053,7 @@ impl Module {
             | Expr::Real(_)
             | Expr::Integer(_)
             | Expr::Parameter(_)
+            | Expr::LocalParameter(_)
             | Expr::Given(_)
             | Expr::Temperature
             | Expr::Gmin
@@ -2210,7 +3151,37 @@ fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mu
 
 #[cfg(test)]
 mod tests {
+    use super::{Expr, Module, Stmt, constant, resolve};
     use crate::compile;
+    use crate::lexer::tokens;
+    use crate::parser::parse;
+
+    const ADVICE_WORDS: [&str; 7] = [
+        "use",
+        "pass",
+        "try",
+        "instead",
+        "should",
+        "give",
+        "did you mean",
+    ];
+
+    fn assert_factual(message: &str) {
+        let lower = message.to_ascii_lowercase();
+        for forbidden in ADVICE_WORDS {
+            let matches_word = if forbidden.contains(' ') {
+                lower.contains(forbidden)
+            } else {
+                lower
+                    .split(|character: char| !character.is_ascii_alphanumeric())
+                    .any(|word| word == forbidden)
+            };
+            assert!(
+                !matches_word,
+                "error message contains advice word {forbidden:?}: {message:?}"
+            );
+        }
+    }
 
     /// The message the compiler refuses `analog`, the analog block of a two-terminal
     /// module with variables `x` and `y`, with.
@@ -2218,9 +3189,31 @@ mod tests {
         let source = format!(
             "`include \"disciplines.vams\"\nmodule m(a, b);\ninout a, b;\nelectrical a, b;\nreal x, y;\nanalog begin\n{analog}\nend\nendmodule\n"
         );
-        compile(&source, "m.va", &|_| None)
+        let message = compile(&source, "m.va", &|_| None)
             .expect_err("refused")
-            .message
+            .message;
+        assert_factual(&message);
+        message
+    }
+
+    fn module_refusal(body: &str) -> String {
+        let source = format!(
+            "`include \"disciplines.vams\"\nmodule m(a, b);\ninout a, b;\nelectrical a, b;\n{body}\nendmodule\n"
+        );
+        let message = compile(&source, "m.va", &|_| None)
+            .expect_err("refused")
+            .message;
+        assert_factual(&message);
+        message
+    }
+
+    fn resolve_source(body: &str) -> Module {
+        let source = format!(
+            "`include \"disciplines.vams\"\nmodule m(a, b);\ninout a, b;\nelectrical a, b;\n{body}\nendmodule\n"
+        );
+        let tokens = tokens(&source, &|_| None).expect("tokens");
+        let parsed = parse(&tokens).expect("parse");
+        resolve(&parsed).expect("resolve")
     }
 
     /// Code under an initial event may read neither a probe nor what other code assigns,
@@ -2242,6 +3235,300 @@ mod tests {
         assert_eq!(
             refusal("@(final_step) x = 1;\nI(a, b) <+ x * V(a, b);"),
             "the event final_step is not compiled yet"
+        );
+    }
+
+    #[test]
+    fn localparam_duplicate_and_collision_errors() {
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 1.0;\nlocalparam real k = 2.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "the localparam k is declared more than once"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real k = 1.0;\nlocalparam real k = 2.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "k is declared as both a parameter and a localparam"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 2.0;\nparameter real k = 1.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "k is declared as both a parameter and a localparam"
+        );
+        assert_eq!(
+            module_refusal("localparam real k = 2.0;\nreal k;\nanalog I(a, b) <+ V(a, b);"),
+            "k is declared as both a localparam and a variable"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real p = 1.0;\naliasparam k = p;\nlocalparam real k = 2.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "k is declared as both a localparam and an aliasparam"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 2.0;\naliasparam alias_k = k;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "the alias alias_k targets localparam k, not a parameter"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog begin : blk\nlocalparam real k = 1.0;\nlocalparam real k = 2.0;\nI(a, b) <+ V(a, b);\nend"
+            ),
+            "the localparam k is declared more than once"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog begin : blk\nlocalparam real k = 1.0;\nreal k;\nI(a, b) <+ V(a, b);\nend"
+            ),
+            "k is declared as both a localparam and a variable"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog function real f;\ninput x;\nlocalparam real k = 1.0;\nlocalparam real k = 2.0;\nf = x;\nendfunction\nanalog I(a, b) <+ f(V(a, b));"
+            ),
+            "the localparam k is declared more than once"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog function real f;\ninput x;\nlocalparam real x = 1.0;\nf = x;\nendfunction\nanalog I(a, b) <+ f(V(a, b));"
+            ),
+            "x is declared as both a localparam and a variable"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog function real f;\ninput x;\nlocalparam real f = 1.0;\nf = x;\nendfunction\nanalog I(a, b) <+ f(V(a, b));"
+            ),
+            "f is declared as both a localparam and a variable"
+        );
+    }
+
+    #[test]
+    fn localparam_ordering_scope_and_mutability_errors() {
+        assert_eq!(
+            module_refusal("localparam real k = missing;\nanalog I(a, b) <+ V(a, b);"),
+            "missing is not declared"
+        );
+        assert_eq!(
+            module_refusal("localparam real k = k + 1.0;\nanalog I(a, b) <+ V(a, b);"),
+            "k reads k, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real first = second;\nlocalparam real second = 1.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "first reads second, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = p;\nparameter real p = 1.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "k reads p, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real p = k;\nlocalparam real k = 1.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "p's default reads k, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam integer has_p = $param_given(p);\nparameter real p = 1.0;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "has_p reads p, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 2.0;\nanalog begin : blk\nlocalparam real a = k;\nlocalparam real k = 3.0;\nI(a, b) <+ V(a, b) * a;\nend"
+            ),
+            "a reads k, which is not declared before it"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 2.0;\nanalog begin\nk = 3.0;\nI(a, b) <+ V(a, b);\nend"
+            ),
+            "k is a localparam, not a variable"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam real k = 2.0;\nreal g;\nanalog begin\ng = $param_given(k);\nI(a, b) <+ V(a, b) * g;\nend"
+            ),
+            "k is not a parameter"
+        );
+    }
+
+    #[test]
+    fn localparam_constant_expression_and_type_errors() {
+        assert_eq!(
+            module_refusal("real x;\nlocalparam real k = x;\nanalog I(a, b) <+ V(a, b);"),
+            "k reads the variable x, which is not a constant"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog begin : blk\nlocalparam real k = y;\nreal y;\nI(a, b) <+ V(a, b) * k;\nend"
+            ),
+            "k reads the variable y, which is not a constant"
+        );
+        assert_eq!(
+            module_refusal("localparam real k = V(a, b);\nanalog I(a, b) <+ V(a, b);"),
+            "k reads the probes through V, which is not a constant"
+        );
+        assert_eq!(
+            module_refusal("localparam real k = $simparam(\"gmin\");\nanalog I(a, b) <+ V(a, b);"),
+            "k reads $simparam(\"gmin\"), which is not a constant"
+        );
+        assert_eq!(
+            module_refusal(
+                "analog function real f;\ninput x;\nf = x + 1.0;\nendfunction\nlocalparam real k = f(1.0);\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "k calls the analog function f, which is not compiled yet"
+        );
+        assert_eq!(
+            module_refusal("localparam label = \"hello\";\nanalog I(a, b) <+ V(a, b);"),
+            "a string is not a number"
+        );
+        assert_eq!(
+            module_refusal("localparam integer n = 1.5;\nanalog I(a, b) <+ V(a, b);"),
+            "the integer localparam n has a real initializer"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real p = 1.0;\nlocalparam integer n = p;\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "the integer localparam n has a real initializer"
+        );
+        assert_eq!(
+            module_refusal("localparam integer n = 0 ? 1.5 : 2;\nanalog I(a, b) <+ V(a, b);"),
+            "the integer localparam n has a real initializer"
+        );
+        assert_eq!(
+            module_refusal("localparam integer n = 1 / 0;\nanalog I(a, b) <+ V(a, b);"),
+            "the integer localparam n divides by zero"
+        );
+        assert_eq!(
+            module_refusal("localparam real x = 5 / 0;\nanalog I(a, b) <+ V(a, b);"),
+            "the localparam x divides by zero"
+        );
+        assert_eq!(
+            module_refusal("localparam integer n = 2147483647 + 1;\nanalog I(a, b) <+ V(a, b);"),
+            "the integer localparam n overflows an integer"
+        );
+        assert_eq!(
+            module_refusal(
+                "localparam integer n = -(-2147483647 - 1);\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "the integer localparam n overflows an integer"
+        );
+        assert_eq!(
+            module_refusal("localparam real x = 1.0 / 0.0;\nanalog I(a, b) <+ V(a, b);"),
+            "the localparam x evaluates to a non-finite value"
+        );
+        assert_eq!(
+            module_refusal("localparam real x = sqrt(-1.0);\nanalog I(a, b) <+ V(a, b);"),
+            "the localparam x evaluates to a non-finite value"
+        );
+        assert_eq!(
+            module_refusal("parameter real p = sqrt(-1.0);\nanalog I(a, b) <+ V(a, b);"),
+            "p's default evaluates to a non-finite value"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real p = 1.0 from (0:sqrt(-1.0));\nanalog I(a, b) <+ V(a, b);"
+            ),
+            "p's range evaluates to a non-finite value"
+        );
+    }
+
+    #[test]
+    fn limiting_function_rejects_parameter_dependent_localparam_cleanly() {
+        assert_eq!(
+            module_refusal(
+                "parameter real p = 2.0;\nlocalparam real k = 2.0 * p;\nanalog function real lim;\ninput vnew, vold;\nreal vnew, vold;\nlim = vnew * k;\nendfunction\nreal v;\nanalog begin\nv = $limit(V(a, b), lim);\nI(a, b) <+ v;\nend"
+            ),
+            "the limiting function reads localparam k, which depends on parameters and is not compiled yet"
+        );
+        assert_eq!(
+            module_refusal(
+                "parameter real p = 2.0;\nanalog function real lim;\ninput vnew, vold;\nlocalparam real scale = p * 2.0;\nreal vnew, vold;\nlim = vnew * scale;\nendfunction\nreal v;\nanalog begin\nv = $limit(V(a, b), lim);\nI(a, b) <+ v;\nend"
+            ),
+            "the limiting function reads localparam scale, which depends on parameters and is not compiled yet"
+        );
+    }
+
+    #[test]
+    fn localparam_constant_folding_handles_builtins_truncation_and_short_circuit() {
+        let module = resolve_source(
+            "localparam integer truncated = 5 / 2;\n\
+             localparam real truncated_real = 5 / 2;\n\
+             localparam real guarded = 0 ? (1.0 / 0.0) : (sqrt(4.0) + ln(exp(1.0)) + floor(3.7) + ceil(1.2));\n\
+             localparam integer short_and = 0 && (1 / 0);\n\
+             localparam integer short_or = 1 || (1 / 0);\n\
+             localparam untyped_int = truncated + short_or;\n\
+             localparam untyped_real = guarded + truncated_real;\n\
+             analog I(a, b) <+ V(a, b) * (untyped_real + untyped_int + short_and);",
+        );
+        // Every pure constant folds directly with zero prepared localparams.
+        assert_eq!(module.local_parameters, [] as [super::LocalParameter; 0]);
+        // `truncated = 2`, `truncated_real = 2.0`, `guarded = 2 + 1 + 3 + 2 = 8.0`,
+        // `short_and = 0`, `short_or = 1`, `untyped_int = 3`, `untyped_real = 10.0`.
+        let Stmt::Contribute {
+            resistive: Some(Expr::Binary("*", _, right)),
+            ..
+        } = &module.analog[0]
+        else {
+            panic!("expected resistive contribution");
+        };
+        let value = constant(right).expect("folded constant");
+        assert!((value - 13.0).abs() < 1e-12, "got {value}");
+    }
+
+    #[test]
+    fn static_scaled_ddt_accepts_static_and_refuses_dynamic_factors() {
+        for valid in [
+            "x = 1e-12;\nI(a, b) <+ x * ddt(V(a, b));",
+            "x = 1e-12;\nI(a, b) <+ ddt(V(a, b)) * x;",
+            "x = 2.0;\nI(a, b) <+ ddt(V(a, b)) / x;",
+            "x = 1e-12;\nI(a, b) <+ -(x * ddt(V(a, b)));",
+            "x = 1e-12;\nI(a, b) <+ x * (-ddt(V(a, b)));",
+            "x = 1e-12;\nI(a, b) <+ x * (V(a, b) / 100.0 + ddt(V(a, b)));",
+            "x = 1e-12;\ny = 2.0;\nI(a, b) <+ (ddt(V(a, b)) * x) / y;",
+            "x = 1e-12;\nI(a, b) <+ x * ddt(V(a, b));\nx = V(a, b);",
+            "x = 1e-9;\nV(a, b) <+ x * ddt(I(a, b));",
+        ] {
+            let source = format!(
+                "`include \"disciplines.vams\"\nmodule m(a, b);\ninout a, b;\nelectrical a, b;\nreal x, y;\nanalog begin\n{valid}\nend\nendmodule\n"
+            );
+            compile(&source, "m.va", &|_| None)
+                .unwrap_or_else(|error| panic!("expected {valid:?} to compile, got: {error}"));
+        }
+
+        for dynamic_scale in [
+            "I(a, b) <+ (1.0 + V(a, b)) * ddt(V(a, b));",
+            "x = V(a, b);\nI(a, b) <+ x * ddt(V(a, b));",
+            "if (V(a, b) > 0) x = 2e-12; else x = 1e-12;\nI(a, b) <+ x * ddt(V(a, b));",
+            "I(a, b) <+ $simparam(\"gmin\") * ddt(V(a, b));",
+        ] {
+            assert_eq!(
+                refusal(dynamic_scale),
+                "ddt scaled by a dynamic expression is not charge-conserving and is not compiled yet",
+                "{dynamic_scale}"
+            );
+        }
+
+        assert_eq!(
+            refusal("I(a, b) <+ ddt(V(a, b)) * ddt(V(a, b));"),
+            "ddt is not compiled yet"
+        );
+        assert_eq!(
+            refusal("I(a, b) <+ 1.0 / ddt(V(a, b));"),
+            "ddt is not compiled yet"
+        );
+        assert_eq!(
+            refusal("x = 2.0;\nI(a, b) <+ x * white_noise(1.0);"),
+            "white_noise is not compiled yet"
         );
     }
 }
