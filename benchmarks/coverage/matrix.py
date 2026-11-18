@@ -174,6 +174,10 @@ def _number(value: complex) -> str:
     return f"{value.real:.7g}{value.imag:+.7g}j"
 
 
+class _NotInstalledError(Exception):
+    """A simulator binary is not installed on this machine."""
+
+
 def run(fixture: Fixture, simulator: Simulator) -> Cell:
     """Runs `fixture` in `simulator`, its cell not yet judged.
 
@@ -186,8 +190,6 @@ def run(fixture: Fixture, simulator: Simulator) -> Cell:
             case Simulator.NGSPICE_SPARSE | Simulator.NGSPICE_KLU:
                 found = run_ngspice(fixture, Ngspice(simulator))
             case Simulator.XYCE_SERIAL:
-                if xyce.EXECUTABLE is None:
-                    return Cell(status=Status.UNKNOWN, evidence="Xyce is not installed")
                 found = run_xyce(fixture)
             case _:
                 message = f"the matrix runs no {simulator}"
@@ -196,6 +198,8 @@ def run(fixture: Fixture, simulator: Simulator) -> Cell:
         return Cell(status=Status.UNSUPPORTED, evidence=_relative(str(refused), ROOT))
     except Documented as manual:
         return Cell(status=Status.DOCUMENTED, evidence=str(manual))
+    except _NotInstalledError as missing:
+        return Cell(status=Status.UNKNOWN, evidence=str(missing))
     except Failed as failure:
         return Cell(status=Status.FAILED, evidence=_relative(str(failure), ROOT))
     return Cell(status=Status.SOLVED, found=_pairs(found))
@@ -515,9 +519,10 @@ def run_jolty(fixture: Fixture) -> Values:
 
     Raises:
         Unsupported: When jolty offers no way to ask the row, or refuses the fixture.
+        Documented: When jolty's coverage is documented rather than run offline.
         Failed: When jolty takes the fixture and does not finish it.
     """
-    if isinstance(fixture.jolty, Unsupported):
+    if isinstance(fixture.jolty, Unsupported | Documented):
         raise fixture.jolty
     try:
         return fixture.jolty()
@@ -542,14 +547,17 @@ PRINTED: Final = "printed:"
 
 
 def _printed(printed: str, read: str) -> complex:
-    """The number a simulator printed as ``name = value``.
+    """The number a simulator printed as ``name = value`` or ``name: value``.
 
     Raises:
         Failed: When it printed none.
     """
     name = read.removeprefix(PRINTED)
+    number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
     found = re.search(
-        rf"^\s*{re.escape(name)}\s*=\s*(\S+)", printed, re.IGNORECASE | re.MULTILINE
+        rf"(?<![\w.]){re.escape(name)}\s*[:=]\s*{number}",
+        printed,
+        re.IGNORECASE,
     )
     if found is None:
         message = f"printed no {name}"
@@ -574,6 +582,9 @@ def run_ngspice(fixture: Fixture, runner: Ngspice) -> Values:
     spice = _spice(fixture)
     if isinstance(spice.ngspice, Unsupported | Documented):
         raise spice.ngspice
+    if ngspice.EXECUTABLE is None:
+        message = "ngspice is not installed"
+        raise _NotInstalledError(message)
     tight = "\n".join(part for part in (ngspice.OPTIONS, spice.options) if part)
     try:
         plots = runner.runs(
@@ -581,6 +592,9 @@ def run_ngspice(fixture: Fixture, runner: Ngspice) -> Values:
             spice.ngspice,
             options=tight,
             temperature=spice.temperature,
+            compatibility=spice.compatibility,
+            libraries=spice.libraries,
+            sections=spice.sections,
         )
     except JoltyError as error:
         raise _refused(str(error), NGSPICE_REFUSALS) from None
@@ -648,7 +662,7 @@ def run_xyce(fixture: Fixture) -> Values:
     ]
     if xyce.EXECUTABLE is None:
         message = "Xyce is not installed"
-        raise Unsupported(message)
+        raise _NotInstalledError(message)
     try:
         executed = Xyce().execute(deck, timeout=TIMEOUT)
     except JoltyError as error:

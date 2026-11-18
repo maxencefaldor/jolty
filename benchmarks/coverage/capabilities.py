@@ -21,7 +21,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 import numpy as np
@@ -50,9 +50,13 @@ from jolty.plan import (
     Transient,
     decade,
 )
+from jolty.report import OperatingPointReport
+from jolty.runner import Built, Job
+from jolty.runner import run as run_plan
+from jolty.settings import Settings
 from jolty.simulate import Simulation
-from jolty.specs import Specs, crossing, evaluate
-from jolty.spice import Library, export, ngspice
+from jolty.specs import Specs, crossing, distortion, evaluate
+from jolty.spice import Library, export, gf180mcu, kits, ngspice, sg13g2, sky130
 from jolty.spice.library import FUNCTION, INITIAL
 from jolty.units import (
     A,
@@ -60,17 +64,21 @@ from jolty.units import (
     K,
     V,
     W,
+    fF,
+    kHz,
     kohm,
+    ms,
     nF,
     ns,
     ohm,
+    ps,
     s,
     us,
 )
 from jolty.units import (
     m as m_,
 )
-from jolty.waveforms import Piecewise, Sine
+from jolty.waveforms import Piecewise, Pulse, Sine
 
 type Values = dict[str, complex]
 """What a fixture reads, by name: a voltage such as ``v(out)``, a current such as
@@ -100,6 +108,15 @@ CHARGE: Final = 1.602176634e-19
 THERMAL_VOLTAGE: Final = BOLTZMANN * ROOM / CHARGE
 """The thermal voltage at `ROOM`, which every simulator runs at once its temperature
 is set where its own constants give this one."""
+
+VBIC_BOLTZMANN: Final = 1.380662e-23
+"""VBIC 1.2's Boltzmann constant, in joules per kelvin, fixed by its reference code."""
+
+VBIC_CHARGE: Final = 1.602189e-19
+"""VBIC 1.2's elementary charge, in coulombs, paired with `VBIC_BOLTZMANN`."""
+
+VBIC_INTRINSIC_RESISTANCE: Final = 0.1
+"""VBIC 1.2's default intrinsic resistances (`RCI`, `RBI`, `RBP`), in ohms."""
 
 
 class Category(StrEnum):
@@ -175,6 +192,12 @@ class Spice:
     thermal: bool = True
     """Whether Xyce runs where its thermal voltage is jolty's, rather than at the
     temperature itself, for a fixture whose answer is a law of the temperature alone."""
+    compatibility: ngspice.Compatibility | None = None
+    """ngspice compatibility mode (``ps`` or ``hsa``), when a fixture needs it."""
+    libraries: tuple[Path, ...] = ()
+    """Files ngspice includes via ``.include`` before the deck's body."""
+    sections: tuple[tuple[Path, str], ...] = ()
+    """Library sections ngspice reads via ``.lib`` before the deck's body."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -185,7 +208,7 @@ class Fixture:
     category: Category
     name: str
     known: Known | None
-    jolty: Callable[[], Values] | Unsupported
+    jolty: Callable[[], Values] | Unsupported | Documented
     spice: Spice | Unsupported
 
 
@@ -228,8 +251,10 @@ def _rejected(error: JoltyError) -> Unsupported:
 # jolty's side.
 
 
-def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
-    """A deck's elements read by jolty's SPICE reader, as the top of a circuit.
+def deck_with_state(
+    lines: Sequence[str],
+) -> tuple[ir.Circuit, dict[str, float], dict[str, float]]:
+    """Reads `lines` into a circuit plus its top-level ``.ic`` and ``.nodeset`` maps.
 
     The deck's title is left out, its subcircuits and the statements a library reads
     outside them, its functions, initial conditions and nodesets, stay outside, and its
@@ -251,9 +276,23 @@ def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
     try:
         library.read("\n".join(definitions), "fixture.cir")
         library.read("\n".join([".subckt deck", *elements, ".ends"]), "fixture.cir")
-        return circuit(library.component("deck"))
+        return (
+            circuit(library.component("deck")),
+            dict(library.initial_conditions),
+            dict(library.nodesets),
+        )
     except JoltyError as error:
         raise _rejected(error) from None
+
+
+def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
+    """A deck's elements read by jolty's SPICE reader, as the top of a circuit.
+
+    Raises:
+        Unsupported: When the reader refuses a line, with its message.
+    """
+    built, _, _ = deck_with_state(lines)
+    return built
 
 
 def simulation(built: ir.Circuit, temperature: float = ROOM) -> Simulation:
@@ -888,6 +927,7 @@ def small_signal() -> list[Fixture]:
     rows.extend(sensitivities())
     rows.extend(transients())
     rows.append(monte_carlo())
+    rows.extend(extended_analyses())
     return rows
 
 
@@ -1123,6 +1163,120 @@ def bjt_currents(
     return collector, base
 
 
+def vbic_currents(  # noqa: PLR0913 - VBIC bias, saturation currents, temperature and intrinsic resistances
+    collector_voltage: float,
+    base_voltage: float,
+    *,
+    saturation_current: float,
+    ideal_base_emitter_current: float,
+    ideal_base_collector_current: float,
+    temperature: float = ROOM,
+    nominal_temperature: float = ROOM,
+    intrinsic_base_resistance: float = VBIC_INTRINSIC_RESISTANCE,
+    intrinsic_collector_resistance: float = VBIC_INTRINSIC_RESISTANCE,
+    parasitic_base_resistance: float = VBIC_INTRINSIC_RESISTANCE,
+    minimum_conductance: float = 0.0,
+) -> tuple[float, float]:
+    """Exact VBIC 1.2 operating-point collector and base currents (emitter/substrate 0).
+
+    Accounts for the exact model details that caused naive Ebers-Moll with VBIC's
+    physical constants to miss the `vbic` fixture by +2.114e-6:
+
+    1. VBIC 1.2 uses its own physical constants (`k = 1.380662e-23 J/K`,
+       `q = 1.602189e-19 C`) rather than 2019 SI values.
+    2. VBIC 1.2 mandates positive intrinsic resistances whose defaults are non-zero:
+       `RBI = RCI = RBP = 0.1 ohm` (ngspice `vbicsetup.c`, `vbic.rs`). At `V_c = 2 V`,
+       `V_b = 0.7 V`, `I_b ~= 5.670e-7 A` drops `V_rbi = I_b * RBI ~= 5.670e-8 V`
+       across `RBI`, lowering the intrinsic `V_bei` and reducing both `I_c` and `I_b`
+       by `V_rbi / Vt_VBIC = 2.192e-6`.
+    3. VBIC smooths `q1` above zero even when Early voltages are infinite (`q1z = 1`):
+       `q1 = (sqrt((1 - 1e-4)^2 + 1e-8) + (1 - 1e-4)) / 2 + 1e-4 = 1 + 2.50025e-9`,
+       lowering `I_tzf = I_fi / q1` by `2.500e-9` (`-2.195e-6` total at `gmin = 0`).
+    4. Optional junction minimum conductance (`gmin = 1e-12 S` in SPICE/jolty defaults)
+       shifts `I_c` by `+4.60 pA` (`+8.111e-8` of `I_c`, explaining
+       `-2.195e-6 + 0.081e-6 = -2.114e-6`) and `I_b` by `-1.20 pA`
+       (`-2.116e-8` of `I_c`).
+
+    The coupled KCL equations are solved in voltage-drop coordinates (`base_drop =
+    V_bx - V_bi`, `collector_drop = V_cx - V_ci`, `parasitic_drop = V_bp - V_cx`) so
+    there is no floating-point cancellation when dividing small drops by `0.1 ohm`.
+    """
+    ratio = temperature / nominal_temperature
+    thermal_voltage = temperature * VBIC_BOLTZMANN / VBIC_CHARGE
+    arrhenius = (ratio**3) * math.exp(1.12 * (ratio - 1.0) / thermal_voltage)
+    scaled_saturation_current = saturation_current * arrhenius
+    scaled_base_emitter_saturation = ideal_base_emitter_current * arrhenius
+    scaled_base_collector_saturation = ideal_base_collector_current * arrhenius
+    shifted = 1.0 - 1e-4
+    base_charge = (math.hypot(shifted, 1e-4) + shifted) * 0.5 + 1e-4
+    base_collector_external = base_voltage - collector_voltage
+    base_drop = 0.0
+    collector_drop = 0.0
+    parasitic_drop = 0.0
+    forward_transport = 0.0
+    reverse_transport = 0.0
+    base_emitter_current = 0.0
+    base_collector_current = 0.0
+    for _ in range(30):
+        intrinsic_base_emitter_voltage = base_voltage - base_drop
+        intrinsic_base_collector_voltage = (
+            base_collector_external - base_drop + collector_drop
+        )
+        extrinsic_base_collector_voltage = base_collector_external - base_drop
+        base_emitter_current = (
+            scaled_base_emitter_saturation
+            * math.expm1(intrinsic_base_emitter_voltage / thermal_voltage)
+            + intrinsic_base_emitter_voltage * minimum_conductance
+        )
+        base_collector_current = (
+            scaled_base_collector_saturation
+            * math.expm1(intrinsic_base_collector_voltage / thermal_voltage)
+            + intrinsic_base_collector_voltage * minimum_conductance
+        )
+        forward_transport = (
+            scaled_saturation_current
+            * math.expm1(intrinsic_base_emitter_voltage / thermal_voltage)
+            / base_charge
+        )
+        reverse_transport = (
+            scaled_saturation_current
+            * math.expm1(intrinsic_base_collector_voltage / thermal_voltage)
+            / base_charge
+        )
+        parasitic_drop = (
+            (base_collector_external - collector_voltage)
+            * minimum_conductance
+            / (1.0 / parasitic_base_resistance + 2.0 * minimum_conductance)
+        )
+        base_drop = (
+            (base_emitter_current + base_collector_current)
+            * intrinsic_base_resistance
+            / base_charge
+        )
+        collector_drop = (
+            (forward_transport - reverse_transport - base_collector_current)
+            - (intrinsic_base_collector_voltage + extrinsic_base_collector_voltage)
+            * minimum_conductance
+        ) / (1.0 / intrinsic_collector_resistance + minimum_conductance)
+    extrinsic_base_emitter_leakage = base_voltage * minimum_conductance
+    parasitic_base_emitter_leakage = (
+        base_collector_external - parasitic_drop
+    ) * minimum_conductance
+    parasitic_collector_substrate_leakage = (
+        -collector_voltage - parasitic_drop
+    ) * minimum_conductance
+    collector_current = (
+        forward_transport - reverse_transport - base_collector_current
+    ) - (parasitic_base_emitter_leakage + parasitic_collector_substrate_leakage)
+    base_current = (
+        base_emitter_current
+        + base_collector_current
+        + extrinsic_base_emitter_leakage
+        + parasitic_base_emitter_leakage
+    )
+    return collector_current, base_current
+
+
 def coupled_secondary(frequency: float) -> complex:
     """The coupled inductors' open secondary's voltage, solved exactly."""
     jw = 2j * math.pi * frequency
@@ -1270,20 +1424,34 @@ def device_fixtures() -> list[Fixture]:
             "NCI=1 TNOM=27)"
         ),
     )
+    vbic_collector, vbic_base = vbic_currents(
+        2.0,
+        0.7,
+        saturation_current=1e-16,
+        ideal_base_emitter_current=1e-18,
+        ideal_base_collector_current=1e-16,
+    )
     rows.append(
         Fixture(
             key="vbic",
             category=Category.DEVICE,
             name="Bipolar transistor, VBIC 1.2",
             known=Known(
+                values={"i(vc)": -vbic_collector, "i(vb)": -vbic_base},
                 source=(
-                    "none yet: Ebers and Moll's transport form with VBIC's constants "
-                    "misses the run of both by 2e-6, to be explained"
-                )
+                    "closed form: VBIC 1.2 transport and base currents with VBIC "
+                    "constants (k=1.380662e-23, q=1.602189e-19), default intrinsic "
+                    "resistances (RBI=RCI=RBP=0.1 ohm, causing -2.19e-6 base drop), "
+                    "and q1 smoothing floor (1 + 2.5e-9)"
+                ),
             ),
             jolty=Op(vbic, ("i(vc)", "i(vb)")).jolty,
             spice=dataclasses.replace(
                 Op(vbic, ("i(vc)", "i(vb)")).spice(),
+                # VBIC computes its thermal voltage with constants of its own in both
+                # engines: ngspice must run at 27.0 C (300.15 K) itself so Arrhenius
+                # scaling from TNOM=27 does not shift currents by +6.53e-6.
+                temperature=ngspice.same_kelvins(ROOM),
                 xyce=Documented(
                     "Xyce Reference Guide 7.10, BJT levels 11 and 12: VBIC 1.3, "
                     "not 1.2, its card's level not ngspice's 4; the dialect of "
@@ -1445,13 +1613,16 @@ def built_devices() -> list[Fixture]:
             ),
         )
     )
+    # Default BSIM3v3.3 (tox=15 nm) has Vth ~= 1.815 V; (1.5 V, 1.2 V) sits in deep
+    # weak inversion (~1.95 pA, 77% gmin leakage). At (3.0 V, 3.0 V) it is solidly in
+    # strong-inversion saturation (overdrive +1.19 V, Vdsat ~= 0.58 V, Id ~= 0.328 mA).
     bsim3 = devices.bsim3(channel="n", width=10e-6 * m_, length=1e-6 * m_)
     rows.append(
         built_fixture(
             "bsim3",
             "BSIM3v3.3",
             forced(
-                "bsim3", bsim3, {"drain": 1.5, "gate": 1.2, "source": 0.0, "bulk": 0.0}
+                "bsim3", bsim3, {"drain": 3.0, "gate": 3.0, "source": 0.0, "bulk": 0.0}
             ),
             ("i(vdrain)",),
             Known(
@@ -1602,8 +1773,273 @@ def built_devices() -> list[Fixture]:
             "tline", "Lossless transmission line", "T1 in 0 out 0 Z0=50 TD=5n"
         )
     )
+    rows.extend(switch_and_logic_devices())
     rows.extend(missing_devices())
+    rows.extend(kit_devices())
     return rows
+
+
+def _switch_fixture(
+    key: str,
+    name: str,
+    *,
+    subcircuit: str,
+    levels: Sequence[float],
+    xyce_note: str,
+) -> Fixture:
+    """A PSpice-model switch row sweeping through OFF, midpoint, and ON."""
+    library_path = DECKS / "switches.lib"
+    deck = (
+        f"* {key}",
+        "V1 in 0 5",
+        "VC ctrl 0 0",
+        f"X1 in out ctrl {subcircuit}",
+    )
+    names = tuple(f"v(out)@{index}" for index in range(len(levels)))
+    expected = (5 * 10e3 / 11e3, 2.5, 5 * 100 / 1100)
+    step = levels[1] - levels[0]
+    ngspice_command = f"dc VC {levels[0]:g} {levels[-1]:g} {step:g}"
+
+    def run() -> Values:
+        library = Library()
+        library.include(library_path)
+        library.read(
+            "\n".join([".subckt bench", *deck[1:], ".ends"]),
+            "fixture.cir",
+        )
+        built = circuit(library.component("bench"))
+        return solved(built, DcSweep("VC", [level * V for level in levels]), names)
+
+    return Fixture(
+        key=key,
+        category=Category.DEVICE,
+        name=name,
+        known=Known(
+            values=dict(zip(names, expected, strict=True)),
+            source=(
+                "closed form: divider with switch at `ROFF=10 kohm`, "
+                "`sqrt(RON * ROFF) = 1 kohm`, and `RON=100 ohm`"
+            ),
+        ),
+        jolty=run,
+        spice=Spice(
+            deck=deck,
+            ngspice=(ngspice_command,),
+            xyce=Documented(xyce_note),
+            reads=_reads(names),
+            compatibility="ps",
+            libraries=(library_path,),
+        ),
+    )
+
+
+def switch_and_logic_devices() -> list[Fixture]:
+    """The rows for voltage- and current-controlled switches and logic devices."""
+    rows = [
+        _switch_fixture(
+            "switch-voltage",
+            "Voltage-controlled switch (VSWITCH)",
+            subcircuit="vswitch_stage",
+            levels=(0.0, 0.5, 1.0),
+            xyce_note=(
+                "Xyce Reference Guide 7.10, VSWITCH: smooth voltage-controlled "
+                "switch with log-cubic transition; no fixture runs it here yet"
+            ),
+        ),
+        _switch_fixture(
+            "switch-current",
+            "Current-controlled switch (ISWITCH)",
+            subcircuit="iswitch_stage",
+            levels=(0.0, 1.0, 2.0),
+            xyce_note=(
+                "Xyce Reference Guide 7.10, ISWITCH: smooth current-controlled "
+                "switch with log-cubic transition; no fixture runs it here yet"
+            ),
+        ),
+    ]
+
+    def run_logic() -> Values:
+        builder, ground = _builder("logic")
+        input_a = builder.place(
+            devices.logic_source(0, [(1 * ns, 1)], transition=10 * ps), name="A"
+        )
+        input_b = builder.place(devices.logic_source(1, transition=10 * ps), name="B")
+        nand_gate = builder.place(
+            devices.logic_gate("nand", rise=2 * ns, fall=1 * ns, transition=10 * ps),
+            name="U1",
+        )
+        not_gate = builder.place(
+            devices.logic_gate("not", rise=2 * ns, fall=1 * ns, transition=10 * ps),
+            name="U2",
+        )
+        builder.connect(input_a.output, nand_gate.a, name="a")
+        builder.connect(input_b.output, nand_gate.b, name="b")
+        builder.connect(nand_gate.y, not_gate.a, name="n")
+        builder.connect(not_gate.y, name="y")
+
+        supply = builder.place(devices.voltage_source(1.8 * V), name="VDD")
+        edge = Pulse(
+            initial=0 * V,
+            pulsed=1.8 * V,
+            delay=1 * ns,
+            rise=1 * ns,
+            fall=1 * ns,
+            width=10 * ns,
+        )
+        stimulus = builder.place(devices.voltage_source(edge), name="V1")
+        electrical_inverter = builder.place(
+            devices.logic_gate(
+                "not",
+                rise=500 * ps,
+                transition=100 * ps,
+                electrical=True,
+                input_capacitance=2 * fF,
+            ),
+            name="U3",
+        )
+        load = builder.place(devices.capacitor(5 * fF), name="C1")
+        builder.connect(supply.positive, electrical_inverter.supply, name="vdd")
+        builder.connect(stimulus.positive, electrical_inverter.a, name="in")
+        builder.connect(electrical_inverter.y, load.a, name="out")
+        builder.connect(
+            supply.negative,
+            stimulus.negative,
+            electrical_inverter.ground,
+            load.b,
+            ground,
+        )
+        built = circuit(builder.finish())
+        waveforms = simulation(built).run(Transient(6 * ns), TIGHT)
+        nand_times = waveforms.logic_level("n").times
+        inverter_times = waveforms.logic_level("y").times
+        output = np.asarray(waveforms.voltage("out"))
+        return {
+            "t(n_fall)": complex(float(nand_times[-1])),
+            "t(y_rise)": complex(float(inverter_times[-1])),
+            "v(out)@5e-10": complex(float(np.interp(0.5e-9, waveforms.times, output))),
+            "v(out)@2e-09": complex(float(np.interp(2.0e-9, waveforms.times, output))),
+            "v(out)@3e-09": complex(float(np.interp(3.0e-9, waveforms.times, output))),
+        }
+
+    rows.append(
+        Fixture(
+            key="logic",
+            category=Category.DEVICE,
+            name="Event-driven logic and mixed-signal bridge",
+            known=Known(
+                values={
+                    "t(n_fall)": 2e-9,
+                    "t(y_rise)": 4e-9,
+                    "v(out)@5e-10": 1.8,
+                    "v(out)@2e-09": 0.9,
+                    "v(out)@3e-09": 0.0,
+                },
+                source=(
+                    "closed form: event-driven NAND fall at 1 ns + 1 ns = 2 ns, "
+                    "inverter rise at 2 ns + 2 ns = 4 ns, and electrical inverter "
+                    "midpoint crossing at 1.5 ns + 0.5 ns = 2.0 ns"
+                ),
+            ),
+            jolty=run_logic,
+            spice=Spice(
+                deck=(),
+                ngspice=Documented(
+                    "ngspice 47 manual, chapter 8 XSPICE: digital logic code models "
+                    "and ADC/DAC bridges; no fixture runs it here yet"
+                ),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, Behavioral Digital Devices (U): "
+                    "mixed-signal digital gate primitives; no fixture runs it here yet"
+                ),
+                reads={},
+            ),
+        )
+    )
+    return rows
+
+
+def kit_devices() -> list[Fixture]:
+    """The rows for the pinned open foundry process design kits.
+
+    Real PDK archives are tens of megabytes fetched from GitHub and are verified by
+    `tests/test_kits.py`; these rows stay `Documented` so the coverage matrix and its
+    offline unit tests never require network downloads.
+    """
+    return [
+        Fixture(
+            key="kit-sky130",
+            category=Category.DEVICE,
+            name="Process design kit: SKY130",
+            known=None,
+            jolty=Documented(
+                f"docs/guide/foundry.md & tests/test_kits.py: SKY130 pinned at "
+                f"{sky130.VERSION[:8]} (251 of 263 devices native, BSIM4 4.5, "
+                f"scale=1u, hsa compatibility); external archive not fetched offline"
+            ),
+            spice=Spice(
+                deck=(),
+                ngspice=Documented(
+                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
+                    f"SKY130 ({sky130.VERSION[:8]}) with ngbehavior=hsa; external "
+                    f"archive not fetched offline"
+                ),
+                xyce=Documented(
+                    "open_pdks SKY130: supported via open_pdks Xyce netlists or XDM "
+                    "translation; external archive not fetched offline"
+                ),
+                reads={},
+            ),
+        ),
+        Fixture(
+            key="kit-gf180mcu",
+            category=Category.DEVICE,
+            name="Process design kit: GF180MCU",
+            known=None,
+            jolty=Documented(
+                f"docs/guide/foundry.md & tests/test_kits.py: GF180MCU pinned at "
+                f"{gf180mcu.VERSION[:8]} (65 of 72 devices native, BSIM4 4.5, "
+                f"Gummel-Poon, diode level 3); external archive not fetched offline"
+            ),
+            spice=Spice(
+                deck=(),
+                ngspice=Documented(
+                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
+                    f"GF180MCU ({gf180mcu.VERSION[:8]}) natively; external archive "
+                    f"not fetched offline"
+                ),
+                xyce=Documented(
+                    "open_pdks GF180MCU: BSIM4 models run with XDM translation; "
+                    "external archive not fetched offline"
+                ),
+                reads={},
+            ),
+        ),
+        Fixture(
+            key="kit-sg13g2",
+            category=Category.DEVICE,
+            name="Process design kit: SG13G2",
+            known=None,
+            jolty=Documented(
+                f"docs/guide/foundry.md & tests/test_kits.py: SG13G2 pinned at "
+                f"{sg13g2.VERSION[:8]} (36 of 53 devices native including self-heated "
+                f"VBIC HBTs, 14 Verilog-A models); external archive not fetched offline"
+            ),
+            spice=Spice(
+                deck=(),
+                ngspice=Documented(
+                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
+                    f"SG13G2 ({sg13g2.VERSION[:8]}) native devices and requires "
+                    f"OpenVAF/OSDI for Verilog-A MOSFETs; external archive not "
+                    f"fetched offline"
+                ),
+                xyce=Documented(
+                    "IHP-Open-PDK SG13G2: ships dedicated Xyce model libraries for "
+                    "MOS, HBT and passive devices; external archive not fetched offline"
+                ),
+                reads={},
+            ),
+        ),
+    ]
 
 
 def _line_fixture(
@@ -1971,7 +2407,177 @@ def syntax() -> list[Fixture]:
             {"i(v1)": -1e-14 * math.expm1(0.7 / (1.2 * THERMAL_VOLTAGE))},
             "closed form: Shockley's law with the inherited saturation current",
         ),
+        *_state_and_kit_syntax(),
     ]
+
+
+def _state_and_kit_syntax() -> list[Fixture]:
+    """The rows for ``.ic``, ``.nodeset``, and offline process-kit library syntax."""
+    rows: list[Fixture] = []
+
+    initial_condition_deck = ("* ic", "R1 out 0 1k", "C1 out 0 1n", ".ic v(out)=1")
+    decay_times = (0.0, 0.5e-6, 1e-6, 2e-6, 3e-6)
+    decay_names = tuple(f"v(out)@{time!r}" for time in decay_times)
+
+    def run_initial_conditions() -> Values:
+        built, initial, _ = deck_with_state(initial_condition_deck)
+        waveforms = simulation(built).run(
+            Transient(
+                4 * us,
+                max_step=10 * ns,
+                initial_conditions={net: level * V for net, level in initial.items()},
+                breakpoints=[time * s for time in decay_times if time > 0],
+            ),
+            TIGHT,
+        )
+        return sampled(waveforms, decay_names)
+
+    rows.append(
+        Fixture(
+            key="ic",
+            category=Category.SYNTAX,
+            name="Initial conditions (.ic)",
+            known=Known(
+                values={
+                    name: math.exp(-time / RC_TAU)
+                    for name, time in zip(decay_names, decay_times, strict=True)
+                },
+                source=(
+                    "closed form: RC discharge `exp(-t / (R * C))` from "
+                    "`v(out)(0) = 1 V`"
+                ),
+                tolerance=INTEGRATED,
+            ),
+            jolty=run_initial_conditions,
+            spice=Spice(
+                deck=initial_condition_deck,
+                ngspice=("tran 10n 4u 0 10n",),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .IC: transient initial node "
+                    "voltages; no fixture runs it here yet"
+                ),
+                reads={
+                    name: Read(ngspice="v(out)", xyce="V(OUT)", time=time)
+                    for name, time in zip(decay_names, decay_times, strict=True)
+                },
+            ),
+        )
+    )
+
+    nodeset_deck = (
+        "* nodeset",
+        "B1 0 x I={2m * tanh(V(x))}",
+        "R1 x 0 1k",
+        ".nodeset v(x)=1.5",
+    )
+    latch_root = 1.9
+    for _ in range(50):
+        latch_root -= (latch_root - 2.0 * math.tanh(latch_root)) / (
+            1.0 - 2.0 / math.cosh(latch_root) ** 2
+        )
+
+    def run_nodeset() -> Values:
+        built, _, nodesets = deck_with_state(nodeset_deck)
+        options = dataclasses.replace(
+            TIGHT, nodesets={net: level * V for net, level in nodesets.items()}
+        )
+        found = simulation(built).run(OperatingPoint(), options)
+        return {"v(x)": complex(found.voltage("x"))}
+
+    rows.append(
+        Fixture(
+            key="nodeset",
+            category=Category.SYNTAX,
+            name="Operating-point guess (.nodeset)",
+            known=Known(
+                values={"v(x)": latch_root},
+                source=(
+                    "closed form: positive root of `v = 2 * tanh(v)`, selected over "
+                    "the trivial root `v = 0` by `.nodeset v(x)=1.5`"
+                ),
+            ),
+            jolty=run_nodeset,
+            spice=Spice(
+                deck=nodeset_deck,
+                ngspice=("op",),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .NODESET: operating-point initial "
+                    "guesses; no fixture runs it here yet"
+                ),
+                reads=_reads(("v(x)",)),
+            ),
+        )
+    )
+
+    kit_directory = DECKS / "pdk"
+    globals_path = kit_directory / "globals.spice"
+    corners_path = kit_directory / "corners.lib"
+    library_deck = (
+        "* pdk-library",
+        "V1 in 0 5",
+        "X1 in out 0 kit_div ratio=3",
+        "VD d 0 3",
+        "VG g 0 2",
+        "M1 d g 0 0 nfet W=10 L=2",
+        "VB db 0 1.5",
+        "VGB gb 0 1.2",
+        "M2 db gb 0 0 nbin W=4 L=0.5",
+    )
+    synthetic_kit = kits.Kit(
+        name="synthetic",
+        version="1",
+        files=(),
+        includes=(PurePosixPath("globals.spice"),),
+        corners=(kits.Corners(PurePosixPath("corners.lib"), ("tt", "ss")),),
+        compatibility="hsa",
+    )
+    transistor_current = 1e-4 / 2.0 * (10.0 / 2.0) * 1.3**2
+
+    def run_kit_library() -> Values:
+        library = kits.read(
+            synthetic_kit,
+            ((PurePosixPath("corners.lib"), "tt"),),
+            settings=Settings(pdk_root=kit_directory),
+        )
+        library.read(
+            "\n".join([".subckt bench", *library_deck[1:], ".ends"]),
+            "fixture.cir",
+        )
+        built = circuit(library.component("bench"))
+        return solved(built, OperatingPoint(), ("v(out)", "i(vd)"))
+
+    rows.append(
+        Fixture(
+            key="pdk-library",
+            category=Category.SYNTAX,
+            name="Process kit library (.lib, scale, .if, binning, temper, agauss)",
+            known=Known(
+                values={"v(out)": divider_out(), "i(vd)": -transistor_current},
+                source=(
+                    "closed form: synthetic PDK exercising `.include`, `.lib tt`, "
+                    "`.option scale=1u`, `.if`, `temper`, `agauss`, and BSIM3 "
+                    "binning (`M2` requires `scale=1u` to select `nbin.1`)"
+                ),
+            ),
+            jolty=run_kit_library,
+            spice=Spice(
+                deck=library_deck,
+                ngspice=("op",),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .LIB, .INCLUDE, .OPTIONS, .PARAM "
+                    "and binned models; no fixture runs it here yet"
+                ),
+                reads=_reads(("v(out)", "i(vd)")),
+                # Default ROOM keeps ngspice temp == tnom so M1's LEVEL=1 KP and VTO
+                # have zero temperature-ratio shift; the +1.02e-4 K offset in `temper`
+                # shifts kit_div's divider voltage by only -2.55e-8 (40x inside 1e-6).
+                compatibility="hsa",
+                libraries=(globals_path,),
+                sections=((corners_path, "tt"),),
+            ),
+        )
+    )
+    return rows
 
 
 def raw_divider() -> Values:
@@ -2049,6 +2655,49 @@ def outputs() -> list[Fixture]:
             ),
         )
     )
+
+    fourier_deck = (
+        "* four",
+        "V1 n1 0 SIN(0 1 1k)",
+        "V2 n2 n1 SIN(0 0.03 2k)",
+        "V3 out n2 SIN(0 0.04 3k)",
+        "R1 out 0 1k",
+    )
+
+    def run_fourier() -> Values:
+        waveforms = simulation(deck_circuit(fourier_deck)).run(
+            Transient(2 * ms, max_step=2 * us), TIGHT
+        )
+        requirement = distortion("tran", "out", fundamental=1 * kHz, harmonics=9) <= 0
+        (verdict,) = evaluate(Specs([requirement]), ["tran"], {"tran": waveforms})
+        distortion_decibels = verdict.value if verdict.value is not None else math.nan
+        return {"thd": complex(100.0 * 10.0 ** (distortion_decibels / 20.0))}
+
+    rows.append(
+        Fixture(
+            key="four",
+            category=Category.OUTPUT,
+            name="Fourier harmonics (.four)",
+            known=Known(
+                values={"thd": 5.0},
+                source=(
+                    "closed form: 3-4-5 harmonic sum "
+                    "`100 * sqrt(0.03^2 + 0.04^2) / 1.0 = 5 %`"
+                ),
+                tolerance=INTEGRATED,
+            ),
+            jolty=run_fourier,
+            spice=Spice(
+                deck=fourier_deck,
+                ngspice=("tran 2u 2m 0 2u\nfour 1k v(out)",),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .FOUR: Fourier analysis written "
+                    "to a .four file; no fixture runs it here yet"
+                ),
+                reads={"thd": Read(ngspice="printed:THD")},
+            ),
+        )
+    )
     return rows
 
 
@@ -2108,6 +2757,304 @@ def monte_carlo() -> Fixture:
             reads={},
         ),
     )
+
+
+_CORNERS_SCRIPT: Final = """\
+from jolty import Builder, Corner, OperatingPoint, Plan, Role, Specs, component, devices
+from jolty.plan import TIGHT
+from jolty.specs import value
+from jolty.units import K, V, celsius, kohm
+
+
+@component
+def divider(builder: Builder, supply=5 * V) -> None:
+    ground = builder.port("ground", Role.GROUND)
+    source = builder.place(devices.voltage_source(supply), name="V1")
+    upper = builder.place(
+        devices.resistor(1 * kohm, temperature_coefficient=0.01 / K), name="R1"
+    )
+    lower = builder.place(devices.resistor(3 * kohm), name="R2")
+    builder.connect(source.positive, upper.a, name="in")
+    builder.connect(upper.b, lower.a, name="out")
+    builder.connect(lower.b, source.negative, ground)
+
+
+def build(supply=5 * V):
+    return divider(supply=supply)
+
+
+def plan():
+    return Plan(
+        {"op": OperatingPoint()},
+        options=TIGHT,
+        corners={
+            "cold_low": Corner(temperature=celsius(-40), supply=4.5 * V),
+            "hot_high": Corner(temperature=celsius(90), supply=5.5 * V),
+        },
+    )
+
+
+def specs():
+    return Specs([
+        value("op", "out") >= 0 * V,
+        value("op", "out") <= 10 * V,
+    ])
+"""
+
+_WORST_CASE_SCRIPT: Final = """\
+from jolty import Builder, OperatingPoint, Plan, Role, Specs, component, devices
+from jolty.plan import TIGHT, WorstCase
+from jolty.specs import value
+from jolty.units import V, kohm
+
+
+@component
+def divider(builder: Builder) -> None:
+    ground = builder.port("ground", Role.GROUND)
+    source = builder.place(devices.voltage_source(5 * V), name="V1")
+    upper = builder.place(devices.resistor(1 * kohm, tolerance=0.1), name="R1")
+    lower = builder.place(devices.resistor(3 * kohm, tolerance=0.1), name="R2")
+    builder.connect(source.positive, upper.a, name="in")
+    builder.connect(upper.b, lower.a, name="out")
+    builder.connect(lower.b, source.negative, ground)
+
+
+def build():
+    return divider()
+
+
+def plan():
+    return Plan({"op": OperatingPoint()}, options=TIGHT, worst_case=WorstCase())
+
+
+def specs():
+    return Specs([
+        value("op", "out") >= 3.0 * V,
+        value("op", "out") <= 4.5 * V,
+    ])
+"""
+
+
+def extended_analyses() -> list[Fixture]:
+    """The v2 analysis rows: corners, worst case, .disto, .sp, and transient noise."""
+    rows: list[Fixture] = []
+
+    def run_corners() -> Values:
+        with tempfile.TemporaryDirectory() as directory:
+            script_path = Path(directory) / "corners.py"
+            script_path.write_text(_CORNERS_SCRIPT, encoding="utf-8")
+            outcome = run_plan(
+                Job(script=script_path, plan=script_path, max_unknowns=10),
+                Path(directory),
+            )
+        if not isinstance(outcome, Built):
+            message = f"corners plan did not build: {outcome}"
+            raise TypeError(message)
+        report = outcome.analyses[0]
+        if not isinstance(report, OperatingPointReport):
+            message = f"expected operating point report, got {type(report).__name__}"
+            raise TypeError(message)
+        nominal = next(item.value for item in report.values if item.unknown == "out")
+        lowest, highest = outcome.specs
+        return {
+            "v(out)@nominal": complex(nominal),
+            "v(out)@hot_high": complex(
+                lowest.value if lowest.value is not None else math.nan
+            ),
+            "v(out)@cold_low": complex(
+                highest.value if highest.value is not None else math.nan
+            ),
+        }
+
+    cold_resistance = 1e3 * (1.0 + 0.01 * (-40.0 - 27.0))
+    hot_resistance = 1e3 * (1.0 + 0.01 * (90.0 - 27.0))
+    rows.append(
+        Fixture(
+            key="corners",
+            category=Category.ANALYSIS,
+            name="Corners (temperature and supply)",
+            known=Known(
+                values={
+                    "v(out)@nominal": divider_out(5.0, 1e3, 3e3),
+                    "v(out)@hot_high": divider_out(5.5, hot_resistance, 3e3),
+                    "v(out)@cold_low": divider_out(4.5, cold_resistance, 3e3),
+                },
+                source=(
+                    "closed form: drifting divider at nominal (5 V, 27 C), "
+                    "hot_high (5.5 V, 90 C), and cold_low (4.5 V, -40 C)"
+                ),
+            ),
+            jolty=run_corners,
+            spice=Spice(
+                deck=(),
+                ngspice=Documented(
+                    "ngspice 47 manual, §18.5 / control language: corners run by "
+                    "altering temperature and parameters in a control loop; no "
+                    "fixture runs it here yet"
+                ),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .STEP: sweeps parameters and "
+                    "temperature over combinations; no fixture runs it here yet"
+                ),
+                reads={},
+            ),
+        )
+    )
+
+    def run_worst_case() -> Values:
+        with tempfile.TemporaryDirectory() as directory:
+            script_path = Path(directory) / "worst_case.py"
+            script_path.write_text(_WORST_CASE_SCRIPT, encoding="utf-8")
+            outcome = run_plan(
+                Job(script=script_path, plan=script_path, max_unknowns=10),
+                Path(directory),
+            )
+        if not isinstance(outcome, Built):
+            message = f"worst-case plan did not build: {outcome}"
+            raise TypeError(message)
+        if outcome.worst_case is None:
+            message = "worst-case plan produced no worst-case verdicts"
+            raise RuntimeError(message)
+        lowest, highest = outcome.worst_case.verdicts
+        return {
+            "v(out)@low": complex(
+                lowest.value if lowest.value is not None else math.nan
+            ),
+            "v(out)@high": complex(
+                highest.value if highest.value is not None else math.nan
+            ),
+        }
+
+    rows.append(
+        Fixture(
+            key="worst-case",
+            category=Category.ANALYSIS,
+            name="Worst-case tolerance analysis",
+            known=Known(
+                values={
+                    "v(out)@low": divider_out(5.0, 1.1e3, 2.7e3),
+                    "v(out)@high": divider_out(5.0, 0.9e3, 3.3e3),
+                },
+                source=(
+                    "closed form: divider extremes at +/-10 % resistance "
+                    "tolerance (R1 +10 %, R2 -10 % and R1 -10 %, R2 +10 %)"
+                ),
+            ),
+            jolty=run_worst_case,
+            spice=Spice(
+                deck=(),
+                ngspice=Unsupported(
+                    NGSPICE_ANALYSES + "; no built-in worst-case tolerance analysis"
+                ),
+                xyce=Unsupported(XYCE_COMMANDS),
+                reads={},
+            ),
+        )
+    )
+
+    distortion_deck = (
+        "* disto",
+        "I1 0 out DC 1m DISTOF1 1m",
+        "D1 out 0 dd",
+        ".model dd D(IS=1e-14 N=1)",
+    )
+    rows.append(
+        Fixture(
+            key="disto",
+            category=Category.ANALYSIS,
+            name="Small-signal distortion (.disto)",
+            known=Known(
+                values={
+                    "v(hd2)": -THERMAL_VOLTAGE / 4.0,
+                    "v(hd3)": THERMAL_VOLTAGE / 12.0,
+                },
+                source=(
+                    "closed form: Volterra 2nd and 3rd harmonic amplitudes of "
+                    "`v = Vt * ln(1 + i / Is)` driven by `I0 + I0 * cos(wt)`"
+                ),
+            ),
+            jolty=Unsupported(
+                JOLTY_ANALYSES + "; none computes small-signal distortion (.disto)"
+            ),
+            spice=Spice(
+                deck=distortion_deck,
+                ngspice=("disto lin 1 1k 1k\nsetplot disto1", "setplot disto2"),
+                xyce=Unsupported(XYCE_COMMANDS),
+                reads={
+                    "v(hd2)": Read(ngspice="v(out)", plot=0, complex=True),
+                    "v(hd3)": Read(ngspice="v(out)", plot=1, complex=True),
+                },
+            ),
+        )
+    )
+
+    scattering_deck = (
+        "* sp",
+        "V1 p1 0 DC 0 AC 1 portnum 1 z0 50",
+        "R1 p1 p2 100",
+        "V2 p2 0 DC 0 portnum 2 z0 50",
+    )
+    rows.append(
+        Fixture(
+            key="sp",
+            category=Category.ANALYSIS,
+            name="S-parameters (.sp)",
+            known=Known(
+                values={"s(1,1)": 0.5, "s(2,1)": 0.5, "s(1,2)": 0.5, "s(2,2)": 0.5},
+                source=(
+                    "closed form: 100 ohm series resistor between 50 ohm ports: "
+                    "`S11 = S22 = R / (R + 2 * Z0)`, "
+                    "`S21 = S12 = 2 * Z0 / (R + 2 * Z0)`"
+                ),
+            ),
+            jolty=Unsupported(JOLTY_ANALYSES + "; none computes S-parameters (.sp)"),
+            spice=Spice(
+                deck=scattering_deck,
+                ngspice=("sp lin 1 1Meg 1Meg",),
+                xyce=Documented(
+                    "Xyce Reference Guide 7.10, .LIN: linear multi-port "
+                    "S-parameter extraction with P port devices; no fixture runs "
+                    "it here yet"
+                ),
+                reads={
+                    "s(1,1)": Read(ngspice="v(s_1_1)", complex=True),
+                    "s(2,1)": Read(ngspice="v(s_2_1)", complex=True),
+                    "s(1,2)": Read(ngspice="v(s_1_2)", complex=True),
+                    "s(2,2)": Read(ngspice="v(s_2_2)", complex=True),
+                },
+            ),
+        )
+    )
+
+    transient_noise_deck = (
+        "* trnoise",
+        "V1 out 0 DC 0 TRNOISE(1m 10n 0 0)",
+        "R1 out 0 1k",
+    )
+    rows.append(
+        Fixture(
+            key="trnoise",
+            category=Category.ANALYSIS,
+            name="Transient noise",
+            known=Known(
+                source=(
+                    "none: stochastic transient noise draw has no deterministic "
+                    "per-sample closed form"
+                )
+            ),
+            jolty=Unsupported(UNNOISY_TEMPERATURE),
+            spice=Spice(
+                deck=transient_noise_deck,
+                ngspice=("tran 10n 1u 0 10n",),
+                xyce=Unsupported(
+                    "Xyce Reference Guide 7.10, Netlist Commands: no native "
+                    "TRNOISE transient noise source"
+                ),
+                reads={"v(out)@5e-07": Read(ngspice="v(out)", time=5e-7)},
+            ),
+        )
+    )
+    return rows
 
 
 def fixtures() -> list[Fixture]:

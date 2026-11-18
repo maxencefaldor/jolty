@@ -99,8 +99,28 @@ CELLS: Final[dict[str, dict[str, tuple[str, str]]]] = {
         "spectre": (_D, f"{SPECTRE}: montecarlo"),
         "hspice": (_D, f"{HSPICE}: .VARIATION"),
     },
+    "corners": {
+        "ltspice": (_D, f"{LTSPICE}: .step over parameters and temp"),
+        "spectre": (_D, f"{SPECTRE}: sweep"),
+        "hspice": (_D, f"{HSPICE}: .ALTER, .DATA"),
+    },
+    "disto": {
+        "ltspice": (_N, f"{LTSPICE}: no .disto; only .four after a transient"),
+        "spectre": (_D, f"{SPECTRE}: distortion through hb"),
+    },
+    "sp": {
+        "spectre": (_D, f"{SPECTRE}: sp"),
+        "hspice": (_D, f"{HSPICE}: .LIN"),
+    },
+    "trnoise": {
+        "hspice": (_D, f"{HSPICE}: .TRANNOISE"),
+        "afs": (_D, f"{AFS}: transient noise"),
+    },
     "measure": {
         "ltspice": (_D, f"{LTSPICE}: .meas"),
+    },
+    "four": {
+        "ltspice": (_D, f"{LTSPICE}: .four"),
     },
 }
 """The documented cells, by row then simulator: each status and its source."""

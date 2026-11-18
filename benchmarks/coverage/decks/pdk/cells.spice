@@ -1,0 +1,12 @@
+* Synthetic process design kit models and conditional subcircuit
+.model nfet NMOS(LEVEL=1 VTO={0.7 + vth_shift} KP=1e-4)
+.model nbin.1 NMOS(LEVEL=49 LMIN=0.1u LMAX=1u WMIN=1u WMAX=10u VTH0=0.4)
+.model nbin.2 NMOS(LEVEL=49 LMIN=1u LMAX=10u WMIN=1u WMAX=10u VTH0=0.5)
+.subckt kit_div a out gnd ratio=3
+R1 a out {r_sheet * skew * (1 + 0.001 * (temper - 27))}
+.if (ratio > 2)
+R2 out gnd {r_sheet * ratio}
+.else
+R2 out gnd {r_sheet}
+.endif
+.ends

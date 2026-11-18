@@ -34,6 +34,11 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [Transient, backward Euler](#tran-backward-euler) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Periodic steady state](#pss) | agreed | no | no | documented | no | documented | documented | documented |
 | [Monte Carlo](#monte-carlo) | agreed | documented | documented | documented | documented | documented | documented | ? |
+| [Corners (temperature and supply)](#corners) | agreed | documented | documented | documented | documented | documented | documented | ? |
+| [Worst-case tolerance analysis](#worst-case) | agreed | no | no | no | ? | ? | ? | ? |
+| [Small-signal distortion (.disto)](#disto) | no | ? | ? | no | no | documented | ? | ? |
+| [S-parameters (.sp)](#sp) | no | ? | ? | documented | ? | documented | documented | ? |
+| [Transient noise](#trnoise) | no | ? | ? | no | ? | ? | documented | documented |
 
 ## Devices
 
@@ -50,18 +55,21 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [Behavioral source](#behavioral) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Diode](#diode) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Bipolar transistor, Gummel-Poon](#bjt) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
-| [Bipolar transistor, VBIC 1.2](#vbic) | solved | solved | solved | documented | ? | ? | ? | ? |
+| [Bipolar transistor, VBIC 1.2](#vbic) | agreed | ? | ? | documented | ? | ? | ? | ? |
 | [JFET](#jfet) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [MOSFET, level 1](#mos1) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [MOSFET, level 3](#mos3) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [VDMOS](#vdmos) | agreed | reference | agreed | documented | ? | ? | ? | ? |
-| [BSIM3v3.3](#bsim3) | agreed | reference | agreed | documented | ? | ? | ? | ? |
+| [BSIM3v3.3](#bsim3) | solved | ? | ? | documented | ? | ? | ? | ? |
 | [BSIM4 4.5](#bsim4) | agreed | reference | agreed | documented | ? | ? | ? | ? |
 | [Memristor, VTEAM](#memristor-vteam) | agreed | no | no | no | ? | ? | ? | ? |
 | [Memristor, HP's linear ion drift](#memristor-hp) | agreed | no | no | no | ? | ? | ? | ? |
 | [Photocell](#photocell) | agreed | no | no | no | ? | ? | ? | ? |
 | [Thermal network](#thermal) | agreed | no | no | no | ? | ? | ? | ? |
 | [Lossless transmission line](#tline) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
+| [Voltage-controlled switch (VSWITCH)](#switch-voltage) | agreed | ? | ? | documented | ? | ? | ? | ? |
+| [Current-controlled switch (ISWITCH)](#switch-current) | agreed | ? | ? | documented | ? | ? | ? | ? |
+| [Event-driven logic and mixed-signal bridge](#logic) | agreed | documented | documented | documented | ? | ? | ? | ? |
 | [MOSFET, level 2](#mos2) | no | solved | solved | solved | ? | ? | ? | ? |
 | [MOSFET, level 6](#mos6) | no | solved | solved | solved | ? | ? | ? | ? |
 | [MOSFET, level 9](#mos9) | no | solved | solved | documented | ? | ? | ? | ? |
@@ -74,6 +82,9 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [Distributed RC line (URC)](#urc) | no | agreed | agreed | no | ? | ? | ? | ? |
 | [XSPICE code models](#xspice) | no | agreed | agreed | no | ? | ? | ? | ? |
 | [Verilog-A models through OSDI](#osdi) | no | documented | documented | no | ? | ? | ? | ? |
+| [Process design kit: SKY130](#kit-sky130) | documented | documented | documented | documented | ? | ? | ? | ? |
+| [Process design kit: GF180MCU](#kit-gf180mcu) | documented | documented | documented | documented | ? | ? | ? | ? |
+| [Process design kit: SG13G2](#kit-sg13g2) | documented | documented | documented | documented | ? | ? | ? | ? |
 
 ## Syntax
 
@@ -88,6 +99,9 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | [POLY sources](#poly) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [TABLE sources](#table) | agreed | agreed | agreed | agreed | ? | ? | ? | ? |
 | [Model cards inheriting by AKO](#ako) | agreed | no | no | no | ? | ? | ? | ? |
+| [Initial conditions (.ic)](#ic) | agreed | ? | ? | documented | ? | ? | ? | ? |
+| [Operating-point guess (.nodeset)](#nodeset) | agreed | ? | ? | documented | ? | ? | ? | ? |
+| [Process kit library (.lib, scale, .if, binning, temper, agauss)](#pdk-library) | agreed | ? | ? | documented | ? | ? | ? | ? |
 
 ## Outputs
 
@@ -95,6 +109,7 @@ The documented columns cite their sources in [documented.py](documented.py); the
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [SPICE raw files](#raw) | agreed | agreed | agreed | documented | ? | ? | ? | ? |
 | [Measurements of a waveform](#measure) | agreed | agreed | agreed | agreed | documented | ? | ? | ? |
+| [Fourier harmonics (.four)](#four) | agreed | ? | ? | documented | documented | ? | ? | ? |
 
 ## Counts
 
@@ -102,15 +117,18 @@ Rows each simulator offers, right or not, by category; no total and no weights.
 
 | Category | jolty | ngspice 47 | ngspice 47, KLU | Xyce 7.10 | LTspice | Spectre 23.1 | HSPICE 2015 | AFS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Analyses | 19 of 19 | 15 of 19 | 12 of 19 | 15 of 19 | 9 of 19 | 12 of 19 | 9 of 19 | 2 of 19 |
-| Devices | 23 of 35 | 31 of 35 | 31 of 35 | 27 of 35 | 0 of 35 | 0 of 35 | 0 of 35 | 0 of 35 |
-| Syntax | 7 of 9 | 8 of 9 | 8 of 9 | 8 of 9 | 0 of 9 | 0 of 9 | 0 of 9 | 0 of 9 |
-| Outputs | 2 of 2 | 2 of 2 | 2 of 2 | 2 of 2 | 1 of 2 | 0 of 2 | 0 of 2 | 0 of 2 |
+| Analyses | 21 of 24 | 16 of 24 | 13 of 24 | 17 of 24 | 10 of 24 | 15 of 24 | 12 of 24 | 3 of 24 |
+| Devices | 29 of 41 | 33 of 41 | 33 of 41 | 33 of 41 | 0 of 41 | 0 of 41 | 0 of 41 | 0 of 41 |
+| Syntax | 10 of 12 | 8 of 12 | 8 of 12 | 11 of 12 | 0 of 12 | 0 of 12 | 0 of 12 | 0 of 12 |
+| Outputs | 3 of 3 | 2 of 3 | 2 of 3 | 3 of 3 | 2 of 3 | 0 of 3 | 0 of 3 | 0 of 3 |
 
 ## What each simulator lacks that another has
 
 ### jolty
 
+- [Small-signal distortion (.disto)](#disto): spectre
+- [S-parameters (.sp)](#sp): hspice, spectre, xyce-serial
+- [Transient noise](#trnoise): afs, hspice
 - [MOSFET, level 2](#mos2): ngspice-klu, ngspice-sparse, xyce-serial
 - [MOSFET, level 6](#mos6): ngspice-klu, ngspice-sparse, xyce-serial
 - [MOSFET, level 9](#mos9): ngspice-klu, ngspice-sparse, xyce-serial
@@ -132,6 +150,7 @@ Rows each simulator offers, right or not, by category; no total and no weights.
 - [Loop gain (stability)](#stability): hspice, jolty, ltspice, spectre
 - [Sensitivities over time](#sens-tran): jolty, xyce-serial
 - [Periodic steady state](#pss): afs, hspice, jolty, spectre, xyce-serial
+- [Worst-case tolerance analysis](#worst-case): jolty
 - [Memristor, VTEAM](#memristor-vteam): jolty
 - [Memristor, HP's linear ion drift](#memristor-hp): jolty
 - [Photocell](#photocell): jolty
@@ -146,6 +165,7 @@ Rows each simulator offers, right or not, by category; no total and no weights.
 - [Loop gain (stability)](#stability): hspice, jolty, ltspice, spectre
 - [Sensitivities over time](#sens-tran): jolty, xyce-serial
 - [Periodic steady state](#pss): afs, hspice, jolty, spectre, xyce-serial
+- [Worst-case tolerance analysis](#worst-case): jolty
 - [Memristor, VTEAM](#memristor-vteam): jolty
 - [Memristor, HP's linear ion drift](#memristor-hp): jolty
 - [Photocell](#photocell): jolty
@@ -158,6 +178,9 @@ Rows each simulator offers, right or not, by category; no total and no weights.
 - [Transfer function](#tf): hspice, jolty, ltspice, ngspice-klu, ngspice-sparse, spectre
 - [Poles and zeros](#pz): jolty, ngspice-sparse, spectre
 - [Loop gain (stability)](#stability): hspice, jolty, ltspice, spectre
+- [Worst-case tolerance analysis](#worst-case): jolty
+- [Small-signal distortion (.disto)](#disto): spectre
+- [Transient noise](#trnoise): afs, hspice
 - [Memristor, VTEAM](#memristor-vteam): jolty
 - [Memristor, HP's linear ion drift](#memristor-hp): jolty
 - [Photocell](#photocell): jolty
@@ -417,6 +440,71 @@ Monte Carlo; the known answer: closed form: each sample's divider at the resista
 - hspice, documented: HSPICE Quick Reference Guide, June 2015: .VARIATION
 - afs, unknown: no document read says
 
+### corners
+
+Corners (temperature and supply); the known answer: closed form: drifting divider at nominal (5 V, 27 C), hot_high (5.5 V, 90 C), and cold_low (4.5 V, -40 C).
+
+- jolty, agreed: largest error 2.2e-16 of the scale
+- ngspice-sparse, documented: ngspice 47 manual, §18.5 / control language: corners run by altering temperature and parameters in a control loop; no fixture runs it here yet
+- ngspice-klu, documented: ngspice 47 manual, §18.5 / control language: corners run by altering temperature and parameters in a control loop; no fixture runs it here yet
+- xyce-serial, documented: Xyce Reference Guide 7.10, .STEP: sweeps parameters and temperature over combinations; no fixture runs it here yet
+- ltspice, documented: LTspice's help, Dot Commands: .step over parameters and temp
+- spectre, documented: Spectre Circuit Simulator Reference 23.1: sweep
+- hspice, documented: HSPICE Quick Reference Guide, June 2015: .ALTER, .DATA
+- afs, unknown: no document read says
+
+### worst-case
+
+Worst-case tolerance analysis; the known answer: closed form: divider extremes at +/-10 % resistance tolerance (R1 +10 %, R2 -10 % and R1 -10 %, R2 +10 %).
+
+- jolty, agreed: largest error 1.1e-16 of the scale
+- ngspice-sparse, unsupported: `` ngspice 47 manual, §11.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; no built-in worst-case tolerance analysis ``
+- ngspice-klu, unsupported: `` ngspice 47 manual, §11.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; no built-in worst-case tolerance analysis ``
+- xyce-serial, unsupported: `` Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case ``
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### disto
+
+Small-signal distortion (.disto); the known answer: closed form: Volterra 2nd and 3rd harmonic amplitudes of `v = Vt * ln(1 + i / Is)` driven by `I0 + I0 * cos(wt)`.
+
+- jolty, unsupported: `` jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, PeriodicSteadyState, Sensitivity, Mismatch, Stability, Noise, PoleZero, TransferFunction; none computes small-signal distortion (.disto) ``
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, unsupported: `` Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case ``
+- ltspice, unsupported: `` LTspice's help, Dot Commands: no .disto; only .four after a transient ``
+- spectre, documented: Spectre Circuit Simulator Reference 23.1: distortion through hb
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### sp
+
+S-parameters (.sp); the known answer: closed form: 100 ohm series resistor between 50 ohm ports: `S11 = S22 = R / (R + 2 * Z0)`, `S21 = S12 = 2 * Z0 / (R + 2 * Z0)`.
+
+- jolty, unsupported: `` jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, PeriodicSteadyState, Sensitivity, Mismatch, Stability, Noise, PoleZero, TransferFunction; none computes S-parameters (.sp) ``
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, .LIN: linear multi-port S-parameter extraction with P port devices; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, documented: Spectre Circuit Simulator Reference 23.1: sp
+- hspice, documented: HSPICE Quick Reference Guide, June 2015: .LIN
+- afs, unknown: no document read says
+
+### trnoise
+
+Transient noise; the known answer: none: stochastic transient noise draw has no deterministic per-sample closed form.
+
+- jolty, unsupported: `` jolty.plan.Analysis has no analysis of noise over time ``
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, unsupported: `` Xyce Reference Guide 7.10, Netlist Commands: no native TRNOISE transient noise source ``
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, documented: HSPICE Quick Reference Guide, June 2015: .TRANNOISE
+- afs, documented: Analog FastSPICE fact sheet: transient noise
+
 ### capacitor
 
 Capacitor; the known answer: closed form: jωC.
@@ -562,11 +650,11 @@ Bipolar transistor, Gummel-Poon; the known answer: closed form: Ebers and Moll's
 
 ### vbic
 
-Bipolar transistor, VBIC 1.2; the known answer: none yet: Ebers and Moll's transport form with VBIC's constants misses the run of both by 2e-6, to be explained.
+Bipolar transistor, VBIC 1.2; the known answer: closed form: VBIC 1.2 transport and base currents with VBIC constants (k=1.380662e-23, q=1.602189e-19), default intrinsic resistances (RBI=RCI=RBP=0.1 ohm, causing -2.19e-6 base drop), and q1 smoothing floor (1 + 2.5e-9).
 
-- jolty, solved
-- ngspice-sparse, solved
-- ngspice-klu, solved
+- jolty, agreed: largest error 8.1e-08 of the scale
+- ngspice-sparse, unknown: pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)
+- ngspice-klu, unknown: pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)
 - xyce-serial, documented: Xyce Reference Guide 7.10, BJT levels 11 and 12: VBIC 1.3, not 1.2, its card's level not ngspice's 4; the dialect of branch xyce writes it
 - ltspice, unknown: no document read says
 - spectre, unknown: no document read says
@@ -629,9 +717,9 @@ VDMOS; the known answer: ngspice 47's VDMOS, the model's defining implementation
 
 BSIM3v3.3; the known answer: ngspice 47's BSIM3v3.3, Berkeley's code, the model's defining implementation.
 
-- jolty, agreed: largest error 2.1e-16 of the scale
-- ngspice-sparse, reference
-- ngspice-klu, agreed: largest error 0 of the scale
+- jolty, solved
+- ngspice-sparse, unknown: pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)
+- ngspice-klu, unknown: pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)
 - xyce-serial, documented: Xyce Reference Guide 7.10, MOSFET level 9 (BSIM3v3.2.2); no fixture runs it: another version than jolty's 3.3
 - ltspice, unknown: no document read says
 - spectre, unknown: no document read says
@@ -711,6 +799,45 @@ Lossless transmission line; the known answer: closed form: a matched line delays
 - ngspice-sparse, agreed: largest error 1.1e-16 of the scale
 - ngspice-klu, agreed: largest error 0 of the scale
 - xyce-serial, agreed: largest error 5.6e-17 of the scale
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### switch-voltage
+
+Voltage-controlled switch (VSWITCH); the known answer: closed form: divider with switch at `ROFF=10 kohm`, `sqrt(RON * ROFF) = 1 kohm`, and `RON=100 ohm`.
+
+- jolty, agreed: largest error 2e-16 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, VSWITCH: smooth voltage-controlled switch with log-cubic transition; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### switch-current
+
+Current-controlled switch (ISWITCH); the known answer: closed form: divider with switch at `ROFF=10 kohm`, `sqrt(RON * ROFF) = 1 kohm`, and `RON=100 ohm`.
+
+- jolty, agreed: largest error 2e-16 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, ISWITCH: smooth current-controlled switch with log-cubic transition; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### logic
+
+Event-driven logic and mixed-signal bridge; the known answer: closed form: event-driven NAND fall at 1 ns + 1 ns = 2 ns, inverter rise at 2 ns + 2 ns = 4 ns, and electrical inverter midpoint crossing at 1.5 ns + 0.5 ns = 2.0 ns.
+
+- jolty, agreed: largest error 1.1e-15 of the scale
+- ngspice-sparse, documented: ngspice 47 manual, chapter 8 XSPICE: digital logic code models and ADC/DAC bridges; no fixture runs it here yet
+- ngspice-klu, documented: ngspice 47 manual, chapter 8 XSPICE: digital logic code models and ADC/DAC bridges; no fixture runs it here yet
+- xyce-serial, documented: Xyce Reference Guide 7.10, Behavioral Digital Devices (U): mixed-signal digital gate primitives; no fixture runs it here yet
 - ltspice, unknown: no document read says
 - spectre, unknown: no document read says
 - hspice, unknown: no document read says
@@ -872,6 +999,45 @@ Verilog-A models through OSDI; the known answer: none yet.
 - hspice, unknown: no document read says
 - afs, unknown: no document read says
 
+### kit-sky130
+
+Process design kit: SKY130; the known answer: none yet.
+
+- jolty, documented: docs/guide/foundry.md & tests/test_kits.py: SKY130 pinned at bdc9412b (251 of 263 devices native, BSIM4 4.5, scale=1u, hsa compatibility); external archive not fetched offline
+- ngspice-sparse, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SKY130 (bdc9412b) with ngbehavior=hsa; external archive not fetched offline
+- ngspice-klu, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SKY130 (bdc9412b) with ngbehavior=hsa; external archive not fetched offline
+- xyce-serial, documented: open_pdks SKY130: supported via open_pdks Xyce netlists or XDM translation; external archive not fetched offline
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### kit-gf180mcu
+
+Process design kit: GF180MCU; the known answer: none yet.
+
+- jolty, documented: docs/guide/foundry.md & tests/test_kits.py: GF180MCU pinned at 9f992d5a (65 of 72 devices native, BSIM4 4.5, Gummel-Poon, diode level 3); external archive not fetched offline
+- ngspice-sparse, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs GF180MCU (9f992d5a) natively; external archive not fetched offline
+- ngspice-klu, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs GF180MCU (9f992d5a) natively; external archive not fetched offline
+- xyce-serial, documented: open_pdks GF180MCU: BSIM4 models run with XDM translation; external archive not fetched offline
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### kit-sg13g2
+
+Process design kit: SG13G2; the known answer: none yet.
+
+- jolty, documented: docs/guide/foundry.md & tests/test_kits.py: SG13G2 pinned at e73adb40 (36 of 53 devices native including self-heated VBIC HBTs, 14 Verilog-A models); external archive not fetched offline
+- ngspice-sparse, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SG13G2 (e73adb40) native devices and requires OpenVAF/OSDI for Verilog-A MOSFETs; external archive not fetched offline
+- ngspice-klu, documented: docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SG13G2 (e73adb40) native devices and requires OpenVAF/OSDI for Verilog-A MOSFETs; external archive not fetched offline
+- xyce-serial, documented: IHP-Open-PDK SG13G2: ships dedicated Xyce model libraries for MOS, HBT and passive devices; external archive not fetched offline
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
 ### subckt
 
 Subcircuits with parameters; the known answer: closed form: a halving divider.
@@ -989,6 +1155,45 @@ Model cards inheriting by AKO; the known answer: closed form: Shockley's law wit
 - hspice, unknown: no document read says
 - afs, unknown: no document read says
 
+### ic
+
+Initial conditions (.ic); the known answer: closed form: RC discharge `exp(-t / (R * C))` from `v(out)(0) = 1 V`.
+
+- jolty, agreed: largest error 2.1e-06 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, .IC: transient initial node voltages; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### nodeset
+
+Operating-point guess (.nodeset); the known answer: closed form: positive root of `v = 2 * tanh(v)`, selected over the trivial root `v = 0` by `.nodeset v(x)=1.5`.
+
+- jolty, agreed: largest error 2.1e-15 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, .NODESET: operating-point initial guesses; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### pdk-library
+
+Process kit library (.lib, scale, .if, binning, temper, agauss); the known answer: closed form: synthetic PDK exercising `.include`, `.lib tt`, `.option scale=1u`, `.if`, `temper`, `agauss`, and BSIM3 binning (`M2` requires `scale=1u` to select `nbin.1`).
+
+- jolty, agreed: largest error 7.1e-09 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, .LIB, .INCLUDE, .OPTIONS, .PARAM and binned models; no fixture runs it here yet
+- ltspice, unknown: no document read says
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
 ### raw
 
 SPICE raw files; the known answer: closed form: a divider's ratio, read back from the raw file.
@@ -1011,6 +1216,19 @@ Measurements of a waveform; the known answer: closed form: when an RC's ramp res
 - ngspice-klu, agreed: largest error 5.1e-06 of the scale
 - xyce-serial, agreed: largest error 7.9e-07 of the scale
 - ltspice, documented: LTspice's help, Dot Commands: .meas
+- spectre, unknown: no document read says
+- hspice, unknown: no document read says
+- afs, unknown: no document read says
+
+### four
+
+Fourier harmonics (.four); the known answer: closed form: 3-4-5 harmonic sum `100 * sqrt(0.03^2 + 0.04^2) / 1.0 = 5 %`.
+
+- jolty, agreed: largest error 8.2e-05 of the scale
+- ngspice-sparse, unknown: ngspice is not installed
+- ngspice-klu, unknown: ngspice is not installed
+- xyce-serial, documented: Xyce Reference Guide 7.10, .FOUR: Fourier analysis written to a .four file; no fixture runs it here yet
+- ltspice, documented: LTspice's help, Dot Commands: .four
 - spectre, unknown: no document read says
 - hspice, unknown: no document read says
 - afs, unknown: no document read says

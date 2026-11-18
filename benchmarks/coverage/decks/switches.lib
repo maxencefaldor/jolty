@@ -1,0 +1,14 @@
+* PSpice-model voltage- and current-controlled switch subcircuits
+.subckt vswitch_stage in out ctrl
+R1 in out 1k
+S1 out 0 ctrl 0 sw_voltage
+.model sw_voltage VSWITCH(RON=100 ROFF=10k VON=1 VOFF=0)
+.ends
+
+.subckt iswitch_stage in out src
+R1 in out 1k
+R2 src mid 1k
+VS mid 0 0
+W1 out 0 VS sw_current
+.model sw_current ISWITCH(RON=100 ROFF=10k ION=2m IOFF=0)
+.ends

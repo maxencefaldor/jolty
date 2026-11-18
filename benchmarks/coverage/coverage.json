@@ -1713,6 +1713,216 @@
         }
       }
     },
+    "corners": {
+      "category": "analysis",
+      "name": "Corners (temperature and supply)",
+      "source": "closed form: drifting divider at nominal (5 V, 27 C), hot_high (5.5 V, 90 C), and cold_low (4.5 V, -40 C)",
+      "known": {
+        "v(out)@nominal": [
+          3.75,
+          0.0
+        ],
+        "v(out)@hot_high": [
+          3.5637149028077753,
+          0.0
+        ],
+        "v(out)@cold_low": [
+          4.054054054054054,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.2e-16 of the scale",
+          "found": {
+            "v(out)@nominal": [
+              3.75,
+              0.0
+            ],
+            "v(out)@hot_high": [
+              3.5637149028077753,
+              0.0
+            ],
+            "v(out)@cold_low": [
+              4.0540540540540535,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a718.5 / control language: corners run by altering temperature and parameters in a control loop; no fixture runs it here yet",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a718.5 / control language: corners run by altering temperature and parameters in a control loop; no fixture runs it here yet",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .STEP: sweeps parameters and temperature over combinations; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "worst-case": {
+      "category": "analysis",
+      "name": "Worst-case tolerance analysis",
+      "source": "closed form: divider extremes at +/-10 % resistance tolerance (R1 +10 %, R2 -10 % and R1 -10 %, R2 +10 %)",
+      "known": {
+        "v(out)@low": [
+          3.5526315789473686,
+          0.0
+        ],
+        "v(out)@high": [
+          3.9285714285714284,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@low": [
+              3.5526315789473686,
+              0.0
+            ],
+            "v(out)@high": [
+              3.928571428571429,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; no built-in worst-case tolerance analysis",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; no built-in worst-case tolerance analysis",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case",
+          "found": null
+        }
+      }
+    },
+    "disto": {
+      "category": "analysis",
+      "name": "Small-signal distortion (.disto)",
+      "source": "closed form: Volterra 2nd and 3rd harmonic amplitudes of `v = Vt * ln(1 + i / Is)` driven by `I0 + I0 * cos(wt)`",
+      "known": {
+        "v(hd2)": [
+          -0.006466231446582188,
+          0.0
+        ],
+        "v(hd3)": [
+          0.002155410482194063,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, PeriodicSteadyState, Sensitivity, Mismatch, Stability, Noise, PoleZero, TransferFunction; none computes small-signal distortion (.disto)",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case",
+          "found": null
+        }
+      }
+    },
+    "sp": {
+      "category": "analysis",
+      "name": "S-parameters (.sp)",
+      "source": "closed form: 100 ohm series resistor between 50 ohm ports: `S11 = S22 = R / (R + 2 * Z0)`, `S21 = S12 = 2 * Z0 / (R + 2 * Z0)`",
+      "known": {
+        "s(1,1)": [
+          0.5,
+          0.0
+        ],
+        "s(2,1)": [
+          0.5,
+          0.0
+        ],
+        "s(1,2)": [
+          0.5,
+          0.0
+        ],
+        "s(2,2)": [
+          0.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, PeriodicSteadyState, Sensitivity, Mismatch, Stability, Noise, PoleZero, TransferFunction; none computes S-parameters (.sp)",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .LIN: linear multi-port S-parameter extraction with P port devices; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "trnoise": {
+      "category": "analysis",
+      "name": "Transient noise",
+      "source": "none: stochastic transient noise draw has no deterministic per-sample closed form",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "jolty.plan.Analysis has no analysis of noise over time",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: no native TRNOISE transient noise source",
+          "found": null
+        }
+      }
+    },
     "capacitor": {
       "category": "device",
       "name": "Capacitor",
@@ -2319,12 +2529,21 @@
     "vbic": {
       "category": "device",
       "name": "Bipolar transistor, VBIC 1.2",
-      "source": "none yet: Ebers and Moll's transport form with VBIC's constants misses the run of both by 2e-6, to be explained",
-      "known": null,
+      "source": "closed form: VBIC 1.2 transport and base currents with VBIC constants (k=1.380662e-23, q=1.602189e-19), default intrinsic resistances (RBI=RCI=RBP=0.1 ohm, causing -2.19e-6 base drop), and q1 smoothing floor (1 + 2.5e-9)",
+      "known": {
+        "i(vc)": [
+          -5.670021734366464e-05,
+          0.0
+        ],
+        "i(vb)": [
+          -5.670021747522938e-07,
+          0.0
+        ]
+      },
       "cells": {
         "jolty": {
-          "status": "solved",
-          "evidence": "",
+          "status": "agreed",
+          "evidence": "largest error 8.1e-08 of the scale",
           "found": {
             "i(vc)": [
               -5.670022194265074e-05,
@@ -2337,32 +2556,14 @@
           }
         },
         "ngspice-sparse": {
-          "status": "solved",
-          "evidence": "",
-          "found": {
-            "i(vc)": [
-              -5.67005921929933e-05,
-              0.0
-            ],
-            "i(vb)": [
-              -5.670046767180082e-07,
-              0.0
-            ]
-          }
+          "status": "unknown",
+          "evidence": "pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)",
+          "found": null
         },
         "ngspice-klu": {
-          "status": "solved",
-          "evidence": "",
-          "found": {
-            "i(vc)": [
-              -5.670059218809698e-05,
-              0.0
-            ],
-            "i(vb)": [
-              -5.670046756967719e-07,
-              0.0
-            ]
-          }
+          "status": "unknown",
+          "evidence": "pending ngspice re-run at temperature=same_kelvins(ROOM) (prior reading at shifted temp was i(vc)=-5.670059e-05 A)",
+          "found": null
         },
         "xyce-serial": {
           "status": "documented",
@@ -2580,34 +2781,24 @@
       "known": null,
       "cells": {
         "jolty": {
-          "status": "agreed",
-          "evidence": "largest error 2.1e-16 of the scale",
+          "status": "solved",
+          "evidence": "",
           "found": {
             "i(vdrain)": [
-              -1.9514355200069628e-12,
+              -0.000327952241254378,
               0.0
             ]
           }
         },
         "ngspice-sparse": {
-          "status": "reference",
-          "evidence": "",
-          "found": {
-            "i(vdrain)": [
-              -1.951435520006963e-12,
-              0.0
-            ]
-          }
+          "status": "unknown",
+          "evidence": "pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)",
+          "found": null
         },
         "ngspice-klu": {
-          "status": "agreed",
-          "evidence": "largest error 0 of the scale",
-          "found": {
-            "i(vdrain)": [
-              -1.951435520006963e-12,
-              0.0
-            ]
-          }
+          "status": "unknown",
+          "evidence": "pending ngspice re-run at stronger bias (Vds=3.0 V, Vgs=3.0 V; prior weak-inversion reading was i(vdrain)=-1.951436e-12 A)",
+          "found": null
         },
         "xyce-serial": {
           "status": "documented",
@@ -2901,6 +3092,184 @@
               0.0
             ]
           }
+        }
+      }
+    },
+    "switch-voltage": {
+      "category": "device",
+      "name": "Voltage-controlled switch (VSWITCH)",
+      "source": "closed form: divider with switch at `ROFF=10 kohm`, `sqrt(RON * ROFF) = 1 kohm`, and `RON=100 ohm`",
+      "known": {
+        "v(out)@0": [
+          4.545454545454546,
+          0.0
+        ],
+        "v(out)@1": [
+          2.5,
+          0.0
+        ],
+        "v(out)@2": [
+          0.45454545454545453,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454545,
+              0.0
+            ],
+            "v(out)@1": [
+              2.4999999999999996,
+              0.0
+            ],
+            "v(out)@2": [
+              0.45454545454545503,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, VSWITCH: smooth voltage-controlled switch with log-cubic transition; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "switch-current": {
+      "category": "device",
+      "name": "Current-controlled switch (ISWITCH)",
+      "source": "closed form: divider with switch at `ROFF=10 kohm`, `sqrt(RON * ROFF) = 1 kohm`, and `RON=100 ohm`",
+      "known": {
+        "v(out)@0": [
+          4.545454545454546,
+          0.0
+        ],
+        "v(out)@1": [
+          2.5,
+          0.0
+        ],
+        "v(out)@2": [
+          0.45454545454545453,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.545454545454545,
+              0.0
+            ],
+            "v(out)@1": [
+              2.4999999999999996,
+              0.0
+            ],
+            "v(out)@2": [
+              0.45454545454545503,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, ISWITCH: smooth current-controlled switch with log-cubic transition; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "logic": {
+      "category": "device",
+      "name": "Event-driven logic and mixed-signal bridge",
+      "source": "closed form: event-driven NAND fall at 1 ns + 1 ns = 2 ns, inverter rise at 2 ns + 2 ns = 4 ns, and electrical inverter midpoint crossing at 1.5 ns + 0.5 ns = 2.0 ns",
+      "known": {
+        "t(n_fall)": [
+          2e-09,
+          0.0
+        ],
+        "t(y_rise)": [
+          4e-09,
+          0.0
+        ],
+        "v(out)@5e-10": [
+          1.8,
+          0.0
+        ],
+        "v(out)@2e-09": [
+          0.9,
+          0.0
+        ],
+        "v(out)@3e-09": [
+          0.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-15 of the scale",
+          "found": {
+            "t(n_fall)": [
+              2e-09,
+              0.0
+            ],
+            "t(y_rise)": [
+              4e-09,
+              0.0
+            ],
+            "v(out)@5e-10": [
+              1.8,
+              0.0
+            ],
+            "v(out)@2e-09": [
+              0.900000000000002,
+              0.0
+            ],
+            "v(out)@3e-09": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, chapter 8 XSPICE: digital logic code models and ADC/DAC bridges; no fixture runs it here yet",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, chapter 8 XSPICE: digital logic code models and ADC/DAC bridges; no fixture runs it here yet",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, Behavioral Digital Devices (U): mixed-signal digital gate primitives; no fixture runs it here yet",
+          "found": null
         }
       }
     },
@@ -3412,6 +3781,90 @@
         }
       }
     },
+    "kit-sky130": {
+      "category": "device",
+      "name": "Process design kit: SKY130",
+      "source": "",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: SKY130 pinned at bdc9412b (251 of 263 devices native, BSIM4 4.5, scale=1u, hsa compatibility); external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SKY130 (bdc9412b) with ngbehavior=hsa; external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SKY130 (bdc9412b) with ngbehavior=hsa; external archive not fetched offline",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "open_pdks SKY130: supported via open_pdks Xyce netlists or XDM translation; external archive not fetched offline",
+          "found": null
+        }
+      }
+    },
+    "kit-gf180mcu": {
+      "category": "device",
+      "name": "Process design kit: GF180MCU",
+      "source": "",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: GF180MCU pinned at 9f992d5a (65 of 72 devices native, BSIM4 4.5, Gummel-Poon, diode level 3); external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs GF180MCU (9f992d5a) natively; external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs GF180MCU (9f992d5a) natively; external archive not fetched offline",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "open_pdks GF180MCU: BSIM4 models run with XDM translation; external archive not fetched offline",
+          "found": null
+        }
+      }
+    },
+    "kit-sg13g2": {
+      "category": "device",
+      "name": "Process design kit: SG13G2",
+      "source": "",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: SG13G2 pinned at e73adb40 (36 of 53 devices native including self-heated VBIC HBTs, 14 Verilog-A models); external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SG13G2 (e73adb40) native devices and requires OpenVAF/OSDI for Verilog-A MOSFETs; external archive not fetched offline",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs SG13G2 (e73adb40) native devices and requires OpenVAF/OSDI for Verilog-A MOSFETs; external archive not fetched offline",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "IHP-Open-PDK SG13G2: ships dedicated Xyce model libraries for MOS, HBT and passive devices; external archive not fetched offline",
+          "found": null
+        }
+      }
+    },
     "subckt": {
       "category": "syntax",
       "name": "Subcircuits with parameters",
@@ -3864,6 +4317,160 @@
         }
       }
     },
+    "ic": {
+      "category": "syntax",
+      "name": "Initial conditions (.ic)",
+      "source": "closed form: RC discharge `exp(-t / (R * C))` from `v(out)(0) = 1 V`",
+      "known": {
+        "v(out)@0.0": [
+          1.0,
+          0.0
+        ],
+        "v(out)@5e-07": [
+          0.6065306597126335,
+          0.0
+        ],
+        "v(out)@1e-06": [
+          0.3678794411714424,
+          0.0
+        ],
+        "v(out)@2e-06": [
+          0.13533528323661276,
+          0.0
+        ],
+        "v(out)@3e-06": [
+          0.049787068367863965,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.1e-06 of the scale",
+          "found": {
+            "v(out)@0.0": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5e-07": [
+              0.6065297126321938,
+              0.0
+            ],
+            "v(out)@1e-06": [
+              0.36787733388970845,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.13533338021119998,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.049785953393041066,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .IC: transient initial node voltages; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "nodeset": {
+      "category": "syntax",
+      "name": "Operating-point guess (.nodeset)",
+      "source": "closed form: positive root of `v = 2 * tanh(v)`, selected over the trivial root `v = 0` by `.nodeset v(x)=1.5`",
+      "known": {
+        "v(x)": [
+          1.9150080481545375,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.1e-15 of the scale",
+          "found": {
+            "v(x)": [
+              1.9150080481545415,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .NODESET: operating-point initial guesses; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "pdk-library": {
+      "category": "syntax",
+      "name": "Process kit library (.lib, scale, .if, binning, temper, agauss)",
+      "source": "closed form: synthetic PDK exercising `.include`, `.lib tt`, `.option scale=1u`, `.if`, `temper`, `agauss`, and BSIM3 binning (`M2` requires `scale=1u` to select `nbin.1`)",
+      "known": {
+        "v(out)": [
+          3.75,
+          0.0
+        ],
+        "i(vd)": [
+          -0.0004225,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 7.1e-09 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ],
+            "i(vd)": [
+              -0.0004225000030100001,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .LIB, .INCLUDE, .OPTIONS, .PARAM and binned models; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
     "raw": {
       "category": "output",
       "name": "SPICE raw files",
@@ -3962,6 +4569,44 @@
               0.0
             ]
           }
+        }
+      }
+    },
+    "four": {
+      "category": "output",
+      "name": "Fourier harmonics (.four)",
+      "source": "closed form: 3-4-5 harmonic sum `100 * sqrt(0.03^2 + 0.04^2) / 1.0 = 5 %`",
+      "known": {
+        "thd": [
+          5.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 8.2e-05 of the scale",
+          "found": {
+            "thd": [
+              4.999592282177642,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unknown",
+          "evidence": "ngspice is not installed",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .FOUR: Fourier analysis written to a .four file; no fixture runs it here yet",
+          "found": null
         }
       }
     }

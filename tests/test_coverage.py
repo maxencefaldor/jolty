@@ -6,16 +6,40 @@ runs every simulator; these tests run jolty's fixtures alone, and fail when the
 committed matrix says otherwise, as the reference pages fail when their source changes.
 """
 
+import math
 import typing
+from dataclasses import replace
+from pathlib import Path, PurePosixPath
 
 import documented
 import matrix
 import pytest
-from capabilities import JOLTY_ANALYSES, Known, Read, fixtures, ngspice_only
+from capabilities import (
+    DECKS,
+    JOLTY_ANALYSES,
+    ROOM,
+    VBIC_BOLTZMANN,
+    VBIC_CHARGE,
+    Documented,
+    Known,
+    Read,
+    Spice,
+    deck_circuit,
+    fixtures,
+    forced,
+    ngspice_only,
+    simulation,
+    vbic_currents,
+)
 from measuring import load
 from simulators import Simulator, Unsupported
 
-from jolty import plan
+from differential import SKIP
+from jolty import circuit, devices, plan
+from jolty.plan import TIGHT, OperatingPoint
+from jolty.settings import Settings
+from jolty.spice import kits, ngspice
+from jolty.units import m as m_
 
 FIXTURES = {fixture.key: fixture for fixture in fixtures()}
 COMMITTED = matrix.SuiteResults.model_validate(load(matrix.RESULTS))
@@ -103,8 +127,273 @@ def test_ngspice_only_reads_declared_names() -> None:
         "closed form: halving divider",
         xyce=Unsupported("test"),
     )
-    assert not isinstance(row.jolty, Unsupported)
+    assert not isinstance(row.jolty, Unsupported | Documented)
     values = row.jolty()
     assert list(values) == ["v(out)"]
     # Exact 1:1 divider ratio: 2 V / 2 = 1 V, within floating-point rounding (1e-12).
     assert abs(values["v(out)"] - 1.0) < 1e-12
+
+
+def test_vbic_agrees_with_exact_closed_form() -> None:
+    """VBIC 1.2 agrees with its exact closed form (RBI=RCI=RBP=0.1 ohm, q1 floor).
+
+    Explains the prior 2.11e-6 miss against naive Ebers-Moll (default RBI=0.1 ohm
+    drops I_b * RBI ~= 5.67e-8 V -> -2.19e-6 shift, plus q1 smoothing -2.50e-9 and
+    gmin=1e-12 S leakage +8.11e-8) and verifies rounding-level agreement at gmin=0
+    and at gmin=1e-12.
+    """
+    fixture = FIXTURES["vbic"]
+    assert isinstance(fixture.spice, Spice)
+    assert fixture.spice.temperature == ngspice.same_kelvins(ROOM)
+    assert fixture.known is not None
+
+    cell = matrix.run(fixture, Simulator.JOLTY)
+    assert cell.found is not None
+    found = {name: complex(real, imag) for name, (real, imag) in cell.found.items()}
+    status, evidence = matrix.judge(fixture.known, found, None)
+    assert status is matrix.Status.AGREED, evidence
+
+    jolty_collector_current = -found["i(vc)"].real
+    jolty_base_current = -found["i(vb)"].real
+
+    # 1. Naive Ebers-Moll with VBIC constants alone (omitting default RBI=0.1 ohm)
+    #    misses jolty by +2.114e-6 (> 1e-6 tolerance).
+    vbic_thermal_voltage = ROOM * VBIC_BOLTZMANN / VBIC_CHARGE
+    naive_collector_current = 1e-16 * (
+        math.expm1(0.7 / vbic_thermal_voltage) - math.expm1(-1.3 / vbic_thermal_voltage)
+    ) - 1e-16 * math.expm1(-1.3 / vbic_thermal_voltage)
+    assert (
+        abs(naive_collector_current - jolty_collector_current) / jolty_collector_current
+        > 2e-6
+    )
+
+    # 2. Pure VBIC 1.2 law (gmin=0) matches jolty at TIGHT to 8.11e-8 (the +4.6 pA
+    #    junction gmin leakage).
+    exact_collector_without_leakage, exact_base_without_leakage = vbic_currents(
+        2.0,
+        0.7,
+        saturation_current=1e-16,
+        ideal_base_emitter_current=1e-18,
+        ideal_base_collector_current=1e-16,
+    )
+    assert (
+        abs(exact_collector_without_leakage - jolty_collector_current)
+        / jolty_collector_current
+        < 1e-7
+    )
+
+    # 3. With gmin=1e-12 included, residual drops below 1 ULP of V_c / RCI (4.44 fA).
+    rounding_current_unit = math.ulp(2.0) / 0.1
+    exact_collector_with_leakage, exact_base_with_leakage = vbic_currents(
+        2.0,
+        0.7,
+        saturation_current=1e-16,
+        ideal_base_emitter_current=1e-18,
+        ideal_base_collector_current=1e-16,
+        minimum_conductance=1e-12,
+    )
+    assert abs(exact_collector_with_leakage - jolty_collector_current) < (
+        rounding_current_unit
+    )
+    assert abs(exact_base_with_leakage - jolty_base_current) < rounding_current_unit
+
+    # 4. At gmin=0 in jolty, the pure physical formula also matches within 1 ULP.
+    built = deck_circuit(fixture.spice.deck)
+    zero_leakage_point = simulation(built).run(
+        OperatingPoint(), replace(TIGHT, gmin=0.0)
+    )
+    assert (
+        abs(-float(zero_leakage_point.current("VC")) - exact_collector_without_leakage)
+        < rounding_current_unit
+    )
+    assert (
+        abs(-float(zero_leakage_point.current("VB")) - exact_base_without_leakage)
+        < rounding_current_unit
+    )
+
+    # 5. Reproduces the prior +6.53e-6 Arrhenius shift when ngspice ran at
+    #    option_temperature(ROOM) (+0.000102 K above TNOM=27 C).
+    shifted_temperature_kelvins = ngspice.option_temperature(ROOM) + 273.15
+    shifted_collector_current, _ = vbic_currents(
+        2.0,
+        0.7,
+        saturation_current=1e-16,
+        ideal_base_emitter_current=1e-18,
+        ideal_base_collector_current=1e-16,
+        temperature=shifted_temperature_kelvins,
+        minimum_conductance=1e-12,
+    )
+    prior_ngspice_sparse = 5.67005921929933e-05
+    assert abs(shifted_collector_current - prior_ngspice_sparse) < rounding_current_unit
+
+
+def test_bsim3_probe_is_in_strong_inversion_saturation() -> None:
+    """BSIM3v3.3 probe runs in strong-inversion saturation, well above gmin leakage."""
+    transistor = devices.bsim3(channel="n", width=10e-6 * m_, length=1e-6 * m_)
+    built = circuit(
+        forced(
+            "bsim3",
+            transistor,
+            {"drain": 3.0, "gate": 3.0, "source": 0.0, "bulk": 0.0},
+        )
+    )
+    found = simulation(built).run(OperatingPoint(record=["X1"]), TIGHT)
+    assert found.region("X1") == "saturated"
+    # Overdrive Vgs - Vth ~= 1.19 V, saturation margin Vds - Vdsat ~= 2.42 V,
+    # Id ~= 0.328 mA (8 orders of magnitude above gmin = 1e-12 S * 3 V).
+    assert abs(float(found.current("VDRAIN"))) > 1e-4
+
+    cell = matrix.run(FIXTURES["bsim3"], Simulator.JOLTY)
+    assert cell.found is not None
+    assert abs(cell.found["i(vdrain)"][0]) > 1e-4
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "corners",
+        "worst-case",
+        "switch-voltage",
+        "switch-current",
+        "logic",
+        "ic",
+        "nodeset",
+        "pdk-library",
+        "four",
+    ],
+)
+def test_v2_jolty_rows_agree_with_closed_form(key: str) -> None:
+    """Every new v2 row that jolty executes agrees with its closed form offline."""
+    fixture = FIXTURES[key]
+    cell = matrix.run(fixture, Simulator.JOLTY)
+    assert cell.found is not None, f"{key}: {cell.status} ({cell.evidence})"
+    assert fixture.known is not None
+    found = {name: complex(real, imag) for name, (real, imag) in cell.found.items()}
+    status, evidence = matrix.judge(fixture.known, found, None)
+    assert status is matrix.Status.AGREED, f"{key}: {evidence}"
+
+
+def test_v2_unsupported_and_documented_rows_work_offline() -> None:
+    """Unsupported v2 analyses and external PDK kit rows report statically offline."""
+    for key in ("disto", "sp", "trnoise"):
+        cell = matrix.run(FIXTURES[key], Simulator.JOLTY)
+        assert cell.status is matrix.Status.UNSUPPORTED
+        assert cell.evidence
+
+    for key in ("kit-sky130", "kit-gf180mcu", "kit-sg13g2"):
+        for simulator in (
+            Simulator.JOLTY,
+            Simulator.NGSPICE_SPARSE,
+            Simulator.NGSPICE_KLU,
+            Simulator.XYCE_SERIAL,
+        ):
+            cell = matrix.run(FIXTURES[key], simulator)
+            assert cell.status is matrix.Status.DOCUMENTED, f"{key} / {simulator}"
+            assert cell.evidence
+
+    # Verify ngspice raw-reader vector naming on `sp` (non-voltage vectors get
+    # wrapped in `v(...)` by `ngspice.read`) and temperature setting on `pdk-library`.
+    scattering_spice = FIXTURES["sp"].spice
+    assert isinstance(scattering_spice, Spice)
+    raw_names = {
+        read.ngspice for read in scattering_spice.reads.values() if read.ngspice
+    }
+    assert raw_names == {"v(s_1_1)", "v(s_2_1)", "v(s_1_2)", "v(s_2_2)"}
+
+    library_spice = FIXTURES["pdk-library"].spice
+    assert isinstance(library_spice, Spice)
+    assert library_spice.temperature == ROOM
+
+    # Verify the offline synthetic PDK also resolves its slow corner and binned card.
+    kit_directory = Path(DECKS) / "pdk"
+    synthetic_kit = kits.Kit(
+        name="synthetic",
+        version="1",
+        files=(),
+        includes=(PurePosixPath("globals.spice"),),
+        corners=(kits.Corners(PurePosixPath("corners.lib"), ("tt", "ss")),),
+        compatibility="hsa",
+    )
+    library = kits.read(
+        synthetic_kit,
+        ((PurePosixPath("corners.lib"), "ss"),),
+        settings=Settings(pdk_root=kit_directory),
+    )
+    library.read(
+        ".subckt bench\n"
+        "V1 in 0 5\n"
+        "X1 in out 0 kit_div ratio=3\n"
+        "VB db 0 1.5\n"
+        "VGB gb 0 1.2\n"
+        "M2 db gb 0 0 nbin W=4 L=0.5\n"
+        ".ends\n",
+        "bench.cir",
+    )
+    component = library.component("bench")
+    binned = next(
+        instance for instance in component.definition.instances if instance.name == "M2"
+    )
+    assert binned.parameters["vth0"] == pytest.approx(0.4)
+    assert binned.parameters["width"] == pytest.approx(4e-6)
+    assert binned.parameters["length"] == pytest.approx(5e-7)
+    result = simulation(circuit(component)).run(OperatingPoint(), TIGHT)
+    assert float(result.voltage("out")) == pytest.approx(5.0 * 3.0 / 4.2, rel=1e-12)
+
+
+def test_printed_reads_equals_and_colon_formats() -> None:
+    """Printed-value parser handles both `.meas` (`=`) and `four` (`THD:`) lines."""
+    measure_text = "tcross          =  1.693147e-06 targ= ..."
+    fourier_text = (
+        "No. Harmonics: 10, THD: 5.000000 %, Gridsize: 200, Interpolation Degree: 1"
+    )
+    # Exact parsing against the printed float strings.
+    assert matrix._printed(measure_text, "printed:tcross") == pytest.approx(  # noqa: SLF001 - unit-testing printed-value parser
+        1.693147e-06, rel=1e-15
+    )
+    assert matrix._printed(fourier_text, "printed:THD") == pytest.approx(  # noqa: SLF001 - unit-testing printed-value parser
+        5.0, rel=1e-15
+    )
+    with pytest.raises(matrix.Failed):
+        matrix._printed("NOT_THD: 9.0", "printed:THD")  # noqa: SLF001 - unit-testing printed-value parser
+    with pytest.raises(matrix.Failed):
+        matrix._printed("v.tcross = 9.0", "printed:tcross")  # noqa: SLF001 - unit-testing printed-value parser
+
+
+@SKIP
+@pytest.mark.parametrize("simulator", [Simulator.NGSPICE_SPARSE, Simulator.NGSPICE_KLU])
+@pytest.mark.parametrize("key", list(FIXTURES))
+def test_ngspice_column_is_what_its_fixture_finds(
+    simulator: Simulator, key: str
+) -> None:
+    """When ngspice is installed, its committed column matches live runs."""
+    assert ngspice.EXECUTABLE is not None, (
+        "ngspice is not installed (required by JOLTY_REQUIRE_NGSPICE=1)"
+    )
+    committed_cells = COMMITTED.fixtures[key].cells
+    assert simulator in committed_cells, (
+        f"{key} has no committed {simulator} cell; run scripts/bench --coverage"
+    )
+    fixture = FIXTURES[key]
+    cell = matrix.run(fixture, simulator)
+    document = matrix.SuiteResults(
+        fixtures={
+            key: matrix.FixtureResults(
+                category=fixture.category,
+                name=fixture.name,
+                source="",
+                known=None,
+                cells={
+                    **{
+                        name: found
+                        for name, found in committed_cells.items()
+                        if name != simulator
+                    },
+                    simulator: cell,
+                },
+            )
+        }
+    )
+    matrix.rejudge(document, FIXTURES)
+    assert document.fixtures[key].cells[simulator].status == (
+        committed_cells[simulator].status
+    )

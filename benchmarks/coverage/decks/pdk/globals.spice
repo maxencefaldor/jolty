@@ -1,0 +1,4 @@
+* Synthetic process design kit global options and parameters
+.option scale=1u
+.param r_sheet=1k
+.param sw_stat=0

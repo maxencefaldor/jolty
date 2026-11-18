@@ -60,4 +60,4 @@ Each simulator that runs here runs by its runner of [`../simulators.py`](../simu
 
 ## No fixture yet
 
-These rows of the design (`research/benchmarks.md` §4.1.2 of the lead's notes) have no fixture yet: corners and worst case, which jolty runs through a plan's script; ngspice's `.disto`, `.sp`, transient noise, `.four`, initial conditions and nodesets; CIDER and device bypass; switches and logic; the foundries' kits; and Xyce's harmonic balance, AC and transient sensitivities and sampling, cited as `documented`.
+These rows of the design (`plans/research/benchmarks.md` §4.1.2) have no executed fixture yet: CIDER and device bypass; the external open PDK archives (`kit-sky130`, `kit-gf180mcu`, `kit-sg13g2`), which stay `documented` offline so unit tests never fetch archives over the network (verified online by `tests/test_kits.py`, while `pdk-library` executes a local synthetic PDK offline); and Xyce's `.HB`, `.LIN`, `.STEP`, `.FOUR`, `.IC`, `.NODESET`, `VSWITCH`/`ISWITCH`, digital `U` devices, AC and transient sensitivities, and `.SAMPLING`, cited as `documented`.

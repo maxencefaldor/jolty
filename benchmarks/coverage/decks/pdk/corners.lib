@@ -1,0 +1,11 @@
+* Synthetic process design kit corner sections
+.lib tt
+.param skew=1.0
+.param vth_shift={sw_stat * agauss(0, 0.05, 3)}
+.include cells.spice
+.endl tt
+.lib ss
+.param skew=1.2
+.param vth_shift={sw_stat * agauss(0, 0.05, 3)}
+.include cells.spice
+.endl ss
