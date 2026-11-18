@@ -140,10 +140,11 @@ impl Kernel for TransmissionLine {
         for (own, other, [positive, negative], entries) in ports {
             let [current, other_positive, other_negative, other_current] = entries;
             let delay = prepared.delay;
-            let (_, positive_weight) = at.delayed(positive, delay);
-            let (_, negative_weight) = at.delayed(negative, delay);
-            let (_, current_weight) = at.delayed(other.unknown(), delay);
-            let [positive, negative, arriving] = [positive, negative, other.unknown()]
+            let [
+                (positive, positive_weight),
+                (negative, negative_weight),
+                (arriving, current_weight),
+            ] = [positive, negative, other.unknown()]
                 .map(|local| at.delayed_unknown::<R>(local, delay));
             // The wave that left the other port a delay before.
             let wave = prepared.impedance * arriving + (positive - negative);

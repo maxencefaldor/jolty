@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use jolty_models::{Input, Seeds, Twin};
-use jolty_numerics::Complex64;
+use jolty_numerics::{Complex64, UNMAPPED};
 
 use crate::Simulator;
 use crate::elaborated::Origin;
@@ -69,7 +69,7 @@ impl Twins {
         let mut kept_directions = Vec::with_capacity(directions.len() - unread.len());
         let mut kept_places = Vec::with_capacity(kept_directions.capacity());
         for (column, (direction, place)) in directions.into_iter().zip(places).enumerate() {
-            if unread.contains(&column) {
+            if unread.binary_search(&column).is_ok() {
                 continue;
             }
             renumbered[column] = kept_directions.len();
@@ -231,12 +231,17 @@ impl Twins {
             .iter_mut()
             .filter(|chunk| chunk.device == swept.device)
         {
+            if chunk.columns.iter().all(|&column| self.fixed[column]) {
+                continue;
+            }
             let columns: Vec<&Direction> = chunk
                 .columns
                 .iter()
                 .map(|&column| &self.directions[column])
                 .collect();
-            if let Some(twin) = simulator.twin_of(swept.device, &seeds(&columns, Some(held))) {
+            if let Some(twin) = seeds(&columns, Some(held))
+                .and_then(|seeds| simulator.twin_of(swept.device, &seeds))
+            {
                 chunk.twin = twin;
             }
         }
@@ -271,7 +276,7 @@ fn dot(twin: &Twin, part: Part, seed: usize, a: &[f64]) -> f64 {
 /// The seeds of `columns`, each direction one seed, every number they move with its rate
 /// along each, a number named twice moving at the sum of its rates; the number `held`
 /// left out.
-fn seeds(columns: &[&Direction], held: Option<&str>) -> Seeds {
+fn seeds(columns: &[&Direction], held: Option<&str>) -> Option<Seeds> {
     let mut rates: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut order = Vec::new();
     for (seed, (_, numbers)) in columns.iter().enumerate() {
@@ -290,7 +295,7 @@ fn seeds(columns: &[&Direction], held: Option<&str>) -> Seeds {
         .into_iter()
         .map(|name| (name.to_owned(), rates.remove(name).unwrap_or_default()))
         .collect();
-    Seeds::new(numbers, columns.len()).unwrap_or_else(|| Seeds::units(&[]))
+    Seeds::new(numbers, columns.len())
 }
 
 impl Simulator {
@@ -309,7 +314,7 @@ impl Simulator {
         let mut kept = Vec::with_capacity(parameters.len());
         let mut left_out = Vec::new();
         for (column, (_, parameter)) in parameters.into_iter().enumerate() {
-            if unread.contains(&column) {
+            if unread.binary_search(&column).is_ok() {
                 left_out.push(parameter);
             } else {
                 kept.push(parameter);
@@ -329,6 +334,16 @@ impl Simulator {
         parameters: Vec<(usize, Parameter)>,
         tangents: &[Vec<f64>],
     ) -> Result<(Twins, Vec<Vec<f64>>), Vec<Parameter>> {
+        if tangents.is_empty() {
+            let (twins, unread) = self.unit_twins(parameters);
+            if !unread.is_empty() {
+                return Err(unread);
+            }
+            return Ok((
+                Twins::new(twins.parameters, (Vec::new(), Vec::new(), Vec::new()), &[]),
+                Vec::new(),
+            ));
+        }
         let mut devices: Vec<usize> = Vec::new();
         for (device, _) in &parameters {
             if !devices.contains(device) {
@@ -355,7 +370,9 @@ impl Simulator {
                 .into_iter()
                 .filter(|(device, parameter)| {
                     let unit = (*device, vec![(parameter.name.clone(), 1.0)]);
-                    self.twin_of(*device, &seeds(&[&unit], None)).is_none()
+                    seeds(&[&unit], None)
+                        .and_then(|seeds| self.twin_of(*device, &seeds))
+                        .is_none()
                 })
                 .map(|(_, parameter)| parameter)
                 .collect());
@@ -381,27 +398,27 @@ impl Simulator {
         let mut chunks = Vec::new();
         let mut places = vec![(usize::MAX, 0); directions.len()];
         let mut unread = Vec::new();
-        let seeds_of = |columns: &[usize]| {
+        let twin_of = |device: usize, columns: &[usize]| {
             let along: Vec<&Direction> =
                 columns.iter().map(|&column| &directions[column]).collect();
-            seeds(&along, None)
+            seeds(&along, None).and_then(|seeds| self.twin_of(device, &seeds))
         };
         for (device, columns) in by_device {
             for members in columns.chunks(Seeds::MOST) {
                 let mut members = members.to_vec();
-                let mut twin = self.twin_of(device, &seeds_of(&members));
+                let mut twin = twin_of(device, &members);
                 if twin.is_none() {
                     // A column moves a number no model reads: each is found alone, and the
                     // rest seeded together.
                     members.retain(|&column| {
-                        let read = self.twin_of(device, &seeds_of(&[column])).is_some();
+                        let read = twin_of(device, &[column]).is_some();
                         if !read {
                             unread.push(column);
                         }
                         read
                     });
                     twin = (!members.is_empty())
-                        .then(|| self.twin_of(device, &seeds_of(&members)))
+                        .then(|| twin_of(device, &members))
                         .flatten();
                 }
                 let Some(twin) = twin else {
@@ -457,10 +474,7 @@ impl Simulator {
                     .unknown_twins(&self.elaborated.groups, device, instance)
             })
             .collect();
-        let mut slots: Vec<usize> = twins
-            .iter()
-            .flat_map(|twin| twin.entries().map(|(slot, _, _)| slot))
-            .collect();
+        let mut slots: Vec<usize> = twins.iter().flat_map(Twin::slots).collect();
         slots.sort_unstable();
         slots.dedup();
         (twins, slots)
@@ -498,24 +512,21 @@ impl Simulator {
             }
         }
         let input = unlimited(x, None, gmin);
-        let evaluated = parallelism.spread(
+        parallelism.spread(
             &mut tasks,
             || (),
-            |(), (first, chunk, twin)| {
+            |(), (_, chunk, twin)| {
                 twin.evaluate_along(&input, chunk);
-                twin.entries()
-                    .map(|(slot, (_, conductance), (_, capacitance))| {
-                        (*first, slot, conductance.to_vec(), capacitance.to_vec())
-                    })
-                    .collect::<Vec<_>>()
             },
         );
-        for (first, slot, conductances, capacitances) in evaluated.into_iter().flatten() {
-            for (offset, (&conductance_rate, &capacitance_rate)) in
-                conductances.iter().zip(&capacitances).enumerate()
-            {
-                if conductance_rate != 0.0 || capacitance_rate != 0.0 {
-                    moved[first + offset].push((slot, conductance_rate, capacitance_rate));
+        for (first, _, twin) in &tasks {
+            for (slot, (_, conductances), (_, capacitances)) in twin.entries() {
+                for (offset, (&conductance_rate, &capacitance_rate)) in
+                    conductances.iter().zip(capacitances).enumerate()
+                {
+                    if conductance_rate != 0.0 || capacitance_rate != 0.0 {
+                        moved[first + offset].push((slot, conductance_rate, capacitance_rate));
+                    }
                 }
             }
         }
@@ -600,7 +611,7 @@ impl Simulator {
                 let mut twin_terms = vec![Vec::new(); weights.len()];
                 for (cotangent, sums) in local.into_iter().enumerate() {
                     for (&unknown, sum) in seeded.iter().zip(sums) {
-                        if sum != Complex64::default() {
+                        if unknown != UNMAPPED && sum != Complex64::default() {
                             twin_terms[cotangent].push((unknown as usize, sum));
                         }
                     }

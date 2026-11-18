@@ -548,6 +548,35 @@ impl<'a> Local<'a> {
         }
     }
 
+    /// The derivative of the local unknown at `local` along seed `slot`: zero when no twin
+    /// seeds the unknowns or the unknown is on the reference.
+    #[inline]
+    #[must_use]
+    pub fn unknown_derivative(&self, local: usize, slot: usize) -> f64 {
+        let Some(&unknown) = self
+            .map
+            .get(local)
+            .filter(|&&unknown| unknown != jolty_numerics::UNMAPPED)
+        else {
+            return 0.0;
+        };
+        match self.unknowns {
+            UnknownSeeds::None => 0.0,
+            UnknownSeeds::Units(seeded) => {
+                if seeded.iter().position(|&each| each == unknown) == Some(slot) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            UnknownSeeds::Tangents(tangents) => tangents
+                .get(slot)
+                .and_then(|tangent| tangent.get(unknown as usize))
+                .copied()
+                .unwrap_or(0.0),
+        }
+    }
+
     /// The value of the local unknown at `local`: zero for one on the reference, and for
     /// one the instance does not have.
     #[must_use]
@@ -607,16 +636,20 @@ impl<'a> Local<'a> {
     }
 
     /// The value the local unknown at `local` took `delay` seconds before the time, as
-    /// [`Local::delayed`] gives it, as a number of `R`, which moves as its derivative with
-    /// respect to the unknown's present value says when a twin seeds the unknown.
+    /// [`Local::delayed`] gives it, as a number of `R` together with its derivative weight
+    /// with respect to the unknown's present value, moving as that weight says when a twin
+    /// seeds the unknown.
     #[inline]
     #[must_use]
-    pub fn delayed_unknown<R: Real>(&self, local: usize, delay: f64) -> R {
+    pub fn delayed_unknown<R: Real>(&self, local: usize, delay: f64) -> (R, f64) {
         let (value, weight) = self.delayed(local, delay);
         if R::SEEDS == 0 || !self.seeds_unknowns() {
-            return R::constant(value);
+            return (R::constant(value), weight);
         }
-        (self.unknown::<R>(local) * weight).with_value(value)
+        (
+            (self.unknown::<R>(local) * weight).with_value(value),
+            weight,
+        )
     }
 }
 

@@ -259,9 +259,8 @@ impl Simulator {
 
     /// The derivatives of the unknowns `kept` at each of the `points` of the result
     /// `result`, which left `saved`, with respect to the parameter of each column of
-    /// `twins`, a row at
-    /// a time: the VJP of a cotangent on each unknown kept at each point, and for an
-    /// oscillator's period one more.
+    /// `twins`, a row at a time: the VJP of a cotangent on each unknown kept at each point,
+    /// and for an oscillator's period one more.
     fn by_rows(
         &mut self,
         mut twins: Twins,

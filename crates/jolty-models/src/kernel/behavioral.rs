@@ -246,29 +246,11 @@ impl BehavioralShape {
         if room.workspace.limited() {
             stamp.mark_limited();
         }
-        if R::SEEDS == 0 || !at.seeds_unknowns() {
-            for &(row, factor) in &self.rows {
-                let contribution = R::constant(factor * value);
-                if self.stored {
-                    stamp.add_charge(row, contribution);
-                } else {
-                    stamp.add_residual(row, contribution);
-                }
-            }
-            for (entries, derivative) in self.entries.iter().zip(&room.gradient) {
-                for &(entry, factor) in entries {
-                    let contribution = R::constant(factor * derivative);
-                    if self.stored {
-                        stamp.add_capacitance(entry, contribution);
-                    } else {
-                        stamp.add_conductance(entry, contribution);
-                    }
-                }
-            }
-        } else {
+        let seeded = R::SEEDS > 0 && at.seeds_unknowns();
+        let value_derivatives = if seeded {
             let mut value_derivatives = [0.0; crate::Seeds::MOST];
             for slot in 0..R::SEEDS.min(crate::Seeds::MOST) {
-                self.read_tangent::<R>(at, slot, &mut room.tangent);
+                self.read_tangent(at, slot, &mut room.tangent);
                 if room.tangent.iter().all(|&rate| rate == 0.0) {
                     if let Some(target) = value_derivatives.get_mut(slot) {
                         *target = 0.0;
@@ -298,48 +280,73 @@ impl BehavioralShape {
                     }
                 }
             }
-            for &(row, factor) in &self.rows {
-                let scaled = value_derivatives.map(|rate| factor * rate);
-                let contribution = R::moving(factor * value, &scaled);
-                if self.stored {
-                    stamp.add_charge(row, contribution);
-                } else {
-                    stamp.add_residual(row, contribution);
-                }
-            }
-            for ((entries, &derivative), rates) in self
-                .entries
-                .iter()
-                .zip(&room.gradient)
-                .zip(&room.gradient_derivatives)
-            {
-                for &(entry, factor) in entries {
-                    let scaled = rates.map(|rate| factor * rate);
-                    let contribution = R::moving(factor * derivative, &scaled);
-                    if self.stored {
-                        stamp.add_capacitance(entry, contribution);
-                    } else {
-                        stamp.add_conductance(entry, contribution);
-                    }
-                }
-            }
-        }
+            Some(value_derivatives)
+        } else {
+            None
+        };
+        self.stamp_contribution(
+            stamp,
+            value,
+            value_derivatives.as_ref(),
+            &room.gradient,
+            &room.gradient_derivatives,
+        );
         for port in &self.ports {
             // A short circuit: no voltage across it.
             port.add(at, stamp, port.voltage(at));
         }
     }
 
+    /// Stamps `value` and `gradient` into rows and entries, attaching `value_derivatives`
+    /// and `gradient_derivatives` when unknown-seeded.
+    fn stamp_contribution<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        value: f64,
+        value_derivatives: Option<&[f64; crate::Seeds::MOST]>,
+        gradient: &[f64],
+        gradient_derivatives: &[[f64; crate::Seeds::MOST]],
+    ) {
+        let make = |base: f64, factor: f64, rates: Option<&[f64; crate::Seeds::MOST]>| match rates {
+            Some(rates) => {
+                let scaled = rates.map(|rate| factor * rate);
+                R::moving(factor * base, &scaled)
+            }
+            None => R::constant(factor * base),
+        };
+        for &(row, factor) in &self.rows {
+            let contribution = make(value, factor, value_derivatives);
+            if self.stored {
+                stamp.add_charge(row, contribution);
+            } else {
+                stamp.add_residual(row, contribution);
+            }
+        }
+        for (index, (entries, &derivative)) in self.entries.iter().zip(gradient).enumerate() {
+            let rates = value_derivatives
+                .is_some()
+                .then(|| gradient_derivatives.get(index))
+                .flatten();
+            for &(entry, factor) in entries {
+                let contribution = make(derivative, factor, rates);
+                if self.stored {
+                    stamp.add_capacitance(entry, contribution);
+                } else {
+                    stamp.add_conductance(entry, contribution);
+                }
+            }
+        }
+    }
+
     /// Reads the expression's variables' derivatives along `slot` at `at` into `tangent`.
-    fn read_tangent<R: Real>(&self, at: &Local<'_>, slot: usize, tangent: &mut [f64]) {
+    fn read_tangent(&self, at: &Local<'_>, slot: usize, tangent: &mut [f64]) {
         for (rate, read) in tangent.iter_mut().zip(&self.reads) {
             *rate = match *read {
                 Read::Voltage(positive, negative) => {
-                    let across = at.unknown::<R>(positive)
-                        - negative.map_or_else(|| R::constant(0.0), |node| at.unknown::<R>(node));
-                    across.derivative(slot)
+                    at.unknown_derivative(positive, slot)
+                        - negative.map_or(0.0, |node| at.unknown_derivative(node, slot))
                 }
-                Read::Current(current) => at.unknown::<R>(current).derivative(slot),
+                Read::Current(current) => at.unknown_derivative(current, slot),
                 Read::Time => 0.0,
             };
         }

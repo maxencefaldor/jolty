@@ -383,7 +383,7 @@ impl Simulator {
             }
             let (twins, directions) = self
                 .tangent_twins(named, tangents)
-                .map_err(|unread| SimulationError::UnknownParameters(named_of(unread)))?;
+                .map_err(|unread| SimulationError::UnknownParameters(named_of(&unread)))?;
             let kept: Vec<usize> = (0..self.elaborated.unknowns.len()).collect();
             let pushed = self.push_forward(analysis, twins, directions, &kept, options)?;
             Ok(Jvp {
@@ -444,11 +444,7 @@ impl Simulator {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
-            let names: Vec<(String, String)> = pullback
-                .parameters
-                .iter()
-                .map(|parameter| (parameter.instance.clone(), parameter.name.clone()))
-                .collect();
+            let names = named_of(&pullback.parameters);
             let mut twins = self.named_twins(&names)?;
             self.checked(&pullback.result, cotangents)?;
             let count = twins.len();
@@ -488,7 +484,7 @@ impl Simulator {
         if unread.is_empty() {
             Ok(twins)
         } else {
-            Err(SimulationError::UnknownParameters(named_of(unread)))
+            Err(SimulationError::UnknownParameters(named_of(&unread)))
         }
     }
 
@@ -526,21 +522,22 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         let points = points(result);
         let unknowns = self.elaborated.unknowns.len();
-        let fits = |at: usize, values: usize, finite: bool, period: f64| {
-            at < points && values == unknowns && finite && period.is_finite()
-        };
+        let fits =
+            |at: usize, values: usize, finite: bool| at < points && values == unknowns && finite;
         let fit = match cotangents {
             Cotangents::Real(each) => each.iter().all(|cotangent| {
-                cotangent.points.iter().all(|(&at, values)| {
-                    let finite = values.iter().all(|value| value.is_finite());
-                    fits(at, values.len(), finite, cotangent.period)
-                })
+                cotangent.period.is_finite()
+                    && cotangent.points.iter().all(|(&at, values)| {
+                        let finite = values.iter().all(|value| value.is_finite());
+                        fits(at, values.len(), finite)
+                    })
             }),
             Cotangents::Complex(each) => each.iter().all(|cotangent| {
-                cotangent.points.iter().all(|(&at, values)| {
-                    let finite = values.iter().all(|value| value.is_finite());
-                    fits(at, values.len(), finite, cotangent.period)
-                })
+                cotangent.period.is_finite()
+                    && cotangent.points.iter().all(|(&at, values)| {
+                        let finite = values.iter().all(|value| value.is_finite());
+                        fits(at, values.len(), finite)
+                    })
             }),
         };
         if fit {
@@ -1575,9 +1572,9 @@ fn kept_of(kept: &[usize], moved: &[Vec<f64>]) -> Vec<Vec<f64>> {
 }
 
 /// The paths and names of `parameters`, as an error names them.
-fn named_of(parameters: Vec<Parameter>) -> Vec<(String, String)> {
+pub(crate) fn named_of(parameters: &[Parameter]) -> Vec<(String, String)> {
     parameters
-        .into_iter()
-        .map(|parameter| (parameter.instance, parameter.name))
+        .iter()
+        .map(|parameter| (parameter.instance.clone(), parameter.name.clone()))
         .collect()
 }

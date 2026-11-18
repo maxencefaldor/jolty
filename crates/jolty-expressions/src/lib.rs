@@ -598,7 +598,7 @@ mod tests {
             let values = [x, y, z];
             let tangent = [dx, dy, dz];
             let mut gradient = [0.0; 3];
-            let value = expression.evaluate(&values, &mut workspace, &mut gradient);
+            let _ = expression.evaluate(&values, &mut workspace, &mut gradient);
             let mut gradient_tangent = [0.0; 3];
             let value_tangent = expression.along(&tangent, &mut workspace, &mut gradient_tangent);
             let expected_value_tangent: f64 = gradient
@@ -624,7 +624,6 @@ mod tests {
             };
             let (_, high) = shifted(1.0);
             let (_, low) = shifted(-1.0);
-            let _ = value;
             for index in 0..3 {
                 let (forward, backward) = (
                     (high[index] - gradient[index]) / step,
@@ -642,5 +641,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn along_guards_zero_times_infinite_curvature_and_slope() {
+        // `v(x)^1.5 + v(y)^2` at (0, 1): d²/dx² = +inf, but along [0, 1] x does not move.
+        let power_sum: Expression = "v(x) ^ 1.5 + v(y) ^ 2".parse().expect("valid");
+        let mut workspace = Workspace::new(&power_sum);
+        let mut gradient = [0.0; 2];
+        let _ = power_sum.evaluate(&[0.0, 1.0], &mut workspace, &mut gradient);
+        let mut gradient_tangent = [0.0; 2];
+        let value_tangent = power_sum.along(&[0.0, 1.0], &mut workspace, &mut gradient_tangent);
+        assert_eq!(value_tangent, 2.0);
+        assert_eq!(gradient_tangent, [0.0, 2.0]);
+
+        // `v(x) * v(y)^1.5` at (0, 0): adjoint of `v(y)^1.5` is 0 while adjoint_tangent is 1.
+        let power_product: Expression = "v(x) * v(y) ^ 1.5".parse().expect("valid");
+        let mut workspace = Workspace::new(&power_product);
+        let mut gradient = [0.0; 2];
+        let _ = power_product.evaluate(&[0.0, 0.0], &mut workspace, &mut gradient);
+        let mut gradient_tangent = [0.0; 2];
+        let value_tangent = power_product.along(&[1.0, 0.0], &mut workspace, &mut gradient_tangent);
+        assert_eq!(value_tangent, 0.0);
+        assert_eq!(gradient_tangent, [0.0, 0.0]);
+
+        // `sqrt(v(x)) + v(y)^2` at (0, 1): d/dx = +inf, but along [0, 1] x does not move.
+        let root_sum: Expression = "sqrt(v(x)) + v(y) ^ 2".parse().expect("valid");
+        let mut workspace = Workspace::new(&root_sum);
+        let mut gradient = [0.0; 2];
+        let _ = root_sum.evaluate(&[0.0, 1.0], &mut workspace, &mut gradient);
+        let mut gradient_tangent = [0.0; 2];
+        let value_tangent = root_sum.along(&[0.0, 1.0], &mut workspace, &mut gradient_tangent);
+        assert_eq!(value_tangent, 2.0);
+        assert_eq!(gradient_tangent, [0.0, 2.0]);
     }
 }

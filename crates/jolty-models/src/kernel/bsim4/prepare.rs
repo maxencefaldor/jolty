@@ -558,7 +558,7 @@ impl<R: Real> Bsim4Parameters<R> {
                     format!("{name} must be positive, not {:?}", value.value())
                 })?;
             }
-            let kvsat = R::constant(self.kvsat.value().clamp(-1.0, 1.0));
+            let kvsat = self.kvsat.max(R::constant(-1.0)).min(R::constant(1.0));
             let mut inv_sa = R::constant(0.0);
             let mut inv_sb = R::constant(0.0);
             let mut finger = 0.0;

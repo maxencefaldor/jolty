@@ -797,6 +797,7 @@ impl BaseForm {
     fn add<R: Real>(
         &self,
         resistance: Dual<R, 2>,
+        drop: R,
         (added, derivatives): (
             &Oriented<'_, STAMPED, VARIABLE_COUNT>,
             &mut Derivatives<R, STAMPED>,
@@ -808,7 +809,6 @@ impl BaseForm {
             Self::Current(current) => current.add(resistance, added, at, stamp),
             Self::Conductance => {
                 // Within its law, the drop comes first, then the junctions.
-                let [_, _, drop, _] = added.moving(at);
                 let current = Dual::<R, 1>::variable(drop).embed([0]) / resistance.embed([1, 2]);
                 added.reading(BASE_RESISTANCE).add_current(
                     stamp,
@@ -1835,7 +1835,13 @@ impl Kernel for BipolarTransistor {
             .reading([VBC])
             .add_current(stamp, sums, BASE_COLLECTOR, base_collector);
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
-            form.add(resistance.evaluate(&state), (&added, &mut *sums), at, stamp);
+            form.add(
+                resistance.evaluate(&state),
+                moving[VRB],
+                (&added, &mut *sums),
+                at,
+                stamp,
+            );
         }
         if let Some(charges) = &prepared.charges {
             charges.evaluate(moving, &state).add(&added, sums, stamp);

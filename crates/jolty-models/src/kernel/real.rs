@@ -120,11 +120,20 @@ pub trait Real:
     #[must_use]
     fn powf(self, exponent: f64) -> Self {
         let value = self.value();
-        self.chain(
-            value.powf(exponent),
-            exponent * value.powf(exponent - 1.0),
-            exponent * (exponent - 1.0) * value.powf(exponent - 2.0),
-        )
+        let slope = if exponent == 0.0 {
+            0.0
+        } else if (exponent - 1.0) == 0.0 {
+            1.0
+        } else {
+            exponent * value.powf(exponent - 1.0)
+        };
+        let curvature_factor = exponent * (exponent - 1.0);
+        let curvature = if curvature_factor == 0.0 {
+            0.0
+        } else {
+            curvature_factor * value.powf(exponent - 2.0)
+        };
+        self.chain(value.powf(exponent), slope, curvature)
     }
 
     /// The number raised to `exponent`, itself a number with a derivative.
@@ -222,6 +231,14 @@ impl Real for f64 {
         f64::ln(self)
     }
 
+    fn ln_1p(self) -> Self {
+        f64::ln_1p(self)
+    }
+
+    fn exp_m1(self) -> Self {
+        f64::exp_m1(self)
+    }
+
     fn sqrt(self) -> Self {
         f64::sqrt(self)
     }
@@ -302,6 +319,17 @@ impl<const K: usize> Gradient<K> {
     }
 }
 
+/// `factor * rate`, yielding `0.0` when `rate` is zero and `factor` is not `NaN` so an
+/// infinite slope or curvature along an unmoved direction does not produce `NaN`.
+#[inline]
+fn scaled(factor: f64, rate: f64) -> f64 {
+    if rate == 0.0 && !factor.is_nan() {
+        0.0
+    } else {
+        factor * rate
+    }
+}
+
 /// Each element of `own`, as `combine` makes it of that element and the same one of
 /// `others`.
 fn zip<const K: usize>(
@@ -362,7 +390,7 @@ impl<const K: usize> Real for Gradient<K> {
     fn chain(self, value: f64, slope: f64, _: f64) -> Self {
         Self {
             value,
-            derivatives: self.map(|derivative| slope * derivative),
+            derivatives: self.map(|derivative| scaled(slope, derivative)),
         }
     }
 }
@@ -600,10 +628,15 @@ impl<const K: usize> Real for Hyper<K> {
     fn chain(self, value: f64, slope: f64, curvature: f64) -> Self {
         Self {
             value,
-            first: self.first.map(|first| slope * first),
-            second: slope * self.second,
+            first: self.first.map(|first| scaled(slope, first)),
+            second: scaled(slope, self.second),
             both: zip(self.both, self.first, |both, first| {
-                slope * both + curvature * first * self.second
+                let cross = if first == 0.0 || self.second == 0.0 {
+                    0.0
+                } else {
+                    first * self.second
+                };
+                scaled(slope, both) + scaled(curvature, cross)
             }),
         }
     }
@@ -626,7 +659,12 @@ impl<const K: usize> Sub for Hyper<K> {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
-        self + -other
+        Self {
+            value: self.value - other.value,
+            first: zip(self.first, other.first, |own, others| own - others),
+            second: self.second - other.second,
+            both: zip(self.both, other.both, |own, others| own - others),
+        }
     }
 }
 
@@ -809,5 +847,67 @@ mod tests {
         assert_eq!(hot.first[0].to_bits(), one.first[0].to_bits());
         assert_eq!(hot.both[0].to_bits(), one.both[0].to_bits());
         assert_eq!(hot.second.to_bits(), one.second.to_bits());
+    }
+
+    #[test]
+    fn powf_and_chain_avoid_zero_times_infinity_nans() {
+        let zero_gradient = Gradient::new(0.0, [1.0, 0.0]);
+        assert_eq!(zero_gradient.powf(0.0), Gradient::new(1.0, [0.0, 0.0]));
+        assert_eq!(zero_gradient.powf(1.0), Gradient::new(0.0, [1.0, 0.0]));
+        let sqrt_zero = Gradient::new(0.0, [0.0, 0.0]).sqrt();
+        assert_eq!(sqrt_zero, Gradient::new(0.0, [0.0, 0.0]));
+
+        let zero_hyper = Hyper {
+            value: 0.0,
+            first: [1.0, 0.0],
+            second: 0.0,
+            both: [0.0, 0.0],
+        };
+        assert_eq!(
+            zero_hyper.powf(0.0),
+            Hyper {
+                value: 1.0,
+                first: [0.0, 0.0],
+                second: 0.0,
+                both: [0.0, 0.0],
+            }
+        );
+        assert_eq!(
+            zero_hyper.powf(1.0),
+            Hyper {
+                value: 0.0,
+                first: [1.0, 0.0],
+                second: 0.0,
+                both: [0.0, 0.0],
+            }
+        );
+        // `0.0.powf(1.5)` has finite slope 0 and infinite curvature, which must not poison
+        // `both` when `first * second == 0`.
+        let three_halves = zero_hyper.powf(1.5);
+        assert_eq!(three_halves.value, 0.0);
+        assert_eq!(three_halves.first, [0.0, 0.0]);
+        assert_eq!(three_halves.second, 0.0);
+        assert_eq!(three_halves.both, [0.0, 0.0]);
+
+        let subtracted = Hyper {
+            value: 3.0,
+            first: [2.0, -1.0],
+            second: 4.0,
+            both: [5.0, -6.0],
+        } - Hyper {
+            value: 1.0,
+            first: [0.5, 2.0],
+            second: 1.5,
+            both: [-1.0, 3.0],
+        };
+        assert_eq!(
+            subtracted,
+            Hyper {
+                value: 2.0,
+                first: [1.5, -3.0],
+                second: 2.5,
+                both: [6.0, -9.0],
+            }
+        );
     }
 }

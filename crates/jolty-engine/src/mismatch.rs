@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::derivative::named_of;
 use crate::sensitivity::Parameter;
 use crate::variants::Toleranced;
 use crate::{AnalysisResult, Derivatives, Differentiated, Options, SimulationError, Simulator};
@@ -89,8 +90,8 @@ impl Simulator {
     /// The derivative of each unknown of `mismatch` with respect to each of its random
     /// variables, at each point of the analysis it differentiates.
     ///
-    /// The derivatives are a sensitivity analysis's, exact but for a response's through its
-    /// operating point, each summed over the parameters a random variable moves.
+    /// The derivatives are a sensitivity analysis's, exact, each summed over the
+    /// parameters a random variable moves.
     ///
     /// # Errors
     ///
@@ -118,11 +119,7 @@ impl Simulator {
                 }
             }
             let (twins, unread) = self.unit_twins(moved.parameters);
-            moved.missing.extend(
-                unread
-                    .into_iter()
-                    .map(|parameter| (parameter.instance, parameter.name)),
-            );
+            moved.missing.extend(named_of(&unread));
             if !moved.missing.is_empty() {
                 return Err(SimulationError::UnknownParameters(moved.missing));
             }

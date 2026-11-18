@@ -16,7 +16,7 @@ use crate::group::Kind;
 use crate::lift::{constant, lift};
 use crate::{
     Choice, Delayed, Gradient, Hyper, Kernel, Layout, Local, LogicLevel, Nature, NoiseSource,
-    ParameterError, Regions, Stamp,
+    ParameterError, Real, Regions, Stamp,
 };
 
 /// The instances of the kernel `K` that heat.
@@ -61,6 +61,13 @@ impl<S> HeatedShape<S> {
         } else {
             local + 1
         }
+    }
+
+    /// The circuit's unknown of each of the kernel's instance's local unknowns at `at`.
+    fn map(&self, at: &Local<'_>) -> Vec<u32> {
+        (0..self.unknowns())
+            .map(|local| at.map().get(self.outer(local)).copied().unwrap_or(UNMAPPED))
+            .collect()
     }
 }
 
@@ -266,8 +273,13 @@ fn heat<K: Kernel, R: Heating>(
     let seeding = R::SEEDS > 0 && at.seeds_unknowns();
     if temperature.to_bits() != memory.last.to_bits() || seeding || memory.seeded {
         // The temperature moves with the thermal net when a twin seeds it.
-        let net = shape.terminals;
-        let moving = R::seed(temperature) + (at.unknown::<R::Warm>(net) - at.value(net));
+        // Zeroing the value first prevents `inf - inf = NaN` if a trial step
+        // drives the thermal net infinite while `temperature` is clamped finite.
+        let moving = if seeding {
+            R::seed(temperature) + at.unknown::<R::Warm>(shape.terminals).with_value(0.0)
+        } else {
+            R::seed(temperature)
+        };
         if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
             memory.prepared = Some(heated);
             K::reheat(&mut memory.inner);
@@ -422,14 +434,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         sources: &mut Vec<NoiseSource>,
     ) {
         let heated = memory.prepared.as_ref().unwrap_or(&prepared.at_ambient);
-        let map: Vec<u32> = (0..shape.unknowns())
-            .map(|local| {
-                at.map()
-                    .get(shape.outer(local))
-                    .copied()
-                    .unwrap_or(UNMAPPED)
-            })
-            .collect();
+        let map = shape.map(at);
         let start = sources.len();
         K::noise(&shape.inner, heated, &at.remapped(&map), sources);
         for source in sources.iter_mut().skip(start) {
@@ -519,14 +524,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
     }
 
     fn sense(shape: &Self::Shape, prepared: &Self::Prepared, at: &Local<'_>) -> Option<(f64, f64)> {
-        let map: Vec<u32> = (0..shape.unknowns())
-            .map(|local| {
-                at.map()
-                    .get(shape.outer(local))
-                    .copied()
-                    .unwrap_or(UNMAPPED)
-            })
-            .collect();
+        let map = shape.map(at);
         K::sense(&shape.inner, &prepared.at_ambient, &at.remapped(&map))
     }
 

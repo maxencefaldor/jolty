@@ -343,7 +343,7 @@ impl Binary {
             | Self::And
             | Self::Or => [0.0, 0.0, 0.0],
             Self::Multiply => [0.0, 1.0, 0.0],
-            Self::Divide => [0.0, -1.0 / (b * b), -2.0 * slope_b / b],
+            Self::Divide => [0.0, -slope_a / b, -2.0 * slope_b / b],
             Self::Power => {
                 let factor = b * (b - 1.0);
                 let by_base = if a == 0.0 && factor == 0.0 {

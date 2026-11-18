@@ -154,16 +154,52 @@ pub(crate) fn along(
         adjoint_tangents,
         ..
     } = workspace;
+    along_forward(tape, tangent, values, slopes, tangents);
+    along_backward(
+        tape,
+        (values, slopes, curvatures),
+        (adjoints, tangents),
+        adjoint_tangents,
+        gradient_tangent,
+    );
+    tangents[tape.len() - 1]
+}
+
+/// Forward tangent pass of [`along`], guarding zero tangents so `0 * inf` never becomes `NaN`.
+fn along_forward(
+    tape: &[Instruction],
+    tangent: &[f64],
+    values: &[f64],
+    slopes: &[f64],
+    tangents: &mut [f64],
+) {
     for (index, instruction) in tape.iter().enumerate() {
         tangents[index] = match instruction {
             Instruction::Constant(_) => 0.0,
             Instruction::Variable(variable) => tangent[*variable],
             Instruction::Unary(operation, x) => {
-                operation.slope(values[*x], values[index]) * tangents[*x]
+                if tangents[*x] == 0.0 {
+                    0.0
+                } else {
+                    operation.slope(values[*x], values[index]) * tangents[*x]
+                }
             }
             Instruction::Binary(operation, a, b) => {
-                let (slope_a, slope_b) = operation.slopes(values[*a], values[*b], values[index]);
-                slope_a * tangents[*a] + slope_b * tangents[*b]
+                let (tangent_a, tangent_b) = (tangents[*a], tangents[*b]);
+                if tangent_a == 0.0 && tangent_b == 0.0 {
+                    0.0
+                } else {
+                    let (slope_a, slope_b) =
+                        operation.slopes(values[*a], values[*b], values[index]);
+                    let mut sum = 0.0;
+                    if tangent_a != 0.0 {
+                        sum += slope_a * tangent_a;
+                    }
+                    if tangent_b != 0.0 {
+                        sum += slope_b * tangent_b;
+                    }
+                    sum
+                }
             }
             Instruction::Limit([x, a, b]) => {
                 let chosen = limit(values[*x], values[*a], values[*b]).1;
@@ -176,9 +212,26 @@ pub(crate) fn along(
                     *then
                 }]
             }
-            Instruction::Table(x, _) => slopes[index] * tangents[*x],
+            Instruction::Table(x, _) => {
+                if tangents[*x] == 0.0 {
+                    0.0
+                } else {
+                    slopes[index] * tangents[*x]
+                }
+            }
         };
     }
+}
+
+/// Reverse adjoint-tangent pass of [`along`], skipping zero adjoints and zero tangents so
+/// infinite second derivatives along unmoved directions do not produce `NaN`.
+fn along_backward(
+    tape: &[Instruction],
+    (values, slopes, curvatures): (&[f64], &[f64], &[f64]),
+    (adjoints, tangents): (&[f64], &[f64]),
+    adjoint_tangents: &mut [f64],
+    gradient_tangent: &mut [f64],
+) {
     gradient_tangent.fill(0.0);
     adjoint_tangents.fill(0.0);
     for (index, instruction) in tape.iter().enumerate().rev() {
@@ -190,19 +243,51 @@ pub(crate) fn along(
             Instruction::Constant(_) => {}
             Instruction::Variable(variable) => gradient_tangent[*variable] += adjoint_tangent,
             Instruction::Unary(operation, x) => {
-                let slope = operation.slope(values[*x], values[index]);
-                let curvature = operation.curvature(values[*x], values[index], slope);
-                adjoint_tangents[*x] +=
-                    adjoint_tangent * slope + adjoint * curvature * tangents[*x];
+                let has_curvature = adjoint != 0.0 && tangents[*x] != 0.0;
+                if adjoint_tangent != 0.0 || has_curvature {
+                    let slope = operation.slope(values[*x], values[index]);
+                    let mut delta = 0.0;
+                    if adjoint_tangent != 0.0 {
+                        delta += adjoint_tangent * slope;
+                    }
+                    if has_curvature {
+                        let curvature = operation.curvature(values[*x], values[index], slope);
+                        delta += adjoint * curvature * tangents[*x];
+                    }
+                    adjoint_tangents[*x] += delta;
+                }
             }
             Instruction::Binary(operation, a, b) => {
-                let (slope_a, slope_b) = operation.slopes(values[*a], values[*b], values[index]);
-                let [by_a, mixed, by_b] =
-                    operation.curvatures(values[*a], values[*b], (slope_a, slope_b));
-                adjoint_tangents[*a] += adjoint_tangent * slope_a
-                    + adjoint * (by_a * tangents[*a] + mixed * tangents[*b]);
-                adjoint_tangents[*b] += adjoint_tangent * slope_b
-                    + adjoint * (mixed * tangents[*a] + by_b * tangents[*b]);
+                let (tangent_a, tangent_b) = (tangents[*a], tangents[*b]);
+                let has_curvature = adjoint != 0.0 && (tangent_a != 0.0 || tangent_b != 0.0);
+                if adjoint_tangent != 0.0 || has_curvature {
+                    let (slope_a, slope_b) =
+                        operation.slopes(values[*a], values[*b], values[index]);
+                    if adjoint_tangent != 0.0 {
+                        adjoint_tangents[*a] += adjoint_tangent * slope_a;
+                        adjoint_tangents[*b] += adjoint_tangent * slope_b;
+                    }
+                    if has_curvature {
+                        let [by_a, mixed, by_b] =
+                            operation.curvatures(values[*a], values[*b], (slope_a, slope_b));
+                        let mut delta_a = 0.0;
+                        let mut delta_b = 0.0;
+                        if tangent_a != 0.0 {
+                            delta_a += by_a * tangent_a;
+                            delta_b += mixed * tangent_a;
+                        }
+                        if tangent_b != 0.0 {
+                            delta_a += mixed * tangent_b;
+                            delta_b += by_b * tangent_b;
+                        }
+                        if delta_a != 0.0 {
+                            adjoint_tangents[*a] += adjoint * delta_a;
+                        }
+                        if delta_b != 0.0 {
+                            adjoint_tangents[*b] += adjoint * delta_b;
+                        }
+                    }
+                }
             }
             Instruction::Limit([x, a, b]) => {
                 let chosen = limit(values[*x], values[*a], values[*b]).1;
@@ -217,12 +302,17 @@ pub(crate) fn along(
                 adjoint_tangents[chosen] += adjoint_tangent;
             }
             Instruction::Table(x, _) => {
-                adjoint_tangents[*x] +=
-                    adjoint_tangent * slopes[index] + adjoint * curvatures[index] * tangents[*x];
+                let mut delta = 0.0;
+                if adjoint_tangent != 0.0 {
+                    delta += adjoint_tangent * slopes[index];
+                }
+                if adjoint != 0.0 && tangents[*x] != 0.0 {
+                    delta += adjoint * curvatures[index] * tangents[*x];
+                }
+                adjoint_tangents[*x] += delta;
             }
         }
     }
-    tangents[tape.len() - 1]
 }
 
 /// How a choice's value turns on its input.

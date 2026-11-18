@@ -269,4 +269,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "thermal must be true or false, not 1");
     }
+
+    #[test]
+    fn infinite_thermal_trial_step_does_not_poison_temperature() {
+        let model = Thermal::<Diode>::new();
+        let mut heated = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
+        let trial = heated.evaluate(&[0.72, 0.0, f64::INFINITY, 0.7]);
+        assert!(trial.limited, "infinite thermal step must be limited");
+        let recovered = heated.settle(&[0.72, 0.0, 20.0, 0.7]);
+        assert!(
+            recovered.residual.iter().all(|value| value.is_finite()),
+            "residual poisoned after infinite trial step: {:?}",
+            recovered.residual
+        );
+        let mut reference = Bench::at::<Diode>(
+            &DIODE.replace(r#", "thermal": true"#, ""),
+            REFERENCE_TEMPERATURE + 20.0,
+        );
+        let plain = reference.settle(&[0.72, 0.0, 0.7]);
+        assert_close(
+            &[
+                recovered.residual[0],
+                recovered.residual[1],
+                recovered.residual[3],
+            ],
+            &plain.residual,
+        );
+    }
 }
