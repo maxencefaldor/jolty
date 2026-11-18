@@ -15,7 +15,24 @@ import pkgutil
 import sys
 from pathlib import Path
 
+from hypothesis import HealthCheck, settings
+
 import jolty
+
+settings.register_profile(
+    "ci",
+    max_examples=40,
+    derandomize=True,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.register_profile(
+    "nightly",
+    max_examples=1000,
+    derandomize=False,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 """The agents' benchmark, whose shared scripts their tests import."""

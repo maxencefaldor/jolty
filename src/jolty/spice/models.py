@@ -1014,11 +1014,14 @@ def geometric(
         if letter in instance:
             value = instance[letter]
         elif length * width * sheet > 0:
+            if wide == 0:
+                message = f"effective width of `{card.name}` is 0"
+                raise statement.fail(message)
             value = long / wide * sheet
         else:
             value = values.get("r", LEAST_RESISTANCE)
         if "kf" in drift and sized:
-            drift["kf"] /= long ** values.get("lf", 1.0) * wide ** values.get("wf", 1.0)
+            drift["kf"] /= _noise_area(card, values, long, wide, statement)
     else:
         length = instance.get("l", 0.0)
         cut = values.get("del")
@@ -1035,6 +1038,40 @@ def geometric(
         else:
             value = area * wide * long + values.get("cjsw", 0.0) * 2 * (long + wide)
     return Geometric(value * instance.get("scale", 1.0), drift)
+
+
+def _noise_area(
+    card: ModelCard,
+    values: Mapping[str, float],
+    long: float,
+    wide: float,
+    statement: Statement,
+) -> float:
+    """The effective flicker-noise area of a geometric resistor card.
+
+    Raises:
+        SpiceError: When the dimensions or exponents make the area non-positive,
+            overflow, or non-finite.
+    """
+    if not (long > 0 and wide > 0):
+        message = (
+            f"effective length and width of `{card.name}` are positive for flicker "
+            f"noise, not {long!r} and {wide!r}"
+        )
+        raise statement.fail(message)
+    length_exponent = values.get("lf", 1.0)
+    width_exponent = values.get("wf", 1.0)
+    try:
+        area = math.pow(long, length_exponent) * math.pow(wide, width_exponent)
+    except OverflowError, ValueError:
+        message = f"flicker noise area of `{card.name}` is outside finite range"
+        raise statement.fail(message) from None
+    if not (area > 0 and math.isfinite(area)):
+        message = (
+            f"flicker noise area of `{card.name}` is positive and finite, not {area!r}"
+        )
+        raise statement.fail(message)
+    return area
 
 
 NOISE: Final = frozenset({"nlev", "gdsnoi"})
@@ -1388,7 +1425,11 @@ def _diode(
                 instance["w"] + geometry["xw"],
                 instance["l"] + geometry["xw"],
             )
-            area = width * length * scale**2
+            try:
+                area = width * length * (scale**2)
+            except OverflowError:
+                message = f"scale factor of `{card.name}` overflows: {scale!r}"
+                raise statement.fail(message) from None
             perimeter = (2 * width + 2 * length) * scale
         sizes = {name: instance.get(name, geometry[name]) for name in METAL_AND_POLY}
         if any(sizes.values()):
@@ -1431,10 +1472,14 @@ def _area(instance: Mapping[str, float], statement: Statement) -> float:
     """An element's area times its number of copies, as SPICE scales a device by it.
 
     Raises:
-        SpiceError: When it is not positive, which leaves the device no junction.
+        SpiceError: When the copies or scaled area is not positive and finite.
     """
-    area = instance.get("area", 1.0) * instance.get("m", 1.0)
-    if not area > 0:
+    copies = instance.get("m", 1.0)
+    if not (copies > 0 and math.isfinite(copies)):
+        message = f"the element's copies `m` is positive and finite, not {copies!r}"
+        raise statement.fail(message)
+    area = instance.get("area", 1.0) * copies
+    if not (area > 0 and math.isfinite(area)):
         message = f"the element's area times its copies is positive, not {area!r}"
         raise statement.fail(message)
     return area
@@ -1975,11 +2020,16 @@ def _vbic(
     values = _vbic_read(values)
     charge = values.pop("qbm", None)
     copies = instance.get("m", 1.0)
-    area = instance.get("area", 1.0) * copies
+    area = _area(instance, statement)
     values = _area_scaled("vbic", values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
     for coefficient, exponent in (("kfn", "afn"), ("kf", "af")):
         if coefficient in values:
-            values[coefficient] *= copies ** (1 - values.get(exponent, 1.0))
+            try:
+                scale = math.pow(copies, 1 - values.get(exponent, 1.0))
+            except OverflowError, ValueError:
+                message = f"flicker noise scaling of `{card.name}` overflows"
+                raise statement.fail(message) from None
+            values[coefficient] *= scale
     parameters = _mapped(card, values, VBIC, statement)
     parameters["polarity"] = card.kind
     if charge is not None:
@@ -2036,5 +2086,7 @@ def vbic_heating(
     if resistance <= 0 or given.get("selft", 1.0) != 1:
         return None
     area = instance.get("area", 1.0) * instance.get("m", 1.0)
+    if not (area > 0 and math.isfinite(area)):
+        return None
     capacitance = max(given.get("cth", 0.0), VBIC_LEAST_THERMAL_CAPACITANCE)
     return resistance / area, capacitance * area

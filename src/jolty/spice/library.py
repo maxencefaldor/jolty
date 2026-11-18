@@ -32,7 +32,7 @@ from pydantic import JsonValue
 
 from jolty import _core, ir
 from jolty.builder import Component
-from jolty.devices import device
+from jolty.devices import Device, device
 from jolty.errors import SpiceError
 from jolty.ir import Role
 from jolty.spice import models
@@ -49,6 +49,8 @@ from jolty.spice.expressions import (
     Unary,
     UndefinedError,
     Voltage,
+    check_core_depth,
+    children,
     evaluate,
     inlined,
     integral,
@@ -56,6 +58,7 @@ from jolty.spice.expressions import (
     nominal,
     number,
     parse,
+    rebuild,
     substituted,
     translate,
 )
@@ -302,27 +305,27 @@ class _TranslationOptions:
     multiplier: float = 1.0
     parsed_models: dict[Statement, ModelCard] | None = None
     lock: threading.Lock | None = None
+    instantiating: tuple[str, ...] = ()
 
 
 def _contains_statistical_call(expression: Expression) -> bool:
     """Whether `expression` contains any statistical function call."""
-    match expression:
-        case Call(function, arguments):
-            if function in STATISTICAL and not (
-                function == "limit" and len(arguments) != STATISTICAL[function]
-            ):
-                return True
-            return any(_contains_statistical_call(argument) for argument in arguments)
-        case Unary(_, operand):
-            return _contains_statistical_call(operand)
-        case Binary(_, left, right):
-            return _contains_statistical_call(left) or _contains_statistical_call(right)
-        case Conditional(condition, then, otherwise):
-            return (
-                _contains_statistical_call(condition)
-                or _contains_statistical_call(then)
-                or _contains_statistical_call(otherwise)
-            )
+    stack: list[Expression] = [expression]
+    while stack:
+        current = stack.pop()
+        match current:
+            case Call(function, arguments):
+                if function in STATISTICAL and not (
+                    function == "limit" and len(arguments) != STATISTICAL[function]
+                ):
+                    return True
+                stack.extend(arguments)
+            case Unary(_, operand):
+                stack.append(operand)
+            case Binary(_, left, right):
+                stack.extend((left, right))
+            case Conditional(condition, then, otherwise):
+                stack.extend((condition, then, otherwise))
     return False
 
 
@@ -380,6 +383,33 @@ def _stochastic_closure(
                 stochastic.add(dependent)
                 stack.append(dependent)
     return stochastic
+
+
+def _check_cycle(subcircuit: Subcircuit, instantiating: tuple[str, ...]) -> str:
+    """Returns `subcircuit`'s case-folded key after checking it is not in a cycle."""
+    key = subcircuit.name.casefold()
+    if key in instantiating:
+        cycle = " places ".join(
+            f"`{entry}`" for entry in (*instantiating[instantiating.index(key) :], key)
+        )
+        message = f"a subcircuit places itself: {cycle}"
+        raise subcircuit.statement.fail(message)
+    return key
+
+
+def _extract_multiplier(
+    subcircuit: Subcircuit, given: Mapping[str, float]
+) -> tuple[float, Mapping[str, float]]:
+    """Splits subcircuit multiplier `m` from `given` when it has no `m` parameter."""
+    if "m" not in given or "m" in subcircuit.defaults:
+        return 1.0, given
+    multiplier = given["m"]
+    if not (multiplier > 0 and math.isfinite(multiplier)):
+        message = (
+            f"the subcircuit multiplier `m` is positive and finite, not {multiplier!r}"
+        )
+        raise subcircuit.statement.fail(message)
+    return multiplier, {key: value for key, value in given.items() if key != "m"}
 
 
 def _build_global_plan(
@@ -792,7 +822,15 @@ class Library:
             spread = standard_deviation(function, arguments)
             if not scope or spread == 0:
                 continue
+            if not (math.isfinite(arguments[0]) and math.isfinite(spread)):
+                message = (
+                    f"the call `{call}` of `{scope}` has non-finite mean or standard "
+                    f"deviation ({arguments[0]!r}, {spread!r})"
+                )
+                raise SpiceError(message)
             step = _STEP * spread
+            if not (step > 0 and math.isfinite(step)):
+                continue
             up, down = (
                 read(_Probe((scope, call), sign * step)) for sign in (1.0, -1.0)
             )
@@ -992,6 +1030,7 @@ class Library:
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
+        instantiating: tuple[str, ...] = (),
     ) -> _Built:
         """The built `subcircuit` with the `given` parameters, in `scope`.
 
@@ -999,13 +1038,11 @@ class Library:
         subcircuit that has no parameter of that name multiplies every element it
         holds, as [`MULTIPLIED`][jolty.spice.library.MULTIPLIED] says.
         """
+        key = _check_cycle(subcircuit, instantiating)
         if self.surveying and drawing.path:
             # A survey states each placement within, and what it gives.
             self.use(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
-        multiplier = 1.0
-        if "m" in given and "m" not in subcircuit.defaults:
-            multiplier = given["m"]
-            given = {key: value for key, value in given.items() if key != "m"}
+        multiplier, given = _extract_multiplier(subcircuit, given)
         unknown = sorted(set(given) - set(subcircuit.defaults))
         if unknown:
             message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
@@ -1051,6 +1088,7 @@ class Library:
             multiplier=multiplier,
             parsed_models=self._parsed_models,
             lock=self._cache_lock,
+            instantiating=(*instantiating, key),
         )
         if drawing.sample is not None:
             return _Translation(self, subcircuit, (scope, local), options).translate(
@@ -1116,7 +1154,13 @@ class Library:
         """
         if "l" not in instance or "w" not in instance:
             return None
-        size = (instance["l"], instance["w"] / self.fingers(instance))
+        finger_count = self.fingers(instance)
+        if not (finger_count > 0 and math.isfinite(finger_count)):
+            message = (
+                f"a MOSFET's fingers `NF` is positive and finite, not {finger_count!r}"
+            )
+            raise SpiceError(message)
+        size = (instance["l"], instance["w"] / finger_count)
         bins = _bins(name)
         for cards in (local, self._models):
             for key, card in reversed(list(cards.items())):
@@ -1150,12 +1194,13 @@ class Library:
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
+        instantiating: tuple[str, ...] = (),
     ) -> Component:
         """The component a subcircuit instance with the `given` parameters places.
 
         Its statistical functions draw as `drawing` does.
         """
-        return self._build(subcircuit, scope, given, drawing).component
+        return self._build(subcircuit, scope, given, drawing, instantiating).component
 
     def place_built(
         self,
@@ -1163,9 +1208,10 @@ class Library:
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
+        instantiating: tuple[str, ...] = (),
     ) -> _Built:
         """The built subcircuit (component, nets, initial state) for an instance."""
-        return self._build(subcircuit, scope, given, drawing)
+        return self._build(subcircuit, scope, given, drawing, instantiating)
 
 
 def load(*paths: Path | str) -> Library:
@@ -1239,7 +1285,7 @@ def _expanded_text(
     seen = False
     for statement in statements(text, label):
         words = [word.strip("'\"") for word in tokens(statement.text)]
-        keyword = words[0].casefold()
+        keyword = words[0].casefold() if words else ""
         if (
             subcircuit_depth == 0 and keyword == ".lib" and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
         ):
@@ -1273,6 +1319,8 @@ def _included(
     Raises:
         SpiceError: When it includes a file amiss.
     """
+    if not words:
+        return [statement]
     keyword = words[0].casefold()
     if keyword == ".lib" and len(words) == 3:  # noqa: PLR2004 - a file and a section
         return _expanded(directory / words[1], words[2], within)
@@ -1715,6 +1763,7 @@ class _Translation:
         self.multiplier = options.multiplier
         self._parsed_models = options.parsed_models
         self._cache_lock = options.lock
+        self.instantiating = options.instantiating
         """The subcircuit's multiplier, which multiplies each element it holds."""
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
@@ -1883,7 +1932,7 @@ class _Translation:
         Its terminals join `terminals`' nets; it takes the element's name, or
         `identifier` for a part of it.
         """
-        made = device(model, parameters)
+        made = _checked_device(statement, model, parameters)
         self.instances.append(
             (
                 statement.line,
@@ -2024,9 +2073,14 @@ class _Translation:
                 )
                 raise SpiceError(message)
             value = {parameter: instance.parameters[parameter]}
+            try:
+                checked_parameters = device(model, value).parameters
+            except ValueError as error:
+                message = f"{place}{error}"
+                raise SpiceError(message) from None
             replaced = {
                 "of": ir.DeviceOf(model=model),
-                "parameters": device(model, value).parameters,
+                "parameters": checked_parameters,
             }
             heated.append((line, instance.model_copy(update=replaced)))
         self.instances = heated
@@ -2230,7 +2284,7 @@ def _coupled(
     instance = ir.Instance(
         name=first.text.split()[0],
         of=ir.DeviceOf(model="coupled_inductors"),
-        parameters=device("coupled_inductors", parameters).parameters,
+        parameters=_checked_device(first, "coupled_inductors", parameters).parameters,
         terminals={
             f"{end}{number}": winding.terminals[end]
             for number, winding in enumerate(windings, start=1)
@@ -2380,6 +2434,16 @@ def _needed(translation: _Translation, statement: Statement) -> str:
     return _described(found, translation.scope, translation.functions)
 
 
+def _checked_device(
+    statement: Statement, model: str, parameters: dict[str, JsonValue]
+) -> Device:
+    """Constructs a `model` device, raising `SpiceError` on validation failure."""
+    try:
+        return device(model, parameters)
+    except ValueError as error:
+        raise statement.fail(str(error)) from None
+
+
 def _described(
     card: ModelCard,
     scope: Mapping[str, float],
@@ -2395,7 +2459,12 @@ def _described(
         return family
     written = card.parameters.get("level")
     level = 1.0 if written is None else evaluate(inlined(written, functions), scope)
-    named = _LEVELS.get(family, {}).get(int(level), family)
+    level_key = int(level) if math.isfinite(level) and level.is_integer() else None
+    named = (
+        _LEVELS.get(family, {}).get(level_key, family)
+        if level_key is not None
+        else family
+    )
     version = None if card.version is None else number(card.version)
     given = f" {version:g}" if version is not None else ""
     return f"{named}{given} (level {level:g})"
@@ -2420,7 +2489,7 @@ def _unconditional(body: Sequence[Statement]) -> list[Statement]:
         if keyword == ".if":
             depth += 1
         elif keyword == ".endif":
-            depth -= 1
+            depth = max(0, depth - 1)
         elif depth == 0 and keyword not in CONDITIONS:
             found.append(statement)
     return found
@@ -2598,6 +2667,9 @@ def _passive(
         read = models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
         value, given = _valued(translation, statement, card, own, (letter, read))
         copies = translation.multiplied(own).get("m", 1.0)
+        if not (copies > 0 and math.isfinite(copies)):
+            message = f"the element's copies `m` is positive and finite, not {copies!r}"
+            raise statement.fail(message)
         value = value * copies if model == "capacitor" else value / copies
         given |= _coefficients(translation, statement, assigned, drifts)
         temperatures = {
@@ -2613,13 +2685,7 @@ def _passive(
             for name, amount in given.items()
             if name in _CURVATURE
         }
-        if given.get("kf", 0.0) != 0:
-            given["kf"] *= copies ** (1 - given.get("af", 1.0))
-            parameters |= {
-                _FLICKER[name]: amount
-                for name, amount in given.items()
-                if name in _FLICKER
-            }
+        parameters |= _flicker_parameters(statement, given, copies)
         net_a, net_b = translation.net(a), translation.net(b)
         translation.add(statement, model, parameters, {"a": net_a, "b": net_b})
         _record_passive_initial(
@@ -2632,6 +2698,28 @@ def _passive(
         )
 
     return translated
+
+
+def _flicker_parameters(
+    statement: Statement, given: Mapping[str, float], copies: float
+) -> dict[str, JsonValue]:
+    """Scales a resistor's flicker noise parameters by parallel copies `copies`."""
+    coefficient = given.get("kf", 0.0)
+    if coefficient == 0:
+        return {}
+    try:
+        scaled = coefficient * math.pow(copies, 1 - given.get("af", 1.0))
+    except OverflowError, ValueError:
+        message = "flicker noise scaling by `m` overflows"
+        raise statement.fail(message) from None
+    if not math.isfinite(scaled):
+        message = "flicker noise scaling by `m` overflows"
+        raise statement.fail(message)
+    parameters: dict[str, JsonValue] = {
+        _FLICKER[name]: amount for name, amount in given.items() if name in _FLICKER
+    }
+    parameters[_FLICKER["kf"]] = scaled
+    return parameters
 
 
 def _record_passive_initial(  # noqa: PLR0913 - element identity, nets, IC and copies
@@ -2757,13 +2845,21 @@ def _value_of_voltage(
         )
         raise statement.fail(message)
     rise = translation.library.temperature - _core.REFERENCE_TEMPERATURE
-    factor = 1 + given.get("tc1", 0.0) * rise + given.get("tc2", 0.0) * rise**2
+    factor = 1 + given.get("tc1", 0.0) * rise + given.get("tc2", 0.0) * (rise * rise)
+    if factor == 0 or not math.isfinite(factor):
+        message = (
+            f"temperature factor for resistor is finite and nonzero, not {factor!r}"
+        )
+        raise statement.fail(message)
     own = {
         name: translation.value(words[0])
         for name, words in assigned.items()
         if name == "m" and words
     }
     copies = translation.multiplied(own).get("m", 1.0)
+    if not (copies > 0 and math.isfinite(copies)):
+        message = f"the element's copies `m` is positive and finite, not {copies!r}"
+        raise statement.fail(message)
     current = Binary(
         "*",
         Binary("/", Voltage(nodes[0], nodes[1]), resistance),
@@ -2814,43 +2910,48 @@ def _charge(
 
 def _folded(translation: _Translation, expression: Expression) -> Expression:
     """`expression` with each part that reads no voltage or current evaluated."""
-    if not _unknowns(expression):
-        return Number(evaluate(expression, translation.scope, translation.draw))
-
-    def within(part: Expression) -> Expression:
-        return _folded(translation, part)
-
-    match expression:
-        case Unary(operator, operand):
-            return Unary(operator, within(operand))
-        case Binary(operator, left, right):
-            return Binary(operator, within(left), within(right))
-        case Conditional(condition, then, otherwise):
-            return Conditional(within(condition), within(then), within(otherwise))
-        case Call(function, arguments):
-            return Call(function, tuple(map(within, arguments)))
-        case leaf:
-            return leaf
+    frames: list[tuple[Expression, bool]] = [(expression, False)]
+    results: list[Expression] = []
+    while frames:
+        current, ready = frames.pop()
+        if not ready:
+            if not _unknowns(current):
+                results.append(
+                    Number(evaluate(current, translation.scope, translation.draw))
+                )
+                continue
+            subexpressions = children(current)
+            if not subexpressions:
+                results.append(current)
+                continue
+            frames.append((current, True))
+            frames.extend((child, False) for child in reversed(subexpressions))
+            continue
+        arity = len(children(current))
+        built = results[-arity:]
+        del results[-arity:]
+        results.append(rebuild(current, built))
+    return results[0]
 
 
 def _unknowns(expression: Expression) -> set[Voltage | Current]:
     """The voltages and currents `expression` reads."""
-    match expression:
-        case Voltage() | Current():
-            return {expression}
-        case Unary(_, operand):
-            return _unknowns(operand)
-        case Binary(_, left, right):
-            return _unknowns(left) | _unknowns(right)
-        case Conditional(condition, then, otherwise):
-            return _unknowns(condition) | _unknowns(then) | _unknowns(otherwise)
-        case Call(_, arguments):
-            found: set[Voltage | Current] = set()
-            for argument in arguments:
-                found |= _unknowns(argument)
-            return found
-        case _:
-            return set()
+    found: set[Voltage | Current] = set()
+    stack: list[Expression] = [expression]
+    while stack:
+        current = stack.pop()
+        match current:
+            case Voltage() | Current():
+                found.add(current)
+            case Unary(_, operand):
+                stack.append(operand)
+            case Binary(_, left, right):
+                stack.extend((left, right))
+            case Conditional(condition, then, otherwise):
+                stack.extend((condition, then, otherwise))
+            case Call(_, arguments):
+                stack.extend(arguments)
+    return found
 
 
 def _of_own_voltage(
@@ -3009,6 +3110,9 @@ def _coefficients(
     for name in drifts:
         words = assigned.get(name)
         if words is not None:
+            if not words:
+                message = f"`{name.upper()}` is not assigned a value"
+                raise statement.fail(message)
             given[name] = translation.value(words[0])
     return given
 
@@ -3066,6 +3170,9 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
 
     def translated(translation: _Translation, statement: Statement) -> None:
         words = tokens(statement.text)
+        if len(words) < 3:  # noqa: PLR2004 - a name and two nodes
+            message = "a source joins two nodes"
+            raise statement.fail(message)
         _, positive, negative, *rest = words
         rest, waveform = _transient_function(translation, statement, rest)
         given = rest[:1] and rest[0].casefold() == "dc"
@@ -3088,14 +3195,17 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
             raise statement.fail(message)
         if waveform is None:
             waveform = {"dc": 0.0 if level is None else level}
-        elif level is not None and level != (
-            at_zero := _core.level(json.dumps(waveform), 0.0)
-        ):
-            message = (
-                f"a DC level of {level!r} beside a waveform at {at_zero!r} at time "
-                "zero: jolty's source has one level at zero for every analysis"
-            )
-            raise statement.fail(message)
+        elif level is not None:
+            try:
+                at_zero = _core.level(json.dumps(waveform), 0.0)
+            except ValueError as error:
+                raise statement.fail(str(error)) from None
+            if level != at_zero:
+                message = (
+                    f"a DC level of {level!r} beside a waveform at {at_zero!r} at time "
+                    "zero: jolty's source has one level at zero for every analysis"
+                )
+                raise statement.fail(message)
         parameters: dict[str, JsonValue] = {"waveform": waveform}
         translation.add(
             statement,
@@ -3222,6 +3332,20 @@ def _waveform(
     raise statement.fail(message)
 
 
+def _scaled_mosfet(
+    instance: dict[str, float], scale: float, statement: Statement
+) -> dict[str, float]:
+    """Scales MOSFET instance sizes by `scale`, raising `SpiceError` on overflow."""
+    try:
+        return {
+            key: value * math.pow(scale, _SCALED.get(key, 0))
+            for key, value in instance.items()
+        }
+    except OverflowError, ValueError:
+        message = f"scale option overflows: {scale!r}"
+        raise statement.fail(message) from None
+
+
 def _semiconductor(
     terminals: tuple[str, ...], kinds: frozenset[str]
 ) -> Callable[[_Translation, Statement], None]:
@@ -3246,11 +3370,9 @@ def _semiconductor(
             }
         )
         if "nmos" in kinds:
-            scale = library.options.get("scale", 1.0)
-            instance = {
-                key: value * scale ** _SCALED.get(key, 0)
-                for key, value in instance.items()
-            }
+            instance = _scaled_mosfet(
+                instance, library.options.get("scale", 1.0), statement
+            )
         elif "d" in kinds:
             # A level 3 diode scales its sizes by `scale` as it reads them, its masks'
             # offsets in their own units (`diosetup.c`, lines 336 to 360).
@@ -3528,7 +3650,11 @@ def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
         if first.startswith("poly("):
             expression = _polynomial(statement, rest, by_current=by_current)
         elif first == "value" and not by_current:
-            expression = translation.parse(rest[2] if rest[1:2] == ["="] else rest[1])
+            index = 2 if rest[1:2] == ["="] else 1
+            if len(rest) <= index:
+                message = "a VALUE source names an expression"
+                raise statement.fail(message)
+            expression = translation.parse(rest[index])
         elif first == "table" and not by_current:
             expression = _table(translation, statement, rest)
         elif by_current and len(rest) == 2:  # noqa: PLR2004 - a source and a gain
@@ -3616,6 +3742,19 @@ def _table(
     )
 
 
+def _polynomial_count(statement: Statement, header: str) -> int:
+    """Parses the control count of ``POLY(n)`` and checks it is at least 1."""
+    match = re.fullmatch(r"poly\((\d+)\)", header, re.IGNORECASE)
+    if match is None:
+        message = "POLY counts its controls, as POLY(2)"
+        raise statement.fail(message)
+    count = int(match[1])
+    if count < 1:
+        message = f"POLY counts one or more controls, not {count}"
+        raise statement.fail(message)
+    return count
+
+
 def _polynomial(
     statement: Statement, rest: list[str], *, by_current: bool
 ) -> Expression:
@@ -3624,17 +3763,16 @@ def _polynomial(
     The coefficients are the constant's, the linear terms', then each product of two
     controls', then of three, in order.
     """
-    match = re.fullmatch(r"poly\((\d+)\)", rest[0], re.IGNORECASE)
-    if match is None:
-        message = "POLY counts its controls, as POLY(2)"
-        raise statement.fail(message)
-    count = int(match[1])
+    count = _polynomial_count(statement, rest[0])
     words = [part for word in rest[1:] for part in _split_group(word)]
     # A control is a source, or a pair of nodes.
     width = 1 if by_current else 2
+    if len(words) <= width * count:
+        message = f"POLY({count}) reads {count} controls, then numbers"
+        raise statement.fail(message)
     written = [words[width * k : width * (k + 1)] for k in range(count)]
     values = [number(word) for word in words[width * count :]]
-    if len(words) <= width * count or any(value is None for value in values):
+    if any(value is None for value in values):
         message = f"POLY({count}) reads {count} controls, then numbers"
         raise statement.fail(message)
     controls: list[Expression] = [
@@ -3710,6 +3848,10 @@ def _behavioral(
         return ports[key]
 
     text = translate(expression, translation.scope, node, current)
+    try:
+        check_core_depth(text)
+    except SpiceError as error:
+        raise statement.fail(str(error)) from None
     translation.add(statement, model, {"expression": text}, terminals)
 
 
@@ -3767,6 +3909,9 @@ def _switch(translation: _Translation, statement: Statement) -> None:
     if card is None:
         message = f"no model is named `{name}`"
         raise statement.fail(message)
+    if card.kind != "vswitch":
+        message = f"`{card.name}` is a model of type `{card.kind}`"
+        raise statement.fail(message)
     made = translation.device(card, {}, statement)
     translation.add(
         statement,
@@ -3797,6 +3942,9 @@ def _current_switch(translation: _Translation, statement: Statement) -> None:
     card = translation.library.model(name, translation.models)
     if card is None:
         message = f"no model is named `{name}`"
+        raise statement.fail(message)
+    if card.kind != "iswitch":
+        message = f"`{card.name}` is a model of type `{card.kind}`"
         raise statement.fail(message)
     made = translation.device(card, {}, statement)
     control_positive, control_negative = translation.sense(source, statement)
@@ -3870,15 +4018,20 @@ def _transmission_line(translation: _Translation, statement: Statement) -> None:
     if delay is None:
         length, frequency = given("nl"), given("f")
         default_length, default_frequency = _QUARTER_WAVE_AT_GHZ
-        delay = (default_length if length is None else length) / (
-            default_frequency if frequency is None else frequency
-        )
+        divisor = default_frequency if frequency is None else frequency
+        if not (divisor > 0 and math.isfinite(divisor)):
+            message = (
+                f"a transmission line's frequency `F` is positive and finite, not "
+                f"{divisor!r}"
+            )
+            raise statement.fail(message)
+        delay = (default_length if length is None else length) / divisor
     parameters: dict[str, JsonValue] = {
         "characteristic_impedance": impedance,
         "delay": delay,
     }
     # The line's terminals are in the order of SPICE's nodes, each port's in turn.
-    terminals = device("transmission_line", parameters).terminals
+    terminals = _checked_device(statement, "transmission_line", parameters).terminals
     translation.add(
         statement,
         "transmission_line",
@@ -3922,7 +4075,11 @@ def _instance(translation: _Translation, statement: Statement) -> None:
         }
     )
     built = translation.library.place_built(
-        subcircuit, translation.globals, given, translation.drawing.within(name)
+        subcircuit,
+        translation.globals,
+        given,
+        translation.drawing.within(name),
+        translation.instantiating,
     )
     child = built.component
     ports = [port.name for port in child.definition.ports]

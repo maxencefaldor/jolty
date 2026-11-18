@@ -54,6 +54,45 @@ class Toleranced:
     tolerance: ir.Tolerance
 
 
+def _check_acyclic(circuit: ir.Circuit) -> None:
+    """Rejects recursive component hierarchies before calling the Rust walker.
+
+    `jolty_engine::variants::toleranced` traverses component placements recursively
+    without tracking ancestors, so a cycle overflows the native thread stack.
+    """
+    if circuit.top not in circuit.components:
+        return
+    done: set[str] = set()
+    active_list: list[str] = []
+    active_set: set[str] = set()
+    frames: list[tuple[str, int]] = [(circuit.top, 0)]
+    while frames:
+        name, index = frames.pop()
+        if index == 0:
+            if name in done:
+                continue
+            if name in active_set:
+                cycle = (*active_list[active_list.index(name) :], name)
+                message = (
+                    f"component `{cycle[0]}` contains itself: {' -> '.join(cycle)}"
+                )
+                raise ValueError(message)
+            if name not in circuit.components:
+                done.add(name)
+                continue
+            active_list.append(name)
+            active_set.add(name)
+        placed = circuit.components[name]
+        if index < len(placed.instances):
+            frames.append((name, index + 1))
+            instance = placed.instances[index]
+            if isinstance(instance.of, ir.ComponentOf):
+                frames.append((instance.of.component, 0))
+            continue
+        active_set.remove(active_list.pop())
+        done.add(name)
+
+
 def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     """Every parameter of every device instance of `circuit` that has a tolerance.
 
@@ -61,8 +100,10 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     engine lists them.
 
     Raises:
-        ValueError: When a tolerance's parameter has no number.
+        ValueError: When a tolerance's parameter has no number, or when a component
+            contains itself through a cycle of placements.
     """
+    _check_acyclic(circuit)
     return tuple(
         Toleranced(
             path, parameter, nominal, ir.Tolerance.model_validate_json(tolerance)

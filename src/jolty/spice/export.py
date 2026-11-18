@@ -233,8 +233,12 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
         >>> [(i.name, i.terminals) for i in flat.components[flat.top].instances]
         [('X1_R1', {'a': 'in', 'b': 'X1_mid'}), ('X1_R2', {'a': 'X1_mid', 'b': 'gnd'})]
     """
+    if circuit.top not in circuit.components:
+        message = f"no component `{circuit.top}`"
+        raise _unwritable(message)
     top = circuit.components[circuit.top]
     placed: list[ir.Instance] = []
+    active: list[str] = [circuit.top]
 
     def walk(component: ir.Component, prefix: str, ports: dict[str, str]) -> None:
         for instance in component.instances:
@@ -244,11 +248,22 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
             }
             match instance.of:
                 case ir.ComponentOf(component=name) if name not in subcircuits:
-                    walk(
-                        circuit.components[name],
-                        f"{prefix}{instance.name}_",
-                        nets,
-                    )
+                    if name in active:
+                        cycle = (*active[active.index(name) :], name)
+                        message = (
+                            f"component `{cycle[0]}` contains itself: "
+                            f"{' -> '.join(cycle)}"
+                        )
+                        raise _unwritable(message)
+                    inner = circuit.components.get(name)
+                    if inner is None:
+                        message = f"no component `{name}`"
+                        raise _unwritable(message)
+                    active.append(name)
+                    try:
+                        walk(inner, f"{prefix}{instance.name}_", nets)
+                    finally:
+                        active.pop()
                 case _:
                     placed.append(
                         instance.model_copy(
@@ -260,14 +275,14 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
                     )
 
     walk(top, "", {port.name: port.name for port in top.ports})
-    kept = {
-        name: circuit.components[name]
-        for name in {
-            instance.of.component
-            for instance in placed
-            if isinstance(instance.of, ir.ComponentOf)
-        }
-    }
+    kept: dict[str, ir.Component] = {}
+    for instance in placed:
+        if isinstance(instance.of, ir.ComponentOf):
+            name = instance.of.component
+            if name not in circuit.components:
+                message = f"no component `{name}`"
+                raise _unwritable(message)
+            kept[name] = circuit.components[name]
     flat = top.model_copy(update={"instances": tuple(placed)})
     return circuit.model_copy(update={"components": {**kept, circuit.top: flat}})
 

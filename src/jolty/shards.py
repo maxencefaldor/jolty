@@ -77,6 +77,17 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
     _same(loaded)
     _tiled(loaded)
     first = loaded[0][1]
+    if not first.conditions or any(
+        len(shard.conditions) != len(first.conditions) for _, shard in loaded
+    ):
+        message = "the shards do not hold the same number of conditions"
+        raise JoltyError(message)
+    if len(first.conditions) != len(first.corners) + 1:
+        message = (
+            f"the shards hold {len(first.conditions)} conditions for "
+            f"{len(first.corners)} corners"
+        )
+        raise JoltyError(message)
     conditions = []
     for place in range(len(first.conditions)):
         parts = [shard.conditions[place] for _, shard in loaded]
@@ -189,6 +200,9 @@ def monte_carlo(
     Returns the report, and the batch of the samples at the plan's own conditions as a
     batch file saves it.
     """
+    if not shard.conditions:
+        message = "the shard holds no conditions"
+        raise JoltyError(message)
     count = shard.stop - shard.start
     failed, spreads_found, passing = spreads(
         shard.analyses, shard.conditions, count, shard.specs

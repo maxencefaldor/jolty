@@ -40,18 +40,21 @@ Examples:
     2.5
 """
 
+import contextlib
 import functools
 import hashlib
 import platform as platforms
+import struct
 import sys
 import sysconfig
 import zipfile
-from collections.abc import Mapping
+import zlib
+from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from importlib.metadata import version
 from pathlib import Path
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Final, Literal, Self, override
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -663,6 +666,112 @@ def _write(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
                 )
 
 
+_ARCHIVE_ERRORS: Final = (
+    ValueError,
+    EOFError,
+    zipfile.BadZipFile,
+    zlib.error,
+    struct.error,
+    OSError,
+    NotImplementedError,
+    RuntimeError,
+)
+"""Exceptions raised by NumPy or zipfile when reading a corrupt `.npz` archive."""
+
+_LOAD_ERRORS: Final = (
+    *_ARCHIVE_ERRORS,
+    KeyError,
+    IndexError,
+    TypeError,
+    ZeroDivisionError,
+    OverflowError,
+)
+"""Exceptions raised when decoding arrays or header metadata from a corrupt archive."""
+
+
+class _Archive(Mapping[str, np.ndarray]):
+    """Read-only view of an `.npz` archive requiring every entry to be an `ndarray`.
+
+    `NpzFile.__getitem__` silently returns raw `bytes` for zip entries that do not hold
+    a valid `.npy` header. Rejecting non-array entries here prevents raw bytes from
+    escaping as `AttributeError` later during decoding or merging.
+    """
+
+    def __init__(self, archive: np.lib.npyio.NpzFile) -> None:
+        self._archive = archive
+
+    @override
+    def __getitem__(self, key: str) -> np.ndarray:
+        value = self._archive[key]
+        if not isinstance(value, np.ndarray):
+            message = f"archive entry `{key}` is {type(value).__name__}, not ndarray"
+            raise TypeError(message)
+        return value
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._archive.files)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._archive.files)
+
+
+@contextlib.contextmanager
+def _open_archive(path: Path, unreadable: str) -> Generator[Mapping[str, np.ndarray]]:
+    """Opens the NumPy `.npz` archive at `path`, raising `JoltyError` if corrupt.
+
+    Opening the file handle explicitly ensures no file descriptor leaks when `np.load`
+    fails midway through parsing a truncated or corrupt archive. File-system errors
+    indicating `path` is missing, a directory, or unreadable due to permissions
+    propagate as `OSError` so callers can distinguish missing files from corrupt data.
+    """
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError, IsADirectoryError, PermissionError:
+        raise
+    except OSError:
+        raise JoltyError(unreadable) from None
+    with handle:
+        try:
+            archive = np.load(handle, allow_pickle=False)
+        except _ARCHIVE_ERRORS:
+            raise JoltyError(unreadable) from None
+        if not isinstance(archive, np.lib.npyio.NpzFile):
+            raise JoltyError(unreadable)
+        try:
+            yield _Archive(archive)
+        finally:
+            archive.close()
+
+
+def _header_text(data: Mapping[str, np.ndarray], unreadable: str) -> str:
+    """Extracts the JSON header string from `data`, raising `JoltyError` if corrupt."""
+    try:
+        raw = data[_HEADER]
+    except (KeyError, TypeError, *_ARCHIVE_ERRORS):
+        raise JoltyError(unreadable) from None
+    if raw.ndim != 0 or raw.dtype.kind not in {"U", "S"}:
+        raise JoltyError(unreadable)
+    value = raw.item()
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            raise JoltyError(unreadable) from None
+    return str(value)
+
+
+def _recording_at(
+    recordings: tuple[results.Recording, ...], index: int
+) -> results.Recording:
+    """Returns `recordings[index]` with bounds checking against negative indices."""
+    if not 0 <= index < len(recordings):
+        message = f"recording index {index} is out of range for {len(recordings)}"
+        raise IndexError(message)
+    return recordings[index]
+
+
 def load_results(
     path: Path, *, circuit: ir.Circuit | None = None
 ) -> dict[str, results.AnalysisResult]:
@@ -675,7 +784,8 @@ def load_results(
         JoltyError: When the file is not a jolty results file, or one in another
             version of the format, or its results are of a circuit other than `circuit`.
     """
-    with np.load(path, allow_pickle=False) as data:
+    unreadable = f"{path} is not a jolty results file"
+    with _open_archive(path, unreadable) as data:
         header = _header(path, data)
         of = header.provenance.circuit
         if circuit is not None and of is not None and of != circuit_digest(circuit):
@@ -686,10 +796,15 @@ def load_results(
             )
             raise JoltyError(message)
         recordings = tuple(recording.recording() for recording in header.recordings)
-        found = {
-            name: _load(data, name, entry, header, recordings)
-            for name, entry in header.analyses.items()
-        }
+        try:
+            found = {
+                name: _load(data, name, entry, header, recordings)
+                for name, entry in header.analyses.items()
+            }
+        except JoltyError:
+            raise
+        except _LOAD_ERRORS:
+            raise JoltyError(unreadable) from None
     return {
         name: result
         if name not in header.excursions
@@ -705,7 +820,7 @@ def load_provenance(path: Path) -> Provenance:
         JoltyError: When the file is not a jolty results file, or one in another
             version of the format.
     """
-    with np.load(path, allow_pickle=False) as data:
+    with _open_archive(path, f"{path} is not a jolty results file") as data:
         return _header(path, data).provenance
 
 
@@ -716,17 +831,19 @@ def _header(path: Path, data: Mapping[str, np.ndarray]) -> _Header:
         JoltyError: When the file is not a jolty results file, or one in another
             version of the format.
     """
+    unreadable = f"{path} is not a jolty results file"
+    text = _header_text(data, unreadable)
     try:
-        return _Header.model_validate_json(str(data[_HEADER]))
-    except KeyError, ValidationError:
-        raise _unreadable(path, data) from None
+        return _Header.model_validate_json(text)
+    except ValidationError:
+        raise _unreadable(path, text) from None
 
 
-def _unreadable(path: Path, data: Mapping[str, np.ndarray]) -> JoltyError:
-    """Why the file at `path`, holding `data`, cannot be read as results."""
+def _unreadable(path: Path, text: str) -> JoltyError:
+    """Why the file at `path`, holding header `text`, cannot be read as results."""
     try:
-        version = _Format.model_validate_json(str(data[_HEADER])).version
-    except KeyError, ValidationError:
+        version = _Format.model_validate_json(text).version
+    except ValidationError:
         return JoltyError(f"{path} is not a jolty results file")
     if version == _VERSION:
         return JoltyError(f"{path} is not a jolty results file")
@@ -946,10 +1063,13 @@ def _load(
     unknowns, nets = header.unknowns, header.nets
     match entry:
         case _OperatingPointResult(found=found, recording=recording):
-            return _point(data, name, found, header, recordings[recording])
+            return _point(
+                data, name, found, header, _recording_at(recordings, recording)
+            )
         case _OperatingPointsResult(found=found, recording=recording):
+            resolved = _recording_at(recordings, recording)
             points = tuple(
-                _point(data, f"{name}.{index}", each, header, recordings[recording])
+                _point(data, f"{name}.{index}", each, header, resolved)
                 for index, each in enumerate(found)
             )
             return results.OperatingPointsResult(unknowns, points)
@@ -962,20 +1082,21 @@ def _load(
                 data[f"{name}.values"],
                 nets,
                 data[f"{name}.logic"],
-                **_observed(data, name, recordings[recording]),
+                **_observed(data, name, _recording_at(recordings, recording)),
                 parameter=entry.parameter,
                 strategies=entry.strategies,
                 iterations=entry.iterations,
             )
         case _AcResult(source=source, found=found, recording=recording):
             point = f"{name}.operating_point"
+            resolved = _recording_at(recordings, recording)
             return results.AcResult(
                 unknowns,
                 source,
                 data[f"{name}.frequencies"],
                 data[f"{name}.values"],
-                _point(data, point, found, header, recordings[recording]),
-                recording=recordings[recording],
+                _point(data, point, found, header, resolved),
+                recording=resolved,
                 currents=data[f"{name}.currents"],
             )
         case _TransientResult() | _PeriodicSteadyStateResult():
@@ -992,14 +1113,20 @@ def _load_waveforms(
     recordings: tuple[results.Recording, ...],
 ) -> results.TransientResult:
     """The waveforms stored under `name` in `data`, a transient's or a period's."""
-    leak = (
-        results.ChargeLeak(
-            data[f"{name}.charge_leak.signed"],
-            data[f"{name}.charge_leak.absolute"],
-        )
-        if entry.statistics.charge_leak
-        else None
-    )
+    leak: results.ChargeLeak | None = None
+    if entry.statistics.charge_leak:
+        signed = data[f"{name}.charge_leak.signed"]
+        absolute = data[f"{name}.charge_leak.absolute"]
+        expected = (len(header.unknowns),)
+        if (
+            signed.shape != expected
+            or absolute.shape != expected
+            or not np.issubdtype(signed.dtype, np.floating)
+            or not np.issubdtype(absolute.dtype, np.floating)
+        ):
+            message = f"charge leak arrays do not match {expected}"
+            raise ValueError(message)
+        leak = results.ChargeLeak(signed, absolute)
     statistics = results.Statistics(
         entry.statistics.initial,
         entry.statistics.accepted,
@@ -1018,7 +1145,7 @@ def _load_waveforms(
         header.nets,
         _traces(data, name),
     )
-    observed = _observed(data, name, recordings[entry.recording])
+    observed = _observed(data, name, _recording_at(recordings, entry.recording))
     if isinstance(entry, _PeriodicSteadyStateResult):
         return results.PeriodicSteadyStateResult(
             *fields, **observed, period=entry.period, periods=entry.periods
@@ -1042,8 +1169,12 @@ def _load_linear(
     unknowns = header.unknowns
     match entry:
         case _TransferFunctionResult():
+            transfer = data[f"{name}.transfer"]
+            if transfer.ndim != 1 or len(transfer) != 3:  # noqa: PLR2004 - gain, input and output resistance
+                message = f"{name}.transfer has shape {transfer.shape}, not (3,)"
+                raise ValueError(message)
             gain, input_resistance, output_resistance = (
-                float(value) for value in data[f"{name}.transfer"]
+                float(value) for value in transfer
             )
             return results.TransferFunctionResult(
                 unknowns,
@@ -1059,16 +1190,23 @@ def _load_linear(
                     f"{name}.operating_point",
                     entry.found,
                     header,
-                    recordings[entry.recording],
+                    _recording_at(recordings, entry.recording),
                 ),
             )
         case _SensitivityResult(
             outputs=outputs, parameters=named, period=period, result=differentiated
         ):
+            raw_parameters = data[f"{name}.parameters"]
+            if raw_parameters.ndim != 1 or len(raw_parameters) != len(named):
+                message = (
+                    f"{name}.parameters has shape {raw_parameters.shape}, not "
+                    f"({len(named)},)"
+                )
+                raise ValueError(message)
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
                 for (instance, parameter), value in zip(
-                    named, data[f"{name}.parameters"], strict=True
+                    named, raw_parameters, strict=True
                 )
             )
             found = _differentiated(
@@ -1106,7 +1244,9 @@ def _load_linear(
                 probe,
                 data[f"{name}.frequencies"],
                 data[f"{name}.gains"],
-                _point(data, point, found, header, recordings[recording]),
+                _point(
+                    data, point, found, header, _recording_at(recordings, recording)
+                ),
             )
         case _NoiseResult():
             found_input = None
@@ -1132,7 +1272,7 @@ def _load_linear(
                     f"{name}.operating_point",
                     entry.found,
                     header,
-                    recordings[entry.recording],
+                    _recording_at(recordings, entry.recording),
                 ),
             )
         case _PoleZeroResult(
@@ -1150,7 +1290,9 @@ def _load_linear(
                 source,
                 output,
                 reference,
-                _point(data, point, found, header, recordings[recording]),
+                _point(
+                    data, point, found, header, _recording_at(recordings, recording)
+                ),
             )
 
 
@@ -1266,9 +1408,28 @@ def _traces(
 ) -> tuple[results.LogicTrace, ...]:
     """The logic traces of the transient `name`, stored end to end in `data`."""
     counts = data[f"{name}.logic.counts"]
-    ends = np.cumsum(counts)
-    times = np.split(data[f"{name}.logic.times"], ends[:-1])
-    levels = np.split(data[f"{name}.logic.levels"], ends[:-1])
+    if (
+        counts.ndim != 1
+        or not np.issubdtype(counts.dtype, np.integer)
+        or bool(np.any(counts < 0))
+    ):
+        message = f"{name}.logic.counts is not a 1-D array of non-negative integers"
+        raise ValueError(message)
+    times_raw = data[f"{name}.logic.times"]
+    levels_raw = data[f"{name}.logic.levels"]
+    if times_raw.ndim != 1 or levels_raw.ndim != 1:
+        message = f"{name}.logic traces are not 1-D arrays"
+        raise ValueError(message)
+    total = sum(int(count) for count in counts)
+    if len(times_raw) != total or len(levels_raw) != total:
+        message = (
+            f"{name}.logic traces lengths ({len(times_raw)}, {len(levels_raw)}) "
+            f"do not match counts sum {total}"
+        )
+        raise ValueError(message)
+    ends = np.cumsum(counts, dtype=np.intp)
+    times = np.split(times_raw, ends[:-1])
+    levels = np.split(levels_raw, ends[:-1])
     return tuple(
         results.LogicTrace(times[index], levels[index]) for index in range(len(counts))
     )
@@ -1380,6 +1541,24 @@ class _Columns(_Model):
 
     def result(self, name: str, data: Mapping[str, np.ndarray]) -> results.BatchResult:
         """The result whose arrays `data` holds under keys that start with `name`."""
+        values = data[f"{name}.values"]
+        ended = data[f"{name}.ended"]
+        measured = data[f"{name}.measured"]
+        causes = data[f"{name}.causes"]
+        if values.ndim != 2:  # noqa: PLR2004 - samples by parameters
+            message = f"{name}.values has shape {values.shape}, not 2-D"
+            raise ValueError(message)
+        runs = values.shape[0]
+        expected = (
+            ("values", values, (runs, len(self.parameters))),
+            ("ended", ended, (runs, len(self.analyses))),
+            ("measured", measured, (runs, len(self.measures))),
+            ("causes", causes, (runs, len(self.measures))),
+        )
+        for label, array, shape in expected:
+            if array.shape != shape:
+                message = f"{name}.{label} has shape {array.shape}, not {shape}"
+                raise ValueError(message)
         traces = tuple(
             results.Traces(
                 each.analysis,
@@ -1396,12 +1575,12 @@ class _Columns(_Model):
         return results.BatchResult(
             self.analyses,
             self.parameters,
-            data[f"{name}.values"],
-            data[f"{name}.ended"],
+            values,
+            ended,
             self.measures,
             tuple(_dimension(unit) for unit in self.units),
-            data[f"{name}.measured"],
-            data[f"{name}.causes"],
+            measured,
+            causes,
             self.reasons,
             {int(index): tuple(each) for index, each in self.problems.items()},
             {int(index): dict(each) for index, each in self.errors.items()},
@@ -1458,16 +1637,22 @@ def load_batches(path: Path) -> dict[str, Batch]:
     Raises:
         JoltyError: When the file is not a jolty batch file of this version.
     """
-    with np.load(path, allow_pickle=False) as data:
+    unreadable = f"{path} is not a jolty batch file of version {_BATCHES_VERSION}"
+    with _open_archive(path, unreadable) as data:
+        text = _header_text(data, unreadable)
         try:
-            header = _Batches.model_validate_json(str(data[_HEADER]))
-        except KeyError, ValidationError:
-            message = f"{path} is not a jolty batch file of version {_BATCHES_VERSION}"
-            raise JoltyError(message) from None
-        return {
-            name: Batch(entry.result(name, data), entry.requirements, entry.bounds)
-            for name, entry in header.batches.items()
-        }
+            header = _Batches.model_validate_json(text)
+        except ValidationError:
+            raise JoltyError(unreadable) from None
+        try:
+            return {
+                name: Batch(entry.result(name, data), entry.requirements, entry.bounds)
+                for name, entry in header.batches.items()
+            }
+        except JoltyError:
+            raise
+        except _LOAD_ERRORS:
+            raise JoltyError(unreadable) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1621,38 +1806,43 @@ def load_shard(path: Path) -> Shard:
         JoltyError: When the file is not a jolty shard file of this version.
     """
     unreadable = f"{path} is not a jolty shard file of version {_SHARD_VERSION}"
-    try:
-        archive = np.load(path, allow_pickle=False)
-    except ValueError, OSError, zipfile.BadZipFile:
-        raise JoltyError(unreadable) from None
-    if not isinstance(archive, np.lib.npyio.NpzFile):
-        raise JoltyError(unreadable)
-    with archive as data:
+    with _open_archive(path, unreadable) as data:
+        text = _header_text(data, unreadable)
         try:
-            header = _Shard.model_validate_json(str(data[_HEADER]))
-        except KeyError, ValidationError:
+            header = _Shard.model_validate_json(text)
+        except ValidationError:
             raise JoltyError(unreadable) from None
+        if (
+            not (0 <= header.start <= header.stop <= header.samples)
+            or len(header.conditions) != len(header.corners) + 1
+        ):
+            raise JoltyError(unreadable)
         requirements = header.requirements
-        return Shard(
-            start=header.start,
-            stop=header.stop,
-            digest=header.digest,
-            samples=header.samples,
-            seed=header.seed,
-            toleranced=header.toleranced,
-            mismatched=header.mismatched,
-            corners=header.corners,
-            analyses=header.analyses,
-            specs=None
-            if requirements is None
-            else Specs(
-                [each.requirement() for each in requirements], header.yield_target
-            ),
-            conditions=tuple(
-                None if entry is None else entry.result(str(place), data)
-                for place, entry in enumerate(header.conditions)
-            ),
-        )
+        try:
+            return Shard(
+                start=header.start,
+                stop=header.stop,
+                digest=header.digest,
+                samples=header.samples,
+                seed=header.seed,
+                toleranced=header.toleranced,
+                mismatched=header.mismatched,
+                corners=header.corners,
+                analyses=header.analyses,
+                specs=None
+                if requirements is None
+                else Specs(
+                    [each.requirement() for each in requirements], header.yield_target
+                ),
+                conditions=tuple(
+                    None if entry is None else entry.result(str(place), data)
+                    for place, entry in enumerate(header.conditions)
+                ),
+            )
+        except JoltyError:
+            raise
+        except _LOAD_ERRORS:
+            raise JoltyError(unreadable) from None
 
 
 type RawAnalysisResult = (
