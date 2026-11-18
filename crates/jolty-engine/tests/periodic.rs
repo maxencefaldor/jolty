@@ -7,6 +7,7 @@ use std::f64::consts::TAU;
 use jolty_engine::{
     Analysis, AnalysisResult, Conditions, Differentiated, Method, Options, PeriodicSteadyState,
     PeriodicSteadyStateResult, Sensitivity, SimulationError, Simulator, Transient, TransientResult,
+    Values,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -597,4 +598,204 @@ fn an_oscillating_tanks_period_moves_with_its_inductance_and_capacitance_exactly
             "{exact} against {finite}"
         );
     }
+}
+
+#[test]
+fn an_autonomous_periodic_steady_state_allows_dc_and_constant_waveforms() {
+    let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
+    let impedance = (inductance / capacitance).sqrt();
+    let regulation = (0.2 / impedance, impedance);
+    let expected = TAU * (inductance * capacitance).sqrt();
+    let mut instances = regulated_tank((inductance, capacitance), regulation, 1.0);
+    instances
+        .as_array_mut()
+        .expect("an instance list")
+        .extend([
+            json!({"name": "VDC", "of": {"model": "voltage_source"},
+                   "parameters": {"waveform": {"dc": 3.3}},
+                   "terminals": {"positive": "vdc", "negative": "0"}}),
+            two_terminal("RDC", ("resistor", "resistance", 1e3), "vdc", "0"),
+            sine("VSIN0", "vsin0", (1.0, 0.0, 1e6)),
+            two_terminal("RSIN0", ("resistor", "resistance", 1e3), "vsin0", "0"),
+            json!({"name": "VP0", "of": {"model": "voltage_source"},
+                   "parameters": {"waveform": {"pulse": {
+                       "initial": 2.0, "pulsed": 2.0, "rise": 1e-9, "fall": 1e-9, "width": 1e-8
+                   }}},
+                   "terminals": {"positive": "vp0", "negative": "0"}}),
+            two_terminal("RP0", ("resistor", "resistance", 1e3), "vp0", "0"),
+            json!({"name": "IPWL0", "of": {"model": "current_source"},
+                   "parameters": {"waveform": {"piecewise": {
+                       "points": [[0.0, 1e-3], [1e-6, 1e-3]]
+                   }}},
+                   "terminals": {"positive": "ipwl0", "negative": "0"}}),
+            two_terminal("RPWL0", ("resistor", "resistance", 1e3), "ipwl0", "0"),
+            json!({"name": "VEXP0", "of": {"model": "voltage_source"},
+                   "parameters": {"waveform": {"exponential": {
+                       "initial": 1.0, "pulsed": 1.0, "rise_delay": 0.0,
+                       "rise_time_constant": 1e-9, "fall_delay": 1e-6, "fall_time_constant": 1e-9
+                   }}},
+                   "terminals": {"positive": "vexp0", "negative": "0"}}),
+            two_terminal("REXP0", ("resistor", "resistance", 1e3), "vexp0", "0"),
+        ]);
+    let mut simulator = simulator(&instances);
+    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    assert!(
+        (found.period / expected - 1.0).abs() < 1e-2,
+        "{} against {expected}",
+        found.period
+    );
+}
+
+#[test]
+fn an_autonomous_periodic_steady_state_refuses_time_varying_sources() {
+    let cases = [
+        ("V1", sine("V1", "n", (0.0, 1.0, 1e3))),
+        (
+            "VP",
+            json!({"name": "VP", "of": {"model": "voltage_source"},
+                   "parameters": {"waveform": {"pulse": {
+                       "initial": 0.0, "pulsed": 1.0, "rise": 1e-9, "fall": 1e-9, "width": 1e-6
+                   }}},
+                   "terminals": {"positive": "n", "negative": "0"}}),
+        ),
+        (
+            "IPWL",
+            json!({"name": "IPWL", "of": {"model": "current_source"},
+                   "parameters": {"waveform": {"piecewise": {
+                       "points": [[0.0, 0.0], [1e-6, 1e-3]]
+                   }}},
+                   "terminals": {"positive": "n", "negative": "0"}}),
+        ),
+        (
+            "VEXP",
+            json!({"name": "VEXP", "of": {"model": "voltage_source"},
+                   "parameters": {"waveform": {"exponential": {
+                       "initial": 0.0, "pulsed": 1.0, "rise_delay": 0.0,
+                       "rise_time_constant": 1e-9, "fall_delay": 1e-6, "fall_time_constant": 1e-9
+                   }}},
+                   "terminals": {"positive": "n", "negative": "0"}}),
+        ),
+        (
+            "BV1",
+            json!({"name": "BV1", "of": {"model": "behavioral_voltage_source"},
+                   "parameters": {"expression": "sin(time)"},
+                   "terminals": {"positive": "n", "negative": "0"}}),
+        ),
+        (
+            "BI1",
+            json!({"name": "BI1", "of": {"model": "behavioral_current_source"},
+                   "parameters": {"expression": "1e-3 * time"},
+                   "terminals": {"positive": "n", "negative": "0"}}),
+        ),
+        (
+            "BC1",
+            json!({"name": "BC1", "of": {"model": "behavioral_capacitor"},
+                   "parameters": {"expression": "1e-9 * v(x) + 1e-12 * time"},
+                   "terminals": {"positive": "n", "negative": "0", "x": "n"}}),
+        ),
+    ];
+    let advice = ["use", "pass", "try", "instead", "should", "give"];
+    for (name, source) in cases {
+        let mut simulator = simulator(&json!([
+            source,
+            two_terminal("R1", ("resistor", "resistance", 1e3), "n", "0"),
+        ]));
+        let error = simulator
+            .run(
+                &Analysis::PeriodicSteadyState(PeriodicSteadyState::default()),
+                &Options::default(),
+            )
+            .expect_err("a time-varying source is refused");
+        assert_eq!(
+            error,
+            SimulationError::InvalidAnalysis(format!(
+                "an autonomous periodic steady state takes no source or behavioral device \
+                 that varies with time: `{name}`"
+            ))
+        );
+        let message = error.to_string().to_lowercase();
+        assert!(!message.contains("did you mean"), "advice in `{message}`");
+        for word in advice {
+            let found = message
+                .split(|character: char| !character.is_ascii_alphabetic())
+                .any(|token| token == word);
+            assert!(!found, "advice word `{word}` in `{message}`");
+        }
+        assert_eq!(simulator.operating_point_solves(), 0);
+    }
+}
+
+#[test]
+fn an_autonomous_periodic_steady_state_names_every_time_varying_device() {
+    let mut simulator = simulator(&json!([
+        {"name": "VDC", "of": {"model": "voltage_source"},
+         "parameters": {"waveform": {"dc": 1.0}},
+         "terminals": {"positive": "dc", "negative": "0"}},
+        two_terminal("RDC", ("resistor", "resistance", 1e3), "dc", "0"),
+        sine("V1", "a", (0.0, 1.0, 1e3)),
+        two_terminal("R1", ("resistor", "resistance", 1e3), "a", "0"),
+        {"name": "BI1", "of": {"model": "behavioral_current_source"},
+         "parameters": {"expression": "1e-3 * time"},
+         "terminals": {"positive": "b", "negative": "0"}},
+        two_terminal("R2", ("resistor", "resistance", 1e3), "b", "0"),
+    ]));
+    let error = simulator
+        .run(
+            &Analysis::PeriodicSteadyState(PeriodicSteadyState::default()),
+            &Options::default(),
+        )
+        .expect_err("multiple time-varying devices are refused");
+    assert_eq!(
+        error,
+        SimulationError::InvalidAnalysis(
+            "an autonomous periodic steady state takes no source or behavioral device \
+             that varies with time: `V1`, `BI1`"
+                .to_owned()
+        )
+    );
+    assert_eq!(simulator.operating_point_solves(), 0);
+}
+
+#[test]
+fn resetting_a_sine_amplitude_updates_autonomous_time_varying_check() {
+    let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
+    let impedance = (inductance / capacitance).sqrt();
+    let regulation = (0.2 / impedance, impedance);
+    let expected = TAU * (inductance * capacitance).sqrt();
+    let mut instances = regulated_tank((inductance, capacitance), regulation, 1.0);
+    instances.as_array_mut().expect("an instance list").extend([
+        sine("VSIN", "vsin", (0.0, 0.0, 1e6)),
+        two_terminal("RSIN", ("resistor", "resistance", 1e3), "vsin", "0"),
+    ]);
+    let mut simulator = simulator(&instances);
+    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    assert!((found.period / expected - 1.0).abs() < 1e-2);
+
+    let amplitude = simulator
+        .elaborated()
+        .parameter("VSIN", "waveform.sine.amplitude")
+        .expect("sine amplitude parameter");
+    let mut active = Values::default();
+    active.set(amplitude, 1.0);
+    simulator.reset(active).expect("reset with active sine");
+    let error = simulator
+        .run(
+            &Analysis::PeriodicSteadyState(PeriodicSteadyState::default()),
+            &Options::default(),
+        )
+        .expect_err("active sine is refused");
+    assert_eq!(
+        error,
+        SimulationError::InvalidAnalysis(
+            "an autonomous periodic steady state takes no source or behavioral device \
+             that varies with time: `VSIN`"
+                .to_owned()
+        )
+    );
+
+    simulator
+        .reset(Values::default())
+        .expect("reset back to zero amplitude");
+    let found = steady(&mut simulator, (None, expected / 100.0), &Options::default());
+    assert!((found.period / expected - 1.0).abs() < 1e-2);
 }

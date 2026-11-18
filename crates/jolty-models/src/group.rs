@@ -235,6 +235,9 @@ pub(crate) trait Kind: Send + Sync + 'static {
     /// As [`Kernel::breakpoints`].
     fn breakpoints(prepared: &Self::Prepared, span: (f64, f64), times: &mut Vec<f64>);
 
+    /// As [`Kernel::varies_in_time`].
+    fn varies_in_time(shape: &Self::Shape, prepared: &Self::Prepared) -> bool;
+
     /// As [`Kernel::delayed`].
     fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>);
 
@@ -357,6 +360,10 @@ impl<K: Kernel> Kind for K {
 
     fn breakpoints(prepared: &K::Prepared<f64>, span: (f64, f64), times: &mut Vec<f64>) {
         K::breakpoints(prepared, span, times);
+    }
+
+    fn varies_in_time(shape: &K::Shape, prepared: &K::Prepared<f64>) -> bool {
+        K::varies_in_time(shape, prepared)
     }
 
     fn delayed(shape: &K::Shape, prepared: &K::Prepared<f64>, found: &mut Vec<Delayed>) {
@@ -1373,6 +1380,19 @@ impl Runs {
         }
     }
 
+    /// The device indices of the instances of `groups` whose equations explicitly depend
+    /// on time, as [`Kernel::varies_in_time`] states it, in ascending order.
+    #[must_use]
+    pub fn time_varying(&self, groups: &Groups) -> Vec<usize> {
+        let mut found = Vec::new();
+        for (group, run) in groups.kernels.iter().zip(&self.groups) {
+            run.time_varying(group, &mut found);
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
     /// Each part of the circuit's conductance that an instance of `groups` reads in the
     /// past, as [`Kernel::delayed`] states it, placed among the circuit's equations, in
     /// the order of the groups and their instances: none in a circuit without a delay
@@ -1804,6 +1824,10 @@ trait GroupRun: fmt::Debug + Send {
     /// Appends the times in `span` where an instance is not smooth to `times`.
     fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>);
 
+    /// Appends the device index of each instance of `group` whose equations explicitly
+    /// depend on time to `found`.
+    fn time_varying(&self, group: &Group, found: &mut Vec<usize>);
+
     /// Appends each part of the conductance of an instance of `group` that reads the
     /// past to `found`, placed among the circuit's equations.
     fn delayed(&self, group: &Group, found: &mut Vec<DelayedEntry>);
@@ -2001,6 +2025,16 @@ impl<K: Kind> GroupRun for KernelRun<K> {
     fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>) {
         for prepared in self.prepared.iter().flatten() {
             K::breakpoints(prepared, span, times);
+        }
+    }
+
+    fn time_varying(&self, group: &Group, found: &mut Vec<usize>) {
+        for (member, prepared) in self.prepared.iter().enumerate() {
+            if let (Some(prepared), Some(&device)) = (prepared, group.members.get(member))
+                && K::varies_in_time(&self.shape, prepared)
+            {
+                found.push(device);
+            }
         }
     }
 

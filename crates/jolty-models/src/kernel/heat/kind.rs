@@ -460,6 +460,10 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         K::breakpoints(&prepared.at_ambient, span, times);
     }
 
+    fn varies_in_time(shape: &Self::Shape, prepared: &Self::Prepared) -> bool {
+        K::varies_in_time(&shape.inner, &prepared.at_ambient)
+    }
+
     fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>) {
         let start = found.len();
         K::delayed(&shape.inner, &prepared.at_ambient, found);

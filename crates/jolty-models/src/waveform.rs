@@ -212,6 +212,38 @@ impl<R: Real> Waveform<R> {
         }
     }
 
+    /// Whether the level varies with time.
+    ///
+    /// Returns `false` for a constant `dc` waveform, a `pulse` or `exponential` whose
+    /// initial and pulsed levels are equal (or an `exponential` whose rise and fall have
+    /// equal delays and time constants), a `piecewise` waveform whose points all share one
+    /// level, or a `sine` with zero amplitude or zero frequency and either zero damping or
+    /// zero phase sine.
+    #[must_use]
+    pub fn varies_in_time(&self) -> bool {
+        match &self.0 {
+            Shape::Dc(_) => false,
+            Shape::Pulse(pulse) => pulse.pulsed.value() - pulse.initial.value() != 0.0,
+            Shape::Sine(sine) => {
+                sine.amplitude.value() != 0.0
+                    && (sine.frequency.value() != 0.0
+                        || (sine.damping.value() != 0.0 && sine.phase.value().sin() != 0.0))
+            }
+            Shape::Piecewise { points } => points.first().is_some_and(|&(_, first)| {
+                points
+                    .iter()
+                    .any(|&(_, level)| level.value() - first.value() != 0.0)
+            }),
+            Shape::Exponential(exponential) => {
+                exponential.pulsed.value() - exponential.initial.value() != 0.0
+                    && (exponential.fall_delay.value() - exponential.rise_delay.value() != 0.0
+                        || exponential.fall_time_constant.value()
+                            - exponential.rise_time_constant.value()
+                            != 0.0)
+            }
+        }
+    }
+
     /// Appends the times in `[start, stop]` where the level has a corner.
     pub fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
         let mut push = |time: f64| {
@@ -412,5 +444,60 @@ mod tests {
             read(&early.replace(r#""rise_time_constant": 1"#, r#""rise_time_constant": 0"#))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn distinguishes_time_varying_from_constant_waveforms() {
+        assert!(!Waveform::dc(5.0).varies_in_time());
+        let cases = [
+            (PULSE, true),
+            (
+                r#"{"pulse": {"initial": 2, "pulsed": 2, "rise": 1, "fall": 1, "width": 1}}"#,
+                false,
+            ),
+            (
+                r#"{"sine": {"offset": 0, "amplitude": 1, "frequency": 1e3}}"#,
+                true,
+            ),
+            (
+                r#"{"sine": {"offset": 1, "amplitude": 0, "frequency": 1e3}}"#,
+                false,
+            ),
+            (
+                r#"{"sine": {"offset": 1, "amplitude": 2, "frequency": 0}}"#,
+                false,
+            ),
+            (
+                r#"{"sine": {"offset": 0, "amplitude": 1, "frequency": 0,
+                    "damping": 1, "phase": 1}}"#,
+                true,
+            ),
+            (
+                r#"{"sine": {"offset": 0, "amplitude": 1, "frequency": 0,
+                    "damping": 1, "phase": 0}}"#,
+                false,
+            ),
+            (r#"{"piecewise": {"points": [[0, 0], [1, 2]]}}"#, true),
+            (r#"{"piecewise": {"points": [[0, 1], [1, 1]]}}"#, false),
+            (r#"{"piecewise": {"points": [[0, 1]]}}"#, false),
+            (
+                r#"{"exponential": {"initial": 0, "pulsed": 1, "rise_delay": 0,
+                    "rise_time_constant": 1, "fall_delay": 2, "fall_time_constant": 1}}"#,
+                true,
+            ),
+            (
+                r#"{"exponential": {"initial": 3, "pulsed": 3, "rise_delay": 0,
+                    "rise_time_constant": 1, "fall_delay": 2, "fall_time_constant": 1}}"#,
+                false,
+            ),
+            (
+                r#"{"exponential": {"initial": 0, "pulsed": 1, "rise_delay": 1,
+                    "rise_time_constant": 2, "fall_delay": 1, "fall_time_constant": 2}}"#,
+                false,
+            ),
+        ];
+        for (json, expected) in cases {
+            assert_eq!(read(json).unwrap().varies_in_time(), expected, "{json}");
+        }
     }
 }

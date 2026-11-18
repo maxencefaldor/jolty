@@ -247,9 +247,10 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for a circuit with logic, whose state
-    /// shooting does not carry, or an oscillator's analysis with times to step onto;
-    /// [`SimulationError::TooMuchMemory`] when its dense matrices would hold more than the
-    /// options' `max_memory`; [`SimulationError::NoGrowingMode`] and
+    /// shooting does not carry, an oscillator's analysis with times to step onto, or an
+    /// autonomous analysis of a circuit with a source or behavioral device that varies with
+    /// time; [`SimulationError::TooMuchMemory`] when its dense matrices would hold more than
+    /// the options' `max_memory`; [`SimulationError::NoGrowingMode`] and
     /// [`SimulationError::Unsettled`] when an oscillator does not start or settle,
     /// [`SimulationError::Stationary`] when its shooting converges onto its operating point;
     /// [`SimulationError::NoSteadyState`] when the periods do not converge; and the errors
@@ -266,14 +267,13 @@ impl Simulator {
         })
     }
 
-    /// One period of the periodic steady state, as [`Simulator::periodic_steady_state`]
-    /// finds it, and what that period carried: its derivatives with respect to its start
-    /// and, for an oscillator, to its period.
-    pub(crate) fn shot_steady_state(
-        &mut self,
+    /// Fails for a circuit or analysis that shooting does not run: one with logic, delay
+    /// lines, breakpoints without a period, or a time-varying source or behavioral device
+    /// in an autonomous analysis.
+    pub(crate) fn check_periodic(
+        &self,
         analysis: &PeriodicSteadyState,
-        options: &Options,
-    ) -> Result<(PeriodicSteadyStateResult, Shot), SimulationError> {
+    ) -> Result<(), SimulationError> {
         if !self.elaborated.logic.nets.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
                 "a periodic steady state is found for circuits without logic".to_owned(),
@@ -283,13 +283,39 @@ impl Simulator {
             "periodic steady state",
             "the state a period starts from would hold the waves on its lines, which              shooting does not carry",
         )?;
-        if analysis.period.is_none() && !analysis.breakpoints.is_empty() {
-            return Err(SimulationError::InvalidAnalysis(
-                "an oscillator's period is found, not given, so its periodic steady state \
-                 has no times to step onto"
-                    .to_owned(),
-            ));
+        if analysis.period.is_none() {
+            if !analysis.breakpoints.is_empty() {
+                return Err(SimulationError::InvalidAnalysis(
+                    "an oscillator's period is found, not given, so its periodic steady state \
+                     has no times to step onto"
+                        .to_owned(),
+                ));
+            }
+            let varying = self.state.runs.time_varying(&self.elaborated.groups);
+            if !varying.is_empty() {
+                let names: Vec<String> = varying
+                    .into_iter()
+                    .map(|device| format!("`{}`", self.elaborated.devices[device].path()))
+                    .collect();
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "an autonomous periodic steady state takes no source or behavioral device \
+                     that varies with time: {}",
+                    names.join(", ")
+                )));
+            }
         }
+        Ok(())
+    }
+
+    /// One period of the periodic steady state, as [`Simulator::periodic_steady_state`]
+    /// finds it, and what that period carried: its derivatives with respect to its start
+    /// and, for an oscillator, to its period.
+    pub(crate) fn shot_steady_state(
+        &mut self,
+        analysis: &PeriodicSteadyState,
+        options: &Options,
+    ) -> Result<(PeriodicSteadyStateResult, Shot), SimulationError> {
+        self.check_periodic(analysis)?;
         options.check()?;
         let reading = self.read_meter(options.profile);
         let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());

@@ -218,6 +218,15 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (prepared, start, stop, times);
     }
 
+    /// Whether an instance of `shape`, with the numbers `prepared`, explicitly depends on
+    /// time: `false` for every autonomous device, `true` for a source whose waveform varies
+    /// with time or a behavioral device whose expression reads `time`.
+    #[must_use]
+    fn varies_in_time(shape: &Self::Shape, prepared: &Self::Prepared<f64>) -> bool {
+        let _ = (shape, prepared);
+        false
+    }
+
     /// Appends to `found` each part of the conductance of an instance of `shape`, with the
     /// numbers `prepared`, that reads a local unknown in the past, through
     /// [`Local::delayed`]: none, unless it is a delay line.

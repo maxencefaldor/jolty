@@ -228,6 +228,11 @@ impl BehavioralShape {
         }
     }
 
+    /// Whether the expression explicitly reads `time`.
+    fn reads_time(&self) -> bool {
+        self.reads.contains(&Read::Time)
+    }
+
     /// Adds the expression's value to its rows, with its derivatives, and the ports'
     /// equations, with `expression` at `at`, from `memory`, which it updates.
     fn add<R: Real>(
@@ -462,6 +467,10 @@ impl Kernel for BehavioralCurrentSource {
     ) {
         shape.choices(expression, memory, at, found);
     }
+
+    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+        shape.reads_time()
+    }
 }
 
 /// A voltage source whose voltage follows an expression of the voltages and currents it
@@ -531,6 +540,10 @@ impl Kernel for BehavioralVoltageSource {
     ) {
         shape.choices(expression, memory, at, found);
     }
+
+    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+        shape.reads_time()
+    }
 }
 
 /// A capacitor whose charge follows an expression of the voltages and currents it reads:
@@ -597,6 +610,10 @@ impl Kernel for BehavioralCapacitor {
         found: &mut Vec<Choice>,
     ) {
         shape.choices(expression, memory, at, found);
+    }
+
+    fn varies_in_time(shape: &BehavioralShape, _: &Expression) -> bool {
+        shape.reads_time()
     }
 }
 
