@@ -2297,6 +2297,9 @@ impl Seeds {
     pub const MOST: usize = 8;
 
     /// A seed for each of the numbers at `paths`, which moves that number alone.
+    ///
+    /// A twin accepts between `1` and [`Seeds::MOST`] seeds; empty or larger sets yield
+    /// `None` when passed to [`Runs::twin`].
     #[must_use]
     pub fn units(paths: &[&str]) -> Self {
         let count = paths.len();
@@ -2347,13 +2350,12 @@ impl Seeds {
         }
     }
 
-    /// `count` seeds, along which each number of `numbers`, at its path, moves at its
-    /// rates, one per seed; `None` when a number has another count of rates.
+    /// `count` seeds, between `1` and [`Seeds::MOST`], along which each number of
+    /// `numbers`, at its path, moves at its rates, one per seed; `None` when `count` is
+    /// out of range or a number has another count of rates.
     #[must_use]
     pub fn new(numbers: Vec<(String, Vec<f64>)>, count: usize) -> Option<Self> {
-        numbers
-            .iter()
-            .all(|(_, rates)| rates.len() == count)
+        ((1..=Self::MOST).contains(&count) && numbers.iter().all(|(_, rates)| rates.len() == count))
             .then_some(Self {
                 numbers,
                 count,
@@ -2521,6 +2523,16 @@ impl Twin {
     /// `∂q/∂p · s` along each seed, as last evaluated.
     pub fn charge(&self) -> impl Iterator<Item = (usize, Moving<'_>)> + '_ {
         self.by_unknown(Contribution::Charge)
+    }
+
+    /// Each mapped matrix slot the twin stamps into, in the order of its local entries,
+    /// those on the reference left out.
+    pub fn slots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots
+            .iter()
+            .copied()
+            .filter(|&slot| slot != UNMAPPED)
+            .map(|slot| slot as usize)
     }
 
     /// Each conductance and capacitance the instance adds, by the stored position it adds

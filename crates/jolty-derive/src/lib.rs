@@ -10,7 +10,7 @@ use proc_macro2::{Span, TokenStream as Tokens, TokenTree};
 use quote::{ToTokens, quote};
 use syn::meta::ParseNestedMeta;
 use syn::{
-    Attribute, Data, DeriveInput, Error, Fields, Ident, LitStr, Result, Token, Type,
+    Attribute, Data, DeriveInput, Error, Fields, GenericParam, Ident, LitStr, Result, Token, Type,
     parse_macro_input,
 };
 
@@ -34,10 +34,10 @@ pub fn lift(input: TokenStream) -> TokenStream {
 
 /// The implementation of `Lift` for `input`.
 fn derived(input: &DeriveInput) -> Result<Tokens> {
-    let mut parameters = input.generics.type_params();
+    let mut parameters = input.generics.params.iter();
     let number = match (parameters.next(), parameters.next()) {
-        (None, _) if input.generics.params.is_empty() => return Ok(holding_none(&input.ident)),
-        (Some(number), None) => number,
+        (None, _) => return Ok(holding_none(&input.ident)),
+        (Some(GenericParam::Type(number)), None) => number,
         _ => {
             return Err(Error::new_spanned(
                 &input.generics,
@@ -53,7 +53,8 @@ fn derived(input: &DeriveInput) -> Result<Tokens> {
             let transparent = container.transparent || is_newtype(&data.fields);
             let (pattern, construction) = lifted_fields(
                 &data.fields,
-                (number, container.rename_all),
+                number,
+                container.rename_all,
                 transparent,
                 &quote!(Self),
             )?;
@@ -74,7 +75,8 @@ fn derived(input: &DeriveInput) -> Result<Tokens> {
                 });
                 let (pattern, construction) = lifted_fields(
                     &variant.fields,
-                    (number, None),
+                    number,
+                    naming.rename_all,
                     is_newtype(&variant.fields),
                     &quote!(Self::#ident),
                 )?;
@@ -140,7 +142,8 @@ fn holding_none(name: &Ident) -> Tokens {
 /// name, as `case` renames it, or its index, unless the fields are `transparent`.
 fn lifted_fields(
     fields: &Fields,
-    (number, case): (&Ident, Option<Case>),
+    number: &Ident,
+    case: Option<Case>,
     transparent: bool,
     constructor: &Tokens,
 ) -> Result<(Tokens, Tokens)> {
@@ -148,30 +151,29 @@ fn lifted_fields(
     let mut values = Vec::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
         let naming = Naming::of(&field.attrs)?;
-        let (binding, within) = match &field.ident {
-            Some(ident) => {
-                let key = naming.rename.unwrap_or_else(|| {
-                    case.map_or_else(|| unraw(ident), |case| case.field(&unraw(ident)))
-                });
-                (ident.clone(), quote!(&path.key(#key)))
-            }
-            None => (
-                Ident::new(&format!("field{index}"), Span::call_site()),
-                quote!(&path.index(#index)),
-            ),
+        let binding = Ident::new(&format!("field{index}"), Span::call_site());
+        let within = if let Some(ident) = &field.ident {
+            let key = naming.rename.unwrap_or_else(|| {
+                case.map_or_else(|| unraw(ident), |case| case.field(&unraw(ident)))
+            });
+            quote!(&path.key(#key))
+        } else {
+            quote!(&path.index(#index))
         };
         let within = if transparent { quote!(path) } else { within };
         let value = if holds(&field.ty, number) {
-            let ty = &field.ty;
-            quote!(<#ty as ::jolty_models::Lift<#number>>::lift(#binding, #within, number))
+            let field_type = &field.ty;
+            quote!(<#field_type as ::jolty_models::Lift<#number>>::lift(#binding, #within, number))
         } else {
             quote!(::core::clone::Clone::clone(#binding))
         };
-        values.push(match &field.ident {
-            Some(ident) => quote!(#ident: #value),
-            None => value,
-        });
-        bindings.push(binding);
+        if let Some(ident) = &field.ident {
+            bindings.push(quote!(#ident: #binding));
+            values.push(quote!(#ident: #value));
+        } else {
+            bindings.push(quote!(#binding));
+            values.push(value);
+        }
     }
     Ok(match fields {
         Fields::Named(_) => (
@@ -191,8 +193,8 @@ fn is_newtype(fields: &Fields) -> bool {
     matches!(fields, Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1)
 }
 
-/// Whether `ty` holds the kind of number `number`, as itself or within another type.
-fn holds(ty: &Type, number: &Ident) -> bool {
+/// Whether `field_type` holds the kind of number `number`, as itself or within another type.
+fn holds(field_type: &Type, number: &Ident) -> bool {
     fn within(tokens: Tokens, number: &Ident) -> bool {
         tokens.into_iter().any(|tree| match tree {
             TokenTree::Ident(ident) => ident == *number,
@@ -200,14 +202,16 @@ fn holds(ty: &Type, number: &Ident) -> bool {
             TokenTree::Punct(_) | TokenTree::Literal(_) => false,
         })
     }
-    within(ty.to_token_stream(), number)
+    within(field_type.to_token_stream(), number)
 }
 
 /// The name serde gives `ident`: itself, without the prefix of a raw identifier.
 fn unraw(ident: &Ident) -> String {
     let name = ident.to_string();
-    name.strip_prefix("r#")
-        .map_or_else(|| name.clone(), str::to_owned)
+    match name.strip_prefix("r#") {
+        Some(stripped) => stripped.to_owned(),
+        None => name,
+    }
 }
 
 /// What a type's, a variant's or a field's `#[serde(...)]` attributes say of the path it
@@ -307,8 +311,9 @@ impl Case {
         }
     }
 
-    /// The name of the field `name` in this case, as serde gives it: itself, a field's
-    /// name being in both cases already.
+    /// The name of the field `name` in this case, as `serde_derive` gives it: both
+    /// `RenameRule::LowerCase` and `RenameRule::SnakeCase` return `field.to_owned()` in
+    /// `apply_to_field`, even for mixed-case field identifiers.
     fn field(self, name: &str) -> String {
         match self {
             Self::Lower | Self::Snake => name.to_owned(),
