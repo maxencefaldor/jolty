@@ -43,8 +43,8 @@ None of these effects is measured; each stage's "done when" measures its own wit
 | 1.3 Gummel-Poon, JFET | Measured: an evaluation 2 to 8% more instructions, a time within what a build's layout moves (below) | Likewise for their twins |
 | 1.4 Short laws | Measured: an evaluation at most 25 instructions more (below) | None |
 | MOSFET circuits, under all of step 1 | Unchanged: their kernels are composed already | Unchanged |
-| 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from how the build laid out its code | Measured: a twin of eight evaluates in 2.2 (BSIM4) to 3.9 (the diode) times fewer instructions than eight twins of one, of two in 1.5 to 1.6 times fewer than two (below); a JVP evaluates each device once per tangent whatever the number of its parameters |
-| 2b AC exact | At most +2 instructions (+0.07%) on Newton's `f64` kernels, −4 on VBIC and −10 on the photocell (`instructions.rs`, below) | Measured: AC VJP pullback 54.6× faster at 1,000 parameters (116.7 to 2.1 ms, total `vjp` + `pull_back` 29.7× faster, 118.9 to 4.0 ms); exact against 61fa6e8's central difference within 9.57e-10; AC dot-product residual 7.2e-17 |
+| 2 Chunk twins | None, by design: Newton is never touched; every kernel's instruction count unchanged but VDMOS's, 0.9% more, from compiler inlining and codegen choices | Measured: a twin of eight evaluates in 2.4 (BSIM4) to 3.5 (the diode, properly biased at 0.69 V) times fewer instructions than eight twins of one on GRTEv5 glibc 2.27 (below); a JVP evaluates each device once per tangent whatever the number of its parameters |
+| 2b AC exact | At most +2 instructions (+0.07%) on Newton's `f64` kernels, −4 on VBIC and −10 on the photocell (`instructions.rs`, below) | Measured: AC VJP pullback 49.8× faster at 1,000 parameters on a Borg AMD EPYC 7B13 (107.8 to 2.17 ms; total `vjp` + `pull_back` 28.7× faster, 109.9 to 3.83 ms); agrees with `61fa6e8`'s central difference within 9.74e-8 at 1,000 parameters (9.57e-10 on `loaded_amplifier`); AC dot-product residual 7.15e-17 |
 
 ## Step 1: every kernel composed on dual numbers
 
@@ -130,26 +130,26 @@ Counted as VBIC was: from 1 more instruction an evaluation, the resistor's, to 2
 
 **Result** (17 November): `Gradient<K>` and `Hyper<K>` carry `K` derivatives, `Gradient<1>` and `Hyper<1>` the former ones; `Seeds` says each seed's rate on each number, `Seeds::units` a unit seed on each; `GroupRun::twin` lifts a device's parameters with a chunk's seeds at the smallest width of 1, 2, 4 or 8 that holds them, and its `Twin` gives each residual, charge, conductance and capacitance with its derivative along each seed.
 The engine's `Twins` (`crates/jolty-engine/src/twins.rs`) hold a derivative's columns, a column a direction of one device's parameters, each device's columns up to eight to a twin, and every pass of `derivative.rs`, the sensitivity, mismatch and objective analyses read them, so no pass sees a twin of one parameter alone.
-A twin's parameters are lifted from its instance's plain ones by `Lift` (`crates/jolty-models/src/lift.rs`), derived for every type of parameters by `jolty-derive`, rather than written as JSON and read back, which compiled serde's reader of every type of parameters again at each width: jolty-models' code generation at `opt-level = 1` took 689 s with the widths through JSON, and takes 159 s through `Lift`.
+A twin's parameters are lifted from its instance's plain ones by `Lift` (`crates/jolty-models/src/lift.rs`), derived for every type of parameters by `jolty-derive`, rather than written as JSON and read back, which compiled serde's reader of every type of parameters again at each width: at single width (`ecc932d`), `jolty-models`' code generation at `opt-level = 1` dropped from 392 s to 68 s (1.85M to 1.49M LLVM IR lines), and with all four widths (`61fa6e8`) it dropped from 689 s through JSON to 159 s through `Lift`.
 
 ### 2.3 Chunk sizes
 
 A small set monomorphized, 1, 2, 4 and 8; each chunk takes the smallest that holds its parameters: a crossbar resistor's weight takes 1, a transistor's width and length take 2.
 The largest is a threshold like every other: set from a measured break-even with the timing protocol, on machine B, its machine and load stated, before this lands; never picked.
 
-**Result** (17 November): counted by `instructions.rs` as step 1's kernels were, one evaluation of a twin at each width, along that many of eight numbers given, the instructions of BSIM4's, the diode's and the resistor's twins:
+**Result** (18 November): counted by `instructions.rs` through Valgrind 3.25.1 Callgrind on Borg GRTEv5 (`glibc 2.27` `libm`, `rustc 1.100.0`, `debug = true`), one evaluation of a twin at each width along that many of eight numbers given, after fixing `diode_twin`'s internal node bias from `"anode"` (1 mV) to `"junction"` (0.69 V forward):
 
 | Twin | 1 | 2 | 4 | 8 | 8 against eight of 1 |
 | --- | --- | --- | --- | --- | --- |
-| BSIM4 | 24,015 | 32,769 | 50,217 | 88,422 | 2.2 times fewer |
-| Diode | 1,136 | 1,404 | 1,665 | 2,334 | 3.9 times fewer |
-| Resistor, with voltage coefficients | 395 | 542 | 713 | 1,095 | 2.9 times fewer |
+| BSIM4 | 27,077 | 35,861 | 53,350 | 92,128 | 2.4 times fewer |
+| Diode (0.69 V forward) | 1,090 | 1,360 | 1,662 | 2,482 | 3.5 times fewer |
+| Resistor, with voltage coefficients | 430 | 607 | 772 | 1,170 | 2.9 times fewer |
 
-A twin's evaluation costs a part paid once, its values and its control, and a part paid per seed, about 9,200 instructions of BSIM4's, 170 of the diode's and 100 of the resistor's.
+A twin's evaluation costs a part paid once, its values and its control, and a part paid per seed, about 9,293 instructions of BSIM4's, 199 of the diode's and 106 of the resistor's (higher absolute `BSIM4` baseline vs earlier `glibc 2.39` runs reflects GRTEv5 `glibc 2.27` `libm` instruction sequences; per-seed slope is essentially identical).
 So every width is cheaper than as many twins of one, from two on: chunks always pay.
-Past eight, the line through these counts gives each seed from 8% (BSIM4) to 21% (the diode) less at sixteen, while a twin's numbers grow with its width; eight holds the six to eight numbers a kit's mismatch moves on a device, and stays the largest.
-Padding costs where the part per seed is large: five of BSIM4's parameters cost 88,422 instructions in a twin of eight against 74,232 in a twin of four and one of one, where the diode's cost 2,334 against 2,801; the rule stays the smallest width that holds a chunk, one twin per chunk, until a measurement of whole gradients asks for more.
-Instruction counts are deterministic, the machine's load none of their concern; the times, through `evaluation.rs`, wait for machine B.
+Past eight, the line through these counts gives each seed less incremental benefit while a twin's stack footprint grows with its width; eight holds the six to eight numbers a kit's mismatch moves on a device, and stays the largest.
+Padding costs where the part per seed is large: five of BSIM4's parameters cost 92,128 instructions in a twin of eight against 80,427 in a twin of four and one of one, where the diode's cost 2,482 against 2,752; the rule stays the smallest width that holds a chunk, one twin per chunk, until a measurement of whole gradients asks for more.
+Instruction counts are deterministic and independent of machine load.
 
 ### 2.4 The JVP without chunks
 
@@ -200,16 +200,17 @@ Following Step 2b, `Real` and `Kernel` were decoupled from `serde` and `schemars
 On `loaded_amplifier` over four frequencies, exact AC VJP matches `61fa6e8`'s 1 µV central difference within a worst relative gap of `9.57e-10` (at `VDD.waveform.dc`, the central difference's error) and `0` on `RG`, `CL`, and `CG`.
 The AC dot-product test holds to `7.15e-17` (`0.32 ε`), and the worst residual across all analyses stays `7.38e-16` (`crates/jolty-engine/tests/sensitivity.rs`), with new tests covering self-heated AC (hot and cooled to exact ambient `ΔT = 0`), nonlinear behavioral AC, linear AC, bit-for-bit determinism across 1, 2 and 4 threads, and a 504-parameter nonlinear amplifier plus resistive ladder.
 
-Measured in release mode (`lto = "thin"`, `codegen-units = 1`) on one pinned core (`taskset -c 0`) of an AMD EPYC 7B12 (load 4.5 to 7.5), three alternating rounds of 11 repetitions each, on a fixed 500-rung resistive ladder driven by `loaded_amplifier` over 5 frequencies with 1 cotangent, comparing `61fa6e8` against Step 2b:
+Measured in release mode (`lto = "thin"`, `codegen-units = 1`) on one pinned core (`cpu=0`) of a Borg AMD EPYC 7B13 (Milan, 256 logical CPUs, host load 122 to 132), three alternating rounds of 11 repetitions each (33 samples per revision), on a fixed 500-rung resistive ladder driven by `loaded_amplifier` over 5 frequencies with 1 cotangent, comparing `61fa6e8` against `ab2c08c` (max relative difference at `P = 1,000`: 9.743e-8 at index 514):
 
 | Parameters `P` | `61fa6e8` pullback median (range) | Step 2b pullback median (range) | Pullback speedup | Total (`vjp` + `pull_back`) median |
 | --- | --- | --- | --- | --- |
-| 1 | 0.376 ms (0.366–0.389) | 0.283 ms (0.277–0.356) | 1.3× | 0.658 → 0.585 ms (1.1×) |
-| 10 | 0.987 ms (0.920–1.000) | 0.302 ms (0.297–0.356) | 3.3× | 1.324 → 0.613 ms (2.2×) |
-| 100 | 12.829 ms (10.916–13.927) | 0.478 ms (0.440–0.533) | 26.8× | 13.584 → 0.933 ms (14.6×) |
-| 1,000 | 116.733 ms (115.393–119.041) | 2.137 ms (2.098–2.396) | 54.6× | 118.896 → 4.002 ms (29.7×) |
+| 1 | 0.423 ms (0.391 to 0.470) | 0.316 ms (0.301 to 0.348) | 1.3× | 0.763 → 0.644 ms (1.2×) |
+| 10 | 1.194 ms (1.115 to 1.287) | 0.343 ms (0.319 to 0.426) | 3.5× | 1.544 → 0.695 ms (2.2×) |
+| 100 | 10.064 ms (9.620 to 10.857) | 0.515 ms (0.476 to 0.567) | 19.5× | 10.501 → 0.999 ms (10.5×) |
+| 1,000 | 107.795 ms (100.857 to 117.648) | 2.165 ms (1.970 to 2.657) | 49.8× | 109.933 → 3.830 ms (28.7×) |
 
-Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, Callgrind) against `61fa6e8`: every Newton `f64` kernel moves by at most `+2` instructions (`+0.07%`), with VBIC down by `1` to `4` instructions and the photocell down by `10` (`−0.49%`); parameter twins move by `+0.18%` to `+0.77%` on BSIM4 (`24,177` / `32,827` / `50,546` / `89,099`), `+4.0%` to `+4.7%` on the diode (`1,185` / `1,465` / `1,731` / `2,444`), and `+0.4%` to `+15.1%` (`+4` to `+82` instructions) on the resistor (`423` / `624` / `759` / `1,099`).
+Counted by `crates/jolty-models/benches/instructions.rs` (gungraun, Valgrind 3.25.1 Callgrind) against `61fa6e8` on `glibc 2.39`: every Newton `f64` kernel moved by at most +2 instructions (+0.07%), with VBIC down by 1 to 4 instructions and the photocell down by 10 (−0.49%).
+Re-measured natively on Borg GRTEv5 (`glibc 2.27`, `ff752db`) after fixing `diode_twin`'s internal node bias from `"anode"` (1 mV) to `"junction"` (0.69 V): `bsim4` twin (`27,077` / `35,861` / `53,350` / `92,128`), `diode` twin (`1,090` / `1,360` / `1,662` / `2,482`), and `resistor` twin (`430` / `607` / `772` / `1,170`).
 
 ## Step 3, deferred: one shared compile-time differentiation pass
 
