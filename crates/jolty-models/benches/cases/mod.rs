@@ -8,7 +8,7 @@
 use jolty_models::testing::{Bench, twin};
 use jolty_models::{
     BipolarTransistor, Bsim4, Capacitor, Contributions, CurrentControlledMemristor,
-    CurrentControlledSwitch, Diode, Input, Jfet, Kernel, Photocell, REFERENCE_TEMPERATURE,
+    CurrentControlledSwitch, Diode, Input, Jfet, Kernel, Nature, Photocell, REFERENCE_TEMPERATURE,
     Resistor, Seeds, Twin, Vbic, Vdmos, VoltageControlledMemristor, VoltageControlledSwitch,
 };
 use schemars::JsonSchema;
@@ -26,8 +26,13 @@ pub(crate) struct Case {
 impl Case {
     /// An instance of `K` with `parameters`, each of its unknowns at the voltage `bias`
     /// gives its name: the terminals' `n0`, `n1` and on, and the device's own their
-    /// labels, such as `collector`.
-    fn of<K: Kernel>(parameters: &str, bias: fn(&str) -> f64) -> Self
+    /// labels, such as `collector`. Branch current unknowns default to `1e-3` A; any
+    /// other unknown omitted by `bias` panics so typos never silently bias a node at 1 mV.
+    #[expect(
+        clippy::panic,
+        reason = "every non-current unknown in a benchmark case must be explicitly biased"
+    )]
+    fn of<K: Kernel>(parameters: &str, bias: fn(&str) -> Option<f64>) -> Self
     where
         K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
     {
@@ -35,7 +40,14 @@ impl Case {
         let x = bench
             .unknowns()
             .into_iter()
-            .map(|unknown| bias(unknown.strip_prefix("device:").unwrap_or(unknown)))
+            .zip(bench.natures())
+            .map(|(unknown, nature)| {
+                let label = unknown.strip_prefix("device:").unwrap_or(unknown);
+                bias(label).unwrap_or_else(|| match nature {
+                    Nature::Current => 1e-3,
+                    _ => panic!("unbiased {nature:?} unknown `{label}` in benchmark case"),
+                })
+            })
             .collect();
         let contributions = bench.contributions();
         Self {
@@ -77,7 +89,7 @@ impl TwinCase {
     fn of<K: Kernel>(
         (parameters, paths): (&str, &[&str]),
         seeds: usize,
-        bias: fn(&str) -> f64,
+        bias: fn(&str) -> Option<f64>,
     ) -> Self
     where
         K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -98,8 +110,8 @@ impl TwinCase {
 /// A bipolar transistor's unknowns, forward active: its collector at 3 V, its base at
 /// 0.75 V, its emitter grounded and its substrate at −1 V, each internal node a little
 /// inside the terminal it lies behind, and each current unknown a milliampere.
-fn forward_active(name: &str) -> f64 {
-    match name {
+fn forward_active(name: &str) -> Option<f64> {
+    Some(match name {
         "n0" => 3.0,
         "collector" => 2.99,
         "intrinsic_collector" => 2.9,
@@ -111,8 +123,8 @@ fn forward_active(name: &str) -> f64 {
         "n3" => -1.0,
         "substrate" => -0.999,
         "n2" => 0.0,
-        _ => 1e-3,
-    }
+        _ => return None,
+    })
 }
 
 /// A Gummel-Poon transistor with every part of its model in play: its base resistance
@@ -194,15 +206,15 @@ pub(crate) fn vbic_delayed() -> Case {
 /// A field-effect transistor's unknowns, saturated: its drain at 3 V, its gate at −0.5 V
 /// and its source grounded, each internal node a little inside the terminal it lies
 /// behind, and each current unknown a milliampere.
-fn saturated(name: &str) -> f64 {
-    match name {
+fn saturated(name: &str) -> Option<f64> {
+    Some(match name {
         "n0" => 3.0,
         "drain" => 2.99,
         "n1" => -0.5,
         "n2" => 0.0,
         "source" => 0.002,
-        _ => 1e-3,
-    }
+        _ => return None,
+    })
 }
 
 /// A JFET with every part of its model in play: charged gate junctions, channel-length
@@ -224,11 +236,11 @@ pub(crate) fn jfet_full() -> Case {
 /// A power MOSFET's unknowns, its drain resistance quasi-saturated: its drain at 20 V, its
 /// gate at 8 V and its source grounded, each internal node a little inside the terminal it
 /// lies behind, and each current unknown a milliampere.
-fn quasi_saturated(name: &str) -> f64 {
+fn quasi_saturated(name: &str) -> Option<f64> {
     match name {
-        "n0" => 20.0,
-        "drain" => 19.8,
-        "n1" | "gate" => 8.0,
+        "n0" => Some(20.0),
+        "drain" => Some(19.8),
+        "n1" | "gate" => Some(8.0),
         _ => saturated(name),
     }
 }
@@ -244,16 +256,16 @@ pub(crate) fn vdmos_quasi_saturated() -> Case {
 /// A two-terminal device's unknowns, with what controls it: 1.5 V across it, 1.2 V,
 /// 1.2 mA or 1.2 lux on its control, its state at 0.3, its lagging response at 0.5, and
 /// each other current unknown a milliampere.
-fn controlled(name: &str) -> f64 {
-    match name {
+fn controlled(name: &str) -> Option<f64> {
+    Some(match name {
         "n0" => 1.5,
         "n2" => 1.2,
         "control" => 1.2e-3,
         "state" => 0.3,
         "response" => 0.5,
         "n1" | "n3" => 0.0,
-        _ => 1e-3,
-    }
+        _ => return None,
+    })
 }
 
 /// A passive device's voltage coefficients, as members of its parameters.
@@ -315,14 +327,14 @@ const BSIM4_GIVEN: (&str, &[&str]) = (
 /// A BSIM4 n-channel's unknowns, saturated: its drain at 1.5 V, its gate at 1.8 V, its
 /// source grounded and its body at −0.5 V, each internal node at the terminal it lies
 /// behind, and each current unknown a milliampere.
-fn bsim4_saturated(name: &str) -> f64 {
-    match name {
+fn bsim4_saturated(name: &str) -> Option<f64> {
+    Some(match name {
         "n0" | "drain" => 1.5,
         "n1" | "gate" => 1.8,
         "n3" | "body" => -0.5,
         "n2" | "source" => 0.0,
-        _ => 1e-3,
-    }
+        _ => return None,
+    })
 }
 
 /// A twin of a BSIM4 n-channel along `seeds` of its numbers, saturated.
@@ -350,13 +362,13 @@ const DIODE_GIVEN: (&str, &[&str]) = (
 
 /// A diode's unknowns, forward: 0.7 V across it, its internal node 0.69 V above its
 /// cathode, and each current unknown a milliampere.
-fn forward(name: &str) -> f64 {
-    match name {
+fn forward(name: &str) -> Option<f64> {
+    Some(match name {
         "n0" => 0.7,
-        "anode" => 0.69,
+        "junction" => 0.69,
         "n1" => 0.0,
-        _ => 1e-3,
-    }
+        _ => return None,
+    })
 }
 
 /// A twin of a diode along `seeds` of its numbers, forward.

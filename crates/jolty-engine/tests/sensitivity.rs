@@ -848,13 +848,13 @@ fn heated_diode(supply: f64, thermal_resistance: f64) -> Value {
          "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
                         "series_resistance": 4.0, "junction_capacitance": 2e-9,
                         "transit_time": 1e-9, "thermal": true},
-         "terminals": {"anode": "anode", "cathode": "0", "thermal": "temp"}},
+         "terminals": {"anode": "anode", "cathode": "0", "thermal": "temperature"}},
         {"name": "RTH", "of": {"model": "thermal_resistance"},
          "parameters": {"resistance": thermal_resistance},
-         "terminals": {"a": "temp", "b": "0"}},
+         "terminals": {"a": "temperature", "b": "0"}},
         {"name": "CTH", "of": {"model": "thermal_capacitance"},
          "parameters": {"capacitance": 1e-8},
-         "terminals": {"a": "temp", "b": "0"}}
+         "terminals": {"a": "temperature", "b": "0"}}
     ])
 }
 
@@ -878,7 +878,7 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
     ];
     // Hot case: substantial self-heating shifts both electrical and thermal Jacobians.
     let hot = heated_diode(2.0, 200.0);
-    assert_matches(&hot, &["anode", "temp"], &ac, 1e-5);
+    assert_matches(&hot, &["anode", "temperature"], &ac, 1e-5);
     assert_transposes(&hot, &parameters, &ac);
     // Exact dot-product test also holds across six decades including low frequency.
     let wide_ac = Differentiated::Ac(Ac {
@@ -888,7 +888,7 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
     assert_transposes(&hot, &parameters, &wide_ac);
     // Exact ambient case (`ΔT == 0` bit-for-bit while forward-biased and conducting):
     // measure the diode's ambient power first, then sink that exact power with a
-    // `heat_source` so `temp == 0.0` at DC while remaining a live AC thermal unknown.
+    // `heat_source` so `temperature == 0.0` at DC while remaining a live AC thermal unknown.
     let mut reference = Simulator::new(
         &circuit_of(&json!([
             {"name": "V1", "of": {"model": "voltage_source"},
@@ -908,15 +908,31 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
     .expect("reference");
     let operating = reference.operating_point(&tight()).expect("dc");
     let anode = operating.values[reference.unknown("anode").expect("anode").index()];
-    let current = -operating.values[reference.unknown("V1:current").expect("i").index()];
+    let current = -operating.values[reference.unknown("V1:current").expect("V1:current").index()];
     let ambient_power = anode * current;
     let mut cooled = heated_diode(2.0, 200.0);
     cooled.as_array_mut().expect("instances").push(json!({
         "name": "Q1", "of": {"model": "heat_source"},
         "parameters": {"power": ambient_power},
-        "terminals": {"a": "temp", "b": "0"}
+        "terminals": {"a": "temperature", "b": "0"}
     }));
-    assert_matches(&cooled, &["anode", "temp"], &ac, 1e-5);
+    let mut cooled_simulator = Simulator::new(
+        &circuit_of(&cooled),
+        &Library::standard(),
+        &Conditions::default(),
+    )
+    .expect("cooled");
+    let cooled_operating = cooled_simulator.operating_point(&tight()).expect("dc");
+    let rise = cooled_operating.values[cooled_simulator
+        .unknown("temperature")
+        .expect("temperature")
+        .index()];
+    assert_eq!(
+        (jolty_models::REFERENCE_TEMPERATURE + rise).to_bits(),
+        jolty_models::REFERENCE_TEMPERATURE.to_bits(),
+        "expected exact ambient temperature, got ΔT = {rise:e} K"
+    );
+    assert_matches(&cooled, &["anode", "temperature"], &ac, 1e-5);
     let cooled_parameters = [
         ("V1", "waveform.dc"),
         ("R1", "resistance"),
@@ -989,10 +1005,10 @@ fn ac_derivatives_are_deterministic_across_thread_counts() {
     placed.push(json!({"name": "D1", "of": {"model": "diode"},
         "parameters": {"saturation_current": 1e-14, "series_resistance": 5.0,
                        "junction_capacitance": 1e-12, "thermal": true},
-        "terminals": {"anode": "drain", "cathode": "0", "thermal": "temp"}}));
+        "terminals": {"anode": "drain", "cathode": "0", "thermal": "temperature"}}));
     placed.push(json!({"name": "RTH", "of": {"model": "thermal_resistance"},
         "parameters": {"resistance": 150.0},
-        "terminals": {"a": "temp", "b": "0"}}));
+        "terminals": {"a": "temperature", "b": "0"}}));
     let circuit = circuit_of(&instances);
     let ac = Differentiated::Ac(Ac {
         source: "VG".to_owned(),
@@ -1176,6 +1192,56 @@ fn ac_vjp_matches_jvp_and_finite_differences_with_many_parameters() {
         assert!(
             (exact - finite).norm() <= 1e-5 * scale,
             "504-parameter AC VJP for {device}.{parameter}: exact {exact}, finite {finite}"
+        );
+    }
+}
+
+#[test]
+fn jvp_with_empty_tangents_still_rejects_non_real_parameters() {
+    let circuit = circuit_of(&loaded_amplifier());
+    let mut simulator =
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("elaborates");
+    let error = simulator
+        .jvp(
+            &Differentiated::OperatingPoint,
+            &[("M1".to_owned(), "level".to_owned())],
+            &[],
+            &tight(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            SimulationError::UnknownParameters(missing)
+                if missing.as_slice() == [("M1".to_owned(), "level".to_owned())]
+        ),
+        "expected UnknownParameters for M1.level, got {error:?}"
+    );
+}
+
+#[test]
+fn pull_back_rejects_non_finite_period_when_points_are_empty() {
+    let circuit = circuit_of(&rc());
+    let mut simulator =
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("elaborates");
+    let pullback = simulator
+        .vjp(
+            &Differentiated::OperatingPoint,
+            &[("R1".to_owned(), "resistance".to_owned())],
+            &tight(),
+        )
+        .expect("vjp");
+    for bad_period in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let cotangent = Cotangent::<f64> {
+            points: BTreeMap::new(),
+            period: bad_period,
+        };
+        let error = simulator
+            .pull_back(&pullback, &Cotangents::Real(vec![cotangent]), &tight())
+            .unwrap_err();
+        assert!(
+            matches!(error, SimulationError::InvalidAnalysis(_)),
+            "expected InvalidAnalysis for period={bad_period}, got {error:?}"
         );
     }
 }

@@ -31,16 +31,20 @@ allocation-counter.workspace = true
 criterion.workspace = true
 gungraun.workspace = true
 # The crate itself with its bench, for its benchmarks.
-jolty-models = { workspace = true, features = ["testing"] }
+# Path-only so `cargo package` / `cargo publish` strips this self-dependency rather than
+# requiring an already-published version on crates.io.
+jolty-models = { path = ".", features = ["testing"] }
 proptest.workspace = true
 
 [[bench]]
 name = "evaluation"
 harness = false
+required-features = ["testing"]
 
 [[bench]]
 name = "instructions"
 harness = false
+required-features = ["testing"]
 
 [lints]
 workspace = true

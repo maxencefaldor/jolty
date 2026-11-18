@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use jolty_ir::{Circuit, Parameters};
 use jolty_models::{Contributions, Input, Library, Past, Runs, Tasks};
@@ -344,11 +345,14 @@ pub(crate) struct Recording {
 }
 
 impl Recording {
-    /// Every circuit of the corpus, with its runs.
-    pub(crate) fn corpus() -> Vec<Self> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/kernels.json");
-        let text = std::fs::read_to_string(path).expect("the corpus");
-        serde_json::from_str(&text).expect("the corpus reads")
+    /// Every circuit of the corpus, with its runs, parsed once per process.
+    pub(crate) fn corpus() -> &'static [Self] {
+        static CORPUS: LazyLock<Vec<Recording>> = LazyLock::new(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/kernels.json");
+            let text = std::fs::read_to_string(path).expect("the corpus");
+            serde_json::from_str(&text).expect("the corpus reads")
+        });
+        &CORPUS
     }
 
     /// The circuit, and a simulator of it in the conditions it is recorded in.
@@ -365,11 +369,35 @@ impl Recording {
     }
 }
 
+/// Generates `#[test]` functions calling `$runner(shard, total)`, assigning consecutive
+/// shard indices `0..total` automatically from the list of test names so no shard can be
+/// skipped or duplicated.
+macro_rules! sharded_tests {
+    ($runner:path; $($name:ident),+ $(,)?) => {
+        crate::kernels::sharded_tests!(
+            @step $runner;
+            [$(stringify!($name)),+].len();
+            0usize;
+            $($name),+
+        );
+    };
+    (@step $runner:path; $total:expr; $index:expr; $name:ident $(, $rest:ident)*) => {
+        #[test]
+        fn $name() {
+            $runner($index, $total);
+        }
+        crate::kernels::sharded_tests!(@step $runner; $total; $index + 1usize; $($rest),*);
+    };
+    (@step $runner:path; $total:expr; $index:expr;) => {};
+}
+
+pub(crate) use sharded_tests;
+
 /// Checks one shard (`index % shards == shard`) of the kernel corpus.
 fn check_corpus_shard(shard: usize, shards: usize) {
     let mut all = Check::default();
     let mut checked_circuits = 0_usize;
-    for (index, record) in Recording::corpus().into_iter().enumerate() {
+    for (index, record) in Recording::corpus().iter().enumerate() {
         if index % shards != shard {
             continue;
         }
@@ -400,28 +428,6 @@ fn check_corpus_shard(shard: usize, shards: usize) {
     assert!(all.reads.0 > 0, "{all:?}");
 }
 
-/// Number of parallel shards partitioning `Recording::corpus()`.
-const CORPUS_SHARDS: usize = 16;
-
-macro_rules! corpus_assembly_shards {
-    ($($name:ident => $shard:literal),* $(,)?) => {
-        const _: () = {
-            let shards: [usize; CORPUS_SHARDS] = [$($shard),*];
-            let mut index = 0;
-            while index < CORPUS_SHARDS {
-                assert!(shards[index] == index);
-                index += 1;
-            }
-        };
-        $(
-            #[test]
-            fn $name() {
-                check_corpus_shard($shard, CORPUS_SHARDS);
-            }
-        )*
-    };
-}
-
 // At every evaluation of every run of the corpus's circuits, each run recording every
 // device: the groups' assembly against the instances evaluated alone, in the order of the
 // devices, to within 1e-13 of the magnitudes summed; and what the observer reads of each
@@ -429,23 +435,24 @@ macro_rules! corpus_assembly_shards {
 // the derivatives of its equations, against its instance evaluated alone at the state of
 // the evaluation it reads, bit for bit, as the observer once evaluated a copy of each
 // device it recorded. Sharded across 16 tests so nextest runs the corpus in parallel.
-corpus_assembly_shards!(
-    every_corpus_circuit_assembles_as_its_devices_shard_00 => 0,
-    every_corpus_circuit_assembles_as_its_devices_shard_01 => 1,
-    every_corpus_circuit_assembles_as_its_devices_shard_02 => 2,
-    every_corpus_circuit_assembles_as_its_devices_shard_03 => 3,
-    every_corpus_circuit_assembles_as_its_devices_shard_04 => 4,
-    every_corpus_circuit_assembles_as_its_devices_shard_05 => 5,
-    every_corpus_circuit_assembles_as_its_devices_shard_06 => 6,
-    every_corpus_circuit_assembles_as_its_devices_shard_07 => 7,
-    every_corpus_circuit_assembles_as_its_devices_shard_08 => 8,
-    every_corpus_circuit_assembles_as_its_devices_shard_09 => 9,
-    every_corpus_circuit_assembles_as_its_devices_shard_10 => 10,
-    every_corpus_circuit_assembles_as_its_devices_shard_11 => 11,
-    every_corpus_circuit_assembles_as_its_devices_shard_12 => 12,
-    every_corpus_circuit_assembles_as_its_devices_shard_13 => 13,
-    every_corpus_circuit_assembles_as_its_devices_shard_14 => 14,
-    every_corpus_circuit_assembles_as_its_devices_shard_15 => 15,
+sharded_tests!(
+    check_corpus_shard;
+    every_corpus_circuit_assembles_as_its_devices_shard_00,
+    every_corpus_circuit_assembles_as_its_devices_shard_01,
+    every_corpus_circuit_assembles_as_its_devices_shard_02,
+    every_corpus_circuit_assembles_as_its_devices_shard_03,
+    every_corpus_circuit_assembles_as_its_devices_shard_04,
+    every_corpus_circuit_assembles_as_its_devices_shard_05,
+    every_corpus_circuit_assembles_as_its_devices_shard_06,
+    every_corpus_circuit_assembles_as_its_devices_shard_07,
+    every_corpus_circuit_assembles_as_its_devices_shard_08,
+    every_corpus_circuit_assembles_as_its_devices_shard_09,
+    every_corpus_circuit_assembles_as_its_devices_shard_10,
+    every_corpus_circuit_assembles_as_its_devices_shard_11,
+    every_corpus_circuit_assembles_as_its_devices_shard_12,
+    every_corpus_circuit_assembles_as_its_devices_shard_13,
+    every_corpus_circuit_assembles_as_its_devices_shard_14,
+    every_corpus_circuit_assembles_as_its_devices_shard_15,
 );
 
 /// Tasks of at least `least` instances each, on `threads` threads.

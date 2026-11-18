@@ -10,7 +10,7 @@ mod common;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use common::Worst;
 use jolty_engine::{Analysis, Conditions, Options, Simulator, Substitute};
@@ -101,15 +101,18 @@ where
         stamp: &mut Stamp<'_, R>,
     ) {
         if let Some((parameters, temperature)) = plain {
-            STATES.lock().expect("the states").push(State {
-                kernel: K::NAME,
-                parameters: parameters.clone(),
-                temperature: *temperature,
-                x: (0..*unknowns).map(|local| at.value(local)).collect(),
-                time: at.transient.then_some(at.time),
-                source_scale: at.source_scale,
-                gmin: at.gmin,
-            });
+            STATES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(State {
+                    kernel: K::NAME,
+                    parameters: parameters.clone(),
+                    temperature: *temperature,
+                    x: (0..*unknowns).map(|local| at.value(local)).collect(),
+                    time: at.transient.then_some(at.time),
+                    source_scale: at.source_scale,
+                    gmin: at.gmin,
+                });
         }
         K::evaluate(shape, prepared, memory, at, stamp);
     }
@@ -166,34 +169,48 @@ where
     }
 }
 
-/// Number of parallel shards partitioning the kernel corpus.
-const CORPUS_SHARDS: usize = 16;
+/// The kernel corpus parsed once per process.
+static CORPUS: LazyLock<Vec<CorpusCircuit>> = LazyLock::new(|| {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../jolty-engine/tests/data/kernels.json");
+    let text = std::fs::read_to_string(path).expect("the corpus");
+    serde_json::from_str(&text).expect("the corpus reads")
+});
+
+/// Clears `STATES` on drop so an unwind inside a shard cannot leak recorded states into a
+/// subsequent shard running in the same process.
+struct ClearStatesOnDrop;
+
+impl Drop for ClearStatesOnDrop {
+    fn drop(&mut self) {
+        STATES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+}
 
 /// At every state in shard `shard` (`index % shards == shard`) of the corpus's runs that
 /// evaluates a resistor or a diode, checks that the compiled kernel is its hand-written
 /// twin, to rounding: across all 16 shards (on 16 November 2026), 1,423,039 states of
 /// resistors and 823,769 of diodes, of 80 instances, all within 3.1 ε of each other.
 fn check_corpus_shard(shard: usize, shards: usize) {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../jolty-engine/tests/data/kernels.json");
-    let text = std::fs::read_to_string(path).expect("the corpus");
-    let corpus: Vec<CorpusCircuit> = serde_json::from_str(&text).expect("the corpus reads");
     let mut library = Library::standard();
     library.add(Thermal::<StateRecorder<Resistor>>::new());
     library.add(Thermal::<StateRecorder<Diode>>::new());
     let mut expects_diode = false;
     let states = {
-        let _guard = RECORD_GUARD.lock().expect("record guard");
-        STATES.lock().expect("the states").clear();
-        for (index, entry) in corpus.iter().enumerate() {
+        let _guard = RECORD_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        let _clear = ClearStatesOnDrop;
+        STATES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        for (index, entry) in CORPUS.iter().enumerate() {
             if index % shards != shard {
                 continue;
             }
-            let text = entry.circuit.to_string();
-            if text.contains(r#""model":"diode""#) {
-                expects_diode = true;
-            }
-            let circuit = Circuit::from_json(&text).expect("a circuit");
+            let circuit = Circuit::from_json(&entry.circuit.to_string()).expect("a circuit");
             let conditions = Conditions {
                 temperature: entry.temperature,
                 overrides: entry.overrides.clone(),
@@ -201,12 +218,19 @@ fn check_corpus_shard(shard: usize, shards: usize) {
             };
             let mut simulator =
                 Simulator::new(&circuit, &library, &conditions).expect("the circuit elaborates");
+            if simulator
+                .devices()
+                .iter()
+                .any(|device| device.model() == "diode")
+            {
+                expects_diode = true;
+            }
             for (analysis, options) in &entry.runs {
                 // An analysis that fails, as one a test expects to, was evaluated all the same.
                 let _ = simulator.run(analysis, options);
             }
         }
-        std::mem::take(&mut *STATES.lock().expect("the states"))
+        std::mem::take(&mut *STATES.lock().unwrap_or_else(PoisonError::into_inner))
     };
     let mut instances: BTreeMap<(&str, &str, u64), Vec<&State>> = BTreeMap::new();
     for state in &states {
@@ -238,39 +262,34 @@ fn check_corpus_shard(shard: usize, shards: usize) {
 }
 
 macro_rules! corpus_twin_shards {
-    ($($name:ident => $shard:literal),* $(,)?) => {
-        const _: () = {
-            let shards: [usize; CORPUS_SHARDS] = [$($shard),*];
-            let mut index = 0;
-            while index < CORPUS_SHARDS {
-                assert!(shards[index] == index);
-                index += 1;
-            }
-        };
-        $(
-            #[test]
-            fn $name() {
-                check_corpus_shard($shard, CORPUS_SHARDS);
-            }
-        )*
+    ($($name:ident),+ $(,)?) => {
+        corpus_twin_shards!(@step [$(stringify!($name)),+].len(); 0usize; $($name),+);
     };
+    (@step $total:expr; $index:expr; $name:ident $(, $rest:ident)*) => {
+        #[test]
+        fn $name() {
+            check_corpus_shard($index, $total);
+        }
+        corpus_twin_shards!(@step $total; $index + 1usize; $($rest),*);
+    };
+    (@step $total:expr; $index:expr;) => {};
 }
 
 corpus_twin_shards!(
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_00 => 0,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_01 => 1,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_02 => 2,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_03 => 3,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_04 => 4,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_05 => 5,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_06 => 6,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_07 => 7,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_08 => 8,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_09 => 9,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_10 => 10,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_11 => 11,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_12 => 12,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_13 => 13,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_14 => 14,
-    the_compiled_kernels_are_their_twins_across_the_corpus_shard_15 => 15,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_00,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_01,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_02,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_03,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_04,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_05,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_06,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_07,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_08,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_09,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_10,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_11,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_12,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_13,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_14,
+    the_compiled_kernels_are_their_twins_across_the_corpus_shard_15,
 );

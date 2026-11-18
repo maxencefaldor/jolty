@@ -697,6 +697,8 @@ mod tests {
             ("jfet", r#"{"channel": "p", "thermal": true}"#),
             ("vbic", r#"{"polarity": "pnp", "thermal": true}"#),
             ("bsim3", r#"{"channel": "p", "thermal": true}"#),
+            ("vdmos", r#"{"channel": "p", "thermal": true}"#),
+            ("bsim4", r#"{"channel": "p"}"#),
         ];
         for &(name, parameters) in extra {
             let model = library.get(name).expect("a model of the library");

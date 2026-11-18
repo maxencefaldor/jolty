@@ -188,7 +188,8 @@ impl Bench {
     }
 
     /// The nature of each local unknown, a thermal terminal's a temperature.
-    pub(crate) fn natures(&self) -> Vec<Nature> {
+    #[must_use]
+    pub fn natures(&self) -> Vec<Nature> {
         self.unknowns.iter().map(|unknown| unknown.nature).collect()
     }
 
@@ -784,6 +785,22 @@ pub fn assert_unknown_derivatives_match(model: &dyn Model, parameters: &str, x: 
                 );
             }
         }
+        for (row, (value, derivatives)) in twin.charge() {
+            let largest = exact.capacitance[row]
+                .iter()
+                .fold(0.0_f64, |largest, capacitance| {
+                    largest.max(capacitance.abs())
+                });
+            for &(seed, column) in &seeded {
+                let (derivative, capacitance) = (derivatives[seed], exact.capacitance[row][column]);
+                assert!(
+                    (derivative - capacitance).abs() <= 1e-12 * largest + 1e-20,
+                    "{} charge[{row}] along {column}: {derivative}, its capacitance \
+                     {capacitance}, at {value}",
+                    model.name(),
+                );
+            }
+        }
         for &(seed, column) in &seeded {
             assert_entries_match_along(
                 (model.name(), &mut bench, &twin),
@@ -945,8 +962,16 @@ fn leaf_number_kind(node: &serde_json::Value) -> Option<NumberKind> {
             for name in names.iter().filter_map(serde_json::Value::as_str) {
                 match name {
                     "null" => {}
-                    "number" => found = Some(NumberKind::Real),
-                    "integer" => found = Some(NumberKind::Integer),
+                    "number" => {
+                        if found.replace(NumberKind::Real).is_some() {
+                            return None;
+                        }
+                    }
+                    "integer" => {
+                        if found.replace(NumberKind::Integer).is_some() {
+                            return None;
+                        }
+                    }
                     _ => return None,
                 }
             }
