@@ -2,7 +2,7 @@
 
 Status: rewritten in plain words on 15 November 2026, every item checked against its source and today's code, and brought up to date on 18 November; the research is `research/benchmarks.md`, kept whole.
 
-Plan: ✅ 6 done · 🚧 2 in progress · 📋 7 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 7 done · 🚧 2 in progress · 📋 6 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -142,10 +142,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** a change that moves them fails until it records the move.
 - **Source:** row B11; the precision suite's report.
 
-### 📋 6. Efficiency against concurrent copies, and peak memory
+### ✅ 6. Efficiency against concurrent copies, and peak memory
 
 - **What:** a run's speed-up on N threads beside N copies of it run at once, which is what the machine can attain; each fixture's peak memory.
 - **Done when:** the suite prints both on every machine.
+- **Result** (18 November): `benchmarks/measuring.py` adds `ru_maxrss_to_bytes`, `peak_memory_bytes` (`VmHWM` from `/proc/self/status` on Linux so forked+exec'd children never inherit a larger parent's `ru_maxrss`; `getrusage(2)` on macOS/other), `available_memory_bytes`, and `memory` (IEC binary prefixes); `benchmarks/speed/timing.py` adds isolated `probe()` and drops `peak_memory_bytes` to `None` if a worker serves a second distinct fixture; `benchmarks/speed/bench.py` adds backwards-compatible Pydantic models (`TimingRecord`, `ConcurrentCopies`, `ThroughputEfficiency`, `SpeedResults`, `load_results`), `throughput_efficiency` (unclamped `E(N) = T_copies / (N * T_par)` plus hybrid-core rate-sum diagnostics), `concurrent_copies` (barrier-synchronized isolated `timing.py` workers with an 85% available-memory guard), `--peak-memory`/`--no-peak-memory`, `--concurrent-copies`/`--no-concurrent-copies`, `--copy-rounds`, and peak memory + concurrent-copy columns in speed, scaling, baseline comparison and `--compare` tables (`tests/test_benchmarks.py`).
 - **Source:** rows B10 and B16.
 
 ### ✅ 7. The precision suite

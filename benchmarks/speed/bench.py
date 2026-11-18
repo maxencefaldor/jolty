@@ -911,22 +911,31 @@ def concurrent_copies(
     prepare_line = json.dumps(request_payload | {"prepare": True}) + "\n"
     request_line = json.dumps(request_payload) + "\n"
     workers: list[_CopyWorker] = []
+    workers_lock = threading.Lock()
+
+    def start_worker(_index: int) -> _CopyWorker:
+        worker = _CopyWorker.start(chosen.python_executable)
+        with workers_lock:
+            workers.append(worker)
+        return worker
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=copies) as executor:
-            workers = list(
+            started_workers = list(executor.map(start_worker, range(copies)))
+            list(
                 executor.map(
-                    lambda _: _CopyWorker.start(chosen.python_executable),
-                    range(copies),
+                    lambda worker: worker.prepare(prepare_line), started_workers
                 )
             )
-            list(executor.map(lambda worker: worker.prepare(prepare_line), workers))
             if chosen.warmup:
-                _synchronized_round(executor, workers, request_line)
+                _synchronized_round(executor, started_workers, request_line)
             load_before = load_average()
             round_seconds: list[float] = []
             round_runs: list[list[Run]] = []
             for _ in range(chosen.rounds):
-                elapsed, runs = _synchronized_round(executor, workers, request_line)
+                elapsed, runs = _synchronized_round(
+                    executor, started_workers, request_line
+                )
                 round_seconds.append(elapsed)
                 round_runs.append(runs)
             load_after = load_average()
