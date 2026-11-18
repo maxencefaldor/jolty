@@ -1423,7 +1423,8 @@ fn variate(variate: &str, seed: u64, index: u64, scope: &str, call: &str) -> PyR
 /// has a tolerance, in the order of the hierarchy, each instance's numbers by path: each
 /// as its instance's path, its own path, its nominal value and its tolerance's JSON text.
 ///
-/// Raises `ValueError` for a tolerance of a parameter given no number.
+/// Raises `ValueError` for a tolerance of a parameter given no number, or for a
+/// component cycle.
 #[pyfunction]
 fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
     let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;

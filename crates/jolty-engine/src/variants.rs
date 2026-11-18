@@ -382,44 +382,98 @@ fn normal(generator: &mut ChaCha20Rng, mean: f64, deviation: f64) -> f64 {
 ///
 /// # Errors
 ///
-/// Returns [`Untoleranced`] for a tolerance on a parameter the instance writes no number
-/// for, which a valid circuit never holds.
-pub fn toleranced(circuit: &Circuit) -> Result<Vec<Toleranced>, Untoleranced> {
+/// Returns [`TolerancedError::Untoleranced`] for a tolerance on a parameter the instance writes
+/// no number for, or [`TolerancedError::Recursive`] when a component contains itself through a
+/// cycle of component placements.
+pub fn toleranced(circuit: &Circuit) -> Result<Vec<Toleranced>, TolerancedError> {
     let mut found = Vec::new();
-    walk(circuit, circuit.top.as_str(), "", &mut found)?;
+    walk(circuit, &mut found)?;
     Ok(found)
 }
 
-/// The tolerance of a parameter an instance writes no number for.
+/// What prevented walking a circuit's toleranced parameters.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{instance} gives {parameter} a tolerance, not a number")]
-pub struct Untoleranced {
-    /// The instance's path.
-    pub instance: String,
-    /// The parameter's path among its parameters.
-    pub parameter: String,
+pub enum TolerancedError {
+    /// The tolerance of a parameter an instance writes no number for.
+    #[error("{instance} gives {parameter} a tolerance, not a number")]
+    Untoleranced {
+        /// The instance's path.
+        instance: String,
+        /// The parameter's path among its parameters.
+        parameter: String,
+    },
+    /// A component hierarchy containing a placement cycle.
+    #[error("component `{component}` contains itself: {}", .cycle.join(" -> "))]
+    Recursive {
+        /// The component that closes the cycle.
+        component: String,
+        /// The components around the cycle, starting and ending with `component`.
+        cycle: Vec<String>,
+    },
 }
 
-/// Appends the toleranced numbers of the instances of `component`, whose paths start with
-/// `prefix`, to `found`.
-fn walk(
-    circuit: &Circuit,
-    component: &str,
-    prefix: &str,
-    found: &mut Vec<Toleranced>,
-) -> Result<(), Untoleranced> {
-    let Some(placed) = circuit.components.get(component) else {
+/// One active frame of the iterative hierarchy walk in [`walk`].
+struct Frame<'a> {
+    component: &'a str,
+    prefix: String,
+    next_instance: usize,
+}
+
+/// Appends the toleranced numbers of the reachable instances of `circuit` to `found` using an
+/// iterative depth-first walk with cycle detection.
+fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), TolerancedError> {
+    let top = circuit.top.as_str();
+    if !circuit.components.contains_key(top) {
         return Ok(());
-    };
-    for instance in &placed.instances {
-        let path = format!("{prefix}{}", instance.name.as_str());
+    }
+    let mut active = vec![top];
+    let mut stack = vec![Frame {
+        component: top,
+        prefix: String::new(),
+        next_instance: 0,
+    }];
+    while let Some(frame) = stack.last_mut() {
+        let Some(placed) = circuit.components.get(frame.component) else {
+            stack.pop();
+            active.pop();
+            continue;
+        };
+        let Some(instance) = placed.instances.get(frame.next_instance) else {
+            stack.pop();
+            active.pop();
+            continue;
+        };
+        frame.next_instance += 1;
+        let path = format!("{}{}", frame.prefix, instance.name.as_str());
         match &instance.of {
-            Of::Component(inner) => walk(circuit, inner.as_str(), &format!("{path}/"), found)?,
+            Of::Component(inner) => {
+                let child = inner.as_str();
+                if let Some(start) = active.iter().position(|&seen| seen == child) {
+                    let cycle = active[start..]
+                        .iter()
+                        .copied()
+                        .chain(std::iter::once(child))
+                        .map(str::to_owned)
+                        .collect();
+                    return Err(TolerancedError::Recursive {
+                        component: child.to_owned(),
+                        cycle,
+                    });
+                }
+                if circuit.components.contains_key(child) {
+                    active.push(child);
+                    stack.push(Frame {
+                        component: child,
+                        prefix: format!("{path}/"),
+                        next_instance: 0,
+                    });
+                }
+            }
             Of::Device(_) => {
                 for (name, tolerance) in &instance.tolerances {
                     let nominal = jolty_ir::parameter(&instance.parameters, name)
                         .and_then(serde_json::Value::as_f64)
-                        .ok_or_else(|| Untoleranced {
+                        .ok_or_else(|| TolerancedError::Untoleranced {
                             instance: path.clone(),
                             parameter: name.clone(),
                         })?;
@@ -545,5 +599,144 @@ mod tests {
             Grid::new(vec![(Axis::Temperature, vec![])], false),
             Err(VariantsError::Empty(0))
         );
+    }
+
+    #[test]
+    fn toleranced_rejects_self_and_mutual_cycles_and_walks_diamonds_and_deep_chains() {
+        let version = jolty_ir::VERSION;
+        let self_cycle = Circuit::from_json(
+            &serde_json::json!({
+                "format": "jolty-circuit",
+                "version": version,
+                "top": "top",
+                "components": {
+                    "top": {
+                        "instances": [
+                            {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
+                        ]
+                    },
+                    "stage": {
+                        "instances": [
+                            {"name": "Xloop", "of": {"component": "stage"}, "terminals": {}}
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("valid JSON");
+        let error = toleranced(&self_cycle).expect_err("self-cycle must fail");
+        assert_eq!(
+            error,
+            TolerancedError::Recursive {
+                component: "stage".to_owned(),
+                cycle: vec!["stage".to_owned(), "stage".to_owned()],
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "component `stage` contains itself: stage -> stage"
+        );
+
+        let mutual = Circuit::from_json(
+            &serde_json::json!({
+                "format": "jolty-circuit",
+                "version": version,
+                "top": "top",
+                "components": {
+                    "top": {
+                        "instances": [
+                            {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
+                        ]
+                    },
+                    "stage": {
+                        "instances": [
+                            {"name": "Xback", "of": {"component": "top"}, "terminals": {}}
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("valid JSON");
+        let error = toleranced(&mutual).expect_err("mutual cycle must fail");
+        assert_eq!(
+            error.to_string(),
+            "component `top` contains itself: top -> stage -> top"
+        );
+
+        // Diamond DAG: a shared subcircuit placed twice emits both instance paths.
+        let diamond = Circuit::from_json(
+            &serde_json::json!({
+                "format": "jolty-circuit",
+                "version": version,
+                "top": "top",
+                "components": {
+                    "top": {
+                        "instances": [
+                            {"name": "X1", "of": {"component": "leaf"}, "terminals": {}},
+                            {"name": "X2", "of": {"component": "leaf"}, "terminals": {}}
+                        ]
+                    },
+                    "leaf": {
+                        "instances": [
+                            {
+                                "name": "R1",
+                                "of": {"device": "resistor"},
+                                "parameters": {"resistance": 1000.0},
+                                "terminals": {"a": "a", "b": "b"},
+                                "tolerances": {
+                                    "resistance": {"relative": 0.01, "distribution": "uniform"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("valid JSON");
+        let items = toleranced(&diamond).expect("diamond DAG must succeed");
+        let paths: Vec<&str> = items.iter().map(|item| item.instance.as_str()).collect();
+        assert_eq!(paths, vec!["X1/R1", "X2/R1"]);
+
+        // Deep acyclic hierarchy (1500 levels) must not overflow the thread stack.
+        let mut components = serde_json::Map::new();
+        for level in 0..1500 {
+            let instances = if level + 1 < 1500 {
+                serde_json::json!([{
+                    "name": "X",
+                    "of": {"component": format!("c{}", level + 1)},
+                    "terminals": {}
+                }])
+            } else {
+                serde_json::json!([{
+                    "name": "R1",
+                    "of": {"device": "resistor"},
+                    "parameters": {"resistance": 50.0},
+                    "terminals": {"a": "a", "b": "b"},
+                    "tolerances": {
+                        "resistance": {"relative": 0.05, "distribution": "uniform"}
+                    }
+                }])
+            };
+            components.insert(
+                format!("c{level}"),
+                serde_json::json!({"instances": instances}),
+            );
+        }
+        let deep = Circuit::from_json(
+            &serde_json::json!({
+                "format": "jolty-circuit",
+                "version": version,
+                "top": "c0",
+                "components": components,
+            })
+            .to_string(),
+        )
+        .expect("valid JSON");
+        let items = toleranced(&deep).expect("deep chain must succeed");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].nominal.to_bits(), 50.0_f64.to_bits());
     }
 }

@@ -65,15 +65,6 @@ DEFAULT_EXAMPLES: Final = 30
 SEARCH: Final = os.environ.get("JOLTY_FUZZ_EXAMPLES")
 """Override example count for ad-hoc fuzzing searches."""
 
-SAFE_RUST_EXPRESSION_DEPTH: Final = 64
-"""Parenthesis depth cap for direct Rust `_core` expression calls.
-
-The compiled recursive-descent parser in `jolty-expressions/src/parser.rs` does not
-enforce a recursion limit and overflows the thread stack around 750 nested parentheses
-on Linux. Python entry points (`expressions.parse`, `expressions.evaluate`, and
-`library._behavioral`) enforce their own limits before crossing into the extension.
-"""
-
 
 def _fuzz_settings(default_examples: int = DEFAULT_EXAMPLES) -> settings:
     """Returns Hypothesis settings tuned for CI speed, profile overrides, or search."""
@@ -1613,9 +1604,15 @@ def test_valid_spice_expressions_with_variables_translate_to_core(text: str) -> 
         lambda node: node_map[node.casefold()],
         lambda source: source.casefold(),
     )
-    if nesting_depth(translated) <= SAFE_RUST_EXPRESSION_DEPTH:
+    error_message: str | None = None
+    try:
         tree_json = _core.expression_tree(translated)
+    except ValueError as error:
+        error_message = str(error)
+    else:
         assert json.loads(tree_json) is not None or tree_json == "null"
+    if error_message is not None:
+        assert "levels deep" in error_message
 
 
 @FUZZ
@@ -1624,11 +1621,12 @@ def test_valid_spice_expressions_with_variables_translate_to_core(text: str) -> 
 @example("0/0")
 @example("table(1, 0, 0, 1, 1)")
 @example("table(1, 0, 0, 0, 1)")
+@example("table(0, 0/0, 1, 1, 2)")
 @example("rounded_table(1, 0.25, 0, 0, 1, 1)")
+@example("(" * 1000 + "1" + ")" * 1000)
+@example("-" * 1000 + "1")
 @given(st.text(max_size=150))
 def test_core_expression_arbitrary_text_only_raises_value_error(text: str) -> None:
-    if nesting_depth(text) > SAFE_RUST_EXPRESSION_DEPTH:
-        return
     with contextlib.suppress(ValueError):
         _core.constant(text)
     try:
@@ -1641,8 +1639,6 @@ def test_core_expression_arbitrary_text_only_raises_value_error(text: str) -> No
 @FUZZ
 @given(_expression_token_soup())
 def test_core_expression_token_soup_only_raises_value_error(text: str) -> None:
-    if nesting_depth(text) > SAFE_RUST_EXPRESSION_DEPTH:
-        return
     with contextlib.suppress(ValueError):
         _core.constant(text)
     try:
@@ -1655,8 +1651,6 @@ def test_core_expression_token_soup_only_raises_value_error(text: str) -> None:
 @FUZZ
 @given(_valid_core_expressions(with_variables=False))
 def test_valid_core_expressions_evaluate_deterministically(text: str) -> None:
-    if nesting_depth(text) > SAFE_RUST_EXPRESSION_DEPTH:
-        return
     first = _core.constant(text)
     second = _core.constant(text)
     if math.isnan(first):
@@ -1670,8 +1664,6 @@ def test_valid_core_expressions_evaluate_deterministically(text: str) -> None:
 @FUZZ
 @given(_valid_core_expressions(with_variables=True))
 def test_valid_core_expressions_with_variables_produce_json_tree(text: str) -> None:
-    if nesting_depth(text) > SAFE_RUST_EXPRESSION_DEPTH:
-        return
     tree = _core.expression_tree(text)
     assert tree
     json.loads(tree)
@@ -1750,67 +1742,23 @@ def test_expression_parser_regression_bugs() -> None:
     assert expressions.integral(expressions.parse("v(a)^1e20"), variable) is None
 
 
+def test_core_expression_depth_and_non_finite_table_regression_bugs() -> None:
+    # Rust expression parser guards recursion depth and non-finite table points.
+    with pytest.raises(ValueError, match="levels deep"):
+        _core.constant("(" * 1000 + "1" + ")" * 1000)
+    with pytest.raises(ValueError, match="levels deep"):
+        _core.expression_tree("-" * 1000 + "v(a)")
+    with pytest.raises(ValueError, match="levels deep"):
+        _core.constant("2 ^ " * 300 + "2")
+    with pytest.raises(ValueError, match="ascending abscissae"):
+        _core.constant("table(0, 0/0, 1, 1, 2)")
+    with pytest.raises(ValueError, match="ascending abscissae"):
+        _core.expression_tree("table(v(a), 0, 1/0, 1, 2)")
+
+
 # ---------------------------------------------------------------------------
 # 2. Circuit Format JSON Parser Fuzz Tests
 # ---------------------------------------------------------------------------
-
-
-def _component_children(components: dict[object, object], name: str) -> list[str]:
-    """Extracts child component names placed inside `name` from raw JSON."""
-    definition = components.get(name)
-    if not isinstance(definition, dict):
-        return []
-    instances = definition.get("instances")
-    if not isinstance(instances, list):
-        return []
-    found: list[str] = []
-    for instance in instances:
-        if not isinstance(instance, dict):
-            continue
-        target = instance.get("of")
-        if isinstance(target, dict) and isinstance(target.get("component"), str):
-            found.append(target["component"])
-    return found
-
-
-def _json_has_component_cycle(encoded: str) -> bool:
-    """Whether raw circuit JSON `encoded` has a component cycle reachable from `top`.
-
-    Guards direct calls to `_core.toleranced`, whose Rust `walk()` in
-    `crates/jolty-engine/src/variants.rs` overflows the thread stack on cyclic circuits
-    even when other fields fail Pydantic validation. Python's
-    `jolty.variation.toleranced` enforces this check itself and raises `ValueError`.
-    """
-    try:
-        document = json.loads(encoded)
-    except ValueError, RecursionError:
-        return False
-    if not isinstance(document, dict):
-        return False
-    top = document.get("top")
-    components = document.get("components")
-    if not isinstance(top, str) or not isinstance(components, dict):
-        return False
-    done: set[str] = set()
-    active: set[str] = set()
-    frames: list[tuple[str, bool]] = [(top, False)]
-    while frames:
-        name, leaving = frames.pop()
-        if leaving:
-            active.discard(name)
-            done.add(name)
-            continue
-        if name in done:
-            continue
-        if name in active:
-            return True
-        if name not in components:
-            done.add(name)
-            continue
-        active.add(name)
-        frames.append((name, True))
-        frames.extend((child, False) for child in _component_children(components, name))
-    return False
 
 
 @FUZZ
@@ -1831,9 +1779,8 @@ def test_circuit_json_arbitrary_bytes_only_raise_validation_error(
     decoded = payload.decode("utf-8", errors="replace")
     with contextlib.suppress(ValueError, _core.ElaborationError):
         _core.Elaborated(decoded, "{}")
-    if not _json_has_component_cycle(decoded):
-        with contextlib.suppress(ValueError):
-            _core.toleranced(decoded)
+    with contextlib.suppress(ValueError):
+        _core.toleranced(decoded)
 
 
 @FUZZ
@@ -1883,15 +1830,13 @@ def test_mutated_circuit_json_raises_only_documented_errors(
             Simulation(parsed)
     with contextlib.suppress(ValueError, _core.ElaborationError):
         _core.Elaborated(encoded, "{}")
-    if not _json_has_component_cycle(encoded):
-        with contextlib.suppress(ValueError):
-            _core.toleranced(encoded)
+    with contextlib.suppress(ValueError):
+        _core.toleranced(encoded)
 
 
 def test_circuit_cycle_and_missing_component_regression_bugs() -> None:
     # Self-recursive and mutually recursive circuits previously segfaulted in
-    # variation.toleranced (via Rust variants::walk) and hit RecursionError in
-    # export.flatten / export.netlist.
+    # Rust variants::walk and hit RecursionError in export.flatten / export.netlist.
     self_cycle_document = _base_circuit_document()
     _component_instances(self_cycle_document, "stage").append(
         {
@@ -1902,6 +1847,8 @@ def test_circuit_cycle_and_missing_component_regression_bugs() -> None:
     )
     self_cycle_json = json.dumps(self_cycle_document)
     self_cycle = ir.Circuit.model_validate_json(self_cycle_json)
+    with pytest.raises(ValueError, match="contains itself: stage -> stage"):
+        _core.toleranced(self_cycle_json)
     with pytest.raises(ValueError, match="contains itself: stage -> stage"):
         variation.toleranced(self_cycle)
     with pytest.raises(JoltyError, match="contains itself: stage -> stage"):

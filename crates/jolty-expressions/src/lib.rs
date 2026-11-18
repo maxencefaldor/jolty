@@ -675,4 +675,62 @@ mod tests {
         assert_eq!(value_tangent, 2.0);
         assert_eq!(gradient_tangent, [0.0, 2.0]);
     }
+
+    #[test]
+    fn parser_rejects_excessive_nesting_depth_without_stack_overflow() {
+        let limit = parser::MAX_DEPTH;
+        let at_limit = format!("{}1{}", "(".repeat(limit), ")".repeat(limit));
+        assert_eq!(value(&at_limit).to_bits(), 1.0_f64.to_bits());
+
+        let deep_parens = format!("{}1{}", "(".repeat(limit + 1), ")".repeat(limit + 1));
+        assert!(
+            deep_parens
+                .parse::<Expression>()
+                .expect_err("depth above MAX_DEPTH must fail")
+                .to_string()
+                .contains("levels deep")
+        );
+
+        let very_deep_parens = format!("{}1{}", "(".repeat(1000), ")".repeat(1000));
+        assert!(very_deep_parens.parse::<Expression>().is_err());
+
+        let deep_unary = format!("{}1", "-".repeat(1000));
+        assert!(deep_unary.parse::<Expression>().is_err());
+
+        let deep_power = format!("{}2", "2 ^ ".repeat(1000));
+        assert!(deep_power.parse::<Expression>().is_err());
+
+        let deep_ternary = format!("{}1{}", "1 ? ".repeat(300), " : 2".repeat(300));
+        assert!(deep_ternary.parse::<Expression>().is_err());
+
+        let deep_calls = format!("{}0{}", "sin(".repeat(300), ")".repeat(300));
+        assert!(deep_calls.parse::<Expression>().is_err());
+
+        // Flat binary chains use iterative `level()` loops and do not hit MAX_DEPTH.
+        let wide_sum = format!("1{}", " + 1".repeat(500));
+        assert_eq!(value(&wide_sum).to_bits(), 501.0_f64.to_bits());
+    }
+
+    #[test]
+    fn table_rejects_non_finite_abscissae_and_ordinates() {
+        for invalid in [
+            "table(v(a), 0/0, 0, 1, 1)",
+            "table(v(a), 0, 0, 0/0, 1)",
+            "table(v(a), 0, 0/0, 1, 1)",
+            "table(v(a), -1/0, 0, 1, 1)",
+            "table(v(a), 0, 0, 1/0, 1)",
+            "table(v(a), 0, 1/0, 1, 1)",
+            "pwl(v(a), 0/0, 1, 2, 3)",
+            "rounded_table(v(a), 0.25, 0/0, 0, 1, 1)",
+            "rounded_table(v(a), 0/0, 0, 0, 1, 1)",
+            "rounded_table(v(a), 1/0, 0, 0, 1, 1)",
+            "table(0, 0/0, 1, 1, 2)",
+        ] {
+            let error = invalid.parse::<Expression>().unwrap_err();
+            assert!(
+                error.to_string().contains("ascending abscissae"),
+                "unexpected error for `{invalid}`: {error}"
+            );
+        }
+    }
 }

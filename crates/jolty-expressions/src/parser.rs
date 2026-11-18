@@ -1,10 +1,20 @@
 //! The grammar of expressions, read into a tree whose constant parts are folded.
 
+use std::cmp::Ordering;
+
 use crate::SyntaxError;
 use crate::Variable;
 use crate::lexer::{Kind, Symbol, Token, tokenize};
 use crate::operations::{Binary, Unary};
 use crate::tape::{Beyond, Points};
+
+/// Maximum nesting depth accepted by the recursive-descent parser.
+///
+/// Matches `_MAX_CORE_DEPTH` in `src/jolty/spice/expressions.py`: recursive descent
+/// overflows an 8 MiB Linux thread stack around 750 nested parentheses (`tests/test_fuzz_parsers.py`),
+/// so capping at 256 keeps both parsing and recursive `Drop` well inside Linux, macOS,
+/// and Windows default thread stacks.
+pub(crate) const MAX_DEPTH: usize = 256;
 
 /// An expression's tree. Every part without a variable is folded into a constant.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +48,7 @@ pub(crate) fn parse(text: &str) -> Result<(Node, Vec<Variable>), SyntaxError> {
         tokens: tokenize(text)?,
         position: 0,
         variables: Vec::new(),
+        depth: 0,
     };
     let node = parser.expression()?;
     let token = parser.peek();
@@ -54,6 +65,7 @@ struct Parser {
     tokens: Vec<Token>,
     position: usize,
     variables: Vec<Variable>,
+    depth: usize,
 }
 
 /// The binary operators at each level of precedence, loosest first, above the conditional.
@@ -118,15 +130,34 @@ impl Parser {
         }
     }
 
+    fn descend<T>(
+        &mut self,
+        column: usize,
+        parse: impl FnOnce(&mut Self) -> Result<T, SyntaxError>,
+    ) -> Result<T, SyntaxError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(SyntaxError::new(
+                format!("expression nests more than {MAX_DEPTH} levels deep"),
+                column,
+            ));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+
     /// `condition ? then : otherwise`, which groups to the right, or a looser operand.
     fn expression(&mut self) -> Result<Node, SyntaxError> {
         let condition = self.level(0)?;
+        let question_column = self.peek().column;
         if !self.accept(Symbol::Question) {
             return Ok(condition);
         }
-        let then = self.expression()?;
+        let then = self.descend(question_column, Self::expression)?;
+        let colon_column = self.peek().column;
         self.expect(Symbol::Colon)?;
-        let otherwise = self.expression()?;
+        let otherwise = self.descend(colon_column, Self::expression)?;
         Ok(conditional([condition, then, otherwise]))
     }
 
@@ -149,12 +180,13 @@ impl Parser {
 
     /// A signed or negated operand.
     fn unary(&mut self) -> Result<Node, SyntaxError> {
+        let column = self.peek().column;
         if self.accept(Symbol::Minus) {
-            Ok(unary(Unary::Negate, self.unary()?))
+            Ok(unary(Unary::Negate, self.descend(column, Self::unary)?))
         } else if self.accept(Symbol::Plus) {
-            self.unary()
+            self.descend(column, Self::unary)
         } else if self.accept(Symbol::Not) {
-            Ok(unary(Unary::Not, self.unary()?))
+            Ok(unary(Unary::Not, self.descend(column, Self::unary)?))
         } else {
             self.power()
         }
@@ -163,8 +195,9 @@ impl Parser {
     /// `base ^ exponent`, which groups to the right and binds tighter than a sign.
     fn power(&mut self) -> Result<Node, SyntaxError> {
         let base = self.primary()?;
+        let column = self.peek().column;
         if self.accept(Symbol::Power) {
-            let exponent = self.unary()?;
+            let exponent = self.descend(column, Self::unary)?;
             Ok(binary(Binary::Power, base, exponent))
         } else {
             Ok(base)
@@ -176,7 +209,7 @@ impl Parser {
         match token.kind {
             Kind::Number(value) => Ok(Node::Constant(value)),
             Kind::Symbol(Symbol::Open) => {
-                let node = self.expression()?;
+                let node = self.descend(token.column, Self::expression)?;
                 self.expect(Symbol::Close)?;
                 Ok(node)
             }
@@ -216,9 +249,9 @@ impl Parser {
             }
             _ => {}
         }
-        let mut arguments = vec![self.expression()?];
+        let mut arguments = vec![self.descend(column, Self::expression)?];
         while self.accept(Symbol::Comma) {
-            arguments.push(self.expression()?);
+            arguments.push(self.descend(column, Self::expression)?);
         }
         self.expect(Symbol::Close)?;
         if let Some(operation) = Unary::named(name) {
@@ -364,11 +397,17 @@ fn table(
     let points: Vec<(f64, f64)> = numbers
         .chunks(2)
         .map(|pair| match *pair {
-            [abscissa, ordinate] => Ok((abscissa, ordinate)),
+            [abscissa, ordinate] if abscissa.is_finite() && ordinate.is_finite() => {
+                Ok((abscissa, ordinate))
+            }
             _ => Err(invalid()),
         })
         .collect::<Result<_, _>>()?;
-    if points.is_empty() || points.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+    if points.is_empty()
+        || points
+            .windows(2)
+            .any(|pair| pair[0].0.partial_cmp(&pair[1].0) != Some(Ordering::Less))
+    {
         return Err(invalid());
     }
     let points = Points::new(&points, beyond, rounding);

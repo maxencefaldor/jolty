@@ -218,9 +218,8 @@ _MAX_DEPTH: Final = 100
 _MAX_CORE_DEPTH: Final = 256
 """The maximum parenthesis depth passed to the Rust expression engine.
 
-The compiled recursive-descent parser overflows the stack around 750 nested
-parentheses on an 8 MiB Linux thread stack, so Python refuses deeper expressions
-before crossing into the extension.
+Matches `jolty_expressions::parser::MAX_DEPTH` (`256`) so SPICE behavioral and
+parameter translation raises `SpiceError` directly before crossing into `_core`.
 """
 
 _MAX_INLINED_NODES: Final = 100_000
