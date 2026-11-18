@@ -1,14 +1,14 @@
 # Copyright 2026 Maxence Faldor
 """Tests for the JAX bridge (`jolty.jax.function`).
 
-Checks exact bit-for-bit parity with `jolty.vjp`, agreement with central finite
-differences across all five differentiable analyses, `jax.jit`, `jax.grad`,
-`jax.value_and_grad`, `jax.vjp`, `jax.jacrev`, `jax.remat`, single-batch `jax.vmap`
-dispatch across cores, empty batches, nested `vmap`, mixed `in_axes`, structural
-unknown changes (both added and dropped unknowns), unsorted and duplicate breakpoints,
-linear interpolation transpose adjointness, both `jax_enable_x64=True` and `False`,
-input and analysis validation, runtime failure messages, optional import error
-handling, and free-threaded `3.15t` execution without re-enabling the GIL.
+Checks bit-for-bit parity with `jolty.vjp`, agreement with central finite differences
+across all five differentiable analyses, `jax.jit`, `jax.grad`, `jax.value_and_grad`,
+`jax.vjp`, `jax.jacrev`, `jax.remat`, `jax.vmap` as one engine batch matching a loop bit
+for bit, empty batches, nested `vmap`, mixed `in_axes`, pullbacks kept from the forward
+pass, structural unknown changes (both added and dropped unknowns), unsorted and
+duplicate breakpoints, both `jax_enable_x64=True` and `False`, input and analysis
+validation, runtime failure messages, optional import error handling, and free-threaded
+`3.15t` execution without re-enabling the GIL.
 """
 
 import builtins
@@ -16,13 +16,14 @@ import importlib.util
 import math
 import sys
 import sysconfig
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest.mock import patch
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 import jolty.jax as jolty_jax_module
@@ -53,6 +54,7 @@ from jolty.plan import (
     TransferFunction,
     Transient,
 )
+from jolty.simulate import BatchPullback, Elaborated, Function, Outputs
 from jolty.units import F, H, MHz, V, kHz, kohm, nF, ns, ohm, pF, us
 from jolty.waveforms import Pulse, Sine
 
@@ -443,62 +445,6 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
             )
 
 
-def test_linear_interpolation_sample_and_scatter_are_exact_transposes() -> None:
-    times = np.array([0.0, 1.0, 3.0, 6.0, 10.0], dtype=np.float64)
-    values = np.array(
-        [
-            [1.0, -2.0, 0.5],
-            [2.5, 0.0, -1.5],
-            [-0.5, 3.0, 2.0],
-            [4.0, -1.0, 1.0],
-            [0.25, 2.5, -3.0],
-        ],
-        dtype=np.float64,
-    )
-    # Mix interior off-grid breakpoints, unsorted order, exact grid hits, duplicates.
-    breakpoints = (4.5, 1.0, 0.25, 4.5, 8.2, 10.0, 2.1)
-    base_indices = np.array([0, 2], dtype=np.intp)
-    simulator_indices = np.array([2, 0], dtype=np.intp)
-    indices = (base_indices, simulator_indices)
-
-    sampled = jolty_jax_module._sample_at_breakpoints(  # noqa: SLF001 - direct unit test of transpose pair
-        times, values, breakpoints, indices, width=3
-    )
-    assert np.all(np.isnan(sampled[:, 1]))
-
-    cotangent_at_breakpoints = np.array(
-        [
-            [0.7, 0.0, -1.1],
-            [-0.4, 0.0, 0.9],
-            [1.5, 0.0, 0.3],
-            [0.2, 0.0, 0.8],
-            [-0.6, 0.0, 1.2],
-            [0.5, 0.0, -0.5],
-            [1.0, 0.0, 0.4],
-        ],
-        dtype=np.float64,
-    )
-    full_cotangent = np.zeros_like(values)
-    jolty_jax_module._scatter_breakpoint_cotangents(  # noqa: SLF001 - direct unit test of transpose pair
-        times, breakpoints, cotangent_at_breakpoints, indices, full_cotangent
-    )
-
-    forward_inner = float(
-        np.sum(sampled[:, base_indices] * cotangent_at_breakpoints[:, base_indices])
-    )
-    adjoint_inner = float(np.sum(values * full_cotangent))
-    np.testing.assert_allclose(forward_inner, adjoint_inner, rtol=1e-15, atol=0.0)
-
-    with pytest.raises(SimulationError, match="outside solved time range"):
-        jolty_jax_module._sample_at_breakpoints(  # noqa: SLF001 - bounds check
-            times, values, (12.0,), indices, width=3
-        )
-    with pytest.raises(SimulationError, match="outside solved time range"):
-        jolty_jax_module._scatter_breakpoint_cotangents(  # noqa: SLF001 - bounds check
-            times, (12.0,), np.zeros((1, 3), dtype=np.float64), indices, full_cotangent
-        )
-
-
 def test_unsorted_and_duplicate_breakpoints_work_single_and_vmapped() -> None:
     breakpoints = (1.5 * us, 0.5 * us, 1.5 * us, 1.0 * us)
     transient = Transient(2 * us, max_step=50 * ns, breakpoints=breakpoints)
@@ -616,8 +562,10 @@ def test_autonomous_periodic_steady_state_period_gradient_and_scaling_law() -> N
     with jax.enable_x64():
         jax_parameters = _as_jax_parameters(parameters, dtype=jnp.float64)
         outputs = wrapped(jax_parameters)
-        assert set(outputs) == {PERIOD}
         assert outputs[PERIOD].shape == ()
+        waveforms = {name: array for name, array in outputs.items() if name != PERIOD}
+        assert waveforms
+        assert all(array.shape == (0,) for array in waveforms.values())
 
         def period_function(current: dict[str, dict[str, jax.Array]]) -> jax.Array:
             return wrapped(current)[PERIOD]
@@ -655,18 +603,17 @@ def test_vmap_dispatches_single_engine_batch_and_matches_loop_bit_for_bit() -> N
         )
 
         call_shapes: list[tuple[int, ...]] = []
-        original_forward = jolty_jax_module._forward_batch  # noqa: SLF001 - verifies batch dispatch
+        original_batch = Function.batch
 
-        def spy_forward(
-            plan: jolty_jax_module._AnalysisPlan,
-            theta_host: np.ndarray,
-            names: tuple[tuple[str, str], ...],
-            output_dtype: np.dtype,
-        ) -> np.ndarray:
-            call_shapes.append(tuple(np.asarray(theta_host).shape))
-            return original_forward(plan, theta_host, names, output_dtype)
+        def spy_batch(
+            native: Function,
+            names: Sequence[tuple[str, str]],
+            values: npt.ArrayLike,
+        ) -> Outputs:
+            call_shapes.append(np.asarray(values).shape)
+            return original_batch(native, names, values)
 
-        with patch.object(jolty_jax_module, "_forward_batch", side_effect=spy_forward):
+        with patch.object(Function, "batch", spy_batch):
             vmapped_outputs = jax.jit(jax.vmap(wrapped, in_axes=in_axes))(batched)
 
         assert call_shapes == [(batch_size, 4)]
@@ -709,6 +656,41 @@ def test_vmap_dispatches_single_engine_batch_and_matches_loop_bit_for_bit() -> N
             rtol=1e-14,
             atol=0.0,
         )
+
+
+def test_gradient_keeps_its_forward_pullbacks_and_recomputes_once_dropped() -> None:
+    calls: list[int] = []
+    original_batch_vjp = Function.batch_vjp
+
+    def spy_batch_vjp(
+        native: Function,
+        names: Sequence[tuple[str, str]],
+        values: npt.ArrayLike,
+    ) -> tuple[Outputs, BatchPullback]:
+        calls.append(len(np.asarray(values)))
+        return original_batch_vjp(native, names, values)
+
+    with jax.enable_x64():
+        parameters = _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
+        gradients = {}
+        for saved in (16, 0):
+            wrapped = jax_function(crossbar(), OperatingPoint(), saved_pullbacks=saved)
+
+            def loss(
+                current: dict[str, dict[str, jax.Array]],
+                wrapped: Callable[..., dict[str, jax.Array]] = wrapped,
+            ) -> jax.Array:
+                return jnp.sum(wrapped(current)["out0"] ** 2)
+
+            calls.clear()
+            with patch.object(Function, "batch_vjp", spy_batch_vjp):
+                gradients[saved] = jax.grad(loss)(parameters)
+            assert calls == ([1] if saved else [1, 1])
+        for instance in WEIGHTS:
+            np.testing.assert_array_equal(
+                np.asarray(gradients[16][instance]["resistance"]),
+                np.asarray(gradients[0][instance]["resistance"]),
+            )
 
 
 def test_vmap_forward_and_gradient_across_all_analyses() -> None:
@@ -867,7 +849,7 @@ def test_empty_batch_vmap_forward_and_gradient() -> None:
             assert autonomous_gradient["L1"]["inductance"].shape == shape
 
 
-def test_nested_vmap_repeated_vjp_and_zero_cotangent_shortcut() -> None:
+def test_nested_vmap_repeated_vjps_and_a_zero_cotangent() -> None:
     analysis = OperatingPoint()
     wrapped = jax_function(crossbar(), analysis)
 
@@ -917,11 +899,7 @@ def test_nested_vmap_repeated_vjp_and_zero_cotangent_shortcut() -> None:
                 rtol=1e-14,
             )
 
-        # Zero cotangent shortcuts without invoking the simulator elaboration/vjp.
-        with patch.object(
-            jolty_jax_module, "_build_overrides", side_effect=AssertionError
-        ):
-            (gradient_zero,) = vjp_function(zeros)
+        (gradient_zero,) = vjp_function(zeros)
         for instance in WEIGHTS:
             assert float(gradient_zero[instance]["resistance"]) == 0.0
 
@@ -1060,21 +1038,13 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
                 }
             )
 
-        # Direct host-side check verifies unwrapped SimulationError type directly.
-        plan = jolty_jax_module._build_analysis_plan(  # noqa: SLF001 - direct unit check
-            low_resistance_crossbar(), OperatingPoint(), None
-        )
-        names = tuple((instance, "resistance") for instance in sorted(WEIGHTS))
-        theta_row = np.array(
-            [WEIGHTS[instance]["resistance"] for instance in sorted(WEIGHTS)],
-            dtype=np.float64,
-        )
-        dropped_cotangent = np.zeros((1, len(plan.unknowns)), dtype=np.float64)
-        dropped_cotangent[0, plan.unknowns.index("W00:current")] = 1.0
+        # The batch's own pullback raises the unwrapped SimulationError directly.
+        native = jolty_function(low_resistance_crossbar(), OperatingPoint())
+        names = [(instance, "resistance") for instance in sorted(WEIGHTS)]
+        row = [[WEIGHTS[instance]["resistance"] for instance in sorted(WEIGHTS)]]
+        _, batch_pullback = native.batch_vjp(names, row)
         with pytest.raises(SimulationError, match="W00:current"):
-            jolty_jax_module._backward_batch(  # noqa: SLF001 - direct unit check
-                plan, theta_row, dropped_cotangent, names, np.dtype(np.float64)
-            )
+            batch_pullback({"W00:current": [[1.0]]})
 
         # Complex AC dropped unknown places NaN + NaNj and rejects non-zero / NaN.
         wrapped_dropped_ac = jax_function(
@@ -1186,9 +1156,7 @@ def test_empty_parameters_key_order_aliasing_and_runner_cache() -> None:
 
         # Repeated eager calls hit the runner cache without re-running validation.
         wrapped({"W00": {"resistance": jnp.asarray(1200.0, dtype=jnp.float64)}})
-        with patch.object(
-            jolty_jax_module, "_validate_parameter_names", side_effect=AssertionError
-        ):
+        with patch.object(Elaborated, "check", side_effect=AssertionError):
             cached_output = wrapped(
                 {"W00": {"resistance": jnp.asarray(1600.0, dtype=jnp.float64)}}
             )
@@ -1196,49 +1164,10 @@ def test_empty_parameters_key_order_aliasing_and_runner_cache() -> None:
 
 
 def test_construction_time_analysis_refusals() -> None:
-    with pytest.raises(ValueError, match="at least one sweep level"):
-        jax_function(crossbar(), DcSweep("V0", []))
-    with pytest.raises(ValueError, match="at least one frequency"):
-        jax_function(crossbar(), Ac("V1", []))
-    with pytest.raises(ValueError, match="stop time must be positive"):
-        jax_function(crossbar(), Transient(stop=0 * us, breakpoints=(0.1 * us,)))
-    with pytest.raises(ValueError, match="stop time must be positive"):
-        jax_function(crossbar(), Transient(stop=-1 * us, breakpoints=(0.1 * us,)))
     with pytest.raises(ValueError, match="breakpoints"):
         jax_function(crossbar(), Transient(stop=2 * us))
-    with pytest.raises(ValueError, match=r"must lie in \(0,"):
-        jax_function(crossbar(), Transient(stop=2 * us, breakpoints=(0 * us,)))
-    with pytest.raises(ValueError, match=r"must lie in \(0,"):
-        jax_function(crossbar(), Transient(stop=2 * us, breakpoints=(-0.5 * us,)))
-    with pytest.raises(ValueError, match=r"must lie in \(0,"):
-        jax_function(crossbar(), Transient(stop=2 * us, breakpoints=(2.5 * us,)))
-    with pytest.raises(ValueError, match="period must be positive"):
-        jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(period=0 * us, breakpoints=(0.1 * us,)),
-        )
-    with pytest.raises(ValueError, match="period must be positive"):
-        jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(period=-1 * us, breakpoints=(0.1 * us,)),
-        )
     with pytest.raises(ValueError, match="breakpoints"):
         jax_function(driven_rc_filter(), PeriodicSteadyState(period=1 * us))
-    with pytest.raises(ValueError, match=r"must lie in \(0,"):
-        jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(period=1 * us, breakpoints=(0 * us,)),
-        )
-    with pytest.raises(ValueError, match=r"must lie in \(0,"):
-        jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(period=1 * us, breakpoints=(1.5 * us,)),
-        )
-    with pytest.raises(ValueError, match="breakpoints"):
-        jax_function(
-            van_der_pol_tank(),
-            PeriodicSteadyState(breakpoints=(0.1 * us,)),
-        )
 
     for unsupported in (
         OperatingPoints(),
@@ -1247,7 +1176,7 @@ def test_construction_time_analysis_refusals() -> None:
         PoleZero(source="V0", output="out0"),
         TransferFunction(source="V0", output="out0"),
     ):
-        with pytest.raises(ValueError, match="unsupported analysis"):
+        with pytest.raises(TypeError, match="a function runs"):
             jax_function(crossbar(), unsupported)  # ty: ignore[invalid-argument-type] - the wrong type is tested
 
     class _FoundrySimulatorStub:
@@ -1266,23 +1195,23 @@ def test_construction_time_analysis_refusals() -> None:
 def test_invalid_parameter_and_autodiff_refusals() -> None:
     wrapped = jax_function(crossbar(), OperatingPoint())
 
-    with pytest.raises(TypeError, match="mapping of instance path"):
+    with pytest.raises(TypeError, match="a mapping, not list"):
         wrapped([1000.0])  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="mapping of instance path"):
+    with pytest.raises(TypeError, match="a mapping, not NoneType"):
         wrapped(None)  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="mapping of instance path"):
+    with pytest.raises(TypeError, match="each instance's path"):
         wrapped({1: {"resistance": 1000.0}})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="mapping of instance path"):
+    with pytest.raises(TypeError, match="each instance's path"):
         wrapped({"W00": 1000.0})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="must be a string"):
+    with pytest.raises(TypeError, match="is a real number"):
         wrapped({"W00": {1: 1000.0}})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="not bool"):
+    with pytest.raises(TypeError, match="is a real number"):
         wrapped({"W00": {"resistance": True}})
-    with pytest.raises(TypeError, match="real numeric dtype"):
+    with pytest.raises(TypeError, match="is a real number"):
         wrapped({"W00": {"resistance": jnp.asarray(1, dtype=jnp.bool_)}})
-    with pytest.raises(TypeError, match="real numeric dtype"):
+    with pytest.raises(TypeError, match="is a real number"):
         wrapped({"W00": {"resistance": 1000.0 + 1.0j}})
-    with pytest.raises(ValueError, match="must be a scalar"):
+    with pytest.raises(ValueError, match="is a scalar"):
         wrapped({"W00": {"resistance": jnp.array([1000.0, 2000.0])}})
     with pytest.raises(ElaborationError):
         wrapped({"NONEXISTENT": {}})

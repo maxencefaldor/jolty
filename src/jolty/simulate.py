@@ -363,6 +363,38 @@ class Elaborated:
                     shared = cached
             return _core.Simulator.from_elaborated(shared, values)
 
+    def check(self, parameters: Mapping[str, Iterable[str]]) -> None:
+        """Checks that the circuit has each instance and number `parameters` names.
+
+        `parameters` holds each instance's path with its parameters' paths, the paths
+        overrides name. The engine reads each name to the number it
+        is and checks no value, so any value stands in for each.
+
+        Raises:
+            ElaborationError: With every instance the circuit lacks and every number its
+                devices do not write.
+        """
+        overrides = {
+            path: dict.fromkeys(names, 0.0) for path, names in parameters.items()
+        }
+        with _elaborating():
+            self._core.values(json.dumps(overrides, allow_nan=False), self._kelvins)
+
+    def variants(self, runs: Iterable[Parameters]) -> _core.Variants:
+        """The engine's variants of a batch of `runs`, each the numbers of one run.
+
+        Each run is at the circuit's temperature, its numbers in place of the circuit's.
+
+        Raises:
+            ElaborationError: With every number a run names that the circuit's
+                devices do not write.
+        """
+        listed: list[tuple[str, float | None]] = [
+            (json.dumps(run, allow_nan=False), self._kelvins) for run in runs
+        ]
+        with _elaborating():
+            return _core.Variants.explicit(self._core, listed)
+
 
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses.
@@ -2305,7 +2337,17 @@ class Function:
 
         Raises:
             ElaborationError: With every problem the engine finds in the circuit.
+            TypeError: When `analysis` is of a kind a function does not run.
         """
+        if not isinstance(
+            analysis, OperatingPoint | DcSweep | Ac | Transient | PeriodicSteadyState
+        ):
+            message = (
+                "a function runs an operating point, a DC sweep, a small-signal "
+                f"response, a transient or a periodic steady state, not "
+                f"{type(analysis).__name__}"
+            )
+            raise TypeError(message)
         self.elaborated = Elaborated(circuit_or_top)
         self.analysis = analysis
         self.options = Options() if options is None else options
@@ -2347,12 +2389,13 @@ class Function:
         found: Outputs = {
             name: rows[:, column] for column, (name, _) in enumerate(core.unknowns)
         }
-        if period is not None and self._oscillates():
+        if period is not None and self.oscillates:
             found[PERIOD] = float(period)
         return found
 
-    def _oscillates(self) -> bool:
-        """Whether its analysis is an oscillator's periodic steady state."""
+    @property
+    def oscillates(self) -> bool:
+        """Whether its analysis is an oscillator's, whose outputs hold its period."""
         analysis = self.analysis
         return isinstance(analysis, PeriodicSteadyState) and analysis.period is None
 
@@ -2399,7 +2442,7 @@ class Function:
         pushed: Outputs = {
             name: moved[:, column] for column, (name, _) in enumerate(core.unknowns)
         }
-        if (period := found["period"]) is not None and self._oscillates():
+        if (period := found["period"]) is not None and self.oscillates:
             pushed[PERIOD] = float(period[0])
         return outputs, pushed
 
@@ -2428,21 +2471,17 @@ class Function:
                     give.
                 SimulationError: When the pullback fails.
             """
-            shape = (points, len(columns))
-            values: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
-                np.zeros(shape, dtype=np.complex128) if phasors else np.zeros(shape)
+            values, period = _cotangents(
+                cotangent,
+                columns,
+                (points, len(columns)),
+                phasors=phasors,
+                oscillates=self.oscillates,
             )
-            period = 0.0
-            for name, given in cotangent.items():
-                if name == PERIOD and self._oscillates():
-                    period = float(np.asarray(given))
-                elif name in columns:
-                    values[:, columns[name]] = given
-                else:
-                    message = f"the function gives no output `{name}`"
-                    raise ValueError(message)
             try:
-                found = core.pull_back(pullback, values, period, settings, _engine())
+                found = core.pull_back(
+                    pullback, values, float(period), settings, _engine()
+                )
             except _core.SimulationError as error:
                 raise SimulationError(str(error)) from None
             pulled: Gradient = {}
@@ -2451,6 +2490,223 @@ class Function:
             return pulled
 
         return outputs, pull
+
+    @functools.cached_property
+    def unknowns(self) -> tuple[str, ...]:
+        """The names of the circuit's unknowns, its outputs, in the engine's order."""
+        return tuple(name for name, _ in self.elaborated.simulator().unknowns)
+
+    @property
+    def points(self) -> int:
+        """How many points each output of a run of a batch has.
+
+        An operating point's one, a DC sweep's levels, a response's frequencies, and a
+        transient's or a periodic steady state's breakpoints, none for an oscillator's.
+        """
+        return _points(self.analysis)
+
+    def batch(self, names: Sequence[tuple[str, str]], values: npt.ArrayLike) -> Outputs:
+        """The analysis's outputs on each run of a batch, each a row of runs by points.
+
+        The parameters `names`, each an instance's path and a parameter's path, take
+        the numbers of each row of `values`, a row of names by run, in SI base units;
+        each output has the analysis's [`points`][jolty.simulate.Function.points], at
+        a transient's breakpoints rather than its own times, and an oscillator's
+        period is a number per run under [`PERIOD`][jolty.simulate.PERIOD]. The engine
+        runs the batch across its threads, each run's bits the same however many
+        threads run it and however many runs run beside it; a call of the function
+        runs alone and may dissect its matrix, and so find other last digits.
+
+        Raises:
+            ValueError: When `values` is not a row of names by run.
+            ElaborationError: With the problems of the first run whose numbers make
+                some.
+            SimulationError: Naming the first run whose analysis fails.
+        """
+        outputs, _ = self._batched(names, values, [])
+        return outputs
+
+    def batch_vjp(
+        self, names: Sequence[tuple[str, str]], values: npt.ArrayLike
+    ) -> tuple[Outputs, BatchPullback]:
+        """The outputs of a [`batch`][jolty.simulate.Function.batch], and its pullback.
+
+        As [`vjp`][jolty.simulate.vjp] for each run: the pullback takes a cotangent on
+        each run's outputs and gives its value on each parameter of `names`, by the
+        adjoint method, one transposed solve at each point of a run however many the
+        parameters, the runs' pullbacks spread across the engine's threads.
+
+        Raises:
+            ValueError: When `values` is not a row of names by run.
+            ElaborationError: With the problems of the first run whose numbers make
+                some.
+            SimulationError: Naming the first run whose analysis fails.
+        """
+        outputs, core = self._batched(names, values, list(names))
+        pullback = BatchPullback(
+            core,
+            self.unknowns,
+            self.points,
+            phasors=isinstance(self.analysis, Ac),
+            oscillates=self.oscillates,
+            settings=self._settings(),
+        )
+        return outputs, pullback
+
+    def _batched(
+        self,
+        names: Sequence[tuple[str, str]],
+        values: npt.ArrayLike,
+        parameters: list[tuple[str, str]],
+    ) -> tuple[Outputs, _core.BatchPullback]:
+        """The outputs of a batch at `values` of `names`, and the engine's pullback.
+
+        The pullback is with respect to `parameters`, none for a batch without one.
+
+        Raises:
+            ValueError: When `values` is not a row of names by run.
+            ElaborationError: With the problems of the first run whose numbers make
+                some.
+            SimulationError: Naming the first run whose analysis fails.
+        """
+        rows = np.asarray(values, dtype=np.float64)
+        if rows.ndim != 2 or rows.shape[1] != len(names):  # noqa: PLR2004 - a matrix
+            message = f"values are a row of {len(names)} names by run, not {rows.shape}"
+            raise ValueError(message)
+        runs: list[dict[str, dict[str, float]]] = []
+        for row in rows.tolist():
+            run: dict[str, dict[str, float]] = {}
+            for (path, name), value in zip(names, row, strict=True):
+                run.setdefault(path, {})[name] = value
+            runs.append(run)
+        variants = self.elaborated.variants(runs)
+        base = self.elaborated.simulator()
+        columns = list(range(len(base.unknowns)))
+        try:
+            found, pullback = base.batch_vjp(
+                self._encoded(),
+                self._settings(),
+                parameters,
+                variants,
+                (0, len(runs)),
+                columns,
+                _engine(),
+            )
+        except _core.SimulationError as error:
+            raise SimulationError(str(error)) from None
+        if found["problems"]:
+            problems = found["problems"][min(found["problems"])]
+            raise ElaborationError([checks.problem(each) for each in problems])
+        if found["errors"]:
+            first = min(found["errors"])
+            message = f"batch run {first}: {found['errors'][first]}"
+            raise SimulationError(message)
+        traces = found["traces"]
+        outputs: Outputs = {
+            name: traces[:, :, column] for column, name in enumerate(self.unknowns)
+        }
+        if self.oscillates:
+            outputs[PERIOD] = found["periods"]
+        return outputs, pullback
+
+
+class BatchPullback:
+    """The pullback of a [`batch`][jolty.simulate.Function.batch], a run each.
+
+    [`Function.batch_vjp`][jolty.simulate.Function.batch_vjp] gives it; called with a
+    cotangent on the batch's outputs, it gives each row's value on each parameter.
+    """
+
+    def __init__(  # noqa: PLR0913 - what a batch's pullback reads of its function
+        self,
+        core: _core.BatchPullback,
+        unknowns: Sequence[str],
+        points: int,
+        *,
+        phasors: bool,
+        oscillates: bool,
+        settings: str,
+    ) -> None:
+        """The pullback `core` of a batch of a function of `unknowns` at `points`.
+
+        Its cotangents are complex where `phasors`, and take an oscillator's period
+        where `oscillates`; it pulls them back with the options `settings` names.
+        """
+        self._core = core
+        self._columns = {name: column for column, name in enumerate(unknowns)}
+        self._points = points
+        self._phasors = phasors
+        self._oscillates = oscillates
+        self._settings = settings
+
+    def __call__(
+        self, cotangent: Mapping[str, npt.ArrayLike], runs: npt.ArrayLike | None = None
+    ) -> npt.NDArray[np.float64] | npt.NDArray[np.complex128]:
+        """Each row's value of `cotangent` on each parameter, by row then parameter.
+
+        `cotangent` gives each output's, by its name, by row then point, those it
+        leaves out zero, and an oscillator's period's, a number per row, under
+        [`PERIOD`][jolty.simulate.PERIOD]; row `i` is on the batch's run at `runs[i]`,
+        each run in order without `runs`, a run named by any number of rows. Over
+        frequency, the cotangents and their values are complex, as for
+        [`vjp`][jolty.simulate.vjp].
+
+        Raises:
+            ValueError: When the cotangent names an output the function does not give.
+            SimulationError: When a run failed, a cotangent moves an unknown its run's
+                structure dropped, or a pullback fails.
+        """
+        rows = np.atleast_1d(
+            np.arange(self._core.runs) if runs is None else np.asarray(runs, np.intp)
+        )
+        values, periods = _cotangents(
+            cotangent,
+            self._columns,
+            (len(rows), self._points, len(self._columns)),
+            phasors=self._phasors,
+            oscillates=self._oscillates,
+        )
+        try:
+            return self._core.pull_back(
+                rows.tolist(), values, periods.tolist(), self._settings, _engine()
+            )
+        except _core.SimulationError as error:
+            raise SimulationError(str(error)) from None
+
+
+def _cotangents(
+    cotangent: Mapping[str, npt.ArrayLike],
+    columns: Mapping[str, int],
+    shape: tuple[int, ...],
+    *,
+    phasors: bool,
+    oscillates: bool,
+) -> tuple[
+    npt.NDArray[np.float64] | npt.NDArray[np.complex128], npt.NDArray[np.float64]
+]:
+    """The values `cotangent` gives the unknowns at `columns`, and the periods.
+
+    The values have `shape`, its last axis the unknowns' and the one before it the
+    points', complex where `phasors`; the periods have the axes before them and take
+    an oscillator's under [`PERIOD`][jolty.simulate.PERIOD] where `oscillates`. What
+    the cotangent leaves out is zero.
+
+    Raises:
+        ValueError: When the cotangent names an output the function does not give.
+    """
+    values: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+        np.zeros(shape, np.complex128) if phasors else np.zeros(shape)
+    )
+    periods = np.zeros(shape[:-2])
+    for name, given in cotangent.items():
+        if name == PERIOD and oscillates:
+            periods[...] = np.asarray(given, dtype=np.float64)
+        elif name in columns:
+            values[..., columns[name]] = given
+        else:
+            message = f"the function gives no output `{name}`"
+            raise ValueError(message)
+    return values, periods
 
 
 def _values(

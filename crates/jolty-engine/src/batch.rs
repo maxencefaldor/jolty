@@ -100,10 +100,7 @@ impl Run {
     /// the same name on another; none when the run's circuit has no unknown of that name.
     #[must_use]
     pub fn column(&self, unknown: usize) -> Option<usize> {
-        match &self.structure {
-            None => Some(unknown),
-            Some(structure) => structure.column(unknown),
-        }
+        column(self.structure.as_deref(), unknown)
     }
 
     /// Whether the run failed: its values made problems, or an analysis failed.
@@ -132,6 +129,68 @@ impl Run {
             .collect();
         (!failures.is_empty()).then(|| failures.join("; "))
     }
+}
+
+/// What [`Batch::map`] found of one run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mapped<T> {
+    /// The values the run ran at.
+    pub values: Values,
+    /// The circuit the run ran on, when its values gave the batch's circuit another
+    /// structure; none when they did not, or made problems.
+    pub structure: Option<Arc<Restructured>>,
+    /// What the work found of the run, or the problems its values make.
+    pub found: Result<T, ElaborationError>,
+}
+
+impl<T> Mapped<T> {
+    /// The index among the run's own unknowns of the batch circuit's unknown at
+    /// `unknown`, as [`Run::column`] gives it.
+    #[must_use]
+    pub fn column(&self, unknown: usize) -> Option<usize> {
+        column(self.structure.as_deref(), unknown)
+    }
+}
+
+/// The index among the unknowns of a run on `structure`, or on the batch's own circuit with
+/// none, of the batch circuit's unknown at `unknown`.
+fn column(structure: Option<&Restructured>, unknown: usize) -> Option<usize> {
+    match structure {
+        None => Some(unknown),
+        Some(structure) => structure.column(unknown),
+    }
+}
+
+/// Checks that `range` lies within `variants`.
+///
+/// # Errors
+///
+/// Returns [`BatchError::Range`] when it does not.
+fn within(variants: &dyn Variants, range: &Range<u64>) -> Result<(), BatchError> {
+    let len = variants.len();
+    if range.start > range.end || range.end > len {
+        return Err(BatchError::Range {
+            start: range.start,
+            end: range.end,
+            len,
+        });
+    }
+    Ok(())
+}
+
+/// `options` as a run among `runs` of a batch takes them: on one thread when the runs fill
+/// every thread of the pool, and ordering its matrix by the minimum degree unless the
+/// options set the interiors of a dissection, whose default depends on the threads a run
+/// takes, so that every run finds the same bits however many threads the pool has and
+/// however the runs split into ranges.
+fn batched(options: &Options, runs: u64) -> Options {
+    let mut options = options.clone();
+    if runs >= rayon::current_num_threads() as u64 {
+        options.parallelism.max_threads = Some(1);
+    }
+    let interiors = &mut options.parallelism.max_unknowns_per_interior;
+    *interiors = interiors.or(Some(usize::MAX));
+    options
 }
 
 /// Why a measure of a run read no number.
@@ -383,31 +442,15 @@ impl Batch {
         range: Range<u64>,
         sink: &dyn Sink,
     ) -> Result<Summary, BatchError> {
-        let len = variants.len();
-        if range.start > range.end || range.end > len {
-            return Err(BatchError::Range {
-                start: range.start,
-                end: range.end,
-                len,
-            });
-        }
+        within(variants, &range)?;
         let measures = self.measures.len();
         if range.is_empty() {
             return Ok(Summary::empty(measures));
         }
-        let threads = rayon::current_num_threads() as u64;
         let options: Vec<Options> = self
             .analyses
             .iter()
-            .map(|(_, options)| {
-                let mut options = options.clone();
-                if range.end - range.start >= threads {
-                    options.parallelism.max_threads = Some(1);
-                }
-                let interiors = &mut options.parallelism.max_unknowns_per_interior;
-                *interiors = interiors.or(Some(usize::MAX));
-                options
-            })
+            .map(|(_, options)| batched(options, range.end - range.start))
             .collect();
         let chain = variants.chain().max(1);
         let chains = range.start / chain..range.end.div_ceil(chain);
@@ -430,6 +473,62 @@ impl Batch {
             })
             .reduce(|| Summary::empty(measures), Summary::merge);
         Ok(summary)
+    }
+
+    /// What `work` finds of each run of `range` of `variants`, in the order of the runs,
+    /// on the threads of the rayon pool it is called in: each run readied as
+    /// [`Batch::run`] readies it, in chains, on the circuit of its structure, and handed
+    /// to `work` with its index and with `options` as a run of `range` takes them, so that
+    /// what it finds is the same however many threads run it. A run whose values make
+    /// problems finds them instead.
+    ///
+    /// It is how a batch runs what its analyses do not say, such as a derivative of each
+    /// run, or a pullback of a cotangent on each.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BatchError::Range`] when the range does not lie within the variants.
+    pub fn map<T: Send>(
+        &self,
+        variants: &dyn Variants,
+        range: Range<u64>,
+        options: &Options,
+        work: &(dyn Fn(u64, &mut Simulator, &Options) -> T + Sync),
+    ) -> Result<Vec<Mapped<T>>, BatchError> {
+        within(variants, &range)?;
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+        let options = batched(options, range.end - range.start);
+        let chain = variants.chain().max(1);
+        let chains = range.start / chain..range.end.div_ceil(chain);
+        let mapped: Vec<Vec<Mapped<T>>> = chains
+            .into_par_iter()
+            .map_init(Worker::default, |worker, chained| {
+                let first = chained * chain;
+                let mut found = Vec::new();
+                let mut warm = false;
+                for index in first..(first + chain).min(range.end) {
+                    let values = variants.values(index);
+                    let (structure, done) = match self.ready(worker, &values, warm) {
+                        Ok((simulator, structure)) => {
+                            (structure, Ok(work(index, simulator, &options)))
+                        }
+                        Err(problems) => (None, Err(problems)),
+                    };
+                    warm = done.is_ok();
+                    if range.contains(&index) {
+                        found.push(Mapped {
+                            values,
+                            structure,
+                            found: done,
+                        });
+                    }
+                }
+                found
+            })
+            .collect();
+        Ok(mapped.into_iter().flatten().collect())
     }
 
     /// The outcome of one run at `values`, on a state `worker` keeps; `warm` when it starts

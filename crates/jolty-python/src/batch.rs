@@ -13,10 +13,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use jolty_engine::batch::{Batch, Measured, Run, Sink, Unmeasured, Variants as _};
+use jolty_engine::batch::{Batch, Mapped, Measured, Run, Sink, Unmeasured, Variants as _};
 use jolty_engine::measure::MeasureError;
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced};
-use jolty_engine::{Analysis, ElaborationError, Options, ParameterId, Values};
+use jolty_engine::{
+    Analysis, Cotangent, Cotangents, Differentiated, ElaborationError, Options,
+    ParameterCotangents, ParameterId, Values,
+};
 use numpy::{Complex64, PyArray1, PyArrayMethods, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -397,6 +400,18 @@ struct Traced {
     points: Points,
 }
 
+impl Traced {
+    /// How many values it traces of a run: its unknowns at each of its points.
+    fn len(&self) -> usize {
+        self.points.len() * self.unknowns.len()
+    }
+
+    /// The values it traces of a run that found none: not a number, each.
+    fn missing(&self) -> Vec<Complex64> {
+        vec![Complex64::new(f64::NAN, f64::NAN); self.len()]
+    }
+}
+
 /// The buffer of a traced analysis: runs × points × unknowns, real or complex.
 enum Buffer<'a> {
     Real(&'a mut [f64]),
@@ -588,7 +603,7 @@ impl Sink for Columns<'_> {
             }
             for ((buffer, traces), found) in written.traces.iter_mut().zip(self.traces).zip(traces)
             {
-                let stride = traces.points.len() * traces.unknowns.len();
+                let stride = traces.len();
                 let range = row * stride..(row + 1) * stride;
                 match buffer {
                     Buffer::Real(buffer) => {
@@ -615,15 +630,25 @@ impl Sink for Columns<'_> {
 /// first, as complex numbers: not a number where the run did not end its analysis or has
 /// no such unknown.
 fn trace(outcome: &Run, traces: &Traced) -> Vec<Complex64> {
-    let missing = Complex64::new(f64::NAN, f64::NAN);
-    let mut found = vec![missing; traces.points.len() * traces.unknowns.len()];
-    let Some(Ok(result)) = outcome.results.get(traces.analysis) else {
-        return found;
-    };
+    match outcome.results.get(traces.analysis) {
+        Some(Ok(result)) => trace_result(result, |unknown| outcome.column(unknown), traces),
+        _ => traces.missing(),
+    }
+}
+
+/// The values of the unknowns `traces` names at each of its points in `result`, points
+/// first, as complex numbers, each read at `column` of the batch circuit's unknown: not a
+/// number where the run has no such unknown.
+fn trace_result(
+    result: &jolty_engine::AnalysisResult,
+    column: impl Fn(usize) -> Option<usize>,
+    traces: &Traced,
+) -> Vec<Complex64> {
+    let mut found = traces.missing();
     let columns: Vec<Option<usize>> = traces
         .unknowns
         .iter()
-        .map(|&unknown| outcome.column(unknown))
+        .map(|&unknown| column(unknown))
         .collect();
     let mut put = |point: usize, row: &dyn Fn(usize) -> Option<Complex64>| {
         for (place, column) in columns.iter().enumerate() {
@@ -665,20 +690,39 @@ fn trace(outcome: &Run, traces: &Traced) -> Vec<Complex64> {
     found
 }
 
+/// Where `time` lies among the accepted `times`: at one of them, or between two, the
+/// fraction of the way from the first to the second; none outside them.
+enum Located {
+    At(usize),
+    Between(usize, usize, f64),
+}
+
+/// Where `time` lies among the accepted `times`, as [`Located`] says.
+fn located(times: &[f64], time: f64) -> Option<Located> {
+    match times.binary_search_by(|accepted| accepted.total_cmp(&time)) {
+        Ok(found) => Some(Located::At(found)),
+        Err(after) => {
+            let before = after.checked_sub(1)?;
+            let (start, stop) = (*times.get(before)?, *times.get(after)?);
+            Some(Located::Between(
+                before,
+                after,
+                (time - start) / (stop - start),
+            ))
+        }
+    }
+}
+
 /// The value of the unknown at `column` at `time`: its value at a time accepted there, and
 /// else interpolated linearly between the accepted times on either side; none outside
 /// them.
 fn at(times: &[f64], values: &[Vec<f64>], column: usize, time: f64) -> Option<f64> {
-    match times.binary_search_by(|accepted| accepted.total_cmp(&time)) {
-        Ok(found) => values.get(found)?.get(column).copied(),
-        Err(after) => {
-            let before = after.checked_sub(1)?;
-            let (start, stop) = (*times.get(before)?, *times.get(after)?);
-            let (low, high) = (
-                *values.get(before)?.get(column)?,
-                *values.get(after)?.get(column)?,
-            );
-            Some(low + (high - low) * ((time - start) / (stop - start)))
+    match located(times, time)? {
+        Located::At(found) => values.get(found)?.get(column).copied(),
+        Located::Between(before, after, fraction) => {
+            let low = *values.get(before)?.get(column)?;
+            let high = *values.get(after)?.get(column)?;
+            Some(low + (high - low) * fraction)
         }
     }
 }
@@ -791,7 +835,7 @@ impl<'py> Arrays<'py> {
             .traces
             .iter()
             .map(|traces| {
-                let len = runs * traces.points.len() * traces.unknowns.len();
+                let len = runs * traces.len();
                 if matches!(traces.points, Points::Frequencies(_)) {
                     Traces::Complex(filled(py, len, Complex64::new(f64::NAN, f64::NAN)))
                 } else {
@@ -1022,4 +1066,447 @@ fn canonical(causes: &mut [i32], reasons: &[Cause]) -> Vec<Cause> {
         *cell = new;
     }
     ordered
+}
+
+/// A batch's VJP as Python asks for it: the analysis differentiated and its options, as
+/// JSON texts, the parameters it differentiates with respect to, each its instance's path
+/// and its name, the runs it runs, by their indices among the variants', and the unknowns
+/// it traces, by their indices among the batch circuit's.
+pub(crate) struct Differentiating {
+    pub(crate) analysis: String,
+    pub(crate) options: String,
+    pub(crate) parameters: Vec<(String, String)>,
+    pub(crate) runs: Range<u64>,
+    pub(crate) unknowns: Vec<usize>,
+}
+
+/// What a run of a batch's VJP found: its pullback, or why its analysis failed.
+type Derived = Mapped<Result<jolty_engine::Pullback, jolty_engine::SimulationError>>;
+
+/// The pullbacks of a batch's VJP, a run each, as `jolty._core.Simulator.batch_vjp` finds
+/// them: what carries a cotangent on each run's traced unknowns back to the parameters.
+#[pyclass(module = "jolty._core", frozen)]
+pub(crate) struct BatchPullback {
+    batch: Batch,
+    traced: Traced,
+    /// The batch circuit's unknowns, by name, which a cotangent's messages name.
+    names: Vec<String>,
+    parameters: usize,
+    runs: Vec<Derived>,
+}
+
+/// The VJP of every run `request` asks for of `elaborated` at `base`, as
+/// `jolty._core.Simulator.batch_vjp` returns it: what the runs found, as [`outcomes`]
+/// gives it, and their pullbacks.
+pub(crate) fn vjp<'py>(
+    py: Python<'py>,
+    (elaborated, base): (&Arc<jolty_engine::Elaborated>, &Values),
+    variants: &Variants,
+    request: Differentiating,
+    pool: &Pool,
+) -> PyResult<(Bound<'py, PyDict>, BatchPullback)> {
+    if !Arc::ptr_eq(elaborated, &variants.elaborated) {
+        return Err(PyValueError::new_err(
+            "the variants vary another elaborated circuit than the simulator's",
+        ));
+    }
+    let analysis: Analysis =
+        serde_json::from_str(&request.analysis).map_err(|error| unreadable(&error))?;
+    let differentiated: Differentiated =
+        serde_json::from_str(&request.analysis).map_err(|error| unreadable(&error))?;
+    let options: Options =
+        serde_json::from_str(&request.options).map_err(|error| unreadable(&error))?;
+    let traced = Traced {
+        analysis: 0,
+        unknowns: request.unknowns,
+        points: Points::from_analysis(&analysis)?,
+    };
+    let names: Vec<String> = elaborated
+        .unknowns()
+        .iter()
+        .map(|unknown| unknown.name.clone())
+        .collect();
+    if let Some(unknown) = traced
+        .unknowns
+        .iter()
+        .find(|&&unknown| unknown >= names.len())
+    {
+        return Err(PyValueError::new_err(format!(
+            "the circuit has {} unknowns, not one at {unknown}",
+            names.len()
+        )));
+    }
+    let based = Based {
+        base,
+        varied: &variants.varied,
+    };
+    let batch = Batch::new(Arc::clone(elaborated), Vec::new(), Vec::new())
+        .map_err(|error| unreadable(&error))?;
+    let parameters = request.parameters;
+    let runs = py
+        .detach(|| {
+            pool.inner.install(|| {
+                batch.map(
+                    &based,
+                    request.runs.clone(),
+                    &options,
+                    &|_, simulator, options| simulator.vjp(&differentiated, &parameters, options),
+                )
+            })
+        })
+        .map_err(|error| unreadable(&error))?;
+    let found = outcomes(py, &runs, &traced)?;
+    let pullback = BatchPullback {
+        batch,
+        traced,
+        names,
+        parameters: parameters.len(),
+        runs,
+    };
+    Ok((found, pullback))
+}
+
+/// What the runs `runs` of a batch's VJP found, as `jolty._core.Simulator.batch_vjp`
+/// returns it: the `traces` `traced` names, runs × points × unknowns, each oscillator's
+/// `periods`, not a number for another analysis or a failed run, the `problems` by row
+/// and the `errors` by row.
+fn outcomes<'py>(
+    py: Python<'py>,
+    runs: &[Derived],
+    traced: &Traced,
+) -> PyResult<Bound<'py, PyDict>> {
+    let found = PyDict::new(py);
+    let complex = matches!(traced.points, Points::Frequencies(_));
+    let mut real_traces = Vec::new();
+    let mut complex_traces = Vec::new();
+    let mut periods = vec![f64::NAN; runs.len()];
+    let problems = PyDict::new(py);
+    let errors = PyDict::new(py);
+    for (row, run) in runs.iter().enumerate() {
+        let values = match &run.found {
+            Ok(Ok(pullback)) => {
+                if let jolty_engine::AnalysisResult::PeriodicSteadyState(steady) = &pullback.result
+                {
+                    periods[row] = steady.period;
+                }
+                trace_result(&pullback.result, |unknown| run.column(unknown), traced)
+            }
+            Ok(Err(error)) => {
+                errors.set_item(row, error.to_string())?;
+                traced.missing()
+            }
+            Err(error) => {
+                problems.set_item(row, crate::problems_to_python(py, error)?)?;
+                traced.missing()
+            }
+        };
+        if complex {
+            complex_traces.extend(values);
+        } else {
+            real_traces.extend(values.iter().map(|value| value.re));
+        }
+    }
+    let shape = [runs.len(), traced.points.len(), traced.unknowns.len()];
+    if complex {
+        found.set_item(
+            "traces",
+            PyArray1::from_vec(py, complex_traces).reshape(shape)?,
+        )?;
+    } else {
+        found.set_item(
+            "traces",
+            PyArray1::from_vec(py, real_traces).reshape(shape)?,
+        )?;
+    }
+    found.set_item("periods", PyArray1::from_vec(py, periods))?;
+    found.set_item("problems", problems)?;
+    found.set_item("errors", errors)?;
+    Ok(found)
+}
+
+/// A number a cotangent is made of: a real number on values, a complex one on phasors.
+trait Cotangential:
+    Copy
+    + Default
+    + PartialEq
+    + Send
+    + Sync
+    + std::ops::AddAssign
+    + std::ops::Mul<f64, Output = Self>
+    + numpy::Element
+{
+    /// The cotangents of `each`, of this kind of number.
+    fn cotangents(each: Vec<Cotangent<Self>>) -> Cotangents;
+
+    /// Whether the number is not a number, which moves a loss as much as any other.
+    fn is_nan(self) -> bool;
+}
+
+impl Cotangential for f64 {
+    fn cotangents(each: Vec<Cotangent<Self>>) -> Cotangents {
+        Cotangents::Real(each)
+    }
+
+    fn is_nan(self) -> bool {
+        f64::is_nan(self)
+    }
+}
+
+impl Cotangential for Complex64 {
+    fn cotangents(each: Vec<Cotangent<Self>>) -> Cotangents {
+        Cotangents::Complex(each)
+    }
+
+    fn is_nan(self) -> bool {
+        Complex64::is_nan(self)
+    }
+}
+
+/// A batch's pull back as Python asks for it: the runs, a row each, any run named by any
+/// number of rows, and each row's cotangents, on the traced unknowns, by point then
+/// unknown, and on the run's period.
+struct Pulling<'py, T: Cotangential> {
+    runs: Vec<usize>,
+    values: numpy::PyReadonlyArray3<'py, T>,
+    periods: Vec<f64>,
+}
+
+/// What a run's pullback finds of a cotangent: its value on each parameter.
+type Pulled = Result<Vec<Complex64>, String>;
+
+#[pymethods]
+impl BatchPullback {
+    /// How many runs the batch ran, a pullback each.
+    #[getter]
+    fn runs(&self) -> usize {
+        self.runs.len()
+    }
+
+    /// The value on each parameter of each cotangent of `values`, runs × points × unknowns,
+    /// on the unknowns traced at each point of the run at `runs` of the same row, as the
+    /// traces hold them, real or complex, and of the row of `periods` on an oscillator's
+    /// period, with the options whose JSON text is `options`: rows × parameters, complex
+    /// over frequency, each row pulled back on the threads of `pool`, the interpreter
+    /// released, as a batch runs its runs. A row may name a run more than once.
+    ///
+    /// Raises `ValueError` for cotangents of another shape, and `SimulationError` for a
+    /// run that failed, a cotangent on an unknown its run does not have, or a pullback
+    /// that fails.
+    fn pull_back<'py>(
+        &self,
+        py: Python<'py>,
+        runs: Vec<usize>,
+        values: &Bound<'py, PyAny>,
+        periods: Vec<f64>,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
+        if let Ok(real) = values.extract::<numpy::PyReadonlyArray3<'py, f64>>() {
+            let pulling = Pulling {
+                runs,
+                values: real,
+                periods,
+            };
+            self.pulled(py, &pulling, &options, pool)
+        } else {
+            let pulling = Pulling {
+                runs,
+                values: values.extract::<numpy::PyReadonlyArray3<'py, Complex64>>()?,
+                periods,
+            };
+            self.pulled(py, &pulling, &options, pool)
+        }
+    }
+}
+
+impl BatchPullback {
+    /// The rows `pull_back` finds of `pulling`.
+    fn pulled<'py, T: Cotangential>(
+        &self,
+        py: Python<'py>,
+        pulling: &Pulling<'py, T>,
+        options: &Options,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let Pulling {
+            runs,
+            values,
+            periods,
+        } = pulling;
+        let given = values.as_array();
+        let expected = [
+            runs.len(),
+            self.traced.points.len(),
+            self.traced.unknowns.len(),
+        ];
+        if given.shape() != expected || periods.len() != runs.len() {
+            return Err(PyValueError::new_err(format!(
+                "cotangents are runs × points × unknowns, {expected:?}, with a period each, \
+                 not {:?} with {} periods",
+                given.shape(),
+                periods.len()
+            )));
+        }
+        for &run in runs {
+            let Some(derived) = self.runs.get(run) else {
+                return Err(PyValueError::new_err(format!(
+                    "the batch ran {} runs, not one at {run}",
+                    self.runs.len()
+                )));
+            };
+            succeeded(run, derived.found.as_ref().map(Result::as_ref))?;
+        }
+        let rows: Vec<Vec<T>> = given
+            .outer_iter()
+            .map(|row| row.iter().copied().collect())
+            .collect();
+        let selected = Selected {
+            values: runs
+                .iter()
+                .map(|&run| self.runs[run].values.clone())
+                .collect(),
+        };
+        let found = py.detach(|| {
+            pool.inner.install(|| {
+                self.batch.map(
+                    &selected,
+                    0..selected.values.len() as u64,
+                    options,
+                    &|index, simulator, options| -> Pulled {
+                        let row = usize::try_from(index).map_err(|error| error.to_string())?;
+                        let derived = &self.runs[runs[row]];
+                        let Ok(Ok(pullback)) = &derived.found else {
+                            return Err(format!("batch run {} has no pullback", runs[row]));
+                        };
+                        let width = simulator.unknowns().len();
+                        let cotangent =
+                            self.cotangent(derived, pullback, &rows[row], periods[row], width)?;
+                        let pulled = simulator
+                            .pull_back(pullback, &T::cotangents(vec![cotangent]), options)
+                            .map_err(|error| error.to_string())?;
+                        Ok(match pulled {
+                            ParameterCotangents::Real(mut found) => found
+                                .pop()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(Complex64::from)
+                                .collect(),
+                            ParameterCotangents::Complex(mut found) => {
+                                found.pop().unwrap_or_default()
+                            }
+                        })
+                    },
+                )
+            })
+        });
+        let found = found.map_err(|error| unreadable(&error))?;
+        let mut pulled = Vec::with_capacity(runs.len() * self.parameters);
+        for (&run, mapped) in runs.iter().zip(found) {
+            pulled.extend(succeeded(run, mapped.found)?);
+        }
+        let shape = [runs.len(), self.parameters];
+        if matches!(self.traced.points, Points::Frequencies(_)) {
+            Ok(PyArray1::from_vec(py, pulled).reshape(shape)?.into_any())
+        } else {
+            let real: Vec<f64> = pulled.iter().map(|value| value.re).collect();
+            Ok(PyArray1::from_vec(py, real).reshape(shape)?.into_any())
+        }
+    }
+
+    /// The cotangent on the run `derived`, whose `pullback` it pulls back, of `values`, on
+    /// the traced unknowns at each traced point, by point then unknown, and `period`: on
+    /// each of the run's `width` unknowns at each of its own points, a transient's values
+    /// at each traced time carried back onto the times either side of it as `at` reads
+    /// them, the transpose of its interpolation.
+    fn cotangent<T: Cotangential>(
+        &self,
+        derived: &Derived,
+        pullback: &jolty_engine::Pullback,
+        values: &[T],
+        period: f64,
+        width: usize,
+    ) -> Result<Cotangent<T>, String> {
+        let unknowns = &self.traced.unknowns;
+        let mut points: BTreeMap<usize, Vec<T>> = BTreeMap::new();
+        let mut add = |point: usize, column: usize, value: T| {
+            points
+                .entry(point)
+                .or_insert_with(|| vec![T::default(); width])[column] += value;
+        };
+        let times = match &pullback.result {
+            jolty_engine::AnalysisResult::Transient(waveforms)
+            | jolty_engine::AnalysisResult::PeriodicSteadyState(
+                jolty_engine::PeriodicSteadyStateResult { waveforms, .. },
+            ) => Some(waveforms.times.as_slice()),
+            _ => None,
+        };
+        for (point, row) in values.chunks(unknowns.len().max(1)).enumerate() {
+            for (&unknown, &value) in unknowns.iter().zip(row) {
+                if value == T::default() && !value.is_nan() {
+                    continue;
+                }
+                let Some(column) = derived.column(unknown) else {
+                    return Err(format!(
+                        "the run has no unknown `{}`, which a cotangent moves",
+                        self.names[unknown]
+                    ));
+                };
+                match (&self.traced.points, times) {
+                    (Points::Times(traced), Some(times)) => match located(times, traced[point]) {
+                        Some(Located::At(found)) => add(found, column, value),
+                        Some(Located::Between(before, after, fraction)) => {
+                            add(before, column, value * (1.0 - fraction));
+                            add(after, column, value * fraction);
+                        }
+                        None => {
+                            return Err(format!(
+                                "the time {} lies outside the run's times",
+                                traced[point]
+                            ));
+                        }
+                    },
+                    _ => add(point, column, value),
+                }
+            }
+        }
+        points.retain(|_, row| row.iter().any(|value| *value != T::default()));
+        Ok(Cotangent { points, period })
+    }
+}
+
+/// What the batch's run at `run` found, or, as a `SimulationError` naming it, why it
+/// failed: its numbers' problems or its analysis's error.
+fn succeeded<T, E: std::fmt::Display>(
+    run: usize,
+    found: Result<Result<T, E>, impl std::fmt::Display>,
+) -> PyResult<T> {
+    let error = match found {
+        Ok(Ok(value)) => return Ok(value),
+        Ok(Err(error)) => error.to_string(),
+        Err(error) => error.to_string(),
+    };
+    Err(crate::SimulationError::new_err(format!(
+        "batch run {run}: {error}"
+    )))
+}
+
+/// The values of runs a pullback carries cotangents back on, a run each, in the order of
+/// the rows.
+struct Selected {
+    values: Vec<Values>,
+}
+
+impl jolty_engine::batch::Variants for Selected {
+    fn len(&self) -> u64 {
+        self.values.len() as u64
+    }
+
+    fn values(&self, index: u64) -> Values {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.values.get(index))
+            .cloned()
+            .unwrap_or_default()
+    }
 }

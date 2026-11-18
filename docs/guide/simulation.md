@@ -172,7 +172,8 @@ gradient = pullback({name: 2 * distance for name, distance in distances.items()}
 The loss here is the sum of the squares of each output's distance to its target, so its cotangent is twice each distance; `gradient["W00"]["resistance"]` is the loss's derivative with respect to that weight, per ohm, and every weight's together cost one transposed solve.
 Over frequency, cotangents and their values are complex, `vᵀ dx/dp`; a real loss of the phasors `a + jb` takes the real part of the pullback of `∂L/∂a − j ∂L/∂b`.
 
-With the optional `jax` extra (`pip install 'jolty[jax]'`), `jolty.jax.function` exposes the same dict-to-dict map as a `jax.custom_vjp` callable that works inside `jax.jit`, `jax.grad`, `jax.vjp`, `jax.remat` and `jax.vmap` (dispatching `vmap` into one multi-threaded engine batch):
+A batch of runs of the function, `f.batch(names, values)`, runs a row of `values` of the parameters `names` on each run, across the engine's threads, and `f.batch_vjp(names, values)` gives the batch's outputs and a pullback that pulls each run's cotangent back, as a batch too.
+With the optional `jax` extra (`pip install 'jolty[jax]'`), `jolty.jax.function` exposes the same dict-to-dict map as a `jax.custom_vjp` callable that works inside `jax.jit`, `jax.grad`, `jax.vjp`, `jax.remat` and `jax.vmap`, each call one batch forward and one backward, however `vmap` maps it:
 
 ```python
 import jax
@@ -199,9 +200,9 @@ jax_gradient = jax.jit(jax.grad(loss))(
 )
 ```
 
-Transients and driven periodic steady states require explicit `breakpoints` so the output array has a fixed static shape.
-Autonomous oscillators return only `{PERIOD: scalar}` (`jolty.jax.PERIOD`), with no waveform arrays (unlike `jolty.function`).
-Because the custom VJP saves only the parameter vector across the callback boundary, every reverse-mode pullback (`value_and_grad`, `jax.grad`, `jax.vjp`, `jax.jacrev`) re-runs the forward simulation from scratch (2× forward cost for one pullback, `(k + 1)×` for `k` pullbacks).
+A batch reads a transient's outputs at its `breakpoints`, which a transient or a driven periodic steady state then needs, so that every output has a fixed shape; an oscillator's outputs hold no point, and its period is under `jolty.jax.PERIOD`.
+A mapped call finds, row by row, the bits of an unmapped one; a batch's runs dissect no matrix unless the options set the interiors, and a call of `jolty.function` alone may, so the two can differ in the last digits.
+A derivative's forward pass keeps its runs' pullbacks for its backward pass, those of the latest `saved_pullbacks` forward passes (16 unless set), so `jax.grad` and `jax.value_and_grad` run the circuit once; a backward pass whose pullbacks were dropped runs its forward pass again, which finds the same bits.
 Only first-order reverse-mode differentiation is supported (`jax.jvp`, `jax.grad(jax.grad(...))` and `jax.hessian` are refused).
 
 The derivatives are exact, both directions of one computation.

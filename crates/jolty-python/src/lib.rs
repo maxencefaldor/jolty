@@ -360,6 +360,49 @@ impl Simulator {
         batch::run(py, (&elaborated, &base), variants, request, pool)
     }
 
+    /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
+    /// it, with the options whose JSON text is `options`, with respect to `parameters`,
+    /// each its instance's path and its name, on each of the runs `runs` of the circuit at
+    /// the simulator's values with those of the run's variant of `variants` in their place,
+    /// each a pure function of its index, on the threads of `pool`, the interpreter
+    /// released, as `batch` runs them: a dictionary of the `traces` of the unknowns at
+    /// `unknowns`, by their indices, runs × points × unknowns, as `batch` traces them, each
+    /// oscillator's `periods`, the `problems` by row and the `errors` by row; and the
+    /// pullbacks, a run each. Raises `ValueError` for input the engine cannot read, or runs
+    /// that do not lie within the variants'.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a batch's VJP is its analysis, its options, its parameters, its runs, what \
+                  it traces and its threads, as Python names them"
+    )]
+    fn batch_vjp<'py>(
+        &self,
+        py: Python<'py>,
+        analysis: String,
+        options: String,
+        parameters: Vec<(String, String)>,
+        variants: &batch::Variants,
+        runs: (u64, u64),
+        unknowns: Vec<usize>,
+        pool: &Pool,
+    ) -> PyResult<(Bound<'py, PyDict>, batch::BatchPullback)> {
+        let (elaborated, base) = {
+            let simulator = self.lock();
+            (
+                Arc::clone(simulator.elaborated()),
+                simulator.values().clone(),
+            )
+        };
+        let request = batch::Differentiating {
+            analysis,
+            options,
+            parameters,
+            runs: runs.0..runs.1,
+            unknowns,
+        };
+        batch::vjp(py, (&elaborated, &base), variants, request, pool)
+    }
+
     /// Each unknown's name and quantity, `"voltage"` or `"current"`, in the order of every
     /// solution's values.
     #[getter]
@@ -1404,6 +1447,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Values>()?;
     module.add_class::<StructureKey>()?;
     module.add_class::<batch::Variants>()?;
+    module.add_class::<batch::BatchPullback>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;

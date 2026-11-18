@@ -195,6 +195,25 @@ class JvpResult(TypedDict):
 @final
 class Pullback: ...
 
+@final
+class BatchPullback:
+    @property
+    def runs(self) -> int: ...
+    def pull_back(
+        self,
+        runs: list[int],
+        values: Real | Complex,
+        periods: list[float],
+        options: str,
+        pool: Pool,
+    ) -> Real | Complex: ...
+
+class BatchVjpResult(TypedDict):
+    traces: Real | Complex
+    periods: Real
+    problems: dict[int, list[Problem]]
+    errors: dict[int, str]
+
 class SourceLocation(TypedDict):
     file: str
     line: int
@@ -319,6 +338,16 @@ class Simulator:
     ) -> Real | Complex: ...
     @property
     def elaborated(self) -> Elaborated: ...
+    def batch_vjp(
+        self,
+        analysis: str,
+        options: str,
+        parameters: list[tuple[str, str]],
+        variants: Variants,
+        runs: tuple[int, int],
+        unknowns: list[int],
+        pool: Pool,
+    ) -> tuple[BatchVjpResult, BatchPullback]: ...
     def batch(
         self,
         analyses: list[tuple[str, str]],
