@@ -26,7 +26,7 @@ const SHIFT: f64 = 1.0;
 
 /// The floating-point resolution of a residual whose equation's `|J|·|x|` is `resolution`:
 /// the rounding of the unknowns it reads, which no step can resolve.
-fn rounding(resolution: f64) -> f64 {
+pub(crate) fn rounding(resolution: f64) -> f64 {
     RESIDUAL_ROUNDINGS * f64::EPSILON * resolution
 }
 
@@ -280,6 +280,30 @@ impl Workspace {
         self.differences.clear();
         self.moved.clear();
         self.meter = Meter::default();
+    }
+
+    /// A test workspace pre-filled with `conductance`, `capacitance`, and `jacobian` of
+    /// `pattern`.
+    #[cfg(test)]
+    pub(crate) fn from_matrices(
+        pattern: &Pattern,
+        conductance: Vec<f64>,
+        capacitance: Vec<f64>,
+        jacobian: Vec<f64>,
+    ) -> Self {
+        let unknowns = pattern.dimension();
+        let mut contributions = Contributions::new(pattern);
+        contributions.conductance = conductance;
+        contributions.capacitance = capacitance;
+        Self {
+            contributions,
+            jacobian,
+            resolution: vec![0.0; unknowns],
+            step: vec![0.0; unknowns],
+            differences: Vec::new(),
+            moved: Vec::new(),
+            meter: Meter::default(),
+        }
     }
 }
 

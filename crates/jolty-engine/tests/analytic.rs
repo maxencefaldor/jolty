@@ -1188,6 +1188,430 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
     }
 }
 
+/// Builds a default trapezoidal transient over `[0, stop]` with optional `max_step`.
+fn trapezoidal_transient(stop: f64, max_step: Option<f64>) -> Transient {
+    Transient {
+        stop,
+        max_step,
+        method: Method::Trapezoidal,
+        breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
+    }
+}
+
+/// Asserts that `energy_at` stays constant within `relative_bound` across all points
+/// `time >= start_time` and returns `(first_free, last_free)`.
+fn assert_energy_conserved(
+    times: &[f64],
+    values: &[Vec<f64>],
+    start_time: f64,
+    relative_bound: f64,
+    label: &str,
+    energy_at: impl Fn(&[f64]) -> f64,
+) -> (f64, f64) {
+    let free_energies: Vec<f64> = times
+        .iter()
+        .zip(values)
+        .filter(|&(&time, _)| time >= start_time)
+        .map(|(_, row)| energy_at(row))
+        .collect();
+    assert!(
+        free_energies.len() >= 10,
+        "too few points for {label}: {}",
+        free_energies.len()
+    );
+    let first_free = free_energies[0];
+    let last_free = *free_energies.last().unwrap();
+    assert!(
+        (last_free - first_free).abs() <= relative_bound * first_free,
+        "{label} lost energy: start={first_free:.6e}, end={last_free:.6e}"
+    );
+    (first_free, last_free)
+}
+
+#[test]
+fn an_undamped_lc_tank_conserves_energy_at_every_tolerance() {
+    // Precision suite fixture `lc_tank`: 1 uH, 1 nF, 1 mA turned off in 1 ns, stop = 4 us
+    // (20 periods), default max_step = stop / 50 = 80 ns (omega * h = 2.53 > 2).
+    // At coarse tolerances (1e-2, 3e-3), the first difference of dq/dt alternates every step
+    // even though the oscillation is physical; the ringing test must not damp it with BE.
+    let (inductance, capacitance, ramp_time, initial_current) = (1e-6, 1e-9, 1e-9, 1e-3);
+    let omega = 1.0 / (inductance * capacitance).sqrt();
+    let free_current = initial_current * (omega * ramp_time).sin() / (omega * ramp_time);
+    let free_voltage =
+        inductance * (initial_current / ramp_time) * ((omega * ramp_time).cos() - 1.0);
+    let exact_energy = 0.5 * capacitance * free_voltage * free_voltage
+        + 0.5 * inductance * free_current * free_current;
+
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"piecewise": {"points": [[0.0, initial_current], [ramp_time, 0.0]]}}}),
+            &[("positive", "0"), ("negative", "top")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance}),
+            &[("a", "top"), ("b", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "top"), ("b", "0")],
+        ),
+    ]);
+    let transient = trapezoidal_transient(4e-6, None);
+
+    for &relative_tolerance in &[1e-2, 3e-3, 1e-3, 1e-4, 1e-6] {
+        let mut simulator = simulator(&circuit);
+        let options = Options {
+            relative_tolerance,
+            ..Options::default()
+        };
+        let waveforms = simulator.transient(&transient, &options).unwrap();
+        let voltage_index = index(&simulator, "top");
+        let current_index = index(&simulator, "L1:current");
+        let (_, last_free) = assert_energy_conserved(
+            &waveforms.times,
+            &waveforms.values,
+            200e-9,
+            1e-10,
+            &format!("lc_tank reltol={relative_tolerance}"),
+            |values| {
+                let voltage = values[voltage_index];
+                let current = values[current_index];
+                0.5 * capacitance * voltage * voltage + 0.5 * inductance * current * current
+            },
+        );
+        // Total energy matches the exact closed-form energy after the 1 ns turn-off ramp to
+        // within 1e-3 (over 3 correct digits even at reltol = 1e-2).
+        assert!(
+            (last_free - exact_energy).abs() <= 1e-3 * exact_energy,
+            "energy mismatch at reltol={relative_tolerance}: got={last_free:.6e}, exact={exact_energy:.6e}"
+        );
+    }
+}
+
+#[test]
+fn a_multi_mode_lossless_lc_ladder_conserves_energy_at_coarse_tolerance() {
+    // Three-stage lossless coupled LC ladder kicked by 1 mA turned off in 1 ns, running at
+    // reltol = 1e-2 with default max_step (80 ns, where omega * h > 2 on multiple modes and
+    // scalar beating fails single-mode harmonic checks).
+    let (capacitance_1, capacitance_2, capacitance_3) = (1e-9, 0.47e-9, 0.82e-9);
+    let (inductance_1, inductance_2, inductance_3) = (1e-6, 2.2e-6, 1.5e-6);
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"piecewise": {"points": [[0.0, 1e-3], [1e-9, 0.0]]}}}),
+            &[("positive", "0"), ("negative", "n1")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance_1}),
+            &[("a", "n1"), ("b", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance_1}),
+            &[("a", "n1"), ("b", "0")],
+        ),
+        (
+            "L2",
+            "inductor",
+            json!({"inductance": inductance_2}),
+            &[("a", "n1"), ("b", "n2")],
+        ),
+        (
+            "C2",
+            "capacitor",
+            json!({"capacitance": capacitance_2}),
+            &[("a", "n2"), ("b", "0")],
+        ),
+        (
+            "L3",
+            "inductor",
+            json!({"inductance": inductance_3}),
+            &[("a", "n2"), ("b", "n3")],
+        ),
+        (
+            "C3",
+            "capacitor",
+            json!({"capacitance": capacitance_3}),
+            &[("a", "n3"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options {
+        relative_tolerance: 1e-2,
+        ..Options::default()
+    };
+    let waveforms = simulator
+        .transient(&trapezoidal_transient(4e-6, None), &options)
+        .unwrap();
+    let (voltage_1, voltage_2, voltage_3) = (
+        index(&simulator, "n1"),
+        index(&simulator, "n2"),
+        index(&simulator, "n3"),
+    );
+    let (current_1, current_2, current_3) = (
+        index(&simulator, "L1:current"),
+        index(&simulator, "L2:current"),
+        index(&simulator, "L3:current"),
+    );
+    let (_, last_free) = assert_energy_conserved(
+        &waveforms.times,
+        &waveforms.values,
+        200e-9,
+        1e-10,
+        "multi-mode ladder",
+        |values| {
+            0.5 * (capacitance_1 * values[voltage_1].powi(2)
+                + capacitance_2 * values[voltage_2].powi(2)
+                + capacitance_3 * values[voltage_3].powi(2)
+                + inductance_1 * values[current_1].powi(2)
+                + inductance_2 * values[current_2].powi(2)
+                + inductance_3 * values[current_3].powi(2))
+        },
+    );
+    let initial_energy = 0.5 * inductance_1 * 1e-6;
+    assert!(
+        (last_free - initial_energy).abs() <= 1e-2 * initial_energy,
+        "ladder energy drifted from initial: got={last_free:.6e}, init={initial_energy:.6e}"
+    );
+}
+
+#[test]
+fn a_lossless_lc_ladder_with_dc_bypass_and_zero_volt_sense_conserves_energy() {
+    // Two-mode lossless LC ladder coupled via a bypass capacitor to a 5 V grounded DC supply
+    // and carrying a floating 0 V sense source across a floating capacitor: both grounded and
+    // floating ideal voltage sources must produce zero false ringing triggers.
+    let (bypass_capacitance, floating_capacitance, capacitance_2, inductance_1, inductance_2) =
+        (1e-9, 0.5e-9, 0.68e-9, 1e-6, 2.2e-6);
+    let circuit = circuit(&[
+        (
+            "VDD",
+            "voltage_source",
+            json!({"waveform": {"dc": 5.0}}),
+            &[("positive", "vdd"), ("negative", "0")],
+        ),
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"piecewise": {"points": [[0.0, 1e-3], [1e-9, 0.0]]}}}),
+            &[("positive", "0"), ("negative", "n1")],
+        ),
+        (
+            "CB",
+            "capacitor",
+            json!({"capacitance": bypass_capacitance}),
+            &[("a", "vdd"), ("b", "n1")],
+        ),
+        (
+            "VS",
+            "voltage_source",
+            json!({"waveform": {"dc": 0.0}}),
+            &[("positive", "n1s"), ("negative", "n1")],
+        ),
+        (
+            "CF",
+            "capacitor",
+            json!({"capacitance": floating_capacitance}),
+            &[("a", "n1s"), ("b", "n1")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance_1}),
+            &[("a", "n1"), ("b", "0")],
+        ),
+        (
+            "L2",
+            "inductor",
+            json!({"inductance": inductance_2}),
+            &[("a", "n1s"), ("b", "n2")],
+        ),
+        (
+            "C2",
+            "capacitor",
+            json!({"capacitance": capacitance_2}),
+            &[("a", "n2"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options {
+        relative_tolerance: 1e-2,
+        ..Options::default()
+    };
+    let waveforms = simulator
+        .transient(&trapezoidal_transient(4e-6, None), &options)
+        .unwrap();
+    let (voltage_1, voltage_2) = (index(&simulator, "n1"), index(&simulator, "n2"));
+    let (current_1, current_2) = (
+        index(&simulator, "L1:current"),
+        index(&simulator, "L2:current"),
+    );
+    // Conserved small-signal Hamiltonian relative to the DC equilibrium (vdd = 5 V, n1 = n2 = 0):
+    // CF carries 0 V across VS, while CB stores 0.5 * CB * v1^2 against the constant 5 V supply.
+    assert_energy_conserved(
+        &waveforms.times,
+        &waveforms.values,
+        200e-9,
+        1e-9,
+        "DC bypass + 0 V sense LC ladder",
+        |values| {
+            0.5 * (bypass_capacitance * values[voltage_1].powi(2)
+                + capacitance_2 * values[voltage_2].powi(2)
+                + inductance_1 * values[current_1].powi(2)
+                + inductance_2 * values[current_2].powi(2))
+        },
+    );
+}
+
+#[test]
+fn the_trapezoidal_formula_stops_floating_capacitor_ringing_above_an_lc_tank() {
+    // Floating capacitor C1 in parallel with behavioral source B1 = abs(v(s)), stacked on top
+    // of a grounded lossless LC tank with stray capacitance C_stray = 1 nF to ground.
+    // Neither end of B1 lies individually in ker(F), so the saddle-point projection must
+    // isolate the floating C-V loop's (-1)^n ringing and insert BE steps after each corner.
+    let (capacitance, stray, tank_inductance, tank_capacitance, frequency) =
+        (1e-6, 1e-9, 10e-6, 1e-6, 1e3);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": 1, "frequency": frequency}}}),
+            &[("positive", "s"), ("negative", "0")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": tank_inductance}),
+            &[("a", "base"), ("b", "0")],
+        ),
+        (
+            "CT",
+            "capacitor",
+            json!({"capacitance": tank_capacitance}),
+            &[("a", "base"), ("b", "0")],
+        ),
+        (
+            "B1",
+            "behavioral_voltage_source",
+            json!({"expression": "abs(v(s))"}),
+            &[("positive", "top"), ("negative", "base"), ("s", "s")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "top"), ("b", "base")],
+        ),
+        (
+            "CS",
+            "capacitor",
+            json!({"capacitance": stray}),
+            &[("a", "top"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    // Asymmetric step relative to the 500 us half-period so corners land off-midpoint.
+    let transient = trapezoidal_transient(5e-3, Some(9.7e-6));
+    let waveforms = simulator
+        .transient(&transient, &Options::default())
+        .unwrap();
+    let current = index(&simulator, "B1:current");
+    let peak = capacitance * TAU * frequency;
+    for (time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        let phase = TAU * frequency * time;
+        if phase.sin().abs() < 0.5 {
+            continue;
+        }
+        let expected = peak * phase.cos().abs();
+        let error = (values[current].abs() - expected).abs();
+        // Without damping the floating loop accumulates > 2.0 * peak (200% error); with
+        // saddle-point damping it stays near 1% (plus ~0.1% stray capacitance current).
+        assert!(
+            error < 3e-2 * peak,
+            "at {time} s the floating B1 current is off by {error} A (peak={peak} A)"
+        );
+    }
+}
+
+#[test]
+fn the_trapezoidal_formula_stops_ringing_beside_a_lossless_lc_tank() {
+    // A 1 A lossless LC tank running in the same circuit as a 6.28 mA grounded `|sin|`
+    // capacitor must NOT hide the corner-induced ringing on B1:current.
+    let (capacitance, frequency) = (1e-6, 1e3);
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"piecewise": {"points": [[0.0, 1.0], [1e-6, 0.0]]}}}),
+            &[("positive", "0"), ("negative", "tank")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": 10e-6}),
+            &[("a", "tank"), ("b", "0")],
+        ),
+        (
+            "CT",
+            "capacitor",
+            json!({"capacitance": 1e-6}),
+            &[("a", "tank"), ("b", "0")],
+        ),
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": 1, "frequency": frequency}}}),
+            &[("positive", "s"), ("negative", "0")],
+        ),
+        (
+            "B1",
+            "behavioral_voltage_source",
+            json!({"expression": "abs(v(s))"}),
+            &[("positive", "out"), ("negative", "0"), ("s", "s")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let transient = trapezoidal_transient(5e-3, Some(9.7e-6));
+    for &(relative_tolerance, bound) in &[(1e-3, 1e-2), (1e-2, 8e-2)] {
+        let mut simulator = simulator(&circuit);
+        let options = Options {
+            relative_tolerance,
+            ..Options::default()
+        };
+        let waveforms = simulator.transient(&transient, &options).unwrap();
+        let current = index(&simulator, "B1:current");
+        let peak = capacitance * TAU * frequency;
+        for (time, values) in waveforms.times.iter().zip(&waveforms.values) {
+            let phase = TAU * frequency * time;
+            if phase.sin().abs() < 0.5 {
+                continue;
+            }
+            let expected = peak * phase.cos().abs();
+            let error = (values[current].abs() - expected).abs();
+            assert!(
+                error < bound * peak,
+                "at reltol={relative_tolerance}, {time} s the grounded B1 current is off by {error} A"
+            );
+        }
+    }
+}
+
 /// A behavioral source steps from 0 to 5 V as `condition` turns true, through 1 kΩ into
 /// 1 nF, a time constant of 1 µs; a ramp of 5 V over 2 ms is at `ramp`, which the source
 /// reads if the condition does.

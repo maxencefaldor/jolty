@@ -85,6 +85,7 @@ mod periodic;
 mod pole_zero;
 mod profile;
 mod record;
+mod ringing;
 mod sensitivity;
 mod solver;
 mod stability;

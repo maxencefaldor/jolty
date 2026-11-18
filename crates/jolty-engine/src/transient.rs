@@ -11,12 +11,13 @@ use serde::Deserialize;
 use crate::derivative::Forward;
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{
-    Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, all, each_chunk, pieces, step_matrix,
+    Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, each_chunk, pieces, step_matrix,
 };
 use crate::options::{Inside, NUMBERS_PER_GIB};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
 use crate::record::{Observer, Read};
+use crate::ringing;
 use crate::{
     Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError, Simulator,
     Strategy, Work,
@@ -1242,7 +1243,13 @@ impl Simulator {
         } else {
             let trapezoidal = method == Method::Trapezoidal;
             let previous = self.state.workspace.meter.enter(Activity::StepControl);
-            stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
+            stepper.damp = trapezoidal
+                && self.rings(
+                    &stepper.history,
+                    (end, &charge, &derivative),
+                    formula.alpha,
+                    options,
+                );
             self.state.workspace.meter.leave(previous);
             stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
@@ -1307,39 +1314,53 @@ impl Simulator {
         stepper.reject(next, || Rejection::Inaccurate(name.clone()))
     }
 
-    /// Whether the trapezoidal formula rings: whether some charge's derivative, over the last
-    /// four points it took, turned back and forth twice by more than its tolerance.
+    /// Whether the trapezoidal formula is numerically ringing at `(end, charge, derivative)`:
+    /// distinguishes genuine `(-1)^n` trapezoidal ringing (stiff real decaying modes with
+    /// `σ ≥ α = 2/h`, algebraic capacitor-voltage-source loop modes, and zero-capacitance
+    /// Meyer displacement unknowns) from real physical oscillations (single- or multi-mode
+    /// lossless LC tanks, coupled transformers, gyrators, and active harmonic oscillators).
     ///
-    /// The formula carries an error in a derivative from step to step undamped, flipping its
-    /// sign each time; a smooth waveform turns at most once in so few steps. A derivative no
-    /// equation reads, such as a Meyer displacement while its capacitance is zero, would
-    /// gather that error without bound. One step of backward Euler, needing no derivative,
-    /// starts it afresh.
-    fn rings(&self, history: &History, newest: &[f64], options: &Options) -> bool {
-        if history.ringing.len() < RINGING {
+    /// One step of backward Euler, needing no derivative, restarts a ringing derivative
+    /// afresh while leaving physical lossless oscillations undamped.
+    fn rings(
+        &mut self,
+        history: &History,
+        (end, charge, derivative): (f64, &[f64], &[f64]),
+        alpha: f64,
+        options: &Options,
+    ) -> bool {
+        if history.ringing.len() < RINGING || history.earlier.len() < RINGING {
             return false;
         }
-        let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
-        let natures = &self.elaborated.natures;
-        let inside = options.parallelism.inside(natures.len());
-        !all(natures.len(), inside, |index| {
-            let run = [
-                oldest[index],
-                older[index],
-                history.derivative[index],
-                newest[index],
-            ];
-            let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
-            let absolute = options.equation_tolerance(natures[index]);
-            let largest = run
-                .iter()
-                .fold(0.0_f64, |most, value| most.max(value.abs()));
-            let tolerance =
-                options.truncation_tolerance * (options.relative_tolerance * largest + absolute);
-            !(turns[0] * turns[1] < 0.0
-                && turns[1] * turns[2] < 0.0
-                && turns.iter().all(|turn| turn.abs() > tolerance))
-        })
+        let run = ringing::Run {
+            times: [
+                history.earlier[0].0,
+                history.earlier[1].0,
+                history.last.0,
+                end,
+            ],
+            charges: [
+                history.earlier[0].1.as_slice(),
+                history.earlier[1].1.as_slice(),
+                history.last.1.as_slice(),
+                charge,
+            ],
+            derivatives: [
+                history.ringing[0].as_slice(),
+                history.ringing[1].as_slice(),
+                history.derivative.as_slice(),
+                derivative,
+            ],
+            alpha,
+        };
+        ringing::rings(
+            &self.elaborated.pattern,
+            &self.elaborated.natures,
+            &mut self.state.solver,
+            &mut self.state.workspace,
+            &run,
+            options,
+        )
     }
 
     /// The events of a step from the stepper's last point to `end`, where the solution is
