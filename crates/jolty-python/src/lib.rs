@@ -17,10 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Cotangent, Cotangents, DcSweepResult, Derivatives, Differentiated,
-    Location, MismatchResult, NoiseResult, OperatingPointResult, Options, ParameterCotangents,
-    PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity, Statistics, Strategy,
-    TransientResult,
+    Analysis, AnalysisResult, ChargeLeak, Cotangent, Cotangents, DcSweepResult, Derivatives,
+    Differentiated, Location, MismatchResult, NoiseResult, OperatingPointResult, Options,
+    ParameterCotangents, PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity,
+    Statistics, Strategy, TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -1205,6 +1205,11 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
         None => None,
     };
     result.set_item("profile", profile)?;
+    let ChargeLeak { signed, absolute } = statistics.charge_leak;
+    let charge_leak = PyDict::new(py);
+    charge_leak.set_item("signed", PyArray1::from_vec(py, signed))?;
+    charge_leak.set_item("absolute", PyArray1::from_vec(py, absolute))?;
+    result.set_item("charge_leak", charge_leak)?;
     Ok(result)
 }
 

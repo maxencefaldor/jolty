@@ -19,11 +19,12 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 19 of the format, which holds that provenance, the regions of operation
+in version 20 of the format, which holds that provenance, the regions of operation
 each recorded transistor's model distinguishes, the Newton iterations that found each
 operating point, each recording's summed terminals as its ``summed_terminals``, a
-periodic steady state as an analysis of its own, and a mismatch analysis's random
-variables; a file of another version is not read.
+periodic steady state as an analysis of its own, a mismatch analysis's random
+variables, and each transient's integrated residuals (`charge_leak`); a file of another
+version is not read.
 
 Examples:
     >>> import tempfile
@@ -127,9 +128,39 @@ class _AcResult(_Model):
     recording: int
 
 
+class _Statistics(_Model):
+    """How a transient or periodic steady state went, as the header stores it."""
+
+    initial: str | None
+    accepted: int
+    rejected: int
+    landed: int
+    iterations: int
+    work: results.Work | None = None
+    profile: results.Profile | None = None
+    charge_leak: bool = Field(
+        default=False,
+        description="Whether the arrays hold each unknown's integrated residual.",
+    )
+
+    @classmethod
+    def from_statistics(cls, statistics: results.Statistics) -> Self:
+        """The header's entry of `statistics`."""
+        return cls(
+            initial=statistics.initial,
+            accepted=statistics.accepted,
+            rejected=statistics.rejected,
+            landed=statistics.landed,
+            iterations=statistics.iterations,
+            work=statistics.work,
+            profile=statistics.profile,
+            charge_leak=statistics.charge_leak is not None,
+        )
+
+
 class _TransientResult(_Model):
     kind: Literal["transient"] = "transient"
-    statistics: results.Statistics
+    statistics: _Statistics
     recording: int
 
 
@@ -137,7 +168,7 @@ class _PeriodicSteadyStateResult(_Model):
     kind: Literal["periodic_steady_state"] = "periodic_steady_state"
     period: float
     periods: int
-    statistics: results.Statistics
+    statistics: _Statistics
     recording: int
 
 
@@ -421,7 +452,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[19] = 19
+    version: Literal[20] = 20
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -769,15 +800,19 @@ def _save_waveforms(
     arrays[f"{name}.logic.levels"] = np.concatenate(
         [np.empty(0), *(trace.levels for trace in traces)]
     )
+    if result.statistics.charge_leak is not None:
+        arrays[f"{name}.charge_leak.signed"] = result.statistics.charge_leak.signed
+        arrays[f"{name}.charge_leak.absolute"] = result.statistics.charge_leak.absolute
+    statistics = _Statistics.from_statistics(result.statistics)
     recording = _indexed(recordings, result.recording)
     if isinstance(result, results.PeriodicSteadyStateResult):
         return _PeriodicSteadyStateResult(
             period=result.period,
             periods=result.periods,
-            statistics=result.statistics,
+            statistics=statistics,
             recording=recording,
         )
-    return _TransientResult(statistics=result.statistics, recording=recording)
+    return _TransientResult(statistics=statistics, recording=recording)
 
 
 def _indexed(
@@ -948,11 +983,29 @@ def _load_waveforms(
     recordings: tuple[results.Recording, ...],
 ) -> results.TransientResult:
     """The waveforms stored under `name` in `data`, a transient's or a period's."""
+    leak = (
+        results.ChargeLeak(
+            data[f"{name}.charge_leak.signed"],
+            data[f"{name}.charge_leak.absolute"],
+        )
+        if entry.statistics.charge_leak
+        else None
+    )
+    statistics = results.Statistics(
+        entry.statistics.initial,
+        entry.statistics.accepted,
+        entry.statistics.rejected,
+        entry.statistics.landed,
+        entry.statistics.iterations,
+        entry.statistics.work,
+        entry.statistics.profile,
+        leak,
+    )
     fields = (
         header.unknowns,
         data[f"{name}.times"],
         data[f"{name}.values"],
-        entry.statistics,
+        statistics,
         header.nets,
         _traces(data, name),
     )

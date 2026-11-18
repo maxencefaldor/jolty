@@ -94,6 +94,8 @@ fn bits(outcome: &Result<jolty_engine::AnalysisResult, SimulationError>) -> Bits
                 reals(row, &mut numbers);
             }
             reals(&waveforms.observations.currents, &mut numbers);
+            reals(&waveforms.statistics.charge_leak.signed, &mut numbers);
+            reals(&waveforms.statistics.charge_leak.absolute, &mut numbers);
         }
         Ok(Found::DcSweep(sweep)) => {
             for row in &sweep.values {

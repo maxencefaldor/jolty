@@ -2057,8 +2057,9 @@ def _observed(
 
 
 def _statistics(outcome: _core.Statistics) -> results.Statistics:
-    """How the transient of `outcome` went, its work and its profile included."""
+    """How the transient of `outcome` went: work, profile and charge leak included."""
     profile = outcome["profile"]
+    leak = outcome["charge_leak"]
     return results.Statistics(
         outcome["initial"],
         outcome["accepted"],
@@ -2067,6 +2068,7 @@ def _statistics(outcome: _core.Statistics) -> results.Statistics:
         outcome["iterations"],
         results.Work(**outcome["work"]),
         None if profile is None else results.Profile(**profile),
+        results.ChargeLeak(leak["signed"], leak["absolute"]),
     )
 
 

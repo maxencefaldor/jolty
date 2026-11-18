@@ -102,8 +102,36 @@ pub struct TransientResult {
     pub statistics: Statistics,
 }
 
+/// Each equation's converged residual integrated over a transient's accepted steps, in the
+/// order of the circuit's unknowns (Kundert and Clifford, "Achieving Accurate Results with
+/// a Circuit Simulator", IEEE CICC 1993).
+///
+/// For an electrical node (and a displacement equation), the unit is coulombs (`A·s`):
+/// the charge the solver's nonzero KCL residual added to the node. For a branch current
+/// equation, the unit is webers (`V·s`, magnetic flux linkage); for a thermal net, joules
+/// (`W·s`); for a device's state equation, the state's own unit.
+///
+/// At every accepted step `n`, Newton iteration stops with residual
+/// `r_n = f(x_n, t_n) + q̇_n`. Integrating `r_n` by the step's own
+/// [`Formula`](jolty_numerics::integration::Formula),
+/// `Δℓ_n = (r_n − γ r_{n-1} + β₁ Δℓ_{n-1}) / α`, splits each step's discrete charge change
+/// `Δq_n` into the integral of the static currents `−f` plus `Δℓ_n`. On any closed node or
+/// cutset whose static currents sum to zero, the change in stored charge from start to end
+/// equals the sum of `signed` to floating-point rounding, and the charge excursion at every
+/// intermediate accepted time stays within the sum of `absolute`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChargeLeak {
+    /// The signed integral `∑ Δℓ_n` for each unknown: the net charge, flux or energy the
+    /// solver's nonzero residual added over the transient.
+    pub signed: Vec<f64>,
+    /// The cumulative absolute integral `∑ |Δℓ_n|` for each unknown: the sum of step leak
+    /// magnitudes without cancellation, bounding the excursion at every intermediate
+    /// accepted time.
+    pub absolute: Vec<f64>,
+}
+
 /// How a transient analysis went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Statistics {
     /// How the initial operating point was found, or `None` for a transient that starts
     /// from its initial conditions alone.
@@ -124,6 +152,8 @@ pub struct Statistics {
     pub work: Work,
     /// Where its time went, when its options' `profile` is on.
     pub profile: Option<Profile>,
+    /// Each equation's converged residual integrated over the transient's accepted steps.
+    pub charge_leak: ChargeLeak,
 }
 
 impl Statistics {
@@ -138,7 +168,94 @@ impl Statistics {
             iterations: 0,
             work: Work::default(),
             profile: None,
+            charge_leak: ChargeLeak::default(),
         }
+    }
+}
+
+/// Adds `term` into `(total, compensation)` using Neumaier's compensated summation
+/// (Neumaier, *ZAMM* 54, 1974, pages 39 to 51), preserving accuracy both when small terms add
+/// into a larger running sum and when terms of opposite sign cancel back toward zero.
+#[inline]
+fn neumaier_add(total: &mut f64, compensation: &mut f64, term: f64) {
+    let next = *total + term;
+    if total.abs() >= term.abs() {
+        *compensation += (*total - next) + term;
+    } else {
+        *compensation += (term - next) + *total;
+    }
+    *total = next;
+}
+
+/// Running residual-integral state for a single unknown across accepted transient steps.
+#[derive(Debug, Clone, Copy, Default)]
+struct UnknownLeak {
+    signed: f64,
+    signed_compensation: f64,
+    absolute: f64,
+    absolute_compensation: f64,
+    previous_residual: f64,
+    previous_increment: f64,
+}
+
+/// Accumulates each equation's residual integrated over accepted steps in a single cache
+/// line per unknown, updated sequentially in time and independently per unknown so that
+/// splitting across threads is bit-for-bit identical to running serially.
+struct LeakAccumulator {
+    states: Vec<UnknownLeak>,
+}
+
+impl LeakAccumulator {
+    /// Starts at zero for `unknowns` equations.
+    fn new(unknowns: usize) -> Self {
+        Self {
+            states: vec![UnknownLeak::default(); unknowns],
+        }
+    }
+
+    /// Accumulates one accepted step solved with `formula` whose converged residual is
+    /// `residual`; `restarted` clears the previous-step history when integration restarts
+    /// after a corner. Work across unknowns splits as `inside` says.
+    fn accumulate(
+        &mut self,
+        formula: &Formula,
+        residual: &[f64],
+        restarted: bool,
+        inside: Option<Inside>,
+    ) {
+        each_chunk(&mut self.states, inside, |start, chunk| {
+            for (state, &current_residual) in chunk.iter_mut().zip(&residual[start..]) {
+                let increment = formula.integral_increment(
+                    current_residual,
+                    state.previous_residual,
+                    state.previous_increment,
+                );
+                neumaier_add(&mut state.signed, &mut state.signed_compensation, increment);
+                neumaier_add(
+                    &mut state.absolute,
+                    &mut state.absolute_compensation,
+                    increment.abs(),
+                );
+                if restarted {
+                    state.previous_residual = 0.0;
+                    state.previous_increment = 0.0;
+                } else {
+                    state.previous_residual = current_residual;
+                    state.previous_increment = increment;
+                }
+            }
+        });
+    }
+
+    /// Completes the compensated sums and yields the final [`ChargeLeak`].
+    fn finish(self) -> ChargeLeak {
+        let mut signed = Vec::with_capacity(self.states.len());
+        let mut absolute = Vec::with_capacity(self.states.len());
+        for state in self.states {
+            signed.push(state.signed + state.signed_compensation);
+            absolute.push(state.absolute + state.absolute_compensation);
+        }
+        ChargeLeak { signed, absolute }
     }
 }
 
@@ -395,6 +512,8 @@ struct Pending {
     length: f64,
     /// The Newton iterations that solved it.
     iterations: usize,
+    /// The converged residual vector at its end, kept until the next step accepts or rejects it.
+    residual: Vec<f64>,
     /// What the recorded devices did at its end.
     read: Read,
     /// The corner it started from.
@@ -491,10 +610,44 @@ struct Stepper {
     /// The first step after the last corner, while it waits for the next to estimate its
     /// error; the stepper stands at its end.
     pending: Option<Pending>,
+    /// The running residual integral of every accepted step so far.
+    leak: LeakAccumulator,
     statistics: Statistics,
 }
 
 impl Stepper {
+    /// Starts a transient stepper at time zero with initial solution `x` and `charge`.
+    fn starting(
+        method: Method,
+        (longest, shortest, first): (f64, f64, f64),
+        (x, charge): (Vec<f64>, Vec<f64>),
+        strategy: Option<Strategy>,
+    ) -> Self {
+        let unknowns = x.len();
+        Self {
+            method,
+            longest,
+            shortest,
+            time: 0.0,
+            resume: None,
+            before: None,
+            history: History {
+                earlier: VecDeque::with_capacity(HISTORY - 1),
+                last: (0.0, charge),
+                derivative: vec![0.0; unknowns],
+                ringing: VecDeque::with_capacity(RINGING),
+            },
+            next: first,
+            previous: first,
+            damp: false,
+            terms: vec![0.0; unknowns],
+            pending: None,
+            leak: LeakAccumulator::new(unknowns),
+            statistics: Statistics::starting(strategy),
+            x,
+        }
+    }
+
     /// Where Newton iteration starts a step ending at `end`, as SPICE's does: the line
     /// through the last two accepted points carried on to `end`, or the last point after a
     /// corner.
@@ -717,33 +870,18 @@ impl Simulator {
         self.state
             .events
             .start(&self.elaborated.logic, transient.stop);
-        let unknowns = initial.len();
         let mut breakpoints = Breakpoints::new(
             &self.breakpoints(transient.stop, shortest, &delays),
             shortest,
         );
         let first = RESTART_FRACTION * longest.min(breakpoints.first());
-        let mut stepper = Stepper {
-            method: transient.method,
-            longest,
-            shortest,
-            time: 0.0,
-            resume: None,
-            before: None,
-            history: History {
-                earlier: VecDeque::with_capacity(HISTORY - 1),
-                last: (0.0, self.state.workspace.contributions.charge.clone()),
-                derivative: vec![0.0; unknowns],
-                ringing: VecDeque::with_capacity(RINGING),
-            },
-            next: first,
-            previous: first,
-            damp: false,
-            terms: vec![0.0; unknowns],
-            pending: None,
-            statistics: Statistics::starting(strategy),
-            x: initial,
-        };
+        let charge = self.state.workspace.contributions.charge.clone();
+        let mut stepper = Stepper::starting(
+            transient.method,
+            (longest, shortest, first),
+            (initial, charge),
+            strategy,
+        );
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
         let mut observed = RecordedSeries::default();
         observed.push(&self.record(|observer| observer.start(&start)));
@@ -784,6 +922,7 @@ impl Simulator {
         }
         self.state.past = None;
         let mut statistics = stepper.statistics;
+        statistics.charge_leak = stepper.leak.finish();
         (statistics.work, statistics.profile) = self.metered_since(&reading);
         Ok(TransientResult {
             times,
@@ -1048,11 +1187,13 @@ impl Simulator {
             derivative,
             read,
         } = tried;
+        let inside = options.parallelism.inside(stepper.x.len());
         let mut points = Vec::with_capacity(2);
         if let Some(pending) = stepper.pending.take() {
             // The first step after the corner, its error now estimated within tolerance.
             let at = (stepper.time, stepper.x.clone());
             let step = (pending.formula, pending.length, pending.iterations);
+            stepper.leak.accumulate(&pending.formula, &pending.residual, false, inside);
             points.push(self.accept(stepper, at, step, (false, &pending.read)));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
@@ -1064,6 +1205,7 @@ impl Simulator {
                 formula,
                 length,
                 iterations,
+                residual: self.state.workspace.contributions.residual.clone(),
                 read,
                 corner: Corner {
                     time: last.0,
@@ -1079,6 +1221,12 @@ impl Simulator {
             // error from, and is accepted as SPICE accepts it.
             let at = (end, stepper.x.clone());
             let step = (formula, length, iterations);
+            stepper.leak.accumulate(
+                &formula,
+                &self.state.workspace.contributions.residual,
+                restart.is_some(),
+                inside,
+            );
             points.push(self.accept(stepper, at, step, (restart.is_some(), &read)));
         }
         stepper.previous = length;
@@ -1567,11 +1715,21 @@ fn least(a: (f64, ErrorBound), b: (f64, ErrorBound)) -> (f64, ErrorBound) {
 
 #[cfg(test)]
 mod tests {
-    use super::Breakpoints;
+    use jolty_numerics::integration::{Formula, Method};
+    use jolty_numerics::reduce;
+    use rayon::ThreadPoolBuilder;
+
+    use super::{Breakpoints, LeakAccumulator, neumaier_add};
+    use crate::options::Inside;
 
     /// The bits of a breakpoint and of the gap after it, to compare them exactly.
     fn bits((next, gap): (f64, f64)) -> (u64, u64) {
         (next.to_bits(), gap.to_bits())
+    }
+
+    /// The raw IEEE-754 bits of every value in `values`.
+    fn slice_bits(values: &[f64]) -> Vec<u64> {
+        values.iter().copied().map(f64::to_bits).collect()
     }
 
     #[test]
@@ -1590,5 +1748,58 @@ mod tests {
         // A negative zero orders as zero, before every positive time.
         breakpoints.insert(-0.0);
         assert_eq!(breakpoints.first().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn neumaier_preserves_small_terms_across_large_cancellation() {
+        let (mut total, mut compensation) = (0.0, 0.0);
+        for term in [1.0, 1e-16, -1.0, 2e-16] {
+            neumaier_add(&mut total, &mut compensation, term);
+        }
+        let sum = total + compensation;
+        assert!((sum - 3e-16).abs() <= 1e-30, "got {sum:e}");
+    }
+
+    #[test]
+    fn leak_accumulator_matches_serial_and_parallel_bit_for_bit() {
+        let unknowns = 2 * reduce::CHUNK + 17;
+        let run = |inside: Option<Inside>| {
+            let mut accumulator = LeakAccumulator::new(unknowns);
+            let steps = [
+                (Method::BackwardEuler, 1e-6, 1e-6, false),
+                (Method::BackwardEuler, 1.5e-6, 1e-6, false),
+                (Method::Trapezoidal, 2e-6, 1.5e-6, false),
+                (Method::Trapezoidal, 0.5e-6, 2e-6, true),
+                (Method::BackwardEuler, 0.2e-6, 0.5e-6, false),
+                (Method::BackwardEuler, 0.4e-6, 0.2e-6, false),
+                (Method::Gear2, 0.8e-6, 0.4e-6, false),
+            ];
+            for (step_index, &(method, length, previous, restarted)) in steps.iter().enumerate() {
+                let formula = Formula::new(method, length, previous);
+                let sign = if step_index % 2 == 0 { 1.0 } else { -1.0 };
+                let residuals: Vec<f64> = (0..unknowns)
+                    .map(|index| {
+                        let scale = f64::from(u32::try_from(index + 1).expect("small index"));
+                        sign * 1e-12 * scale
+                    })
+                    .collect();
+                accumulator.accumulate(&formula, &residuals, restarted, inside);
+            }
+            accumulator.finish()
+        };
+        let serial = run(None);
+        assert_eq!(serial.signed.len(), unknowns);
+        assert_eq!(serial.absolute.len(), unknowns);
+        for (&signed, &absolute) in serial.signed.iter().zip(&serial.absolute) {
+            assert!(absolute >= 0.0);
+            assert!(signed.abs() <= absolute);
+        }
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("a pool");
+        let parallel = pool.install(|| run(Some(Inside { chunks: 1 })));
+        assert_eq!(slice_bits(&parallel.signed), slice_bits(&serial.signed));
+        assert_eq!(slice_bits(&parallel.absolute), slice_bits(&serial.absolute));
     }
 }

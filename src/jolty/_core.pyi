@@ -86,6 +86,10 @@ class Profile(TypedDict):
     recording: float
     other: float
 
+class ChargeLeak(TypedDict):
+    signed: npt.NDArray[np.float64]
+    absolute: npt.NDArray[np.float64]
+
 class Statistics(TypedDict):
     initial: str | None
     accepted: int
@@ -94,6 +98,7 @@ class Statistics(TypedDict):
     iterations: int
     work: Work
     profile: Profile | None
+    charge_leak: ChargeLeak
 
 class Waveforms(RecordedValues):
     times: npt.NDArray[np.float64]

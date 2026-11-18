@@ -85,6 +85,62 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
         "  out  0 V    0 V  900 mV  900 mV\n"
         "  ... and 1 more in the results file"
     )
+    assert summary.charge_leak is None
+
+
+def test_a_transient_reports_the_largest_nonzero_charge_leak() -> None:
+    values = np.array([[0.0, 0.0, 0.0], [1.0, 0.4, -1e-3], [1.0, 0.9, -1e-4]])
+    # The branch current `V1:current` has a larger numeric residual (in webers),
+    # which must not shadow electrical nodes (in coulombs).
+    leak = results.ChargeLeak(
+        signed=np.array([1e-18, -1.25e-15, 5e-9]),
+        absolute=np.array([2e-18, 3.5e-15, 5e-9]),
+    )
+    statistics = results.Statistics("direct", 2, 0, 0, 4, charge_leak=leak)
+    waveforms = results.TransientResult(
+        UNKNOWNS, np.array([0.0, 1e-6, 2e-6]), values, statistics
+    )
+    summary = report.report("step", waveforms, max_unknowns=3)
+    assert isinstance(summary, report.TransientReport)
+    assert summary.charge_leak == report.ChargeLeak(
+        net="out", signed=-1.25e-15, absolute=3.5e-15
+    )
+    assert summary.describe().splitlines()[-1] == (
+        "  largest charge leak: out  -1.25 fC signed, 3.5 fC absolute"
+    )
+    zero_leak = results.ChargeLeak(signed=np.zeros(3), absolute=np.zeros(3))
+    quiet = replace(
+        waveforms,
+        statistics=replace(statistics, charge_leak=zero_leak),
+    )
+    quiet_summary = report.report("step", quiet, max_unknowns=3)
+    assert isinstance(quiet_summary, report.TransientReport)
+    assert quiet_summary.charge_leak is None
+    assert "largest charge leak" not in quiet_summary.describe()
+
+
+def test_a_periodic_steady_state_reports_its_largest_charge_leak() -> None:
+    leak = results.ChargeLeak(
+        signed=np.array([0.0, 2.5e-12, 1.0]),
+        absolute=np.array([0.0, 4.0e-12, 1.0]),
+    )
+    statistics = results.Statistics("direct", 2, 0, 0, 4, charge_leak=leak)
+    waveforms = results.PeriodicSteadyStateResult(
+        UNKNOWNS,
+        np.array([0.0, 1e-6]),
+        np.zeros((2, 3)),
+        statistics,
+        period=1e-6,
+        periods=3,
+    )
+    summary = report.report("steady", waveforms, max_unknowns=3)
+    assert isinstance(summary, report.PeriodicSteadyStateReport)
+    assert summary.charge_leak == report.ChargeLeak(
+        net="out", signed=2.5e-12, absolute=4.0e-12
+    )
+    assert summary.describe().splitlines()[-1] == (
+        "  largest charge leak: out  2.5 pC signed, 4 pC absolute"
+    )
 
 
 def test_a_periodic_steady_state_states_its_period_and_periods() -> None:

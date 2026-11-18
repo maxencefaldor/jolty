@@ -53,6 +53,10 @@ STATISTICS = results.Statistics(
         iterations=9, factorizations=1, refactorizations=6, fallbacks=1, reuses=2
     ),
     profile=results.Profile(0.1, 0.4, 0.1, 0.2, 0.1, 0.05, 0.03, 0.02),
+    charge_leak=results.ChargeLeak(
+        signed=np.array([1e-18, -2e-18]),
+        absolute=np.array([3e-18, 4e-18]),
+    ),
 )
 PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
 RECORDING = results.Recording(
@@ -303,6 +307,10 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     step = read["step"]
     assert isinstance(step, results.TransientResult)
     assert step.statistics == STATISTICS
+    assert step.charge_leak("out") == 1e-18
+    assert step.charge_leak("out", absolute=True) == 3e-18
+    assert step.charge_leak("V1:current") == -2e-18
+    assert step.charge_leak("V1:current", absolute=True) == 4e-18
     # Each result keeps the excursions its run watched, or that no run watched them.
     assert step.excursions == (EXCURSION,)
     assert op.excursions is None
@@ -376,7 +384,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 19
+    assert header["version"] == 20
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
@@ -506,3 +514,20 @@ def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
     assert_same(read, sweep, "sweep")
     assert isinstance(read, results.DcSweepResult)
     assert (read.parameter, read.nature) == ("resistance", None)
+
+
+def test_results_files_round_trip_transient_without_charge_leak(
+    tmp_path: Path,
+) -> None:
+    unleaked = results.Statistics("direct", 1, 0, 0, 2)
+    step = results.TransientResult(
+        UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), unleaked
+    )
+    path = tmp_path / "ngspice.results.npz"
+    save_results(path, {"step": step})
+    loaded = load_results(path)["step"]
+    assert_same(loaded, step, "step")
+    assert isinstance(loaded, results.TransientResult)
+    assert loaded.statistics.charge_leak is None
+    with pytest.raises(KeyError, match="no charge leak"):
+        loaded.charge_leak("out")

@@ -31,7 +31,7 @@ import functools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, Never, TypedDict, override
+from typing import Any, ClassVar, Final, Literal, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
@@ -794,6 +794,69 @@ class Profile:
         )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class ChargeLeak:
+    """Each equation's converged residual integrated over a transient's steps.
+
+    In the order of the result's `unknowns` (Kundert and Clifford, "Achieving
+    Accurate Results with a Circuit Simulator", IEEE CICC 1993): coulombs
+    (``A·s``) for electrical nodes and displacement equations, webers (``V·s``)
+    for branch current equations, joules (``W·s``) for thermal nets, and state
+    units for device state equations.
+
+    At every accepted step, Newton iteration stops with residual
+    ``r_n = f(x_n, t_n) + dq/dt``. Integrating ``r_n`` by the step's own
+    integration formula (backward Euler, trapezoidal or Gear2) yields the step
+    increment ``Δℓ_n`` so that on any closed node or cutset whose static
+    currents sum to zero, ``q(T) - q(0)`` equals the sum of `signed` to
+    floating-point rounding, and the charge excursion at every intermediate
+    accepted time stays within the sum of `absolute`.
+
+    Examples:
+        >>> leak = ChargeLeak(np.array([-1e-18]), np.array([2e-18]))
+        >>> leak == ChargeLeak(np.array([-1e-18]), np.array([2e-18]))
+        True
+    """
+
+    signed: Real
+    """The signed integral ``∑ Δℓ_n`` for each unknown: the net charge, flux or
+    energy the solver's nonzero residual added over the transient."""
+    absolute: Real
+    """The cumulative absolute integral ``∑ |Δℓ_n|`` for each unknown: the sum
+    of step leak magnitudes without cancellation, bounding the excursion at
+    every intermediate accepted time."""
+
+    __hash__: ClassVar[None] = None
+
+    def __post_init__(self) -> None:
+        """Validate that `signed` and `absolute` are 1D arrays of equal length.
+
+        Raises:
+            ValueError: When either array is not one-dimensional, or when their
+                lengths differ.
+        """
+        if self.signed.ndim != 1 or self.absolute.ndim != 1:
+            message = (
+                "charge leak arrays must be one-dimensional, not shapes "
+                f"{self.signed.shape} and {self.absolute.shape}"
+            )
+            raise ValueError(message)
+        if self.signed.shape != self.absolute.shape:
+            message = (
+                "signed and absolute charge leak arrays must have the same length, "
+                f"not {self.signed.shape[0]} and {self.absolute.shape[0]}"
+            )
+            raise ValueError(message)
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if type(self) is not type(other) or not isinstance(other, ChargeLeak):
+            return NotImplemented
+        return np.array_equal(self.signed, other.signed) and np.array_equal(
+            self.absolute, other.absolute
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Statistics:
     """How a transient analysis went."""
@@ -816,6 +879,10 @@ class Statistics:
     remembers, and on the pivots its sparse solver kept."""
     profile: Profile | None = None
     """Where the engine's time went, when the options' ``profile`` is on."""
+    charge_leak: ChargeLeak | None = None
+    """Each equation's converged residual integrated over the transient's accepted
+    steps, in the order of the result's `unknowns`; None for ngspice's, which does
+    not compute it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,6 +914,25 @@ class TransientResult(_Devices[Real], _Watched):
     def logic_level(self, net: str) -> LogicTrace:
         """The level of the logic net `net` over time."""
         return self.logic[net_column(self.nets, net)]
+
+    def charge_leak(self, unknown: str, *, absolute: bool = False) -> float:
+        """The integrated residual of `unknown` over the transient.
+
+        Returns the signed net integral by default, or the cumulative absolute
+        integral when `absolute` is true. The unit is coulombs for an electrical
+        node, webers (``V·s``) for a branch current, joules for a thermal net,
+        and state units for a device state.
+
+        Raises:
+            KeyError: When the circuit has no unknown named `unknown`, or when
+                the result holds no charge leak (such as one simulated by ngspice).
+        """
+        leak = self.statistics.charge_leak
+        if leak is None:
+            message = "the result holds no charge leak"
+            raise KeyError(message)
+        values = leak.absolute if absolute else leak.signed
+        return float(values[column(self.unknowns, unknown)])
 
     @override
     def _read(self, values: Real) -> Real:

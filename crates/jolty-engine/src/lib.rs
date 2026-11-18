@@ -123,7 +123,7 @@ pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivity, Sensi
 pub use stability::{Stability, StabilityResult};
 pub use sweep::{DcSweep, DcSweepResult};
 pub use transfer::{TransferFunction, TransferFunctionResult};
-pub use transient::{Statistics, Transient, TransientResult};
+pub use transient::{ChargeLeak, Statistics, Transient, TransientResult};
 pub use values::{ParameterId, Values};
 
 use state::State;

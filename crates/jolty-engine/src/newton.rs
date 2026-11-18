@@ -845,7 +845,7 @@ mod tests {
         };
         let waveforms = simulator.transient(&transient, &options).unwrap();
         let (searched, refactored, reused) = work(before, simulator.state.solver.statistics());
-        let steps = waveforms.statistics;
+        let steps = &waveforms.statistics;
         assert!(steps.accepted >= 1000, "{} steps", steps.accepted);
         assert!(steps.iterations >= steps.accepted);
         assert!(searched + refactored + reused >= steps.iterations);
@@ -897,7 +897,7 @@ mod tests {
             .unwrap();
         // The work counts the operating point's iterations and the rejected steps' beside
         // the accepted steps', and each iteration factors its Jacobian once.
-        let (steps, work) = (plain.statistics, plain.statistics.work);
+        let (steps, work) = (&plain.statistics, plain.statistics.work);
         assert!(work.iterations > steps.iterations, "{work:?} for {steps:?}");
         let factored = work.factorizations + work.refactorizations + work.fallbacks;
         assert!(factored + work.reuses >= work.iterations, "{work:?}");

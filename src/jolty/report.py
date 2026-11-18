@@ -315,6 +315,26 @@ class AcReport(_Model):
         return _join(head, _extents(self.magnitudes), self.unlisted)
 
 
+class ChargeLeak(_Model):
+    """The electrical net with the largest integrated KCL residual over a run."""
+
+    net: str = Field(description="The electrical net with the largest absolute leak.")
+    signed: float = Field(
+        description="The signed net charge leaked into that net, in coulombs."
+    )
+    absolute: float = Field(
+        description="The cumulative absolute charge leaked across every step at that "
+        "net, in coulombs, bounding the drift at every intermediate accepted time."
+    )
+
+
+def _charge_leak_line(leak: ChargeLeak) -> str:
+    """The report line stating the electrical net with the largest charge leak."""
+    signed = format_si(leak.signed, "C")
+    absolute = format_si(leak.absolute, "C")
+    return f"  largest charge leak: {leak.net}  {signed} signed, {absolute} absolute"
+
+
 class TransientReport(_Model):
     """A transient analysis."""
 
@@ -333,13 +353,22 @@ class TransientReport(_Model):
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
+    charge_leak: ChargeLeak | None = Field(
+        default=None,
+        description="The electrical net with the largest cumulative absolute charge "
+        "leak over the run, when nonzero; null when zero, when there are no "
+        "electrical nets, or when the solver reports no charge leak.",
+    )
 
     def describe(self) -> str:
         """The report as text."""
         steps = _steps(self.accepted, self.rejected, self.landed)
         head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
         lines = _extents(self.extents) + _activities(self.activities)
-        return _join(head, lines, self.unlisted)
+        text = _join(head, lines, self.unlisted)
+        if self.charge_leak is None:
+            return text
+        return f"{text}\n{_charge_leak_line(self.charge_leak)}"
 
 
 class PeriodicSteadyStateReport(_Model):
@@ -366,6 +395,12 @@ class PeriodicSteadyStateReport(_Model):
     )
     extents: tuple[Extent, ...]
     unlisted: int = Field(description="Unknowns left out of the list.")
+    charge_leak: ChargeLeak | None = Field(
+        default=None,
+        description="The electrical net with the largest cumulative absolute charge "
+        "leak over the last period, when nonzero; null when zero, when there are no "
+        "electrical nets, or when the solver reports no charge leak.",
+    )
 
     def describe(self) -> str:
         """The report as text."""
@@ -375,7 +410,10 @@ class PeriodicSteadyStateReport(_Model):
             f"{format_si(self.period, 's')}, {format_si(1 / self.period, 'Hz')}, "
             f"found in {self.periods} periods, the last {steps}"
         )
-        return _join(head, _extents(self.extents), self.unlisted)
+        text = _join(head, _extents(self.extents), self.unlisted)
+        if self.charge_leak is None:
+            return text
+        return f"{text}\n{_charge_leak_line(self.charge_leak)}"
 
 
 def _steps(accepted: int, rejected: int, landed: int) -> str:
@@ -1144,6 +1182,29 @@ type AnalysisReport = Annotated[
 """The report of any analysis."""
 
 
+def _largest_charge_leak(result: results.TransientResult) -> ChargeLeak | None:
+    """The electrical net with the largest absolute charge leak, if nonzero."""
+    leak = result.statistics.charge_leak
+    if leak is None:
+        return None
+    worst_index: int | None = None
+    worst_absolute = 0.0
+    for index, unknown in enumerate(result.unknowns):
+        if unknown.nature != "voltage":
+            continue
+        absolute = float(leak.absolute[index])
+        if absolute > worst_absolute:
+            worst_absolute = absolute
+            worst_index = index
+    if worst_index is None:
+        return None
+    return ChargeLeak(
+        net=result.unknowns[worst_index].name,
+        signed=float(leak.signed[worst_index]),
+        absolute=worst_absolute,
+    )
+
+
 def _waveforms_report(
     name: str,
     result: results.TransientResult,
@@ -1155,6 +1216,7 @@ def _waveforms_report(
     """
     extents, nets, unlisted = listed
     statistics = result.statistics
+    charge_leak = _largest_charge_leak(result)
     if isinstance(result, results.PeriodicSteadyStateResult):
         return PeriodicSteadyStateReport(
             name=name,
@@ -1165,6 +1227,7 @@ def _waveforms_report(
             landed=statistics.landed,
             extents=extents,
             unlisted=unlisted,
+            charge_leak=charge_leak,
         )
     return TransientReport(
         name=name,
@@ -1177,6 +1240,7 @@ def _waveforms_report(
             _activity(net, result.logic_level(net).levels) for net in nets
         ),
         unlisted=unlisted,
+        charge_leak=charge_leak,
     )
 
 

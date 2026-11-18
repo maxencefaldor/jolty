@@ -310,6 +310,39 @@ impl Formula {
     pub fn history(&self, previous: [f64; 2], previous_derivative: f64) -> f64 {
         self.beta[0] * previous[0] + self.beta[1] * previous[1] + self.gamma * previous_derivative
     }
+
+    /// The charge increment `Δℓ_n` a converged residual `residual` at the new point adds,
+    /// given `previous_residual` at the previous point and `previous_increment` of the step
+    /// before: `(residual − γ · previous_residual + β₁ · previous_increment) / α`.
+    ///
+    /// Because `α + β₀ + β₁ = 0`, the step formula
+    /// `q̇_n = α q_n + β₀ q_{n-1} + β₁ q_{n-2} + γ q̇_{n-1}` rearranges to
+    /// `α Δq_n = q̇_n − γ q̇_{n-1} + β₁ Δq_{n-1}`. Substituting `q̇_n = r_n − f_n` splits
+    /// each step's charge change linearly into the discrete integral of `−f` plus that of
+    /// the residual `r`:
+    /// - backward Euler (`β₁ = 0, γ = 0`): `h · r_n`,
+    /// - trapezoidal (`β₁ = 0, γ = −1`): `½ h · (r_n + r_{n-1})`,
+    /// - Gear2 (`γ = 0`): `h · (ω r̄_{n-1} + (1 + ω) r_n) / (1 + 2ω)`, a convex combination
+    ///   of the previous step's mean leak rate `r̄_{n-1} = Δℓ_{n-1} / h_{n-1}` and `r_n`.
+    ///
+    /// Zero coefficients skip reading earlier steps, so backward Euler and post-restart
+    /// steps do not depend on `previous_residual` or `previous_increment`.
+    #[must_use]
+    pub fn integral_increment(
+        &self,
+        residual: f64,
+        previous_residual: f64,
+        previous_increment: f64,
+    ) -> f64 {
+        let mut rate = residual;
+        if self.gamma != 0.0 {
+            rate -= self.gamma * previous_residual;
+        }
+        if self.beta[1] != 0.0 {
+            rate += self.beta[1] * previous_increment;
+        }
+        rate / self.alpha
+    }
 }
 
 /// The divided difference `f[t_0, …, t_k]` of `values` sampled at the distinct `times`,
@@ -528,5 +561,140 @@ mod tests {
         assert!((formula.alpha - 3.0).abs() < 1e-15);
         assert!((formula.beta[0] + 4.0).abs() < 1e-15);
         assert!((formula.beta[1] - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn integral_increment_ignores_earlier_steps_on_backward_euler() {
+        let formula = Formula::new(Method::BackwardEuler, 2e-6, 1e-6);
+        let increment = formula.integral_increment(3e-9, f64::NAN, f64::INFINITY);
+        let expected = 3e-9 / formula.alpha;
+        assert_eq!(increment.to_bits(), expected.to_bits());
+    }
+
+    proptest! {
+        /// For any sequence of steps and residuals across backward Euler, trapezoidal,
+        /// Gear2, and mixed sequences with restarts, summing `integral_increment` equals
+        /// the exact discrete charge change `q_N - q_0` when static current `f == 0`.
+        #[test]
+        fn integral_increment_matches_charge_change_for_every_formula(
+            initial_charge in -1e-9..1e-9f64,
+            exponents in proptest::collection::vec(-10.0..-8.0f64, 4..32),
+            targets in proptest::collection::vec(-1e-3..1e-3f64, 4..32),
+        ) {
+            let count = exponents.len().min(targets.len());
+            let steps: Vec<f64> = exponents[..count]
+                .iter()
+                .map(|&exponent| 10_f64.powf(exponent))
+                .collect();
+            for mode in 0..4u8 {
+                let mut charge = initial_charge;
+                let mut previous_charge = initial_charge;
+                let mut previous_derivative = 0.0;
+                let mut leak = 0.0;
+                let mut previous_residual = 0.0;
+                let mut previous_increment = 0.0;
+                let mut previous_step = steps[0];
+                let mut charge_scale = initial_charge.abs();
+                let mut ratio_sum = 0.0;
+                for (index, (&step, &target)) in steps.iter().zip(&targets[..count]).enumerate() {
+                    let method = if index < 2 {
+                        Method::BackwardEuler
+                    } else {
+                        match mode {
+                            0 => Method::BackwardEuler,
+                            1 => Method::Trapezoidal,
+                            2 => Method::Gear2,
+                            _ => match index % 7 {
+                                0 | 1 => Method::BackwardEuler,
+                                2 | 4 => Method::Trapezoidal,
+                                _ => Method::Gear2,
+                            },
+                        }
+                    };
+                    let formula = Formula::new(method, step, previous_step);
+                    let history = formula.history([charge, previous_charge], previous_derivative);
+                    let next_charge = (target - history) / formula.alpha;
+                    let residual = formula.alpha * next_charge + history;
+                    let increment = formula.integral_increment(
+                        residual,
+                        previous_residual,
+                        previous_increment,
+                    );
+                    leak += increment;
+                    charge_scale = charge_scale.max(next_charge.abs());
+                    let ratio_weight = if method == Method::Gear2 {
+                        step / previous_step
+                    } else {
+                        1.0
+                    };
+                    ratio_sum += 1.0 + ratio_weight;
+                    previous_charge = charge;
+                    charge = next_charge;
+                    previous_derivative = residual;
+                    previous_residual = residual;
+                    previous_increment = increment;
+                    previous_step = step;
+                }
+                let actual = charge - initial_charge;
+                // Per-step rounding scales with `(1 + ratio) * eps * max(|q|)` when Gear2
+                // divides by `alpha` and combines `beta_0` and `beta_1`.
+                let bound =
+                    32.0 * f64::EPSILON * ratio_sum * charge_scale.max(leak.abs()).max(1e-30);
+                prop_assert!(
+                    (actual - leak).abs() <= bound,
+                    "mode {mode}: actual {actual:e} vs leak {leak:e} (bound {bound:e})"
+                );
+            }
+        }
+
+        /// Integrating a constant residual `c` over arbitrary non-uniform steps spanning
+        /// total time `T` equals `c * T` for backward Euler, trapezoidal, and Gear2.
+        #[test]
+        fn integral_increment_integrates_a_constant_residual_exactly(
+            constant_residual in -1e-3..1e-3f64,
+            exponents in proptest::collection::vec(-10.0..-7.0f64, 4..32),
+        ) {
+            let steps: Vec<f64> = exponents
+                .iter()
+                .map(|&exponent| 10_f64.powf(exponent))
+                .collect();
+            let total_time: f64 = steps.iter().sum();
+            let expected = constant_residual * total_time;
+            for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+                let mut total = 0.0;
+                let mut previous_residual = 0.0;
+                let mut previous_increment = 0.0;
+                let mut previous_step = steps[0];
+                let mut ratio_sum = 0.0;
+                for (index, &step) in steps.iter().enumerate() {
+                    let chosen = if index < 2 {
+                        Method::BackwardEuler
+                    } else {
+                        method
+                    };
+                    let formula = Formula::new(chosen, step, previous_step);
+                    let increment = formula.integral_increment(
+                        constant_residual,
+                        previous_residual,
+                        previous_increment,
+                    );
+                    total += increment;
+                    let ratio_weight = if chosen == Method::Gear2 {
+                        step / previous_step
+                    } else {
+                        1.0
+                    };
+                    ratio_sum += 1.0 + ratio_weight;
+                    previous_residual = constant_residual;
+                    previous_increment = increment;
+                    previous_step = step;
+                }
+                let bound = 64.0 * f64::EPSILON * ratio_sum * expected.abs().max(1e-30);
+                prop_assert!(
+                    (total - expected).abs() <= bound,
+                    "{method:?}: {total:e} vs {expected:e} (bound {bound:e})"
+                );
+            }
+        }
     }
 }

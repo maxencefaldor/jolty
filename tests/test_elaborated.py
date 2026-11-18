@@ -105,6 +105,9 @@ def _found(simulation: Simulation, source: str) -> list[bytes | str]:
                 found.append(value.tobytes())
             elif isinstance(value, results.Statistics):
                 found.append(repr(value.work))
+                if value.charge_leak is not None:
+                    found.append(value.charge_leak.signed.tobytes())
+                    found.append(value.charge_leak.absolute.tobytes())
     return found
 
 
