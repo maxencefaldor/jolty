@@ -133,6 +133,7 @@ from measuring import (
     available_memory_bytes,
     commit,
     duration,
+    format_json,
     git,
     load,
     load_average,
@@ -561,7 +562,7 @@ def fixtures() -> dict[str, Fixture]:
                 stale.append(f"{path.relative_to(ROOT)} ({script.__name__}.py)")
     found = planned()
     for name, fixture in found.items():
-        written = json.dumps(engine_plan(fixture), indent=2) + "\n"
+        written = format_json(engine_plan(fixture)) + "\n"
         path = PLANS / f"{name}.json"
         if not path.is_file() or path.read_text(encoding="utf-8") != written:
             stale.append(f"{path.relative_to(ROOT)}")

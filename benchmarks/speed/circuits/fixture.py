@@ -12,11 +12,15 @@ Run a fixture's script from the repository root, so the instances' script lines 
 written relative to it, such as ``uv run python benchmarks/speed/circuits/bjt_amp.py``.
 """
 
-import json
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+
+# The suites' measuring helpers lie beside the suites' directories.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from measuring import format_json
 
 from jolty import Component, Plan, circuit
 from jolty.plan import Ac, OperatingPoint, Transient
@@ -69,5 +73,5 @@ def write(circuits: Mapping[str, Component], fixtures: Mapping[str, Fixture]) ->
         written = circuit(top).model_dump_json()
         (CIRCUITS / f"{name}.json").write_text(written + "\n", encoding="utf-8")
     for name, fixture in fixtures.items():
-        written = json.dumps(engine_plan(fixture), indent=2)
+        written = format_json(engine_plan(fixture))
         (PLANS / f"{name}.json").write_text(written + "\n", encoding="utf-8")

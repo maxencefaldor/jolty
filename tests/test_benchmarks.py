@@ -1634,3 +1634,80 @@ def test_deviations_bjt_amp_transient_has_no_chord_sag() -> None:
     # Against 0.1 us fine grid, linear interpolation gave 3.9e-3; Huynh cubic ~1.8e-5.
     found_deviation = bench.deviations({"tran": plan_tran}, ref, cand)["tran"]
     assert found_deviation < 5e-5
+
+
+def test_format_json_compacts_scalar_arrays_and_flat_object_lists(
+    tmp_path: Path,
+) -> None:
+    nested: dict[str, object] = {
+        "wall": (1.0, 2.5, 3.25),
+        "pair": [3.75, 0.0],
+        "labels": ["op", "operating_point"],
+    }
+    document: dict[str, object] = {
+        "nested": nested,
+        "matrix": [[1.0, 2.0], [3.0, 4.0]],
+        "parts": [
+            {"kind": "resistor", "value": 10.0, "part_number": None},
+            {"kind": "resistor", "value": 10.1, "part_number": "RC0603"},
+        ],
+        "mixed": [{"count": 1}, {"values": [1, 2]}],
+        "empty_list": [],
+        "empty_object": {},
+    }
+    formatted = measuring.format_json(document)
+    parsed = json.loads(formatted)
+    assert parsed == {**document, "nested": {**nested, "wall": [1.0, 2.5, 3.25]}}
+    assert '  "nested": {\n    "wall": [1.0, 2.5, 3.25],' in formatted
+    assert '    "pair": [3.75, 0.0],' in formatted
+    assert '    "labels": ["op", "operating_point"]' in formatted
+    assert (
+        '    {"kind": "resistor", "value": 10.0, "part_number": null},\n'
+        '    {"kind": "resistor", "value": 10.1, "part_number": "RC0603"}'
+    ) in formatted
+    assert "    [1.0, 2.0],\n    [3.0, 4.0]" in formatted
+    assert '  "empty_list": [],' in formatted
+    assert '  "empty_object": {}' in formatted
+    assert measuring.format_json(parsed) == formatted
+
+    sorted_text = measuring.format_json(
+        {"b": [{"z": 1, "a": 2}], "a": 0}, sort_keys=True
+    )
+    assert sorted_text == '{\n  "a": 0,\n  "b": [\n    {"a": 2, "z": 1}\n  ]\n}'
+
+    output = tmp_path / "compact.json"
+    measuring.save(output, document)
+    saved_text = output.read_text(encoding="utf-8")
+    assert saved_text == formatted + "\n"
+    assert measuring.load(output) == parsed
+
+
+def test_format_json_rejects_invalid_indent_non_finite_floats_and_types() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        measuring.format_json({}, indent=-1)
+    for invalid in (math.nan, [1.0, math.inf], [{"value": -math.inf}]):
+        with pytest.raises(ValueError, match="JSON compliant"):
+            measuring.format_json(invalid)
+    with pytest.raises(TypeError, match="strings"):
+        measuring.format_json({1: "a"})
+    with pytest.raises(TypeError, match="unsupported JSON value"):
+        measuring.format_json(object())
+
+
+def test_committed_benchmark_json_files_stay_in_canonical_compact_form() -> None:
+    tracked = (
+        COST_DOWN / "given" / "catalog.json",
+        SPEED_RESULTS / "430c75d6b0b402812924ebcfd22ed6c91fee6378.json",
+    )
+    for path in tracked:
+        raw = path.read_text(encoding="utf-8")
+        assert raw.endswith("\n"), path
+        assert measuring.format_json(json.loads(raw)) + "\n" == raw, path
+
+    for name, fixture in timing.planned().items():
+        plan_path = bench.PLANS / f"{name}.json"
+        raw = plan_path.read_text(encoding="utf-8")
+        assert raw.endswith("\n"), plan_path
+        expected = measuring.format_json(bench.engine_plan(fixture)) + "\n"
+        assert raw == expected, plan_path
+        assert measuring.format_json(json.loads(raw)) + "\n" == raw, plan_path

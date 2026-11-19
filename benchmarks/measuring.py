@@ -6,11 +6,11 @@ other programs put on it, and writes what it found to a results file headed by i
 provenance: the commit, marked ``-dirty`` when tracked files have changes, and the
 machine. This module is the one definition of each, which every suite imports: the
 suites themselves (`Suite`), `load_average`, `commit`, `machine`, `provenance`,
-`results_path` in each suite's `results_directory`, and `save` and `load` for the
-results files; `duration`, how the suites print a time; `memory`, how they print a byte
-count; `ru_maxrss_to_bytes`, `peak_memory_bytes` and `available_memory_bytes` for
-resident memory; and `median`, the median of a time's runs with the interval that holds
-the true median at `CONFIDENCE`.
+`results_path` in each suite's `results_directory`, and `format_json`, `save` and
+`load` for the results files; `duration`, how the suites print a time; `memory`, how
+they print a byte count; `ru_maxrss_to_bytes`, `peak_memory_bytes` and
+`available_memory_bytes` for resident memory; and `median`, the median of a time's runs
+with the interval that holds the true median at `CONFIDENCE`.
 """
 
 import json
@@ -206,13 +206,147 @@ def shown(path: Path) -> Path:
     return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
 
 
+_DEFAULT_JSON_INDENT: Final = 2
+"""Default spaces per indentation level in diffable JSON files."""
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonStyle:
+    """Indentation width and key-ordering policy for `format_json`."""
+
+    indent: int
+    sort_keys: bool
+
+
+def _is_json_scalar(value: object) -> bool:
+    """Return whether `value` is a JSON scalar: null, boolean, number, or string."""
+    return value is None or isinstance(value, bool | int | float | str)
+
+
+def _is_flat_json_object(value: object) -> bool:
+    """Return whether `value` is a mapping of string keys to JSON scalars."""
+    return isinstance(value, Mapping) and all(
+        isinstance(key, str) and _is_json_scalar(item) for key, item in value.items()
+    )
+
+
+def _entry_key[V](entry: tuple[str, V]) -> str:
+    """Return the key of a `(key, value)` entry for sorting."""
+    return entry[0]
+
+
+def _mapping_entries[K, V](
+    mapping: Mapping[K, V], *, sort_keys: bool
+) -> list[tuple[str, V]]:
+    """Return `(key, value)` pairs from `mapping`, verifying string keys.
+
+    Raises:
+        TypeError: When any key in `mapping` is not a string.
+    """
+    entries: list[tuple[str, V]] = []
+    for key, item in mapping.items():
+        if not isinstance(key, str):
+            message = f"JSON object keys must be strings, not {type(key).__name__}"
+            raise TypeError(message)
+        entries.append((key, item))
+    if sort_keys:
+        entries.sort(key=_entry_key)
+    return entries
+
+
+def _format_flat_object[K, V](mapping: Mapping[K, V], style: _JsonStyle) -> str:
+    """Serialize a flat mapping of string keys to JSON scalars onto one line."""
+    entries = _mapping_entries(mapping, sort_keys=style.sort_keys)
+    return json.dumps(dict(entries), allow_nan=False)
+
+
+def _format_sequence(items: Sequence[object], style: _JsonStyle, level: int) -> str:
+    """Format a JSON array, keeping scalar lists and flat object items on one line."""
+    if not items:
+        return "[]"
+    if all(_is_json_scalar(item) for item in items):
+        return json.dumps(items, allow_nan=False)
+    child_indent = " " * (style.indent * (level + 1))
+    closing_indent = " " * (style.indent * level)
+    if all(_is_flat_json_object(item) for item in items):
+        formatted = [
+            f"{child_indent}{_format_flat_object(item, style)}"
+            for item in items
+            if isinstance(item, Mapping)
+        ]
+    else:
+        formatted = [
+            f"{child_indent}{_format_json_node(item, style, level + 1)}"
+            for item in items
+        ]
+    joined = ",\n".join(formatted)
+    return f"[\n{joined}\n{closing_indent}]"
+
+
+def _format_mapping[K, V](mapping: Mapping[K, V], style: _JsonStyle, level: int) -> str:
+    """Format a JSON object with one key per line at indentation depth `level`."""
+    entries = _mapping_entries(mapping, sort_keys=style.sort_keys)
+    if not entries:
+        return "{}"
+    child_indent = " " * (style.indent * (level + 1))
+    closing_indent = " " * (style.indent * level)
+    formatted = [
+        f"{child_indent}{json.dumps(key, allow_nan=False)}: "
+        f"{_format_json_node(item, style, level + 1)}"
+        for key, item in entries
+    ]
+    joined = ",\n".join(formatted)
+    return f"{{\n{joined}\n{closing_indent}}}"
+
+
+def _format_json_node(value: object, style: _JsonStyle, level: int) -> str:
+    """Recursively format a JSON value at indentation depth `level`.
+
+    Raises:
+        TypeError: When `value` or any nested element is not JSON-serializable.
+    """
+    if _is_json_scalar(value):
+        return json.dumps(value, allow_nan=False)
+    if isinstance(value, list | tuple):
+        return _format_sequence(value, style, level)
+    if isinstance(value, Mapping):
+        return _format_mapping(value, style, level)
+    message = f"unsupported JSON value of type {type(value).__name__}"
+    raise TypeError(message)
+
+
+def format_json(
+    value: object,
+    *,
+    indent: int = _DEFAULT_JSON_INDENT,
+    sort_keys: bool = False,
+) -> str:
+    """Format `value` as diffable compact JSON without a trailing newline.
+
+    Nested objects and mixed arrays are indented by `indent` spaces for readable
+    diffs. Arrays of JSON scalars (such as numeric samples or `[real, imaginary]`
+    pairs) are kept inline on a single line, and arrays whose elements are all flat
+    objects (such as catalog records) place one object per line. Non-finite floats
+    (`NaN`, `Infinity`) are rejected.
+
+    Raises:
+        TypeError: When `value` contains an unsupported type or a non-string key.
+        ValueError: When `indent` is negative or `value` contains non-finite floats.
+    """
+    if indent < 0:
+        message = f"indent must be non-negative, not {indent}"
+        raise ValueError(message)
+    style = _JsonStyle(indent=indent, sort_keys=sort_keys)
+    return _format_json_node(value, style, 0)
+
+
 def save(path: Path, results: BaseModel | Mapping[str, object]) -> None:
-    """Writes the results file `path`, as JSON, and says so."""
+    """Writes the results file `path`, as diffable compact JSON, and says so."""
     document = (
         results.model_dump(mode="json") if isinstance(results, BaseModel) else results
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(document, indent=2, allow_nan=False)
+    text = format_json(document)
     path.write_text(text + "\n", encoding="utf-8")
     print(f"wrote {shown(path)}")
 

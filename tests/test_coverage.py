@@ -6,6 +6,7 @@ runs every simulator; these tests run jolty's fixtures alone, and fail when the
 committed matrix says otherwise, as the reference pages fail when their source changes.
 """
 
+import json
 import math
 import typing
 from dataclasses import replace
@@ -31,7 +32,7 @@ from capabilities import (
     simulation,
     vbic_currents,
 )
-from measuring import load
+from measuring import format_json, load
 from simulators import Simulator, Unsupported
 
 from differential import SKIP
@@ -75,6 +76,12 @@ def test_jolty_column_is_what_its_fixture_finds(key: str) -> None:
 
 def test_every_row_is_in_the_matrix() -> None:
     assert list(COMMITTED.fixtures) == list(FIXTURES)
+
+
+def test_committed_coverage_json_stays_in_canonical_compact_form() -> None:
+    raw = matrix.RESULTS.read_text(encoding="utf-8")
+    assert raw.endswith("\n")
+    assert format_json(json.loads(raw)) + "\n" == raw
 
 
 def test_jolty_analyses_are_the_plans() -> None:
