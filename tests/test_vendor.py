@@ -17,13 +17,14 @@ import pytest
 
 from differential import (
     SKIP,
-    closest,
-    compare,
-    compared,
+    assert_ac_agrees,
+    assert_dc_sweep_agrees,
+    assert_op_agrees,
+    assert_transient_agrees,
+    dc_command,
     netlist,
     ngspice,
-    size,
-    vector,
+    transient_command,
 )
 from jolty import (
     Ac,
@@ -266,16 +267,7 @@ def test_operating_points_agree(name: str, downloads: Path) -> None:
         compatibility=bench.compatibility,
         options=bench.spice_options,
     )
-    for column, unknown in compared(simulation):
-        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # ngspice TIGHT (reltol=1e-6, vntol=1e-9, abstol=1e-14) agreement floor.
-        compare(
-            point.values[column],
-            spice_value,
-            unknown,
-            scale=abs(spice_value),
-            tolerance=1e-6,
-        )
+    assert_op_agrees(simulation, point, raw)
 
 
 _TEMPERATURES = [
@@ -306,16 +298,7 @@ def test_operating_points_agree_across_temperatures(
         options=bench.spice_options,
         temperature=temperature.value,
     )
-    for column, unknown in compared(simulation):
-        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # ngspice TIGHT (reltol=1e-6, vntol=1e-9, abstol=1e-14) agreement floor.
-        compare(
-            point.values[column],
-            spice_value,
-            unknown,
-            scale=abs(spice_value),
-            tolerance=1e-6,
-        )
+    assert_op_agrees(simulation, point, raw)
 
 
 @pytest.mark.parametrize("name", _benches("dc"))
@@ -328,24 +311,14 @@ def test_dc_sweeps_agree(name: str, downloads: Path) -> None:
     sweep = simulation.run(
         DcSweep("V1", linear(first * V, last * V, count)), bench.options
     )
-    step = (last - first) / (count - 1)
     raw = ngspice.run(
         netlist(simulation.circuit),
-        f"dc VV1 {first!r} {last!r} {step!r}",
+        dc_command("V1", sweep),
         libraries=(file,),
         compatibility=bench.compatibility,
         options=bench.spice_options,
     )
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # ngspice TIGHT (reltol=1e-6) DC sweep agreement across bench voltage levels.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    assert_dc_sweep_agrees(simulation, sweep, raw)
 
 
 @pytest.mark.parametrize("name", _benches("ac"))
@@ -361,16 +334,7 @@ def test_ac_responses_agree(name: str, downloads: Path) -> None:
         compatibility=bench.compatibility,
         options=bench.spice_options,
     )
-    for column, unknown in compared(simulation):
-        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
-        # ngspice TIGHT (reltol=1e-6) linearized AC phasor agreement.
-        compare(
-            response.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    assert_ac_agrees(simulation, response, raw)
 
 
 @pytest.mark.parametrize("name", _benches("tran"))
@@ -383,19 +347,11 @@ def test_transients_agree(name: str, downloads: Path) -> None:
     waveforms = simulation.run(
         Transient(stop=duration, max_step=maximal), bench.options
     )
-    step, stop = maximal.value, duration.value
     raw = ngspice.run(
         netlist(simulation.circuit),
-        f"tran {step!r} {stop!r} 0 {step!r}",
+        transient_command(duration.value, maximal.value),
         libraries=(file,),
         compatibility=bench.compatibility,
         options=bench.spice_options,
     )
-    times = raw.real("time")
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times, waveforms.values[:, column], times, spice_values, step
-        )
-        # Transient time-integration O(h^2) and closest-window comparison vs ngspice.
-        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=maximal.value)

@@ -17,7 +17,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Final, Literal
@@ -27,12 +27,17 @@ import pytest
 
 from differential import (
     SKIP,
-    closest,
+    assert_ac_agrees,
+    assert_dc_sweep_agrees,
+    assert_noise_agrees,
+    assert_op_agrees,
+    assert_transient_agrees,
     compare,
-    compared,
+    dc_command,
     netlist,
     ngspice,
     size,
+    transient_command,
     vector,
 )
 from jolty import (
@@ -94,11 +99,59 @@ from jolty.units import (
     uS,
     us,
 )
-from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
+from jolty.waveforms import Exponential, Piecewise, Pulse, Sine, Waveform
 
 pytestmark = SKIP
 
 # The corpus.
+
+
+def _wire_rc(c: Builder, waveform: Waveform) -> None:
+    """Wires a 1 kΩ, 1 nF RC low-pass network driven by `waveform`."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(waveform), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+@dataclass(frozen=True, slots=True)
+class _CommonSourceSpec:
+    """Parameters of a common-source transistor amplifier stage."""
+
+    supply: Quantity
+    signal: Sine
+    gate_resistance: Quantity
+    drain_resistance: Quantity
+    transistor: devices.Device
+    transistor_name: str
+    source_resistance: Quantity | None = None
+
+
+def _wire_common_source_stage(c: Builder, spec: _CommonSourceSpec) -> None:
+    """Wires a common-source stage with optional source degeneration and bulk tie."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(spec.supply), name="V2")
+    source = c.place(devices.voltage_source(spec.signal), name="V1")
+    gate = c.place(devices.resistor(spec.gate_resistance), name="RG")
+    transistor = c.place(spec.transistor, name=spec.transistor_name)
+    drain = c.place(devices.resistor(spec.drain_resistance), name="RD")
+    c.connect(source.positive, gate.a, name="in")
+    c.connect(gate.b, transistor.gate, name="gate")
+    c.connect(supply.positive, drain.a, name="supply")
+    c.connect(drain.b, transistor.drain, name="out")
+    grounded = [source.negative, supply.negative]
+    if spec.source_resistance is not None:
+        degeneration = c.place(devices.resistor(spec.source_resistance), name="RS")
+        c.connect(transistor.source, degeneration.a, name="tail")
+        grounded.append(degeneration.b)
+    else:
+        grounded.append(transistor.source)
+    if "bulk" in spec.transistor.terminals:
+        grounded.append(transistor.bulk)
+    c.connect(*grounded, ground)
 
 
 @component
@@ -114,34 +167,23 @@ def divider(c: Builder) -> None:
 
 @component
 def low_pass(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
-    source = c.place(devices.voltage_source(step), name="V1")
-    resistor = c.place(devices.resistor(1 * kohm), name="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-    c.connect(source.positive, resistor.a, name="in")
-    c.connect(resistor.b, capacitor.a, name="out")
-    c.connect(capacitor.b, source.negative, ground)
+    _wire_rc(c, Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)]))
 
 
 @component
 def exponential(c: Builder) -> None:
     """An RC driven by SPICE's ``EXP``: a rise at 1 µs and a fall back from 5 µs."""
-    ground = c.port("ground", Role.GROUND)
-    rise_and_fall = Exponential(
-        initial=0.5 * V,
-        pulsed=2 * V,
-        rise_delay=1 * us,
-        rise_time_constant=0.5 * us,
-        fall_delay=5 * us,
-        fall_time_constant=1 * us,
+    _wire_rc(
+        c,
+        Exponential(
+            initial=0.5 * V,
+            pulsed=2 * V,
+            rise_delay=1 * us,
+            rise_time_constant=0.5 * us,
+            fall_delay=5 * us,
+            fall_time_constant=1 * us,
+        ),
     )
-    source = c.place(devices.voltage_source(rise_and_fall), name="V1")
-    resistor = c.place(devices.resistor(1 * kohm), name="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-    c.connect(source.positive, resistor.a, name="in")
-    c.connect(resistor.b, capacitor.a, name="out")
-    c.connect(capacitor.b, source.negative, ground)
 
 
 @component
@@ -168,21 +210,17 @@ def resonator(c: Builder) -> None:
 @component
 def triangle(c: Builder) -> None:
     """A pulse with no width, a triangle wave, which ngspice reads its own way."""
-    ground = c.port("ground", Role.GROUND)
-    pulse = Pulse(
-        initial=0 * V,
-        pulsed=1 * V,
-        rise=10 * us,
-        fall=10 * us,
-        width=0 * us,
-        period=20 * us,
+    _wire_rc(
+        c,
+        Pulse(
+            initial=0 * V,
+            pulsed=1 * V,
+            rise=10 * us,
+            fall=10 * us,
+            width=0 * us,
+            period=20 * us,
+        ),
     )
-    source = c.place(devices.voltage_source(pulse), name="V1")
-    resistor = c.place(devices.resistor(1 * kohm), name="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-    c.connect(source.positive, resistor.a, name="in")
-    c.connect(resistor.b, capacitor.a, name="out")
-    c.connect(capacitor.b, source.negative, ground)
 
 
 @component
@@ -483,24 +521,25 @@ _JFET = devices.jfet(
 
 @component
 def jfet_stage(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), name="V2")
     # Starting at its peak, the sine's slope is zero, so the operating point at zero
     # time is also the transient's start, with no capacitive current to jump.
-    signal = Sine(
-        offset=-0.8 * V, amplitude=0.6 * V, frequency=200 * kHz, phase=math.pi / 2
+    _wire_common_source_stage(
+        c,
+        _CommonSourceSpec(
+            supply=12 * V,
+            signal=Sine(
+                offset=-0.8 * V,
+                amplitude=0.6 * V,
+                frequency=200 * kHz,
+                phase=math.pi / 2,
+            ),
+            gate_resistance=1 * kohm,
+            drain_resistance=2.2 * kohm,
+            transistor=_JFET,
+            transistor_name="J1",
+            source_resistance=470 * ohm,
+        ),
     )
-    source = c.place(devices.voltage_source(signal), name="V1")
-    gate = c.place(devices.resistor(1 * kohm), name="RG")
-    transistor = c.place(_JFET, name="J1")
-    drain = c.place(devices.resistor(2.2 * kohm), name="RD")
-    degeneration = c.place(devices.resistor(470 * ohm), name="RS")
-    c.connect(source.positive, gate.a, name="in")
-    c.connect(gate.b, transistor.gate, name="gate")
-    c.connect(supply.positive, drain.a, name="supply")
-    c.connect(drain.b, transistor.drain, name="out")
-    c.connect(transistor.source, degeneration.a, name="tail")
-    c.connect(source.negative, supply.negative, degeneration.b, ground)
 
 
 @component
@@ -866,22 +905,42 @@ def _level_three(
 
 @component
 def level_three_stage(c: Builder) -> None:
+    _wire_common_source_stage(
+        c,
+        _CommonSourceSpec(
+            supply=5 * V,
+            signal=Sine(
+                offset=1.4 * V, amplitude=0.4 * V, frequency=2 * MHz, phase=math.pi / 2
+            ),
+            gate_resistance=100 * kohm,
+            drain_resistance=4.7 * kohm,
+            transistor=_level_three(1.5e5 * m / s),
+            transistor_name="M1",
+        ),
+    )
+
+
+def _wire_mosfet_curves(  # noqa: PLR0913 - builder, transistor, three biases, and pins
+    c: Builder,
+    transistor: Component | devices.Device,
+    gate_bias: Quantity,
+    drain_bias: Quantity,
+    body_bias: Quantity,
+    *,
+    pins: tuple[str, str, str, str] = ("gate", "drain", "bulk", "source"),
+    instance_name: str = "M1",
+) -> None:
+    """Wires a 4-terminal MOSFET curve tracer: gate `V1`, drain `V2`, body `V3`."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), name="V2")
-    signal = Sine(
-        offset=1.4 * V, amplitude=0.4 * V, frequency=2 * MHz, phase=math.pi / 2
-    )
-    source = c.place(devices.voltage_source(signal), name="V1")
-    gate = c.place(devices.resistor(100 * kohm), name="RG")
-    transistor = c.place(_level_three(1.5e5 * m / s), name="M1")
-    drain = c.place(devices.resistor(4.7 * kohm), name="RD")
-    c.connect(source.positive, gate.a, name="in")
-    c.connect(gate.b, transistor.gate, name="gate")
-    c.connect(supply.positive, drain.a, name="supply")
-    c.connect(drain.b, transistor.drain, name="out")
-    c.connect(
-        source.negative, supply.negative, transistor.source, transistor.bulk, ground
-    )
+    gate, drain_pin, bulk, source = pins
+    bias = c.place(devices.voltage_source(gate_bias), name="V1")
+    drain = c.place(devices.voltage_source(drain_bias), name="V2")
+    body = c.place(devices.voltage_source(body_bias), name="V3")
+    placed = c.place(transistor, name=instance_name)
+    c.connect(bias.positive, placed[gate], name="gate")
+    c.connect(drain.positive, placed[drain_pin], name="drain")
+    c.connect(body.positive, placed[bulk], name="body")
+    c.connect(bias.negative, drain.negative, body.negative, placed[source], ground)
 
 
 @component
@@ -891,18 +950,13 @@ def level_three_curves(
     saturation_field_factor: float = 0.4,
     lateral_diffusion: Quantity = 0.2 * um,
 ) -> None:
-    ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(1.5 * V), name="V1")
-    drain = c.place(devices.voltage_source(0 * V), name="V2")
-    body = c.place(devices.voltage_source(-1 * V), name="V3")
-    transistor = c.place(
+    _wire_mosfet_curves(
+        c,
         _level_three(max_drift_velocity, saturation_field_factor, lateral_diffusion),
-        name="M1",
+        1.5 * V,
+        0 * V,
+        -1 * V,
     )
-    c.connect(bias.positive, transistor.gate, name="gate")
-    c.connect(drain.positive, transistor.drain, name="drain")
-    c.connect(body.positive, transistor.bulk, name="body")
-    c.connect(bias.negative, drain.negative, body.negative, transistor.source, ground)
 
 
 @component
@@ -1048,35 +1102,25 @@ def drifting_apart() -> Component:
 
 @component
 def nmos_stage(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(9 * V), name="V2")
-    signal = Sine(
-        offset=1.6 * V, amplitude=0.3 * V, frequency=2 * MHz, phase=math.pi / 2
+    _wire_common_source_stage(
+        c,
+        _CommonSourceSpec(
+            supply=9 * V,
+            signal=Sine(
+                offset=1.6 * V, amplitude=0.3 * V, frequency=2 * MHz, phase=math.pi / 2
+            ),
+            gate_resistance=100 * kohm,
+            drain_resistance=4.7 * kohm,
+            transistor=_NMOS,
+            transistor_name="M1",
+            source_resistance=1 * kohm,
+        ),
     )
-    source = c.place(devices.voltage_source(signal), name="V1")
-    gate = c.place(devices.resistor(100 * kohm), name="RG")
-    transistor = c.place(_NMOS, name="M1")
-    drain = c.place(devices.resistor(4.7 * kohm), name="RD")
-    degeneration = c.place(devices.resistor(1 * kohm), name="RS")
-    c.connect(source.positive, gate.a, name="in")
-    c.connect(gate.b, transistor.gate, name="gate")
-    c.connect(supply.positive, drain.a, name="supply")
-    c.connect(drain.b, transistor.drain, name="out")
-    c.connect(transistor.source, degeneration.a, name="tail")
-    c.connect(source.negative, supply.negative, degeneration.b, transistor.bulk, ground)
 
 
 @component
 def mosfet_curves(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(2 * V), name="V1")
-    drain = c.place(devices.voltage_source(0 * V), name="V2")
-    body = c.place(devices.voltage_source(-3 * V), name="V3")
-    transistor = c.place(_NMOS, name="M1")
-    c.connect(bias.positive, transistor.gate, name="gate")
-    c.connect(drain.positive, transistor.drain, name="drain")
-    c.connect(body.positive, transistor.bulk, name="body")
-    c.connect(bias.negative, drain.negative, body.negative, transistor.source, ground)
+    _wire_mosfet_curves(c, _NMOS, 2 * V, 0 * V, -3 * V)
 
 
 @component
@@ -1370,8 +1414,14 @@ def ion_drift(c: Builder) -> None:
     c.connect(source.negative, cell.negative, ground)
 
 
-@component
-def switched(c: Builder) -> None:
+def _wire_switched(
+    c: Builder,
+    switch_device: devices.Device,
+    switch_name: str,
+    *,
+    control_resistance: Quantity | None = None,
+) -> None:
+    """Wires a pulsed switch driving a 1 kΩ / 10 nF RC load from 5 V."""
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(
         initial=0 * V,
@@ -1383,66 +1433,56 @@ def switched(c: Builder) -> None:
         period=100 * us,
     )
     control = c.place(devices.voltage_source(pulse), name="V1")
+    limit = (
+        c.place(devices.resistor(control_resistance), name="R2")
+        if control_resistance is not None
+        else None
+    )
     supply = c.place(devices.voltage_source(5 * V), name="V2")
     feed = c.place(devices.resistor(1 * kohm), name="R1")
-    switch = c.place(
+    switch = c.place(switch_device, name=switch_name)
+    hold = c.place(devices.capacitor(10 * nF), name="C1")
+    if limit is None:
+        c.connect(control.positive, switch.control_positive, name="control")
+    else:
+        c.connect(control.positive, limit.a, name="control")
+        c.connect(limit.b, switch.control_positive, name="sensed")
+    c.connect(supply.positive, feed.a, name="supply")
+    c.connect(feed.b, switch.positive, hold.a, name="out")
+    c.connect(
+        control.negative,
+        supply.negative,
+        switch.negative,
+        switch.control_negative,
+        hold.b,
+        ground,
+    )
+
+
+@component
+def switched(c: Builder) -> None:
+    _wire_switched(
+        c,
         devices.voltage_controlled_switch(
             on_resistance=10 * ohm,
             off_resistance=1 * Mohm,
             on_voltage=2 * V,
             off_voltage=1 * V,
         ),
-        name="S1",
-    )
-    hold = c.place(devices.capacitor(10 * nF), name="C1")
-    c.connect(control.positive, switch.control_positive, name="control")
-    c.connect(supply.positive, feed.a, name="supply")
-    c.connect(feed.b, switch.positive, hold.a, name="out")
-    c.connect(
-        control.negative,
-        supply.negative,
-        switch.negative,
-        switch.control_negative,
-        hold.b,
-        ground,
+        "S1",
     )
 
 
 @component
 def current_switched(c: Builder) -> None:
     """A switch the current through its control port moves, its parameters defaulted."""
-    ground = c.port("ground", Role.GROUND)
-    pulse = Pulse(
-        initial=0 * V,
-        pulsed=3 * V,
-        delay=10 * us,
-        rise=5 * us,
-        fall=5 * us,
-        width=30 * us,
-        period=100 * us,
-    )
-    control = c.place(devices.voltage_source(pulse), name="V1")
-    limit = c.place(devices.resistor(1 * kohm), name="R2")
-    supply = c.place(devices.voltage_source(5 * V), name="V2")
-    feed = c.place(devices.resistor(1 * kohm), name="R1")
-    switch = c.place(
+    _wire_switched(
+        c,
         devices.current_controlled_switch(
             on_resistance=10 * ohm, on_current=2 * mA, off_current=1 * mA
         ),
-        name="W1",
-    )
-    hold = c.place(devices.capacitor(10 * nF), name="C1")
-    c.connect(control.positive, limit.a, name="control")
-    c.connect(limit.b, switch.control_positive, name="sensed")
-    c.connect(supply.positive, feed.a, name="supply")
-    c.connect(feed.b, switch.positive, hold.a, name="out")
-    c.connect(
-        control.negative,
-        supply.negative,
-        switch.negative,
-        switch.control_negative,
-        hold.b,
-        ground,
+        "W1",
+        control_resistance=1 * kohm,
     )
 
 
@@ -1571,25 +1611,23 @@ def p_power_curves() -> Component:
 @component
 def power_stage(c: Builder) -> None:
     """A VDMOS amplifier: about an ampere through 10 Ω, its gate fed through 1 kΩ."""
-    ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(24 * V), name="V2")
-    signal = Sine(
-        offset=5.3 * V, amplitude=0.05 * V, frequency=200 * kHz, phase=math.pi / 2
+    _wire_common_source_stage(
+        c,
+        _CommonSourceSpec(
+            supply=24 * V,
+            signal=Sine(
+                offset=5.3 * V,
+                amplitude=0.05 * V,
+                frequency=200 * kHz,
+                phase=math.pi / 2,
+            ),
+            gate_resistance=1 * kohm,
+            drain_resistance=10 * ohm,
+            transistor=_power(flicker_coefficient=1e-25, flicker_exponent=1.2),
+            transistor_name="M1",
+            source_resistance=1 * ohm,
+        ),
     )
-    source = c.place(devices.voltage_source(signal), name="V1")
-    feed = c.place(devices.resistor(1 * kohm), name="RG")
-    transistor = c.place(
-        _power(flicker_coefficient=1e-25, flicker_exponent=1.2),
-        name="M1",
-    )
-    load = c.place(devices.resistor(10 * ohm), name="RD")
-    degeneration = c.place(devices.resistor(1 * ohm), name="RS")
-    c.connect(source.positive, feed.a, name="in")
-    c.connect(feed.b, transistor.gate, name="gate")
-    c.connect(supply.positive, load.a, name="supply")
-    c.connect(load.b, transistor.drain, name="out")
-    c.connect(transistor.source, degeneration.a, name="tail")
-    c.connect(source.negative, supply.negative, degeneration.b, ground)
 
 
 @component
@@ -1727,6 +1765,39 @@ def flickering(c: Builder) -> None:
     )
 
 
+def _run_and_compare_dc_sweep(  # noqa: PLR0913 - simulation, sweep spec, and ngspice options
+    simulation: Simulation,
+    source: str,
+    levels: list[Quantity],
+    *,
+    temperature: float = _core.REFERENCE_TEMPERATURE,
+    libraries: tuple[Path, ...] = (),
+    vector_names: Mapping[str, str] | None = None,
+) -> results.DcSweepResult:
+    """Runs a DC sweep in jolty and ngspice and asserts every shared unknown agrees."""
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    raw = ngspice.run(
+        netlist(simulation.circuit),
+        dc_command(source, sweep),
+        libraries=libraries,
+        temperature=temperature,
+    )
+    assert_dc_sweep_agrees(simulation, sweep, raw, vector_names=vector_names)
+    return sweep
+
+
+def _assert_op_and_ac_agree(top: Component, kelvins: float) -> None:
+    """Asserts a stage's operating point and 10 Hz to 10 GHz AC response agree."""
+    simulation = Simulation(top)
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
+    assert_op_agrees(simulation, point, raw)
+    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
+    assert_ac_agrees(simulation, response, raw)
+
+
 @pytest.mark.parametrize(
     "top",
     [
@@ -1766,10 +1837,7 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     simulation = Simulation(top())
     point = simulation.run(OperatingPoint(), TIGHT)
     raw = ngspice.run(netlist(simulation.circuit), "op")
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
+    assert_op_agrees(simulation, point, raw)
 
 
 @component
@@ -1806,10 +1874,8 @@ def test_a_transistor_without_a_substrate_agrees_to_rounding(
     simulation = Simulation(bare_transistor(polarity))
     point = simulation.run(OperatingPoint(), TIGHT)
     raw = ngspice.run(netlist(simulation.circuit), "op")
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))[0]
-        # No substrate junction: engines agree to rounding (1e-10 vs ngspice).
-        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-10)
+    # No substrate junction: engines agree to rounding (1e-10 vs ngspice).
+    assert_op_agrees(simulation, point, raw, tolerance=1e-10)
 
 
 TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
@@ -1845,49 +1911,97 @@ def test_operating_points_agree_across_temperatures(
     simulation = Simulation(top(), temperature)
     point = simulation.run(OperatingPoint(), TIGHT)
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=temperature.value)
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
+    assert_op_agrees(simulation, point, raw)
 
 
-@pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
+_TEMPERATURE_DC_SWEEPS: Final[
+    list[tuple[Callable[[], Component], str, list[Quantity]]]
+] = [
+    (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
+    (junction_parts, "V1", linear(-12 * V, 2 * V, 141)),
+    (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+    (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
+    (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
+    (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
+    (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
+    (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
+    (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
+    (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
+    (drifting, "V1", linear(0 * V, 15 * V, 76)),
+    (drifting_apart, "V1", linear(0 * V, 15 * V, 76)),
+]
+
+_NOMINAL_DC_SWEEPS: Final[list[tuple[Callable[[], Component], str, list[Quantity]]]] = [
+    (divider, "V1", linear(-5 * V, 5 * V, 21)),
+    (clipper, "V1", linear(-2 * V, 2 * V, 81)),
+    (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
+    (jfet_stage, "V1", linear(-3 * V, 1 * V, 81)),
+    (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+    (p_jfet_follower, "V1", linear(-4 * V, 2 * V, 61)),
+    (bjt_stage, "V1", linear(-1 * V, 3 * V, 81)),
+    (integrated_stage, "V3", linear(-2 * V, 6 * V, 81)),
+    (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
+    (current_controlled, "V1", linear(-3 * V, 3 * V, 13)),
+    (nmos_stage, "V1", linear(-1 * V, 5 * V, 61)),
+    (mosfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+    (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
+    (level_three_stage, "V1", linear(0 * V, 3 * V, 61)),
+    (level_three_curves, "V2", linear(-3 * V, 5 * V, 81)),
+    (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
+    # `KAPPA=0`, read by ngspice as no channel shortening, with and without
+    # velocity saturation.
+    (lambda: level_three_curves(None, 0.0), "V2", linear(-3 * V, 5 * V, 81)),
+    # A negative lateral diffusion lengthens the channel, as CircuitSim90's jge's
+    # cards have it.
+    (
+        lambda: level_three_curves(lateral_diffusion=-0.025 * um),
+        "V2",
+        linear(-3 * V, 5 * V, 81),
+    ),
+    (
+        lambda: level_three_curves(1.5e5 * m / s, 0.0),
+        "V2",
+        linear(-3 * V, 5 * V, 81),
+    ),
+    (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
+    (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
+    (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
+    (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
+    (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
+    (power_stage, "V1", linear(3 * V, 6 * V, 61)),
+    (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
+    (switched, "V1", linear(0 * V, 3 * V, 61)),
+    (curved, "V1", linear(-3 * V, 3 * V, 61)),
+    (lit, "V2", linear(-1 * V, 100 * V, 102)),
+    (expressions, "V1", linear(-1.95 * V, 1.95 * V, 40)),
+]
+
+
 @pytest.mark.parametrize(
-    ("top", "source", "levels"),
+    ("top", "source", "levels", "temperature"),
     [
-        (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
-        (junction_parts, "V1", linear(-12 * V, 2 * V, 141)),
-        (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
-        (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
-        (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
-        (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
-        (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
-        (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
-        (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
-        (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
-        (drifting, "V1", linear(0 * V, 15 * V, 76)),
-        (drifting_apart, "V1", linear(0 * V, 15 * V, 76)),
+        *(
+            (top, source, levels, temperature)
+            for temperature in TEMPERATURES.values()
+            for top, source, levels in _TEMPERATURE_DC_SWEEPS
+        ),
+        *((top, source, levels, None) for top, source, levels in _NOMINAL_DC_SWEEPS),
     ],
 )
-def test_dc_sweeps_agree_across_temperatures(
+def test_dc_sweeps_agree(
     top: Callable[[], Component],
     source: str,
     levels: list[Quantity],
-    temperature: Quantity,
+    temperature: Quantity | None,
 ) -> None:
-    simulation = Simulation(top(), temperature)
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice.run(
-        netlist(simulation.circuit), command, temperature=temperature.value
-    )
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
+    if temperature is None:
+        _run_and_compare_dc_sweep(Simulation(top()), source, levels)
+    else:
+        _run_and_compare_dc_sweep(
+            Simulation(top(), temperature),
+            source,
+            levels,
+            temperature=temperature.value,
         )
 
 
@@ -1903,16 +2017,7 @@ def test_ac_responses_agree_across_temperatures(
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
     raw = ngspice.run(lines, "ac dec 20 10 10meg", temperature=temperature.value)
-    for column, unknown in compared(simulation):
-        spice = raw.vectors[vector(simulation.circuit, unknown)]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
-        compare(
-            response.values[:, column],
-            spice,
-            unknown,
-            scale=size(spice),
-            tolerance=1e-6,
-        )
+    assert_ac_agrees(simulation, response, raw)
 
 
 def test_loop_gains_agree() -> None:
@@ -1930,70 +2035,6 @@ def test_loop_gains_agree() -> None:
     assert abs(expected[0]) > 1
     # TIGHT (reltol=1e-6) loop-gain agreement vs ngspice double injection.
     compare(loop.gains, expected, current, scale=size(expected), tolerance=1e-6)
-
-
-@pytest.mark.parametrize(
-    ("top", "source", "levels"),
-    [
-        (divider, "V1", linear(-5 * V, 5 * V, 21)),
-        (clipper, "V1", linear(-2 * V, 2 * V, 81)),
-        (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
-        (jfet_stage, "V1", linear(-3 * V, 1 * V, 81)),
-        (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
-        (p_jfet_follower, "V1", linear(-4 * V, 2 * V, 61)),
-        (bjt_stage, "V1", linear(-1 * V, 3 * V, 81)),
-        (integrated_stage, "V3", linear(-2 * V, 6 * V, 81)),
-        (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
-        (current_controlled, "V1", linear(-3 * V, 3 * V, 13)),
-        (nmos_stage, "V1", linear(-1 * V, 5 * V, 61)),
-        (mosfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
-        (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
-        (level_three_stage, "V1", linear(0 * V, 3 * V, 61)),
-        (level_three_curves, "V2", linear(-3 * V, 5 * V, 81)),
-        (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
-        # `KAPPA=0`, read by ngspice as no channel shortening, with and without
-        # velocity saturation.
-        (lambda: level_three_curves(None, 0.0), "V2", linear(-3 * V, 5 * V, 81)),
-        # A negative lateral diffusion lengthens the channel, as CircuitSim90's jge's
-        # cards have it.
-        (
-            lambda: level_three_curves(lateral_diffusion=-0.025 * um),
-            "V2",
-            linear(-3 * V, 5 * V, 81),
-        ),
-        (
-            lambda: level_three_curves(1.5e5 * m / s, 0.0),
-            "V2",
-            linear(-3 * V, 5 * V, 81),
-        ),
-        (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
-        (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
-        (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
-        (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
-        (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
-        (power_stage, "V1", linear(3 * V, 6 * V, 61)),
-        (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
-        (switched, "V1", linear(0 * V, 3 * V, 61)),
-        (curved, "V1", linear(-3 * V, 3 * V, 61)),
-        (lit, "V2", linear(-1 * V, 100 * V, 102)),
-        (expressions, "V1", linear(-1.95 * V, 1.95 * V, 40)),
-    ],
-)
-def test_dc_sweeps_agree(
-    top: Callable[[], Component], source: str, levels: list[Quantity]
-) -> None:
-    simulation = Simulation(top())
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice.run(netlist(simulation.circuit), command)
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
-        )
 
 
 @pytest.mark.parametrize(
@@ -2025,17 +2066,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     lines = netlist(simulation.circuit, excited="V1")
     raw = ngspice.run(lines, "ac dec 20 10 10meg")
     # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
-    np.testing.assert_allclose(response.frequencies, raw.real("frequency"), rtol=1e-9)
-    for column, unknown in compared(simulation):
-        spice = raw.vectors[vector(simulation.circuit, unknown)]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
-        compare(
-            response.values[:, column],
-            spice,
-            unknown,
-            scale=size(spice),
-            tolerance=1e-6,
-        )
+    assert_ac_agrees(simulation, response, raw, frequency_tolerance=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -2061,16 +2092,7 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     )
     lines = netlist(simulation.circuit, excited=source)
     raw = ngspice.run(lines, f"noise v(out) V{source} dec 5 1 100meg\nsetplot noise1")
-    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
-    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(
-        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
-    )
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(
-        np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
-    )
+    assert_noise_agrees(spectrum, raw)
 
 
 NGSPICE_INFINITE_RESISTANCE: Final = 1e20
@@ -2187,16 +2209,9 @@ def test_transients_agree(
 ) -> None:
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
-    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
+    command = transient_command(stop.value, step.value)
     raw = ngspice.run(netlist(simulation.circuit, transient=True), command)
-    times = raw.real("time")
-    for column, unknown in compared(simulation):
-        spice = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times, waveforms.values[:, column], times, spice, step.value
-        )
-        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
-        compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=step.value)
 
 
 @pytest.mark.parametrize("operating_point", [True, False], ids=["op", "uic"])
@@ -2226,27 +2241,15 @@ def test_transients_from_initial_conditions_agree(
         operating_point=operating_point,
     )
     waveforms = simulation.run(analysis, TIGHT)
-    start = "" if operating_point else " uic"
-    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}{start}"
+    command = transient_command(stop.value, step.value, uic=not operating_point)
     deck = [
         *netlist(simulation.circuit, transient=True),
         *node_voltages(".ic", simulation.circuit, {"out": 0.5}),
     ]
     raw = ngspice.run(deck, command)
-    times = raw.real("time")
     # Initial condition .ic v(out)=0.5 V held at t=0 within LU rounding (abs=1e-12).
     assert waveforms.voltage("out")[0] == pytest.approx(0.5, abs=1e-12)
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times,
-            waveforms.values[:, column],
-            times,
-            spice_values,
-            step.value,
-        )
-        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
-        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=step.value)
 
 
 @component
@@ -2276,10 +2279,7 @@ def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> Non
         *node_voltages(".nodeset", simulation.circuit, nodesets),
     ]
     raw = ngspice.run(deck, "op")
-    for column, unknown in compared(simulation):
-        found = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(point.values[column], found, unknown, scale=abs(found), tolerance=1e-6)
+    assert_op_agrees(simulation, point, raw)
     found = point.voltage("x")
     if nodeset is None:
         # Trivial root v = 0 matches within TIGHT vntol=1e-9 V.
@@ -2424,21 +2424,7 @@ def test_vendors_cards_sweep_as_in_ngspice(
     """A vendor's VDMOS card, read by the SPICE reader, against ngspice reading it."""
     read = spice.load(vendor_cards).component(part)
     simulation = Simulation(power_curves(read, sign, _PINS))
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice.run(netlist(simulation.circuit), command, libraries=(vendor_cards,))
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    _run_and_compare_dc_sweep(simulation, source, levels, libraries=(vendor_cards,))
 
 
 def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
@@ -2450,24 +2436,12 @@ def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
     simulation = Simulation(top)
     stop, step = 16 * us, 10 * ns
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
-    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
     raw = ngspice.run(
         netlist(simulation.circuit, transient=True),
-        command,
+        transient_command(stop.value, step.value),
         libraries=(vendor_cards,),
     )
-    times = raw.real("time")
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times,
-            waveforms.values[:, column],
-            times,
-            spice_values,
-            step.value,
-        )
-        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
-        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=step.value)
 
 
 # BSIM3v3.3: the transistors of the processes from 0.8 µm to 0.13 µm.
@@ -2568,21 +2542,30 @@ def bsim_kelvins(temperature: Quantity) -> float:
 
 
 @component
-def bsim_curves(c: Builder, transistor: devices.Device) -> None:
-    """A BSIM3 or BSIM4 transistor's curves: its gate at `V1`, its drain at `V2`.
+def bsim_curves(
+    c: Builder,
+    transistor: Switch,
+    *,
+    sign: Literal[1, -1] | None = None,
+    pins: tuple[str, str, str, str] = ("gate", "drain", "bulk", "source"),
+    instance_name: str = "M1",
+) -> None:
+    """A BSIM3, BSIM4, or library transistor's curves: gate `V1`, drain `V2`, bulk `V3`.
 
     Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
     """
-    ground = c.port("ground", Role.GROUND)
-    sign = 1 if transistor.parameters.get("channel", "n") == "n" else -1
-    bias = c.place(devices.voltage_source(sign * 2 * V), name="V1")
-    drain = c.place(devices.voltage_source(sign * 2 * V), name="V2")
-    body = c.place(devices.voltage_source(sign * -0.5 * V), name="V3")
-    placed = c.place(transistor, name="M1")
-    c.connect(bias.positive, placed.gate, name="gate")
-    c.connect(drain.positive, placed.drain, name="drain")
-    c.connect(body.positive, placed.bulk, name="body")
-    c.connect(bias.negative, drain.negative, body.negative, placed.source, ground)
+    if sign is None:
+        assert isinstance(transistor, devices.Device)
+        sign = 1 if transistor.parameters.get("channel", "n") == "n" else -1
+    _wire_mosfet_curves(
+        c,
+        transistor,
+        sign * 2 * V,
+        sign * 2 * V,
+        sign * -0.5 * V,
+        pins=pins,
+        instance_name=instance_name,
+    )
 
 
 @component
@@ -2643,48 +2626,6 @@ def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> 
     c.connect(source.negative, supply.negative, n.source, n.bulk, load.b, ground)
 
 
-def _bsim_sweep(
-    simulation: Simulation, source: str, levels: list[Quantity], kelvins: float
-) -> None:
-    """Asserts a DC sweep of `source` over `levels` agrees with ngspice's."""
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice.run(netlist(simulation.circuit), command, temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
-
-
-@pytest.mark.parametrize(
-    "temperature",
-    [celsius(27), *TEMPERATURES.values()],
-    ids=["nominal", *TEMPERATURES.keys()],
-)
-@pytest.mark.parametrize("name", BSIM3_TRANSISTORS)
-@pytest.mark.parametrize("source", ["V1", "V2"])
-def test_bsim3_curves_agree(name: str, source: str, temperature: Quantity) -> None:
-    """A BSIM3 transistor's output and transfer curves, in both modes, as ngspice's.
-
-    The drain sweeps from 1 V behind the source, the bulk junction forward and the
-    channel reversed, to 3.3 V; the gate from below the threshold to 3.3 V.
-    """
-    transistor = BSIM3_TRANSISTORS[name]
-    sign = 1 if name.endswith("-n") else -1
-    simulation = Simulation(bsim_curves(transistor), temperature)
-    bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
-    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
-    _bsim_sweep(simulation, source, levels, bsim_kelvins(temperature))
-
-
 BSIM4_TRANSISTORS: Final = {
     "short-n": devices.bsim4(
         width=1 * um,
@@ -2740,26 +2681,39 @@ whose bias-dependent drain and source resistances lie outside its channel, `rdsm
 and a long p-channel of two fingers whose temperature scales its mobility and
 threshold."""
 
+_BSIM_CURVES: Final[dict[str, tuple[devices.Device, float, int]]] = {
+    **{
+        f"bsim3-{name}": (transistor, 3.3, 87)
+        for name, transistor in BSIM3_TRANSISTORS.items()
+    },
+    **{
+        f"bsim4-{name}": (transistor, 1.8, 57)
+        for name, transistor in BSIM4_TRANSISTORS.items()
+    },
+}
+
 
 @pytest.mark.parametrize(
     "temperature",
     [celsius(27), *TEMPERATURES.values()],
     ids=["nominal", *TEMPERATURES.keys()],
 )
-@pytest.mark.parametrize("name", BSIM4_TRANSISTORS)
+@pytest.mark.parametrize("name", _BSIM_CURVES)
 @pytest.mark.parametrize("source", ["V1", "V2"])
-def test_bsim4_curves_agree(name: str, source: str, temperature: Quantity) -> None:
-    """A BSIM4 transistor's output and transfer curves, in both modes, as ngspice's.
+def test_bsim_curves_agree(name: str, source: str, temperature: Quantity) -> None:
+    """BSIM3 and BSIM4 output and transfer curves, in both modes, as ngspice's.
 
-    The drain sweeps from 1 V behind the source, the body's junction forward and the
-    channel reversed, to 1.8 V; the gate from below the threshold to 1.8 V.
+    The drain sweeps from 1 V behind the source, the body junction forward and the
+    channel reversed, to 3.3 V (BSIM3) or 1.8 V (BSIM4); the gate from below threshold.
     """
-    transistor = BSIM4_TRANSISTORS[name]
+    transistor, upper, points = _BSIM_CURVES[name]
     sign = 1 if name.endswith("-n") else -1
     simulation = Simulation(bsim_curves(transistor), temperature)
-    bounds = (-1.0, 1.8) if source == "V2" else (-0.5, 1.8)
-    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 57)
-    _bsim_sweep(simulation, source, levels, bsim_kelvins(temperature))
+    lower = -1.0 if source == "V2" else -0.5
+    levels = linear(sign * lower * V, sign * upper * V, points)
+    _run_and_compare_dc_sweep(
+        simulation, source, levels, temperature=bsim_kelvins(temperature)
+    )
 
 
 @pytest.mark.parametrize(("name", "decades"), [("short-n", 5), ("external-n", 8)])
@@ -2782,10 +2736,7 @@ def test_bsim4_noise_agrees(name: str, decades: int) -> None:
     lines = netlist(simulation.circuit, excited="V1")
     command = f"noise v(out) VV1 dec 5 1 {stop!r}\nsetplot noise1"
     raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(
-        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
-    )
+    assert_noise_agrees(spectrum, raw, frequency_tolerance=None, check_referred=False)
 
 
 _GATED: Final = {
@@ -2821,33 +2772,7 @@ def test_bsim4_gate_networks_agree(name: str) -> None:
     ngspice's capacitances with respect to the body, which are not its charges'
     derivatives (the guide's departures), carry no current.
     """
-    simulation = Simulation(bsim_stage(_GATED[name]))
-    kelvins = bsim_kelvins(celsius(27))
-    point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(
-            point.values[column],
-            spice_value,
-            unknown,
-            scale=abs(spice_value),
-            tolerance=1e-6,
-        )
-    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
-    lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
-        compare(
-            response.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    _assert_op_and_ac_agree(bsim_stage(_GATED[name]), bsim_kelvins(celsius(27)))
 
 
 _PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
@@ -2886,33 +2811,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
 
     Its transistor's charges follow each charge model and partition.
     """
-    simulation = Simulation(bsim_stage(_STAGES[name]))
-    kelvins = bsim_kelvins(celsius(27))
-    point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(
-            point.values[column],
-            spice_value,
-            unknown,
-            scale=abs(spice_value),
-            tolerance=1e-6,
-        )
-    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
-    lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
-        compare(
-            response.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    _assert_op_and_ac_agree(bsim_stage(_STAGES[name]), bsim_kelvins(celsius(27)))
 
 
 @pytest.mark.parametrize("noise_model", [1, 2, 3, 4, 5, 6])
@@ -2932,16 +2831,7 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
     lines = netlist(simulation.circuit, excited="V1")
     command = "noise v(out) VV1 dec 5 1 100meg\nsetplot noise1"
     raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
-    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
-    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(
-        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
-    )
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(
-        np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
-    )
+    assert_noise_agrees(spectrum, raw)
 
 
 @pytest.mark.parametrize(
@@ -2964,24 +2854,12 @@ def test_bsim3_transients_agree(
     """A BSIM3 stage's step response and a CMOS inverter's switching, as ngspice's."""
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
-    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
     raw = ngspice.run(
         netlist(simulation.circuit, transient=True),
-        command,
+        transient_command(stop.value, step.value),
         temperature=bsim_kelvins(celsius(27)),
     )
-    times = raw.real("time")
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times,
-            waveforms.values[:, column],
-            times,
-            spice_values,
-            step.value,
-        )
-        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
-        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=step.value)
 
 
 BERKELEY_CARDS: Final = """\
@@ -3067,21 +2945,8 @@ def berkeley_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-@component
-def part_curves(c: Builder, part: Component, sign: Literal[1, -1]) -> None:
-    """A library's transistor's curves: its gate at `V1`, its drain at `V2`.
-
-    Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
-    """
-    ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(sign * 2 * V), name="V1")
-    drain = c.place(devices.voltage_source(sign * 2 * V), name="V2")
-    body = c.place(devices.voltage_source(sign * -0.5 * V), name="V3")
-    placed = c.place(part, name="X1")
-    c.connect(bias.positive, placed["g"], name="gate")
-    c.connect(drain.positive, placed["d"], name="drain")
-    c.connect(body.positive, placed["b"], name="body")
-    c.connect(bias.negative, drain.negative, body.negative, placed["s"], ground)
+_FOUR_PINS: Final = ("g", "d", "b", "s")
+"""A library MOSFET subcircuit's gate, drain, bulk, and source pins."""
 
 
 @pytest.mark.parametrize(
@@ -3104,28 +2969,17 @@ def test_published_bsim3_cards_sweep_as_in_ngspice(
     threshold.
     """
     read = spice.load(berkeley_cards).component(part)
-    simulation = Simulation(part_curves(read, sign), temperature)
+    top = bsim_curves(read, sign=sign, pins=_FOUR_PINS, instance_name="X1")
+    simulation = Simulation(top, temperature)
     bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    raw = ngspice.run(
-        netlist(simulation.circuit),
-        f"dc V{source} {first!r} {last!r} {step!r}",
-        libraries=(berkeley_cards,),
+    _run_and_compare_dc_sweep(
+        simulation,
+        source,
+        levels,
         temperature=bsim_kelvins(temperature),
+        libraries=(berkeley_cards,),
     )
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
 
 
 BINNED_CARDS: Final = """\
@@ -3168,28 +3022,18 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
 ) -> None:
     """A binned BSIM3 card's transistors, each of the bin it takes, as ngspice's."""
     read = spice.load(binned_cards).component(part)
-    simulation = Simulation(part_curves(read, 1))
+    simulation = Simulation(
+        bsim_curves(read, sign=1, pins=_FOUR_PINS, instance_name="X1")
+    )
     bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
     levels = linear(bounds[0] * V, bounds[1] * V, 87)
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    raw = ngspice.run(
-        netlist(simulation.circuit),
-        f"dc V{source} {first!r} {last!r} {step!r}",
-        libraries=(binned_cards,),
+    _run_and_compare_dc_sweep(
+        simulation,
+        source,
+        levels,
         temperature=bsim_kelvins(celsius(27)),
+        libraries=(binned_cards,),
     )
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
 
 
 def _vbic(
@@ -3349,54 +3193,16 @@ def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) ->
     simulation = Simulation(vbic_curves(transistor), temperature)
     bounds = (0.2, 1.0) if source == "V1" else (-0.5, 3.0)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 81)
-    sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice.run(
-        netlist(simulation.circuit), command, temperature=vbic_kelvins(temperature)
+    _run_and_compare_dc_sweep(
+        simulation, source, levels, temperature=vbic_kelvins(temperature)
     )
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
 
 
 def test_vbic_ac_response_agrees() -> None:
     """A VBIC stage's operating point and AC response, as ngspice's."""
-    simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
-    kelvins = vbic_kelvins(celsius(27))
-    point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
-        compare(
-            point.values[column],
-            spice_value,
-            unknown,
-            scale=abs(spice_value),
-            tolerance=1e-6,
-        )
-    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
-    lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
-    for column, unknown in compared(simulation):
-        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
-        compare(
-            response.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
+    _assert_op_and_ac_agree(
+        vbic_stage(VBIC_TRANSISTORS["npn"]), vbic_kelvins(celsius(27))
+    )
 
 
 def test_vbic_noise_agrees() -> None:
@@ -3442,24 +3248,12 @@ def test_vbic_transient_agrees() -> None:
     simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
     stop, step = 2 * us, 1 * ns
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
-    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
     raw = ngspice.run(
         netlist(simulation.circuit, transient=True),
-        command,
+        transient_command(stop.value, step.value),
         temperature=vbic_kelvins(celsius(27)),
     )
-    times = raw.real("time")
-    for column, unknown in compared(simulation):
-        spice_values = raw.real(vector(simulation.circuit, unknown))
-        jolty = closest(
-            waveforms.times,
-            waveforms.values[:, column],
-            times,
-            spice_values,
-            step.value,
-        )
-        # Transient O(h^2) step error plus closest() window interpolation vs ngspice.
-        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, raw, window=step.value)
 
 
 HEATED_VBIC: Final = """\
@@ -3511,25 +3305,15 @@ def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
     """
     read = spice.load(heated_cards).component("heated")
     simulation = Simulation(heated_stage(read))
-    sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 51)), TIGHT)
-    raw = ngspice.run(
-        netlist(simulation.circuit),
-        "dc VV1 0 5 0.1",
-        libraries=(heated_cards,),
+    # The netlist places the library's subcircuit as `XX1`, its thermal node in it.
+    sweep = _run_and_compare_dc_sweep(
+        simulation,
+        "V1",
+        linear(0 * V, 5 * V, 51),
         temperature=vbic_kelvins(celsius(27)),
+        libraries=(heated_cards,),
+        vector_names={"X1/dt": "v(xx1.dt)"},
     )
-    for column, unknown in compared(simulation):
-        # The netlist places the library's subcircuit as `XX1`, its thermal node in it.
-        name = "v(xx1.dt)" if unknown.nature == "temperature" else None
-        spice_values = raw.real(name or vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
-        compare(
-            sweep.values[:, column],
-            spice_values,
-            unknown,
-            scale=size(spice_values),
-            tolerance=1e-6,
-        )
     # The bench heats: both engines warming it alike is no vacuous agreement.
     rise = sweep.values[
         :, simulation.unknowns.index(results.Unknown("X1/dt", "temperature"))

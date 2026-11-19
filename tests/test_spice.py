@@ -6,7 +6,7 @@ import math
 import re
 import struct
 import threading
-from collections.abc import MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,6 +115,28 @@ def output(
 ) -> float:
     point = Simulation(driven(part, level, pins)).run(OperatingPoint())
     return point.voltage("out")
+
+
+def _diode_connected_netlist(
+    transistor: devices.Device,
+    supply_voltage: float,
+    *,
+    instance_name: str = "M1",
+) -> list[str]:
+    """Exports a diode-connected single-transistor bench driven by `supply_voltage`."""
+    terminals = transistor.terminals
+    if "drain" in terminals:
+        high, net_name = ("drain", "gate"), "d"
+    else:
+        high, net_name = ("collector", "base"), "c"
+    low = tuple(pin for pin in terminals if pin not in high)
+    c = Builder("bench")
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(supply_voltage * V), name="V1")
+    placed = c.place(transistor, name=instance_name)
+    c.connect(supply.positive, *(placed[pin] for pin in high), name=net_name)
+    c.connect(supply.negative, *(placed[pin] for pin in low), ground)
+    return netlist(circuit(c.finish()))
 
 
 def test_statements_join_continuations_and_drop_comments() -> None:
@@ -539,27 +561,16 @@ def test_a_bipolar_transistors_temperature_terms_are_written_back() -> None:
         "collector_resistance_quadratic_temperature_coefficient": 3e-5,
         "base_emitter_potential_temperature_coefficient": 2e-3,
     }
-
-    @component
-    def bench(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(5 * V), name="V1")
-        transistor = c.place(
-            devices.bipolar_transistor(
-                temperature_model=1,
-                capacitance_temperature_model=1,
-                high_injection_exponent=0.4,
-                collector_resistance=10 * ohm,
-                collector_resistance_temperature_coefficient=-0.01 / K,
-                collector_resistance_quadratic_temperature_coefficient=3e-5 / K**2,
-                base_emitter_potential_temperature_coefficient=2e-3 * V / K,
-            ),
-            name="Q1",
-        )
-        c.connect(supply.positive, transistor.collector, transistor.base, name="c")
-        c.connect(supply.negative, transistor.emitter, ground)
-
-    lines = netlist(circuit(bench()))
+    transistor = devices.bipolar_transistor(
+        temperature_model=1,
+        capacitance_temperature_model=1,
+        high_injection_exponent=0.4,
+        collector_resistance=10 * ohm,
+        collector_resistance_temperature_coefficient=-0.01 / K,
+        collector_resistance_quadratic_temperature_coefficient=3e-5 / K**2,
+        base_emitter_potential_temperature_coefficient=2e-3 * V / K,
+    )
+    lines = _diode_connected_netlist(transistor, 5.0, instance_name="Q1")
     card = next(line for line in lines if line.startswith(".model"))
     element = next(line for line in lines if line.startswith("QQ1"))
     read = library(f"{card}\n.subckt a c\n{element.replace('QQ1', 'Q1', 1)}\n.ends")
@@ -934,24 +945,14 @@ def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
 
 
 def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
-    @component
-    def bench(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(-5 * V), name="V1")
-        transistor = c.place(
-            devices.vdmos(
-                channel="p",
-                threshold_voltage=-4 * V,
-                drain_resistance=0.02 * ohm,
-                multiplier=2,
-                junction_capacitance=1e-9 * C / V,
-            ).warmer_by(10 * K),
-            name="M1",
-        )
-        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
-        c.connect(supply.negative, transistor.source, ground)
-
-    lines = netlist(circuit(bench()))
+    transistor = devices.vdmos(
+        channel="p",
+        threshold_voltage=-4 * V,
+        drain_resistance=0.02 * ohm,
+        multiplier=2,
+        junction_capacitance=1e-9 * C / V,
+    ).warmer_by(10 * K)
+    lines = _diode_connected_netlist(transistor, -5.0, instance_name="M1")
     card = next(line for line in lines if line.startswith(".model"))
     assert card == (".model MM1 VDMOS(pchan vto=-4.0 rd=0.02 cjo=1e-09)"), card
     element = next(line for line in lines if line.startswith("MM1"))
@@ -1085,16 +1086,7 @@ def test_a_vbic_is_written_for_ngspice_as_its_card_reads_back() -> None:
         extrinsic_collector_resistance=10 * ohm,
         forward_transit_time=0.01 * ns,
     )
-
-    @component
-    def bench(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(-5 * V), name="V1")
-        placed = c.place(transistor, name="Q1")
-        c.connect(supply.positive, placed.collector, placed.base, name="c")
-        c.connect(supply.negative, placed.emitter, placed.substrate, ground)
-
-    lines = netlist(circuit(bench()))
+    lines = _diode_connected_netlist(transistor, -5.0, instance_name="Q1")
     card = next(line for line in lines if line.startswith(".model"))
     assert card.startswith(".model MQ1 PNP(level=4 "), card
     element = next(line for line in lines if line.startswith("QQ1"))
@@ -1103,161 +1095,221 @@ def test_a_vbic_is_written_for_ngspice_as_its_card_reads_back() -> None:
     assert instance.parameters == transistor.parameters
 
 
-def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
-    """A level 8 or 49 card makes a BSIM3, each parameter by its name in SI units.
-
-    As ngspice reads them, `NCH` is per cubic centimeter up to 1e20 and per cubic meter
-    above, `NSUB` per cubic centimeter, a `U0` above 1 in cm²/(V·s) with its
-    dependences, and with `BINUNIT` 1, its default, each length and width dependence
-    per micrometer; its bins' ranges, its safe operating area and the area
-    calculation's parameters, which change nothing, are read past.
-    """
-    parts = library(
-        ".model N1 NMOS(level=8 version=3.3.0 tnom=50 nch=2.5e17 lnch=1e16 nsub=1e17\n"
-        "+ u0=400 lu0=-20 vth0=0.6 lvth0=0.02 pvth0=0.003 capmod=2 mobmod=3\n"
-        "+ paramchk=1 xpart=0.5 lmin=0.1u vgs_max=4 ld=1n elm=3)\n"
-        ".model P1 PMOS(level=49 binunit=2 nch=3e23 u0=0.02 lvth0=1e-8)\n"
-        ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.5u nrd=2 delvto=0.1\n"
-        "M2 d g 0 0 P1 L=1u off\n.ends"
-    )
-    first, second = parts.component("a").definition.instances
-    assert first.of == second.of == ir.DeviceOf(model="bsim3")
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
-    assert first.parameters == pytest.approx(
-        {
-            "channel": "n",
-            "nominal_temperature": celsius(50).value,
-            "nch": 2.5e23,
-            "lnch": 1e16,
-            "nsub": 1e23,
-            "u0": 0.04,
-            "lu0": -2e-9,
-            "vth0": 0.6,
-            "lvth0": 2e-8,
-            "pvth0": 3e-15,
-            "capacitance_model": 2,
-            "mobility_model": 3,
-            "check_parameters": True,
-            "charge_partition": 0.5,
-            "width": 2e-6,
-            "length": 5e-7,
-            "drain_squares": 2.0,
-            "threshold_adjustment": 0.1,
-        }
-    )
-    assert second.parameters == {
-        "channel": "p",
-        "nch": 3e23,
-        "u0": 0.02,
-        "lvth0": 1e-8,
-        "length": 1e-6,
-    }
-
-
 @pytest.mark.parametrize(
-    ("card", "error"),
+    ("model", "deck", "expected_instances"),
     [
-        ("level=49 version=3.1", "`N1` is a BSIM3 card of version 3.1"),
-        ("level=8 nqsmod=1", "jolty models BSIM3 with `NQSMOD` 0 alone"),
-        ("level=8 acnqsmod=1", "jolty models BSIM3 with `ACNQSMOD` 0 alone"),
-        ("level=8 acm=2", "jolty models BSIM3 with `ACM` 0 alone"),
-        ("level=8 capmod=1.5", "`CAPMOD` of `N1` is a whole number, not 1.5"),
-        ("level=8 vto=1", "no counterpart to `VTO` of `N1`"),
-        ("level=8 lvto=1", "no counterpart to `LVTO` of `N1`"),
-    ],
-)
-def test_a_bsim3_card_jolty_cannot_run_as_ngspice_does_is_refused(
-    card: str, error: str
-) -> None:
-    parts = library(f".model N1 NMOS({card})\n.subckt a d\nM1 d d 0 0 N1\n.ends")
-    with pytest.raises(SpiceError, match=re.escape(error)):
-        parts.component("a")
-
-
-def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
-    """A level 14 or 54 card of version 4.5 makes a BSIM4, each parameter in SI units.
-
-    As ngspice reads them, `NDEP` is per cubic centimeter up to 1e20 and per cubic
-    meter above, `NSD` and `NGATE` up to 1e24, `NSUB` per cubic centimeter, a `U0`
-    above 1 in cm²/(V·s) with its dependences, `VTHO` is `VTH0`, and with `BINUNIT` 1,
-    its default, each length and width dependence per micrometer; its bins' ranges,
-    which only select it, are read past, and an instance's gate contacts, `XGW` and
-    `NGCON`, stand for its card's.
-    """
-    parts = library(
-        ".model N1 NMOS(level=54 version=4.5 tnom=25 ndep=1.7e17 lndep=1e16 nsd=1e20\n"
-        "+ ngate=3e25 nsub=6e16 u0=400 lu0=-20 vtho=0.5 lvth0=0.02 rbodymod=1\n"
-        "+ permod=0 paramchk=0 xpart=0.5 lmin=0.1u tnoimod=1 capmod=2 mobmod=0\n"
-        "+ rgatemod=3 xgw=0.5u)\n"
-        ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.15u nf=2 sa=1u sb=2u sd=0.5u\n"
-        "+ nrd=2 delvto=0.1 rbpb=20 xgw=1u ngcon=2\n.ends"
-    )
-    (instance,) = parts.component("a").definition.instances
-    assert instance.of == ir.DeviceOf(model="bsim4")
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
-    assert instance.parameters == pytest.approx(
-        {
-            "channel": "n",
-            "nominal_temperature": celsius(25).value,
-            "ndep": 1.7e23,
-            "lndep": 1e16,
-            "nsd": 1e26,
-            "ngate": 3e25,
-            "nsub": 6e22,
-            "u0": 0.04,
-            "lu0": -2e-9,
-            "vth0": 0.5,
-            "lvth0": 2e-8,
-            "body_resistance_model": 1,
-            "gate_resistance_model": 3,
-            "perimeter_model": 0,
-            "thermal_noise_model": 1,
-            "check_parameters": False,
-            "charge_partition": 0.5,
-            "width": 2e-6,
-            "length": 1.5e-7,
-            "fingers": 2.0,
-            "diffusion_edge_a": 1e-6,
-            "diffusion_edge_b": 2e-6,
-            "finger_spacing": 5e-7,
-            "drain_squares": 2.0,
-            "threshold_adjustment": 0.1,
-            "rbpb": 20.0,
-            "xgw": 1e-6,
-            "ngcon": 2.0,
-        }
-    )
-
-
-@pytest.mark.parametrize(
-    ("card", "error"),
-    [
-        ("level=54 version=4.6", "`N1` is a BSIM4 card of version 4.6"),
-        ("level=14", "`N1` is a BSIM4 card of version 4.8"),
-        ("level=54 version=4.5 capmod=1", "jolty models BSIM4 with `CAPMOD` 2 alone"),
-        ("level=54 version=4.5 igcmod=1", "jolty models BSIM4 with `IGCMOD` 0 alone"),
-        (
-            "level=54 version=4.5 rgatemod=4",
-            "gate_resistance_model is 0, 1, 2 or 3, not 4",
+        pytest.param(
+            "bsim3",
+            (
+                ".model N1 NMOS(level=8 version=3.3.0 tnom=50 nch=2.5e17 lnch=1e16 "
+                "nsub=1e17\n"
+                "+ u0=400 lu0=-20 vth0=0.6 lvth0=0.02 pvth0=0.003 capmod=2 mobmod=3\n"
+                "+ paramchk=1 xpart=0.5 lmin=0.1u vgs_max=4 ld=1n elm=3)\n"
+                ".model P1 PMOS(level=49 binunit=2 nch=3e23 u0=0.02 lvth0=1e-8)\n"
+                ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.5u nrd=2 delvto=0.1\n"
+                "M2 d g 0 0 P1 L=1u off\n.ends"
+            ),
+            (
+                (
+                    {
+                        "channel": "n",
+                        "nominal_temperature": celsius(50).value,
+                        "nch": 2.5e23,
+                        "lnch": 1e16,
+                        "nsub": 1e23,
+                        "u0": 0.04,
+                        "lu0": -2e-9,
+                        "vth0": 0.6,
+                        "lvth0": 2e-8,
+                        "pvth0": 3e-15,
+                        "capacitance_model": 2,
+                        "mobility_model": 3,
+                        "check_parameters": True,
+                        "charge_partition": 0.5,
+                        "width": 2e-6,
+                        "length": 5e-7,
+                        "drain_squares": 2.0,
+                        "threshold_adjustment": 0.1,
+                    },
+                    False,
+                ),
+                (
+                    {
+                        "channel": "p",
+                        "nch": 3e23,
+                        "u0": 0.02,
+                        "lvth0": 1e-8,
+                        "length": 1e-6,
+                    },
+                    True,
+                ),
+            ),
+            id="bsim3",
         ),
-        ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
-        ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),
+        pytest.param(
+            "bsim4",
+            (
+                ".model N1 NMOS(level=54 version=4.5 tnom=25 ndep=1.7e17 lndep=1e16 "
+                "nsd=1e20\n"
+                "+ ngate=3e25 nsub=6e16 u0=400 lu0=-20 vtho=0.5 lvth0=0.02 rbodymod=1\n"
+                "+ permod=0 paramchk=0 xpart=0.5 lmin=0.1u tnoimod=1 capmod=2 "
+                "mobmod=0\n"
+                "+ rgatemod=3 xgw=0.5u)\n"
+                ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.15u nf=2 sa=1u sb=2u sd=0.5u\n"
+                "+ nrd=2 delvto=0.1 rbpb=20 xgw=1u ngcon=2\n.ends"
+            ),
+            (
+                (
+                    {
+                        "channel": "n",
+                        "nominal_temperature": celsius(25).value,
+                        "ndep": 1.7e23,
+                        "lndep": 1e16,
+                        "nsd": 1e26,
+                        "ngate": 3e25,
+                        "nsub": 6e22,
+                        "u0": 0.04,
+                        "lu0": -2e-9,
+                        "vth0": 0.5,
+                        "lvth0": 2e-8,
+                        "body_resistance_model": 1,
+                        "gate_resistance_model": 3,
+                        "perimeter_model": 0,
+                        "thermal_noise_model": 1,
+                        "check_parameters": False,
+                        "charge_partition": 0.5,
+                        "width": 2e-6,
+                        "length": 1.5e-7,
+                        "fingers": 2.0,
+                        "diffusion_edge_a": 1e-6,
+                        "diffusion_edge_b": 2e-6,
+                        "finger_spacing": 5e-7,
+                        "drain_squares": 2.0,
+                        "threshold_adjustment": 0.1,
+                        "rbpb": 20.0,
+                        "xgw": 1e-6,
+                        "ngcon": 2.0,
+                    },
+                    False,
+                ),
+            ),
+            id="bsim4",
+        ),
     ],
 )
-def test_a_bsim4_card_jolty_cannot_run_as_ngspice_does_is_refused(
-    card: str, error: str
+def test_bsim_cards_read_in_si_units_as_ngspice_reads_them(
+    model: str,
+    deck: str,
+    expected_instances: tuple[tuple[Mapping[str, object], bool], ...],
+) -> None:
+    """BSIM3 (levels 8/49) and BSIM4 (levels 14/54) cards read into SI units.
+
+    Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
+    """
+    instances = library(deck).component("a").definition.instances
+    assert len(instances) == len(expected_instances)
+    for instance, (expected, exact) in zip(instances, expected_instances, strict=True):
+        assert instance.of == ir.DeviceOf(model=model)
+        if exact:
+            assert instance.parameters == expected
+        else:
+            assert instance.parameters == pytest.approx(expected)
+
+
+_BSIM_REFUSALS: Final[
+    list[tuple[str, str, type[Exception] | tuple[type[Exception], ...]]]
+] = [
+    *[
+        (card, error, SpiceError)
+        for card, error in (
+            ("level=49 version=3.1", "`N1` is a BSIM3 card of version 3.1"),
+            ("level=8 nqsmod=1", "jolty models BSIM3 with `NQSMOD` 0 alone"),
+            ("level=8 acnqsmod=1", "jolty models BSIM3 with `ACNQSMOD` 0 alone"),
+            ("level=8 acm=2", "jolty models BSIM3 with `ACM` 0 alone"),
+            ("level=8 capmod=1.5", "`CAPMOD` of `N1` is a whole number, not 1.5"),
+            ("level=8 vto=1", "no counterpart to `VTO` of `N1`"),
+            ("level=8 lvto=1", "no counterpart to `LVTO` of `N1`"),
+        )
+    ],
+    *[
+        (card, error, (SpiceError, ValueError))
+        for card, error in (
+            ("level=54 version=4.6", "`N1` is a BSIM4 card of version 4.6"),
+            ("level=14", "`N1` is a BSIM4 card of version 4.8"),
+            (
+                "level=54 version=4.5 capmod=1",
+                "jolty models BSIM4 with `CAPMOD` 2 alone",
+            ),
+            (
+                "level=54 version=4.5 igcmod=1",
+                "jolty models BSIM4 with `IGCMOD` 0 alone",
+            ),
+            (
+                "level=54 version=4.5 rgatemod=4",
+                "gate_resistance_model is 0, 1, 2 or 3, not 4",
+            ),
+            ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
+            ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),
+        )
+    ],
+]
+
+
+@pytest.mark.parametrize(("card", "error", "expected_error"), _BSIM_REFUSALS)
+def test_bsim_cards_jolty_cannot_run_as_ngspice_does_are_refused(
+    card: str,
+    error: str,
+    expected_error: type[Exception] | tuple[type[Exception], ...],
 ) -> None:
     parts = library(f".model N1 NMOS({card})\n.subckt a d\nM1 d d 0 0 N1\n.ends")
-    with pytest.raises((SpiceError, ValueError), match=re.escape(error)):
+    with pytest.raises(expected_error, match=re.escape(error)):
         parts.component("a")
 
 
-def test_a_bsim4_is_written_for_ngspice_as_its_card_reads_back() -> None:
-    @component
-    def bench(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(1.8 * V), name="V1")
-        transistor = c.place(
+@pytest.mark.parametrize(
+    ("transistor", "supply", "expected_card", "expected_element", "expected_params"),
+    [
+        pytest.param(
+            devices.bsim3(
+                channel="p",
+                width=2 * um,
+                length=0.5 * um,
+                capacitance_model=1,
+                check_parameters=True,
+                nominal_temperature=celsius(50),
+                card={
+                    "vth0": -0.6 * V,
+                    "nch": 1.7e23 / m**3,
+                    "lnch": 1e30 / m**2,
+                    "nsub": 6e22 / m**3,
+                    "lvth0": 1e-8 * m * V,
+                    "k2": -0.02,
+                },
+            ),
+            3.0,
+            (
+                ".model MM1 PMOS(level=8 version=3.3.0 binunit=2 tnom=50.0 capmod=1 "
+                "paramchk=1 vth0=-0.6 nch=1.7e+17 lnch=1e+30 nsub=6e+16 lvth0=1e-08 "
+                "k2=-0.02)"
+            ),
+            "MM1 d d 0 0 MM1 w=2e-06 l=5e-07",
+            {
+                "channel": "p",
+                "nominal_temperature": celsius(50).value,
+                "capacitance_model": 1,
+                "check_parameters": True,
+                "vth0": -0.6,
+                "nch": 1.7e23,
+                "lnch": 1e30,
+                "nsub": 6e22,
+                "lvth0": 1e-8,
+                "k2": -0.02,
+                "width": 2e-6,
+                "length": 5e-7,
+            },
+            id="bsim3",
+        ),
+        pytest.param(
             devices.bsim4(
                 channel="p",
                 width=2 * um,
@@ -1274,40 +1326,60 @@ def test_a_bsim4_is_written_for_ngspice_as_its_card_reads_back() -> None:
                     "k2": -0.02,
                 },
             ),
-            name="M1",
-        )
-        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
-        c.connect(supply.negative, transistor.source, transistor.bulk, ground)
-
-    lines = netlist(circuit(bench()))
+            1.8,
+            (
+                ".model MM1 PMOS(level=54 version=4.5 binunit=2 tnom=50.0 rbodymod=1 "
+                "vth0=-0.5 ndep=1.7e+17 ngate=1e+23 nsub=6e+16 lvth0=1e-08 k2=-0.02)"
+            ),
+            "MM1 d d 0 0 MM1 w=2e-06 l=1.5e-07 nf=2.0",
+            {
+                "channel": "p",
+                "nominal_temperature": celsius(50).value,
+                "body_resistance_model": 1,
+                "vth0": -0.5,
+                "ndep": 1.7e23,
+                "ngate": 1e29,
+                "nsub": 6e22,
+                "lvth0": 1e-8,
+                "k2": -0.02,
+                "width": 2e-6,
+                "length": 1.5e-7,
+                "fingers": 2.0,
+            },
+            id="bsim4",
+        ),
+    ],
+)
+def test_bsim_is_written_for_ngspice_as_its_card_reads_back(
+    transistor: devices.Device,
+    supply: float,
+    expected_card: str,
+    expected_element: str,
+    expected_params: Mapping[str, object],
+) -> None:
+    lines = _diode_connected_netlist(transistor, supply, instance_name="M1")
     card = next(line for line in lines if line.startswith(".model"))
-    assert card == (
-        ".model MM1 PMOS(level=54 version=4.5 binunit=2 tnom=50.0 rbodymod=1 "
-        "vth0=-0.5 ndep=1.7e+17 ngate=1e+23 nsub=6e+16 lvth0=1e-08 k2=-0.02)"
-    ), card
+    assert card == expected_card, card
     element = next(line for line in lines if line.startswith("MM1"))
-    assert element == "MM1 d d 0 0 MM1 w=2e-06 l=1.5e-07 nf=2.0", element
+    assert element == expected_element, element
     read = library(
         f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
     )
     (instance,) = read.component("a").definition.instances
     # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal round-trip rounding.
-    assert instance.parameters == pytest.approx(
-        {
-            "channel": "p",
-            "nominal_temperature": celsius(50).value,
-            "body_resistance_model": 1,
-            "vth0": -0.5,
-            "ndep": 1.7e23,
-            "ngate": 1e29,
-            "nsub": 6e22,
-            "lvth0": 1e-8,
-            "k2": -0.02,
-            "width": 2e-6,
-            "length": 1.5e-7,
-            "fingers": 2.0,
-        }
-    )
+    assert instance.parameters == pytest.approx(expected_params)
+
+
+def test_a_bsim3_held_at_its_own_temperature_cannot_be_exported() -> None:
+    """A BSIM3 held at 85 °C is refused on export: ngspice has no own temperature."""
+    with pytest.raises(JoltyError, match="at its own temperature"):
+        _diode_connected_netlist(devices.bsim3().held_at(celsius(85)), 3.0)
+
+
+def _assert_matches_engine_schema(model: str, named: set[str]) -> None:
+    schema = json.loads(_core.schema(model))
+    unread = {"temperature", "temperature_offset", "thermal"}
+    assert named == set(schema["properties"]) - unread
 
 
 @pytest.mark.parametrize("model", models.BSIMS)
@@ -1328,9 +1400,7 @@ def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
         *bsim.selectors.values(),
         *bsim.settings.values(),
     }
-    schema = json.loads(_core.schema(model))
-    unread = {"temperature", "temperature_offset", "thermal"}
-    assert named == set(schema["properties"]) - unread
+    _assert_matches_engine_schema(model, named)
 
 
 @pytest.mark.parametrize(
@@ -1395,20 +1465,6 @@ def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
             "current_controlled_switch",
             {jolty for jolty, _ in models.CURRENT_SWITCH.values()},
         ),
-    ],
-)
-def test_compact_model_and_switch_tables_match_engine_schema(
-    model: str, named: set[str]
-) -> None:
-    """Every compact model and switch table names the engine schema's properties."""
-    schema = json.loads(_core.schema(model))
-    unread = {"temperature", "temperature_offset", "thermal"}
-    assert named == set(schema["properties"]) - unread
-
-
-@pytest.mark.parametrize(
-    ("model", "named"),
-    [
         (
             "resistor",
             {
@@ -1440,11 +1496,11 @@ def test_compact_model_and_switch_tables_match_engine_schema(
         ),
     ],
 )
-def test_passive_tables_match_engine_schema(model: str, named: set[str]) -> None:
-    """Shared passive drift, curvature, and flicker tables match the engine schema."""
-    schema = json.loads(_core.schema(model))
-    unread = {"temperature", "temperature_offset", "thermal"}
-    assert named == set(schema["properties"]) - unread
+def test_compact_switch_and_passive_tables_match_engine_schema(
+    model: str, named: set[str]
+) -> None:
+    """Every compact, switch, and passive table names the engine schema's properties."""
+    _assert_matches_engine_schema(model, named)
 
 
 def test_model_tables_have_canonical_entries_and_valid_scaling_subsets() -> None:
@@ -1577,76 +1633,6 @@ def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
         rel=1e-15,
         abs=0,
     )
-
-
-def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
-    @component
-    def bench(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(3 * V), name="V1")
-        transistor = c.place(
-            devices.bsim3(
-                channel="p",
-                width=2 * um,
-                length=0.5 * um,
-                capacitance_model=1,
-                check_parameters=True,
-                nominal_temperature=celsius(50),
-                card={
-                    "vth0": -0.6 * V,
-                    "nch": 1.7e23 / m**3,
-                    "lnch": 1e30 / m**2,
-                    "nsub": 6e22 / m**3,
-                    "lvth0": 1e-8 * m * V,
-                    "k2": -0.02,
-                },
-            ),
-            name="M1",
-        )
-        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
-        c.connect(supply.negative, transistor.source, transistor.bulk, ground)
-
-    lines = netlist(circuit(bench()))
-    card = next(line for line in lines if line.startswith(".model"))
-    assert card == (
-        ".model MM1 PMOS(level=8 version=3.3.0 binunit=2 tnom=50.0 capmod=1 "
-        "paramchk=1 vth0=-0.6 nch=1.7e+17 lnch=1e+30 nsub=6e+16 lvth0=1e-08 k2=-0.02)"
-    ), card
-    element = next(line for line in lines if line.startswith("MM1"))
-    assert element == "MM1 d d 0 0 MM1 w=2e-06 l=5e-07", element
-    read = library(
-        f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
-    )
-    (instance,) = read.component("a").definition.instances
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal round-trip rounding.
-    assert instance.parameters == pytest.approx(
-        {
-            "channel": "p",
-            "nominal_temperature": celsius(50).value,
-            "capacitance_model": 1,
-            "check_parameters": True,
-            "vth0": -0.6,
-            "nch": 1.7e23,
-            "lnch": 1e30,
-            "nsub": 6e22,
-            "lvth0": 1e-8,
-            "k2": -0.02,
-            "width": 2e-6,
-            "length": 5e-7,
-        }
-    )
-    with pytest.raises(JoltyError, match="at its own temperature"):
-        netlist(circuit(bench_held()))
-
-
-@component
-def bench_held(c: Builder) -> None:
-    """A BSIM3 held at 85 °C, which ngspice's has no temperature of its own for."""
-    ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3 * V), name="V1")
-    transistor = c.place(devices.bsim3().held_at(celsius(85)), name="M1")
-    c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
-    c.connect(supply.negative, transistor.source, transistor.bulk, ground)
 
 
 def test_a_bsim3s_parameters_take_their_dimensions() -> None:
@@ -2937,23 +2923,16 @@ def test_include_and_lib_expand_inside_subcircuits_from_file_and_text(
     )
 
     via_include = spice.load(deck)
-    # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
-    assert output(via_include.component("fast_div"), 4.0) == pytest.approx(
-        3.0, rel=1e-12, abs=0
-    )
-    assert output(via_include.component("slow_div"), 4.0) == pytest.approx(
-        2.0, rel=1e-12, abs=0
-    )
-
     via_read = spice.Library()
     via_read.read(deck.read_text(encoding="utf-8"), str(deck))
-    # Same closed-form divider ratios within LU rounding (rel=1e-12, abs=0).
-    assert output(via_read.component("fast_div"), 4.0) == pytest.approx(
-        3.0, rel=1e-12, abs=0
-    )
-    assert output(via_read.component("slow_div"), 4.0) == pytest.approx(
-        2.0, rel=1e-12, abs=0
-    )
+    for loaded in (via_include, via_read):
+        # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
+        assert output(loaded.component("fast_div"), 4.0) == pytest.approx(
+            3.0, rel=1e-12, abs=0
+        )
+        assert output(loaded.component("slow_div"), 4.0) == pytest.approx(
+            2.0, rel=1e-12, abs=0
+        )
 
 
 def test_include_inside_if_block_within_subcircuit(tmp_path: Path) -> None:
@@ -3212,44 +3191,42 @@ def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
     )
 
 
-def test_recursive_local_func_and_wrong_arity_are_refused() -> None:
-    direct = library(".subckt a n\n.func f(x) {f(x) + 1}\nR1 n 0 {f(1)}\n.ends\n")
-    with pytest.raises(SpiceError, match="a function calls itself: `f` calls `f`"):
-        direct.component("a")
-
-    mutual = library(
-        ".subckt a n\n.func p(x) {q(x)}\n.func q(x) {p(x)}\nR1 n 0 {p(1)}\n.ends\n"
-    )
-    with pytest.raises(
-        SpiceError, match="a function calls itself: `p` calls `q` calls `p`"
-    ):
-        mutual.component("a")
-
-    cross_scope = library(
-        ".func g(x) {loc(x)}\n"
-        ".subckt a n\n"
-        ".func loc(x) {g(x)}\n"
-        "R1 n 0 {loc(1)}\n"
-        ".ends\n"
-    )
-    with pytest.raises(
-        SpiceError, match="a function calls itself: `loc` calls `g` calls `loc`"
-    ):
-        cross_scope.component("a")
-
-    in_model = library(
-        ".subckt a n\n"
-        ".func bad(x) {bad(x)}\n"
-        ".model dm D(IS=bad(1e-14))\n"
-        "D1 n 0 dm\n"
-        ".ends\n"
-    )
-    with pytest.raises(SpiceError, match="a function calls itself: `bad` calls `bad`"):
-        in_model.component("a")
-
-    arity = library(".subckt a n\n.func pair(x, y) {x + y}\nR1 n 0 {pair(1)}\n.ends\n")
-    with pytest.raises(SpiceError, match="`pair` takes 2 arguments, not 1"):
-        arity.component("a")
+@pytest.mark.parametrize(
+    ("deck", "match"),
+    [
+        (
+            ".subckt a n\n.func f(x) {f(x) + 1}\nR1 n 0 {f(1)}\n.ends\n",
+            "a function calls itself: `f` calls `f`",
+        ),
+        (
+            ".subckt a n\n.func p(x) {q(x)}\n.func q(x) {p(x)}\nR1 n 0 {p(1)}\n.ends\n",
+            "a function calls itself: `p` calls `q` calls `p`",
+        ),
+        (
+            (
+                ".func g(x) {loc(x)}\n.subckt a n\n.func loc(x) {g(x)}\n"
+                "R1 n 0 {loc(1)}\n.ends\n"
+            ),
+            "a function calls itself: `loc` calls `g` calls `loc`",
+        ),
+        (
+            (
+                ".subckt a n\n.func bad(x) {bad(x)}\n.model dm D(IS=bad(1e-14))\n"
+                "D1 n 0 dm\n.ends\n"
+            ),
+            "a function calls itself: `bad` calls `bad`",
+        ),
+        (
+            ".subckt a n\n.func pair(x, y) {x + y}\nR1 n 0 {pair(1)}\n.ends\n",
+            "`pair` takes 2 arguments, not 1",
+        ),
+    ],
+)
+def test_recursive_local_func_and_wrong_arity_are_refused(
+    deck: str, match: str
+) -> None:
+    with pytest.raises(SpiceError, match=match):
+        library(deck).component("a")
 
 
 def test_local_func_model_cache_has_no_crosstalk() -> None:
@@ -3438,32 +3415,40 @@ def test_consistent_parallel_and_loop_capacitor_ic_succeed() -> None:
     }
 
 
-def test_contradictory_and_malformed_ic_are_refused() -> None:
-    parallel = library(".subckt s a\nC1 a 0 1u IC=1\nC2 a 0 1u IC=2\n.ends\n")
-    with pytest.raises(SpiceError, match="contradictory initial conditions"):
-        parallel.initial_conditions_of("s", operating_point=False)
-
-    vs_dot_ic = library(".subckt s a\nC1 a 0 1u IC=1\n.ic v(a)=2\n.ends\n")
-    with pytest.raises(SpiceError, match="contradictory initial conditions"):
-        vs_dot_ic.initial_conditions_of("s", operating_point=False)
-
-    loop = library(
-        ".subckt s a b c\nC1 a b 1u IC=1\nC2 b c 1u IC=1\nC3 c a 1u IC=1\n.ends\n"
+@pytest.mark.parametrize(
+    ("deck", "via_component", "match"),
+    [
+        (
+            ".subckt s a\nC1 a 0 1u IC=1\nC2 a 0 1u IC=2\n.ends\n",
+            False,
+            "contradictory initial conditions",
+        ),
+        (
+            ".subckt s a\nC1 a 0 1u IC=1\n.ic v(a)=2\n.ends\n",
+            False,
+            "contradictory initial conditions",
+        ),
+        (
+            ".subckt s a b c\nC1 a b 1u IC=1\nC2 b c 1u IC=1\nC3 c a 1u IC=1\n.ends\n",
+            False,
+            "contradictory initial conditions",
+        ),
+        (".subckt s a\nC1 a a 1u IC=1.5\n.ends\n", False, "shorted capacitor `C1`"),
+        (".subckt s a\nC1 a 0 1u IC=1,2\n.ends\n", True, "`IC` has one value"),
+        (".subckt s a\nR1 a 0 1k IC=1\n.ends\n", True, "no `IC` here"),
+    ],
+)
+def test_contradictory_and_malformed_ic_are_refused(
+    deck: str, *, via_component: bool, match: str
+) -> None:
+    lib = library(deck)
+    action = (
+        (lambda: lib.component("s"))
+        if via_component
+        else (lambda: lib.initial_conditions_of("s", operating_point=False))
     )
-    with pytest.raises(SpiceError, match="contradictory initial conditions"):
-        loop.initial_conditions_of("s", operating_point=False)
-
-    shorted = library(".subckt s a\nC1 a a 1u IC=1.5\n.ends\n")
-    with pytest.raises(SpiceError, match="shorted capacitor `C1`"):
-        shorted.initial_conditions_of("s", operating_point=False)
-
-    multi_val = library(".subckt s a\nC1 a 0 1u IC=1,2\n.ends\n")
-    with pytest.raises(SpiceError, match="`IC` has one value"):
-        multi_val.component("s")
-
-    resistor_ic = library(".subckt s a\nR1 a 0 1k IC=1\n.ends\n")
-    with pytest.raises(SpiceError, match="no `IC` here"):
-        resistor_ic.component("s")
+    with pytest.raises(SpiceError, match=match):
+        action()
 
 
 def test_inductor_ic_currents_multiplier_and_coupled_windings() -> None:
@@ -3520,52 +3505,36 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
     )
     tau = 1e-3  # R * C = 1k * 1u = 1 ms
 
-    # 1) Subcircuit .ic under UIC matches closed-form v(t) = 3 * exp(-t / tau).
-    ic_map = {
-        net: value * V
-        for net, value in lib.initial_conditions_of(
-            "rc_ic", operating_point=False
-        ).items()
-    }
-    res_ic = Simulation(circuit(lib.component("rc_ic"))).run(
-        Transient(
-            stop=2 * ms,
-            max_step=20 * us,
-            initial_conditions=ic_map,
-            operating_point=False,
-        ),
-        TIGHT,
-    )
-    # Initial condition at t=0 matches exactly within LU rounding (rel=1e-12, abs=0);
-    # trapezoidal discretization with max_step=20 us on tau=1 ms (h/tau=0.02) gives
-    # O(h^2/tau^2) ~ 1e-4 relative error at t=2 ms (bounded by rel=1e-4, abs=0).
-    assert res_ic.voltage("mid")[0] == pytest.approx(3.0, rel=1e-12, abs=0)
-    assert res_ic.voltage("mid")[-1] == pytest.approx(
-        3.0 * math.exp(-2e-3 / tau), rel=1e-4, abs=0
-    )
-
-    # 2) Nested subcircuit capacitor IC=4 under UIC matches 4 * exp(-t / tau).
-    cap_ic_map = {
-        net: value * V
-        for net, value in lib.initial_conditions_of(
-            "wrapper", operating_point=False
-        ).items()
-    }
-    assert cap_ic_map == {"X1/mid": 4.0 * V}
-    res_cap = Simulation(circuit(lib.component("wrapper"))).run(
-        Transient(
-            stop=2 * ms,
-            max_step=20 * us,
-            initial_conditions=cap_ic_map,
-            operating_point=False,
-        ),
-        TIGHT,
-    )
-    # Same LU rounding (rel=1e-12) and O(h^2/tau^2) trapezoidal error (rel=1e-4).
-    assert res_cap.voltage("X1/mid")[0] == pytest.approx(4.0, rel=1e-12, abs=0)
-    assert res_cap.voltage("X1/mid")[-1] == pytest.approx(
-        4.0 * math.exp(-2e-3 / tau), rel=1e-4, abs=0
-    )
+    # 1) Subcircuit .ic and nested capacitor IC= under UIC match V0 * exp(-t / tau).
+    for subcircuit, probe, expected_initial in (
+        ("rc_ic", "mid", 3.0),
+        ("wrapper", "X1/mid", 4.0),
+    ):
+        ic_map = {
+            net: value * V
+            for net, value in lib.initial_conditions_of(
+                subcircuit, operating_point=False
+            ).items()
+        }
+        assert ic_map == {probe: expected_initial * V}
+        res = Simulation(circuit(lib.component(subcircuit))).run(
+            Transient(
+                stop=2 * ms,
+                max_step=20 * us,
+                initial_conditions=ic_map,
+                operating_point=False,
+            ),
+            TIGHT,
+        )
+        # Initial condition at t=0 matches within LU rounding (rel=1e-12, abs=0);
+        # trapezoidal discretization with max_step=20 us on tau=1 ms (h/tau=0.02) gives
+        # O(h^2/tau^2) ~ 1e-4 relative error at t=2 ms (bounded by rel=1e-4, abs=0).
+        assert res.voltage(probe)[0] == pytest.approx(
+            expected_initial, rel=1e-12, abs=0
+        )
+        assert res.voltage(probe)[-1] == pytest.approx(
+            expected_initial * math.exp(-2e-3 / tau), rel=1e-4, abs=0
+        )
 
     # 3) Subcircuit .nodeset guides a bistable tanh circuit to its chosen root.
     bistable = library(
@@ -3588,6 +3557,18 @@ def test_transient_rc_decay_from_subcircuit_ic_and_capacitor_ic() -> None:
     assert op.voltage("X1/x") == pytest.approx(1.915008046, rel=1e-6, abs=0)
 
 
+def _assert_pss_fields(
+    card: object, expected: Mapping[str, object], *, tolerance: float = 1e-12
+) -> None:
+    """Asserts `.pss` card fields match `expected` within IEEE-754 rounding."""
+    for field, target in expected.items():
+        actual = getattr(card, field)
+        if isinstance(target, float):
+            assert actual == pytest.approx(target, rel=tolerance, abs=0), field
+        else:
+            assert actual == target, field
+
+
 def test_library_reads_driven_pss_statements() -> None:
     """Driven `.pss` card values parse within IEEE-754 rounding (`rel=1e-12, abs=0`)."""
     read = library(
@@ -3601,39 +3582,28 @@ def test_library_reads_driven_pss_statements() -> None:
     )
     cards = read.periodic_steady_states
     assert len(cards) == 5
-
-    # .pss 1meg -> driven at 1 MHz
-    assert cards[0].autonomous is False
-    assert cards[0].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
-    assert cards[0].period == pytest.approx(1e-6, rel=1e-12, abs=0)
-    assert cards[0].stabilization is None
     assert cards[0].statement is not None
     assert cards[0].statement.line == 3
-
-    # Parameterized driven .pss with user function
-    assert cards[1].autonomous is False
-    assert cards[1].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
-    assert cards[1].period == pytest.approx(1e-6, rel=1e-12, abs=0)
-    assert cards[1].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
-
-    # Keyword driven with period, max_step, method
-    assert cards[2].autonomous is False
-    assert cards[2].period == pytest.approx(1e-6, rel=1e-12, abs=0)
-    assert cards[2].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
-    assert cards[2].max_step == pytest.approx(5e-9, rel=1e-12, abs=0)
-    assert cards[2].method == "gear2"
-
-    # Keyword driven with fund, points, method alias
-    assert cards[3].autonomous is False
-    assert cards[3].period == pytest.approx(1e-3, rel=1e-12, abs=0)
-    assert cards[3].points == 100
-    assert cards[3].method == "backward_euler"
-
-    # Keyword driven with freq, tstep, uic
-    assert cards[4].autonomous is False
-    assert cards[4].period == pytest.approx(1e-4, rel=1e-12, abs=0)
-    assert cards[4].max_step == pytest.approx(1e-6, rel=1e-12, abs=0)
-    assert cards[4].uic is True
+    expected: tuple[dict[str, object], ...] = (
+        {"autonomous": False, "frequency": 1e6, "period": 1e-6, "stabilization": None},
+        {"autonomous": False, "frequency": 1e6, "period": 1e-6, "stabilization": 10e-6},
+        {
+            "autonomous": False,
+            "period": 1e-6,
+            "frequency": 1e6,
+            "max_step": 5e-9,
+            "method": "gear2",
+        },
+        {
+            "autonomous": False,
+            "period": 1e-3,
+            "points": 100,
+            "method": "backward_euler",
+        },
+        {"autonomous": False, "period": 1e-4, "max_step": 1e-6, "uic": True},
+    )
+    for card, fields in zip(cards, expected, strict=True):
+        _assert_pss_fields(card, fields)
 
 
 def test_library_reads_autonomous_pss_statements() -> None:
@@ -3649,55 +3619,50 @@ def test_library_reads_autonomous_pss_statements() -> None:
     )
     cards = read.periodic_steady_states
     assert len(cards) == 7
-
-    # Bare .pss -> autonomous
-    assert cards[0].autonomous is True
-    assert cards[0].period is None
-    assert cards[0].frequency is None
     assert cards[0].statement is not None
     assert cards[0].statement.line == 1
-
-    # ngspice 3-arg autonomous .pss
-    assert cards[1].autonomous is True
-    assert cards[1].period is None
-    assert cards[1].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
-    assert cards[1].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
-    assert cards[1].oscillator_node == "out"
-
-    # ngspice full positional autonomous .pss with V(out) and uic
-    assert cards[2].autonomous is True
-    assert cards[2].period is None
-    assert cards[2].frequency == pytest.approx(1e6, rel=1e-12, abs=0)
-    assert cards[2].stabilization == pytest.approx(10e-6, rel=1e-12, abs=0)
-    assert cards[2].oscillator_node == "out"
-    assert cards[2].points == 1024
-    assert cards[2].harmonics == 10
-    assert cards[2].shooting_iterations == 50
-    assert cards[2].steady_coefficient == pytest.approx(5e-3, rel=1e-12, abs=0)
-    assert cards[2].uic is True
-
-    # Numeric non-ground node name
-    assert cards[3].autonomous is True
-    assert cards[3].oscillator_node == "2"
-    assert cards[3].stabilization == 0.0
-    assert cards[3].points == 512
-
-    # Keyword autonomous with oscnode=v(tank)
-    assert cards[4].autonomous is True
-    assert cards[4].period is None
-    assert cards[4].frequency == pytest.approx(2e6, rel=1e-12, abs=0)
-    assert cards[4].stabilization == pytest.approx(5e-6, rel=1e-12, abs=0)
-    assert cards[4].oscillator_node == "tank"
-    assert cards[4].harmonics == 8
-    assert cards[4].shooting_iterations == 40
-    assert cards[4].steady_coefficient == pytest.approx(1e-3, rel=1e-12, abs=0)
-
-    # Explicit autonomous flag and ngspice oscnob spelling alias
-    assert cards[5].autonomous is True
-    assert cards[5].period is None
-    assert cards[5].max_step == pytest.approx(2e-9, rel=1e-12, abs=0)
-    assert cards[6].autonomous is True
-    assert cards[6].oscillator_node == "node_a"
+    expected: tuple[dict[str, object], ...] = (
+        {"autonomous": True, "period": None, "frequency": None},
+        {
+            "autonomous": True,
+            "period": None,
+            "frequency": 1e6,
+            "stabilization": 10e-6,
+            "oscillator_node": "out",
+        },
+        {
+            "autonomous": True,
+            "period": None,
+            "frequency": 1e6,
+            "stabilization": 10e-6,
+            "oscillator_node": "out",
+            "points": 1024,
+            "harmonics": 10,
+            "shooting_iterations": 50,
+            "steady_coefficient": 5e-3,
+            "uic": True,
+        },
+        {
+            "autonomous": True,
+            "oscillator_node": "2",
+            "stabilization": 0.0,
+            "points": 512,
+        },
+        {
+            "autonomous": True,
+            "period": None,
+            "frequency": 2e6,
+            "stabilization": 5e-6,
+            "oscillator_node": "tank",
+            "harmonics": 8,
+            "shooting_iterations": 40,
+            "steady_coefficient": 1e-3,
+        },
+        {"autonomous": True, "period": None, "max_step": 2e-9},
+        {"autonomous": True, "oscillator_node": "node_a"},
+    )
+    for card, fields in zip(cards, expected, strict=True):
+        _assert_pss_fields(card, fields)
 
 
 def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
@@ -4074,63 +4039,41 @@ def test_binned_model_index_tracks_order_and_invalidation() -> None:
 
 
 def test_heat_propagates_across_multi_stage_foster_and_cauer_ladders() -> None:
+    hot = ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
     cauer = library(
-        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
-        ".subckt cauer c b e t\n"
-        "Q1 c b e 0 t hot\n"
-        "Rload c 0 1k\n"
-        "Rth1 t t1 100\n"
-        "Cth1 t1 0 10n\n"
-        "Rth2 t1 t2 200\n"
-        "Cth2 t2 0 20n\n"
-        "Rth3 t2 0 500\n"
-        ".ends\n"
+        f"{hot}.subckt cauer c b e t\nQ1 c b e 0 t hot\nRload c 0 1k\n"
+        "Rth1 t t1 100\nCth1 t1 0 10n\nRth2 t1 t2 200\nCth2 t2 0 20n\n"
+        "Rth3 t2 0 500\n.ends\n"
     )
     found = _devices(cauer.component("cauer"))
-    assert found["Rload"] == ("resistor", {"resistance": 1000.0})
-    assert found["Rth1"] == ("thermal_resistance", {"resistance": 100.0})
-    assert found["Cth1"] == ("thermal_capacitance", {"capacitance": 10e-9})
-    assert found["Rth2"] == ("thermal_resistance", {"resistance": 200.0})
-    assert found["Cth2"] == ("thermal_capacitance", {"capacitance": 20e-9})
-    assert found["Rth3"] == ("thermal_resistance", {"resistance": 500.0})
+    assert {k: found[k] for k in ("Rload", "Rth1", "Cth1", "Rth2", "Cth2", "Rth3")} == {
+        "Rload": ("resistor", {"resistance": 1000.0}),
+        "Rth1": ("thermal_resistance", {"resistance": 100.0}),
+        "Cth1": ("thermal_capacitance", {"capacitance": 10e-9}),
+        "Rth2": ("thermal_resistance", {"resistance": 200.0}),
+        "Cth2": ("thermal_capacitance", {"capacitance": 20e-9}),
+        "Rth3": ("thermal_resistance", {"resistance": 500.0}),
+    }
 
     foster = library(
-        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
-        ".subckt foster c b e t\n"
-        "Q1 c b e 0 t hot\n"
-        "R1 t t1 40\n"
-        "C1 t t1 5n\n"
-        "R2 t1 0 60\n"
-        "C2 t1 0 8n\n"
-        ".ends\n"
+        f"{hot}.subckt foster c b e t\nQ1 c b e 0 t hot\n"
+        "R1 t t1 40\nC1 t t1 5n\nR2 t1 0 60\nC2 t1 0 8n\n.ends\n"
     )
     foster_devices = _devices(foster.component("foster"))
-    assert foster_devices["R1"] == ("thermal_resistance", {"resistance": 40.0})
-    assert foster_devices["C1"] == ("thermal_capacitance", {"capacitance": 5e-9})
-    assert foster_devices["R2"] == ("thermal_resistance", {"resistance": 60.0})
-    assert foster_devices["C2"] == ("thermal_capacitance", {"capacitance": 8e-9})
+    assert {k: foster_devices[k] for k in ("R1", "C1", "R2", "C2")} == {
+        "R1": ("thermal_resistance", {"resistance": 40.0}),
+        "C1": ("thermal_capacitance", {"capacitance": 5e-9}),
+        "R2": ("thermal_resistance", {"resistance": 60.0}),
+        "C2": ("thermal_capacitance", {"capacitance": 8e-9}),
+    }
 
-    bridged = library(
-        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
-        ".subckt bridged c b e t\n"
-        "Q1 c b e 0 t hot\n"
-        "Rth1 t t1 100\n"
-        "Rbad t1 c 1k\n"
-        ".ends\n"
-    )
-    with pytest.raises(SpiceError, match="joins a thermal node to another"):
-        bridged.component("bridged")
-
-    drifting = library(
-        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
-        ".subckt drift c b e t\n"
-        "Q1 c b e 0 t hot\n"
-        "Rth1 t t1 100\n"
-        "Rth2 t1 0 200 TC1=1m\n"
-        ".ends\n"
-    )
-    with pytest.raises(SpiceError, match="drifts with temperature or voltage"):
-        drifting.component("drift")
+    for body, match in (
+        ("Rth1 t t1 100\nRbad t1 c 1k\n", "joins a thermal node to another"),
+        ("Rth1 t t1 100\nRth2 t1 0 200 TC1=1m\n", "drifts with temperature or voltage"),
+    ):
+        bad = library(f"{hot}.subckt s c b e t\nQ1 c b e 0 t hot\n{body}.ends\n")
+        with pytest.raises(SpiceError, match=match):
+            bad.component("s")
 
 
 @pytest.mark.parametrize(
@@ -4322,16 +4265,17 @@ def test_models_ako_handles_bare_overrides_attached_parens_and_spaces() -> None:
         ".ends\n"
     )
     found = _devices(lib.component("s"))
-    assert found["D2"][1]["saturation_current"] == 1e-15
     assert found["D2"][1]["emission_coefficient"] == 1.5
-    assert found["D3"][1]["saturation_current"] == 2e-15
-    assert found["D4"][1]["saturation_current"] == 3e-15
-    assert found["D5"][1]["saturation_current"] == 4e-15
-    assert found["D6"][1]["saturation_current"] == 5e-15
-    assert found["M2"][1]["channel"] == "p"
-    assert found["M2"][1]["threshold_voltage"] == -2.5
-    assert found["M3"][1]["channel"] == "n"
-    assert found["M3"][1]["threshold_voltage"] == 1.8
+    for name, expected_is in (
+        ("D2", 1e-15),
+        ("D3", 2e-15),
+        ("D4", 3e-15),
+        ("D5", 4e-15),
+        ("D6", 5e-15),
+    ):
+        assert found[name][1]["saturation_current"] == expected_is
+    assert found["M2"][1] == {"channel": "p", "threshold_voltage": -2.5}
+    assert found["M3"][1] == {"channel": "n", "threshold_voltage": 1.8}
 
     with pytest.raises(SpiceError, match="AKO:"):
         library(".model Dbad AKO:\n")
@@ -4435,31 +4379,25 @@ def test_export_flatten_handles_deep_hierarchy_iteratively() -> None:
 
 
 def test_export_written_is_iterative_and_guards_exponential_blowup() -> None:
+    def render(tree: JsonValue) -> str:
+        return export._written(tree, lambda _node: "v(a)")  # noqa: SLF001 - test internal writer
+
     # 1200-deep left-leaning sum must not raise RecursionError.
     deep: JsonValue = 1.0
     for _ in range(1200):
         deep = {"operation": "+", "operands": [deep, 1.0]}
-    rendered = export._written(deep, lambda _node: "v(a)")  # noqa: SLF001 - test internal writer
-    assert rendered.count("+") == 1200
+    assert render(deep).count("+") == 1200
 
-    # Nested limit(0, a, 1) duplicates `a` twice per level (2^d > 1_000_000 at d=15).
+    # Nested limit (2^d / 4^d) and nested tables blow up exponentially if unguarded.
     nested_limit: JsonValue = {"voltage": "a"}
     for _ in range(18):
         nested_limit = {"operation": "limit", "operands": [0.0, nested_limit, 1.0]}
-    with pytest.raises(ValueError, match="exceeds the limit"):
-        export._written(nested_limit, lambda _node: "v(a)")  # noqa: SLF001 - test limit guard
-
-    # Nested limit(0, a, a) duplicates both bounds (4^d > 1_000_000 at d=9).
     nested_both: JsonValue = {"voltage": "a"}
     for _ in range(10):
         nested_both = {
             "operation": "limit",
             "operands": [0.0, nested_both, nested_both],
         }
-    with pytest.raises(ValueError, match="exceeds the limit"):
-        export._written(nested_both, lambda _node: "v(a)")  # noqa: SLF001 - test 4^d limit guard
-
-    # Nested tables blow up exponentially if unguarded.
     nested_table: JsonValue = {"voltage": "a"}
     for _ in range(12):
         nested_table = {
@@ -4468,59 +4406,54 @@ def test_export_written_is_iterative_and_guards_exponential_blowup() -> None:
             "ordinates": [0.0, 1.0, 0.5, 2.0],
             "rounding": 0.1,
         }
-    with pytest.raises(ValueError, match="exceeds the limit"):
-        export._written(nested_table, lambda _node: "v(a)")  # noqa: SLF001 - test table guard
-
-    # A table with fewer than 2 points raises ValueError.
     short_table: JsonValue = {
         "table": {"voltage": "a"},
         "abscissae": [0.0],
         "ordinates": [1.0],
         "rounding": 0.0,
     }
-    with pytest.raises(ValueError, match="at least 2 points"):
-        export._written(short_table, lambda _node: "v(a)")  # noqa: SLF001 - test table guard
+    for tree, match in (
+        (nested_limit, "exceeds the limit"),
+        (nested_both, "exceeds the limit"),
+        (nested_table, "exceeds the limit"),
+        (short_table, "at least 2 points"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            render(tree)
+
+
+def _single_component_circuit(
+    *instances: ir.Instance,
+    ports: tuple[ir.Port, ...] = (ir.Port(name="ground", role=Role.GROUND),),
+) -> ir.Circuit:
+    return ir.Circuit(
+        top="top",
+        components={"top": ir.Component(ports=ports, instances=instances)},
+    )
 
 
 def test_export_passive_uses_explicit_primary_parameter_regardless_of_key_order() -> (
     None
 ):
-    design = ir.Circuit(
-        top="top",
-        components={
-            "top": ir.Component(
-                ports=(ir.Port(name="ground", role=Role.GROUND),),
-                instances=(
-                    ir.Instance(
-                        name="R1",
-                        of=ir.DeviceOf(model="resistor"),
-                        parameters={
-                            "temperature_coefficient": 1e-3,
-                            "resistance": 1000.0,
-                        },
-                        terminals={"a": "n1", "b": "ground"},
-                    ),
-                    ir.Instance(
-                        name="C1",
-                        of=ir.DeviceOf(model="capacitor"),
-                        parameters={
-                            "temperature_coefficient": 2e-4,
-                            "capacitance": 1e-6,
-                        },
-                        terminals={"a": "n1", "b": "ground"},
-                    ),
-                    ir.Instance(
-                        name="L1",
-                        of=ir.DeviceOf(model="inductor"),
-                        parameters={
-                            "temperature_coefficient": 3e-4,
-                            "inductance": 1e-3,
-                        },
-                        terminals={"a": "n1", "b": "ground"},
-                    ),
-                ),
-            )
-        },
+    design = _single_component_circuit(
+        ir.Instance(
+            name="R1",
+            of=ir.DeviceOf(model="resistor"),
+            parameters={"temperature_coefficient": 1e-3, "resistance": 1000.0},
+            terminals={"a": "n1", "b": "ground"},
+        ),
+        ir.Instance(
+            name="C1",
+            of=ir.DeviceOf(model="capacitor"),
+            parameters={"temperature_coefficient": 2e-4, "capacitance": 1e-6},
+            terminals={"a": "n1", "b": "ground"},
+        ),
+        ir.Instance(
+            name="L1",
+            of=ir.DeviceOf(model="inductor"),
+            parameters={"temperature_coefficient": 3e-4, "inductance": 1e-3},
+            terminals={"a": "n1", "b": "ground"},
+        ),
     )
     deck = netlist(design)
     assert any(line.startswith("RR1 n1 0 1000.0 tc1=0.001") for line in deck)
@@ -4529,47 +4462,32 @@ def test_export_passive_uses_explicit_primary_parameter_regardless_of_key_order(
 
 
 def test_export_netlist_rejects_missing_ground_port_with_jolty_error() -> None:
-    ungrounded = ir.Circuit(
-        top="top",
-        components={
-            "top": ir.Component(
-                ports=(ir.Port(name="a", role=Role.SIGNAL),),
-                instances=(
-                    ir.Instance(
-                        name="R1",
-                        of=ir.DeviceOf(model="resistor"),
-                        parameters={"resistance": 100.0},
-                        terminals={"a": "a", "b": "b"},
-                    ),
-                ),
-            )
-        },
+    ungrounded = _single_component_circuit(
+        ir.Instance(
+            name="R1",
+            of=ir.DeviceOf(model="resistor"),
+            parameters={"resistance": 100.0},
+            terminals={"a": "a", "b": "b"},
+        ),
+        ports=(ir.Port(name="a", role=Role.SIGNAL),),
     )
     with pytest.raises(JoltyError, match="no ground port"):
         netlist(ungrounded)
 
 
 def test_export_diode_capacitance_singular_shift_raises_jolty_error() -> None:
-    singular = ir.Circuit(
-        top="top",
-        components={
-            "top": ir.Component(
-                ports=(ir.Port(name="ground", role=Role.GROUND),),
-                instances=(
-                    ir.Instance(
-                        name="D1",
-                        of=ir.DeviceOf(model="diode"),
-                        parameters={
-                            "capacitance_temperature_model": 1,
-                            "nominal_temperature": _core.REFERENCE_TEMPERATURE + 8.0,
-                            "junction_capacitance": 1e-12,
-                            "junction_capacitance_temperature_coefficient": 0.125,
-                        },
-                        terminals={"anode": "a", "cathode": "ground"},
-                    ),
-                ),
-            )
-        },
+    singular = _single_component_circuit(
+        ir.Instance(
+            name="D1",
+            of=ir.DeviceOf(model="diode"),
+            parameters={
+                "capacitance_temperature_model": 1,
+                "nominal_temperature": _core.REFERENCE_TEMPERATURE + 8.0,
+                "junction_capacitance": 1e-12,
+                "junction_capacitance_temperature_coefficient": 0.125,
+            },
+            terminals={"anode": "a", "cathode": "ground"},
+        )
     )
     with pytest.raises(JoltyError, match="singular"):
         netlist(singular)
@@ -4786,29 +4704,15 @@ def test_ngspice_parse_raw_checks_ascii_row_index_and_reads_binary_complex() -> 
     with pytest.raises(JoltyError, match="row index 5, not 1"):
         ngspice.parse_raw(bad_ascii)
 
-    header = (
-        b"Title: ac\n"
-        b"Plotname: AC Analysis\n"
-        b"Flags: complex\n"
-        b"No. Variables: 2\n"
-        b"No. Points: 2\n"
-        b"Variables:\n"
-        b"\t0\tfrequency\tfrequency\n"
-        b"\t1\tv(out)\tvoltage\n"
-        b"Binary:\n"
-    )
-    payload = struct.pack(
-        "<8d",
-        100.0,
-        0.0,
-        -0.0,
-        -2.5,
-        1000.0,
-        0.0,
-        0.75,
-        0.25,
-    )
-    (plot,) = ngspice.parse_raw(header + payload)
+    def binary_header(points: int) -> bytes:
+        return (
+            "Title: ac\nPlotname: AC Analysis\nFlags: complex\nNo. Variables: 2\n"
+            f"No. Points: {points}\n"
+            "Variables:\n\t0\tfrequency\tfrequency\n\t1\tv(out)\tvoltage\nBinary:\n"
+        ).encode("ascii")
+
+    payload = struct.pack("<8d", 100.0, 0.0, -0.0, -2.5, 1000.0, 0.0, 0.75, 0.25)
+    (plot,) = ngspice.parse_raw(binary_header(2) + payload)
     assert plot.values.dtype == np.complex128
     assert plot.values.shape == (2, 2)
     assert plot.values[0, 0] == 100.0 + 0.0j
@@ -4816,18 +4720,7 @@ def test_ngspice_parse_raw_checks_ascii_row_index_and_reads_binary_complex() -> 
     assert plot.values[0, 1] == complex(-0.0, -2.5)
     assert plot.values[1, 1] == 0.75 + 0.25j
 
-    empty_header = (
-        b"Title: ac\n"
-        b"Plotname: AC Analysis\n"
-        b"Flags: complex\n"
-        b"No. Variables: 2\n"
-        b"No. Points: 0\n"
-        b"Variables:\n"
-        b"\t0\tfrequency\tfrequency\n"
-        b"\t1\tv(out)\tvoltage\n"
-        b"Binary:\n"
-    )
-    (empty_plot,) = ngspice.parse_raw(empty_header)
+    (empty_plot,) = ngspice.parse_raw(binary_header(0))
     assert empty_plot.values.dtype == np.complex128
     assert empty_plot.values.shape == (0, 2)
 
@@ -4843,32 +4736,25 @@ def test_xyce_run_rejects_empty_analysis_and_parses_complex_csv_with_blank_lines
         "Total Simulation Solvers Run Time: 0.12 seconds\n"
         "Total Elapsed Run Time: 0.25 seconds\n"
     )
-    csv_body = "\nFREQ,Re(V(OUT)),Im(V(OUT))\n\n100.0,0.5,-0.25\n1000.0,0.25,0.75\n\n"
 
-    def fake_execute(
-        deck: Sequence[str],
-        *,
-        launch: Sequence[str] | None = None,
-        timeout: float | None = None,
-    ) -> xyce.Executed:
-        del deck, launch, timeout
-        return xyce.Executed(printed=printed, code=0, seconds=0.3, values=csv_body)
+    def stub(values: str) -> None:
+        def fake_execute(
+            deck: Sequence[str],
+            *,
+            launch: Sequence[str] | None = None,
+            timeout: float | None = None,
+        ) -> xyce.Executed:
+            del deck, launch, timeout
+            return xyce.Executed(printed=printed, code=0, seconds=0.3, values=values)
 
-    monkeypatch.setattr(xyce, "execute", fake_execute)
+        monkeypatch.setattr(xyce, "execute", fake_execute)
+
+    stub("\nFREQ,Re(V(OUT)),Im(V(OUT))\n\n100.0,0.5,-0.25\n1000.0,0.25,0.75\n\n")
     result = xyce.run(["* title", "R1 out 0 1k"], ".ac dec 10 100 1k")
     assert list(result.vectors["frequency"]) == [100.0 + 0j, 1000.0 + 0j]
     assert list(result.vectors["v(out)"]) == [0.5 - 0.25j, 0.25 + 0.75j]
 
     # Blank-only CSV triggers "printed no values" instead of ValueError.
-    def empty_execute(
-        deck: Sequence[str],
-        *,
-        launch: Sequence[str] | None = None,
-        timeout: float | None = None,
-    ) -> xyce.Executed:
-        del deck, launch, timeout
-        return xyce.Executed(printed=printed, code=0, seconds=0.1, values="\n\n")
-
-    monkeypatch.setattr(xyce, "execute", empty_execute)
+    stub("\n\n")
     with pytest.raises(JoltyError, match="printed no values"):
         xyce.run(["* title", "R1 out 0 1k"], ".op")

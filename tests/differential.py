@@ -26,15 +26,23 @@ __all__ = [
     "REQUIRED",
     "SKIP",
     "SKIP_XYCE",
+    "SpiceResult",
     "Values",
+    "assert_ac_agrees",
+    "assert_dc_sweep_agrees",
+    "assert_noise_agrees",
+    "assert_op_agrees",
+    "assert_transient_agrees",
     "closest",
     "compare",
     "compared",
+    "dc_command",
     "differing",
     "nearest",
     "netlist",
     "ngspice",
     "size",
+    "transient_command",
     "unstable",
     "vector",
     "xyce",
@@ -60,6 +68,7 @@ run and fail."""
 
 type Real = npt.NDArray[np.float64]
 type Values = float | Real | npt.NDArray[np.complex128]
+type SpiceResult = ngspice.Result | xyce.Result
 
 
 def _libraries(circuit: ir.Circuit) -> set[str]:
@@ -103,21 +112,229 @@ def vector(
 # The tests.
 
 
-def compare(
+def _dialect(raw: SpiceResult) -> export.Dialect:
+    """The SPICE dialect matching `raw`'s simulator."""
+    return export.XYCE if isinstance(raw, xyce.Result) else export.NGSPICE
+
+
+def _vector_name(
+    simulation: Simulation,
+    unknown: results.Unknown,
+    dialect: export.Dialect,
+    vector_names: Mapping[str, str] | None = None,
+) -> str:
+    """The simulator's vector name for `unknown`, applying any explicit override."""
+    if vector_names is not None and unknown.name in vector_names:
+        return vector_names[unknown.name]
+    return vector(simulation.circuit, unknown, dialect)
+
+
+def dc_command(
+    source: str,
+    sweep: results.DcSweepResult,
+    *,
+    dialect: export.Dialect = export.NGSPICE,
+) -> str:
+    """The SPICE DC sweep command matching `sweep` on voltage source `source`."""
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
+    step = (last - first) / (len(sweep.swept) - 1)
+    prefix = ".dc" if dialect == export.XYCE else "dc"
+    return f"{prefix} V{source} {first!r} {last!r} {step!r}"
+
+
+def transient_command(
+    stop: float,
+    step: float,
+    *,
+    dialect: export.Dialect = export.NGSPICE,
+    uic: bool = False,
+) -> str:
+    """The SPICE transient command for `stop` and `step` in seconds."""
+    prefix = ".tran" if dialect == export.XYCE else "tran"
+    suffix = " uic" if uic else ""
+    return f"{prefix} {step!r} {stop!r} 0 {step!r}{suffix}"
+
+
+def compare(  # noqa: PLR0913 - compared values, unknown metadata, and explicit tolerances
     jolty: Values,
     spice: Values,
     unknown: results.Unknown,
     *,
     scale: float,
     tolerance: float,
+    allowance: float = 0.0,
 ) -> None:
     """Asserts both agree within `tolerance` times `scale`, the signal's size.
 
     Values within the engines' absolute tolerance for the unknown's quantity are noise,
-    and agree too.
+    and agree too. A current agrees within `allowance` too, when given.
     """
-    noise = CURRENT_TOLERANCE if unknown.nature == "current" else VOLTAGE_TOLERANCE
-    np.testing.assert_allclose(jolty, spice, rtol=0, atol=tolerance * scale + noise)
+    current = unknown.nature == "current"
+    noise = CURRENT_TOLERANCE if current else VOLTAGE_TOLERANCE
+    np.testing.assert_allclose(
+        jolty,
+        spice,
+        rtol=0,
+        atol=tolerance * scale + noise + (allowance if current else 0.0),
+        err_msg=unknown.name,
+    )
+
+
+def assert_op_agrees(
+    simulation: Simulation,
+    point: results.OperatingPointResult,
+    raw: SpiceResult,
+    *,
+    tolerance: float = 1e-6,
+    allowance: float = 0.0,
+) -> None:
+    """Asserts every shared unknown of an operating point agrees with SPICE.
+
+    Defaults to `tolerance=1e-6`, matching both engines' `TIGHT` Newton `reltol=1e-6`.
+    """
+    dialect = _dialect(raw)
+    use_size = dialect == export.XYCE
+    for column, unknown in compared(simulation):
+        spice_value = float(raw.real(vector(simulation.circuit, unknown, dialect))[0])
+        compare(
+            float(point.values[column]),
+            spice_value,
+            unknown,
+            scale=size(spice_value) if use_size else abs(spice_value),
+            tolerance=tolerance,
+            allowance=allowance,
+        )
+
+
+def assert_dc_sweep_agrees(  # noqa: PLR0913 - simulation, results, and explicit overrides
+    simulation: Simulation,
+    sweep: results.DcSweepResult,
+    raw: SpiceResult,
+    *,
+    tolerance: float = 1e-6,
+    allowance: float = 0.0,
+    vector_names: Mapping[str, str] | None = None,
+) -> None:
+    """Asserts every shared unknown of a DC sweep agrees with SPICE.
+
+    Defaults to `tolerance=1e-6`, matching both engines' `TIGHT` Newton `reltol=1e-6`.
+    """
+    dialect = _dialect(raw)
+    for column, unknown in compared(simulation):
+        name = _vector_name(simulation, unknown, dialect, vector_names)
+        spice_values = raw.real(name)
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=tolerance,
+            allowance=allowance,
+        )
+
+
+def assert_ac_agrees(  # noqa: PLR0913 - simulation, results, and frequency/scaling options
+    simulation: Simulation,
+    response: results.AcResult,
+    raw: SpiceResult,
+    *,
+    tolerance: float = 1e-6,
+    frequency_tolerance: float | None = None,
+    scale_by_nature: bool = False,
+) -> None:
+    """Asserts every shared unknown of an AC response agrees with SPICE.
+
+    Defaults to `tolerance=1e-6` (matching `TIGHT` Newton `reltol=1e-6`); when
+    `frequency_tolerance` is given (typically `1e-9` for log-decade stepping rounding),
+    checks the frequency grid too. When `scale_by_nature` is true, scales each unknown
+    against the largest value of its nature across the circuit via `differing`.
+    """
+    if frequency_tolerance is not None:
+        np.testing.assert_allclose(
+            response.frequencies, raw.real("frequency"), rtol=frequency_tolerance
+        )
+    dialect = _dialect(raw)
+    if scale_by_nature:
+        shared = compared(simulation)
+        jolty_values = {
+            unknown.name: response.values[:, column] for column, unknown in shared
+        }
+        spice_values = {
+            unknown.name: raw.vectors[vector(simulation.circuit, unknown, dialect)]
+            for _, unknown in shared
+        }
+        natures = {unknown.name: unknown.nature for _, unknown in shared}
+        assert not differing(jolty_values, spice_values, natures, tolerance), (
+            "the responses differ"
+        )
+        return
+    for column, unknown in compared(simulation):
+        spice_vector = raw.vectors[vector(simulation.circuit, unknown, dialect)]
+        compare(
+            response.values[:, column],
+            spice_vector,
+            unknown,
+            scale=size(spice_vector),
+            tolerance=tolerance,
+        )
+
+
+def assert_noise_agrees(
+    spectrum: results.NoiseResult,
+    raw: SpiceResult,
+    *,
+    tolerance: float = 1e-5,
+    frequency_tolerance: float | None = 1e-9,
+    check_referred: bool = True,
+) -> None:
+    """Asserts output (and optionally input-referred) noise agrees with SPICE.
+
+    ngspice reports root spectral densities (`onoise_spectrum`, `inoise_spectrum`),
+    whereas Xyce reports squared densities (`onoise`, `inoise`). Defaults to
+    `tolerance=1e-5` (~10x `TIGHT` `reltol=1e-6`, covering operating-point spread and
+    CODATA `k_B` difference) and `frequency_tolerance=1e-9` (log-decade grid rounding).
+    """
+    if frequency_tolerance is not None:
+        np.testing.assert_allclose(
+            spectrum.frequencies, raw.real("frequency"), rtol=frequency_tolerance
+        )
+    squared = isinstance(raw, xyce.Result)
+    output_key = "onoise" if squared else "onoise_spectrum"
+    output_values = spectrum.densities if squared else np.sqrt(spectrum.densities)
+    np.testing.assert_allclose(output_values, raw.real(output_key), rtol=tolerance)
+    if check_referred:
+        input_key = "inoise" if squared else "inoise_spectrum"
+        input_values = spectrum.referred() if squared else np.sqrt(spectrum.referred())
+        np.testing.assert_allclose(input_values, raw.real(input_key), rtol=tolerance)
+
+
+def assert_transient_agrees(
+    simulation: Simulation,
+    waveforms: results.TransientResult,
+    raw: SpiceResult,
+    *,
+    window: float,
+    tolerance: float = 1e-3,
+) -> None:
+    """Asserts every shared transient waveform agrees with SPICE within `window`.
+
+    Defaults to `tolerance=1e-3` of each waveform's swing, covering `O(h^2)` time
+    integration error and `closest()` windowed linear interpolation onto SPICE's times.
+    """
+    dialect = _dialect(raw)
+    times = raw.real("time")
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown, dialect))
+        jolty = closest(
+            waveforms.times, waveforms.values[:, column], times, spice_values, window
+        )
+        compare(
+            jolty,
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=tolerance,
+        )
 
 
 def closest(times: Real, values: Real, at: Real, targets: Real, window: float) -> Real:

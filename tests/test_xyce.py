@@ -51,12 +51,14 @@ import pytest
 
 from differential import (
     SKIP_XYCE,
-    closest,
-    compare,
-    compared,
+    assert_ac_agrees,
+    assert_dc_sweep_agrees,
+    assert_noise_agrees,
+    assert_op_agrees,
+    assert_transient_agrees,
+    dc_command,
     netlist,
-    size,
-    vector,
+    transient_command,
     xyce,
 )
 from jolty import (
@@ -74,7 +76,6 @@ from jolty import (
 from jolty.errors import JoltyError
 from jolty.plan import TIGHT, decade, linear
 from jolty.spice.export import XYCE
-from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 from jolty.units import Hz, MHz, Quantity, V, ms, ns, us
 from jolty.unknowns import Unknown
 from test_ngspice import (
@@ -150,25 +151,6 @@ def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -
     return allowed
 
 
-def _agree(
-    jolty: np.ndarray, spice: np.ndarray, unknown: Unknown, allowance: float
-) -> None:
-    """Asserts both agree within a millionth of the signal (TIGHT reltol=1e-6).
-
-    A current agrees within the `allowance` of Xyce's junctions' departures too.
-    """
-    current = unknown.nature == "current"
-    noise = CURRENT_TOLERANCE if current else VOLTAGE_TOLERANCE
-    # TIGHT (reltol=1e-6) cross-simulator tolerance plus noise floor and allowance.
-    np.testing.assert_allclose(
-        jolty,
-        spice,
-        rtol=0,
-        atol=1e-6 * size(spice) + noise + (allowance if current else 0.0),
-        err_msg=unknown.name,
-    )
-
-
 def _lines(
     simulation: Simulation, *, excited: str | None = None, transient: bool = False
 ) -> list[str]:
@@ -203,10 +185,7 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     point = simulation.run(OperatingPoint(), TIGHT)
     found = xyce.run(_lines(simulation), ".op")
     allowance = _allowance(simulation, point.values, REFERENCE)
-    for column, unknown in compared(simulation):
-        spice = found.real(vector(simulation.circuit, unknown, XYCE))[0]
-        # TIGHT (reltol=1e-6) cross-simulator agreement plus Xyce junction allowance.
-        _agree(point.values[column], spice, unknown, allowance)
+    assert_op_agrees(simulation, point, found, allowance=allowance)
 
 
 @SKIP_XYCE
@@ -221,10 +200,7 @@ def test_operating_points_agree_across_temperatures(
     point = simulation.run(OperatingPoint(), TIGHT)
     found = xyce.run(_lines(simulation), ".op", temperature=temperature.value)
     allowance = _allowance(simulation, point.values, temperature.value)
-    for column, unknown in compared(simulation):
-        spice = found.real(vector(simulation.circuit, unknown, XYCE))[0]
-        # TIGHT (reltol=1e-6) cross-simulator agreement plus Xyce junction allowance.
-        _agree(point.values[column], spice, unknown, allowance)
+    assert_op_agrees(simulation, point, found, allowance=allowance)
 
 
 @SKIP_XYCE
@@ -250,14 +226,9 @@ def test_dc_sweeps_agree(
 ) -> None:
     simulation = Simulation(top())
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
-    step = (last - first) / (len(levels) - 1)
-    found = xyce.run(_lines(simulation), f".dc V{source} {first!r} {last!r} {step!r}")
+    found = xyce.run(_lines(simulation), dc_command(source, sweep, dialect=XYCE))
     allowance = _allowance(simulation, sweep.values, REFERENCE)
-    for column, unknown in compared(simulation):
-        spice = found.real(vector(simulation.circuit, unknown, XYCE))
-        # TIGHT (reltol=1e-6) cross-simulator sweep agreement plus junction allowance.
-        _agree(sweep.values[:, column], spice, unknown, allowance)
+    assert_dc_sweep_agrees(simulation, sweep, found, allowance=allowance)
 
 
 @SKIP_XYCE
@@ -280,17 +251,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     found = xyce.run(_lines(simulation, excited="V1"), ".ac dec 20 10 10meg")
     # Log-decade grid stepping rounding across Xyce raw output vs jolty (rtol=1e-9).
-    np.testing.assert_allclose(response.frequencies, found.real("frequency"), rtol=1e-9)
-    for column, unknown in compared(simulation):
-        spice = found.vectors[vector(simulation.circuit, unknown, XYCE)]
-        # TIGHT (reltol=1e-6) AC phasor agreement vs Xyce.
-        compare(
-            response.values[:, column],
-            spice,
-            unknown,
-            scale=size(spice),
-            tolerance=1e-6,
-        )
+    assert_ac_agrees(simulation, response, found, frequency_tolerance=1e-9)
 
 
 @SKIP_XYCE
@@ -315,11 +276,7 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     )
     lines = _lines(simulation, excited=source)
     found = xyce.run(lines, f".noise v(out) V{source} dec 5 1 100meg")
-    # Log-decade frequency grid rounding (1e-9) and squared noise spectral density
-    # agreement (1e-5, ~10x TIGHT reltol=1e-6 covering k_B/operating-point spread).
-    np.testing.assert_allclose(spectrum.frequencies, found.real("frequency"), rtol=1e-9)
-    np.testing.assert_allclose(spectrum.densities, found.real("onoise"), rtol=1e-5)
-    np.testing.assert_allclose(spectrum.referred(), found.real("inoise"), rtol=1e-5)
+    assert_noise_agrees(spectrum, found)
 
 
 @SKIP_XYCE
@@ -343,16 +300,9 @@ def test_transients_agree(
 ) -> None:
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
-    command = f".tran {step.value!r} {stop.value!r} 0 {step.value!r}"
+    command = transient_command(stop.value, step.value, dialect=XYCE)
     found = xyce.run(_lines(simulation, transient=True), command)
-    times = found.real("time")
-    for column, unknown in compared(simulation):
-        spice = found.real(vector(simulation.circuit, unknown, XYCE))
-        jolty = closest(
-            waveforms.times, waveforms.values[:, column], times, spice, step.value
-        )
-        # Transient O(h^2) integration and window comparison vs Xyce (1e-3 of swing).
-        compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
+    assert_transient_agrees(simulation, waveforms, found, window=step.value)
 
 
 @pytest.mark.parametrize(

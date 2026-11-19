@@ -16,6 +16,7 @@ from hypothesis import event, given
 
 from differential import (
     SKIP,
+    assert_ac_agrees,
     compared,
     differing,
     nearest,
@@ -130,13 +131,7 @@ def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
     )
     response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), TIGHT)
     raw = ngspice.run(netlist(circuit, excited=source), "ac dec 5 1 1g")
-    shared = compared(simulation)
-    jolty = {unknown.name: response.values[:, column] for column, unknown in shared}
-    spice = {
-        unknown.name: raw.vectors[vector(circuit, unknown)] for _, unknown in shared
-    }
-    natures = {unknown.name: unknown.nature for _, unknown in shared}
-    assert not differing(jolty, spice, natures), "the responses differ"
+    assert_ac_agrees(simulation, response, raw, scale_by_nature=True)
 
 
 type Waveforms = dict[str, Real]
