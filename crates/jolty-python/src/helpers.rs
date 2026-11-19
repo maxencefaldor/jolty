@@ -35,10 +35,12 @@ pub(crate) fn elaboration_result<T>(
     py: Python<'_>,
     result: Result<T, ElaborationError>,
 ) -> PyResult<T> {
-    result.map_err(|error| match crate::convert::problems_to_python(py, &error) {
-        Ok(problems) => crate::ElaborationError::new_err((problems.unbind(),)),
-        Err(conversion_error) => conversion_error,
-    })
+    result.map_err(
+        |error| match crate::convert::problems_to_python(py, &error) {
+            Ok(problems) => crate::ElaborationError::new_err((problems.unbind(),)),
+            Err(conversion_error) => conversion_error,
+        },
+    )
 }
 
 /// Locks `mutex`, recovering the guard even if a prior holder panicked.

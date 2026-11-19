@@ -709,7 +709,7 @@ pub(crate) mod test_helpers {
 
     /// Elaborates a single-component grounded test circuit named `top` with ground `ground`
     /// and `instances`.
-    pub(crate) fn grounded_simulator(top: &str, ground: &str, instances: Value) -> Simulator {
+    pub(crate) fn grounded_simulator(top: &str, ground: &str, instances: &Value) -> Simulator {
         let document = json!({
             "format": "jolty-circuit",
             "version": jolty_ir::VERSION,
@@ -729,7 +729,7 @@ pub(crate) mod test_helpers {
         grounded_simulator(
             "test",
             "0",
-            json!([
+            &json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"dc": 1.0}},
                  "terminals": {"positive": "in", "negative": "0"}},

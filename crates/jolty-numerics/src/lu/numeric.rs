@@ -298,7 +298,8 @@ impl<T: Scalar> ColumnFactors<T> {
             self.clear_reach();
             return Err(error);
         }
-        self.upper.drain_pivoted(&self.reach, &self.positions, &mut self.work);
+        self.upper
+            .drain_pivoted(&self.reach, &self.positions, &mut self.work);
         let pivot = self.work[chosen];
         self.work[chosen] = T::ZERO;
         self.positions[chosen] = step;
@@ -562,7 +563,9 @@ impl<T: Scalar> Numeric<T> {
     ) -> Result<(), LinearError> {
         let entries = ordering.within(column);
         let allowed = self.factors.work.len();
-        let found = self.factors.eliminate_column(entries, values, (column, column, allowed))?;
+        let found = self
+            .factors
+            .eliminate_column(entries, values, (column, column, allowed))?;
         let Some((chosen, pivot)) = found else {
             return Err(LinearError::Singular {
                 columns: vec![ordering.columns()[column]],
@@ -670,7 +673,10 @@ impl<T: Scalar> Numeric<T> {
             for position in positions.clone() {
                 let above = ordering.above(position);
                 let value = take_in(above, by_position[position], (values, by_row), threads);
-                let value = self.factors.upper.subtract_dot(position, value, by_position);
+                let value = self
+                    .factors
+                    .upper
+                    .subtract_dot(position, value, by_position);
                 by_position[position] = value / self.factors.pivots[position];
             }
             for position in positions.rev() {

@@ -450,16 +450,22 @@ pub(crate) fn trace_result(
         .collect();
     match (result, &traces.points, &mut found) {
         (AnalysisResult::OperatingPoint(point), Points::Point, TracedValues::Real(buffer)) => {
-            fill_trace(buffer, &columns, 0, |column| point.values.get(column).copied());
+            fill_trace(buffer, &columns, 0, |column| {
+                point.values.get(column).copied()
+            });
         }
         (AnalysisResult::DcSweep(sweep), Points::Swept(_), TracedValues::Real(buffer)) => {
             for (level, values) in sweep.values.iter().enumerate() {
-                fill_trace(buffer, &columns, level, |column| values.get(column).copied());
+                fill_trace(buffer, &columns, level, |column| {
+                    values.get(column).copied()
+                });
             }
         }
         (AnalysisResult::Ac(response), Points::Frequencies(_), TracedValues::Complex(buffer)) => {
             for (frequency, values) in response.values.iter().enumerate() {
-                fill_trace(buffer, &columns, frequency, |column| values.get(column).copied());
+                fill_trace(buffer, &columns, frequency, |column| {
+                    values.get(column).copied()
+                });
             }
         }
         (

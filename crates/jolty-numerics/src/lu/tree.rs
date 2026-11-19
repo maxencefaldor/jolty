@@ -587,7 +587,9 @@ impl<T: Scalar> Interior<T> {
     fn eliminate(&mut self, node: &Node, values: &[T], column: usize) -> Result<(), LinearError> {
         let entries = node.columns.of(column);
         let step = self.factors.pivots.len();
-        let found = self.factors.eliminate_column(entries, values, (column, step, node.size()))?;
+        let found = self
+            .factors
+            .eliminate_column(entries, values, (column, step, node.size()))?;
         let Some((chosen, pivot)) = found else {
             self.delayed.push(column);
             return Ok(());

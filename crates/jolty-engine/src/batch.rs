@@ -508,9 +508,7 @@ impl Batch {
         let mapped: Vec<Vec<Mapped<T>>> = self
             .run_chains(variants, range, Vec::new, |target, index, values, ready| {
                 let (structure, found) = match ready {
-                    Ok((simulator, structure)) => {
-                        (structure, Ok(work(index, simulator, &options)))
-                    }
+                    Ok((simulator, structure)) => (structure, Ok(work(index, simulator, &options))),
                     Err(problems) => (None, Err(problems)),
                 };
                 if let Some(collected) = target {

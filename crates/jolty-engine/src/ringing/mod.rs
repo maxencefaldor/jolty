@@ -634,7 +634,10 @@ impl Detector {
         run: &Run<'_>,
         options: &Options,
     ) -> bool {
-        let Some(ideal_sources) = self.sources.as_ref().map(|cached| cached.sources.as_slice())
+        let Some(ideal_sources) = self
+            .sources
+            .as_ref()
+            .map(|cached| cached.sources.as_slice())
         else {
             return false;
         };

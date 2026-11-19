@@ -112,6 +112,7 @@ fn bound(terms: usize, magnitude: f64) -> f64 {
 pub(crate) type Slab<'a> = ([&'a [f64]; 3], [&'a [f64]; 2]);
 
 /// The assembled evaluation output checked against one-by-one device evaluation.
+#[derive(Clone, Copy)]
 pub(crate) struct Evaluated<'a> {
     pub(crate) input: &'a Input<'a>,
     pub(crate) limited: bool,

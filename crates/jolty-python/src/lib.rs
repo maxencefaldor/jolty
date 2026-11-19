@@ -549,6 +549,10 @@ impl Simulator {
     /// number per parameter of `parameters`, each its instance's path and its name:
     /// a dictionary of the analysis's `result`, the `tangents`, by point, unknown and
     /// tangent, and an oscillator's `period`'s along each tangent, or `None`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 extracts owned Vec arguments from Python sequences"
+    )]
     fn jvp<'py>(
         &self,
         py: Python<'py>,
@@ -572,6 +576,10 @@ impl Simulator {
     /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
     /// it, with the options whose JSON text is `options`, with respect to `parameters`,
     /// each its instance's path and its name: the analysis's result, and its pullback.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 extracts owned Vec arguments from Python sequences"
+    )]
     fn vjp<'py>(
         &self,
         py: Python<'py>,

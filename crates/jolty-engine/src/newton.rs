@@ -769,7 +769,7 @@ mod tests {
                 "terminals": {"anode": node(stages), "cathode": "ground"}
             }));
         }
-        grounded_simulator("ladder", "ground", Value::Array(instances))
+        grounded_simulator("ladder", "ground", &Value::Array(instances))
     }
 
     /// A simulator of a behavioral current source of `expression` from `a` to the ground,
@@ -778,7 +778,7 @@ mod tests {
         grounded_simulator(
             "root",
             "ground",
-            json!([
+            &json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"dc": 0.0}},
                  "terminals": {"positive": "c", "negative": "ground"}},

@@ -638,13 +638,16 @@ struct Elements<'a> {
 }
 
 /// A logic device pin crossing onto an electrical net through a connect element.
+#[derive(Clone, Copy)]
 enum CrossingPin {
     Input {
         end: Endpoint,
         threshold: f64,
         capacitance: f64,
     },
-    Output { end: Endpoint },
+    Output {
+        end: Endpoint,
+    },
 }
 
 impl Elements<'_> {
@@ -1314,7 +1317,12 @@ mod tests {
     fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
         let header = r#""format": "jolty-circuit", "version": 4, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
-        let none = (&BTreeMap::new(), &BTreeMap::new());
+        let substitutes = BTreeMap::new();
+        let overrides = BTreeMap::new();
+        let none = Replaced {
+            substitutes: &substitutes,
+            overrides: &overrides,
+        };
         let circuit = Circuit::from_json(&text).unwrap();
         elaborate(&circuit, &Library::standard(), none, REFERENCE_TEMPERATURE)
             .map(|(elaborated, _)| elaborated)
@@ -1419,7 +1427,11 @@ mod tests {
                 .unwrap(),
         );
         overrides.insert("X3/R1".to_owned(), Parameters::new());
-        let replaced = (&BTreeMap::new(), &overrides);
+        let substitutes = BTreeMap::new();
+        let replaced = Replaced {
+            substitutes: &substitutes,
+            overrides: &overrides,
+        };
         let error = elaborate(
             &circuit,
             &Library::standard(),
@@ -1562,7 +1574,12 @@ mod tests {
             .name("deep-elaborate".to_owned())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
-                let none = (&BTreeMap::new(), &BTreeMap::new());
+                let substitutes = BTreeMap::new();
+                let overrides = BTreeMap::new();
+                let none = Replaced {
+                    substitutes: &substitutes,
+                    overrides: &overrides,
+                };
                 elaborate(&circuit, &Library::standard(), none, REFERENCE_TEMPERATURE)
                     .map(|(elaborated, _)| elaborated)
             })

@@ -1236,13 +1236,13 @@ impl Simulator {
             }
         }
         if !nonlinear_slots.is_empty() {
-            let nonlinear_twins = NonlinearTwins {
+            let mut nonlinear_twins = NonlinearTwins {
                 twins: &mut unknown_twins,
                 slots: &nonlinear_slots,
             };
             self.add_operating_point_cotangents(
                 twins,
-                nonlinear_twins,
+                &mut nonlinear_twins,
                 operating,
                 &weights,
                 &mut sums,
@@ -1258,7 +1258,7 @@ impl Simulator {
     fn add_operating_point_cotangents(
         &mut self,
         twins: &mut Twins,
-        nonlinear: NonlinearTwins<'_>,
+        nonlinear: &mut NonlinearTwins<'_>,
         operating: &[f64],
         weights: &[Option<(Vec<Complex64>, Vec<Complex64>)>],
         sums: &mut [Vec<Complex64>],
@@ -1910,7 +1910,7 @@ mod tests {
         grounded_simulator(
             "test",
             "0",
-            json!([
+            &json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"dc": 2.0}},
                  "terminals": {"positive": "in", "negative": "0"}},

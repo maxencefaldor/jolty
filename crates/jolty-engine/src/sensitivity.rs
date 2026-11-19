@@ -233,7 +233,7 @@ impl Simulator {
         let (result, saved) = self.run_saving(of, options)?;
         let points = points(&result);
         if Self::cheaper_backward(of, kept.len(), parameters, points) {
-            return self.by_rows(twins, result, saved, &kept, points, options);
+            return self.by_rows(twins, result, &saved, &kept, points, options);
         }
         // Over time or a period, more points than the least make the JVP the cheaper.
         let directions = units(parameters);
@@ -255,7 +255,7 @@ impl Simulator {
                 let period = forward.stretch.take().map(|(_, derivatives)| derivatives);
                 (forward, period)
             }
-            _ => return self.by_rows(twins, result, saved, &kept, points, options),
+            _ => return self.by_rows(twins, result, &saved, &kept, points, options),
         };
         Ok(Differentiation {
             twins: forward.twins,
@@ -301,13 +301,13 @@ impl Simulator {
         &mut self,
         mut twins: Twins,
         result: AnalysisResult,
-        saved: Saved,
+        saved: &Saved,
         kept: &[usize],
         points: usize,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
         let unknowns = self.elaborated.unknowns.len();
-        let oscillator = matches!(&saved, Saved::Period(_, system) if system.scale.is_some());
+        let oscillator = matches!(saved, Saved::Period(_, system) if system.scale.is_some());
         let parameters = twins.len();
         if let AnalysisResult::Ac(response) = &result {
             let one = Complex64::new(1.0, 0.0);
@@ -320,7 +320,7 @@ impl Simulator {
                 result,
             });
         }
-        if let Saved::Period(_, system) = &saved
+        if let Saved::Period(_, system) = saved
             && let AnalysisResult::PeriodicSteadyState(found) = &result
             && ((!kept.is_empty() && points > 0) || oscillator)
         {
@@ -347,7 +347,7 @@ impl Simulator {
                 period: 1.0,
             });
         }
-        let mut pulled = self.pull_collected(&mut twins, &saved, &result, &cotangents, options)?;
+        let mut pulled = self.pull_collected(&mut twins, saved, &result, &cotangents, options)?;
         let period_derivatives = if oscillator { pulled.pop() } else { None };
         Ok(Differentiation {
             twins,

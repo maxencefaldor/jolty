@@ -354,12 +354,11 @@ impl Simulator {
         };
         let point = self.operating_point(options)?;
         let strategy = point.strategy;
-        let (values, period) = match analysis.period {
-            Some(period) => (point.values, PeriodMode::Forced(period)),
-            None => {
-                let (values, period) = self.settled(analysis, &point, &period_options)?;
-                (values, PeriodMode::Free(period))
-            }
+        let (values, period) = if let Some(period) = analysis.period {
+            (point.values, PeriodMode::Forced(period))
+        } else {
+            let (values, period) = self.settled(analysis, &point, &period_options)?;
+            (values, PeriodMode::Free(period))
         };
         let initial = ShootingStart {
             values,

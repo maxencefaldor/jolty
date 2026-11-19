@@ -412,7 +412,7 @@ impl Simulator {
             }
         }
         if let Some(warm) = self.state.warm.take() {
-            return self.solve_warm(warm, options);
+            return self.solve_warm(&warm, options);
         }
         let [nodesets] = self.forcings([(&options.nodesets, "nodeset")])?;
         self.solve_forced(&[], &nodesets.forced, options)
@@ -488,13 +488,16 @@ impl Simulator {
         let zero = vec![0.0; self.elaborated.unknowns.len()];
         if released.is_empty() {
             self.state.forced = held.to_vec();
-            return self.solve_dc(zero, options);
+            return self.solve_dc(&zero, options);
         }
         let before = self.state.workspace.meter.iterations();
         self.state.forced = [held, released].concat();
-        let guess = self.solve_dc(zero.clone(), options);
+        let guess = self.solve_dc(&zero, options);
         self.state.forced = held.to_vec();
-        let solved = self.solve_dc(guess.map_or(zero, |solved| solved.values), options)?;
+        let solved = self.solve_dc(
+            guess.as_ref().map_or(&zero, |solved| &solved.values),
+            options,
+        )?;
         Ok(Solved {
             iterations: self.iterations_since(before),
             from_guess: false,
@@ -547,7 +550,7 @@ impl Simulator {
     /// there first, so that each limits its steps from there, then continued along every
     /// number and the temperature that differ between the two runs' values, or else
     /// solved from it by every strategy.
-    fn solve_warm(&mut self, warm: Warm, options: &Options) -> Result<Solved, SimulationError> {
+    fn solve_warm(&mut self, warm: &Warm, options: &Options) -> Result<Solved, SimulationError> {
         let before = self.state.workspace.meter.iterations();
         let to = self.values.clone();
         self.evaluate(&warm.solution, None, 1.0, options.gmin, false);
@@ -586,7 +589,7 @@ impl Simulator {
             ));
         }
         let continued = self.iterations_since(before);
-        let solved = self.solve_dc(warm.solution, options)?;
+        let solved = self.solve_dc(&warm.solution, options)?;
         Ok(Solved {
             iterations: continued + solved.iterations,
             from_guess: false,
@@ -696,7 +699,7 @@ impl Simulator {
     fn another(&mut self, known: &[Vec<f64>], options: &Options) -> Option<Solved> {
         let before = self.state.workspace.meter.iterations();
         let zero = vec![0.0; self.elaborated.unknowns.len()];
-        if let Ok(solved) = self.solve_deflated(zero, options, known)
+        if let Ok(solved) = self.solve_deflated(&zero, options, known)
             && self.distinct(known, &solved.values, options)
         {
             return Some(solved);
@@ -885,7 +888,7 @@ impl Simulator {
                 let element = self.elaborated.logic.drivers[driver].0;
                 self.drive(element, 0.0, level, 0.0);
             }
-            solved = self.solve_dc(solved.values, options)?;
+            solved = self.solve_dc(&solved.values, options)?;
             iterations += solved.iterations;
         }
         self.measure_loads(&solved.values, options);
@@ -903,7 +906,7 @@ impl Simulator {
     /// then source stepping.
     pub(crate) fn solve_dc(
         &mut self,
-        guess: Vec<f64>,
+        guess: &[f64],
         options: &Options,
     ) -> Result<Solved, SimulationError> {
         self.solve_deflated(guess, options, &[])
@@ -913,7 +916,7 @@ impl Simulator {
     /// already found, so that it finds another.
     pub(crate) fn solve_deflated(
         &mut self,
-        guess: Vec<f64>,
+        guess: &[f64],
         options: &Options,
         deflated: &[Vec<f64>],
     ) -> Result<Solved, SimulationError> {
@@ -924,7 +927,7 @@ impl Simulator {
             iterations: simulator.iterations_since(before),
             from_guess: false,
         };
-        let mut values = guess.clone();
+        let mut values = guess.to_owned();
         if let Ok(iterations) = self.newton(
             &mut values,
             Mode::direct(deflated),
@@ -942,7 +945,7 @@ impl Simulator {
             (Stepped::Shunt, Strategy::GminStepping),
             (Stepped::Junctions, Strategy::JunctionGminStepping),
         ] {
-            let mut values = guess.clone();
+            let mut values = guess.to_owned();
             if self
                 .gmin_stepping(&mut values, options, deflated, stepped)
                 .is_ok()
@@ -1167,7 +1170,7 @@ mod tests {
         grounded_simulator(
             "test",
             "0",
-            json!([
+            &json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"dc": 3.0}},
                  "terminals": {"positive": "in", "negative": "0"}},

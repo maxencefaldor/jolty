@@ -1346,7 +1346,7 @@ impl Simulator {
         let mut points = Vec::with_capacity(2);
         if let Some(pending) = stepper.pending.take() {
             // The first step after the corner, its error now estimated within tolerance.
-            points.push(self.accept_pending(stepper, pending, inside));
+            points.push(self.accept_pending(stepper, &pending, inside));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
         let settles = self.follow(&transition.commands);
@@ -1424,7 +1424,7 @@ impl Simulator {
     fn accept_pending(
         &mut self,
         stepper: &mut Stepper,
-        pending: Pending,
+        pending: &Pending,
         inside: Option<Inside>,
     ) -> Point {
         let step = StepFormula {
@@ -2101,7 +2101,7 @@ mod tests {
         let mut simulator = grounded_simulator(
             "test",
             "0",
-            json!([
+            &json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"pulse": {
                      "initial": 0.0, "pulsed": 1.0, "delay": 0.5e-9,

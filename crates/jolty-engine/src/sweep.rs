@@ -210,7 +210,7 @@ impl Simulator {
                 let found = if previous.is_none() {
                     self.solve_from_zero(options)
                 } else {
-                    self.solve_dc(values.clone(), options)
+                    self.solve_dc(&values, options)
                 };
                 match found {
                     Ok(solved) => Solved {

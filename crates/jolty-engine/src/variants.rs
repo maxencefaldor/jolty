@@ -607,7 +607,7 @@ mod tests {
         );
     }
 
-    fn circuit_from_components(top: &str, components: serde_json::Value) -> Circuit {
+    fn circuit_from_components(top: &str, components: &serde_json::Value) -> Circuit {
         Circuit::from_json(
             &serde_json::json!({
                 "format": "jolty-circuit",
@@ -624,7 +624,7 @@ mod tests {
     fn toleranced_rejects_self_and_mutual_cycles() {
         let self_cycle = circuit_from_components(
             "top",
-            serde_json::json!({
+            &serde_json::json!({
                 "top": {
                     "instances": [
                         {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
@@ -652,7 +652,7 @@ mod tests {
 
         let mutual = circuit_from_components(
             "top",
-            serde_json::json!({
+            &serde_json::json!({
                 "top": {
                     "instances": [
                         {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
@@ -677,7 +677,7 @@ mod tests {
         // Diamond DAG: a shared subcircuit placed twice emits both instance paths.
         let diamond = circuit_from_components(
             "top",
-            serde_json::json!({
+            &serde_json::json!({
                 "top": {
                     "instances": [
                         {"name": "X1", "of": {"component": "leaf"}, "terminals": {}},
@@ -728,7 +728,7 @@ mod tests {
                 serde_json::json!({"instances": instances}),
             );
         }
-        let deep = circuit_from_components("c0", serde_json::Value::Object(components));
+        let deep = circuit_from_components("c0", &serde_json::Value::Object(components));
         let items = toleranced(&deep).expect("deep chain must succeed");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].nominal.to_bits(), 50.0_f64.to_bits());

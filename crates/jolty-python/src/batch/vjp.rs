@@ -109,7 +109,7 @@ fn outcomes<'py>(
     traced: &Traced,
 ) -> PyResult<Bound<'py, PyDict>> {
     let total = runs.len() * traced.len();
-    let mut traces = if traced.is_complex() {
+    let mut collected = if traced.is_complex() {
         TracedValues::Complex(Vec::with_capacity(total))
     } else {
         TracedValues::Real(Vec::with_capacity(total))
@@ -133,7 +133,7 @@ fn outcomes<'py>(
                 traced.missing()
             }
         };
-        match (&mut traces, values) {
+        match (&mut collected, values) {
             (TracedValues::Real(all), TracedValues::Real(row_values)) => all.extend(row_values),
             (TracedValues::Complex(all), TracedValues::Complex(row_values)) => {
                 all.extend(row_values);
@@ -142,25 +142,18 @@ fn outcomes<'py>(
         }
     }
     let shape = [runs.len(), traced.points.len(), traced.unknowns.len()];
-    let traces = match traces {
+    let array = match collected {
         TracedValues::Real(values) => PyArray1::from_vec(py, values).reshape(shape)?.into_any(),
         TracedValues::Complex(values) => PyArray1::from_vec(py, values).reshape(shape)?.into_any(),
     };
     Ok(py_dict!(py;
-        "traces" => traces, "periods" => PyArray1::from_vec(py, periods),
+        "traces" => array, "periods" => PyArray1::from_vec(py, periods),
         "problems" => problems, "errors" => errors,
     ))
 }
 
 trait Cotangential:
-    Copy
-    + Default
-    + PartialEq
-    + Send
-    + Sync
-    + AddAssign
-    + Mul<f64, Output = Self>
-    + Element
+    Copy + Default + PartialEq + Send + Sync + AddAssign + Mul<f64, Output = Self> + Element
 {
     fn cotangents(each: Vec<Cotangent<Self>>) -> Cotangents;
     fn unpack(pulled: ParameterCotangents) -> Result<Vec<Self>, String>;
@@ -219,6 +212,10 @@ impl BatchPullback {
     /// Raises `ValueError` for cotangents of another shape, and `SimulationError` for a
     /// run that failed, a cotangent on an unknown its run does not have, or a pullback
     /// that fails.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 extracts owned Vec arguments from Python sequences"
+    )]
     fn pull_back<'py>(
         &self,
         py: Python<'py>,
@@ -293,25 +290,26 @@ impl BatchPullback {
         );
         let found = value_result(py.detach(|| {
             pool.inner.install(|| {
-                self.batch.map(
-                    &selected,
-                    0..selected.len(),
-                    options,
-                    &|index, simulator, options| -> Result<Vec<T>, String> {
-                        let row = usize::try_from(index).map_err(|error| error.to_string())?;
-                        let derived = &self.runs[runs[row]];
-                        let Ok(Ok(pullback)) = &derived.found else {
-                            return Err(format!("batch run {} has no pullback", runs[row]));
-                        };
-                        let width = simulator.unknowns().len();
-                        let cotangent =
-                            self.cotangent(derived, pullback, &rows[row], periods[row], width)?;
-                        let pulled = simulator
-                            .pull_back(pullback, &T::cotangents(vec![cotangent]), options)
-                            .map_err(|error| error.to_string())?;
-                        T::unpack(pulled)
-                    },
-                )
+                self.batch
+                    .map(
+                        &selected,
+                        0..selected.len(),
+                        options,
+                        &|index, simulator, options| -> Result<Vec<T>, String> {
+                            let row = usize::try_from(index).map_err(|error| error.to_string())?;
+                            let derived = &self.runs[runs[row]];
+                            let Ok(Ok(pullback)) = &derived.found else {
+                                return Err(format!("batch run {} has no pullback", runs[row]));
+                            };
+                            let width = simulator.unknowns().len();
+                            let cotangent =
+                                self.cotangent(derived, pullback, &rows[row], periods[row], width)?;
+                            let pulled = simulator
+                                .pull_back(pullback, &T::cotangents(vec![cotangent]), options)
+                                .map_err(|error| error.to_string())?;
+                            T::unpack(pulled)
+                        },
+                    )
             })
         }))?;
         let mut pulled: Vec<T> = Vec::with_capacity(runs.len() * self.parameters);

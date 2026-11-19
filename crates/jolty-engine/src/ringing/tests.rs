@@ -449,7 +449,11 @@ fn classifies_excess_phase_filter_separately_from_electrical_inductors() {
     assert_eq!(domains[0], (Domain::Electrical, 1.0));
     assert_eq!(domains[1], (Domain::Electrical, -1.0));
     assert_eq!(domains[2], (Domain::Filter, 1.0));
-    assert!(domain_is_skew_lossless(system, &domains, Domain::Electrical));
+    assert!(domain_is_skew_lossless(
+        system,
+        &domains,
+        Domain::Electrical
+    ));
     assert!(!domain_is_skew_lossless(system, &domains, Domain::Filter));
 }
 

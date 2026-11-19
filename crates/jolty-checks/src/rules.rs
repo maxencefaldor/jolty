@@ -385,11 +385,11 @@ pub(crate) fn no_dc_paths(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for group in floating.iter().filter(|group| group.sources.is_empty()) {
-        diagnostics.push(group.diagnostic(
-            structure,
-            &NO_DC_PATH,
-            |nets, verb, reference| format!("{nets} {verb} no DC path to `{reference}`"),
-        ));
+        diagnostics.push(
+            group.diagnostic(structure, &NO_DC_PATH, |nets, verb, reference| {
+                format!("{nets} {verb} no DC path to `{reference}`")
+            }),
+        );
     }
 }
 

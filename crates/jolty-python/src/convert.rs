@@ -232,7 +232,12 @@ fn add_waveforms(result: &Bound<'_, PyDict>, waveforms: TransientResult) -> PyRe
 /// Converts a DC sweep result into a `PyDict`.
 fn dc_sweep_dict(py: Python<'_>, sweep: DcSweepResult) -> PyResult<Bound<'_, PyDict>> {
     let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
-    let strategies: Vec<&str> = sweep.strategies.iter().map(Strategy::name).collect();
+    let strategies: Vec<&str> = sweep
+        .strategies
+        .iter()
+        .copied()
+        .map(Strategy::name)
+        .collect();
     let result = py_dict!(py;
         "kind" => "dc_sweep", "source" => sweep.source, "parameter" => sweep.parameter,
         "nature" => sweep.nature.map(quantity_name), "swept" => array1(py, sweep.swept),
