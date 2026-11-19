@@ -1,47 +1,44 @@
-//! Values: one point in a circuit's parameter space, as patches on the nominal numbers of
-//! an [elaborated circuit](crate::Elaborated)'s table of parameters.
+//! Compact point in circuit parameter space stored as sparse patches over an
+//! [elaborated circuit](crate::Elaborated)'s parameter table.
 //!
-//! Every number of every device instance, as the circuit writes it, has a [`ParameterId`]
-//! in its elaborated circuit's table: the instances in the order of their paths, and each
-//! one's numbers in the order its parameters hold them, by key and then by index in a list,
-//! as [`jolty_ir::numbers`] lists them. A run's [`Values`] are its temperature and the
-//! numbers that differ from the nominal ones, so they are a few bytes, whatever the circuit.
+//! Every numeric device parameter receives a [`ParameterId`] ordered by instance path,
+//! parameter key, and array index (matching [`jolty_ir::numbers`]). A [`Values`] instance
+//! stores only the optional temperature and non-nominal parameter overrides, keeping
+//! per-run memory minimal.
 
 use serde_json::Value;
 
-/// A number of a device instance of an elaborated circuit, by its index in the circuit's
-/// table of parameters.
+/// Handle identifying a numeric device parameter within an elaborated circuit's parameter
+/// table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParameterId(u32);
 
 impl ParameterId {
-    /// The parameter at `index` in its circuit's table, for tests.
+    /// Creates a [`ParameterId`] at `index` for unit tests.
     #[cfg(test)]
     pub(crate) const fn new(index: u32) -> Self {
         Self(index)
     }
 
-    /// The parameter's index in its circuit's table.
+    /// Returns the zero-based table index of this parameter.
     #[must_use]
     pub const fn index(self) -> usize {
         self.0 as usize
     }
 }
 
-/// One point in a circuit's parameter space: the devices' temperature, and the numbers
-/// that replace the nominal ones of an [elaborated circuit](crate::Elaborated)'s parameters,
-/// as a Monte Carlo sample's, a corner's or a candidate design's do.
+/// Point in circuit parameter space: optional temperature and sorted sparse overrides over
+/// an [elaborated circuit](crate::Elaborated)'s nominal parameters.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Values {
-    /// The devices' temperature, in kelvins, or `None` for the one the circuit was
-    /// elaborated at.
+    /// Operating temperature in kelvins, or `None` to inherit the elaboration temperature.
     pub temperature: Option<f64>,
-    /// Each number replaced, by its parameter, in the order of the parameters, one each.
+    /// Sorted, deduplicated `(ParameterId, value)` overrides.
     patches: Vec<(ParameterId, f64)>,
 }
 
 impl Values {
-    /// The values at `temperature`, in kelvins, with no number replaced.
+    /// Creates [`Values`] overriding only operating `temperature` in kelvins.
     #[must_use]
     pub const fn at(temperature: f64) -> Self {
         Self {
@@ -50,7 +47,7 @@ impl Values {
         }
     }
 
-    /// Replaces the number of `parameter` with `value`, or the value that replaced it.
+    /// Sets or updates the override for `parameter` to `value`.
     pub fn set(&mut self, parameter: ParameterId, value: f64) {
         match self
             .patches
@@ -61,13 +58,13 @@ impl Values {
         }
     }
 
-    /// Each number replaced, by its parameter, in the order of the parameters.
+    /// Returns all parameter overrides in ascending [`ParameterId`] order.
     #[must_use]
     pub fn patches(&self) -> &[(ParameterId, f64)] {
         &self.patches
     }
 
-    /// The number that replaces `parameter`'s, if any.
+    /// Returns the override value for `parameter`, if present.
     #[must_use]
     pub fn get(&self, parameter: ParameterId) -> Option<f64> {
         let found = self
@@ -77,8 +74,7 @@ impl Values {
         Some(self.patches[found].1)
     }
 
-    /// Takes the temperature `other` gives, if it gives one, and each number it replaces,
-    /// in place of this one's.
+    /// Merges temperature (if set) and all parameter overrides from `other` into `self`.
     pub fn extend(&mut self, other: &Self) {
         if other.temperature.is_some() {
             self.temperature = other.temperature;
@@ -89,24 +85,21 @@ impl Values {
     }
 }
 
-/// The numbers of an elaborated circuit's device instances: their nominal values, by
-/// parameter, and the parameters of each instance.
+/// Flat table indexing every numeric device parameter of an elaborated circuit.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Table {
-    /// The first parameter of each device, by the device's index; a device's parameters
-    /// run to the next one's in the order of the paths.
+    /// Starting parameter offset for each device index.
     firsts: Vec<usize>,
-    /// The number of parameters of each device, by its index.
+    /// Number of numeric parameters owned by each device index.
     counts: Vec<usize>,
-    /// Each parameter's nominal value.
+    /// Nominal value of every indexed parameter.
     nominal: Vec<f64>,
-    /// Each parameter's device, by the device's index.
+    /// Owning device index for every indexed parameter.
     devices: Vec<usize>,
 }
 
 impl Table {
-    /// The table of the devices whose parameters `parameters` gives, by index, `None` for
-    /// one made from none, taken in the order `by_path` lists the devices.
+    /// Builds a parameter [`Table`] from per-device JSON `parameters` ordered by `by_path`.
     pub(crate) fn new(
         parameters: &[Option<&serde_json::Map<String, Value>>],
         by_path: &[usize],
@@ -132,13 +125,12 @@ impl Table {
         table
     }
 
-    /// Each parameter's nominal value.
+    /// Returns the slice of nominal values for all indexed parameters.
     pub(crate) fn nominal(&self) -> &[f64] {
         &self.nominal
     }
 
-    /// The parameters of `device`, by their indices: none for a device the table does not
-    /// hold.
+    /// Returns the parameter index range owned by `device`, or an empty range if absent.
     pub(crate) fn range(&self, device: usize) -> std::ops::Range<usize> {
         match (self.firsts.get(device), self.counts.get(device)) {
             (Some(&first), Some(&count)) => first..first + count,
@@ -146,14 +138,13 @@ impl Table {
         }
     }
 
-    /// The device whose number `parameter` is, by its index, and the number's place among
-    /// the device's, if the table holds it.
+    /// Returns `(device_index, local_offset)` for `parameter`, if present in the table.
     pub(crate) fn locate(&self, parameter: ParameterId) -> Option<(usize, usize)> {
         let device = *self.devices.get(parameter.index())?;
         Some((device, parameter.index() - self.firsts[device]))
     }
 
-    /// The parameter of the `place`-th number of `device`, if it has one there.
+    /// Returns the [`ParameterId`] at `place` within `device`, if within range.
     pub(crate) fn parameter(&self, device: usize, place: usize) -> Option<ParameterId> {
         (place < *self.counts.get(device)?)
             .then(|| {

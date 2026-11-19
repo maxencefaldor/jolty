@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 use sim::simulator;
 use transient::transient;
 
-/// A cell of one function of `inputs`, given by `table`, with output `y`.
+/// Builds JSON parameters for a single-output logic cell evaluating `table` on `inputs`
+/// with output `y`.
 fn cell(inputs: &[&str], table: &str, (rise, fall): (f64, f64), electrical: bool) -> Value {
     let mut parameters = json!({
         "inputs": inputs,
@@ -63,7 +64,8 @@ fn logic_source(name: &str, initial: &str, changes: &[(f64, &str)], output: &str
     )
 }
 
-/// An analog pulse into a logic inverter loaded by 1 fF, powered by `supply` with `delay`.
+/// Builds a logic inverter driven by an analog pulse, loaded by 1 fF, powered by `supply`
+/// with `delay`.
 fn edged_inverter(supply: f64, delay: f64) -> Circuit {
     circuit([
         voltage_dc("VDD", "vdd", supply),
@@ -99,8 +101,8 @@ fn net(simulator: &Simulator, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no logic net {name}"))
 }
 
-/// `waveforms` apart from the work that found them, which depends on what the simulator
-/// did before: an operating point it remembered, the pivots it kept.
+/// Strips accumulated work counters from `waveforms` so runs with different simulator
+/// histories can be compared directly.
 fn apart_from_work(mut waveforms: TransientResult) -> TransientResult {
     waveforms.statistics.work = Work::default();
     waveforms
@@ -230,9 +232,8 @@ fn an_analog_edge_crosses_into_logic_and_back_at_half_the_supply() {
     assert!((crossing - (2e-9 + delay)).abs() < 1e-14, "{crossing}");
 }
 
-/// An inverter whose output charges its own input through an RC: each half period, the
-/// input crosses half the supply, the output follows a delay `d` later, and the input relaxes
-/// toward the new level until it crosses again: `d + RC ln(2 − exp(−d/RC))`.
+/// Verifies that an inverter charging its input through an RC network oscillates with
+/// half-period `d + RC ln(2 − exp(−d/RC))`.
 #[test]
 fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
     let (resistance, capacitance) = (1e3, 1e-9);
@@ -285,8 +286,8 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
     }
 }
 
-/// A sweep enables a ring of three inverters through a detector: off, the ring settles; on,
-/// it would oscillate, so its nets settle unknown.
+/// Verifies that a three-inverter ring settles when disabled and reports unknown DC levels
+/// when enabled.
 #[test]
 fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
     use LogicLevel::{High, Low, Unknown};
@@ -406,8 +407,8 @@ fn logic_nets_name_what_drives_and_reads_them() {
     assert_eq!(point.logic[net(&simulator, "y")], LogicLevel::Unknown);
 }
 
-/// A circuit whose top places `X1`, an instance of `cell`: a resistor from its supply to
-/// its output, standing for a circuit with ports `a`, `y`, `vdd` and `gnd`.
+/// Builds a hierarchical circuit placing `X1`, an instance of component `cell` with ports
+/// `a`, `y`, `vdd`, and `gnd`.
 fn hierarchy() -> Circuit {
     let document = json!({
         "format": "jolty-circuit", "version": 5, "top": "test",
@@ -470,10 +471,11 @@ fn a_model_stands_in_for_a_component_instance() {
     );
 }
 
-/// An output that turns back before its edge reaches the rail has less to swing, and
-/// crosses half the supply sooner: falling at 2 ns with a 2 ns transition, it is three
-/// quarters of the way down when the edge back would leave the rail, so it crosses half a
-/// nanosecond sooner than from the rail.
+/// Verifies that an output reversing mid-edge crosses half supply sooner than from a full
+/// rail swing.
+///
+/// Falling at 2 ns with a 2 ns transition reaches three quarters down before reversing,
+/// crossing half supply 0.5 ns earlier than from the rail.
 #[test]
 fn an_output_turning_back_before_its_rail_crosses_sooner() {
     let mut buffer = cell(&["a"], "01", (1e-9, 1e-9), false);
@@ -492,8 +494,8 @@ fn an_output_turning_back_before_its_rail_crosses_sooner() {
     assert!((changes[2].0 - 3e-9).abs() < 1e-18, "{changes:?}");
 }
 
-/// A logic driver's delay reads the whole capacitance on the net it drives: an analog
-/// capacitor's as much as a detector's.
+/// Verifies that a logic driver's delay accounts for total analog capacitance on the
+/// driven net.
 #[test]
 fn a_driver_s_load_counts_the_analog_capacitance_it_drives() {
     let inverter = json!({
@@ -534,8 +536,8 @@ fn a_driver_s_load_counts_the_analog_capacitance_it_drives() {
     );
 }
 
-/// A characterized cell records where it is used outside the ranges it was measured over:
-/// its supply, its inputs' transitions and its outputs' loads.
+/// Verifies that a characterized cell records out-of-range supply, input transition, and
+/// output load excursions.
 #[test]
 fn a_cell_used_outside_its_domain_says_where() {
     let inverter = json!({

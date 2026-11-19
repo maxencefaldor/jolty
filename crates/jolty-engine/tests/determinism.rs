@@ -1,9 +1,8 @@
-//! The same circuits simulate the same however many threads or shards run them: a batch at
-//! 1, 2, 3 and 8 threads, and split into ranges, hands on the same outcomes and summary,
-//! and a run finds the same numbers however its small-signal analyses' frequencies, its
-//! sensitivities' right-hand sides, its devices' instances and its Newton iteration's
-//! work on each unknown spread. Every comparison is of every number's bits, with
-//! `f64::to_bits`.
+//! Bitwise determinism across thread counts, batch splits, and parallel task granularities.
+//!
+//! Verifies identical `f64::to_bits` outcomes and summaries at 1, 2, 3, and 8 threads across
+//! split ranges, parallel frequency sweeps, sensitivity right-hand sides, device evaluation,
+//! Newton unknown chunks, and nested-dissection factorizations.
 #![cfg(test)]
 
 #[path = "common/capacitor.rs"]
@@ -45,7 +44,7 @@ use shared::{Bits, Network, benchmark, bits, network, reals, shared, upper};
 /// The thread counts every comparison runs at.
 const THREADS: [usize; 4] = [1, 2, 3, 8];
 
-/// Each of `analyses` with `options`, as a batch runs them.
+/// Pairs every analysis in `analyses` with cloned `options` for batch execution.
 fn with(analyses: Vec<Analysis>, options: &Options) -> Vec<(Analysis, Options)> {
     analyses
         .into_iter()
@@ -53,8 +52,8 @@ fn with(analyses: Vec<Analysis>, options: &Options) -> Vec<(Analysis, Options)> 
         .collect()
 }
 
-/// `options` with a run's frequencies and right-hand sides spread over every thread of its
-/// pool, a task taking as few as one.
+/// Configures `options` to parallelize frequencies and sensitivity right-hand sides down to
+/// one solve per task.
 fn spreading(options: Options) -> Options {
     Options {
         parallelism: Parallelism {
@@ -65,11 +64,10 @@ fn spreading(options: Options) -> Options {
     }
 }
 
-/// A run's outcome as bits: each analysis's, each measure's, and the problems' text.
+/// Raw bit representation of a batch run outcome: analysis bits, measure bits, and problems.
 type OutcomeBits = (Vec<Bits>, Vec<Option<u64>>, String);
 
-/// An outcome of a batch's run as bits: each analysis's, each measure's, and the
-/// problems' text.
+/// Extracts raw IEEE-754 bits and problem debug text from a batch [`Run`].
 fn outcome_bits(outcome: &Run) -> OutcomeBits {
     (
         outcome.results.iter().map(bits).collect(),
@@ -96,12 +94,11 @@ impl Sink for Kept {
     }
 }
 
-/// What a batch found over some runs: each run's outcome as bits, by index, and the
-/// summary.
+/// Indexed batch outcomes as raw bits paired with the merged [`Summary`].
 type Found = (BTreeMap<u64, OutcomeBits>, Summary);
 
-/// The runs `ranges` of `variants`, each range a call of its own, on a pool of `threads`
-/// threads, and their summaries merged in order.
+/// Executes `ranges` of `variants` on a dedicated pool of `threads` threads, merging each
+/// range summary in order.
 fn run_on(batch: &Batch, variants: &dyn Variants, ranges: &[Range<u64>], threads: usize) -> Found {
     let pool = ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -128,7 +125,7 @@ fn run_on(batch: &Batch, variants: &dyn Variants, ranges: &[Range<u64>], threads
     (outcomes, summary.expect("a range or more"))
 }
 
-/// The one range `range`, as the ranges of a run.
+/// Wraps a single `range` in a one-element slice array for [`run_on`].
 fn only(range: Range<u64>) -> [Range<u64>; 1] {
     [range]
 }
@@ -153,7 +150,8 @@ fn assert_same_everywhere(batch: &Batch, variants: &dyn Variants, splits: &[Vec<
     }
 }
 
-/// Each resistor's resistance in `network`, toleranced by 50%, so that samples cross 1 Ω.
+/// Builds 50% uniform resistance tolerances for every resistor in `network` so samples cross
+/// the 1 Ω restructuring boundary.
 fn toleranced_resistors(network: &Network) -> Vec<Toleranced> {
     network
         .resistors
@@ -172,8 +170,8 @@ fn toleranced_resistors(network: &Network) -> Vec<Toleranced> {
         .collect()
 }
 
-/// The analyses a batch of networks runs: the operating point, 40 frequencies of the
-/// pulse's response, the noise at node 1 referred to the pulse, and a transient.
+/// Builds the operating point, 40-point AC, 40-point noise, and transient analyses for
+/// network batch tests.
 fn network_analyses() -> Vec<Analysis> {
     let frequencies: Vec<f64> = (0..40)
         .map(|step| 10f64.powf(f64::from(step) / 4.0))
@@ -189,7 +187,7 @@ fn network_analyses() -> Vec<Analysis> {
     .collect()
 }
 
-/// A measure of node 1 at the operating point.
+/// Builds a [`Measured`] entry reading node `n1` at the operating point.
 fn node_one(elaborated: &Elaborated) -> Vec<Measured> {
     let unknown = elaborated
         .unknowns()
@@ -211,8 +209,8 @@ fn node_one(elaborated: &Elaborated) -> Vec<Measured> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 
-    /// A Monte Carlo batch of a random network, whose samples cross 1 Ω and so change its
-    /// structure, finds the same at every thread count, and split into ranges.
+    /// Verifies that a Monte Carlo batch with samples crossing 1 Ω restructuring boundaries
+    /// yields identical bits across thread counts and range splits.
     #[test]
     fn a_batch_finds_the_same_however_its_runs_spread(
         network in network(true),
@@ -230,8 +228,8 @@ proptest! {
         assert_same_everywhere(&batch, &variants, &[vec![0..7, 7..8, 8..24], vec![0..13, 13..24]]);
     }
 
-    /// A run's small-signal analyses and sensitivities find the same numbers whatever
-    /// threads their frequencies and right-hand sides spread over.
+    /// Verifies that parallelized small-signal analyses and sensitivities match single-threaded
+    /// execution bit for bit across all [`THREADS`] counts.
     #[test]
     fn small_signal_analyses_find_the_same_however_their_frequencies_spread(
         network in network(true),
@@ -267,11 +265,11 @@ proptest! {
     }
 }
 
-/// Frequencies where the pivots of `G + jωC` change and change back, factored in any
-/// spread of tasks, find what one solver going through them in order finds: inductors,
-/// whose branch equations' own entries, `−jωL`, are below a tenth of the unit entries
-/// beside them at low frequencies and above them at high ones, so that elimination takes
-/// another pivot at each end, swept up and down.
+/// Verifies that parallel frequency sweeps match sequential execution even when `G + jωC`
+/// pivots switch between low and high frequencies.
+///
+/// Inductor diagonal entries `−jωL` cross the `0.1` pivot threshold relative to adjacent
+/// unit entries as frequencies sweep up and back down.
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     let circuit = circuit([
@@ -319,9 +317,8 @@ fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     }
 }
 
-/// A run's own work stays on one thread when its options cap its threads at one, and
-/// spreads by default once it fills a task for every thread, and finds what it finds spread over
-/// many.
+/// Verifies that capping `max_threads` at 1 keeps work single-threaded while producing the
+/// exact same bits as multi-threaded default and fine-grained execution.
 #[test]
 fn a_run_on_one_thread_finds_what_it_finds_on_many() {
     let (circuit, analyses, plan) = benchmark("ac_wide");
@@ -364,7 +361,7 @@ fn a_run_on_one_thread_finds_what_it_finds_on_many() {
     assert_eq!(run(&plan), found);
 }
 
-/// The amplifier's resistors, each within 5%, the benchmark `monte_carlo`'s tolerances.
+/// Builds [`MonteCarlo`] resistor samples for `bjt_amp` using its 5% tolerances.
 fn amplifier_samples(elaborated: &Elaborated, seed: u64, samples: u64) -> MonteCarlo {
     let (circuit, _, _) = benchmark("bjt_amp");
     let toleranced = toleranced(&circuit).expect("numbers");
@@ -375,9 +372,8 @@ fn amplifier_samples(elaborated: &Elaborated, seed: u64, samples: u64) -> MonteC
     MonteCarlo::new(elaborated, seed, samples, toleranced).expect("the amplifier's numbers")
 }
 
-/// The benchmark `bjt_amp`'s analyses on samples of its resistors find the same at every
-/// thread count and split; each sample drawn alone, as a batch of one run, finds what it
-/// finds among the others.
+/// Verifies that `bjt_amp` Monte Carlo samples match across all thread counts, range splits,
+/// and isolated single-sample runs.
 #[test]
 fn amplifier_samples_find_the_same_alone_and_in_a_batch() {
     let (circuit, analyses, options) = benchmark("bjt_amp");
@@ -395,9 +391,10 @@ fn amplifier_samples_find_the_same_alone_and_in_a_batch() {
     }
 }
 
-/// A sample's draws depend on its seed, its index and each part's name alone: a part added
-/// leaves every other part's draws as they were, a lot draws one factor for every part in
-/// it, and a seed draws the same sample every time.
+/// Verifies that keyed Monte Carlo draws depend strictly on seed, index, and part path.
+///
+/// Adding an extra part leaves existing part draws unchanged, shared lots draw one common
+/// factor, and identical seeds reproduce identical bits.
 #[test]
 fn a_part_added_leaves_every_other_draw_alone() {
     let part = |path: &str, lot: Option<&str>| Toleranced {
@@ -459,7 +456,7 @@ fn a_part_added_leaves_every_other_draw_alone() {
     }
 }
 
-/// A divider whose upper resistance each run of `upper` replaces.
+/// Builds a 5 V RC voltage divider whose upper resistor `R1` is varied by [`upper`].
 fn divider() -> Circuit {
     circuit([
         voltage_dc("V1", "top", 5.0),
@@ -469,8 +466,8 @@ fn divider() -> Circuit {
     ])
 }
 
-/// A batch whose runs fail now and then, their values out of range, reports each failed
-/// run, by its index, with why it failed, and runs every other.
+/// Verifies that invalid parameter runs record indexed failure outcomes without aborting
+/// valid runs in the same batch.
 #[test]
 fn a_failed_run_is_an_outcome_and_the_batch_goes_on() {
     let elaborated = shared(&divider());
@@ -544,9 +541,8 @@ fn a_failed_run_is_an_outcome_and_the_batch_goes_on() {
     }
 }
 
-/// A batch whose runs alternate between two structures, the upper resistance either side
-/// of 1 Ω, elaborates the other structure once, and finds for each run what a run made for
-/// its values alone finds.
+/// Verifies that batches alternating across the 1 Ω resistance boundary cache the alternate
+/// structure once and match standalone runs bit for bit.
 #[test]
 fn runs_that_alternate_between_structures_share_each_structure() {
     let elaborated = shared(&divider());
@@ -592,8 +588,8 @@ fn runs_that_alternate_between_structures_share_each_structure() {
     }
 }
 
-/// A shunt placed before its source: below 1 Ω, the shunt's current is an unknown, which
-/// comes before the source's among the unknowns.
+/// Builds a shunted divider where lowering `R1` below 1 Ω inserts a branch current unknown
+/// ahead of `V1:current`.
 fn shunted() -> Circuit {
     circuit([
         resistor("R1", 2.0, "out", "0"),
@@ -602,10 +598,10 @@ fn shunted() -> Circuit {
     ])
 }
 
-/// A run on another structure, its unknowns shifted by one it adds, reads the unknowns its
-/// measures name: the source's current, whichever side of 1 Ω the shunt lies, is what a
-/// run made for those values alone finds of the unknown of that name, and the outcome
-/// says where each of the batch circuit's unknowns lies among the run's.
+/// Verifies that measures remap shifted unknown columns accurately on restructured runs.
+///
+/// Whether `R1` sits above or below 1 Ω, `V1:current` matches standalone simulation bits and
+/// [`Run::column`] maps nominal unknown indices to the run's layout.
 #[test]
 fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
     let elaborated = shared(&shunted());
@@ -680,9 +676,8 @@ fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
     }
 }
 
-/// A warm grid's lines are chains, each point starting from the one before it, and find
-/// the same at every thread count and split, a range that starts within a chain among
-/// them; a chain of operating points along a source's level is the DC sweep of it.
+/// Verifies that warm-started [`Grid`] chains produce identical bits across thread counts
+/// and mid-chain range splits.
 #[test]
 fn a_warm_grid_runs_its_lines_as_chains() {
     let (circuit, _, options) = benchmark("bjt_amp");
@@ -727,8 +722,8 @@ fn a_warm_grid_runs_its_lines_as_chains() {
     );
 }
 
-/// A warm grid of a source's DC level is the DC sweep of it, bit for bit: the chain of
-/// operating points goes from one level to the next as the sweep does.
+/// Verifies that a warm [`Grid`] sweeping a source DC level matches [`Analysis::DcSweep`]
+/// bit for bit.
 #[test]
 fn a_chain_of_levels_is_the_dc_sweep_of_them() {
     let elaborated = shared(&divider());
@@ -757,8 +752,8 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
     }
 }
 
-/// A product of corners and samples runs every sample at every corner: run `i` is corner
-/// `i / samples`, sample `i % samples`.
+/// Verifies that [`Product`] runs every sample at every corner in row-major order
+/// (`corner = i / samples`, `sample = i % samples`) deterministically across thread counts.
 #[test]
 fn a_product_runs_every_sample_at_every_corner() {
     let (circuit, analyses, options) = benchmark("bjt_amp");
@@ -774,7 +769,7 @@ fn a_product_runs_every_sample_at_every_corner() {
     assert_same_everywhere(&batch, &product, &[vec![0..6, 6..12]]);
 }
 
-/// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
+/// Builds a forward-biased diode (10 fA saturation current) driven by 1 V through 1 kΩ.
 fn forward_diode() -> Circuit {
     circuit([
         voltage_dc("V1", "top", 1.0),
@@ -788,12 +783,10 @@ fn forward_diode() -> Circuit {
     ])
 }
 
-/// The saturation currents a sweep or a chain takes the diode through, a decade apart, so
-/// that its forward voltage moves by about 60 mV from one to the next.
+/// Decade-spaced diode saturation currents shifting forward voltage by roughly 60 mV each.
 const SATURATION_CURRENTS: [f64; 4] = [1e-15, 1e-14, 1e-13, 1e-12];
 
-/// The voltage across the diode at the operating point of `elaborated` at `values`, from a
-/// simulator made afresh for them.
+/// Computes the diode anode voltage from a fresh simulator constructed with `values`.
 fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
     let mut simulator = Simulator::from_elaborated(Arc::clone(elaborated), values).expect("a run");
     let Ok(AnalysisResult::OperatingPoint(point)) =
@@ -805,14 +798,13 @@ fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
     point.values[anode]
 }
 
-/// The tolerance the anode's voltage is found within: SPICE's default voltage tolerance
-/// and a thousandth of it, as Newton iteration stops.
+/// Checks whether `found` matches `expected` within default SPICE Newton voltage tolerance.
 fn within_tolerance(found: f64, expected: f64) -> bool {
     (found - expected).abs() <= 1e-6 + 1e-3 * expected.abs()
 }
 
-/// A DC sweep of a diode's own number makes its kernel's instance evaluate each value: at
-/// each, the anode lies where a run made afresh for that value finds it.
+/// Verifies that a DC sweep over a diode kernel parameter re-prepares each value to match
+/// fresh operating-point runs.
 #[test]
 fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     let elaborated = shared(&forward_diode());
@@ -841,8 +833,8 @@ fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     }
 }
 
-/// A warm chain through a diode's own numbers makes its kernel's instance evaluate each
-/// run's: at each, the anode lies where a run made afresh for those numbers finds it.
+/// Verifies that a warm grid chain over a diode kernel parameter re-prepares each step to
+/// match fresh operating-point runs.
 #[test]
 fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
     let elaborated = shared(&forward_diode());
@@ -880,10 +872,8 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
     }
 }
 
-/// The ways the runs below spread their own work: devices evaluated in tasks of at least
-/// 1, 3 and 64 instances, the work of Newton iteration and step control on each unknown
-/// and each stored entry split in tasks of a chunk of 1,024 or more, and both at once;
-/// `usize::MAX` spreads none.
+/// Parallel `(min_instances_per_task, min_unknowns_per_task)` configurations exercised
+/// below; `usize::MAX` disables parallel splitting along that axis.
 const SPREADS: [(usize, usize); 5] = [
     (1, usize::MAX),
     (3, usize::MAX),
@@ -892,8 +882,8 @@ const SPREADS: [(usize, usize); 5] = [
     (3, 1),
 ];
 
-/// Asserts that `analyses` of `circuit` with `options`, run on pools of 2, 3 and 8 threads
-/// and spread each way of `spreads`, find the bits they find on the run's own thread.
+/// Asserts that running `analyses` on `circuit` across 2, 3, and 8 threads under every
+/// configuration in `spreads` matches single-threaded execution bit for bit.
 fn spread_finds_what_one_thread_finds(
     circuit: &Circuit,
     analyses: &[Analysis],
@@ -944,11 +934,8 @@ fn spread_finds_what_one_thread_finds(
     }
 }
 
-/// A run whose options let its devices evaluate in parallel, or its Newton iteration work
-/// on its unknowns in parallel, or both, finds the bits it finds on its own thread: the
-/// amplifier's operating point, response and transient, through its transistor's kernel
-/// and every other device's, and the first ten of the buck converter's thousand periods,
-/// each with four edges, through its switching transistors' and its filter's.
+/// Verifies bitwise equivalence between single-threaded and parallel device/Newton
+/// evaluation on `bjt_amp` and the first ten periods of the `buck` converter benchmark.
 #[test]
 fn a_run_spread_over_threads_finds_what_it_finds_on_one() {
     let (circuit, analyses, options) = benchmark("bjt_amp");
@@ -960,11 +947,9 @@ fn a_run_spread_over_threads_finds_what_it_finds_on_one() {
     spread_finds_what_one_thread_finds(&circuit, &[periods], &options, &SPREADS);
 }
 
-/// A transient of a circuit of more unknowns than a chunk of the work on each unknown
-/// holds, whose every judged step's divided differences, filtered differences and worst
-/// ratio are found over several chunks, finds the bits it finds on its own thread: the
-/// first tenth of a nanosecond of the chain of 500 inverters, of 3,504 unknowns, its work
-/// on each unknown spread alone and with its devices'.
+/// Verifies bitwise equivalence across multi-chunk parallel reductions on the 3,504-unknown
+/// `inverter_chain_500` transient (first 0.1 ns), covering divided differences, filtered
+/// differences, and step-ratio reductions.
 #[test]
 fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
     let (circuit, _, options) = benchmark("inverter_chain_500");
@@ -980,16 +965,16 @@ fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
     spread_finds_what_one_thread_finds(&circuit, &[start], &options, &spreads);
 }
 
-/// The search for a latch's every DC solution, which deflates each Newton step by the
-/// solutions found before, finds them spread over threads as it finds them on one.
+/// Verifies that deflated multi-solution DC search on [`latch`] produces identical bits on
+/// one thread and across parallel thread spreads.
 #[test]
 fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
     let search = Analysis::OperatingPoints(OperatingPoints { max_solutions: 8 });
     spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default(), &SPREADS);
 }
 
-/// `options` with the factorization dissected, where that costs fewer multiply-adds, into
-/// interiors of at most `interiors` unknowns.
+/// Configures `options` to enable nested-dissection factorization with interior blocks capped
+/// at `interiors` unknowns when dissection reduces multiply-adds.
 fn dissecting(options: &Options, interiors: usize) -> Options {
     Options {
         parallelism: Parallelism {
@@ -1000,17 +985,12 @@ fn dissecting(options: &Options, interiors: usize) -> Options {
     }
 }
 
-/// A run whose options dissect its factorization finds the same bits on 1, 2, 3 and 8
-/// threads: the operating point of the mesh of 10,000 nodes and its first tenth of a
-/// microsecond, dissected into interiors of at most 157 and 500 unknowns, its separators'
-/// fronts dense, which costs 0.88 and about 0.92 times the minimum degree's
-/// multiply-adds. A small circuit's block, or a chain's, whose dissection costs more, is
-/// not dissected, so the sparse solver's own tests dissect the small matrices whose
-/// pivots its interiors delay, and a row above a block that takes in more than a chunk of
-/// its columns, as a supply's joined to every node
-/// (`a_supplied_mesh_is_the_same_bits_on_any_number_of_threads`).
-/// Checks that a dissected factorization with interior size limit `interiors` finds the
-/// exact same bits on 1, 2, 3 and 8 threads across operating point and transient.
+/// Checks that nested-dissection factorization with interior limit `interiors` produces
+/// identical bits on 1, 2, 3, and 8 threads across `rc_mesh_100` operating point and
+/// transient analyses.
+///
+/// Small blocks and chains skip dissection when minimum degree requires fewer multiply-adds;
+/// delayed interior pivots and wide separator rows are covered directly by solver unit tests.
 fn assert_dissected_factorization_matches_across_threads(interiors: usize) {
     let (mesh, _, mesh_options) = benchmark("rc_mesh_100");
     let start: Analysis =
@@ -1058,11 +1038,9 @@ fn a_dissected_factorization_of_500_finds_the_same_on_any_number_of_threads() {
     assert_dissected_factorization_matches_across_threads(500);
 }
 
-/// A dissected factorization orders its operations otherwise than the minimum degree's, so
-/// a run's operating point differs from the undissected run's in its last digits, by no
-/// more than
-/// twice the tolerance Newton iteration stops within, the relative tolerance of each
-/// unknown plus its absolute tolerance, as each is within it of the exact solution.
+/// Verifies that dissected and undissected operating points agree within twice Newton's
+/// stopping tolerance (`2 * (reltol * max(|a|, |b|) + abstol)`), accounting for elimination
+/// order differences.
 #[test]
 fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
     for (name, interiors) in [("rc_mesh_100", 157), ("rc_mesh_100", 500)] {
@@ -1100,17 +1078,15 @@ fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
     }
 }
 
-/// `options` with no block of `circuit`'s matrix dissected, its interiors as large as the
-/// circuit.
+/// Configures `options` to disable nested dissection on `circuit` by setting the interior
+/// cap to the full unknown count.
 fn undissected(options: &Options, circuit: &Circuit) -> Options {
     dissecting(options, shared(circuit).unknowns().len())
 }
 
-/// A simulator that ran the mesh's first tenth of a microsecond with the undissected
-/// factorization, from the operating point it remembers, solves it again for a dissected
-/// one, rather than read what it remembers, so a run's numbers do not depend on what ran
-/// before it: they are those of a simulator made anew. The mesh's operating point is zero,
-/// the same bits either way, but its transient's are not.
+/// Verifies that switching between undissected and dissected options re-solves cleanly
+/// instead of reusing incompatible cached solver state, matching a fresh simulator bit for
+/// bit.
 #[test]
 fn a_dissected_run_solves_afresh_what_a_serial_one_left() {
     let (circuit, _, options) = benchmark("rc_mesh_100");

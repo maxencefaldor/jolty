@@ -36,8 +36,7 @@ use sim::simulator;
 use sine::voltage_sine;
 use transient::transient;
 
-/// A source into a resistor and a diode with a series resistance, then a divider: nonlinear,
-/// with an internal unknown.
+/// Builds a nonlinear diode-divider circuit with series resistance and an internal unknown.
 fn diode() -> Circuit {
     circuit([
         voltage_dc("V1", "in", 5.0),
@@ -54,8 +53,7 @@ fn diode() -> Circuit {
     ])
 }
 
-/// A common-source stage: an n-channel MOSFET biased into saturation, its drain loaded by
-/// a resistor.
+/// Builds a resistively loaded n-channel MOSFET common-source stage biased in saturation.
 fn amplifier(gate_node: &str) -> Vec<Instance> {
     vec![
         voltage_dc("VDD", "vdd", 3.3),
@@ -76,8 +74,7 @@ fn amplifier(gate_node: &str) -> Vec<Instance> {
     ]
 }
 
-/// The common-source stage loaded by a capacitor and driven through a resistor, so its
-/// response falls with frequency.
+/// Builds the common-source stage with source resistance and gate/load capacitances.
 fn loaded_amplifier() -> Vec<Instance> {
     let mut instances = amplifier("source");
     instances.extend([
@@ -88,10 +85,8 @@ fn loaded_amplifier() -> Vec<Instance> {
     instances
 }
 
-/// The options `of` runs at: tight, and for a transient or a periodic steady state, with a
-/// truncation tolerance no step's error reaches, so every run takes the same steps,
-/// growing to the longest, and finite differences see what the parameters move, not where
-/// the steps fall.
+/// Returns tight solver options for `of`, disabling truncation step control on transients
+/// and periodic steady states so finite differences hold step placement fixed.
 fn options(of: &Differentiated) -> Options {
     tight_options(matches!(
         of,
@@ -99,7 +94,7 @@ fn options(of: &Differentiated) -> Options {
     ))
 }
 
-/// Each output's value at each point of the analysis `of`, on `simulator`.
+/// Evaluates every output in `outputs` at each point of analysis `of` on `simulator`.
 fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> Vec<Vec<Complex64>> {
     let columns: Vec<usize> = outputs
         .iter()
@@ -144,8 +139,8 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
     }
 }
 
-/// The derivatives of a sensitivity analysis or a JVP, by point, then row, then column, as
-/// phasors.
+/// Converts sensitivity or JVP `derivatives` into complex phasor tables indexed by point,
+/// row, and column.
 fn complex(derivatives: &Derivatives) -> Vec<Vec<Vec<Complex64>>> {
     match derivatives {
         Derivatives::Real(points) => points
@@ -339,23 +334,22 @@ fn sensitivities_through_an_inductor_and_a_port_match_finite_differences_over_a_
     assert_matches(&tank, &["t", "L1:current"], &steady, 1e-4);
 }
 
-/// The largest disagreement allowed between the JVP and the VJP, relative to the
-/// magnitudes of the terms `vᵢ Jᵢⱼ tⱼ` they sum: the two sum the same terms in other
-/// orders, from solves of the same matrices and their transposes, so they differ by the
-/// rounding of those sums and solves, which the adjoint's check against the direct method
-/// over the corpus measured at 4.8e-13 at worst (elm, 16 November 2026); a term either
-/// leaves out shows by its own size.
+/// Relative tolerance for JVP-VJP transpose agreement (`1e-11`).
+///
+/// Forward and adjoint passes sum identical `vᵢ Jᵢⱼ tⱼ` terms in opposite orders using
+/// transposed factorizations; corpus checks measure worst rounding at `4.8e-13` (elm,
+/// 16 November 2026), well below any omitted term.
 const TRANSPOSED: f64 = 1e-11;
 
-/// A number between −1 and 1 that `index` picks, the same on every run: tangents and
-/// cotangents with no structure a mistake could hide in.
+/// Computes a deterministic pseudorandom value in `[-1, 1)` for `index` so accidental
+/// cancellation cannot mask errors.
 fn picked(index: usize) -> f64 {
     let wrapped = (index * 7919 + 13) % 1000;
     f64::from(u32::try_from(wrapped).expect("below 1000")) / 500.0 - 1.0
 }
 
-/// A cotangent of numbers [`picked`] on each of `unknowns` at each of `points`, on values
-/// if `real` and else on phasors, and on an oscillator's period if it has one.
+/// Builds deterministic [`picked`] cotangents across `points` and `unknowns`, real when
+/// `real` is true and complex otherwise, with optional oscillator `period` weight.
 fn picked_cotangent(
     (points, unknowns): (usize, usize),
     real: bool,
@@ -388,16 +382,16 @@ fn picked_cotangent(
     }])
 }
 
-/// Checks the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` along `of` in `circuit`, with respect
-/// to `parameters`, for a tangent and a cotangent of numbers [`picked`], each parameter moved
-/// relative to its value, and that the JVP along the tangent is the Jacobian's columns, which
-/// the JVP finds along each parameter, combined by it; to [`TRANSPOSED`] of the magnitudes of
-/// the terms. Returns the worst relative disagreement of the two.
+/// Checks the dot-product identity `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` along `of` in `circuit` with
+/// respect to `parameters` using [`picked`] tangents and cotangents.
+///
+/// Verifies both transpose agreement within [`TRANSPOSED`] and consistency with columnwise
+/// JVP evaluations, returning the worst relative disagreement.
 fn assert_transposes(circuit: &Circuit, parameters: &[(&str, &str)], of: &Differentiated) -> f64 {
     transposes_with(circuit, parameters, of, &options(of))
 }
 
-/// [`assert_transposes`] with `options`.
+/// Runs [`assert_transposes`] with explicit solver `options`.
 fn transposes_with(
     circuit: &Circuit,
     parameters: &[(&str, &str)],
@@ -543,9 +537,8 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         &rectifier_parameters,
         &steady,
     ));
-    // A tank whose conductance holds its radius through an impedance of its own: an
-    // oscillator, whose period is one more output, at the tolerances its period's
-    // derivatives are checked at in `periodic.rs`.
+    // Regulated LC oscillator with fixed-impedance conductance; period becomes an extra
+    // output checked at the tolerances from `periodic.rs`.
     let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
     let impedance = (inductance / capacitance).sqrt();
     let expression = format!(
@@ -586,9 +579,8 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
     assert!(worst <= TRANSPOSED, "worst {worst:e}");
 }
 
-/// A VJP along more of one device's parameters than a twin carries, which it evaluates in
-/// chunks, pulls a cotangent back to each parameter bit for bit as a VJP along that
-/// parameter alone does, at an operating point and at every step of a transient.
+/// Verifies that chunked VJP evaluation across more parameters than one twin carries matches
+/// single-parameter VJP results bit for bit on operating points and transients.
 #[test]
 fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
     let mut instances = rectifier();
@@ -654,7 +646,7 @@ fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
     }
 }
 
-/// A 1 V source through 1 kΩ into 1 nF: an RC of time constant 1 µs.
+/// Builds a 1 V RC low-pass circuit (1 kΩ, 1 nF) with a 1 µs time constant.
 fn rc() -> Circuit {
     circuit([
         voltage_dc("V1", "in", 1.0),
@@ -665,13 +657,11 @@ fn rc() -> Circuit {
 
 #[test]
 fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
-    // From `out` = 0 V, `out = V (1 − e^(−t/RC))`: `d out/dR = −V t/(R²C) e^(−t/RC)`,
-    // `d out/dV = 1 − e^(−t/RC)` and `d out/dC = −V t/(RC²) e^(−t/RC)`, the same whether the
-    // operating point is solved with `out` held there, or not solved at all, every other
-    // unknown starting at zero. The steps' trapezoidal rule errs by `(h/τ)² (t/τ) / 12` of
-    // the waveform for steps of `h`, 7e-7 by `t = 2τ` for `h = τ/500`, and its derivatives
-    // alike; held to 1e-5 of each derivative's largest, which leaves room for the backward
-    // Euler steps from the start, whose error is `h₀/2τ` for the first step's `h₀`.
+    // Starting from `out` = 0 V gives `out = V (1 − e^(−t/RC))`, regardless of whether the
+    // DC operating point runs. Analytical derivatives are `d out/dR = −V t/(R²C) e^(−t/RC)`,
+    // `d out/dV = 1 − e^(−t/RC)`, and `d out/dC = −V t/(RC²) e^(−t/RC)`.
+    // Trapezoidal error scales as `(h/τ)² (t/τ) / 12` (7e-7 at `t = 2τ`, `h = τ/500`), and
+    // initial backward Euler steps add `h₀/2τ`, staying within 1e-5 of peak derivatives.
     let (resistance, capacitance, level): (f64, f64, f64) = (1e3, 1e-9, 1.0);
     let tau = resistance * capacitance;
     let names = [
@@ -762,8 +752,7 @@ fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
     }
 }
 
-/// A self-heated diode biased through a resistor, coupled to a thermal RC network whose
-/// thermal resistance sets how much its junction warms above ambient.
+/// Builds a self-heated diode biased through a resistor and coupled to a thermal RC network.
 fn heated_diode(supply: f64, thermal_resistance: f64) -> Vec<Instance> {
     vec![
         voltage_dc("V1", "in", supply),
@@ -1029,8 +1018,8 @@ fn ac_derivatives_are_deterministic_across_thread_counts() {
     }
 }
 
-/// The common-source stage driving a `rungs`-section resistive ladder, returning its
-/// circuit and every parameter name with its nominal value.
+/// Builds the common-source stage driving a `rungs`-section resistive ladder, returning its
+/// circuit, parameter names, and nominal values.
 fn amplifier_with_ladder(rungs: usize) -> (Circuit, Vec<(String, String)>, Vec<f64>) {
     let mut instances = loaded_amplifier();
     let mut previous = "drain".to_owned();

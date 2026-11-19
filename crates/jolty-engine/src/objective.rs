@@ -1,17 +1,14 @@
-//! Objectives: a scalar of a transient's waveforms, and its derivative with respect to every
-//! number of every device's parameters, by the transient's VJP ([`Simulator::vjp`]).
+//! Scalar transient objectives and their gradients with respect to every numeric device
+//! parameter, computed via [`Simulator::vjp`].
 //!
-//! The scalar is a linear function of the waveforms, or interpolates them linearly, so its
-//! derivative with respect to the unknown at each point is a cotangent on them, which the
-//! discrete adjoint of the steps the transient took carries back to every parameter in one
-//! backward pass, one transposed solve a step whatever the number of parameters. The
-//! derivatives are those of the solution the transient computed, with its steps where they
-//! fell, as a derivative moves no step, and agree with the direct method's to the rounding
-//! of their solves.
+//! Each supported functional is linear in the simulated waveform samples, so its output
+//! derivatives form a cotangent pulled back to every parameter in a single backward adjoint
+//! pass with one transposed solve per step. Gradients differentiate the discrete transient
+//! solution at its accepted time steps and agree with the forward direct method to solver
+//! rounding.
 //!
-//! The backward pass reads the waveforms the transient keeps as its result, and keeps
-//! besides only each step's formula, four numbers a step; it evaluates the circuit and
-//! factors its Jacobian once more at each point, as the direct method does.
+//! Replay consumes the transient waveforms alongside only each step's four-number integration
+//! formula, re-evaluating devices and re-factoring Jacobians once per point.
 
 use std::collections::BTreeMap;
 
@@ -60,15 +57,14 @@ pub enum Functional {
 }
 
 impl Functional {
-    /// The unknown it reads, by name.
+    /// Returns the name of the target unknown read by this functional.
     fn unknown(&self) -> &str {
         match self {
             Self::Integral(unknown) | Self::Value { unknown, .. } | Self::Sum(unknown) => unknown,
         }
     }
 
-    /// Its value on `values`, an unknown's at each of `times`, and its derivative with
-    /// respect to the unknown at each.
+    /// Evaluates the functional on `(times, values)` and returns `(value, sample_weights)`.
     fn read(&self, times: &[f64], values: &[f64]) -> (f64, Vec<f64>) {
         match *self {
             Self::Integral(_) => (trapezoid(times, values), trapezoid_weights(times)),
@@ -81,36 +77,33 @@ impl Functional {
     }
 }
 
-/// The value of an [`Objective`], and its derivatives.
+/// Scalar value and full parameter gradient of an [`Objective`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectiveResult {
-    /// The objective's value, in SI base units.
+    /// Objective value in SI base units.
     pub value: f64,
-    /// Every parameter the derivatives are with respect to.
+    /// Differentiated device parameters in gradient order.
     pub parameters: Vec<Parameter>,
-    /// The objective's derivative with respect to each parameter, in their order.
+    /// Gradient entries matching `parameters`.
     pub derivatives: Vec<f64>,
-    /// The transient's waveforms; its work counts the backward pass's.
+    /// Underlying transient waveforms whose statistics include the backward adjoint pass.
     pub result: TransientResult,
 }
 
-/// What takes each term of an objective's derivatives, every parameter's at once.
+/// Accumulator callback receiving per-step gradient contributions across all parameters at once.
 type Fold<'a> = &'a mut (dyn FnMut(&[f64]) + Send);
 
 impl Simulator {
-    /// The value of `objective`, and its derivative with respect to every number of every
-    /// device's parameters, by the adjoint method: one backward pass through the steps the
-    /// transient took, whatever the number of parameters.
+    /// Evaluates `objective` and computes its exact gradient with respect to every numeric
+    /// device parameter in a single reverse adjoint pass.
     ///
-    /// The derivatives are exact, those of the solution the transient computed, with its
-    /// steps where they fell. A number the device's model reads as a choice, such as a
-    /// MOSFET's level, is no real parameter and has none.
+    /// Discrete choice parameters (such as a MOSFET level) are excluded from differentiation.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownOutput`] for a functional of no unknown,
-    /// [`SimulationError::InvalidAnalysis`] for a time outside the run, and the errors of
-    /// [`Simulator::vjp`] over time.
+    /// Returns [`SimulationError::UnknownOutput`] if the target unknown does not exist,
+    /// [`SimulationError::InvalidAnalysis`] if a sample time lies outside the transient span,
+    /// and any error from [`Simulator::vjp`].
     pub fn objective(
         &mut self,
         objective: &Objective,
@@ -131,14 +124,12 @@ impl Simulator {
         })
     }
 
-    /// The value of `objective`, the twins of every parameter, in their order, and the
-    /// transient's waveforms, whose work counts the backward pass's; `fold` takes each term
-    /// of the derivatives with respect to the twins' numbers, all twins' at once, which
-    /// sum to the derivatives.
+    /// Evaluates `objective`, streaming per-step gradient terms into `fold` and returning
+    /// `(value, twins, transient_result)` with backward-pass work included in statistics.
     ///
     /// # Errors
     ///
-    /// As [`Simulator::objective`].
+    /// Returns the same errors as [`Simulator::objective`].
     pub(crate) fn objective_with(
         &mut self,
         objective: &Objective,
@@ -199,9 +190,8 @@ impl Simulator {
     }
 }
 
-/// The derivative of the linear interpolation at `at` between `times` with respect to the
-/// value at each time: of the two on either side, each its share of the gap, or one at a
-/// time `at` is, and at the end it lies beyond, as numpy's `interp` reads them.
+/// Computes linear interpolation weights at `at` over sorted `times`, clamping outside the
+/// endpoints to match `NumPy`'s `interp`.
 fn interpolation_weights(at: f64, times: &[f64]) -> Vec<f64> {
     let mut weights = vec![0.0; times.len()];
     let after = times.partition_point(|&time| time < at);
@@ -211,17 +201,17 @@ fn interpolation_weights(at: f64, times: &[f64]) -> Vec<f64> {
             weights[before] = 1.0 - share;
             weights[after] = share;
         }
-        // At a time, or before the first, which reads the first value.
+        // Exact match or before the first sample: weight falls on `after`.
         (_, Some(_)) => weights[after] = 1.0,
-        // After the last, which reads the last value.
+        // Past the final sample: weight falls on the last sample.
         (Some(before), None) => weights[before] = 1.0,
         (None, None) => {}
     }
     weights
 }
 
-/// The derivative of the trapezoidal rule's integral over `times` with respect to the value
-/// at each time: half the span of the steps on either side of it.
+/// Computes trapezoidal integration weights over `times`, assigning each sample half the
+/// span of its adjacent intervals.
 fn trapezoid_weights(times: &[f64]) -> Vec<f64> {
     let last = times.len().saturating_sub(1);
     (0..times.len())
@@ -238,31 +228,25 @@ mod tests {
         Sensitivity, SimulationError, Simulator, Transient,
     };
 
-    /// The longest steps of a corpus transient each check runs for: enough for the
-    /// corpus's switches, whose sources start to move ten microseconds in, fifty of their
-    /// longest steps.
+    /// Maximum `max_step` multiples simulated per corpus transient check, long enough to cross
+    /// corpus switching edges starting at 10 µs (50 maximum steps).
     const LONGEST_STEPS: f64 = 100.0;
 
-    /// The largest disagreement allowed between the two methods, relative to the
-    /// magnitudes of their terms: they sum the same terms in other orders, from solves of
-    /// the same matrices, so they differ by the rounding of those sums and solves, at
-    /// worst 4.8e-13 over the corpus (elm, 16 November 2026), and most within 1e-15; a
-    /// term that either leaves out shows by its own size.
+    /// Maximum relative disagreement allowed between adjoint and direct gradients over the
+    /// corpus (measured worst rounding difference 4.8e-13 on 16 November 2026; typical 1e-15).
     const TOLERANCE: f64 = 1e-11;
 
-    /// What the direct method finds of the integral of every unknown over a transient.
+    /// Direct-method integral sensitivities across every unknown of a transient.
     struct Integrated {
         times: Vec<f64>,
-        /// By unknown, then parameter: the integral's derivative.
+        /// Integral derivatives indexed by `[unknown][parameter]`.
         derivatives: Vec<Vec<f64>>,
-        /// By parameter: the largest, over the unknowns, of the magnitudes of the terms
-        /// of its derivative summed; a solve's rounding is relative to the whole of the
-        /// vector it solves for.
+        /// Per-parameter maximum summed term magnitude across unknowns, scaling solve rounding.
         anywhere: Vec<f64>,
     }
 
-    /// The integral of every unknown over `transient`, by the direct method, each point's
-    /// derivatives weighted by the trapezoidal rule's.
+    /// Computes trapezoidal integral sensitivities for every unknown via the forward direct
+    /// method.
     fn direct(
         simulator: &mut Simulator,
         transient: &Transient,
@@ -310,10 +294,8 @@ mod tests {
         })
     }
 
-    /// The largest disagreement, over every parameter, between the adjoint's derivative
-    /// of the integral of each of `unknowns` over `transient` and the direct method's,
-    /// relative to the magnitudes of the adjoint's terms and the direct method's, summed;
-    /// or the error both return.
+    /// Returns the worst relative disagreement across all parameters between adjoint and
+    /// direct integral gradients for `unknowns` over `transient`.
     fn disagreement(
         simulator: &mut Simulator,
         transient: &Transient,

@@ -32,8 +32,8 @@ impl TolerancedParameter {
         }
     }
 
-    /// The Monte Carlo sample the run at `index` draws, as its seed and its index among the
-    /// samples: of the second variants of a product first; none when it draws none.
+    /// Returns the Monte Carlo `(seed, sample_index)` drawn by run `index`, preferring the
+    /// second factor of a product, or `None` for non-Monte-Carlo variants.
     fn sample(&self, index: u64) -> Option<(u64, u64)> {
         match self {
             Self::Explicit(_) | Self::Grid(_) => None,
@@ -63,29 +63,28 @@ impl EngineVariants for TolerancedParameter {
     }
 }
 
-/// A number a batch's runs vary: a parameter, by its instance's path and its own, or the
-/// temperature.
+/// Quantity varied across batch runs: either a device parameter (`instance` and parameter
+/// path) or temperature.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Column {
     Parameter(ParameterId, String, String),
     Temperature,
 }
 
-/// The values of every run of a batch, each a pure function of the run's index, of one
-/// elaborated circuit: listed, on a grid, drawn as Monte Carlo samples, or every one of one
-/// at every one of another.
+/// Parameter and temperature values for batch runs of one elaborated circuit, defined as
+/// explicit lists, grids, Monte Carlo samples, or Cartesian products.
 #[pyclass(module = "jolty._core", frozen)]
 pub(crate) struct Variants {
     toleranced: TolerancedParameter,
     elaborated: Arc<jolty_engine::Elaborated>,
-    /// The numbers the runs vary, in the order of a batch's columns of values.
+    /// Varied quantities in batch output column order.
     columns: Vec<Column>,
 }
 
-/// A parameter, by its instance's path and its own.
+/// Device parameter identified by `(instance_path, parameter_path)`.
 type Named = (String, String);
 
-/// Numbers by instance path, then by parameter path.
+/// Parameter override map indexed by instance path, then parameter path.
 type Replaced = BTreeMap<String, BTreeMap<String, f64>>;
 
 impl Variants {
@@ -102,7 +101,7 @@ impl Variants {
         Ok(())
     }
 
-    /// The toleranced columns in batch output order.
+    /// Returns the varied columns in batch output order.
     pub(crate) fn columns(&self) -> &[Column] {
         &self.columns
     }
@@ -118,11 +117,11 @@ impl Variants {
 
 #[pymethods]
 impl Variants {
-    /// Runs at listed values: each a JSON object of the numbers it replaces, by instance
-    /// path then by parameter path, and a temperature in kelvins, or none for the
-    /// circuit's.
+    /// Creates variants from explicit `(overrides_json, temperature)` run entries.
     ///
-    /// Raises `ElaborationError` naming every number the circuit's devices do not write.
+    /// Each entry specifies a JSON object mapping instance path to parameter overrides, plus
+    /// an optional temperature in kelvins (`None` keeps the base circuit temperature).
+    /// Raises `ElaborationError` naming every unrecognized parameter path.
     #[staticmethod]
     fn explicit(
         py: Python<'_>,
@@ -157,12 +156,14 @@ impl Variants {
         })
     }
 
-    /// Runs on a grid of `axes`, each a parameter, by its instance's path and its own, or
-    /// none for the temperature, and its values in order, in kelvins for the temperature;
-    /// the last axis fastest, its lines chains of warm runs when `warm`.
+    /// Creates variants on a Cartesian grid of `axes`, with the last axis varying fastest.
     ///
-    /// Raises `ElaborationError` naming every number the circuit's devices do not write,
-    /// and `ValueError` for an axis of no values.
+    /// Each axis pairs `(instance_path, parameter_path)` (or `None` for temperature in
+    /// kelvins) with ordered values. When `warm` is true, lines along the last axis execute
+    /// as warm-started chains.
+    ///
+    /// Raises `ElaborationError` naming every unrecognized parameter path, and `ValueError`
+    /// when an axis contains no values.
     #[staticmethod]
     fn grid(
         py: Python<'_>,
@@ -178,7 +179,7 @@ impl Variants {
                 .or_default()
                 .insert(name.clone(), 0.0);
         }
-        // Every number an axis names, checked as replaced values are.
+        // Validate every axis parameter using the same rules as explicit overrides.
         elaboration_result(py, circuit.values(&named, None))?;
         let mut stepped = Vec::with_capacity(axes.len());
         let mut columns = Vec::with_capacity(axes.len());
@@ -202,11 +203,12 @@ impl Variants {
         })
     }
 
-    /// `samples` Monte Carlo samples of the numbers `toleranced`, a JSON list of objects of an
-    /// `instance`, its path, a number's `parameter` path, its `nominal` value and its
-    /// `tolerance`, drawn from `seed` as [`crate::sample`] draws them.
+    /// Creates `samples` Monte Carlo variants of `toleranced` parameters drawn from `seed`
+    /// via [`crate::sample`].
     ///
-    /// Raises `ElaborationError` naming every number the circuit's devices do not write.
+    /// `toleranced` is a JSON list of objects with `instance`, `parameter`, `nominal`, and
+    /// `tolerance` fields. Raises `ElaborationError` naming every unrecognized parameter
+    /// path.
     #[staticmethod]
     fn monte_carlo(
         py: Python<'_>,
@@ -236,12 +238,13 @@ impl Variants {
         })
     }
 
-    /// Every variant of `first` at every variant of `second`: run `i` is variant
-    /// `i // len(second)` of `first`, then variant `i % len(second)` of `second`, whose
-    /// values replace `first`'s where both give one.
+    /// Creates the Cartesian product of `first` and `second` variants.
     ///
-    /// Raises `ValueError` when they vary different circuits, or there are more runs than
-    /// 2**64 - 1.
+    /// Run `i` combines variant `i // len(second)` of `first` with variant `i % len(second)`
+    /// of `second`, with `second` overriding `first` on shared parameters.
+    ///
+    /// Raises `ValueError` when the operands belong to different circuits or when the
+    /// product exceeds `2**64 - 1` runs.
     #[staticmethod]
     fn product(first: &Self, second: &Self) -> PyResult<Self> {
         if !Arc::ptr_eq(&first.elaborated, &second.elaborated) {
@@ -266,14 +269,14 @@ impl Variants {
         })
     }
 
-    /// How many runs there are.
+    /// Returns the total number of runs in the variant set.
     fn __len__(&self) -> PyResult<usize> {
         usize::try_from(self.toleranced.len())
             .map_err(|_| PyValueError::new_err("more runs than an index counts"))
     }
 
-    /// The numbers the runs vary, in the order of a batch's columns of values: each a
-    /// parameter, as its instance's path and its own, or `None` for the temperature.
+    /// Returns the varied columns in batch output order: `(instance_path, parameter_path)`
+    /// for parameters or `None` for temperature.
     #[getter]
     pub(crate) fn parameters(&self) -> Vec<Option<(String, String)>> {
         self.columns
@@ -285,10 +288,10 @@ impl Variants {
             .collect()
     }
 
-    /// The numbers the run at `index` replaces, by instance path then by parameter path,
-    /// and its temperature in kelvins, if it gives one.
+    /// Returns the parameter overrides (indexed by instance path then parameter path) and
+    /// optional temperature in kelvins for run `index`.
     ///
-    /// Raises `ValueError` for an index past the last run.
+    /// Raises `ValueError` when `index` is out of range.
     fn overrides(&self, index: u64) -> PyResult<(Replaced, Option<f64>)> {
         if index >= self.toleranced.len() {
             return Err(PyValueError::new_err(format!(
@@ -311,8 +314,8 @@ impl Variants {
         Ok((replaced, values.temperature))
     }
 
-    /// The Monte Carlo sample the run at `index` draws, as its seed and its index among the
-    /// samples; `None` when it draws none.
+    /// Returns `(seed, sample_index)` for the Monte Carlo sample drawn by run `index`, or
+    /// `None` when the run draws no sample.
     fn sample(&self, index: u64) -> Option<(u64, u64)> {
         (index < self.toleranced.len())
             .then(|| self.toleranced.sample(index))
@@ -320,8 +323,7 @@ impl Variants {
     }
 }
 
-/// The variants a batch runs: each run at the values of the simulator the batch is of,
-/// with those of its variant in their place where it gives them.
+/// Variant wrapper overlaying per-run overrides onto a simulator's base [`Values`].
 pub(crate) struct Based<'a> {
     base: &'a Values,
     toleranced: &'a TolerancedParameter,

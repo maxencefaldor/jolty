@@ -1,55 +1,35 @@
-//! The periodic steady state, by shooting.
+//! Periodic steady-state analysis via shooting.
 //!
-//! A circuit driven by sources of period `T` settles, if it settles, into a state `x₀` that
-//! one period of the transient carries back to itself: `φ(x₀) = x₀`, where `φ` integrates
-//! the circuit's equations over a period from the state it is given. Shooting solves this by
-//! Newton iteration (Aprille and Trick, "Steady-state analysis of nonlinear circuits with
-//! periodic inputs", Proceedings of the IEEE 60(1), 1972): each period simulated from `x₀`
-//! carries, besides the solution, its derivatives with respect to `x₀` along every step by
-//! the direct method, which end as the monodromy matrix `Φ = ∂φ/∂x₀`, and the next start is
-//! `x₀ + Δ`, where `(Φ − I) Δ = x₀ − φ(x₀)`. A period starts from its state by a backward
-//! Euler step, which reads only its charges, so the unknowns that hold no charge follow the
-//! rest. The search starts from the operating point; a circuit that settles slowly but
-//! nearly linearly takes a few periods, where a transient would take many.
+//! A circuit driven by periodic sources of period `T` settles onto a repeating state `x₀`
+//! satisfying `φ(x₀) = x₀`, where `φ` integrates the circuit across one period. Shooting
+//! solves this boundary-value problem by Newton iteration (Aprille and Trick, *Proceedings
+//! of the IEEE* 60(1), 1972). Each simulated period propagates sensitivities with respect to
+//! `x₀` to form the monodromy matrix `Φ = ∂φ/∂x₀`, then updates `x₀` by solving
+//! `(Φ - I) Δ = x₀ - φ(x₀)`. Starting from the operating point with a backward Euler first
+//! step lets lightly damped circuits converge in a few periods rather than many transient
+//! cycles.
 //!
-//! A circuit can have a neutral direction, a state that a period neither grows nor decays,
-//! such as a memristor's that its drive leaves alone, or a charge that nothing but a
-//! capacitor holds: a quantity `uᵀ x` that one period carries back as it was, so that
-//! `uᵀ Φ = uᵀ`. Then `Φ − I` is singular and the steady state is not unique: there is one
-//! for each value of the quantity. The step `Δ` is the least-squares solution of least
-//! norm among those in the range of `Φ − I`, which leaves every such quantity as it was:
-//! shooting keeps the start's place along the neutral directions, and finds the steady
-//! state a transient from it would settle into. Where `Φ − I` is regular, `Δ` is Newton's
-//! step. The system is measured in units of each unknown's tolerance, as its mismatches
-//! are, and its singular values within the rounding of the largest are zero.
+//! Circuits can contain neutral directions, such as an unperturbed memristor state or
+//! floating capacitor charge, where `uᵀ Φ = uᵀ` makes `Φ - I` singular. Taking the
+//! minimum-norm least-squares step `Δ` in the range of `Φ - I` preserves every neutral
+//! invariant from the starting point and reduces to ordinary Newton iteration whenever
+//! `Φ - I` is regular. Equations are scaled by per-unknown tolerances, treating singular
+//! values within rounding of the largest as zero.
 //!
-//! An oscillator, a circuit whose sources hold steady, has a period of its own, which
-//! shooting finds with the state: `φ(x₀, T) = x₀`, `n` equations in `n + 1` unknowns. Any
-//! state along the orbit starts a period as well as any other, a neutral direction of its
-//! own, the flow `ẋ` that `Φ` carries back to itself; the phase condition takes it out, as
-//! the least-norm step takes out the others: the start moves only across the orbit, its
-//! step orthogonal to the flow there, `ẋᵀ Δx = 0`, in units of each unknown's tolerance.
-//! The flow is `∂φ/∂T`, the end's derivative with respect to the period, which at the
-//! steady state is the start's. Newton's step then solves the bordered system
-//! `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [Δx, ΔT] = [x₀ − φ(x₀, T), 0]`, regular where the orbit
-//! is isolated (the orthogonal phase condition: R. Seydel, *Practical Bifurcation and
-//! Stability Analysis*, 3rd ed., Springer, 2010, §7.1). The derivative with respect to the
-//! period is carried along the steps as the others are, every step's length a fixed
-//! fraction of the period: each step's formula scales its charges' terms by `1 / T`,
-//! `∂(dq/dt)/∂T = −(α q_{n+1} + β₀ q_n + β₁ q_{n-1}) / T`, which is exact for the steps
-//! taken, and the circuit's equations, its sources holding steady, read no time.
+//! Autonomous oscillators have an unknown period `T`, yielding `n` equations `φ(x₀, T) = x₀`
+//! in `n + 1` unknowns. Time translation along the orbit produces a neutral direction along
+//! the flow `ẋ = ∂φ/∂T`, removed by the orthogonal phase condition `ẋᵀ Δx = 0` in
+//! tolerance-scaled units (R. Seydel, *Practical Bifurcation and Stability Analysis*, 3rd ed.,
+//! Springer, 2010, §7.1). Newton iteration solves the bordered system
+//! `[[Φ - I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [Δx, ΔT] = [x₀ - φ(x₀, T), 0]`. Propagating `∂x/∂T`
+//! treats every step length as a fixed fraction of `T`, scaling divided charge terms by
+//! `∂(dq/dt)/∂T = -(α q_{n+1} + β₀ q_n + β₁ q_{n-1}) / T`.
 //!
-//! An oscillator's operating point is an equilibrium it leaves, and every period
-//! repeats it, so shooting cannot start there. It starts on the orbit instead, which a
-//! transient from the operating point finds: kicked by one tolerance along the natural mode
-//! that grows fastest, the smallest step off the operating point the analysis resolves,
-//! the transient runs until the oscillation stops growing, its returns to the hyperplane
-//! through the operating point across the kick coming no further apart than the returns
-//! before them, which were apart by more than their tolerance. It runs in stretches, each
-//! twice as long as the one before, which restart its integration and so are compared
-//! only within themselves, each step at most a fiftieth of the period the returns before
-//! it show. Shooting starts from the last return, its period the time since the one
-//! before.
+//! Autonomous shooting cannot start at the unstable DC operating point because every period
+//! repeats equilibrium. Startup perturbs the operating point by one tolerance along the
+//! fastest-growing natural mode and integrates doubling transient stretches until hyperplane
+//! returns stop growing. Each stretch limits steps to `period / 50` using the latest return
+//! interval and hands the final return state and period to shooting.
 
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
@@ -65,91 +45,84 @@ use crate::{
     OperatingPointResult, Options, SimulationError, Simulator, Strategy, Transient, TransientResult,
 };
 
-/// The most periods shooting simulates before it gives up, and the most stretches of
-/// transient an oscillator's settling runs, each twice as long as the one before: the
-/// last 2³⁹, some 5.5·10¹¹, times the first, past the 10¹¹ by which a transient's
-/// longest step may exceed its shortest (`MIN_STEP_FRACTION`), so that no orbit
-/// slower than that shares a transient with the mode that starts it.
+/// Maximum shooting periods and oscillator settling stretches before aborting.
+///
+/// Derivation: doubling stretches reach `2³⁹` (`~5.5e11`) times the initial period, past the
+/// `10¹¹` dynamic range (`MIN_STEP_FRACTION`) of a single transient.
 const MAX_PERIODS: usize = 40;
 
-/// The most dense matrices of a row and a column per unknown, and one more for an
-/// oscillator's period, that shooting holds at once, while it solves for the next start
-/// where its system is singular: the system, the two factors of its singular value
-/// decomposition, the reduced system, the two factors of the reduced system's own
-/// decomposition, and that decomposition's workspace, up to about 7.3 such matrices in
-/// faer's. Before, the first decomposition holds a copy of the system and a workspace of
-/// its own instead of the reduced system and its factors, and a period four: its tangents,
-/// three vectors per unknown, and `Φ`.
+/// Peak count of dense `n × n` (or `(n + 1) × (n + 1)`) matrices live simultaneously during
+/// singular shooting solves.
+///
+/// Derivation: accounts for the system matrix, primary and reduced SVD factors, the reduced
+/// system, and `faer` SVD workspace (`~7.3` matrices), dominating the 4 matrices held during
+/// period integration (three tangent vectors per unknown plus `Φ`).
 pub(crate) const DENSE_MATRICES: f64 = 14.0;
 
-/// A periodic steady state: one period of the state a circuit repeats, found by shooting.
+/// Configuration for periodic steady-state analysis found by shooting.
 ///
-/// In JSON, it is `{"periodic_steady_state": {"period": 1e-6}}`, and an oscillator's
-/// `{"periodic_steady_state": {}}`.
+/// Serializes in JSON as `{"periodic_steady_state": {"period": 1e-6}}` for driven circuits or
+/// `{"periodic_steady_state": {}}` for autonomous oscillators.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeriodicSteadyState {
-    /// The period of every source, in seconds; none for an oscillator, whose sources hold
-    /// steady and whose period shooting finds.
+    /// Source period in seconds, or `None` for an autonomous oscillator with an unknown period.
     #[serde(default)]
     pub period: Option<f64>,
-    /// The longest step allowed, in seconds; by default a fiftieth of the period.
+    /// Maximum allowed step length in seconds; defaults to `period / 50`.
     #[serde(default)]
     pub max_step: Option<f64>,
-    /// The integration method between breakpoints; trapezoidal by default.
+    /// Integration method used between breakpoints; defaults to trapezoidal.
     #[serde(default)]
     pub method: Method,
-    /// Times within a given period, in seconds, the analysis steps onto exactly besides
-    /// its own, without restarting its integration there; none by default.
+    /// Additional times within a fixed period in seconds that the solver hits exactly without
+    /// restarting integration; empty by default.
     #[serde(default)]
     pub breakpoints: Vec<f64>,
 }
 
-/// One period of a periodic steady state.
+/// Converged periodic steady-state waveform spanning one full period.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeriodicSteadyStateResult {
-    /// The period, in seconds: the analysis's, or an oscillator's, which shooting found.
+    /// Period in seconds (configured for driven circuits, or solved for oscillators).
     pub period: f64,
-    /// The periods shooting simulated to find the steady state, the last the one
-    /// `transient` holds.
+    /// Number of shooting periods simulated to converge, including the final period in
+    /// `transient`.
     pub periods: usize,
-    /// The period from the state it repeats, its times from zero to the period. Its
-    /// statistics' work counts every period's, the operating point's and an oscillator's
-    /// settling.
+    /// Converged single-period waveform from time zero to `period`.
+    ///
+    /// Solver work in `transient.statistics` aggregates every shooting period, the operating
+    /// point, and any oscillator settling transient.
     pub transient: TransientResult,
 }
 
-/// The derivatives with respect to the state a period starts from, at the last point a
-/// transient accepted: of the charges, which the integration formula reads, and of the
-/// unknowns, one of each per unknown of the start; and for an oscillator, with respect to
-/// its period.
+/// Forward sensitivities propagated across one transient period with respect to initial state
+/// (and period for oscillators).
 #[derive(Default)]
 pub(crate) struct Monodromy {
     tangents: Vec<Tangent>,
-    /// `∂x/∂x₀`, a column per unknown of the start: at the period's end, the monodromy
-    /// matrix.
+    /// Columns of `∂x/∂x₀`, forming the monodromy matrix `Φ` at the end of the period.
     at: Vec<Vec<f64>>,
-    /// The derivatives with respect to an oscillator's period.
+    /// Period-stretch sensitivity state for autonomous oscillators.
     stretch: Option<Stretch>,
-    /// Each step's formula, and whether the integration restarts after it, in their order,
-    /// for the derivatives with respect to the parameters to go through again.
+    /// Accepted step formulas and restart flags recorded in order for sensitivity replay.
     steps: Vec<StepFormula>,
 }
 
-/// The derivatives with respect to an oscillator's period, every step's length a fixed
-/// fraction of it.
+/// Period-derivative tracking for an autonomous oscillator with step lengths proportional to
+/// period `T`.
 struct Stretch {
     period: f64,
-    /// The charges themselves, which the formula's terms the steps' lengths divide read.
+    /// Raw charge trajectory used to compute step-scaled divided charge terms.
     charges: Tangent,
-    /// The charges' derivatives.
+    /// Charge sensitivity `∂q/∂T` propagated across steps.
     tangent: Tangent,
-    /// `∂x/∂T` at the last point: at the period's end, the flow there.
+    /// State sensitivity `∂x/∂T` at the latest point, yielding orbit flow at period end.
     at: Vec<f64>,
 }
 
 impl Monodromy {
-    /// The derivatives an oscillator's period of length `period` carries.
+    /// Initializes monodromy tracking with autonomous period-derivative state for `period`.
     fn stretched(period: f64) -> Self {
         Self {
             stretch: Some(Stretch {
@@ -163,18 +136,17 @@ impl Monodromy {
     }
 }
 
-/// What a period shooting simulated carried to its end, and the scales shooting measures it
-/// in.
+/// Period-end monodromy state paired with unknown tolerances and period scaling.
 pub(crate) struct Shot {
     monodromy: Monodromy,
-    /// Each unknown's tolerance at the period's start and end.
+    /// Per-unknown tolerances evaluated across period start and end.
     tolerances: Vec<f64>,
-    /// The period's own scale, its relative tolerance of it.
+    /// Period scaling factor `relative_tolerance * period`.
     scale: f64,
 }
 
-/// The scaled shooting system `S⁻¹ (Φ − I) S` (bordered for an oscillator), with the
-/// unknown tolerances `S` and optional period scale `s_T`.
+/// Tolerance-scaled shooting Jacobian `S⁻¹ (Φ - I) S` (bordered for oscillators), with
+/// unknown scales `S` and optional period scale `s_T`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ShootingSystem {
     pub(crate) matrix: Vec<f64>,
@@ -182,7 +154,7 @@ pub(crate) struct ShootingSystem {
     pub(crate) scale: Option<f64>,
 }
 
-/// Whether shooting holds the period fixed or solves for an oscillator's free period.
+/// Period mode distinguishing driven circuits from autonomous oscillators.
 #[derive(Clone, Copy)]
 enum PeriodMode {
     Forced(f64),
@@ -197,10 +169,11 @@ struct ShootingStart {
 }
 
 impl Shot {
-    /// The system Newton's step solves, each unknown in units of its tolerance, by columns:
-    /// `S⁻¹ (Φ − I) S`, bordered, for an oscillator, by the flow `c = S⁻¹ ∂φ/∂T s_T`, the
-    /// period in units of its own scale `s_T`, as a column and as the phase condition's
-    /// row; with the unknowns' tolerances `S` and an oscillator's period's scale.
+    /// Assembles the tolerance-scaled shooting system `S⁻¹ (Φ - I) S` in column-major order.
+    ///
+    /// For autonomous oscillators, borders the matrix with the scaled flow vector
+    /// `c = S⁻¹ (∂φ/∂T) s_T` as both final column and phase-condition row, returning the
+    /// unknown tolerances `S` and period scale `s_T`.
     pub(crate) fn system(self) -> ShootingSystem {
         let Self {
             monodromy,
@@ -245,15 +218,13 @@ impl Shot {
         }
     }
 
-    /// The steps the period took, each its formula and whether the integration restarts
-    /// after it, in their order, leaving none.
+    /// Takes and returns the recorded step formulas and restart flags in integration order.
     pub(crate) fn take_steps(&mut self) -> Vec<StepFormula> {
         std::mem::take(&mut self.monodromy.steps)
     }
 
-    /// Whether an oscillator's orbit moves: whether a change of its period by its scale
-    /// moves the period's end, by the flow there, by more than an unknown's tolerance. An
-    /// orbit that does not is the operating point, which every period repeats.
+    /// Checks whether an oscillator's orbit moves by more than an unknown tolerance under a
+    /// period perturbation of `self.scale`, distinguishing true orbits from stationary points.
     fn moves(&self) -> bool {
         self.monodromy.stretch.as_ref().is_some_and(|stretch| {
             stretch
@@ -266,23 +237,20 @@ impl Shot {
 }
 
 impl Simulator {
-    /// One period of the periodic steady state: of a circuit driven by sources of the
-    /// analysis's period, found by shooting from the operating point, or of an oscillator,
-    /// whose period it finds, by shooting from where a transient from its operating point
-    /// settles onto its orbit.
+    /// Computes one period of the periodic steady state by shooting.
+    ///
+    /// Driven circuits shoot directly from the operating point at the configured period;
+    /// autonomous oscillators first integrate a perturbed transient until oscillation
+    /// amplitude settles and then shoot for both state and period.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for a circuit with logic, whose state
-    /// shooting does not carry, an oscillator's analysis with times to step onto, or an
-    /// autonomous analysis of a circuit with a source or behavioral device that varies with
-    /// time; [`SimulationError::TooMuchMemory`] when its dense matrices would hold more than
-    /// the options' `max_memory`; [`SimulationError::NoGrowingMode`] and
-    /// [`SimulationError::Unsettled`] when an oscillator does not start or settle,
-    /// [`SimulationError::Stationary`] when its shooting converges onto its operating point;
-    /// [`SimulationError::NoSteadyState`] when the periods do not converge; and the errors
-    /// of [`Simulator::transient`] and [`Simulator::growing_modes`], each period's results
-    /// holding what the dense matrices leave of the memory.
+    /// Returns [`SimulationError::InvalidAnalysis`] for unsupported mixed-signal, delayed, or
+    /// misconfigured autonomous circuits; [`SimulationError::TooMuchMemory`] if dense shooting
+    /// matrices exceed `max_memory`; [`SimulationError::NoGrowingMode`],
+    /// [`SimulationError::Unsettled`], [`SimulationError::Stationary`], or
+    /// [`SimulationError::NoSteadyState`] on convergence failures; and errors from
+    /// [`Simulator::transient`] or [`Simulator::growing_modes`].
     pub fn periodic_steady_state(
         &mut self,
         analysis: &PeriodicSteadyState,
@@ -294,9 +262,8 @@ impl Simulator {
         })
     }
 
-    /// Fails for a circuit or analysis that shooting does not run: one with logic, delay
-    /// lines, breakpoints without a period, or a time-varying source or behavioral device
-    /// in an autonomous analysis.
+    /// Validates circuit and configuration preconditions for shooting, rejecting logic nets,
+    /// delay lines, autonomous breakpoints, and time-varying devices in autonomous runs.
     pub(crate) fn check_periodic(
         &self,
         analysis: &PeriodicSteadyState,
@@ -335,9 +302,8 @@ impl Simulator {
         Ok(())
     }
 
-    /// One period of the periodic steady state, as [`Simulator::periodic_steady_state`]
-    /// finds it, and what that period carried: its derivatives with respect to its start
-    /// and, for an oscillator, to its period.
+    /// Solves the periodic steady state as in [`Simulator::periodic_steady_state`], also
+    /// returning the converged period's [`Shot`] monodromy data.
     pub(crate) fn shot_steady_state(
         &mut self,
         analysis: &PeriodicSteadyState,
@@ -371,7 +337,8 @@ impl Simulator {
         Ok((found, shot))
     }
 
-    /// The periods of `analysis` from `initial` until one repeats, and what that one carried.
+    /// Runs shooting iterations for `analysis` from `initial` until start and end states match
+    /// within tolerance, returning the converged result and final [`Shot`].
     fn shoot(
         &mut self,
         analysis: &PeriodicSteadyState,
@@ -463,11 +430,9 @@ impl Simulator {
         })
     }
 
-    /// Where an oscillator's transient from its operating point `point` settles onto its
-    /// orbit, and the time it took to return there last: the transient, kicked by one
-    /// tolerance along the natural mode that grows fastest, runs in stretches, the first
-    /// the mode's natural period, each twice as long as the one before, until a stretch in
-    /// which the oscillation stops growing.
+    /// Integrates an autonomous oscillator from its perturbed operating point `point` in
+    /// doubling transient stretches until oscillation amplitude settles, returning the final
+    /// return state and estimated period.
     fn settled(
         &mut self,
         analysis: &PeriodicSteadyState,
@@ -479,8 +444,7 @@ impl Simulator {
         let equilibrium = &point.values;
         let tolerances = self.tolerances(equilibrium, equilibrium, options);
         let kick = kick(&mode.shape, &tolerances);
-        // The hyperplane through the operating point across the kick, in units of each
-        // unknown's tolerance: a return crosses it the way the kick does.
+        // Tolerance-scaled hyperplane through the operating point orthogonal to `kick`.
         let across = |x: &[f64]| -> f64 {
             x.iter()
                 .zip(equilibrium)
@@ -494,8 +458,7 @@ impl Simulator {
         let (mut time, mut length) = (0.0, TAU / mode.pole.norm());
         let mut returns = Returns::default();
         for _ in 0..MAX_PERIODS {
-            // A stretch's steps are at most a fiftieth of the period the returns before it
-            // show, as a period's own are, or of the stretch while none shows one.
+            // Limit stretch step size to `period / 50` once a return period is observed.
             let shown = returns.apart.map(|(period, _)| period / STEPS_PER_RUN);
             let stretch = Transient {
                 stop: length,
@@ -536,8 +499,7 @@ impl Simulator {
         })
     }
 
-    /// The tolerance of each unknown of a period started at `start` and ended at `end`,
-    /// which it ends within of where it started if it repeats.
+    /// Computes per-unknown tolerances between period `start` and `end` states under `options`.
     fn tolerances(&self, start: &[f64], end: &[f64], options: &Options) -> Vec<f64> {
         self.elaborated
             .unknowns
@@ -547,9 +509,8 @@ impl Simulator {
             .collect()
     }
 
-    /// Starts carrying the derivatives with respect to the state `x` a period starts from:
-    /// the unknowns' are the identity, and the charges' the capacitances there; an
-    /// oscillator's with respect to its period are zero, its charges those at `x`.
+    /// Initializes `monodromy` at period start `x`: identity state sensitivities, initial
+    /// capacitance columns for charge tangents, and zeroed period-stretch tangents.
     pub(crate) fn start_monodromy(
         &mut self,
         monodromy: &mut Monodromy,
@@ -584,11 +545,11 @@ impl Simulator {
         }
     }
 
-    /// Carries the derivatives with respect to the period's start over the step a
-    /// transient accepted at `point` by `step`. Each column solves
-    /// `(G + αC) ∂x/∂x₀ = −∂h/∂x₀`, where `h` is the part of the formula's `dq/dt` that the
-    /// earlier points contribute, and an oscillator's derivative with respect to its period
-    /// `(G + αC) ∂x/∂T = −∂h/∂T + (α q_{n+1} + β₀ q_n + β₁ q_{n-1}) / T`.
+    /// Advances `monodromy` across an accepted step at `point` with `step`.
+    ///
+    /// Solves `(G + αC) ∂x/∂x₀ = -∂h/∂x₀` for each state-transition column, where `h` is the
+    /// formula history term. For autonomous oscillators, also solves
+    /// `(G + αC) ∂x/∂T = -∂h/∂T + (α q_{n+1} + β₀ q_n + β₁ q_{n-1}) / T`.
     pub(crate) fn advance_monodromy(
         &mut self,
         monodromy: &mut Monodromy,
@@ -642,9 +603,8 @@ impl Simulator {
     }
 }
 
-/// The kick that starts an oscillation: along the mode of amplitudes `shape`, turned so
-/// its largest unknown in units of its tolerance is real, its real part, scaled so that
-/// unknown moves by its tolerance and no other by more than its own.
+/// Computes a real perturbation along eigenmode `shape`, rotated so the dominant
+/// tolerance-scaled unknown is real and scaled to move that unknown by one tolerance.
 fn kick(shape: &[Complex64], tolerances: &[f64]) -> Vec<f64> {
     let scaled = shape
         .iter()
@@ -667,30 +627,27 @@ fn kick(shape: &[Complex64], tolerances: &[f64]) -> Vec<f64> {
     along.iter().map(|value| value / reach).collect()
 }
 
-/// An oscillator's returns to the hyperplane across its kick, the last two kept.
+/// Tracker recording an oscillator's recent crossings of the Poincaré hyperplane.
 #[derive(Default)]
 struct Returns {
-    /// The returns so far.
+    /// Total crossings observed across all stretches.
     count: usize,
-    /// The last return's time and state.
+    /// Timestamp and state vector of the most recent crossing.
     last: Option<(f64, Vec<f64>)>,
-    /// The time between the last two returns, and the largest distance between their
-    /// states, each unknown in units of its tolerance at the last.
+    /// Elapsed period and maximum tolerance-scaled state distance between the last two
+    /// crossings.
     apart: Option<(f64, f64)>,
-    /// Whether the last two returns are of the stretch running.
+    /// Flag indicating whether the last two crossings belong to the active stretch.
     compared: bool,
-    /// Whether a return has come no further from the one before than that one from its
-    /// own, which was beyond their tolerance: the oscillation grew past what the analysis
-    /// resolves, and stopped growing. Returns within tolerance of each other show neither,
-    /// as every return is while the oscillation grows from a kick of one tolerance, the
-    /// error of each step's own Newton iteration making them come nearer or further by
-    /// chance.
+    /// Flag indicating that oscillation amplitude grew past tolerance and stopped increasing.
+    ///
+    /// Sub-tolerance crossing spacings are ignored because Newton noise can randomly shrink
+    /// consecutive spacings while a small kick is still growing.
     settled: bool,
 }
 
 impl Returns {
-    /// Adds the return at `time` to `state`, where the unknowns' tolerances are
-    /// `tolerances`.
+    /// Records a hyperplane crossing at `time` and `state` using unknown `tolerances`.
     fn add(&mut self, time: f64, state: Vec<f64>, tolerances: &[f64]) {
         self.count += 1;
         if let Some((before, from)) = &self.last {
@@ -708,17 +665,14 @@ impl Returns {
         self.last = Some((time, state));
     }
 
-    /// Starts a stretch of transient, which restarts its integration with backward Euler's
-    /// steps, damping the oscillation a little: a return is compared only with those of
-    /// its own stretch, from the second on, and the time between the last two returns
-    /// before stays until two of the new stretch replace it.
+    /// Begins a new transient stretch, clearing per-stretch crossing comparisons while
+    /// preserving the last observed return period for step-size control.
     fn restart(&mut self) {
         self.last = None;
         self.compared = false;
     }
 
-    /// The last return's state and the time since the one before, once the oscillation
-    /// stopped growing.
+    /// Returns the latest crossing `(state, period)` once oscillation growth has settled.
     fn settled(&self) -> Option<(Vec<f64>, f64)> {
         let (_, state) = self
             .last
@@ -733,8 +687,7 @@ impl Returns {
 mod tests {
     use super::*;
 
-    /// A shot of an oscillator's period, `T` = 1 s, whose end moves with the period by
-    /// `flow`, each unknown's tolerance 1.
+    /// Builds a unit-tolerance oscillator [`Shot`] with `T = 1 s` and period derivative `flow`.
     fn shot(flow: Vec<f64>) -> Shot {
         let unknowns = flow.len();
         let mut monodromy = Monodromy::stretched(1.0);

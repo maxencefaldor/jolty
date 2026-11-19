@@ -25,168 +25,163 @@ use crate::{
     Strategy, Work,
 };
 
-/// The steps of a run its longest step is by default a fraction of: SPICE's longest step,
-/// a fiftieth of the run (ngspice 47's `traninit.c`, lines 26 to 34).
+/// Default step-count divisor setting `max_step = stop / 50`, matching SPICE's default
+/// longest step (source: ngspice 47 `traninit.c`, lines 26 to 34).
 pub(crate) const STEPS_PER_RUN: f64 = 50.0;
-/// The first step after the start or a breakpoint, as a fraction of the shorter of the step
-/// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
+/// Initial step size after time zero or a breakpoint as a fraction of the shorter of the
+/// prior step and the gap to the next breakpoint.
 ///
 /// Source: ngspice 47 (`src/spicelib/analysis/dctran.c`, lines 507 to 508:
 /// `MIN(ckt->CKTdelta, .1 * MIN(ckt->CKTsaveDelta, ckt->CKTbreaks[1] - ckt->CKTbreaks[0]))`).
 const RESTART_FRACTION: f64 = 0.1;
-/// The smallest step allowed, as a fraction of the longest: SPICE's `delmin` (ngspice 47's
-/// `traninit.c`, line 36). A charge behind a small resistance settles within picoseconds
-/// after a corner, such as the benchmarks' buck's switches' internal sources, 10 mΩ to 1 nF,
-/// in 10 ps, and resolving that to SPICE's charge tolerance at a relative tolerance of 1e-5
-/// takes steps of 2e-14 s, below 1e-9 of the buck's longest.
+/// Minimum allowed step size as a fraction of `max_step`, corresponding to SPICE's `delmin`
+/// (source: ngspice 47 `traninit.c`, line 36).
+///
+/// Fast internal switch RC corners (such as 10 mΩ into 1 nF, `τ = 10 ps` in the buck
+/// benchmark) require sub-picosecond steps (`~2e-14 s`) at `1e-5` relative tolerance, below
+/// `1e-9` of the benchmark's `max_step`.
 const MIN_STEP_FRACTION: f64 = 1e-11;
-/// The factor a step shrinks by when Newton iteration fails (`1 / 8 = 0.125`, exact in binary
-/// floating point).
+/// Factor reducing the step size after a Newton convergence failure (`1 / 8 = 0.125`, exact
+/// in binary floating point).
 ///
 /// Source: ngspice 47 (`src/spicelib/analysis/dctran.c`, line 733:
 /// `ckt->CKTdelta = ckt->CKTdelta/8;`).
 const FAILURE_SHRINK: f64 = 0.125;
-/// The bounds on the factor the truncation error changes the step by.
+/// Lower and upper clamping ratios applied to truncation-error step-size updates.
 ///
-/// Source: upper bound `2.0` matches SPICE / ngspice 47 (`src/spicelib/analysis/ckttrunc.c`,
-/// line 53: `*timeStep = MIN(2 * *timeStep, timetemp);`); lower bound `0.1` follows standard
-/// ODE step-size clamping (Hairer, Nørsett and Wanner, *Solving Ordinary Differential
-/// Equations I*, 2nd ed., 1993, II.4).
+/// Source: upper bound `2.0` matches ngspice 47 (`src/spicelib/analysis/ckttrunc.c`, line 53);
+/// lower bound `0.1` follows standard ODE step clamping (Hairer, Nørsett, and Wanner,
+/// *Solving Ordinary Differential Equations I*, 2nd ed., 1993, II.4).
 const FACTOR_BOUNDS: (f64, f64) = (0.1, 2.0);
-/// The safety factor on the step the truncation error predicts.
+/// Safety multiplier applied to predicted truncation-error step lengths.
 ///
-/// Source: standard ODE step-size safety factor `fac = 0.9` (Hairer, Nørsett and Wanner,
-/// *Solving Ordinary Differential Equations I*, 2nd ed., 1993, II.4; Hairer and Wanner,
-/// *Solving Ordinary Differential Equations II*, 1996, IV.8), matching ngspice 47's step
-/// acceptance threshold `newdelta > .9 * ckt->CKTdelta` (`dctran.c`, line 801).
+/// Source: standard ODE safety factor `fac = 0.9` (Hairer, Nørsett, and Wanner, 1993, II.4;
+/// Hairer and Wanner, 1996, IV.8), matching ngspice 47's acceptance threshold in `dctran.c`
+/// (line 801).
 const SAFETY: f64 = 0.9;
-/// The most accepted points the error estimate reads: enough for second-order formulas.
+/// Maximum accepted points retained for local truncation error estimation of second-order
+/// formulas.
 ///
-/// Derivation: the local truncation error of a second-order formula (`p = 2`, trapezoidal or
-/// Gear2) uses the `(p + 1) = 3`rd divided difference over `p + 2 = 4` points, i.e. 3 prior
-/// accepted points plus the candidate step.
+/// Derivation: a second-order formula (`p = 2`, trapezoidal or Gear2) evaluates the
+/// `(p + 1) = 3`rd divided difference across `p + 2 = 4` points (3 prior points plus the
+/// candidate step).
 const HISTORY: usize = 3;
-/// The earlier derivatives kept to tell the trapezoidal formula's ringing, besides the last.
+/// Number of prior charge derivatives retained alongside the latest two to detect
+/// trapezoidal ringing.
 ///
 /// Derivation: detecting two consecutive slope sign reversals (`turns[0] * turns[1] < 0` and
-/// `turns[1] * turns[2] < 0`) requires 4 consecutive derivatives, so 2 earlier ones are held
-/// beside `history.derivative` and `newest`.
+/// `turns[1] * turns[2] < 0`) requires 4 consecutive derivatives, storing 2 older values
+/// alongside `history.derivative` and `newest`.
 const RINGING: usize = 2;
 
-/// A transient analysis from time zero, starting at the operating point, or from its
-/// initial conditions alone.
+/// Configuration for a transient simulation from time zero, starting either from the DC
+/// operating point or directly from initial conditions.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transient {
-    /// The time to simulate until, in seconds.
+    /// End time of the simulation in seconds.
     pub stop: f64,
-    /// The longest step allowed, in seconds; by default a fiftieth of `stop`.
+    /// Maximum allowed step length in seconds; defaults to `stop / 50`.
     #[serde(default)]
     pub max_step: Option<f64>,
-    /// The integration method between breakpoints; trapezoidal by default.
+    /// Integration method used between breakpoints; defaults to trapezoidal.
     #[serde(default)]
     pub method: Method,
-    /// Times, in seconds, the analysis steps onto exactly besides its own, without
-    /// restarting its integration there; none by default.
+    /// Additional times in seconds that the solver hits exactly without restarting
+    /// integration; empty by default.
     #[serde(default)]
     pub breakpoints: Vec<f64>,
-    /// The voltage, in volts, each net named, such as `amplifier/mid`, starts from, as
-    /// SPICE's `.ic`: forced there while the operating point the transient starts from is
-    /// solved, then left free; or, without that operating point, set there. A net that
-    /// voltage sources and inductors join to the reference, or to a net named before it,
-    /// is left to them, and its voltage at the operating point must be the one given,
-    /// within the tolerances. None by default.
+    /// Per-net starting voltages in volts (such as `amplifier/mid`), analogous to SPICE `.ic`.
+    ///
+    /// Forced during the initial operating-point solve and released afterward, or applied
+    /// directly when `operating_point` is false. Nets fixed by voltage sources or inductors
+    /// remain unconstrained during the solve and are verified against the given values within
+    /// tolerance.
     #[serde(default)]
     pub initial_conditions: BTreeMap<String, f64>,
-    /// Whether the transient starts from the operating point; or else from its initial
-    /// conditions alone, every other unknown zero, as SPICE's `UIC`, so that its first
-    /// step leaves a state that need not solve the circuit's equations. From the
-    /// operating point by default.
+    /// Flag selecting whether to compute an initial DC operating point (`true` by default).
+    ///
+    /// When false, the transient begins directly from `initial_conditions` with all other
+    /// unknowns zeroed (like SPICE `UIC`), so the starting state need not satisfy DC KCL.
     #[serde(default = "from_operating_point")]
     pub operating_point: bool,
 }
 
-/// That a transient starts from the operating point, unless it says otherwise.
+/// Returns the default `operating_point` flag (`true`) for deserializing [`Transient`].
 const fn from_operating_point() -> bool {
     true
 }
 
-/// The waveforms of a transient analysis, at every accepted time point.
+/// Time-domain waveforms and diagnostics produced by a transient analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransientResult {
-    /// The accepted times, in seconds, from zero to the stop time.
+    /// Accepted simulation time points in seconds from zero to `stop`.
     pub times: Vec<f64>,
-    /// The value of every unknown at each time.
+    /// Unknown vectors at each accepted time point.
     pub values: Vec<Vec<f64>>,
-    /// What the devices its options record did at each time: the current into each
-    /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
-    /// variables. A current includes its charge's derivative, by the step's integration
-    /// formula.
+    /// Terminal currents (including capacitive `dq/dt` from the step formula), charges,
+    /// device derivatives, and operating variables requested by options.
     pub recorded: RecordedSeries,
-    /// Each logic net's changes: its level at time zero, then each time it changes, in
-    /// seconds, and its new level.
+    /// Event trace `(time_seconds, level)` for each logic net, beginning with its time-zero
+    /// level.
     pub logic: Vec<Vec<(f64, LogicLevel)>>,
-    /// How the analysis went.
+    /// Step counts, solver work, optional profiling timings, and integrated residual leak.
     pub statistics: Statistics,
 }
 
-/// Each equation's converged residual integrated over a transient's accepted steps, in the
-/// order of the circuit's unknowns (Kundert and Clifford, "Achieving Accurate Results with
-/// a Circuit Simulator", IEEE CICC 1993).
+/// Converged equation residuals integrated over accepted transient steps, indexed in unknown
+/// order (Kundert and Clifford, "Achieving Accurate Results with a Circuit Simulator", IEEE
+/// CICC 1993).
 ///
-/// For an electrical node (and a displacement equation), the unit is coulombs (`A·s`):
-/// the charge the solver's nonzero KCL residual added to the node. For a branch current
-/// equation, the unit is webers (`V·s`, magnetic flux linkage); for a thermal net, joules
-/// (`W·s`); for a device's state equation, the state's own unit.
+/// Electrical nodes and displacements carry coulombs (`A·s`, spurious charge from nonzero
+/// KCL residuals), branch current equations carry webers (`V·s`), thermal nets carry joules
+/// (`W·s`), and state equations carry their native units.
 ///
-/// At every accepted step `n`, Newton iteration stops with residual
-/// `r_n = f(x_n, t_n) + q̇_n`. Integrating `r_n` by the step's own
+/// Integrating `r_n = f(x_n, t_n) + q̇_n` with the step's
 /// [`Formula`](jolty_numerics::integration::Formula),
-/// `Δℓ_n = (r_n − γ r_{n-1} + β₁ Δℓ_{n-1}) / α`, splits each step's discrete charge change
-/// `Δq_n` into the integral of the static currents `−f` plus `Δℓ_n`. On any closed node or
-/// cutset whose static currents sum to zero, the change in stored charge from start to end
-/// equals the sum of `signed` to floating-point rounding, and the charge excursion at every
-/// intermediate accepted time stays within the sum of `absolute`.
+/// `Δℓ_n = (r_n - γ r_{n-1} + β₁ Δℓ_{n-1}) / α`, splits each step's discrete charge change
+/// into integrated static currents plus `Δℓ_n`. On any closed node or cutset with zero net
+/// static current, total charge drift equals the sum of `signed` to floating-point rounding,
+/// and intermediate charge excursions stay bounded by the sum of `absolute`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChargeLeak {
-    /// The signed integral `∑ Δℓ_n` for each unknown: the net charge, flux or energy the
-    /// solver's nonzero residual added over the transient.
+    /// Signed residual integral `∑ Δℓ_n` per unknown, capturing net spurious charge, flux,
+    /// or energy injected over the transient.
     pub signed: Vec<f64>,
-    /// The cumulative absolute integral `∑ |Δℓ_n|` for each unknown: the sum of step leak
-    /// magnitudes without cancellation, bounding the excursion at every intermediate
-    /// accepted time.
+    /// Cumulative absolute integral `∑ |Δℓ_n|` per unknown, bounding peak intermediate
+    /// excursion without cancellation.
     pub absolute: Vec<f64>,
 }
 
-/// How a transient analysis went.
+/// Summary metrics for a transient simulation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Statistics {
-    /// How the initial operating point was found, or `None` for a transient that starts
-    /// from its initial conditions alone.
+    /// Strategy that found the initial operating point, or `None` when starting directly from
+    /// initial conditions.
     pub initial: Option<Strategy>,
-    /// The steps accepted.
+    /// Count of accepted time steps.
     pub accepted: usize,
-    /// The steps rejected, for failing to converge or for too large an error.
+    /// Count of steps rejected due to Newton failure or excessive truncation error.
     pub rejected: usize,
-    /// The steps tried again shorter to land on an event within them: a detector's
-    /// crossing, a logic driver's change or a device's jump.
+    /// Count of steps shortened to land accurately on a threshold crossing, logic driver
+    /// transition, or device jump.
     pub landed: usize,
-    /// The Newton iterations of the accepted steps.
+    /// Total Newton iterations across accepted steps.
     pub iterations: usize,
-    /// The work the analysis did, its operating point's included, and for a periodic
-    /// steady state every period's. Unlike the results, it depends on what the simulator
-    /// did before: on an operating point it remembers, and on the pivots its sparse
-    /// solver kept.
+    /// Cumulative solver work across the run, including the initial operating point and all
+    /// shooting periods for periodic steady state.
+    ///
+    /// Unlike simulation waveforms, solver work reflects prior cache reuse and retained sparse
+    /// pivots.
     pub work: Work,
-    /// Where its time went, when its options' `profile` is on.
+    /// Phase timing breakdown populated when `options.profile` is enabled.
     pub profile: Option<Profile>,
-    /// Each equation's converged residual integrated over the transient's accepted steps.
+    /// Converged equation residuals integrated over all accepted transient steps.
     pub charge_leak: ChargeLeak,
 }
 
 impl Statistics {
-    /// The statistics of a transient before its first step, from an operating point found
-    /// by `initial`, or from its initial conditions with `None`.
+    /// Initializes zeroed transient statistics with the operating-point `initial` strategy.
     fn starting(initial: Option<Strategy>) -> Self {
         Self {
             initial,
@@ -226,24 +221,22 @@ struct UnknownLeak {
     previous_increment: f64,
 }
 
-/// Accumulates each equation's residual integrated over accepted steps in a single cache
-/// line per unknown, updated sequentially in time and independently per unknown so that
-/// splitting across threads is bit-for-bit identical to running serially.
+/// Per-unknown residual-integral accumulator packed into a single cache line per unknown
+/// for bit-identical serial and parallel updates.
 struct LeakAccumulator {
     states: Vec<UnknownLeak>,
 }
 
 impl LeakAccumulator {
-    /// Starts at zero for `unknowns` equations.
+    /// Initializes zeroed accumulators for `unknowns` equations.
     fn new(unknowns: usize) -> Self {
         Self {
             states: vec![UnknownLeak::default(); unknowns],
         }
     }
 
-    /// Accumulates one accepted step solved with `step.formula` whose converged residual is
-    /// `residual`; `step.restarted` clears the previous-step history when integration restarts
-    /// after a corner. Work across unknowns splits as `grain` says.
+    /// Accumulates one accepted step's `residual` using `step.formula`, clearing prior
+    /// history when `step.restarted` marks a corner and splitting work by `grain`.
     fn accumulate(&mut self, step: StepFormula, residual: &[f64], grain: Option<UnknownGrain>) {
         each_chunk(&mut self.states, grain, |start, chunk| {
             for (state, &current_residual) in chunk.iter_mut().zip(&residual[start..]) {
@@ -304,34 +297,31 @@ pub(crate) struct TangentLinear<'a> {
     pub(crate) grain: Option<UnknownGrain>,
 }
 
-/// What a transient carries along its accepted steps besides its solution.
+/// Auxiliary state propagated alongside accepted transient steps.
 pub(crate) enum Carried<'a> {
-    /// Nothing.
+    /// No auxiliary state.
     Nothing,
-    /// Each parameter's derivatives, for a sensitivity analysis.
+    /// Per-parameter forward tangents for transient sensitivity analysis.
     Forward(&'a mut Forward),
-    /// The derivatives with respect to the initial state, and an oscillator's with respect
-    /// to its period, for a periodic steady state.
+    /// State-transition and optional oscillator-period tangents for periodic steady state.
     Monodromy(&'a mut Monodromy),
-    /// Each accepted step's formula, and whether the integration restarts after it, in
-    /// their order, for the adjoint method to go back through.
+    /// Ordered step formulas and restart flags recorded for a reverse adjoint pass.
     Steps(&'a mut Vec<StepFormula>),
 }
 
-/// The charges' derivatives with respect to one variable at the points a transient accepted
-/// last, which its integration formula reads: what the direct method carries from step to
-/// step for each variable it differentiates by.
+/// Charge-derivative history carried from step to step for a single differentiated variable
+/// during direct-method sensitivity or monodromy integration.
 pub(crate) struct Tangent {
-    /// `dq/dp` at the last point.
+    /// Charge derivative `dq/dp` at the most recently accepted point.
     last: Vec<f64>,
-    /// `dq/dp` at the point before, unless the integration restarted at the last.
+    /// Charge derivative `dq/dp` at the preceding point, or `None` after an integration restart.
     before: Option<Vec<f64>>,
-    /// `d(dq/dt)/dp` at the last point.
+    /// Time derivative `d(dq/dt)/dp` at the most recently accepted point.
     rate: Vec<f64>,
 }
 
 impl Tangent {
-    /// Starts at a point where the charges' derivatives are `charge`, at rest.
+    /// Initializes a tangent at rest from initial charge derivatives `charge`.
     pub(crate) fn new(charge: Vec<f64>) -> Self {
         let rate = vec![0.0; charge.len()];
         Self {
@@ -341,9 +331,8 @@ impl Tangent {
         }
     }
 
-    /// Of the charges themselves, carried as their own tangent, the part of `formula`'s
-    /// `dq/dt` at the point where they are `charge` that the steps' lengths divide:
-    /// `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, without the earlier derivative's `γ q̇_n`.
+    /// Computes the step-scaled charge term `α q_{n+1} + β₀ q_n + β₁ q_{n-1}` of `formula`
+    /// (excluding the prior-rate term `γ q̇_n`) when tracking raw charges as a tangent.
     pub(crate) fn divided(&self, charge: &[f64], formula: &Formula) -> Vec<f64> {
         let before = self.before.as_ref().unwrap_or(&self.last);
         charge
@@ -356,8 +345,7 @@ impl Tangent {
             .collect()
     }
 
-    /// The derivative of the part of `formula`'s `dq/dt` that the earlier points
-    /// contribute.
+    /// Computes the historical contribution to `d(dq/dt)/dp` under `formula`.
     pub(crate) fn history(&self, formula: &Formula) -> Vec<f64> {
         let before = self.before.as_ref().unwrap_or(&self.last);
         self.last
@@ -368,9 +356,8 @@ impl Tangent {
             .collect()
     }
 
-    /// Moves on to the point `step.formula` stepped to, where the charges' derivatives are
-    /// `charge` and `history` is [`Tangent::history`]'s; `step.restarted` says whether the
-    /// integration restarts there.
+    /// Advances the tangent to the next accepted point with charge derivatives `charge` and
+    /// precomputed `history`, clearing two-step history when `step.restarted` is true.
     pub(crate) fn advance(&mut self, charge: Vec<f64>, history: &[f64], step: StepFormula) {
         self.rate = charge
             .iter()
@@ -403,36 +390,35 @@ impl Tangent {
         Ok(rhs)
     }
 
-    /// Advances a plain charge history tangent using its own formula history.
+    /// Advances a plain charge-history tangent using its formula history.
     pub(crate) fn advance_plain(&mut self, charge: Vec<f64>, step: StepFormula) {
         let history = self.history(&step.formula);
         self.advance(charge, &history, step);
     }
 }
 
-/// Whether an accepted step extends the consecutive trapezoidal ringing window or resets it.
+/// Indicator for whether an accepted step extends or resets the trapezoidal ringing window.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RingingTrack {
     Trapezoidal,
     Reset,
 }
 
-/// The charges at the points accepted since the last breakpoint, and their derivative at the
-/// last one.
+/// Accepted charge samples since the most recent breakpoint together with the latest charge
+/// derivative and ringing-detection window.
 struct History {
-    /// The points before the last, oldest first.
+    /// Accepted points prior to `last`, ordered oldest first.
     earlier: VecDeque<(f64, Vec<f64>)>,
-    /// The last accepted point.
+    /// Most recently accepted `(time, charge)` pair.
     last: (f64, Vec<f64>),
-    /// The charges' derivative at the last accepted point.
+    /// Charge derivative `dq/dt` at the most recently accepted point.
     derivative: Vec<f64>,
-    /// The derivatives at the points before the last, oldest first, while the trapezoidal
-    /// formula took them all: the run that shows whether it rings.
+    /// Consecutive prior trapezoidal derivatives ordered oldest first for ringing detection.
     ringing: VecDeque<Vec<f64>>,
 }
 
 impl History {
-    /// Starts afresh from the point at `time`, forgetting the points before a breakpoint.
+    /// Clears prior history and restarts from `(time, charge, derivative)` after a breakpoint.
     fn restart(&mut self, time: f64, charge: Vec<f64>, derivative: Vec<f64>) {
         self.earlier.clear();
         self.ringing.clear();
@@ -440,8 +426,8 @@ impl History {
         self.derivative = derivative;
     }
 
-    /// Appends the point at `time`, keeping the last [`HISTORY`] points; `tracking` says
-    /// whether the trapezoidal formula took its derivative, which a run of keeps.
+    /// Appends an accepted point at `time` while retaining at most [`HISTORY`] points and
+    /// updating the ringing window according to `tracking`.
     fn accept(
         &mut self,
         time: f64,
@@ -466,18 +452,18 @@ impl History {
         }
     }
 
-    /// The number of points kept.
+    /// Returns the number of stored charge points.
     fn len(&self) -> usize {
         self.earlier.len() + 1
     }
 
-    /// The points kept, oldest first.
+    /// Iterates over stored `(time, charge)` points from oldest to newest.
     fn points(&self) -> impl Iterator<Item = &(f64, Vec<f64>)> {
         self.earlier.iter().chain(std::iter::once(&self.last))
     }
 
-    /// The charges at the last point and at the one before it, or the last one twice after a
-    /// restart.
+    /// Returns the charge vectors at the last two accepted points, duplicating the latest
+    /// after a restart.
     fn last_two(&self) -> (&[f64], &[f64]) {
         let last = self.last.1.as_slice();
         (
@@ -489,18 +475,17 @@ impl History {
     }
 }
 
-/// The times a transient analysis steps onto exactly, after the current time.
+/// Ordered queue of upcoming simulation breakpoints ending at the transient stop time.
 struct Breakpoints {
-    /// The breakpoints, the last the stop time, each by the bits of its time: times
-    /// are zero or more, whose bits order as the times do, so the set finds the next
-    /// breakpoint, and the neighbors of a new one, in logarithmic time.
+    /// Non-negative breakpoint times encoded as IEEE-754 bits for `O(log n)` neighbor lookup
+    /// and ordering, with `stop` always last.
     times: BTreeSet<u64>,
-    /// How close two breakpoints may be before one is dropped.
+    /// Minimum separation below which newly inserted breakpoints are merged.
     minimum: f64,
 }
 
 impl Breakpoints {
-    /// The breakpoints at `times`, sorted, the last the stop time.
+    /// Constructs a breakpoint set from sorted `times` with minimum separation `minimum`.
     fn new(times: &[f64], minimum: f64) -> Self {
         Self {
             times: times.iter().map(|&time| Self::key(time)).collect(),
@@ -508,19 +493,20 @@ impl Breakpoints {
         }
     }
 
-    /// The key of `time`, zero or more: the bits of positive zero for a negative zero.
+    /// Encodes a non-negative `time` as canonical IEEE-754 bits, normalizing `-0.0` to `+0.0`.
     fn key(time: f64) -> u64 {
         (time + 0.0).to_bits()
     }
 
-    /// The earliest breakpoint.
+    /// Returns the earliest remaining breakpoint time, or infinity if empty.
     fn first(&self) -> f64 {
         self.times
             .first()
             .map_or(f64::INFINITY, |&key| f64::from_bits(key))
     }
 
-    /// Adds `time`, unless it lies past the stop or within the minimum of another.
+    /// Inserts `time` unless it exceeds the stop time or falls within `minimum` of an existing
+    /// breakpoint.
     fn insert(&mut self, time: f64) {
         let stop = self
             .times
@@ -538,7 +524,8 @@ impl Breakpoints {
         }
     }
 
-    /// The first breakpoint after `time`, and the gap from it to the one after.
+    /// Discards breakpoints at or before `time` and returns the next breakpoint and gap to
+    /// the one following it.
     fn after(&mut self, time: f64) -> NextBreakpoint {
         let passed = Self::key(time);
         while self.times.len() > 1 && self.times.first().is_some_and(|&key| key <= passed) {
@@ -551,112 +538,109 @@ impl Breakpoints {
     }
 }
 
-/// The next upcoming breakpoint and the gap from it to the one following.
+/// Next upcoming breakpoint and the time interval to the following breakpoint.
 #[derive(Clone, Copy)]
 struct NextBreakpoint {
     time: f64,
     gap: f64,
 }
 
-/// What came of trying a step.
+/// Outcome of attempting one transient step.
 enum Step {
-    /// The step was accepted, with the first step after the last corner before it if that
-    /// was pending, oldest first; logic drivers began ramps that settle at these times.
+    /// Accepted point(s) ordered oldest first (including any previously pending corner step),
+    /// paired with logic driver ramp settle times.
     Accepted(Vec<Point>, Vec<f64>),
-    /// The step is the first after a corner, solved but accepted only once the next has
-    /// estimated its error.
+    /// First step after a corner, deferred until the next step provides a curvature estimate.
     Pending,
-    /// The step was rejected, to be tried again shorter.
+    /// Rejected step to be retried with a shorter length.
     Rejected,
-    /// A detector crosses, a logic driver changes or a device's contribution jumps within
-    /// the step, at this time, which the step is tried again to land on.
+    /// Exact event time (detector crossing, driver change, or device jump) inside the step
+    /// requiring a shortened step to land on it.
     Land(f64),
 }
 
-/// A point a transient accepted.
+/// Accepted transient time point ready for output recording.
 struct Point {
     time: f64,
-    /// The solution there.
+    /// Converged unknown vector at `time`.
     x: Vec<f64>,
-    /// The formula and restart flag of the step that reached it.
+    /// Integration formula and restart flag of the step reaching `time`.
     step: StepFormula,
-    /// The length of that step.
+    /// Duration of the step reaching `time`.
     length: f64,
-    /// What every recorded device did there.
+    /// Recorded device currents, charges, derivatives, and variables at `time`.
     found: RecordedValues,
 }
 
-/// The first step after a corner, solved and through the logic but not yet accepted.
+/// Deferred first step after a corner waiting for the second step to validate its error.
 ///
-/// Its error needs the curvature of the charges after the corner, which takes a third point
-/// to estimate: the end of the step after it. That step accepts it along with itself, or,
-/// when the estimate shows its error too large, goes back to the corner to take it shorter.
+/// Estimating local truncation error after a corner requires charge curvature across three
+/// points. The following step either commits the pending step alongside itself or rewinds to
+/// `corner` to retry shorter.
 struct Pending {
-    /// The step's formula.
+    /// Integration formula used for the pending step.
     formula: Formula,
-    /// The step's length.
+    /// Duration of the pending step.
     length: f64,
-    /// The Newton iterations that solved it.
+    /// Newton iterations required to solve the pending step.
     iterations: usize,
-    /// The converged residual vector at its end, kept until the next step accepts or rejects it.
+    /// Converged residual vector retained until the next step commits or discards the step.
     residual: Vec<f64>,
-    /// What the recorded devices did at its end.
+    /// Snapshot of recorded device data at the pending step endpoint.
     read: Read,
-    /// The corner it started from.
+    /// Saved state at the preceding corner for rollback if the pending step is rejected.
     corner: Corner,
 }
 
-/// The state at a corner that a pending first step goes back to.
+/// Saved simulator state at a corner enabling rollback of a pending first step.
 struct Corner {
     time: f64,
-    /// The solution, the charges and their derivatives there.
+    /// Unknown vector, charges, and charge derivatives at the corner.
     x: Vec<f64>,
     charge: Vec<f64>,
     derivative: Vec<f64>,
-    /// The length of the step that reached it.
+    /// Duration of the step that landed on the corner.
     previous: f64,
-    /// The logic there, before the pending step moved it on.
+    /// Logic event checkpoint captured before advancing across the pending step.
     logic: Checkpoint,
 }
 
-/// A step judged by its truncation error: its length, and the charges and their
-/// derivatives at its end and at its start.
+/// Step geometry and endpoint charge states passed to truncation-error estimation.
 struct Span<'a> {
     length: f64,
-    /// The length of the step before it, which a multistep formula's error reads.
+    /// Preceding step length used by multistep error constants.
     previous: f64,
-    /// The coefficient of the new charge in the step's formula.
+    /// Leading charge coefficient `α` of the step's integration formula.
     alpha: f64,
     charge: (&'a [f64], &'a [f64]),
     derivative: (&'a [f64], &'a [f64]),
 }
 
-/// A step solved by Newton iteration, on its way to being taken.
+/// Solved candidate step awaiting truncation-error evaluation and event checks.
 struct Tried {
     end: f64,
     length: f64,
     method: Method,
     formula: Formula,
-    /// The Newton iterations that solved it.
+    /// Newton iterations used to converge the candidate step.
     iterations: usize,
-    /// The solution at its end, the charges there and their derivatives.
+    /// Converged unknown vector, charges, and charge derivatives at `end`.
     x: Vec<f64>,
     charge: Vec<f64>,
     derivative: Vec<f64>,
-    /// What the recorded devices did there, as the evaluation that solved it left them.
+    /// Snapshot of recorded device data from the final Newton evaluation.
     read: Read,
 }
 
-/// How a step's estimated truncation error compares with its tolerance.
+/// Truncation-error comparison against step tolerances.
 #[derive(Clone, Copy)]
 struct Judgement {
-    /// The largest ratio of a charge's error to its tolerance.
+    /// Maximum ratio of estimated charge truncation error to tolerance.
     ratio: f64,
-    /// The index of that charge's equation.
+    /// Unknown index realizing `ratio`.
     worst: usize,
-    /// The longest step every charge's error, by the same estimate, allows next: after the
-    /// step, from its end, where it is accepted, or in its place, from its start, where it is
-    /// rejected, which differ for a multistep formula, whose error reads the step before.
+    /// Maximum next step length permitted by the error estimate, measured from the step end
+    /// when accepted or from the step start when rejected.
     longest: f64,
 }
 
@@ -694,45 +678,39 @@ struct CandidatePoint<'a> {
     derivative: &'a [f64],
 }
 
-/// The state of a transient analysis between steps.
+/// Mutable state maintained by the transient time stepper between steps.
 struct Stepper {
-    /// The method between breakpoints.
+    /// Integration method used between breakpoints.
     method: Method,
-    /// The longest step allowed.
+    /// Maximum allowed step duration.
     longest: f64,
-    /// The shortest step allowed.
+    /// Minimum allowed step duration.
     shortest: f64,
-    /// The time of the last accepted point.
+    /// Timestamp of the last accepted point.
     time: f64,
-    /// The solution at the last accepted point.
+    /// Solution vector at the last accepted point.
     x: Vec<f64>,
-    /// The last iterate of a step whose Newton iteration ran out of iterations, which the
-    /// shorter step after it starts from: an iteration converging slowly, as at a
-    /// transistor turning off with nothing else to hold its source, goes on where it
-    /// stopped instead of starting over.
+    /// Final finite iterate from a diverged Newton attempt reused as the initial guess for
+    /// the shortened retry step, preserving progress on slowly converging turn-off nodes.
     resume: Option<Vec<f64>>,
-    /// The accepted point before the last, its time and solution, through which each
-    /// step's Newton iteration starts from a prediction; none after a corner in the
-    /// waveforms, a breakpoint, a driver's ramp starting or a device's jump, where the last
-    /// point alone is the start.
+    /// Preceding accepted `(time, solution)` pair used for linear step prediction; `None`
+    /// immediately after a breakpoint, driver ramp start, or device jump.
     before: Option<(f64, Vec<f64>)>,
     history: History,
-    /// The length of the next step to try: the longest the error allows, which a step
-    /// landing on a breakpoint or an event cuts short without changing.
+    /// Error-controlled length of the next step, preserved across shortened breakpoint or
+    /// event landings.
     next: f64,
-    /// The length of the last step taken.
+    /// Duration of the previous step.
     previous: f64,
-    /// Whether the next step uses backward Euler, its error still controlled, to end the
-    /// trapezoidal formula's ringing.
+    /// Flag requesting a single backward Euler step to damp detected trapezoidal ringing.
     damp: bool,
-    /// The history terms of the step being tried, one per unknown.
+    /// Per-unknown integration history terms for the active step.
     terms: Vec<f64>,
-    /// The first step after the last corner, while it waits for the next to estimate its
-    /// error; the stepper stands at its end.
+    /// Deferred first step after a corner while awaiting validation from the next step.
     pending: Option<Pending>,
     /// Stateful trapezoidal ringing detector caching ideal sources and saddle LU factors.
     detector: ringing::Detector,
-    /// The running residual integral of every accepted step so far.
+    /// Running residual integral over all accepted steps.
     leak: LeakAccumulator,
     statistics: Statistics,
 }
@@ -772,11 +750,8 @@ impl Stepper {
         }
     }
 
-    /// Where Newton iteration starts a step ending at `end`, as SPICE's does: the line
-    /// through the last two accepted points carried on to `end`, or the last point after a
-    /// corner.
-    ///
-    /// The work on each unknown is split as `grain` says.
+    /// Computes the SPICE-style linear predictor at `end` from the last two accepted points,
+    /// falling back to `self.x` after a corner, parallelized by `grain`.
     fn predicted(&self, end: f64, grain: Option<UnknownGrain>) -> Vec<f64> {
         let Some((time, before)) = &self.before else {
             return self.x.clone();
@@ -793,11 +768,10 @@ impl Stepper {
     }
 
     /// Chooses the integration formula for a step of `length` and writes each unknown's
-    /// history term into `self.terms`, split as `grain` says.
+    /// history term into `self.terms`, parallelized by `grain`.
     fn prepare_formula(&mut self, length: f64, grain: Option<UnknownGrain>) -> (Method, Formula) {
-        // Backward Euler until the points since the last corner are enough to estimate the
-        // error of the transient's own method, so that every step but the first after a
-        // corner is judged by its own estimate, and the first by the second's.
+        // Use backward Euler until enough post-corner points exist to evaluate the target
+        // method's error estimate.
         let available = self.history.len() + 1;
         let method = if self.damp || available < self.method.order() + 2 {
             Method::BackwardEuler
@@ -816,10 +790,8 @@ impl Stepper {
         (method, formula)
     }
 
-    /// Whether an event at `time`, within a step from the last point to `end`, comes
-    /// before `end` by more than the relative tolerance of the step, and after the last
-    /// point by the shortest step at least, so the step should land on it instead: an
-    /// event located by interpolating across a step is accurate only within a short one.
+    /// Checks whether an event at `time` falls early enough inside `(self.time, end)` to
+    /// warrant shortening the step to land on it accurately.
     fn lands_before(&self, time: f64, end: f64, options: &Options) -> bool {
         let tolerance = self
             .shortest
@@ -827,8 +799,8 @@ impl Stepper {
         time < end - tolerance && time - self.time >= self.shortest
     }
 
-    /// Records a step rejected for the reason `why` gives, and shortens the next one to
-    /// `next`, failing when it falls below the shortest step allowed.
+    /// Records a step rejection with reason `why` and updates `self.next` to `next`, returning
+    /// [`SimulationError::StepTooSmall`] if `next` drops below `self.shortest`.
     fn reject(
         &mut self,
         next: f64,
@@ -848,18 +820,17 @@ impl Stepper {
 }
 
 impl Simulator {
-    /// Simulates from the operating point at time zero until `transient.stop`.
+    /// Simulates the circuit in the time domain from time zero until `transient.stop`.
     ///
-    /// Each step is solved by Newton iteration and accepted when its estimated truncation error
-    /// is within tolerance, and the next step grows or shrinks to keep it so. Steps land on
-    /// every breakpoint of the sources, and restart with backward Euler after each, as a
-    /// corner in a waveform would make the trapezoidal formula ring.
+    /// Adaptive steps are solved with Newton iteration and controlled by local truncation
+    /// error. Integration lands on source breakpoints and restarts with backward Euler after
+    /// each corner to prevent trapezoidal ringing.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for a stop time or longest step that is
-    /// not positive, [`SimulationError::StepTooSmall`] when no step short enough converges,
-    /// and the errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::InvalidAnalysis`] for non-positive or non-finite stop times
+    /// or step limits, [`SimulationError::StepTooSmall`] if step control hits the minimum step
+    /// size, and any error from [`Simulator::operating_point`].
     pub fn transient(
         &mut self,
         transient: &Transient,
@@ -871,16 +842,17 @@ impl Simulator {
         })
     }
 
-    /// The state `transient` starts from, and how its operating point was found: the
-    /// operating point, solved with its initial conditions forced if it has any, or else
-    /// its initial conditions alone, every other unknown zero.
+    /// Computes the initial state vector and optional operating-point strategy for `transient`.
+    ///
+    /// Solves the operating point (forcing `initial_conditions` if present) when
+    /// `transient.operating_point` is true, or populates `initial_conditions` over zeros
+    /// otherwise.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for initial conditions that name no
-    /// net, or that the circuit's sources contradict, and for a transient from its
-    /// initial conditions alone of a circuit with logic, whose levels only an operating
-    /// point settles; and the errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::InvalidAnalysis`] for invalid or conflicting initial
+    /// conditions or when skipping the operating point on a mixed-signal circuit, plus any
+    /// error from [`Simulator::operating_point`].
     fn initial_state(
         &mut self,
         transient: &Transient,
@@ -910,9 +882,9 @@ impl Simulator {
         Ok((state, None))
     }
 
-    /// The longest step `transient` allows, after checking its times.
+    /// Validates `transient` timing settings and returns the effective maximum step duration.
     pub(crate) fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
-        // Without unknowns, nothing analog needs steps, and the logic moves on at once.
+        // Pure-logic circuits need no analog stepping and advance directly to `stop`.
         let longest = if self.elaborated.unknowns.is_empty() {
             transient.stop
         } else {
@@ -924,7 +896,7 @@ impl Simulator {
             && longest.is_finite())
         {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "the stop time and longest step must be positive and finite, not {:?} and \
+                "stop time and longest step require positive finite values; got {:?} and \
                  {longest:?}",
                 transient.stop
             )));
@@ -941,7 +913,7 @@ impl Simulator {
         Ok(longest)
     }
 
-    /// Starts carrying `carried` from the state `x` at time zero.
+    /// Initializes `carried` auxiliary state from the time-zero solution `x`.
     fn start_carried(
         &mut self,
         carried: &mut Carried<'_>,
@@ -957,7 +929,7 @@ impl Simulator {
         Ok(())
     }
 
-    /// Carries `carried` over the step accepted at `point` by `step`.
+    /// Advances `carried` auxiliary state across an accepted step ending at `point` with `step`.
     fn advance_carried(
         &mut self,
         carried: &mut Carried<'_>,
@@ -978,16 +950,15 @@ impl Simulator {
         }
     }
 
-    /// The numbers each point of a transient's results holds: the unknowns, and the
-    /// recorded terminals' currents and charges and the recorded devices' derivatives and
-    /// variables.
+    /// Returns the number of `f64` values stored per transient time point across unknowns and
+    /// recorded terminal and device quantities.
     pub(crate) fn point_width(&self) -> f64 {
         float_count(self.elaborated.unknowns.len() + self.state.recorder.width())
     }
 
-    /// Runs `transient` from `start`, a state of a circuit without logic and how the
-    /// operating point it came from was found, or else from its own initial state,
-    /// carrying `carried` along its accepted steps.
+    /// Runs `transient` from an optional precomputed `start` state (or computes the initial
+    /// state), propagating `carried` across accepted steps and clearing delay-line history on
+    /// exit.
     pub(crate) fn transient_with(
         &mut self,
         transient: &Transient,
@@ -1090,10 +1061,8 @@ impl Simulator {
         })
     }
 
-    /// Starts the past the circuit's delay lines read from the state `x` at time zero,
-    /// a corner, read by interpolation of `method`'s order, keeping the unknowns they
-    /// read; none for a circuit without one. Returns each distinct delay, in increasing
-    /// order.
+    /// Initializes transmission-line history from state `x` at time zero with `method`'s
+    /// interpolation order, returning sorted distinct line delays.
     fn start_past(&mut self, x: &[f64], method: Method) -> Vec<f64> {
         let delayed = self.state.runs.delayed(&self.elaborated.groups);
         let mut delays: Vec<f64> = delayed.iter().map(|part| part.delay).collect();
@@ -1108,13 +1077,8 @@ impl Simulator {
         delays
     }
 
-    /// Moves the past the delay lines read on past the point accepted at `time`, and
-    /// adds the breakpoint each corner makes, where `step.restarted` says the integration
-    /// restarts: each of `delays` after it, where the corner arrives at a line's other
-    /// port.
-    ///
-    /// The past keeps the points of the longest delay before `time`, which an
-    /// interpolation at any later time reads.
+    /// Prunes delay-line history older than the maximum delay before `time` and schedules
+    /// delayed corner breakpoints when `step.restarted` is true.
     fn passed(
         &mut self,
         breakpoints: &mut Breakpoints,
@@ -1133,7 +1097,8 @@ impl Simulator {
         }
     }
 
-    /// What `read` reads of the recorded devices, its time counted as recording.
+    /// Executes `read` against the simulator's [`Recorder`] while charging elapsed time to
+    /// [`Activity::Recording`].
     fn record(&mut self, read: impl FnOnce(&mut Recorder) -> RecordedValues) -> RecordedValues {
         let previous = self.state.workspace.meter.enter(Activity::Recording);
         let found = read(&mut self.state.recorder);
@@ -1141,14 +1106,12 @@ impl Simulator {
         found
     }
 
-    /// Tries one step toward `breakpoint`, landing on it when it is within reach. A step
-    /// lands on `requested_time` too, when it comes first, without restarting the integration
-    /// there.
+    /// Attempts a single step toward `breakpoint` or earlier `requested_time`, landing on
+    /// whichever comes first.
     ///
-    /// An accepted step moves the logic on to its end, with the detectors' crossings within
-    /// it. A step in which a detector crosses, a logic driver changes or a device's
-    /// contribution jumps, before its end, is rejected to land there; the integration
-    /// restarts after a step in which a device's contribution jumps.
+    /// Accepted steps advance logic state through the step interval. Early detector crossings,
+    /// logic driver transitions, or device jumps reject the step to land on the event time,
+    /// restarting integration after any waveform corner.
     fn step_toward(
         &mut self,
         stepper: &mut Stepper,
@@ -1158,8 +1121,7 @@ impl Simulator {
     ) -> Result<Step, SimulationError> {
         let target = breakpoint.time.min(requested_time);
         let remaining = target - stepper.time;
-        // The step grows from the last by its error, but never past the longest allowed,
-        // whether it lands on its target or not.
+        // Clamp next step length to `stepper.longest` regardless of target landing.
         let reach = stepper.next.min(stepper.longest);
         let landing = reach >= remaining - stepper.shortest;
         let length = if landing { remaining } else { reach };
@@ -1168,11 +1130,9 @@ impl Simulator {
         } else {
             stepper.time + length
         };
-        // Only a breakpoint is a corner in the waveforms, after which the integration
-        // restarts; a requested time is a time like any other.
+        // Only source/event breakpoints create waveform corners; user-requested times do not.
         let corner = landing && target >= breakpoint.time;
-        // Each unknown's work is its own, spread as Newton iteration spreads its work on
-        // each unknown.
+        // Partition per-unknown loops identically to Newton iteration.
         let grain = options.parallelism.unknown_grain(stepper.x.len());
         let (method, formula) = stepper.prepare_formula(length, grain);
 
@@ -1240,8 +1200,7 @@ impl Simulator {
         let (commands, jumped) = match events {
             Ok(found) => found,
             Err(early) => {
-                // An event lands no closer than the shortest step allowed; the step tried
-                // next lands on it, as it is shorter than this one.
+                // Events land at least `shortest` ahead, so the next shortened step hits `early`.
                 stepper.statistics.landed += 1;
                 return Ok(Step::Land(early));
             }
@@ -1298,7 +1257,7 @@ impl Simulator {
                 return Ok(None);
             }
         }
-        // The first step after a corner has no estimate of its own: the next judges it.
+        // Defer error estimation on the first post-corner step until the second step runs.
         let own = if stepper.history.len() == 1 {
             None
         } else {
@@ -1516,14 +1475,13 @@ impl Simulator {
         stepper.reject(next, || Rejection::Inaccurate(name.clone()))
     }
 
-    /// Whether the trapezoidal formula is numerically ringing at `candidate`: distinguishes
-    /// genuine `(-1)^n` trapezoidal ringing (stiff real decaying modes with `σ ≥ α = 2/h`,
-    /// algebraic capacitor-voltage-source loop modes, and zero-capacitance Meyer displacement
-    /// unknowns) from real physical oscillations (single- or multi-mode lossless LC tanks,
-    /// coupled transformers, gyrators, and active harmonic oscillators).
+    /// Checks whether the trapezoidal rule is numerically ringing at `candidate`.
     ///
-    /// One step of backward Euler, needing no derivative, restarts a ringing derivative
-    /// afresh while leaving physical lossless oscillations undamped.
+    /// Distinguishes numerical `(-1)^n` trapezoidal ringing (stiff real modes with
+    /// `σ ≥ α = 2/h`, algebraic capacitor-voltage-source loops, and zero-capacitance Meyer
+    /// displacements) from physical oscillations such as lossless LC tanks and active
+    /// oscillators. A single backward Euler step resets a ringing derivative without damping
+    /// physical oscillations.
     fn rings(
         &mut self,
         detector: &mut ringing::Detector,
@@ -1566,10 +1524,9 @@ impl Simulator {
         )
     }
 
-    /// The events of a step from the stepper's last point to `end`: the changes the logic
-    /// drivers must follow, and whether a device's contribution jumps. An event early enough
-    /// that the step should land on it returns its time instead, leaving the logic where it
-    /// was.
+    /// Evaluates device jumps and mixed-signal logic events across the step ending at `end`,
+    /// returning `(driver_commands, device_jumped)` or `Err(early_time)` if the step needs to
+    /// shorten and land on an interior event.
     fn events_within(
         &mut self,
         stepper: &Stepper,
@@ -1583,16 +1540,14 @@ impl Simulator {
             return Err(time);
         }
         let commands = self.advance_logic(stepper, end, options)?;
-        // A jump closer to the step's start than the shortest step is the one the step
-        // before landed on, where a strict comparison had not yet turned: the integration
-        // restarted there, and the step already follows the jumped contribution.
+        // A jump within `stepper.shortest` of `stepper.time` belongs to the corner landed on
+        // by the prior step, where integration already restarted.
         let jumped = jump.is_some_and(|time| time - stepper.time >= stepper.shortest);
         Ok((commands, jumped))
     }
 
-    /// The first time between the stepper's last point and `end` at which a device's
-    /// contribution jumps, if one does: where the earliest of its choices that changed
-    /// between the two points changes, located by linear interpolation.
+    /// Finds the earliest linearly interpolated discontinuity time in `(stepper.time, end]`
+    /// among devices whose piecewise branch changed across the step, if any.
     fn first_jump(&mut self, stepper: &Stepper, end: StepPoint<'_>) -> Option<f64> {
         let start = stepper.time;
         let before = Input::new(&stepper.x, Some(start), 0.0);
@@ -1602,12 +1557,8 @@ impl Simulator {
         Some(start + (end.time - start) * fraction)
     }
 
-    /// Moves the logic from the stepper's last point to `end`, and returns the changes the
-    /// logic drivers must follow.
-    ///
-    /// A detector's crossing earlier than the end, so that the step should land on it,
-    /// returns its time instead; so does a change of a logic driver that early, leaving
-    /// the logic where it was.
+    /// Advances the logic partition to `end` and returns driver commands scheduled at the step
+    /// endpoint, or `Err(early_time)` if an interior crossing or driver change occurs earlier.
     fn advance_logic(
         &mut self,
         stepper: &Stepper,
@@ -1649,9 +1600,8 @@ impl Simulator {
         if crossings.is_empty() && !events.due(end.time) {
             return Ok(Vec::new());
         }
-        // Without drivers, no change reaches back into the analog circuit, so the logic can
-        // move on for good; with them, it moves on tentatively, and goes back if a driver
-        // must change before the step ends.
+        // Without drivers, logic cannot feed back into the analog circuit; with drivers,
+        // checkpoint first so an interior driver change can roll logic back cleanly.
         let checkpoint = (!logic.drivers.is_empty()).then(|| events.checkpoint());
         events.inject(logic, &crossings);
         let commands = events.advance(logic, end.time);
@@ -1669,7 +1619,7 @@ impl Simulator {
         Ok(commands)
     }
 
-    /// Starts each logic driver of `commands` on its ramp, and returns when each ramp ends.
+    /// Starts each logic driver ramp in `commands` and returns the ramp completion times.
     fn follow(&mut self, commands: &[Command]) -> Vec<f64> {
         let mut settles = Vec::with_capacity(commands.len());
         for command in commands {
@@ -1679,10 +1629,8 @@ impl Simulator {
         settles
     }
 
-    /// The breakpoints of every device in `(0, stop]`, and each of `delays`, where the
-    /// start, a corner where the waveforms leave the operating point, arrives at a delay
-    /// line's other port; sorted, merged when closer than `minimum`, and ending at `stop`,
-    /// so never empty; their time is counted as preparing.
+    /// Collects sorted, deduplicated device breakpoints and initial delay-line arrival times
+    /// in `(0, stop]`, always ending at `stop` and metered under [`Activity::Preparing`].
     fn breakpoints(&mut self, stop: f64, minimum: f64, delays: &[f64]) -> Vec<f64> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
@@ -1698,17 +1646,13 @@ impl Simulator {
         times
     }
 
-    /// Judges `span`, a step by `method`, by its truncation error, estimated from the
-    /// divided difference of the charges at the last of `history`'s points and at `new`, as
-    /// many as the method's order and two, filtered through the step's own equations;
-    /// `None` while too few points follow the last corner to estimate it.
+    /// Evaluates the local truncation error of `span` under `method` using filtered charge
+    /// divided differences from `history` and `new`, returning `None` until enough post-corner
+    /// points exist.
     ///
-    /// A charge's tolerance is the larger of a relative tolerance on the charge itself, or on
-    /// the charge tolerance where the charge is smaller, and one on the current it carries
-    /// over the step, scaled by the truncation tolerance. That tolerance bounds the error as
-    /// SPICE's `TRTOL` does, as SPICE estimates it: the error constant times the divided
-    /// difference, without the factorial that makes the divided difference a derivative, so
-    /// the error itself may be `(p+1)!` times larger.
+    /// Charge tolerances follow SPICE `TRTOL` scaling (`reltol * max(|q|, chgtol)` and
+    /// current tolerance over the step), multiplying by `(p + 1)!` to match SPICE's factorial
+    /// omission.
     fn judge(
         &mut self,
         method: Method,
@@ -1722,19 +1666,16 @@ impl Simulator {
         if available < needed {
             return None;
         }
-        // Each unknown's work is its own, spread as Newton iteration spreads its work on each
-        // unknown.
+        // Partition per-unknown loops identically to Newton iteration.
         let grain = options.parallelism.unknown_grain(new.values.len());
         let mut differences = std::mem::take(&mut self.state.workspace.differences);
         divided_differences(history, new, needed, grain, &mut differences);
         self.filter(&mut differences, span.alpha, grain);
         let scale = options.truncation_tolerance * method.factorial();
         let natures = &self.elaborated.natures;
-        // Each charge's tolerances, on the charge and on the current it carries over the step,
-        // times the truncation tolerance and the factorial SPICE's estimate leaves out. The
-        // one on the charge is SPICE's, `reltol · max(|q|, chgtol)` (ngspice 47's
-        // `cktterr.c`, lines 40 and 41): the charge tolerance is the least charge the
-        // relative tolerance is taken of, not a tolerance added to it.
+        // Scale charge and current tolerances by `truncation_tolerance` and the `(p + 1)!`
+        // factor omitted by SPICE. Charge tolerance uses `reltol * max(|q|, chgtol)` per
+        // ngspice 47 `cktterr.c` (lines 40 to 41).
         let tolerances = |index: usize| {
             let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
             let current = span.derivative.0[index]
@@ -1755,11 +1696,8 @@ impl Simulator {
             },
             (f64::INFINITY, ErrorBound::Charge),
         );
-        // The largest ratio, at the first unknown that reaches it, and the shortest of the
-        // charges' longest steps at a constant step's error constant, found in each piece and
-        // then over the pieces in their order.
-        // A multistep formula's longest step is found at its own error constant, from each
-        // charge's unit steps, which the pass keeps for it.
+        // Compute per-chunk worst error ratio and constant-step shortest next length, retaining
+        // per-charge unit steps for multistep variable-ratio adjustment.
         let keep = method.is_multistep();
         let per_difference = method.error_per_difference(span.length, span.previous);
         let found = pieces(differences.len(), grain, |range| {
@@ -1767,7 +1705,7 @@ impl Simulator {
             let mut units = Vec::with_capacity(if keep { range.len() } else { 0 });
             for index in range {
                 let difference = differences[index];
-                // The step's truncation error, as `Method::truncation_error` gives it.
+                // Step truncation error matching `Method::truncation_error`.
                 let error = per_difference * difference.abs();
                 let (charge, current) = tolerances(index);
                 let ratio = error / charge.max(current);
@@ -1799,8 +1737,8 @@ impl Simulator {
             1 => found.pop().map_or_else(Vec::new, |(_, _, units)| units),
             _ => found.into_iter().flat_map(|(_, _, units)| units).collect(),
         };
-        // The longest step they all allow: after this one where it is accepted, in its place
-        // where it is rejected.
+        // Use the accepted step as `previous` for the next step, or keep `span.previous` on
+        // rejection.
         let previous = if worst.ratio > 1.0 {
             span.previous
         } else {
@@ -1813,21 +1751,13 @@ impl Simulator {
         Some(Judgement { longest, ..worst })
     }
 
-    /// Filters the charges' divided `differences` through the step's equations at its end,
-    /// whose formula's coefficient of the new charge is `alpha`: `C (G + αC)⁻¹ α d`.
+    /// Filters charge divided `differences` through the step equations via
+    /// `C (G + αC)⁻¹ α d`, parallelized identically across thread counts by `grain`.
     ///
-    /// An error `e` in the formula's derivative of the charges moves the step's solution by
-    /// `−(G + αC)⁻¹ α e`, so where the capacitances dominate the step's equations, as along
-    /// a smooth waveform, the charges move by `e` itself, while a stiff component, one that
-    /// settles within the step, barely moves: the divided differences read how far it
-    /// settled, which the formula damps, not the formula's error (Shampine, "Implementation
-    /// of implicit formulas for the solution of ODEs", SIAM Journal on Scientific and
-    /// Statistical Computing 1(1), 1980; Hairer and Wanner, "Solving Ordinary Differential
-    /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
-    /// left as they are.
-    ///
-    /// The work on each unknown and each stored entry is split as `grain` says, the same
-    /// bits however it is.
+    /// Filtering preserves smooth capacitive error while attenuating stiff decaying modes
+    /// already damped by the implicit step (Shampine, *SIAM Journal on Scientific and
+    /// Statistical Computing* 1(1), 1980; Hairer and Wanner, *Solving Ordinary Differential
+    /// Equations II*, §IV.8). Leaves `differences` unchanged if factorization fails.
     fn filter(&mut self, differences: &mut [f64], alpha: f64, grain: Option<UnknownGrain>) {
         let Workspace {
             contributions,
@@ -1865,8 +1795,8 @@ impl Simulator {
     }
 }
 
-/// Writes into `differences` each charge's divided difference over the last `needed`
-/// points: those of `history`, then `new`, its work on each unknown split as `grain` says.
+/// Computes per-unknown charge divided differences over the trailing `needed` points of
+/// `history` plus `new`, writing into `differences` according to `grain`.
 fn divided_differences(
     history: &History,
     new: StepPoint<'_>,
@@ -1874,7 +1804,7 @@ fn divided_differences(
     grain: Option<UnknownGrain>,
     differences: &mut Vec<f64>,
 ) {
-    // The times and the charges of the points used, oldest first, then the new one's.
+    // Collect timestamps and charge slices from oldest to newest, appending `new`.
     let mut times = [0.0; HISTORY + 1];
     let mut charges: [&[f64]; HISTORY + 1] = [&[]; HISTORY + 1];
     let used = history
@@ -1903,10 +1833,8 @@ fn divided_differences(
     });
 }
 
-/// The length of the step after one `length` long judged `judged`, or of the step in its
-/// place where its error rejects it: the longest its error allows, with a safety factor,
-/// within bounds on the change, or the most it may grow to when its error was not
-/// estimated.
+/// Computes the clamped next step length from `length` and optional `judged`, scaling by
+/// [`SAFETY`] within [`FACTOR_BOUNDS`] or growing to the upper bound when unjudged.
 fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
     let (shortest, longest) = (FACTOR_BOUNDS.0 * length, FACTOR_BOUNDS.1 * length);
     judged.map_or(longest, |judged| {
@@ -1914,12 +1842,11 @@ fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
     })
 }
 
-/// A step length and the error bound that determines it, as [`longest_at`] returns.
+/// Step length paired with the active [`ErrorBound`] returned by [`longest_at`].
 type StepBound = (f64, ErrorBound);
 
-/// The shortest of the charges' longest steps at `(charge_scale, current_scale)`, from their
-/// unit steps `units`, and the tolerance that holds it: on one thread, one charge after
-/// another; spread, by pieces, which find the same, as `least` is a total order.
+/// Finds the shortest step length across all charge `units` at `(charge_scale, current_scale)`,
+/// reducing deterministically via [`least`] across optional Rayon `grain`.
 fn shortest(
     units: &[(f64, f64)],
     charge_scale: f64,
@@ -1944,8 +1871,8 @@ fn shortest(
     .fold(none, least)
 }
 
-/// The shorter of two charges' longest steps, and the tolerance that holds it: the least by
-/// length, then by tolerance, so that the same is found however the pieces split the charges.
+/// Returns the smaller of two [`StepBound`] values ordered by step length then error bound so
+/// parallel reductions remain deterministic.
 fn least(first: StepBound, second: StepBound) -> StepBound {
     let order = second.0.total_cmp(&first.0).then(second.1.cmp(&first.1));
     if order.is_lt() { second } else { first }
@@ -1965,12 +1892,12 @@ mod tests {
     use crate::test_helpers::{grounded_simulator, source_resistor_simulator};
     use crate::{Options, SimulationError, Transient};
 
-    /// The bits of a breakpoint and of the gap after it, to compare them exactly.
+    /// Converts a [`NextBreakpoint`]'s time and gap to raw IEEE-754 bits for exact comparison.
     fn bits(breakpoint: NextBreakpoint) -> (u64, u64) {
         (breakpoint.time.to_bits(), breakpoint.gap.to_bits())
     }
 
-    /// The raw IEEE-754 bits of every value in `values`.
+    /// Converts every value in `values` to its raw IEEE-754 bit pattern.
     fn slice_bits(values: &[f64]) -> Vec<u64> {
         values.iter().copied().map(f64::to_bits).collect()
     }
@@ -1979,7 +1906,7 @@ mod tests {
     fn breakpoints_come_in_order_without_near_twins_and_keep_the_stop() {
         let mut breakpoints = Breakpoints::new(&[1.0, 3.0, 10.0], 0.1);
         breakpoints.insert(2.0);
-        // Within the minimum of 2 and of 3, so dropped; past the stop, so dropped.
+        // Drop entries within `minimum` of 2 or 3, and entries beyond `stop`.
         breakpoints.insert(2.05);
         breakpoints.insert(2.95);
         breakpoints.insert(11.0);
@@ -1995,7 +1922,7 @@ mod tests {
             bits(breakpoints.after(2.5)),
             (3.0_f64.to_bits(), 7.0_f64.to_bits())
         );
-        // The stop stays, however far past it the time asked for.
+        // The stop breakpoint persists regardless of how far past it `after` queries.
         assert_eq!(
             bits(breakpoints.after(20.0)),
             (10.0_f64.to_bits(), f64::INFINITY.to_bits())

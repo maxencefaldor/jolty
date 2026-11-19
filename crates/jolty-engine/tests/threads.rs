@@ -1,5 +1,7 @@
-//! A run spreads its own work over at most its parallelism's threads, on a pool of exactly
-//! that many of its own when its caller's has more, and finds the bits it finds on one.
+//! Thread-pool bounding and bitwise reproducibility under [`Parallelism`].
+//!
+//! Each run limits parallel work to at most `max_threads` using a dedicated pool when the
+//! caller pool is wider, producing results bitwise identical to single-threaded execution.
 #![cfg(test)]
 
 use std::collections::BTreeSet;
@@ -16,22 +18,21 @@ use jolty_models::{
 use rayon::ThreadPoolBuilder;
 use serde_json::json;
 
-/// The spies in the ladder, each a task of its own.
+/// Number of spy resistors in the ladder, each dispatched as an individual task.
 const SPIES: usize = 64;
 
-/// A resistor that remembers the thread that evaluated it last: its index in its pool and
-/// the pool's threads, as its two variables. Its parameters are a thermal resistance's, a
-/// resistance alone, here in ohms.
+/// Resistor test kernel that records the evaluating thread index and pool width as its two
+/// variables, using a single scalar resistance parameter in ohms.
 struct Spy;
 
 impl Kernel for Spy {
     const NAME: &'static str = "spy";
     type Parameters<R: Real> = ThermalResistanceParameters<R>;
-    /// Its local entries, `(a, a)`, `(a, b)`, `(b, a)` and `(b, b)`.
+    /// Local matrix entry indices for `(a, a)`, `(a, b)`, `(b, a)`, and `(b, b)`.
     type Shape = [usize; 4];
-    /// Its conductance.
+    /// Prepared conductance value.
     type Prepared<R: Real> = R;
-    /// The index of the thread that evaluated it last in its pool, and the pool's threads.
+    /// Pool thread index and total pool thread count from the most recent evaluation.
     type Memory = Option<(usize, usize)>;
 
     fn interface<R: Real>(_: &ThermalResistanceParameters<R>) -> Interface {
@@ -89,8 +90,8 @@ impl Kernel for Spy {
     }
 }
 
-/// A sine into a ladder of [`SPIES`] spies to the ground, a diode and a capacitor across
-/// its middle rung: a nonlinear circuit whose spies are each a task of their own.
+/// Builds a nonlinear ladder of [`SPIES`] spy resistors with a midpoint diode and capacitor
+/// driven by a 1 kHz sine wave.
 fn ladder() -> Circuit {
     let node = |rung: usize| match rung {
         0 => "in".to_owned(),
@@ -127,9 +128,8 @@ fn ladder() -> Circuit {
     Circuit::from_json(&document.to_string()).expect("a valid circuit")
 }
 
-/// The ladder's operating point and a millisecond of its transient, with `options`,
-/// recording the spies: what each found, without what it recorded, as its debug text, and
-/// the threads the spies recorded, as their index in their pool and the pool's threads.
+/// Runs the ladder operating point and a 1 ms transient under `options`, returning debug
+/// snapshots without recorded data plus the `(thread_index, pool_size)` pairs seen by spies.
 fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
     let mut library = Library::standard();
     library.add(Differentiable::<Spy>::new());
@@ -178,11 +178,10 @@ fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
     (found, threads)
 }
 
-/// A run capped at two threads, spreading every kind of its work, however small, runs it
-/// on a pool of two threads of its own when its caller's has three or eight: every spy,
-/// each a task of its own, is evaluated on one of them. Capped at eight, it runs on its
-/// caller's pool of three. It finds what it finds on one thread, spreading nothing, bit for
-/// bit. Before, its instances' tasks ran on every thread of its caller's pool.
+/// Verifies that `max_threads` caps parallel evaluation to a dedicated sub-pool when the
+/// caller pool is wider while reusing narrower caller pools.
+///
+/// Parallel results match single-threaded execution bit for bit.
 #[test]
 fn a_run_spreads_its_work_over_its_threads_alone() {
     let (serial, alone) = ThreadPoolBuilder::new()

@@ -37,8 +37,7 @@ fn transfer(
     )
 }
 
-/// Agreement within rounding: each solve is a handful of operations on numbers of order 1
-/// to 10⁴, so a few ulps of the result, 1e-12 of it, bound the difference.
+/// Checks whether `found` matches `exact` within `1e-12` relative rounding tolerance.
 fn close(found: f64, exact: f64) -> bool {
     (found - exact).abs() <= 1e-12 * exact.abs()
 }
@@ -117,7 +116,7 @@ fn an_output_the_analysis_cannot_read_is_an_error() {
 
 #[test]
 fn a_source_that_drives_nothing_sees_an_infinite_resistance() {
-    // V1 holds `in`, which nothing else joins; R1 is a load of its own elsewhere.
+    // V1 holds `in`, which nothing else joins; R1 forms a separate load elsewhere.
     let unloaded = circuit([
         voltage_dc("V1", "in", 1.0),
         current_dc("I1", "0", "load", 1e-3),

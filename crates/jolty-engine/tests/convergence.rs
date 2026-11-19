@@ -71,8 +71,8 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
         .operating_point(&Options::default())
         .expect("an operating point");
     assert_eq!(point.strategy, Strategy::JunctionGminStepping);
-    // Its iterations count those of the strategies that failed before it: Newton
-    // iteration's alone run to their limit, or to a matrix the solver cannot factor.
+    // Total iterations include strategies that failed before convergence: plain Newton runs
+    // to its limit or hits a singular matrix.
     let options = Options::default();
     assert!(
         point.iterations > options.max_dc_iterations,
@@ -98,12 +98,10 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
 
 #[test]
 fn the_operating_point_source_stepping_folds_short_of_is_ngspices() {
-    // A random circuit of 47 devices, shrunk from one whose operating point every other
-    // strategy missed: source stepping stops at a fold of its solutions, at 51 % of the
-    // sources, as ngspice's does, which finds the point only by its transient instead;
-    // pseudo-transient continuation finds it too, as a unit test of it shows. Which of the
-    // strategies before it converges first turns on the rounding of the sums of the
-    // circuit's equations, which the order of their terms moves.
+    // Shrunk 47-device random circuit whose operating point defeats source stepping at a
+    // solution fold around 51% of the sources (matching ngspice, falling back to transient).
+    // Pseudo-transient continuation finds the operating point as well. Rounding in equation
+    // sums determines which earlier strategy converges first.
     let circuit = Circuit::from_json(include_str!("data/folded_sources.json")).expect("a circuit");
     let mut simulator = simulator(&circuit);
     let point = simulator

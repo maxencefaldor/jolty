@@ -1,13 +1,11 @@
-//! The noise at an output, from every device's noise sources, by the adjoint method.
+//! Adjoint small-signal output noise analysis across all device noise sources.
 //!
-//! Linearized at its operating point, the circuit at a frequency is `(G + jωC) x = −b` for
-//! an excitation `b` of its equations. One solve of the transposed system,
-//! `(G + jωC)ᵀ z = e`, where `e` reads the output, 1 at its unknown and −1 at its
-//! reference's, weighs every equation's effect on the output at once: an excitation `b`
-//! moves the output by `−zᵀ b`. A noise source excites its two equations by +1 and −1, so
-//! its density reaches the output times `|z₊ − z₋|²`, and the sources are independent, so
-//! their densities add. The same weights give the gain from an input source's level, and
-//! the output's noise over the gain's square is the noise referred to that input.
+//! At each frequency, the linearized circuit satisfies `(G + jωC) x = -b` for an
+//! excitation `b`. Solving the transposed system `(G + jωC)^T z = e` (with `e` selecting
+//! the output minus its optional reference) yields adjoint weights such that excitation `b`
+//! perturbs the output by `-z^T b`. Each independent noise source between equations `+` and
+//! `-` contributes `|z_+ - z_-|^2` times its spectral density, and dividing total output
+//! noise by squared source gain gives input-referred noise.
 
 use jolty_models::{Input, Nature, Node, NoiseSource};
 use jolty_numerics::Complex64;
@@ -41,37 +39,34 @@ pub struct NoiseResult {
     pub output: String,
     /// The node the output voltage is taken over, if not ground.
     pub reference: Option<String>,
-    /// What the output is: a voltage, or a current.
+    /// Physical quantity of the output (voltage or current).
     pub nature: Nature,
-    /// The operating point the circuit was linearized at.
+    /// Operating point around which the circuit was linearized.
     pub operating_point: OperatingPointResult,
-    /// The frequencies, in hertz.
+    /// Analysis frequencies in hertz.
     pub frequencies: Vec<f64>,
-    /// The output's one-sided noise density at each frequency: in V²/Hz for a voltage, or
-    /// A²/Hz for a current.
+    /// One-sided output noise spectral density at each frequency (V²/Hz or A²/Hz).
     pub densities: Vec<f64>,
-    /// What each device's noise sources add to the output's density, in the order of the
-    /// devices.
+    /// Per-source contributions to output noise density, in device placement order.
     pub contributions: Vec<NoiseContribution>,
-    /// The source the noise is referred back to, if any.
+    /// Optional input source used for input-referred noise.
     pub input: Option<NoiseInput>,
 }
 
-/// The independent source a noise analysis refers its output's noise back to.
+/// Independent source used to compute input-referred noise.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseInput {
-    /// The path of the source.
+    /// Instance path of the reference source.
     pub source: String,
-    /// What the source's level is: a voltage, or a current.
+    /// Physical quantity of the source excitation (voltage or current).
     pub nature: Nature,
-    /// The gain from the source's level to the output at each frequency.
+    /// Complex transfer gain from the source to the output at each frequency.
     pub gains: Vec<Complex64>,
 }
 
 impl NoiseResult {
-    /// The noise referred to the input at each frequency, the output's density over the
-    /// gain's square: in V²/Hz for a voltage source, or A²/Hz for a current source, given
-    /// an input; infinite where the gain is zero.
+    /// Computes input-referred noise spectral density at each frequency (`densities / |gain|²`),
+    /// returning `None` when no input source was specified (infinite where gain is zero).
     #[must_use]
     pub fn referred(&self) -> Option<Vec<f64>> {
         let input = self.input.as_ref()?;
@@ -79,20 +74,20 @@ impl NoiseResult {
     }
 }
 
-/// What one noise source of a device adds to an output's noise density.
+/// Spectral noise contribution of a single device noise source at the output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseContribution {
-    /// The path of the device, such as `X1/Q1`.
+    /// Instance path of the device, such as `X1/Q1`.
     pub instance: String,
-    /// What makes the noise, such as `thermal` or `collector shot`.
+    /// Noise mechanism name, such as `thermal` or `collector shot`.
     pub name: &'static str,
-    /// What it adds to the output's density at each frequency.
+    /// Output noise spectral density added by this source at each frequency.
     pub densities: Vec<f64>,
 }
 
 impl Simulator {
-    /// Every device's noise sources at `state`, in the order of the devices, and what
-    /// each adds to the output's density, its densities ready for `frequencies` of them.
+    /// Collects all device noise sources at `state` in placement order along with
+    /// preallocated [`NoiseContribution`] buffers for `frequencies` points.
     fn noise_sources(
         &self,
         state: &Input<'_>,
@@ -113,18 +108,16 @@ impl Simulator {
         (sources, contributions)
     }
 
-    /// Linearizes the circuit at its operating point and finds the noise density at the
-    /// output at each frequency, with each device noise source's share, and the gain from
-    /// the source, if any, that refers it back there.
+    /// Computes output noise spectral density, per-source contributions, and optional
+    /// input-referred gain across all frequencies in `noise`.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownOutput`] when the output or its reference is no
-    /// unknown, [`SimulationError::UnknownSource`] or [`SimulationError::NotASource`] when
-    /// the source is not an independent source, [`SimulationError::InvalidAnalysis`] for
-    /// an output over itself, a current over a node, or no frequency or one not positive,
-    /// [`SimulationError::Singular`] when the linearized circuit is singular at a
-    /// frequency, and the errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::UnknownOutput`] for missing outputs or references,
+    /// [`SimulationError::UnknownSource`] or [`SimulationError::NotASource`] for invalid
+    /// input sources, [`SimulationError::InvalidAnalysis`] for invalid differential outputs
+    /// or non-positive frequencies, [`SimulationError::Singular`] for singular linearizations,
+    /// and any error from [`Simulator::operating_point`].
     pub fn noise(
         &mut self,
         noise: &Noise,
@@ -154,7 +147,7 @@ impl Simulator {
                 .find(|frequency| !(**frequency > 0.0 && frequency.is_finite()))
             {
                 return Err(SimulationError::InvalidAnalysis(format!(
-                    "noise frequencies must be positive, not {frequency:?}"
+                    "noise frequencies require positive finite values; got {frequency:?}"
                 )));
             }
             let operating_point = self.linearize(&noise.frequencies, options)?;

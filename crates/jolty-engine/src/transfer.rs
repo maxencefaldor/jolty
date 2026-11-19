@@ -1,19 +1,17 @@
-//! The small-signal transfer function at DC: a gain, an input resistance and an output
-//! resistance, as SPICE's `.tf` reports them.
+//! Small-signal DC transfer function computing gain, input resistance, and output
+//! resistance (matching SPICE `.tf`).
 //!
-//! The circuit is linearized at its operating point, `J`, and solved twice:
+//! Linearizes the circuit at the operating point into Jacobian `J` and runs two solves:
 //!
-//! - excited by its input source, `J x = −∂f/∂s`, as a small-signal response is at 0 Hz,
-//!   which gives the gain at the output and the input resistance the source sees;
-//! - excited at its output, which gives the resistance the output sees with the input
-//!   source at its operating value: a unit current injected into the output node and drawn
-//!   from its reference, `J x = e_out − e_ref`, for a voltage; a volt in series with the
-//!   voltage source whose current is the output, `J x = −∂f/∂s_out`, for a current.
+//! - Input excitation (`J x = -∂f/∂s`, matching AC at 0 Hz) yields transfer gain and input
+//!   resistance seen by the source.
+//! - Output excitation yields output resistance with the input source held at its operating
+//!   value: a unit current (`J x = e_out - e_ref`) for voltage outputs, or a unit series
+//!   voltage (`J x = -∂f/∂s_out`) for voltage-source current outputs.
 //!
-//! An independent voltage source holds its voltage, so it is a short to the second solve,
-//! and a current source is open to it, as SPICE's `TFanal` has them. A resistance the
-//! solves find infinite, such as a current source's own, is infinite, where ngspice writes
-//! 10²⁰ Ω.
+//! Independent voltage sources act as shorts and current sources as opens in the second
+//! solve, matching SPICE `TFanal`. Open-circuit resistances return exact infinity rather
+//! than ngspice's `1e20` Ω cap.
 
 use jolty_models::{Nature, UnknownIndex};
 use serde::Deserialize;
@@ -41,36 +39,33 @@ pub struct TransferFunction {
 pub struct TransferFunctionResult {
     /// The path of the input source.
     pub source: String,
-    /// What the input source's value is: a voltage, or a current.
+    /// Physical quantity of the input source (voltage or current).
     pub input: Nature,
-    /// The output.
+    /// Output node or current unknown name.
     pub output: String,
-    /// The node the output voltage is taken over, if any.
+    /// Optional reference node for differential voltage outputs.
     pub reference: Option<String>,
-    /// The operating point the circuit was linearized at.
+    /// Operating point around which the circuit was linearized.
     pub operating_point: OperatingPointResult,
-    /// The output per unit of the source's value: volts or amperes of output per volt or
-    /// ampere of input.
+    /// Small-signal transfer gain (output units per input unit).
     pub gain: f64,
-    /// The resistance the input source sees, in ohms.
+    /// Small-signal resistance seen by the input source, in ohms.
     pub input_resistance: f64,
-    /// The resistance the output sees, in ohms, with the input source at its operating
-    /// value.
+    /// Small-signal resistance seen at the output with the input source fixed, in ohms.
     pub output_resistance: f64,
 }
 
 impl Simulator {
-    /// The small-signal transfer function from `analysis`'s source to its output, at DC.
+    /// Computes the small-signal DC transfer function (gain, input resistance, and output
+    /// resistance) for `analysis`.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotASource`] when
-    /// the input or a current output's device is not an independent source,
-    /// [`SimulationError::UnknownOutput`] for an output or a reference that is no unknown,
-    /// [`SimulationError::InvalidAnalysis`] for a current output that is no voltage
-    /// source's, for an output taken over itself, or for an output over a reference that is
-    /// not a voltage, [`SimulationError::Singular`] when the linearized circuit is, and the
-    /// errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotASource`] for
+    /// invalid sources, [`SimulationError::UnknownOutput`] for missing outputs or
+    /// references, [`SimulationError::InvalidAnalysis`] for invalid output types or
+    /// differential references, [`SimulationError::Singular`] when linearized equations
+    /// are singular, and any error from [`Simulator::operating_point`].
     pub fn transfer_function(
         &mut self,
         analysis: &TransferFunction,
@@ -83,10 +78,9 @@ impl Simulator {
             let output = self.output_of(analysis)?;
             let operating_point = self.linearized(options)?;
             let size = self.elaborated.unknowns.len();
-            // Every right side and every index the solves read, before the factors borrow the
-            // solver.
+            // Prepare all right-hand sides and indices before borrowing the solver.
             let mut driven = self.excitation(input);
-            // An independent source holds a voltage or drives a current.
+            // Independent sources either constrain voltage or inject current.
             let seen = if self.source_nature(input) == Nature::Current {
                 Input::Current {
                     terminals: self.terminal_unknowns(input),
@@ -132,7 +126,7 @@ impl Simulator {
         })
     }
 
-    /// The output `analysis` names, checked.
+    /// Resolves and validates the requested output quantity for `analysis`.
     fn output_of(&self, analysis: &TransferFunction) -> Result<Output, SimulationError> {
         let (node, reference, nature) =
             self.measured(&analysis.output, analysis.reference.as_deref())?;
@@ -140,8 +134,8 @@ impl Simulator {
             (Nature::Voltage, node) => Ok(Output::Voltage { node, reference }),
             (Nature::Current, Some(unknown)) => {
                 let index = unknown.index();
-                // A device that adds no unknown of its own counts the same unknowns before
-                // it as the next device does, so the source is sought among sources alone.
+                // Devices without internal unknowns share `first_internal` with the next
+                // device, so filter explicitly to independent voltage sources.
                 let device = (0..self.elaborated.devices.len())
                     .find(|&device| {
                         self.elaborated.devices[device].first_internal == index
@@ -175,7 +169,7 @@ impl Simulator {
         }
     }
 
-    /// `−∂f/∂s` of the source at `device`: the right side of a solve it excites.
+    /// Returns the negated excitation vector `-∂f/∂s` for the independent source at `device`.
     fn excitation(&self, device: usize) -> Vec<f64> {
         let mut excitation = self.source_excitation(device);
         for value in &mut excitation {
@@ -184,7 +178,7 @@ impl Simulator {
         excitation
     }
 
-    /// The unknowns of the first two terminals of the device at `device`, none for
+    /// Returns unknown indices for the first two terminals of `device`, using `None` for
     /// ground.
     fn terminal_unknowns(&self, device: usize) -> [Option<usize>; 2] {
         let nodes = self.elaborated.devices[device].nodes();
@@ -198,19 +192,17 @@ impl Simulator {
     }
 }
 
-/// What a transfer function reads its input resistance from.
+/// Measurement handle for reading input resistance from the input-excited solution.
 #[derive(Debug, Clone, Copy)]
 enum Input {
-    /// A voltage source, by the current through it, its branch unknown.
+    /// Voltage source measured via its branch current unknown.
     Voltage { branch: usize },
-    /// A current source, by the voltage across it, its terminals' unknowns.
+    /// Current source measured via the voltage across its two terminal unknowns.
     Current { terminals: [Option<usize>; 2] },
 }
 
 impl Input {
-    /// The resistance the source sees in a solution `x` the source drove with one volt or
-    /// ampere: the volt over the current it drives out of its positive terminal, or the
-    /// voltage the ampere it drives develops across it.
+    /// Computes input resistance from the unit-excited solution `x`.
     fn resistance(self, x: &[f64]) -> f64 {
         match self {
             Self::Voltage { branch } => resistance(1.0, -x[branch]),
@@ -224,20 +216,20 @@ impl Input {
     }
 }
 
-/// What a transfer function reads its output from.
+/// Measurement handle for extracting the transfer-function output from a solution vector.
 #[derive(Debug, Clone, Copy)]
 enum Output {
-    /// A node voltage, over another node or the reference.
+    /// Node voltage relative to an optional reference node or ground.
     Voltage {
         node: Option<UnknownIndex>,
         reference: Option<UnknownIndex>,
     },
-    /// The current through an independent voltage source, its branch unknown.
+    /// Branch current through an independent voltage source.
     Current { device: usize, branch: usize },
 }
 
 impl Output {
-    /// The output's value in a solution `x`.
+    /// Extracts the output scalar from solution vector `x`.
     fn read(self, x: &[f64]) -> f64 {
         match self {
             Self::Voltage { node, reference } => {
@@ -248,8 +240,8 @@ impl Output {
     }
 }
 
-/// The resistance across which `voltage` drives `current`: infinite, of the voltage's
-/// sign, where no current flows, whichever sign of zero the solve left it.
+/// Computes `voltage / current`, returning signed infinity with `voltage`'s sign when
+/// `current` is zero.
 fn resistance(voltage: f64, current: f64) -> f64 {
     if current == 0.0 {
         voltage.signum() * f64::INFINITY

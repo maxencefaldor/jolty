@@ -1,24 +1,22 @@
-//! The loop gain of a feedback loop, by Middlebrook's double injection.
+//! Feedback loop gain computed via Middlebrook's double-injection method.
 //!
-//! A voltage source in series with the loop, the probe, is where the loop is broken. Its
-//! `negative` terminal faces the side that drives the loop's signal into it, `y`, and its
-//! `positive` terminal the side the signal enters, `x`. Two small-signal solves at each
-//! frequency share one factorization: a unit voltage injected in series, `v_x − v_y = 1`,
-//! and a unit current injected from the reference into `x`, of which the probe carries `i`
-//! on to `y`. With `u = v_x − i`, the loop gain is
+//! A series floating voltage source acts as the loop-breaking probe. The probe's `negative`
+//! terminal faces the driving side `y`, and the `positive` terminal faces the driven side
+//! `x`. Two small-signal solves at each frequency share one factorization: a unit series
+//! voltage (`v_x - v_y = 1`) and a unit shunt current injected from ground into `x` (of
+//! which the probe carries `i` to `y`). Setting `u = v_x - i` gives the loop gain
 //!
 //! ```text
-//! T = −u / (1 + u),
+//! T = -u / (1 + u),
 //! ```
 //!
-//! which is Middlebrook's `T = (T_v T_i − 1) / (T_v + T_i + 2)`, where `T_v = −v_y / v_x`
-//! and `T_i = i / (1 − i)`, cleared of their fractions. It holds however the two sides
-//! load each other (R. D. Middlebrook, "Measurement of loop gain in feedback systems",
-//! *International Journal of Electronics* 38(4), 1975), and is the loop gain Tian's method
-//! and Spectre's `stb` analysis find. The injected current returns through the reference,
-//! which must be the two sides' common return, as a ground is, and so neither of the
-//! probe's terminals. Negative feedback makes `T` positive at low frequencies, and divides
-//! each response it encloses by `1 + T`.
+//! equivalent to Middlebrook's `T = (T_v T_i - 1) / (T_v + T_i + 2)` with
+//! `T_v = -v_y / v_x` and `T_i = i / (1 - i)`. The identity holds regardless of mutual
+//! loading (R. D. Middlebrook, "Measurement of loop gain in feedback systems",
+//! *International Journal of Electronics* 38(4), 1975) and matches Tian's method and
+//! Spectre `stb`. The injected current returns through the ground reference, so neither
+//! probe terminal may sit on ground. Negative feedback yields positive `T` at low
+//! frequencies and divides enclosed closed-loop responses by `1 + T`.
 
 use jolty_models::Nature;
 use jolty_numerics::Complex64;
@@ -59,11 +57,10 @@ impl Simulator {
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotAProbe`] when the
-    /// probe is not an independent voltage source with both terminals off ground,
-    /// [`SimulationError::InvalidAnalysis`] for
-    /// no frequency or a negative one, [`SimulationError::Singular`] when the linearized
-    /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotAProbe`] for
+    /// invalid probes, [`SimulationError::InvalidAnalysis`] for empty or negative
+    /// frequencies, [`SimulationError::Singular`] for singular linearizations, and any
+    /// error from [`Simulator::operating_point`].
     pub fn stability(
         &mut self,
         stability: &Stability,

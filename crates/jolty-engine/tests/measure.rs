@@ -22,8 +22,8 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use sim::simulator;
 
-/// A low pass of `R1`, 1 kΩ, from `in` to `out` and `C1`, 1 µF, from `out` to the ground,
-/// driven at `in` by `V1`, 5 V, with `VP`, a probe of 0 V, in series with the resistor.
+/// Builds a low-pass RC simulator (`R1` = 1 kΩ, `C1` = 1 µF) driven by 5 V source `V1`
+/// through 0 V series probe `VP`.
 fn low_pass() -> Simulator {
     simulator(&circuit([
         voltage_dc("V1", "in", 5.0),
@@ -337,7 +337,7 @@ fn measures_read_exact_signals_exactly() {
     );
 }
 
-/// Any float: ordinary ones, and zeros of either sign, infinities and not a number.
+/// Builds a proptest strategy for finite floats, signed zeros, infinities, and `NaN`.
 fn number() -> impl Strategy<Value = f64> {
     prop_oneof![
         4 => -10.0..10.0f64,

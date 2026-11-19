@@ -1,7 +1,5 @@
-//! The groups of the instances of kernels against the devices they were: at every
-//! evaluation of a run, the circuit's equations as the groups assemble them, against the same
-//! instances evaluated one by one as devices of their own, in the order of the circuit's
-//! devices; and the groups' parallel evaluation against their serial one.
+//! Verification tests comparing grouped kernel evaluation against standalone one-by-one
+//! device evaluation and comparing parallel group assembly against serial execution.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,32 +12,31 @@ use serde::Deserialize;
 use crate::elaborated::Elaborated;
 use crate::{Analysis, Conditions, Options, Record, Simulator, Substitute};
 
-/// How far the groups' assembly of a run's equations has strayed from the devices'.
+/// Accumulated comparison statistics between grouped kernel assembly and standalone device
+/// evaluation.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Check {
-    /// The evaluations compared.
+    /// Total circuit evaluations compared.
     pub(crate) evaluations: usize,
-    /// The values compared, over every evaluation.
+    /// Total scalar assembly entries compared across all evaluations.
     pub(crate) values: usize,
-    /// The largest difference between the two assemblies of a value, in units of
-    /// `ε · Σ|t|`, where `Σ|t|` sums the magnitudes of the terms that add into it.
+    /// Worst observed difference in units of `ε · Σ|t|`, where `Σ|t|` sums term magnitudes.
     pub(crate) worst: f64,
-    /// The most terms a value sums.
+    /// Maximum number of summed contributions for any single assembled entry.
     pub(crate) most: usize,
-    /// The state of the last evaluation: the unknowns, the time, the sources' scale and
-    /// gmin.
+    /// Saved arguments from the latest evaluation: `(unknowns, time, source_scale, gmin)`.
     pub(crate) last: Option<(Vec<f64>, Option<f64>, f64, f64)>,
-    /// The recorder's reads compared, and the values compared over them.
+    /// Count of recorder checks and individual recorded scalars compared.
     pub(crate) reads: (usize, usize),
 }
 
 impl Check {
-    /// Compares what the recorder read of the slab of `runs`, the run of `elaborated`'s
-    /// groups, for each of the devices `devices`, with the device's instance evaluated
-    /// alone, from what it remembers, at the state of the last evaluation, its steps not
-    /// limited, as the recorder once evaluated a copy of each device: the residual and
-    /// the charge of each local unknown, the conductance and the capacitance of each local
-    /// entry, and the variables, bit for bit. A transient's evaluations read `past`.
+    /// Compares recorder slab reads for `devices` in `runs` against evaluating each device
+    /// alone without voltage limiting at the last evaluation state (reading `past` during
+    /// transients).
+    ///
+    /// Verifies bit-identical residuals, charges, conductances, and capacitances for every
+    /// checked device.
     pub(crate) fn compare_read(
         &mut self,
         elaborated: &Elaborated,
@@ -94,11 +91,9 @@ impl Check {
     }
 }
 
-/// The bound on the difference between two sums of the same `terms` terms, of magnitudes
-/// summing to `magnitude`, in different orders and groupings: each lies within
-/// `(terms − 1) · u · magnitude` of the exact sum, with `u` half of `f64::EPSILON`
-/// (Higham, "Accuracy and Stability of Numerical Algorithms", 2002, §4.2), so the two lie
-/// within twice that of each other.
+/// Computes Higham's rounding bound `2 * (terms - 1) * u * magnitude` between reordered
+/// sums of `terms` terms with total `magnitude` (Higham, *Accuracy and Stability of
+/// Numerical Algorithms*, 2002, §4.2; `u = f64::EPSILON / 2`).
 fn bound(terms: usize, magnitude: f64) -> f64 {
     #[expect(
         clippy::cast_precision_loss,
@@ -108,10 +103,10 @@ fn bound(terms: usize, magnitude: f64) -> f64 {
     (terms - 1.0).max(0.0) * f64::EPSILON * magnitude
 }
 
-/// A run's slab, as [`jolty_models::Runs::slab`] gives it.
+/// Borrowed evaluation slab slices matching [`jolty_models::Runs::slab`].
 pub(crate) type Slab<'a> = ([&'a [f64]; 3], [&'a [f64]; 2]);
 
-/// The assembled evaluation output checked against one-by-one device evaluation.
+/// Assembled evaluation output verified against standalone device evaluation.
 #[derive(Clone, Copy)]
 pub(crate) struct Evaluated<'a> {
     pub(crate) input: &'a Input<'a>,
@@ -121,15 +116,11 @@ pub(crate) struct Evaluated<'a> {
 }
 
 impl Check {
-    /// Compares `evaluated`'s assembled contributions and slab with the instances of
-    /// `elaborated`'s groups evaluated at `evaluated.input` each alone, from what `alone`,
-    /// the groups' run before the evaluation, holds, one by one in the order of the circuit's
-    /// devices, each one's local sums added as a device of its own adds them.
+    /// Compares assembled contributions and slab entries in `evaluated` against standalone
+    /// one-by-one device evaluation of `alone` in placement order.
     ///
-    /// Both sum the same terms: each instance's contributions to the value, which its
-    /// block of the slab holds. The groups add them one by one in the order of the groups,
-    /// of their instances and of each instance's local indices; the instances alone each
-    /// one's own sum, in the order of the devices.
+    /// Both paths sum identical per-instance slab terms in different orders (group order vs.
+    /// device placement order), so every finite entry agrees within [`bound`].
     pub(crate) fn compare(
         &mut self,
         elaborated: &Elaborated,
@@ -157,8 +148,7 @@ impl Check {
         );
         let (rows, slots) = elaborated.groups.gathers();
         let ([residual, _, charge], [conductance, capacitance]) = slab;
-        // A stored entry's value gathers the base's, which sums the linear instances'
-        // entries: its terms are those.
+        // Matrix entries include base linear sums gathered from all linear instances.
         let (first, summed) = elaborated.groups.base();
         let planes = [
             (
@@ -221,10 +211,8 @@ impl Check {
     }
 }
 
-/// The contributions of the instances of `elaborated`'s groups evaluated at `input` each
-/// alone, from what `alone` holds, one by one in the order of the circuit's devices, each
-/// one's local sums added as a device of its own adds them, and whether one limited its
-/// voltages.
+/// Evaluates every grouped device in `elaborated` individually in placement order at
+/// `input`, returning summed [`Contributions`] and whether any device limited a voltage.
 fn alone_sums(
     elaborated: &Elaborated,
     alone: &mut Runs,
@@ -269,8 +257,7 @@ fn alone_sums(
     (sums, one_by_one)
 }
 
-/// A fixture of the benchmarks: its circuit and the analyses of its plan, with its
-/// options.
+/// Loads benchmark fixture `name`, returning its circuit, planned analyses, and options.
 fn fixture(name: &str) -> (Circuit, Vec<Analysis>, Options) {
     #[derive(Deserialize)]
     struct Plan {
@@ -294,9 +281,8 @@ fn fixture(name: &str) -> (Circuit, Vec<Analysis>, Options) {
     (circuit, analyses, plan.options)
 }
 
-/// Every outcome of `analyses` run in order on a simulator of `circuit`, written out with
-/// every number's shortest form, which tells any two bit patterns apart but NaNs', and the
-/// simulator.
+/// Runs `analyses` on `circuit` after applying `prepare` and returns formatted `Debug`
+/// outcomes (exact shortest float representations) alongside the final simulator.
 fn outcomes(
     circuit: &Circuit,
     analyses: &[Analysis],
@@ -313,8 +299,8 @@ fn outcomes(
     (outcomes, simulator)
 }
 
-/// The analyses of a fixture shortened to run in a test's time: its transients cut to
-/// `stop`, and its frequency responses to their first `frequencies`.
+/// Truncates transient stop times to `stop` and AC sweeps to `frequencies` entries for
+/// faster test runs.
 fn shortened(analyses: Vec<Analysis>, stop: f64, frequencies: usize) -> Vec<Analysis> {
     analyses
         .into_iter()
@@ -345,10 +331,8 @@ fn the_groups_assemble_what_their_instances_do_as_devices() {
     }
 }
 
-/// A circuit of the differential corpus or of an example that holds a device, what it is
-/// elaborated in, and the runs its tests or its plan make of it, as
-/// `tests/kernel_corpus.py` writes them, and `tests/test_kernel_corpus.py` checks they
-/// still are.
+/// Corpus circuit entry containing circuit JSON, elaboration conditions, and planned runs
+/// generated by `tests/kernel_corpus.py` and verified by `tests/test_kernel_corpus.py`.
 #[derive(Deserialize)]
 pub(crate) struct Recording {
     circuit: serde_json::Value,
@@ -359,7 +343,7 @@ pub(crate) struct Recording {
 }
 
 impl Recording {
-    /// Every circuit of the corpus, with its runs, parsed once per process.
+    /// Returns the cached slice of recorded kernel corpus circuits, parsed once per process.
     pub(crate) fn corpus() -> &'static [Self] {
         static CORPUS: LazyLock<Vec<Recording>> = LazyLock::new(|| {
             let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/kernels.json");
@@ -369,7 +353,7 @@ impl Recording {
         &CORPUS
     }
 
-    /// The circuit, and a simulator of it in the conditions it is recorded in.
+    /// Parses the recorded circuit and builds a [`Simulator`] under its recorded conditions.
     pub(crate) fn simulator(&self) -> (Circuit, Simulator) {
         let circuit = Circuit::from_json(&self.circuit.to_string()).expect("a circuit");
         let conditions = Conditions {
@@ -423,7 +407,7 @@ fn check_corpus_shard(shard: usize, shards: usize) {
                 record: Record::All,
                 ..options.clone()
             };
-            // An analysis that fails, as one a test expects to, was checked all the same.
+            // Failing analyses are still checked through every evaluation they perform.
             let _ = simulator.run(analysis, &options);
         }
         let check = simulator.state.check.expect("a check");
@@ -442,13 +426,10 @@ fn check_corpus_shard(shard: usize, shards: usize) {
     assert!(all.reads.0 > 0, "{all:?}");
 }
 
-// At every evaluation of every run of the corpus's circuits, each run recording every
-// device: the groups' assembly against the instances evaluated alone, in the order of the
-// devices, to within 1e-13 of the magnitudes summed; and what the recorder reads of each
-// device's block of the slab, the currents into its terminals, the charges they hold and
-// the derivatives of its equations, against its instance evaluated alone at the state of
-// the evaluation it reads, bit for bit, as the recorder once evaluated a copy of each
-// device it recorded. Sharded across 16 tests so nextest runs the corpus in parallel.
+// Verifies every corpus evaluation with full recording enabled: grouped assembly matches
+// standalone device sums within 1e-13 of total term magnitude, and recorder slab reads
+// match standalone device evaluation bit for bit. Sharded across 16 tests for parallel
+// nextest execution.
 sharded_tests!(
     check_corpus_shard;
     every_corpus_circuit_assembles_as_its_devices_shard_00,
@@ -469,7 +450,7 @@ sharded_tests!(
     every_corpus_circuit_assembles_as_its_devices_shard_15,
 );
 
-/// Tasks of at least `least` instances each, on `threads` threads.
+/// Builds a [`Tasks`] descriptor with at least `least` instances per task across `threads`.
 fn tasks(least: usize, threads: usize) -> Tasks {
     Tasks {
         least: least.try_into().expect("a task holds an instance"),
@@ -509,10 +490,8 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
     let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let unknowns = simulator.unknowns().len();
-    // Voltages and currents all over, at which every transistor limits its steps from the
-    // last, and some evaluate in reverse; each evaluation in parallel sets every value its
-    // gather writes, over what the one before left. The supply's diagonal sums 2,000
-    // contributions, more than a chunk, which the gather reads from their copies.
+    // Spread arbitrary voltages across all unknowns so transistors trigger limiting and
+    // reverse-mode evaluation, exercising multi-chunk gather (2,000 contributions on supply).
     let points: Vec<Vec<f64>> = (1..=3)
         .map(|point| {
             (0..unknowns)
@@ -555,9 +534,8 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
     }
 }
 
-/// A star of `arms` resistors of 1 kΩ from a hub to nodes of their own, each with 1 nF to
-/// the ground, a diode from the hub to the ground and a source of 1 V behind 1 Ω into the
-/// hub.
+/// Builds a star network with `arms` 1 kΩ resistors from a hub to separate 1 nF ground
+/// capacitors, plus a diode and 1 V / 1 Ω source at the hub.
 fn star(arms: usize) -> Circuit {
     use serde_json::json;
     let mut instances = vec![
@@ -590,11 +568,8 @@ fn star(arms: usize) -> Circuit {
     Circuit::from_json(&document.to_string()).expect("a circuit")
 }
 
-/// The hub's residual sums 2,002 contributions, of 2,001 resistors and a diode, more than a
-/// chunk, which its gather reads from their copies; its diagonal adds the base's value,
-/// which sums the resistors' conductances once a run, then the diode's. At voltages all
-/// over, each evaluation in parallel, on any number of threads and in tasks of any size,
-/// assembles the serial one's bits, and so does a transient.
+/// Verifies bit-identical parallel and serial evaluation and transient results on a 2,000-arm
+/// linear star with a hub diode (exercising multi-chunk gathers and base conductance sums).
 #[test]
 fn a_parallel_evaluation_of_a_star_of_linear_arms_is_the_serial_one_bit_for_bit() {
     let circuit = star(2000);

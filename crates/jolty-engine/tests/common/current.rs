@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::common::device;
 
-/// A current source named `name` from `positive` to `negative` with `waveform`.
+/// Builds a current source named `name` from `positive` to `negative` with `waveform`.
 pub(crate) fn current_source(
     name: &str,
     positive: &str,
@@ -22,7 +22,7 @@ pub(crate) fn current_source(
     )
 }
 
-/// A DC current source named `name` pushing `current` amperes from `positive` to
+/// Builds a DC current source named `name` pushing `current` amperes from `positive` to
 /// `negative`.
 pub(crate) fn current_dc(name: &str, positive: &str, negative: &str, current: f64) -> Instance {
     current_source(name, positive, negative, json!({"dc": current}))

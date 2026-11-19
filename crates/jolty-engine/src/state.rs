@@ -1,13 +1,10 @@
-//! A run's state: everything a run of an elaborated circuit writes.
+//! Mutable per-run simulation state for an elaborated circuit.
 //!
-//! A [`State`] holds the prepared numbers and the memory of a run's devices' instances,
-//! each made once, in its group, for the run's values, and the slab they write; and every
-//! buffer its analyses fill: the sparse solver's factors, Newton iteration's workspace, the
-//! logic's events, what the analyses record of the devices, and the operating point last
-//! solved. Resetting it for other values keeps every buffer, prepares again the instances
-//! whose numbers or temperature change, starts every one from its initial memory, and
-//! forgets everything a run leaves behind, so that a run never depends on the run before
-//! it: a state reset equals a state made afresh for the same values, bit for bit.
+//! [`State`] owns prepared device kernel instances, evaluation slabs, sparse LU factors,
+//! the Newton workspace, logic event queues, device recording history, and the cached
+//! operating point. Resetting for new parameter values reuses allocations while
+//! re-preparing changed devices, resetting device memory, and clearing analysis history so
+//! a reset state matches a fresh state bit for bit.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,82 +20,72 @@ use crate::record::Recorder;
 use crate::solver::Solver;
 use crate::{ParameterId, Values};
 
-/// What a DC sweep holds away from the run's own values: an independent source, at a
-/// value, or a number of a device's parameters.
+/// Target temporarily overridden by a DC sweep: either an independent source value or a
+/// numeric device parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Held {
-    /// The independent source at this index among the devices.
+    /// Independent source identified by its device index.
     Value(usize),
-    /// This number of a device's parameters.
+    /// Numeric device parameter identified by [`ParameterId`].
     Number(ParameterId),
 }
 
-/// Where a run of a chain starts its first operating point: the operating point the run
-/// before it solved, and the values it solved it at.
+/// Warm-start operating point and parameter values carried from the previous run in a
+/// chain.
 #[derive(Debug, Clone)]
 pub(crate) struct Warm {
     pub(crate) values: Values,
     pub(crate) solution: Vec<f64>,
 }
 
-/// What one run of an elaborated circuit writes.
+/// Mutable state owned by a single simulation run of an elaborated circuit.
 #[derive(Debug)]
 pub(crate) struct State {
-    /// The devices' temperature, in kelvins.
+    /// Active device operating temperature in kelvins.
     pub(crate) temperature: f64,
-    /// The groups of the instances of kernels: their prepared numbers, their memory and
-    /// the slab they write.
+    /// Prepared device kernel groups, per-instance memory, and evaluation output slab.
     pub(crate) runs: Runs,
-    /// How the groups' evaluation splits among threads, or `None` to evaluate them on the
-    /// calling thread alone, the same bits either way.
+    /// Parallel device-evaluation task plan, or `None` for single-threaded evaluation.
     pub(crate) tasks: Option<Tasks>,
-    /// The comparison, at every evaluation, of the groups' assembly with the instances
-    /// evaluated as devices, when a test asks for it.
+    /// Optional test harness comparing grouped kernel assembly against standalone device
+    /// evaluation.
     #[cfg(test)]
     pub(crate) check: Option<crate::kernels::Check>,
-    /// What each device whose numbers the run's values replace is made from, by device,
-    /// and `None` for the others, made from their own; empty when they replace none.
+    /// Patched device origins by device index (`None` for nominal devices; empty when no
+    /// parameters are patched).
     pub(crate) patched: Vec<Option<Origin>>,
-    /// What each device a DC sweep holds away from the run's values is made from, by the
-    /// device's index.
+    /// Temporary device origins installed by an active DC sweep, keyed by device index.
     pub(crate) swept: BTreeMap<usize, Origin>,
     pub(crate) solver: Solver<f64>,
     pub(crate) workspace: Workspace,
-    /// The state of the logic nets, as the last analysis left it.
+    /// Logic net state and event queue left by the last analysis.
     pub(crate) events: Events,
-    /// What the analyses record of the devices, and the charges a transient carries for
-    /// them.
+    /// Active device recorder and transient terminal charge history.
     pub(crate) recorder: Recorder,
-    /// The last operating point solved, what it was solved under and the state it left,
-    /// which an analysis about the same operating point takes instead of solving it again.
-    /// Once the devices are made, only what a sweep holds and driving the logic change
-    /// their DC equations: what is held is part of what it was solved under, and an
-    /// operating point starts from the logic reset and leaves the logic and its drivers
-    /// as the one remembered left them.
+    /// Cached operating point and validity metadata reused by subsequent linearized
+    /// analyses under matching conditions.
+    ///
+    /// After device preparation, only active sweep holds and logic driver state alter DC
+    /// equations, so both are tracked in the cache key.
     pub(crate) remembered: Option<Remembered>,
-    /// What a DC sweep holds away from the run's own values, at the value or the number
-    /// each is held at.
+    /// Active DC sweep overrides away from nominal run values, mapping [`Held`] keys to
+    /// their held numbers.
     pub(crate) held: BTreeMap<Held, f64>,
-    /// The nets a DC solution forces to a voltage while it is solved, each a node's
-    /// unknown and its voltage, which source stepping ramps as it ramps the sources: a
-    /// transient's initial conditions, or the nodesets until they are released; none
-    /// outside such a solution.
+    /// Node voltages forced during DC solves (initial conditions or active nodesets),
+    /// ramped alongside sources during source stepping.
     pub(crate) forced: Vec<(UnknownIndex, f64)>,
-    /// Where the run's first operating point starts, in a chain of runs: none for a run
-    /// that starts from zero.
+    /// Optional warm-start state from the previous run in a chain (`None` starts from zero).
     pub(crate) warm: Option<Warm>,
-    /// How many times the run has solved for an operating point, or a DC sweep's first
-    /// value, rather than taken the last one's.
+    /// Cumulative operating-point solves performed (excluding cached reuses).
     pub(crate) solves: usize,
-    /// What the unknowns its delay lines read took at the points the transient being run
-    /// accepted, which each evaluation at a time reads: made afresh as a transient starts,
-    /// none in one of a circuit without a delay line, and forgotten as one ends.
+    /// Accepted transient waveform history read by delay lines during transient evaluation,
+    /// absent when no delay lines exist or outside transient runs.
     pub(crate) past: Option<Past>,
 }
 
 impl State {
-    /// A state of `elaborated` made afresh, whose instances `runs` were prepared at
-    /// `temperature`, those whose numbers a run's values replace from `patched`.
+    /// Creates a fresh [`State`] for `elaborated` from prepared `runs`, `patched` origins,
+    /// and `temperature`.
     pub(crate) fn new(
         elaborated: &Elaborated,
         runs: Devices,
@@ -129,13 +116,13 @@ impl State {
         }
     }
 
-    /// A state of `elaborated` for `values`, its instances prepared for them, or `None`
-    /// when the values give some instance another shape, so the circuit another
-    /// structure.
+    /// Creates a [`State`] for `elaborated` prepared at `values`, returning `None` if
+    /// `values` alter any device kernel shape and require restructuring.
     ///
     /// # Errors
     ///
-    /// Returns every problem the values make, as [`Elaborated::structure_of`] does.
+    /// Returns every elaboration problem triggered by `values`, matching
+    /// [`Elaborated::structure_of`].
     pub(crate) fn from_values(
         elaborated: &Elaborated,
         values: &Values,
@@ -159,17 +146,16 @@ impl State {
         Ok(Some(Self::new(elaborated, runs, patched, temperature)))
     }
 
-    /// Prepares again the run's instances whose numbers or temperature `values` change,
-    /// and forgets everything the runs before it left: the instances' memory and the slab,
-    /// the operating point remembered, the sources held, the sparse solver's pivots and
-    /// factors, the meter's counts, the logic's events and traces, and what the analyses
-    /// record. Every buffer is kept. Returns whether the instances of `values`
-    /// have the shapes of `elaborated`'s; when they do not, or the values make a problem,
-    /// the state is left as it was.
+    /// Resets the state in place for `values`, re-preparing changed devices and clearing
+    /// all cached solver, logic, recording, and meter state while keeping allocations.
+    ///
+    /// Returns `true` if all devices keep their elaborated kernel shapes; returns `false`
+    /// without mutating state when restructuring is required.
     ///
     /// # Errors
     ///
-    /// Returns every problem the values make, as [`Elaborated::structure_of`] does.
+    /// Returns every elaboration problem triggered by `values`, matching
+    /// [`Elaborated::structure_of`], leaving state unchanged.
     pub(crate) fn reset(
         &mut self,
         elaborated: &Elaborated,
@@ -209,9 +195,8 @@ impl State {
         Ok(true)
     }
 
-    /// Forgets what a run leaves but its devices, the sparse solver's pivots and the
-    /// meter's counts: the operating point remembered, what a sweep holds, the logic's
-    /// events and traces, and what the analyses record.
+    /// Clears transient analysis caches (cached operating point, sweep holds, logic events,
+    /// and recorder state) while preserving devices, sparse pivots, and meter counts.
     pub(crate) fn forget(&mut self, elaborated: &Elaborated) {
         self.swept.clear();
         self.events.reset(&elaborated.logic);
@@ -223,15 +208,14 @@ impl State {
         self.past = None;
     }
 
-    /// Prepares again, for `to`, the instances whose numbers or temperature differ from
-    /// those of `from`, the values the run's instances are prepared for, each from its
-    /// initial memory; leaves every other instance as it is, its memory among it. Returns whether each of them keeps
-    /// its shape in `elaborated`; when one does not, or the values make a problem, the
-    /// state is left as it was.
+    /// Re-prepares devices whose parameter patches or temperature differ between `from` and
+    /// `to`, leaving unchanged devices and their memory intact.
+    ///
+    /// Returns `false` without modifying state if any updated device changes kernel shape.
     ///
     /// # Errors
     ///
-    /// Returns every problem the values make for the instances prepared again.
+    /// Returns elaboration problems produced by out-of-range updated parameters.
     pub(crate) fn move_to(
         &mut self,
         elaborated: &Elaborated,
@@ -263,8 +247,7 @@ impl State {
         if !problems.is_empty() {
             return Err(ElaborationError::new(problems));
         }
-        // The origins of the instances prepared again replace their old ones, which come
-        // back if the instances refuse them.
+        // Swap updated origins in, keeping previous values to roll back on shape mismatch.
         let was_empty = self.patched.is_empty();
         if was_empty && made.iter().any(|(_, origin)| origin.is_some()) {
             self.patched.resize_with(elaborated.devices.len(), || None);
@@ -304,14 +287,15 @@ impl State {
         Ok(true)
     }
 
-    /// Prepares again the instance of a kernel the device at `device` is, if it is one,
-    /// from its origin as the run now makes it: swept, patched or its own. Returns whether
-    /// it keeps its group's kernel and shape; when it does not, or its numbers make a
-    /// problem, it keeps the numbers it had.
+    /// Re-prepares the kernel instance at `device` from its current swept, patched, or
+    /// nominal origin.
+    ///
+    /// Returns `true` if the device keeps its group's kernel and shape; returns `false`
+    /// without committing changes otherwise.
     ///
     /// # Errors
     ///
-    /// Returns the problem the device's numbers make.
+    /// Returns the elaboration problem produced by out-of-range device parameters.
     pub(crate) fn prepare_again(
         &mut self,
         elaborated: &Elaborated,
@@ -337,14 +321,15 @@ impl State {
     }
 }
 
-/// Whether an unpatched device should be prepared again.
+/// Policy controlling whether an unpatched device must be re-prepared.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Refresh {
     IfPatched,
     Always,
 }
 
-/// Whether `a` and `b` replace the same numbers with the same bits.
+/// Returns whether patch slices `a` and `b` override identical parameters with bit-equal
+/// values.
 fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
     a.len() == b.len()
         && a.iter()
@@ -352,11 +337,12 @@ fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
             .all(|((p, x), (q, y))| p == q && x.to_bits() == y.to_bits())
 }
 
-/// What has changed of the device at `device` for `origins`: its parameters, when values
-/// replace them or the device's group was made of others; else, when `refresh` is
-/// [`Refresh::Always`], its parameters at another temperature than its group's, which may
-/// give it another shape, as a resistor's crossing 1 Ω does, and its numbers at its
-/// group's; and otherwise nothing.
+/// Classifies what changed for `device` under `origins` and `refresh`.
+///
+/// Patched devices, non-nominal devices, or [`Refresh::Always`] updates at a changed
+/// temperature re-read parameters (because temperature drift can alter kernel shape, such
+/// as a resistor crossing 1 Ω); [`Refresh::Always`] at the nominal temperature refreshes
+/// numbers only.
 fn changes(origins: &Origins<'_>, device: usize, refresh: Refresh) -> Changed {
     let replaced = origins.patched.get(device).is_some_and(Option::is_some);
     let made_otherwise = origins
@@ -375,13 +361,12 @@ fn changes(origins: &Origins<'_>, device: usize, refresh: Refresh) -> Changed {
     }
 }
 
-/// Prepares, in `runs`, each instance of a kernel whose device `changed` says has changed,
-/// from `origins`, keeping the numbers apart until `runs` commits them. Returns whether each
-/// has its group's kernel and shape.
+/// Prepares changed kernel instances in `runs` from `origins` into staging storage until
+/// committed, returning whether every instance keeps its group's kernel and shape.
 ///
 /// # Errors
 ///
-/// Returns the problem of each device whose parameters are out of range.
+/// Returns elaboration problems for every device with out-of-range parameters.
 fn prepared(
     runs: &mut Runs,
     origins: &Origins<'_>,
@@ -414,8 +399,8 @@ mod tests {
 
     use crate::{Analysis, Elaborated, Options, Record, Simulator, Structure, Values};
 
-    /// The circuit of the benchmark `bjt_amp`, whose transistors' junctions remember their
-    /// last voltages, and a ring of a logic inverter, a resistor and a capacitor.
+    /// Loads `bjt_amp` and constructs a mixed-signal logic-inverter ring circuit for reset
+    /// equivalence testing.
     fn circuits() -> [Circuit; 2] {
         let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
         let text = std::fs::read_to_string(speed.join("circuits/bjt_amp.json")).unwrap();
@@ -448,10 +433,8 @@ mod tests {
         [amplifier, Circuit::from_json(&ring.to_string()).unwrap()]
     }
 
-    /// A state reset for some values is the state made afresh for them: its devices and
-    /// their memory, the sparse solver's counts, the workspace and its meter, the logic's
-    /// events, what the analyses record, the operating point remembered and the
-    /// sources held, every one as a fresh state has it.
+    /// Verifies that resetting a used state matches a freshly constructed state across
+    /// device memory, solver counts, workspace, logic events, recordings, and holds.
     #[test]
     fn a_state_reset_is_the_state_made_afresh() {
         let analyses: Vec<Analysis> = [

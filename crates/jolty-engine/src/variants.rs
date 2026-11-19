@@ -1,16 +1,14 @@
-//! Variants: the values of every run of a [batch](crate::batch), each a pure function of the
-//! run's index.
+//! Parameter variant generators for [batch](crate::batch) execution, computing each run's
+//! values as a pure function of run index.
 //!
-//! [`Explicit`] variants list their values; a [`Grid`] steps axes of parameters or the
-//! temperature in mixed radix, the last axis fastest; a [`MonteCarlo`] analysis draws each
-//! toleranced number from its seed, the sample's index and the number's name; and a
-//! [`Product`] runs every variant of one at every variant of another, so corners, samples
-//! and a sweep make one batch.
+//! Supported generators are [`Explicit`] lists, mixed-radix [`Grid`] sweeps (last axis
+//! varying fastest), [`MonteCarlo`] tolerance sampling, and Cartesian [`Product`]
+//! combinations for mixing corners, sweeps, and samples in one batch.
 //!
-//! A Monte Carlo draw depends on nothing but its seed, its sample's index and a stable key:
-//! the FNV-1a hash of the instance's path and the parameter's, or of the lot's name and the
-//! parameter's. So sample `i` drawn alone is sample `i` of any batch, however many threads
-//! run it, and a part added to the circuit leaves every other part's draws as they were.
+//! Each Monte Carlo draw depends solely on seed, sample index, and a stable FNV-1a hash of
+//! `(instance_path, parameter_path)` or `(lot_name, parameter_path)`. Sample `i` stays
+//! identical whether drawn standalone or inside any parallel batch, and adding a part never
+//! perturbs draws for unrelated parts.
 
 use std::collections::HashSet;
 
@@ -24,7 +22,7 @@ use crate::batch::Variants;
 use crate::elaborate::{ElaborationError, ElaborationProblem};
 use crate::{Elaborated, ParameterId, Values};
 
-/// Variants that list the values of each run.
+/// Explicit list of per-run [`Values`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Explicit(pub Vec<Values>);
 
@@ -42,21 +40,20 @@ impl Variants for Explicit {
     }
 }
 
-/// What an axis of a [`Grid`] steps.
+/// Quantity stepped along one axis of a [`Grid`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
-    /// A number of a device's parameters.
+    /// Device numeric parameter identified by [`ParameterId`].
     Parameter(ParameterId),
-    /// The devices' temperature, in kelvins.
+    /// Device operating temperature in kelvins.
     Temperature,
 }
 
-/// Variants on a grid: every combination of the values of its axes, in mixed radix with
-/// the last axis fastest, so that the runs of one value of every axis but the last are
-/// consecutive.
+/// Cartesian grid over parameter and temperature axes in mixed-radix order (last axis
+/// varying fastest).
 ///
-/// A warm grid runs each line along its last axis as a chain, each run starting from the
-/// solution of the run before it, as a DC sweep does from one value to the next.
+/// When `warm` is enabled, runs along each line of the last axis execute as a warm-started
+/// chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grid {
     axes: Vec<(Axis, Vec<f64>)>,
@@ -65,13 +62,13 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// The grid of `axes`, each what it steps and its values in order, `warm` when each line
-    /// along the last is a chain. A grid of no axes has one point, which replaces nothing.
+    /// Creates a [`Grid`] from ordered `(axis, values)` pairs; an empty axis list yields a
+    /// single nominal point, and `warm` chains runs along the last axis.
     ///
     /// # Errors
     ///
-    /// Returns [`VariantsError::Empty`] for an axis of no values, and
-    /// [`VariantsError::TooMany`] when the grid has more points than a `u64` counts.
+    /// Returns [`VariantsError::Empty`] for an empty axis or [`VariantsError::TooMany`]
+    /// when total points overflow `u64`.
     pub fn new(axes: Vec<(Axis, Vec<f64>)>, warm: bool) -> Result<Self, VariantsError> {
         let mut len: u64 = 1;
         for (index, (_, values)) in axes.iter().enumerate() {
@@ -115,9 +112,10 @@ impl Variants for Grid {
     }
 }
 
-/// Every variant of `A` at every variant of `B`: run `i` is variant `i / len(B)` of `A`,
-/// then variant `i % len(B)` of `B`, whose values replace `A`'s where both give one. Its
-/// chains are those of `B`.
+/// Cartesian product combining every variant of `A` with every variant of `B`.
+///
+/// Run `i` applies variant `i / len(B)` of `A` followed by variant `i % len(B)` of `B`,
+/// with `B` overriding `A` on shared keys and setting the chain length.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Product<A, B> {
     first: A,
@@ -126,11 +124,11 @@ pub struct Product<A, B> {
 }
 
 impl<A: Variants, B: Variants> Product<A, B> {
-    /// Every variant of `first` at every variant of `second`.
+    /// Creates the Cartesian [`Product`] of `first` and `second`.
     ///
     /// # Errors
     ///
-    /// Returns [`VariantsError::TooMany`] when there are more runs than a `u64` counts.
+    /// Returns [`VariantsError::TooMany`] when the product overflows `u64`.
     pub fn new(first: A, second: B) -> Result<Self, VariantsError> {
         let len = first
             .len()
@@ -139,7 +137,7 @@ impl<A: Variants, B: Variants> Product<A, B> {
         Ok(Self { first, second, len })
     }
 
-    /// The variants of which it runs every one at every one: the first, then the second.
+    /// Returns references to the `(first, second)` operand variant sets.
     #[must_use]
     pub const fn parts(&self) -> (&A, &B) {
         (&self.first, &self.second)
@@ -163,35 +161,33 @@ impl<A: Variants, B: Variants> Variants for Product<A, B> {
     }
 }
 
-/// Why variants cannot be made.
+/// Error returned when constructing invalid [`Grid`] or [`Product`] variants.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VariantsError {
-    /// An axis of a grid has no values, by its index.
+    /// Grid axis at the given index contains no values.
     #[error("axis {0} of the grid has no values")]
     Empty(usize),
-    /// The variants are more than a `u64` counts.
+    /// Total number of variants overflows `u64`.
     #[error("the variants are more than 2⁶⁴ − 1")]
     TooMany,
 }
 
-/// A number of a device instance that varies within its tolerance: where it is, its
-/// nominal value, and its tolerance.
+/// Device numeric parameter carrying a statistical tolerance specification.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toleranced {
-    /// The instance's path, such as `X1/R1`.
+    /// Hierarchical device instance path, such as `X1/R1`.
     pub instance: String,
-    /// The number's path among the instance's parameters, such as `resistance` or
-    /// `waveform.dc`.
+    /// Parameter path within the device, such as `resistance` or `waveform.dc`.
     pub parameter: String,
-    /// The number the circuit writes.
+    /// Nominal numeric value declared in the circuit.
     pub nominal: f64,
-    /// How far its values spread.
+    /// Statistical distribution and spread parameters for this value.
     pub tolerance: Tolerance,
 }
 
-/// What a draw is drawn for: a part's own factor, its lot's, or a variate of a process
-/// kit's statistical function.
+/// Domain separation tag for per-part draws, shared lot draws, and process-kit statistical
+/// variates.
 #[derive(Debug, Clone, Copy)]
 #[repr(u64)]
 enum Drawn {
@@ -200,26 +196,22 @@ enum Drawn {
     Kit = 2,
 }
 
-/// A standard variate, which a process kit's statistical function scales: SPICE's
-/// `agauss` and `gauss` a normal one, its `aunif`, `unif` and `limit` a uniform one.
+/// Standard random variate scaled by process-kit statistical functions (`agauss`/`gauss`
+/// for normal; `aunif`/`unif`/`limit` for uniform).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variate {
-    /// Normal, of mean 0 and standard deviation 1.
+    /// Standard normal variate with mean 0 and standard deviation 1.
     Normal,
-    /// Uniform within 1 of 0, in `[-1, 1)`.
+    /// Uniform variate on `[-1, 1)`.
     Uniform,
 }
 
-/// The standard `variate` a process kit's statistical function draws in the sample `index`
-/// of a Monte Carlo analysis seeded with `seed`, at the call `call` within `scope`: the path
-/// of the instance whose definitions call it, empty for the kit's own, and which call it is
-/// there, such as a parameter's name and the call's place in its expression.
+/// Draws a standard `variate` for sample `index` from `seed` at `call` within `scope`
+/// (instance path, or empty for kit-level definitions).
 ///
-/// It is drawn from a `ChaCha20` generator seeded as a part's own factor is, of the seed, the
-/// sample's index and the FNV-1a hash of `scope` and `call`, the fourth word marking it a
-/// kit's, so a sample's draws are the same alone or in any batch, and an instance added
-/// leaves every other's as they were; each as numpy draws it from a uniform number in
-/// `[0, 1)` or a standard normal one.
+/// Uses a `ChaCha20` RNG keyed by `(seed, index, fnv1a(scope, call), Drawn::Kit)` so each
+/// draw stays invariant across batch sizes, thread counts, and unrelated circuit edits,
+/// matching `NumPy` uniform and standard-normal transformations.
 #[must_use]
 pub fn variate(variate: Variate, seed: u64, index: u64, scope: &str, call: &str) -> f64 {
     let mut generator = generator(seed, index, key(scope, call), Drawn::Kit);
@@ -230,18 +222,14 @@ pub fn variate(variate: Variate, seed: u64, index: u64, scope: &str, call: &str)
 }
 
 impl Toleranced {
-    /// The number's value in the sample `index` of a Monte Carlo analysis seeded with
-    /// `seed`: its nominal value times its own factor and, if it is in a lot, the lot's.
+    /// Draws the realized parameter value for Monte Carlo sample `index` from `seed`,
+    /// multiplying `nominal` by the per-part factor and optional shared lot factor.
     ///
-    /// Each factor is drawn from a `ChaCha20` generator seeded with four little-endian 64-bit
-    /// words: the seed, the sample's index, a stable key, and whether it is a part's own
-    /// factor or its lot's. A part's key is the FNV-1a hash of its instance's path and the
-    /// number's; a lot's, of the lot's name and the number's, so every part of the lot
-    /// draws the lot's factor alike. A factor is `1 + d` for a linear spread, `d` uniform
-    /// within the tolerance or normal with the tolerance three standard deviations, and
-    /// `(1 + relative)^u` for a logarithmic one, `u` uniform within 1 of 0 or normal with 1
-    /// three standard deviations, each drawn as numpy draws it from a uniform number in
-    /// `[0, 1)` or a standard normal one.
+    /// Each factor uses a `ChaCha20` RNG keyed by `(seed, index, fnv1a_key, domain_tag)`
+    /// where part keys hash `(instance, parameter)` and lot keys hash `(lot, parameter)`.
+    /// Linear tolerances scale by `1 + d` (uniform over `±relative` or normal with
+    /// `3σ = relative`), and logarithmic tolerances scale by `(1 + relative)^u` (uniform
+    /// over `[-1, 1)` or normal with `3σ = 1`).
     #[must_use]
     pub fn drawn(&self, seed: u64, index: u64) -> f64 {
         let tolerance = &self.tolerance;
@@ -265,23 +253,22 @@ impl Toleranced {
     }
 }
 
-/// How a factor [`Toleranced::drawn`] draws spreads, to first order: the standard deviation
-/// of the number it draws, `d` or `u`, whose mean is 0, and the factor's derivative with
-/// respect to it there.
+/// First-order statistical spread of a tolerance factor drawn by [`Toleranced::drawn`]:
+/// standard deviation of the zero-mean variate and factor derivative at zero.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spread {
-    /// The standard deviation of the number drawn.
+    /// Standard deviation of the underlying zero-mean random variable.
     pub standard_deviation: f64,
-    /// The factor's derivative with respect to the number drawn, at its mean.
+    /// Derivative of the multiplicative factor with respect to the random variable at 0.
     pub slope: f64,
 }
 
 impl Spread {
-    /// How a factor drawn within `relative` as `distribution` takes it spreads: a linear
-    /// factor `1 + d`, its derivative 1, `d` uniform within the tolerance, of standard
-    /// deviation `relative / √3`, or normal with the tolerance three standard deviations; a
-    /// logarithmic one `(1 + relative)^u`, its derivative `ln(1 + relative)`, `u` uniform
-    /// within 1 of 0, of standard deviation `1 / √3`, or normal of standard deviation `1/3`.
+    /// Computes the first-order [`Spread`] for `distribution` and `relative` tolerance.
+    ///
+    /// Linear distributions (`1 + d`) have slope `1` with `σ = relative / √3` (uniform) or
+    /// `relative / 3` (normal). Logarithmic distributions (`(1 + relative)^u`) have slope
+    /// `ln(1 + relative)` with `σ = 1 / √3` (uniform) or `1 / 3` (normal).
     #[must_use]
     pub fn from_tolerance(distribution: Distribution, relative: f64) -> Self {
         let uniform = 3.0_f64.sqrt().recip();
@@ -308,8 +295,8 @@ impl Spread {
 }
 
 impl Toleranced {
-    /// The random variables its value is drawn from: its own factor's spread, and its lot's
-    /// name and spread if it is in one, each as [`Spread::from_tolerance`] takes it.
+    /// Returns the per-part [`Spread`] and optional `(lot_name, lot_spread)` computed via
+    /// [`Spread::from_tolerance`].
     #[must_use]
     pub fn random_variables(&self) -> (Spread, Option<(&str, Spread)>) {
         let tolerance = &self.tolerance;
@@ -324,14 +311,13 @@ impl Toleranced {
     }
 }
 
-/// The stable key of `first` and `second`, an instance's path and a number's, or a lot's
-/// name and a number's: the FNV-1a hash of the two joined by the byte 0xFF, which no UTF-8
-/// text holds, so that no two pairs join alike.
+/// Hashes `(first, second)` with 64-bit FNV-1a separated by byte `0xFF` (invalid in UTF-8
+/// so distinct pairs never collide by concatenation).
 fn key(first: &str, second: &str) -> u64 {
     fnv(first.bytes().chain([0xff]).chain(second.bytes()))
 }
 
-/// The FNV-1a hash of `bytes`, 64 bits wide (Fowler, Noll and Vo; IETF draft
+/// Computes the 64-bit FNV-1a hash of `bytes` (Fowler, Noll, and Vo; IETF draft
 /// `draft-eastlake-fnv`).
 fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
     /// FNV-1a 64-bit offset basis (`14695981039346656037`; Fowler, Noll and Vo, IETF draft
@@ -345,8 +331,7 @@ fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
     })
 }
 
-/// The generator of the draw of `drawn` for the stable `key` in the sample `index` of the
-/// analysis seeded with `seed`.
+/// Seeds a `ChaCha20Rng` from little-endian `(seed, index, key, drawn)` words.
 fn generator(seed: u64, index: u64, key: u64, drawn: Drawn) -> ChaCha20Rng {
     let mut words = [0u8; 32];
     for (place, word) in [seed, index, key, drawn as u64].into_iter().enumerate() {
@@ -355,8 +340,8 @@ fn generator(seed: u64, index: u64, key: u64, drawn: Drawn) -> ChaCha20Rng {
     ChaCha20Rng::from_seed(words)
 }
 
-/// A factor drawn from `generator` within a spread of `relative` as `distribution` takes it,
-/// as `jolty.variation` defines it.
+/// Draws a multiplicative tolerance factor from `generator` for `distribution` and
+/// `relative` spread.
 fn factor(distribution: Distribution, relative: f64, mut generator: ChaCha20Rng) -> f64 {
     let generator = &mut generator;
     match distribution {
@@ -367,65 +352,61 @@ fn factor(distribution: Distribution, relative: f64, mut generator: ChaCha20Rng)
     }
 }
 
-/// A number drawn uniformly from `[low, high)`, as numpy's `uniform` draws it: `low` plus
-/// the span times a number drawn uniformly from `[0, 1)`.
+/// Draws a uniform variate on `[low, high)` matching `NumPy`'s `uniform` formula.
 fn uniform(generator: &mut ChaCha20Rng, low: f64, high: f64) -> f64 {
     let unit: f64 = generator.random();
     low + (high - low) * unit
 }
 
-/// A number drawn normally about `mean` with the standard deviation `deviation`, as numpy's
-/// `normal` draws it: the mean plus the deviation times a standard normal number.
+/// Draws a normal variate with `mean` and `deviation` matching `NumPy`'s `normal` formula.
 fn normal(generator: &mut ChaCha20Rng, mean: f64, deviation: f64) -> f64 {
     let standard: f64 = generator.sample(StandardNormal);
     mean + deviation * standard
 }
 
-/// Every number of every device instance of `circuit` that has a tolerance: in the order of
-/// the hierarchy, each instance's numbers in the order of their paths, so that the same
-/// circuit lists the same numbers.
+/// Collects all toleranced numeric device parameters in `circuit` in deterministic
+/// hierarchical and parameter-path order.
 ///
 /// # Errors
 ///
-/// Returns [`TolerancedError::Untoleranced`] for a tolerance on a parameter the instance writes
-/// no number for, or [`TolerancedError::Recursive`] when a component contains itself through a
-/// cycle of component placements.
+/// Returns [`TolerancedError::Untoleranced`] when a tolerance targets a non-numeric
+/// parameter, or [`TolerancedError::Recursive`] when component placements form a cycle.
 pub fn toleranced(circuit: &Circuit) -> Result<Vec<Toleranced>, TolerancedError> {
     let mut found = Vec::new();
     walk(circuit, &mut found)?;
     Ok(found)
 }
 
-/// What prevented walking a circuit's toleranced parameters.
+/// Failure encountered while collecting toleranced parameters from a circuit hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TolerancedError {
-    /// The tolerance of a parameter an instance writes no number for.
+    /// Tolerance targets a parameter without a numeric value.
     #[error("{instance} gives {parameter} a tolerance, not a number")]
     Untoleranced {
-        /// The instance's path.
+        /// Hierarchical device instance path.
         instance: String,
-        /// The parameter's path among its parameters.
+        /// Parameter path within the device.
         parameter: String,
     },
-    /// A component hierarchy containing a placement cycle.
+    /// Component hierarchy contains a placement cycle.
     #[error("component `{component}` contains itself: {}", .cycle.join(" -> "))]
     Recursive {
-        /// The component that closes the cycle.
+        /// Component name closing the cycle.
         component: String,
-        /// The components around the cycle, starting and ending with `component`.
+        /// Sequence of component names along the cycle, starting and ending with `component`.
         cycle: Vec<String>,
     },
 }
 
-/// One active frame of the iterative hierarchy walk in [`walk`].
+/// Active traversal frame in [`walk`].
 struct Frame<'a> {
     placed: &'a Component,
     prefix: String,
     next_instance: usize,
 }
 
-/// Appends the toleranced numbers of the reachable instances of `circuit` to `found` using an
-/// iterative depth-first walk with cycle detection.
+/// Appends toleranced parameters from all reachable instances of `circuit` to `found` via
+/// iterative depth-first traversal with cycle detection.
 fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), TolerancedError> {
     let top = circuit.top.as_str();
     let Some(root) = circuit.components.get(top) else {
@@ -496,8 +477,8 @@ fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), Toleranced
     Ok(())
 }
 
-/// Samples of a circuit's toleranced numbers: sample `i` sets each to its value
-/// [drawn](Toleranced::drawn) for `i` from the seed.
+/// Monte Carlo variant generator drawing each toleranced parameter via
+/// [drawn](Toleranced::drawn) from a fixed seed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonteCarlo {
     seed: u64,
@@ -506,13 +487,13 @@ pub struct MonteCarlo {
 }
 
 impl MonteCarlo {
-    /// `samples` samples of the numbers `toleranced` of `elaborated`, drawn from `seed`.
+    /// Creates a [`MonteCarlo`] generator producing `samples` draws of `toleranced`
+    /// parameters on `elaborated` from `seed`.
     ///
     /// # Errors
     ///
-    /// Returns an [`ElaborationProblem::UnknownParameter`] for each number `elaborated`
-    /// does not write, and [`ElaborationProblem::UnknownOverride`] for each instance it
-    /// does not have.
+    /// Returns [`ElaborationProblem::UnknownParameter`] for unrecognized parameter paths
+    /// and [`ElaborationProblem::UnknownOverride`] for nonexistent instances.
     pub fn new(
         elaborated: &Elaborated,
         seed: u64,

@@ -1,52 +1,46 @@
 //! Distinguishing numerical trapezoidal ringing from genuine physical oscillation.
 //!
-//! Under the trapezoidal rule on a step of length `h` (`α = 2/h`), the charge derivatives
-//! `y_k = dq/dt` of a linear circuit `G x + C x' = s` propagate through the amplification
-//! operator `R = 2 F − I = (α C − G)(α C + G)⁻¹`, where `F = α C (G + α C)⁻¹` is Shampine's
-//! filter (Shampine, 1980; Hairer and Wanner, *Solving Ordinary Differential Equations II*,
-//! 1996, sections IV.3 and IV.8):
+//! Under the trapezoidal rule on step `h` (`α = 2/h`), charge derivatives `y_k = dq/dt`
+//! for `G x + C x' = s` propagate via `R = 2F - I = (αC - G)(αC + G)⁻¹`. Matrix
+//! `F = αC (G + αC)⁻¹` is Shampine's filter (Shampine, 1980; Hairer and Wanner,
+//! *Solving Ordinary Differential Equations II*, 1996, §IV.3 and §IV.8). Each eigenmode
+//! falls into one of three regimes:
 //!
-//! - A **physical lossless oscillation** `s = ±jω` maps to the complex unit circle
-//!   `R = exp(∓jθ)` with `θ = 2 atan(ω h / 2)`. When `ω h > 2` (fewer than four steps per
-//!   period), `θ > π/2` and the first differences `y_{k+1} − y_k` alternate in sign every
-//!   step even though the oscillation is real and energy-conserving.
-//! - A **stiff real decaying mode** `s = −σ` with `σ > α = 2/h` maps to the negative real
-//!   interval `R ∈ (−1, 0)`, so `y_k` suffers genuine numerical `(-1)^k` ringing.
-//! - An **algebraic or DAE constraint mode** `s = ∞` (`C u = 0`, `G u ≠ 0`, such as a
-//!   capacitor driven by a grounded or floating voltage source with an unlocated corner, or
-//!   a Meyer gate-oxide displacement while its capacitance is zero) maps to `R = −1` (`F = 0`),
-//!   carrying any derivative error from step to step undamped with alternating sign.
+//! - **Physical lossless oscillation** (`s = ±jω`): maps to `R = exp(∓jθ)` with
+//!   `θ = 2 atan(ω h / 2)`. When `ω h > 2`, `θ > π/2` and first differences `y_{k+1} - y_k`
+//!   alternate in sign every step despite being energy-conserving.
+//! - **Stiff real decaying mode** (`s = -σ` with `σ > α = 2/h`): maps to `R ∈ (-1, 0)`,
+//!   causing genuine numerical `(-1)^k` ringing in `y_k`.
+//! - **Algebraic DAE constraint mode** (`s = ∞`, `C u = 0`, `G u ≠ 0`): occurs in
+//!   capacitor-voltage-source loops with unlocated corners or zero-capacitance Meyer
+//!   displacements. Algebraic constraint modes map to `R = -1` (`F = 0`), propagating
+//!   derivative error undamped with alternating sign.
 //!
-//! A four-point alternating derivative check is therefore refined in two stages, keeping the
-//! fast path free of allocations and linear solves:
+//! A four-point alternating derivative check is refined in two stages, keeping the fast path
+//! free of allocations and linear solves:
 //!
-//! 1. **Variable-step scalar restoring-force identity**: on any single-mode harmonic
-//!    oscillator `q'' = −ω² (q − q_eq)` integrated by the trapezoidal rule with arbitrary
-//!    variable steps `h_k = t_{k+1} − t_k`, the midpoint acceleration `a_k = (y_{k+1} − y_k)/h_k`
-//!    satisfies `a_k = −ω² (q_{k+1} + q_k)/2 + const` identically. Therefore
-//!    `p_1 = (a_1 − a_0) · (q_2 − q_0)/2 ≤ 0` and `p_2 = (a_2 − a_1) · (q_3 − q_1)/2 ≤ 0`,
-//!    with at least one strictly negative outside rounding. By contrast, a real decaying mode
-//!    `q' = −λ (q − q_eq)` gives `p_1 ≥ 0` and `p_2 ≥ 0` identically, and decoupled algebraic
-//!    ringing gives `p_1 = p_2 = 0` (flat `q`) or `p_1 · p_2 < 0` (monotone `q`).
-//! 2. **Linearized passivity and exact algebraic projection**: for unknowns not explained by
-//!    stage 1 (such as multi-mode coupled lossless LC ladders beating across frequencies, or
-//!    genuine ringing), each physical domain (`Electrical`, `Thermal`, `Filter`, `State`,
-//!    `Displacement`) is checked using the already-factored step Jacobian `J = G + α C`:
-//!    - A `Displacement` unknown rings when its filter diagonal `F_{i,i} < 1/2` (`R_{i,i} < 0`).
-//!    - With sign matrix `S` flipping `Current` rows that carry `C_{i,i} ≤ 0` so that `S C ≥ 0`
-//!      and lossless `S G` is skew-symmetric in watts, a domain whose `S G` is skew-symmetric
-//!      and decoupled from other domains has `uᵀ S G u = 0` identically for every `u`, skipping
-//!      all linear solves for that domain. Otherwise the cached `LU` factors check the quadratic
-//!      passivity ratio `uᵀ S G u ≥ uᵀ S (α C) u` (exact boundary `σ ≥ α = 2/h`), first on the
-//!      collective Nyquist third difference `y_3 − 3 y_2 + 3 y_1 − y_0` of the domain's suspects
-//!      (catching critically damped and overdamped RLC modes at every `ω h`), then per suspect
-//!      unit vector `e_i` (preventing a large lossless tank from hiding a small stiff RC).
-//!    - Finally, for any capacitor-voltage-source loop (grounded or floating ideal voltage
-//!      sources where `C` is zero on row and column and `G` touches only voltage nodes), the
-//!      local saddle-point projection `[C_SS / c_scale, B_S; A_S, 0] [z; μ] = [v_S; 0]` isolates
-//!      the exact algebraic loop current `μ_y` and charge `μ_q` for every source in the
-//!      component, cancelling all lossless LC modes (even multi-mode ladders, bypass capacitors
-//!      to DC supplies, and ungrounded capacitive islands) to machine precision.
+//! 1. **Variable-step scalar restoring-force identity**: for a single-mode oscillator
+//!    `q'' = -ω² (q - q_eq)` over steps `h_k = t_{k+1} - t_k`, midpoint acceleration
+//!    `a_k = (y_{k+1} - y_k) / h_k` equals `-ω² (q_{k+1} + q_k) / 2 + const`.
+//!    Hence `p_1 = (a_1 - a_0) * (q_2 - q_0) / 2 ≤ 0` and
+//!    `p_2 = (a_2 - a_1) * (q_3 - q_1) / 2 ≤ 0`, with at least one strictly negative outside
+//!    rounding. Real decaying modes give `p_1, p_2 ≥ 0`, while decoupled algebraic ringing
+//!    gives `p_1 = p_2 = 0` or `p_1 * p_2 < 0`.
+//! 2. **Linearized passivity and exact algebraic projection**: suspects unexplained by
+//!    stage 1 (multi-mode LC ladders or genuine ringing) are evaluated per physical domain
+//!    (`Electrical`, `Thermal`, `Filter`, `State`, `Displacement`) using the cached step
+//!    Jacobian `J = G + α C`:
+//!    - A `Displacement` unknown rings when its filter diagonal satisfies `F_{i,i} < 1/2`
+//!      (`R_{i,i} < 0`).
+//!    - Sign matrix `S` flips `Current` rows with `C_{i,i} ≤ 0` so `S C ≥ 0` and lossless
+//!      `S G` is skew-symmetric in watts. A decoupled skew-symmetric domain has
+//!      `uᵀ S G u = 0` identically and skips all solves. Otherwise cached `LU` factors test
+//!      `uᵀ S G u ≥ uᵀ S (α C) u` (`σ ≥ α = 2/h`) on the Nyquist third difference
+//!      `y_3 - 3 y_2 + 3 y_1 - y_0` and per-suspect unit vectors `e_i`.
+//!    - For capacitor-voltage-source loops, the local saddle-point solve
+//!      `[C_SS / c_scale, B_S; A_S, 0] [z; μ] = [v_S; 0]` extracts exact loop current `μ_y`
+//!      and charge `μ_q`, cancelling lossless LC oscillations, bypass capacitors, and
+//!      floating islands to machine precision.
 
 #[cfg(test)]
 mod tests;
@@ -71,7 +65,7 @@ use crate::solver::{Factors, Solver};
 /// Equations II*, 1996, section IV.3; Shampine, 1980).
 const TRAPEZOIDAL_REAL_FILTER_BOUND: f64 = 0.5;
 
-/// Sentinel for an unknown absent from a local component index map.
+/// Index marker for an unknown absent from a local component index map.
 const ABSENT: usize = usize::MAX;
 
 /// The four consecutive trapezoidal points tested for numerical ringing, oldest first.
@@ -232,7 +226,7 @@ impl CachedSources {
     }
 }
 
-/// Whether a capacitive connected component is grounded or an ungrounded floating island.
+/// Grounding classification of a capacitive connected component.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Grounding {
     Grounded,
@@ -548,11 +542,11 @@ pub(crate) struct Detector {
 }
 
 impl Detector {
-    /// Whether the trapezoidal formula is numerically ringing at the end of `window`.
+    /// Checks whether the trapezoidal rule is numerically ringing at the end of `window`.
     ///
-    /// The step Jacobian `G + α C` and the device matrices `G`, `C` must remain in `workspace`
-    /// from the step's error-filter pass; the cached factorization in `solver` is reused
-    /// without refactoring whenever `workspace.jacobian` is bitwise unchanged.
+    /// Requires `G`, `C`, and `G + α C` to remain populated in `workspace` from error
+    /// filtering; cached LU factors in `solver` are reused whenever `workspace.jacobian` is
+    /// bitwise unchanged.
     pub(crate) fn rings(
         &mut self,
         pattern: &Pattern,
@@ -625,9 +619,8 @@ impl Detector {
             .is_some_and(|cached| !cached.sources.is_empty())
     }
 
-    /// Exact saddle-point projection isolating algebraic `R = −1` ringing inside
-    /// capacitor-voltage-source loops (both grounded and floating). Callers must have
-    /// refreshed `self.sources` for `system` via [`Detector::refresh_sources`].
+    /// Runs an exact saddle-point projection to detect algebraic `R = -1` ringing inside
+    /// grounded or floating capacitor-voltage-source loops after [`Detector::refresh_sources`].
     fn has_voltage_source_loop_ringing(
         &mut self,
         system: Linearized<'_>,
@@ -778,7 +771,7 @@ fn check_dissipative_stages(
     false
 }
 
-/// The threshold on consecutive derivative differences over `values`.
+/// Computes the tolerance threshold on consecutive derivative turns across `values`.
 fn alternating_tolerance(values: [f64; 4], absolute: f64, options: &Options) -> f64 {
     let largest = values
         .iter()
@@ -786,7 +779,7 @@ fn alternating_tolerance(values: [f64; 4], absolute: f64, options: &Options) -> 
     options.truncation_tolerance * (options.relative_tolerance * largest + absolute)
 }
 
-/// Whether unknown `index`'s derivative over `window` turns back and forth twice beyond tolerance.
+/// Checks whether unknown `index`'s derivative over `window` alternates twice beyond tolerance.
 fn unknown_alternates(
     natures: &[Nature],
     window: &StepWindow<'_>,
@@ -799,7 +792,7 @@ fn unknown_alternates(
     turns_alternate(values, tolerance)
 }
 
-/// Whether `values` turns back and forth twice in a row, each turn exceeding `tolerance`.
+/// Checks whether `values` reverses slope twice in a row with every turn exceeding `tolerance`.
 #[must_use]
 fn turns_alternate(values: [f64; 4], tolerance: f64) -> bool {
     let turns = [
@@ -812,14 +805,14 @@ fn turns_alternate(values: [f64; 4], tolerance: f64) -> bool {
         && turns.iter().all(|turn| turn.abs() > tolerance)
 }
 
-/// Exact variable-step scalar restoring-force check for a single-mode linear oscillator.
+/// Checks the exact variable-step scalar restoring-force identity for a single-mode linear
+/// oscillator.
 ///
-/// On `q'' = −ω² (q − q_eq)` integrated by the trapezoidal rule over arbitrary step sizes
-/// `h_k = t_{k+1} − t_k > 0`, the midpoint acceleration `a_k = (y_{k+1} − y_k) / h_k` equals
-/// `−ω² (q_{k+1} + q_k) / 2 + ω² q_eq` identically. Subtracting adjacent midpoints yields
-/// `a_k − a_{k−1} = −ω² (q_{k+1} − q_{k−1}) / 2`, so both products
-/// `p_1 = (a_1 − a_0) · (q_2 − q_0) / 2` and `p_2 = (a_2 − a_1) · (q_3 − q_1) / 2` are
-/// non-positive and at least one is strictly negative outside floating-point rounding.
+/// For `q'' = -ω² (q - q_eq)` integrated over arbitrary steps `h_k = t_{k+1} - t_k > 0`,
+/// midpoint acceleration `a_k = (y_{k+1} - y_k) / h_k` satisfies
+/// `a_k - a_{k-1} = -ω² (q_{k+1} - q_{k-1}) / 2`. Both products
+/// `p_1 = (a_1 - a_0) * (q_2 - q_0) / 2` and `p_2 = (a_2 - a_1) * (q_3 - q_1) / 2` are
+/// therefore non-positive, with at least one strictly negative outside rounding.
 #[must_use]
 fn is_harmonic_scalar(times: [f64; 4], charges: [f64; 4], derivatives: [f64; 4]) -> bool {
     let steps = [
@@ -872,7 +865,7 @@ fn classify_domains(system: Linearized<'_>) -> Vec<(Domain, f64)> {
         .collect()
 }
 
-/// Whether `S G` restricted to `domain` is strictly skew-symmetric within rounding and
+/// Checks whether `S G` restricted to `domain` is skew-symmetric within rounding and
 /// decoupled from unknowns outside `domain`.
 fn domain_is_skew_lossless(
     system: Linearized<'_>,
@@ -903,8 +896,8 @@ fn domain_is_skew_lossless(
     true
 }
 
-/// Whether the linearized response `response = (G + α C)⁻¹ v` exhibits stiff dissipative
-/// decay (`σ ≥ α = 2/h`) inside `domain`.
+/// Checks whether the linearized response `response = (G + α C)⁻¹ v` exhibits stiff
+/// dissipative decay (`σ ≥ α = 2/h`) inside `domain`.
 ///
 /// Accumulates `dissipation = ∑ s_i u_i (G u)_i` and `reactance = ∑ s_i u_i (α C u)_i` in
 /// strict ascending index order `0..n` for thread-count bitwise determinism. A lossless
@@ -947,7 +940,7 @@ fn is_dissipative_response(
     }
 }
 
-/// Whether `values` sum to zero within floating-point rounding of their magnitudes.
+/// Checks whether `values` sums to zero within floating-point rounding of its term magnitudes.
 fn sums_to_zero(values: impl IntoIterator<Item = f64>) -> bool {
     let (sum, magnitude) = values
         .into_iter()
@@ -1033,8 +1026,8 @@ fn solve_saddle_slice(
     true
 }
 
-/// Maximum componentwise residual rounding floor `8 ε · (|K_S| |solution|)` over the
-/// capacitive rows `0..node_count` (Higham, 2002, §12.3), in amperes.
+/// Computes the maximum componentwise residual rounding floor `8 ε * (|K_S| |solution|)`
+/// over capacitive rows `0..node_count` (Higham, 2002, §12.3), in amperes.
 fn saddle_rounding_floor(
     pattern: &Pattern,
     values: &[f64],

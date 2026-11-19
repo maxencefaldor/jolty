@@ -1,7 +1,7 @@
-//! A circuit elaborated once and run many times: a run of the shared circuit at some values
-//! equals the circuit elaborated with those values, a run reset to other values equals one
-//! made afresh for them, and values that change a device's unknowns run on the circuit
-//! restructured for them. Every comparison is of every number's bits.
+//! Shared circuit elaboration, parameter resets, and dynamic restructuring tests.
+//!
+//! Verifies bitwise equivalence between shared [`Elaborated`] runs, fresh elaborations,
+//! reset simulators, and restructured topologies when overrides change device unknowns.
 #![cfg(test)]
 
 #[path = "common/capacitor.rs"]
@@ -30,10 +30,10 @@ use proptest::prelude::*;
 use serde_json::json;
 use shared::{Bits, benchmark, bits, network, shared, upper};
 
-/// Numbers that replace devices' own, by the device's path, then by the number's path.
+/// Device parameter overrides keyed by instance path and parameter path.
 type Overrides = BTreeMap<String, BTreeMap<String, f64>>;
 
-/// The bits of each analysis of `analyses`, run in turn on `simulator`.
+/// Runs every analysis in `analyses` on `simulator` and returns each outcome as [`Bits`].
 fn run(simulator: &mut Simulator, analyses: &[Analysis], options: &Options) -> Vec<Bits> {
     analyses
         .iter()
@@ -41,11 +41,8 @@ fn run(simulator: &mut Simulator, analyses: &[Analysis], options: &Options) -> V
         .collect()
 }
 
-/// The circuit and the analyses of the benchmark `bjt_amp`: two 2N3904s and three 2N3906s,
-/// whose junctions limit their steps from their last voltages, over 200 µs of a sine, at
-/// an operating point and at 71 frequencies. The transient comes first, so that it solves
-/// the operating point it starts from, and counts the factorizations of a solver that has
-/// kept no pivots.
+/// Loads the `bjt_amp` speed benchmark with the transient rotated first so it solves the
+/// initial operating point and exercises fresh pivot selection.
 fn bjt_amp() -> (Circuit, Vec<Analysis>, Options) {
     let (circuit, mut analyses, options) = benchmark("bjt_amp");
     analyses.rotate_right(1);
@@ -53,7 +50,7 @@ fn bjt_amp() -> (Circuit, Vec<Analysis>, Options) {
     (circuit, analyses, options)
 }
 
-/// Every number of every device of `circuit`, by the device's path then the number's.
+/// Collects every numeric parameter of every device in `circuit` as `(device, name, value)`.
 fn every_number(circuit: &Circuit) -> Vec<(String, String, f64)> {
     let elaborated = shared(circuit);
     let mut found = Vec::new();
@@ -67,7 +64,7 @@ fn every_number(circuit: &Circuit) -> Vec<(String, String, f64)> {
     found
 }
 
-/// The circuit elaborated with `overrides` at `temperature`, as `Simulator::new` takes it.
+/// Elaborates `circuit` directly via [`Simulator::new`] with `overrides` at `temperature`.
 fn elaborated_with(
     circuit: &Circuit,
     overrides: &Overrides,
@@ -75,7 +72,7 @@ fn elaborated_with(
 ) -> Result<Simulator, ElaborationError> {
     let mut conditions = Conditions::at(temperature);
     for (path, numbers) in overrides {
-        // Each number by its path among the parameters, such as `waveform.dc`.
+        // Key each number by its dotted parameter path, such as `waveform.dc`.
         let parameters: Parameters = numbers
             .iter()
             .map(|(name, &value)| (name.clone(), json!(value)))
@@ -85,8 +82,8 @@ fn elaborated_with(
     Simulator::new(circuit, &Library::standard(), &conditions)
 }
 
-/// The same run two ways: the circuit elaborated with `overrides` at `temperature`, and the
-/// circuit elaborated once and run at the values of the same numbers.
+/// Runs `analyses` via direct elaboration and via shared [`Elaborated`] with `overrides` at
+/// `temperature`, returning both bit representations.
 fn both_ways(
     circuit: &Circuit,
     overrides: &Overrides,
@@ -121,9 +118,8 @@ fn both_ways(
 /// The numbers of a network's pulse, `V1`.
 const PULSE_NUMBERS: usize = 7;
 
-/// Every number of `circuit` that `factors` scales, each by its factor, by its place
-/// among the numbers of every device but those at `kept`; a factor of 1 leaves its number
-/// alone.
+/// Builds [`Overrides`] scaling every numeric parameter in `circuit` outside `kept` by the
+/// corresponding factor in `factors`, skipping unit factors.
 fn scaled(circuit: &Circuit, kept: &[&str], factors: &[f64]) -> Overrides {
     let mut overrides = Overrides::new();
     let varied = every_number(circuit)
@@ -140,8 +136,8 @@ fn scaled(circuit: &Circuit, kept: &[&str], factors: &[f64]) -> Overrides {
     overrides
 }
 
-/// A factor for each of `count` numbers: 1 for about half of them, which keep their own,
-/// and else one within a factor `spread` of it.
+/// Builds a proptest strategy yielding `count` scale factors, each either `1.0` or
+/// log-uniform within `[1 / spread, spread]`.
 fn factors(count: usize, spread: f64) -> impl Strategy<Value = Vec<f64>> {
     proptest::collection::vec(
         prop_oneof![
@@ -152,8 +148,7 @@ fn factors(count: usize, spread: f64) -> impl Strategy<Value = Vec<f64>> {
     )
 }
 
-/// A network's operating point, its sensitivities there, and its transient, recording
-/// every device.
+/// Builds the operating point, DC sensitivity, and transient analyses with [`Record::All`].
 fn network_analyses() -> (Vec<Analysis>, Options) {
     let analyses = vec![
         Analysis::OperatingPoint,
@@ -170,10 +165,8 @@ fn network_analyses() -> (Vec<Analysis>, Options) {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// A run of a random network elaborated once, at the values of random numbers and a
-    /// random temperature, equals the network elaborated with those numbers, bit for bit:
-    /// its resistors, capacitors and current sources within a decade of their own, so that
-    /// resistances cross 1 Ω, and its pulse as it is.
+    /// Verifies that shared elaboration with random decade-scaled overrides and temperature
+    /// matches direct elaboration bit for bit, including resistances crossing 1 Ω.
     #[test]
     fn overrides_run_the_same_on_a_shared_circuit(
         (network, factors) in network(false).prop_flat_map(|network| {
@@ -189,8 +182,8 @@ proptest! {
         prop_assert_eq!(direct, shared);
     }
 
-    /// So does a run of `bjt_amp`, every number of its transistors and its sources within a
-    /// factor 2 of its own, recording every device.
+    /// Verifies bitwise equivalence on `bjt_amp` with all device and source parameters
+    /// scaled up to a factor of 2 while recording every device.
     #[test]
     fn overrides_run_the_same_on_a_shared_amplifier(
         factors in factors(every_number(&bjt_amp().0).len(), 2.0),
@@ -207,8 +200,7 @@ proptest! {
     }
 }
 
-/// Two sets of values of `bjt_amp`: its resistors scaled one way, then the other, at two
-/// temperatures.
+/// Builds two opposing resistor-scaling [`Values`] sets for `bjt_amp` at 290 K and 330 K.
 fn two_values(elaborated: &Elaborated) -> (Values, Values) {
     let resistors: Vec<(String, String, f64)> = elaborated
         .devices()
@@ -239,9 +231,8 @@ fn two_values(elaborated: &Elaborated) -> (Values, Values) {
     (values(1.05, 290.0), values(0.95, 330.0))
 }
 
-/// A run reset from values A to values B equals a run made afresh for B, bit for bit, its
-/// work counted alike: the operating point remembered, the pivots kept, the meter's counts,
-/// the junctions' last voltages and what the analyses recorded are forgotten.
+/// Verifies that resetting a simulator from values A to values B matches a fresh run for B
+/// bit for bit, clearing cached operating points, pivots, junction histories, and recordings.
 #[test]
 fn a_run_reset_to_other_values_equals_one_made_for_them() {
     let (circuit, analyses, options) = bjt_amp();
@@ -280,8 +271,8 @@ fn a_run_reset_to_other_values_equals_one_made_for_them() {
     );
 }
 
-/// A logic inverter in a ring with a resistor and a capacitor oscillates: a run reset
-/// after its transient forgets the logic's events and traces, and the drivers' ramps.
+/// Verifies that resetting an oscillating logic-inverter RC ring clears logic events,
+/// traces, excursions, and driver ramps.
 #[test]
 fn a_reset_forgets_the_logic() {
     let circuit = circuit([
@@ -330,8 +321,8 @@ fn a_reset_forgets_the_logic() {
     assert_eq!(run(&mut reused, &analyses, &options), expected);
 }
 
-/// A divider whose upper resistor is 2 Ω: a resistance below 1 Ω carries its current as an
-/// unknown of its own.
+/// Builds a 2 Ω / 3 Ω voltage divider where overriding `R1` below 1 Ω introduces a branch
+/// current unknown.
 fn divider() -> Circuit {
     circuit([
         voltage_dc("V1", "in", 1.0),
@@ -340,9 +331,8 @@ fn divider() -> Circuit {
     ])
 }
 
-/// A resistor overridden across 1 Ω changes the circuit's structure: the values get a key
-/// of their own, alike for every resistance below, and run on the circuit restructured for
-/// them, as the circuit elaborated with the resistance does.
+/// Verifies that overriding a resistor across the 1 Ω threshold triggers restructuring with
+/// a distinct structure key and matches direct elaboration.
 #[test]
 fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
     let circuit = divider();
@@ -393,19 +383,18 @@ fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
     let point = simulator.operating_point(&options).expect("a solution");
     // 1 V across 0.5 Ω then 3 Ω.
     assert!((point.values[out.index()] - 3.0 / 3.5).abs() < 1e-12);
-    // A run reset back above 1 Ω takes the circuit's own structure again.
+    // Resetting back above 1 Ω restores the original circuit structure.
     simulator.reset(upper(&elaborated, 5.0)).expect("values");
     assert!(simulator.unknown("R1:current").is_none());
     let point = simulator.operating_point(&options).expect("a solution");
     assert!((point.values[out.index()] - 3.0 / 8.0).abs() < 1e-12);
-    // And the restructured circuit runs its values without restructuring again.
+    // The restructured circuit runs matching values directly without restructuring again.
     let on = Simulator::from_elaborated(Arc::clone(&restructured), values).expect("a run");
     assert!(Arc::ptr_eq(on.elaborated(), &restructured));
 }
 
-/// Values name their numbers by path and by name: every path the circuit has no device at,
-/// every number a device does not write, and every number of a logic device are each a
-/// problem, all of them reported.
+/// Verifies that [`Elaborated::values`] reports unknown device paths, unknown parameter
+/// names, logic-device overrides, out-of-range values, and foreign parameter indices.
 #[test]
 fn values_report_every_number_they_cannot_replace() {
     let circuit = circuit([
@@ -458,7 +447,7 @@ fn values_report_every_number_they_cannot_replace() {
         problem.to_string(),
         "instance `R1`: resistance must be positive, not -1.0"
     );
-    // A reset to it leaves the run as it was.
+    // A failed reset leaves simulator state unchanged.
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), upper(&elaborated, 4.0))
             .expect("a run");
@@ -469,7 +458,7 @@ fn values_report_every_number_they_cannot_replace() {
         bits(&simulator.run(&Analysis::OperatingPoint, &options)),
         before
     );
-    // A parameter of another circuit is none of this one's.
+    // A parameter handle from a different circuit is rejected.
     let (amplifier, _, _) = bjt_amp();
     let larger = shared(&amplifier);
     let last = larger.nominal().len() - 1;
@@ -490,8 +479,8 @@ fn values_report_every_number_they_cannot_replace() {
     ));
 }
 
-/// The table numbers every device's numbers in the order of the devices' paths, then of
-/// the numbers' own, each at its nominal value.
+/// Verifies that the parameter table indexes numeric parameters by device path then
+/// parameter name, preserving exact nominal values.
 #[test]
 fn the_table_numbers_parameters_by_path_then_by_name() {
     let (circuit, _, _) = bjt_amp();

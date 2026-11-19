@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use proptest::prelude::*;
 
-/// The net name of `index`: `"0"` for ground and `"n<index>"` otherwise.
+/// Returns the net name for `index`: `"0"` for ground and `"n<index>"` otherwise.
 pub(crate) fn node(index: usize) -> String {
     if index == 0 {
         "0".to_owned()
@@ -13,8 +13,8 @@ pub(crate) fn node(index: usize) -> String {
     }
 }
 
-/// A connected graph of resistors on `nodes` nodes (0 through `nodes - 1`): a spanning
-/// tree plus optional extra edges, each resistance drawn log-uniformly over
+/// Builds a proptest strategy for connected resistor graphs on `nodes` nodes (`0..nodes`),
+/// combining a spanning tree with optional extra edges at log-uniform resistances
 /// `10^resistance_exponent`.
 pub(crate) fn connected_resistors(
     nodes: usize,

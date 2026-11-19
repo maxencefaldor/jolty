@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use jolty_ir::{Circuit, Component, Instance, Name, Of, Parameters, Port, Role};
 use serde_json::{Value, json};
 
-/// A circuit whose top component has a ground port `0` and places `instances`.
+/// Builds a circuit whose top component has ground port `0` and places `instances`.
 pub(crate) fn circuit(instances: impl IntoIterator<Item = Instance>) -> Circuit {
     let top = Name::new("test").expect("valid top component name");
     let component = Component {
@@ -21,7 +21,7 @@ pub(crate) fn circuit(instances: impl IntoIterator<Item = Instance>) -> Circuit 
     }
 }
 
-/// A device instance of `model` named `name`, with `parameters` and `terminals`.
+/// Builds a device instance of `model` named `name`, with `parameters` and `terminals`.
 pub(crate) fn device(
     name: &str,
     model: &str,
@@ -50,8 +50,8 @@ pub(crate) fn device(
     }
 }
 
-/// A two-terminal device of `model` named `name`, setting `parameter` to `value` between
-/// `a` and `b`.
+/// Builds a two-terminal device of `model` named `name`, setting `parameter` to `value`
+/// between `a` and `b`.
 pub(crate) fn two_terminal(
     name: &str,
     model: &str,
@@ -68,12 +68,12 @@ pub(crate) fn two_terminal(
     )
 }
 
-/// A resistor named `name` of `resistance` ohms between `a` and `b`.
+/// Builds a resistor named `name` of `resistance` ohms between `a` and `b`.
 pub(crate) fn resistor(name: &str, resistance: f64, a: &str, b: &str) -> Instance {
     two_terminal(name, "resistor", "resistance", resistance, a, b)
 }
 
-/// A voltage source named `name` driving `positive` over `negative` with `waveform`.
+/// Builds a voltage source named `name` driving `positive` over `negative` with `waveform`.
 pub(crate) fn voltage_source(
     name: &str,
     positive: &str,

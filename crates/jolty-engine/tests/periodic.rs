@@ -37,7 +37,7 @@ fn simulate(instances: impl IntoIterator<Item = Instance>) -> Simulator {
     simulator(&circuit(instances))
 }
 
-/// A transient until `stop`, its steps at most `longest`.
+/// Runs a trapezoidal transient until `stop` with steps capped at `longest`.
 fn run(simulator: &mut Simulator, (stop, longest): (f64, f64)) -> TransientResult {
     run_with(simulator, (stop, longest), &Options::default())
 }
@@ -54,8 +54,8 @@ fn run_with(
     }
 }
 
-/// The periodic steady state of `period`, or an oscillator's without, its steps at most
-/// `longest`.
+/// Computes the periodic steady state for `period` (or an autonomous oscillator when `None`)
+/// with steps capped at `longest`.
 fn steady(
     simulator: &mut Simulator,
     (period, longest): (Option<f64>, f64),
@@ -76,7 +76,7 @@ fn index(simulator: &Simulator, name: &str) -> usize {
     simulator.unknown(name).expect("the unknown exists").index()
 }
 
-/// The `(min, max)` of `unknown` across every point of `waveforms` at or after `from`.
+/// Returns `(min, max)` of `unknown` across all points of `waveforms` at or after `from`.
 fn waveform_range(waveforms: &TransientResult, from: f64, unknown: usize) -> (f64, f64) {
     waveforms
         .times
@@ -197,8 +197,8 @@ fn a_rectifier_repeats_the_last_period_of_a_long_transient() {
     assert!((start - end).abs() < 1e-6, "{start} against {end}");
 }
 
-/// A sine of `amplitude` and 1 kHz across `memristor` from `in` to `out`, with 100 nF from
-/// `out` to the ground, the memristor's state 0.5.
+/// Builds a 1 kHz sine source of `amplitude` driving `memristor` into a 100 nF capacitor
+/// with initial memristor state 0.5.
 fn memristor_into_a_capacitor(memristor: (&str, Value), amplitude: f64) -> Circuit {
     let (model, mut parameters) = memristor;
     parameters["on_resistance"] = json!(1e3);
@@ -252,10 +252,9 @@ fn a_memristor_its_drive_leaves_alone_keeps_its_state() {
 
 #[test]
 fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
-    // The charge through the memristor moves its state by q / Q and the capacitor's
-    // voltage by q / C, so Q·x − C·v(out) is as each period found it: every value of it has
-    // a steady state of its own. Shooting keeps the operating point's, and finds the
-    // steady state a long transient from it settles into.
+    // Charge q through the memristor shifts state by q / Q and capacitor voltage by q / C,
+    // leaving Q·x − C·v(out) invariant per period. Each invariant value admits a distinct
+    // steady state, and shooting preserves the operating-point invariant.
     let (charge, capacitance, frequency) = (1e-5, 1e-7, 1e3);
     let memristor = json!({"charge": charge});
     let built = memristor_into_a_capacitor(("current_controlled_memristor", memristor), 1.0);
@@ -345,11 +344,11 @@ fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
     );
 }
 
-/// A tank of `inductance` and `capacitance` whose conductance `−g (1 − r² / a²)`, for
-/// the radius `r² = v² + (z i)²` of its state and an `impedance` `z`, feeds it inside the
-/// circle of radius `a` and drains it outside: where `z` is the tank's own, `√(L/C)`, the
-/// tank is lossless on the circle, so the orbit is that circle, its period exactly
-/// `2π √(LC)`.
+/// Builds an LC tank regulated by nonlinear conductance `−g (1 − r² / a²)` where
+/// `r² = v² + (z i)²`.
+///
+/// When `z = √(L/C)`, the tank is lossless on the circle of radius `a`, yielding an exact
+/// periodic orbit of period `2π √(LC)`.
 fn regulated_tank(
     (inductance, capacitance): (f64, f64),
     (conductance, impedance): (f64, f64),
@@ -377,8 +376,8 @@ fn regulated_tank(
     ]
 }
 
-/// The default 1 µH / 1 nF regulated tank with unit radius and `g = 0.2 / √(L/C)`,
-/// together with its exact natural period `2π √(LC)`.
+/// Builds the default 1 µH / 1 nF regulated tank with unit radius and `g = 0.2 / √(L/C)`,
+/// returning its instances and exact natural period `2π √(LC)`.
 fn default_tank() -> (Vec<Instance>, f64) {
     let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
     let impedance = (inductance / capacitance).sqrt();
@@ -412,12 +411,10 @@ fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
     assert_eq!(found.periods, 3);
     let (voltage, current) = (index(&simulator, "t"), index(&simulator, "L1:current"));
     let (times, values) = (&found.transient.times, &found.transient.values);
-    // A period starts with two steps of backward Euler, until the trapezoidal formula's
-    // error estimate has the four points it reads, and each step h of it keeps
-    // 1 / (1 + (ωh)²) of the tank's energy, which the conductance makes up over the period
-    // inside the circle: the radius falls short by (ωh)² (C / 2gT + 1 / 2) of it at most.
-    // A start within its tolerance of repeating lies within that over 1 − e^(−2π g / ωC)
-    // of the orbit, in voltage and in the impedance times the current.
+    // Each period starts with two backward Euler steps until the four-point trapezoidal
+    // error estimator fills. Each backward Euler step h retains 1 / (1 + (ωh)²) of tank
+    // energy, reducing radius by at most (ωh)² (C / 2gT + 1 / 2). A start repeating within
+    // tolerance stays within tolerance / (1 − e^(−2π g / ωC)) of the orbit.
     let lost: f64 = times[..3]
         .windows(2)
         .map(|pair| (omega * (pair[1] - pair[0])).powi(2))
@@ -433,11 +430,9 @@ fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
             drained + near
         );
     }
-    // The trapezoidal formula turns a step h by 2 atan(ωh / 2), less than ωh by (ωh)³ / 12
-    // to leading order, so its period exceeds 2π / ω by at most (ωh)² / 12 of it, h the
-    // longest step, and each step of backward Euler's by (ωh)³ / 3, less than (ωh)² / 3;
-    // a start within its tolerance of repeating leaves the phase within tolerance over
-    // the radius.
+    // Trapezoidal steps advance phase by 2 atan(ωh / 2), lagging ωh by (ωh)³ / 12 to leading
+    // order, so the period exceeds 2π / ω by at most (ωh)² / 12. Each backward Euler step
+    // adds (ωh)³ / 3 lag, and closure tolerance shifts phase by at most tolerance / radius.
     let longest = times
         .windows(2)
         .map(|pair| pair[1] - pair[0])
@@ -495,9 +490,8 @@ fn an_oscillators_period_is_found_so_it_has_no_times_to_step_onto() {
 
 #[test]
 fn a_latch_that_its_growing_mode_tips_never_returns_and_says_so() {
-    // 2 mS of negative conductance, saturating as tanh, against 1 kΩ across 1 nF: the
-    // balanced state grows at 1e6 per second and tips into either of two stable ones,
-    // ±1.9 V, so the transient never comes back across the kick.
+    // 2 mS saturating tanh negative conductance against 1 kΩ and 1 nF: the balanced state
+    // grows at 1e6 per second and latches to ±1.9 V without returning across the kick.
     let mut simulator = simulate([
         resistor("R1", 1e3, "n", "0"),
         capacitor("C1", 1e-9, "n", "0"),
@@ -525,15 +519,11 @@ fn a_latch_that_its_growing_mode_tips_never_returns_and_says_so() {
 
 #[test]
 fn an_oscillating_tanks_period_moves_with_its_inductance_and_capacitance_exactly() {
-    // The tank's equations are unchanged when time, L and C scale alike, the conductance
-    // reading the radius through an impedance of its own, so the period scales with them:
-    // L ∂T/∂L + C ∂T/∂C = T, for the steps of the discrete period too, each a fixed
-    // fraction of it, to the rounding of the tangents and the bordered solve, 256 ε here,
-    // held to 1e-12. With a truncation tolerance no step's error reaches, every run takes
-    // those fractions, so central differences of the period, each run settling and
-    // shooting afresh, measure the same derivatives: to a square root's truncation, δ²/8
-    // of the derivative for steps of δ, the period going as √L and √C to leading order,
-    // twice that held, and to the period's resolution, its 1e-10 tolerance over δ.
+    // Scaling time, L, and C identically leaves tank equations invariant with fixed impedance
+    // z, so L ∂T/∂L + C ∂T/∂C = T holds discretely up to 256 ε (~1e-12) tangent and bordered
+    // solve rounding. Infinite truncation tolerance locks step fractions across runs, so
+    // fresh central differences match within δ²/8 square-root truncation error plus
+    // 1e-10 / δ period resolution.
     let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
     let impedance = (inductance / capacitance).sqrt();
     let regulation = (0.2 / impedance, impedance);
@@ -849,9 +839,9 @@ fn assert_memory_limit(
     );
 }
 
-/// A sine-driven RC low-pass filter whose resistance is split across `resistors` parallel
-/// resistors of `resistors * 1 kΩ` each, keeping three unknowns (`in`, `out`, `V1:current`)
-/// and the same transfer function while scaling parameter count linearly.
+/// Builds a sine-driven RC low-pass filter splitting resistance across `resistors` parallel
+/// branches of `resistors * 1 kΩ` each, keeping three unknowns while scaling parameter count
+/// linearly.
 fn parallel_resistor_rc(resistors: usize) -> Circuit {
     let resistance = f64::from(u32::try_from(resistors).expect("small resistor count")) * 1e3;
     let mut instances = vec![

@@ -1,29 +1,23 @@
-//! The batch executor: many runs of one circuit in one call, spread across the threads of
-//! the rayon pool it runs in.
+//! Parallel batch executor running many parameter variants of one elaborated circuit across
+//! the active rayon thread pool.
 //!
-//! A [`Batch`] holds a circuit elaborated once, the analyses each run runs in order, each
-//! with its options, and the [measures](crate::measure) each run reads of their results. Its
-//! [`Batch::run`] takes [`Variants`], the values of each run as a pure function of the
-//! run's index, and a range of indices, and hands each run's [`Run`] to a [`Sink`] at
-//! its index. Every outcome is a pure function of the circuit, the analyses, the options and
-//! the index: the same bits however many threads run the batch, however its range is split,
-//! and in whatever order its runs end.
+//! A [`Batch`] binds a shared elaborated circuit, ordered `(analysis, options)` pairs, and
+//! [measures](crate::measure). Calling [`Batch::run`] evaluates [`Variants`] over an index
+//! range and delivers each [`Run`] to a [`Sink`]. Every run outcome is a pure function of
+//! circuit, analyses, options, and run index, producing bit-identical results across thread
+//! counts, range splits, and completion orders.
 //!
-//! - **Chains.** The runs are taken in chains of [`Variants::chain`] runs, each chain on one
-//!   thread, every run of it but the first starting from the operating point of the run
-//!   before it, as a DC sweep does from one value to the next. A range that starts within a
-//!   chain runs the chain from its start, and hands on only the runs within the range.
-//! - **States.** Each thread keeps a run's state for each structure it meets, and resets it
-//!   for every run, so a run never depends on the run its thread ran before, but within
-//!   its chain.
-//! - **Failures.** A run whose values make a problem, or one of whose analyses fails, is a
-//!   failed outcome that says why, and the batch goes on.
-//! - **Structures.** A run whose values give the circuit another structure, as a resistance
-//!   crossing 1 Ω carries its current as an unknown, runs on the circuit elaborated for that
-//!   structure, built once for the batch, whichever thread meets it first, behind the one
-//!   lock of the engine. Its unknowns may lie elsewhere among its results, so its measures
-//!   read the unknowns of the names they read of the batch's circuit, and its outcome says
-//!   where each lies.
+//! - **Chains:** Consecutive blocks of [`Variants::chain`] runs execute sequentially on one
+//!   thread, warm-starting each run from the prior operating point. Ranges starting
+//!   mid-chain run from chain start and emit only indices inside the requested range.
+//! - **States:** Each worker caches one simulator per encountered circuit structure and
+//!   resets state between independent runs so unrelated runs never leak state.
+//! - **Failures:** Invalid parameter values or failing analyses produce a failed [`Run`]
+//!   describing the cause while the remaining runs continue.
+//! - **Structures:** Runs whose parameter values alter circuit topology (such as a resistor
+//!   crossing 1 Ω) execute on a cached restructured circuit built once per batch under a
+//!   single lock. Unknown indices are remapped by name so measures and results stay aligned
+//!   with the base circuit.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -36,81 +30,76 @@ use crate::elaborate::ElaborationError;
 use crate::measure::{AnalysisResult, Measure, MeasureError};
 use crate::{Analysis, Elaborated, Options, SimulationError, Simulator, StructureKey, Values};
 
-/// The values of the runs of a batch.
+/// Pure index-addressed source of per-run parameter [`Values`] for a batch.
 pub trait Variants: Sync {
-    /// How many runs there are.
+    /// Returns the total number of runs.
     fn len(&self) -> u64;
 
-    /// Whether there are no runs.
+    /// Returns whether the variant set contains zero runs.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// The values of the run at `index`, below [`Variants::len`]: a pure function of the
-    /// index.
+    /// Returns the [`Values`] for run `index` (below [`Variants::len`]) as a pure function
+    /// of `index`.
     fn values(&self, index: u64) -> Values;
 
-    /// How many consecutive runs make a chain, each run of it starting from the solution of
-    /// the run before it, as the points of a sweep do; 1, by default, for runs that each
-    /// start afresh. A chain starts at each multiple of it, and the runs of one differ one
-    /// from the next only in the numbers its line steps.
+    /// Returns the consecutive warm-start chain length (default `1` for independent runs).
+    ///
+    /// Chains start at multiples of this length, stepping smoothly along a single axis.
     fn chain(&self) -> u64 {
         1
     }
 }
 
-/// Where a batch hands each run's outcome.
+/// Callback receiving completed [`Run`] outcomes from a batch.
 pub trait Sink: Sync {
-    /// Takes the outcome of the run at `index`. The runs of a batch end in any order, and
-    /// each is handed on once.
+    /// Consumes the completed `outcome` for run `index` (invoked once per run in arbitrary
+    /// completion order).
     fn accept(&self, index: u64, outcome: Run);
 }
 
-/// A measure a batch reads of each run: of the result of the analysis at `analysis`, by
-/// its index among the batch's analyses.
+/// Binding of a [`Measure`] to a target analysis index within a batch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Measured {
-    /// The analysis whose result the measure reads, by its index.
+    /// Zero-based index into the batch's analysis list.
     pub analysis: usize,
-    /// The measure.
+    /// Measure evaluated on that analysis's result.
     pub measure: Measure,
 }
 
-/// What one run of a batch found.
+/// Outcome of a single batch run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
-    /// The values the run ran at.
+    /// Parameter and temperature values applied to this run.
     pub values: Values,
-    /// The circuit the run ran on, when its values gave the batch's circuit another
-    /// structure; none when they did not, or made problems.
+    /// Restructured circuit used when `values` altered topology, or `None` when the base
+    /// circuit applied or elaboration failed.
     pub structure: Option<Arc<Restructured>>,
-    /// The problems the run's values make, which no analysis runs past; none when they make
-    /// none.
+    /// Elaboration error preventing analysis execution, if any.
     pub problems: Option<ElaborationError>,
-    /// What each analysis found, in the batch's order, or why it failed; none when the
-    /// values make problems.
+    /// Per-analysis results or errors in batch order (empty if `problems` is `Some`).
     pub results: Vec<Result<crate::AnalysisResult, SimulationError>>,
-    /// What each measure read, in the batch's order, or why it read nothing.
+    /// Evaluated measure scalars or [`Unmeasured`] causes in batch order.
     pub measured: Vec<Result<f64, Unmeasured>>,
 }
 
 impl Run {
-    /// The index among the run's results' values of the batch circuit's unknown at
-    /// `unknown`: the same index on the batch's own structure, and that of the unknown of
-    /// the same name on another; none when the run's circuit has no unknown of that name.
+    /// Maps base-circuit unknown index `unknown` to the corresponding column index in this
+    /// run's results, returning `None` if a restructured run lacks that unknown name.
     #[must_use]
     pub fn column(&self, unknown: usize) -> Option<usize> {
         column(self.structure.as_deref(), unknown)
     }
 
-    /// Whether the run failed: its values made problems, or an analysis failed.
+    /// Returns whether this run encountered elaboration problems or any analysis failure.
     #[must_use]
     pub fn failed(&self) -> bool {
         self.problems.is_some() || self.results.iter().any(Result::is_err)
     }
 
-    /// Why the run failed: the problems its values made, or each analysis that failed, by
-    /// its index, and why; none when it did not.
+    /// Formats the elaboration problems or failing analysis errors for this run, returning
+    /// `None` when all analyses succeeded.
     #[must_use]
     pub fn failure(&self) -> Option<String> {
         if let Some(problems) = &self.problems {
@@ -131,29 +120,27 @@ impl Run {
     }
 }
 
-/// What [`Batch::map`] found of one run.
+/// Outcome of one run produced by [`Batch::map`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mapped<T> {
-    /// The values the run ran at.
+    /// Parameter and temperature values applied to this run.
     pub values: Values,
-    /// The circuit the run ran on, when its values gave the batch's circuit another
-    /// structure; none when they did not, or made problems.
+    /// Restructured circuit used when `values` altered topology, or `None` otherwise.
     pub structure: Option<Arc<Restructured>>,
-    /// What the work found of the run, or the problems its values make.
+    /// Mapped return value or elaboration error for this run.
     pub found: Result<T, ElaborationError>,
 }
 
 impl<T> Mapped<T> {
-    /// The index among the run's own unknowns of the batch circuit's unknown at
-    /// `unknown`, as [`Run::column`] gives it.
+    /// Maps base-circuit unknown index `unknown` to this run's unknown index, matching
+    /// [`Run::column`].
     #[must_use]
     pub fn column(&self, unknown: usize) -> Option<usize> {
         column(self.structure.as_deref(), unknown)
     }
 }
 
-/// The index among the unknowns of a run on `structure`, or on the batch's own circuit with
-/// none, of the batch circuit's unknown at `unknown`.
+/// Maps base-circuit unknown index `unknown` through optional `structure`.
 fn column(structure: Option<&Restructured>, unknown: usize) -> Option<usize> {
     match structure {
         None => Some(unknown),
@@ -161,11 +148,11 @@ fn column(structure: Option<&Restructured>, unknown: usize) -> Option<usize> {
     }
 }
 
-/// Checks that `range` lies within `variants`.
+/// Validates that `range` lies within `0..variants.len()`.
 ///
 /// # Errors
 ///
-/// Returns [`BatchError::Range`] when it does not.
+/// Returns [`BatchError::Range`] when `range` is reversed or exceeds `variants.len()`.
 fn within(variants: &dyn Variants, range: &Range<u64>) -> Result<(), BatchError> {
     let length = variants.len();
     if range.start > range.end || range.end > length {
@@ -178,11 +165,11 @@ fn within(variants: &dyn Variants, range: &Range<u64>) -> Result<(), BatchError>
     Ok(())
 }
 
-/// `options` as a run among `runs` of a batch takes them: on one thread when the runs fill
-/// every thread of the pool, and ordering its matrix by the minimum degree unless the
-/// options set the interiors of a dissection, whose default depends on the threads a run
-/// takes, so that every run finds the same bits however many threads the pool has and
-/// however the runs split into ranges.
+/// Adapts `options` for a batch of `runs` so results stay bit-identical across thread
+/// counts and range splits.
+///
+/// Forces single-threaded per-run execution once `runs` saturate the pool, and disables
+/// automatic nested dissection unless explicitly configured.
 fn batched(options: &Options, runs: u64) -> Options {
     let mut options = options.clone();
     if runs >= rayon::current_num_threads() as u64 {
@@ -193,42 +180,42 @@ fn batched(options: &Options, runs: u64) -> Options {
     options
 }
 
-/// Why a measure of a run read no number.
+/// Reason a batch measure produced no numeric result.
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum Unmeasured {
-    /// The run's values made problems, or the analysis it reads failed.
+    /// Elaboration failed or the target analysis returned an error.
     #[error("the analysis it reads did not run to its end")]
     Failed,
-    /// The measure could not read the analysis's result.
+    /// Measure evaluation failed on the completed analysis result.
     #[error(transparent)]
     Measure(#[from] MeasureError),
 }
 
-/// What the runs of a batch found together, each number exact, so that the summaries of the
-/// parts of a range [merge](Summary::merge) into the whole range's, bit for bit.
+/// Exact aggregate statistics across batch runs that [merge](Summary::merge) across
+/// sub-ranges bit for bit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
-    /// The runs.
+    /// Total runs counted.
     pub runs: u64,
-    /// The runs that failed.
+    /// Number of runs that failed elaboration or analysis.
     pub failed: u64,
-    /// Each measure's extremes over the runs, in the batch's order.
+    /// Per-measure extrema across counted runs in batch order.
     pub measures: Vec<Extremes>,
 }
 
-/// The extremes of a measure over the runs of a batch.
+/// Count and exact min/max extrema of one measure across batch runs.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Extremes {
-    /// The runs whose measure read a number.
+    /// Number of runs where the measure succeeded.
     pub measured: u64,
-    /// The least number read, in the total order of `f64`; none when none was.
+    /// Minimum measured value under `f64::total_cmp`, or `None` if unmeasured.
     pub minimum: Option<f64>,
-    /// The greatest number read, in the total order of `f64`; none when none was.
+    /// Maximum measured value under `f64::total_cmp`, or `None` if unmeasured.
     pub maximum: Option<f64>,
 }
 
 impl Extremes {
-    /// The extremes with `value` read too.
+    /// Returns updated extrema incorporating one additional measurement `value`.
     fn with(self, value: f64) -> Self {
         let least = |a: f64, b: f64| if b.total_cmp(&a).is_lt() { b } else { a };
         let most = |a: f64, b: f64| if b.total_cmp(&a).is_gt() { b } else { a };
@@ -239,7 +226,7 @@ impl Extremes {
         }
     }
 
-    /// The extremes of the runs of both.
+    /// Merges two [`Extremes`] accumulators into combined count and bounds.
     fn merge(self, other: Self) -> Self {
         let mut merged = Self {
             measured: self.measured,
@@ -254,7 +241,7 @@ impl Extremes {
 }
 
 impl Summary {
-    /// The summary of no run, of `measures` measures.
+    /// Creates an empty [`Summary`] initialized for `measures` measure slots.
     #[must_use]
     pub fn empty(measures: usize) -> Self {
         Self {
@@ -264,8 +251,7 @@ impl Summary {
         }
     }
 
-    /// The summary of the runs of both, as one summary of them all: every count added, and
-    /// the extremes of both.
+    /// Combines two [`Summary`] instances by summing counts and merging measure extrema.
     #[must_use]
     pub fn merge(mut self, other: Self) -> Self {
         self.runs += other.runs;
@@ -276,7 +262,7 @@ impl Summary {
         self
     }
 
-    /// Counts the run that found `outcome`.
+    /// Incorporates one completed `outcome` into the summary counters and extrema.
     fn add(&mut self, outcome: &Run) {
         self.runs += 1;
         self.failed += u64::from(outcome.failed());
@@ -288,105 +274,101 @@ impl Summary {
     }
 }
 
-/// Why a batch cannot run.
+/// Configuration or range error preventing batch execution.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BatchError {
-    /// A measure reads an analysis the batch does not have.
+    /// Measure references an out-of-range analysis index.
     #[error("measure {measure} reads analysis {analysis}, but the batch runs {analyses}")]
     NoAnalysis {
-        /// The measure, by its index.
+        /// Index of the offending measure.
         measure: usize,
-        /// The analysis it reads, by its index.
+        /// Referenced analysis index.
         analysis: usize,
-        /// How many analyses the batch runs.
+        /// Total analyses configured on the batch.
         analyses: usize,
     },
-    /// The range of runs does not lie within the variants.
+    /// Requested run range falls outside the available variants.
     #[error("runs {start} to {stop} do not lie within the {length} variants")]
     Range {
-        /// Where the range starts.
+        /// Inclusive start run index.
         start: u64,
-        /// Where the range stops, past its last run.
+        /// Exclusive stop run index.
         stop: u64,
-        /// How many variants there are.
+        /// Total available variants.
         length: u64,
     },
 }
 
-/// The circuit elaborated for another structure than its batch's, which the batch's runs of
-/// that structure run on, built once for the batch: where its unknowns lie, and the
-/// batch's measures as they read its results.
+/// Cached restructured circuit built once per distinct [`StructureKey`] encountered in a
+/// batch, together with unknown-index and measure remappings.
 #[derive(Debug)]
 pub struct Restructured {
     key: StructureKey,
     elaborated: Arc<Elaborated>,
-    /// The index among this circuit's unknowns of each of the batch circuit's, by its
-    /// index; none where this one has none of its name.
+    /// Mapping from base-circuit unknown index to restructured unknown index (`None` if
+    /// absent).
     columns: Vec<Option<usize>>,
-    /// Each of the batch's measures, reading the unknowns of the names it reads of the
-    /// batch's circuit; an error where this circuit has none of a name.
+    /// Batch measures remapped to this structure's unknown indices, or errors for missing
+    /// unknowns.
     measures: Vec<Result<Measured, MeasureError>>,
 }
 
 impl PartialEq for Restructured {
-    /// Whether two are of the same structure, which makes them the same circuit.
+    /// Returns whether two restructured circuits share the same [`StructureKey`].
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
     }
 }
 
 impl Restructured {
-    /// The structure's key against the batch's circuit.
+    /// Returns the [`StructureKey`] relative to the base batch circuit.
     #[must_use]
     pub fn key(&self) -> &StructureKey {
         &self.key
     }
 
-    /// The circuit elaborated for the structure.
+    /// Returns the [`Elaborated`] circuit built for this structure.
     #[must_use]
     pub fn elaborated(&self) -> &Arc<Elaborated> {
         &self.elaborated
     }
 
-    /// The index among this circuit's unknowns of the batch circuit's unknown at
-    /// `unknown`; none when this one has no unknown of its name.
+    /// Maps base-circuit unknown index `unknown` to this structure's unknown index, or
+    /// `None` if absent.
     #[must_use]
     pub fn column(&self, unknown: usize) -> Option<usize> {
         self.columns.get(unknown).copied().flatten()
     }
 }
 
-/// A circuit elaborated for each structure its runs meet, built once, by the key of the
-/// structure against the batch's own circuit.
+/// Cache of lazily constructed restructured circuits keyed by [`StructureKey`].
 type Structures =
     BTreeMap<StructureKey, Arc<OnceLock<Result<Arc<Restructured>, ElaborationError>>>>;
 
-/// Many runs of one circuit: the circuit, elaborated once, the analyses each run runs, in
-/// order, each with its options, and the measures each run reads.
+/// Reusable batch executor holding an elaborated circuit, ordered analyses with options,
+/// measures, and a shared restructured-circuit cache.
 #[derive(Debug)]
 pub struct Batch {
     elaborated: Arc<Elaborated>,
     analyses: Vec<(Analysis, Options)>,
     measures: Vec<Measured>,
-    /// The circuit elaborated for each other structure the runs have met: the engine's one
-    /// lock, held only to find or add a structure's place, never while it is built.
+    /// Single mutex protecting the map of [`OnceLock`] slots (never held during
+    /// elaboration).
     structures: Mutex<Structures>,
 }
 
-/// Whether a run in a chain starts fresh or from the previous run's operating point.
+/// Flag indicating whether a chain run starts fresh or warm-starts from the prior run.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Start {
     Cold,
     Warm,
 }
 
-/// A simulator readied for one run of a batch, along with its restructured circuit when
-/// different from the batch's own.
+/// Prepared simulator and optional restructured circuit metadata for a single batch run.
 type Ready<'a> = Result<(&'a mut Simulator, Option<Arc<Restructured>>), ElaborationError>;
 
-/// What a thread keeps from one run to the next: a run of each structure it has met, by
-/// the structure's key, with the circuit of each structure other than the batch's own, and
-/// the structure of the run it ran last.
+/// Per-worker simulator cache keyed by [`StructureKey`] together with the last executed
+/// key.
 #[derive(Default)]
 struct Worker {
     simulators: BTreeMap<StructureKey, (Simulator, Option<Arc<Restructured>>)>,
@@ -394,13 +376,12 @@ struct Worker {
 }
 
 impl Batch {
-    /// A batch of runs of `elaborated`, each running `analyses` in order, each with its
-    /// options, and reading `measures`.
+    /// Creates a [`Batch`] for `elaborated` with ordered `analyses` and `measures`.
     ///
     /// # Errors
     ///
-    /// Returns [`BatchError::NoAnalysis`] for a measure of an analysis the batch does not
-    /// have.
+    /// Returns [`BatchError::NoAnalysis`] when any measure references an out-of-range
+    /// analysis index.
     pub fn new(
         elaborated: Arc<Elaborated>,
         analyses: Vec<(Analysis, Options)>,
@@ -425,8 +406,7 @@ impl Batch {
         })
     }
 
-    /// How many structures other than the circuit's own the batch's runs have met, each
-    /// elaborated once.
+    /// Returns the number of distinct restructured circuits built during execution.
     #[must_use]
     pub fn structures(&self) -> usize {
         self.structures
@@ -435,18 +415,16 @@ impl Batch {
             .len()
     }
 
-    /// Runs the runs `range` of `variants`, on the threads of the rayon pool it is called
-    /// in, and hands each run's outcome to `sink` at its index; returns their summary.
+    /// Executes `range` of `variants` across the active rayon pool, delivering each [`Run`]
+    /// to `sink` and returning the combined [`Summary`].
     ///
-    /// A run spreads its own work across threads, as its options' parallelism allows, only
-    /// when the range holds fewer runs than the pool has threads; it orders its matrix by
-    /// the minimum degree unless the options set the interiors of a dissection, whose
-    /// default depends on the threads a run takes, so that every run finds the same bits
-    /// however many threads the pool has and however the runs split into ranges.
+    /// Per-run parallelism activates only when `range` has fewer runs than pool threads,
+    /// and automatic dissection is disabled unless explicitly set so results stay
+    /// bit-identical across thread counts and range splits.
     ///
     /// # Errors
     ///
-    /// Returns [`BatchError::Range`] when the range does not lie within the variants.
+    /// Returns [`BatchError::Range`] when `range` lies outside `variants`.
     pub fn run(
         &self,
         variants: &dyn Variants,
@@ -480,19 +458,16 @@ impl Batch {
         Ok(summary)
     }
 
-    /// What `work` finds of each run of `range` of `variants`, in the order of the runs,
-    /// on the threads of the rayon pool it is called in: each run readied as
-    /// [`Batch::run`] readies it, in chains, on the circuit of its structure, and handed
-    /// to `work` with its index and with `options` as a run of `range` takes them, so that
-    /// what it finds is the same however many threads run it. A run whose values make
-    /// problems finds them instead.
+    /// Executes custom `work` on every run in `range` of `variants` in parallel, returning
+    /// ordered [`Mapped`] results.
     ///
-    /// It is how a batch runs what its analyses do not say, such as a derivative of each
-    /// run, or a pullback of a cotangent on each.
+    /// Prepares simulators in warm-started chains and restructured circuits exactly as
+    /// [`Batch::run`] does, passing adjusted `options` for thread-count invariance. Used for
+    /// custom batch operations such as per-run derivatives and pullbacks.
     ///
     /// # Errors
     ///
-    /// Returns [`BatchError::Range`] when the range does not lie within the variants.
+    /// Returns [`BatchError::Range`] when `range` lies outside `variants`.
     pub fn map<T: Send>(
         &self,
         variants: &dyn Variants,
@@ -543,7 +518,7 @@ impl Batch {
                 let mut accumulator = init();
                 let first = chained * chain;
                 let mut start = Start::Cold;
-                // The runs of the chain past the range's end are of no run within it.
+                // Stop at `range.end` because trailing runs in the final chain are unused.
                 for index in first..(first + chain).min(range.end) {
                     let values = variants.values(index);
                     let ready = self.ready(worker, &values, start);
@@ -563,8 +538,7 @@ impl Batch {
             })
     }
 
-    /// The outcome of one run at `values` on a readied simulator. Each analysis runs with
-    /// its own `options`.
+    /// Executes all batch analyses and measures for one prepared run at `values`.
     fn one(&self, values: Values, ready: Ready<'_>, options: &[Options]) -> Run {
         let (simulator, structure) = match ready {
             Ok(ready) => ready,
@@ -615,17 +589,16 @@ impl Batch {
         }
     }
 
-    /// A run at `values`, of the circuit elaborated for their structure, and that circuit
-    /// when it is not the batch's own: the last run of `worker` gone on from its operating
-    /// point when `start` is [`Start::Warm`] and it can, and else a run of the structure
-    /// reset for them.
+    /// Prepares a simulator on `worker` for `values` using warm advance when `start` is
+    /// [`Start::Warm`] and falling back to reset or restructuring as needed.
     ///
     /// # Errors
     ///
-    /// Returns the problems the values make, as the batch's circuit finds them.
+    /// Returns elaboration problems reported against the base batch circuit for
+    /// thread-independent diagnostics.
     fn ready<'a>(&self, worker: &'a mut Worker, values: &Values, start: Start) -> Ready<'a> {
-        // The problems of the values as the batch's own circuit finds them, every one, so
-        // that a run's message does not depend on the state its thread kept.
+        // Compute problems against the base circuit so diagnostics never depend on worker
+        // cache history.
         let problems =
             |error: ElaborationError| self.elaborated.structure_of(values).err().unwrap_or(error);
         let mut readied = None;
@@ -656,7 +629,7 @@ impl Batch {
             Entry::Occupied(occupied) => {
                 let (simulator, structure) = occupied.into_mut();
                 if !reset {
-                    // The simulator runs the structure the values give, so they reset it.
+                    // The cached simulator already matches this structure, so reset in place.
                     if !simulator.try_reset(values.clone()).map_err(problems)? {
                         return Err(problems(ElaborationError::new(Vec::new())));
                     }
@@ -678,9 +651,8 @@ impl Batch {
         }
     }
 
-    /// The circuit elaborated for the structure `key` names, which `values` give: built
-    /// once for the batch, by the first run that meets it, while the others that meet it
-    /// wait for it.
+    /// Returns the shared [`Restructured`] circuit for `key`, elaborating it once on first
+    /// encounter while concurrent runs wait on the per-key [`OnceLock`].
     fn structure(
         &self,
         key: &StructureKey,
@@ -700,8 +672,8 @@ impl Batch {
         .clone()
     }
 
-    /// The circuit `elaborated` for the structure `key`, with where each of the batch
-    /// circuit's unknowns lies among its own, by name, and the measures that read them.
+    /// Builds a [`Restructured`] wrapper for `key` and `elaborated`, mapping base unknown
+    /// indices and batch measures by unknown name.
     fn restructured(&self, key: StructureKey, elaborated: Arc<Elaborated>) -> Restructured {
         let own: HashMap<&str, usize> = elaborated
             .unknowns()

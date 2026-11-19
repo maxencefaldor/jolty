@@ -10,49 +10,44 @@ use crate::profile::{Activity, Meter};
 use crate::solver::{Factors, Solver};
 use crate::{Options, SimulationError, Simulator};
 
-/// How many roundings of the unknowns a residual may show and still count as zero.
+/// Multiplier on `f64::EPSILON * (|J| * |x|)` below which a residual counts as numerical
+/// zero.
 ///
-/// Derivation: jolty's own rounding floor grounded in floating-point inner-product error
-/// analysis (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., 2002, ch. 3).
-/// Each unknown is stored to half a unit in its last place, so a residual cannot resolve
-/// changes finer than `ε·(|J|·|x|)` of its row, and each term it sums adds a rounding or two
-/// of its own; `8 * f64::EPSILON` absorbs the rounding of a typical KCL node stencil without
-/// masking an unconverged residual. Without this floor, an equation whose terms cancel, such
-/// as the current through a milliohm between two nodes at hundreds of volts, could never
-/// converge.
+/// Grounded in floating-point inner-product rounding analysis (Higham, *Accuracy and
+/// Stability of Numerical Algorithms*, 2nd ed., 2002, ch. 3). A factor of `8` absorbs KCL
+/// stencil cancellation without masking unconverged residuals.
 const RESIDUAL_ROUNDINGS: f64 = 8.0;
 
-/// How many unknowns a failure to converge or a singular matrix names.
+/// Maximum number of worst-offending unknowns named in convergence or singularity errors.
 ///
-/// Origin: jolty's own diagnostic formatting limit so error messages stay concise (documented
-/// in `docs/guide/simulation.md`).
+/// Chosen as a concise diagnostic formatting limit (source: `docs/guide/simulation.md`).
 pub(crate) const NAMED_UNKNOWNS: usize = 3;
 
-/// The shift of the deflation `1/‖x − r‖² + SHIFT` of each known root `r`: far from every
-/// root, where the distance in volts grows, the deflated equations become the plain ones.
+/// Constant shift `sigma = 1` in the shifted deflation multiplier `1 / ||x - r||^2 + sigma`,
+/// recovering unmodified equations far from known roots `r`.
 ///
-/// Source: Farrell, Birkisson and Funke, "Deflation techniques for finding distinct solutions
-/// of nonlinear partial differential equations", *SIAM Journal on Scientific Computing* 37(4),
-/// 2015 (shifted deflation operator `1 / ||x - r||^p + sigma` with power `p = 2` and shift
-/// `sigma = 1`).
+/// Source: Farrell, Birkisson, and Funke, "Deflation techniques for finding distinct
+/// solutions of nonlinear partial differential equations", *SIAM Journal on Scientific
+/// Computing* 37(4), 2015 (`p = 2`, `sigma = 1`).
 const SHIFT: f64 = 1.0;
 
-/// The floating-point resolution of a residual whose equation's `|J|·|x|` is `resolution`:
-/// the rounding of the unknowns it reads, which no step can resolve.
+/// Computes the floating-point rounding floor for a residual whose row magnitude is `resolution`
+/// (`|J| * |x|`).
 pub(crate) fn rounding(resolution: f64) -> f64 {
     RESIDUAL_ROUNDINGS * f64::EPSILON * resolution
 }
 
-/// The step `step` of an unknown of `nature` that the step left at `value`, as a multiple
-/// of its tolerance.
+/// Computes the magnitude of `step` for an unknown of `nature` ending at `value`, normalized
+/// by its tolerance.
 fn step_error(value: f64, step: f64, nature: Nature, options: &Options) -> f64 {
     step.abs() / options.unknown_tolerance(nature, value, value - step)
 }
 
-/// Does `each` for every chunk of `values` and the index of its first value: for one chunk
-/// of them all on the calling thread without `grain`, and else for each chunk of
-/// [`reduce::CHUNK`] values, on the threads of the current rayon pool as they take them,
-/// at least [`UnknownGrain::chunks`] a task.
+/// Applies `each` to contiguous chunks of `values` with each chunk's starting index.
+///
+/// Runs sequentially as a single chunk when `grain` is `None`; otherwise dispatches chunks
+/// of [`reduce::CHUNK`] elements across the current Rayon pool with at least
+/// [`UnknownGrain::chunks`] chunks per task.
 pub(crate) fn each_chunk<T: Send>(
     values: &mut [T],
     grain: Option<UnknownGrain>,
@@ -69,13 +64,11 @@ pub(crate) fn each_chunk<T: Send>(
         .for_each(|(index, chunk)| each(index * reduce::CHUNK, chunk));
 }
 
-/// Does `each` for every chunk of the `N` `planes`, of one length, and the index of their
-/// first value, as [`each_chunk`] does for one, and returns what it returned of every
-/// chunk joined by `join`, from `none`, each chunk done whatever the others return.
+/// Applies `each` across aligned chunks of `N` equal-length `planes` and reduces the chunk
+/// results with `join` starting from identity `none`.
 ///
-/// `join` must give the same whatever order and grouping it joins the chunks' findings
-/// in, as `&&` and the largest do, so that the finding is the same bits on any number of
-/// threads.
+/// The `join` operation must be associative and commutative (such as `&&` or [`largest`]) so
+/// parallel reductions stay bit-identical across thread counts.
 fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
     planes: [&mut [f64]; N],
     grain: Option<UnknownGrain>,
@@ -92,8 +85,8 @@ fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
         .reduce(|| none, join)
 }
 
-/// The larger of `one` and `other`, or NaN if either is: a join of
-/// [`each_chunk_of`]'s, as it gives the same in any order and grouping.
+/// Returns the larger of `one` and `other`, propagating NaN deterministically as a
+/// commutative-associative reduction for [`each_chunk_of`].
 fn largest(one: f64, other: f64) -> f64 {
     if one.is_nan() || one >= other {
         one
@@ -102,16 +95,15 @@ fn largest(one: f64, other: f64) -> f64 {
     }
 }
 
-/// Consecutive values of `N` planes, from the index `first` on.
+/// Aligned slices across `N` planes starting at index `first`.
 struct Planes<'a, const N: usize> {
     first: usize,
     planes: [&'a mut [f64]; N],
 }
 
 impl<const N: usize> Planes<'_, N> {
-    /// The values split in two at a multiple of [`reduce::CHUNK`] values from the first,
-    /// each half at least `least` chunks, or whole with `None` when they fill fewer than
-    /// twice as many.
+    /// Splits the planes at a multiple of [`reduce::CHUNK`] when both halves hold at least
+    /// `least` chunks, returning `(self, None)` otherwise.
     fn halve(self, least: usize) -> (Self, Option<Self>) {
         let count = self.planes.first().map_or(0, |plane| plane.len());
         let chunks = count.div_ceil(reduce::CHUNK);
@@ -135,9 +127,10 @@ impl<const N: usize> Planes<'_, N> {
     }
 }
 
-/// Whether `holds` holds of every index below `count`, asked on the calling thread without
-/// `grain`, and else in tasks of at least [`UnknownGrain::chunks`] chunks of [`reduce::CHUNK`]
-/// indices on the threads of the current rayon pool: the same answer either way.
+/// Checks whether `holds` returns true for every index in `0..count`.
+///
+/// Runs sequentially when `grain` is `None`, or in Rayon tasks of at least
+/// [`UnknownGrain::chunks`] chunks of [`reduce::CHUNK`] indices otherwise.
 pub(crate) fn all(
     count: usize,
     grain: Option<UnknownGrain>,
@@ -152,11 +145,12 @@ pub(crate) fn all(
     }
 }
 
-/// What `each` finds of each of the ranges [`reduce::CHUNK`] long that the indices below
-/// `count` fall into, in their order, on the calling thread without `grain`, and else on
-/// the threads of the current rayon pool, at least [`UnknownGrain::chunks`] ranges a task: the
-/// ranges are the same however many threads take them, so a fold of the findings in their
-/// order is the same bits on any number.
+/// Evaluates `each` on every fixed [`reduce::CHUNK`]-sized subrange covering `0..count` in
+/// index order.
+///
+/// Runs sequentially when `grain` is `None`, or across the current Rayon pool with at least
+/// [`UnknownGrain::chunks`] ranges per task. Fixed chunk boundaries keep subsequent folds
+/// bit-identical across thread counts.
 pub(crate) fn pieces<R: Send>(
     count: usize,
     grain: Option<UnknownGrain>,
@@ -174,9 +168,8 @@ pub(crate) fn pieces<R: Send>(
     }
 }
 
-/// Writes into `matrix` the matrix `G + αC` of the equations of a time step whose formula
-/// weighs the new charges by `alpha`, from the conductances and capacitances of
-/// `contributions`, its stored entries split as `grain` says.
+/// Writes the transient step Jacobian `G + αC` from `contributions` into `matrix`,
+/// parallelized according to `grain`.
 pub(crate) fn step_matrix(
     matrix: &mut [f64],
     contributions: &Contributions,
@@ -193,7 +186,7 @@ pub(crate) fn step_matrix(
 }
 
 /// Builds `G + αC` from `workspace.contributions` into `workspace.jacobian` and factors
-/// it with `solver`.
+/// the matrix with `solver`.
 pub(crate) fn factor_step_jacobian<'a>(
     solver: &'a mut Solver<f64>,
     workspace: &mut Workspace,
@@ -209,9 +202,8 @@ pub(crate) fn factor_step_jacobian<'a>(
     solver.factor(&workspace.jacobian)
 }
 
-/// Adds to `into` the product of the matrix of `pattern` whose stored values are `values`
-/// and the vector `x`, each row's terms in the order of their columns, its rows split as
-/// `grain` says: the same bits however they are.
+/// Accumulates the matrix-vector product `(pattern, values) * x` into `into` using fixed
+/// column order per row, parallelized according to `grain`.
 pub(crate) fn add_product(
     pattern: &Pattern,
     values: &[f64],
@@ -224,9 +216,8 @@ pub(crate) fn add_product(
     });
 }
 
-/// Replaces the row of the node `index` in `jacobian`, a matrix of `elaborated`'s pattern
-/// by its stored values, by that of its forced voltage's equation, `v − v₀ = 0`: one on
-/// its diagonal, zero elsewhere.
+/// Replaces row `index` in `jacobian` with the forced-voltage equation `v - v0 = 0`
+/// (unit diagonal, zero off-diagonals).
 pub(crate) fn force_row(elaborated: &Elaborated, jacobian: &mut [f64], index: usize) {
     for &(slot, _) in elaborated.pattern.row(index) {
         jacobian[slot] = 0.0;
@@ -235,9 +226,8 @@ pub(crate) fn force_row(elaborated: &Elaborated, jacobian: &mut [f64], index: us
     jacobian[elaborated.pattern.slot(entry)] = 1.0;
 }
 
-/// The sum of the `count` terms `term` gives, by [`reduce::sum`]'s fixed order, on the
-/// calling thread without `grain`, and else on the threads of the current rayon pool, at
-/// least [`UnknownGrain::chunks`] chunks a task.
+/// Sums `count` terms produced by `term` in [`reduce::sum`]'s fixed tree order, using
+/// Rayon when `grain` is set.
 fn sum(count: usize, term: impl Fn(usize) -> f64 + Sync, grain: Option<UnknownGrain>) -> f64 {
     match grain {
         None => reduce::sum(count, term),
@@ -245,34 +235,29 @@ fn sum(count: usize, term: impl Fn(usize) -> f64 + Sync, grain: Option<UnknownGr
     }
 }
 
-/// The buffers one evaluation of the circuit fills, allocated once per simulator, and the
-/// meter of the work they see done.
+/// Reusable evaluation buffers allocated once per simulator alongside its work meter.
 #[derive(Debug)]
 pub(crate) struct Workspace {
-    /// What the devices added; after [`Simulator::combine`], the residual is the full
-    /// residual of the system being solved.
+    /// Device contributions; after [`Simulator::combine`], `residual` holds the full system
+    /// residual.
     pub(crate) contributions: Contributions,
-    /// The Jacobian of the system being solved, by pattern slot; once a Newton iteration
-    /// has ended, the space where the matrix of a step's equations is written to be
-    /// factored, as the next iteration writes it again.
+    /// System Jacobian indexed by pattern slot, overwritten each Newton iteration and reused
+    /// for step-control factorizations between iterations.
     pub(crate) jacobian: Vec<f64>,
-    /// `|J|·|x|` of each equation: how much its residual moves when every unknown moves by
-    /// its own magnitude, which bounds the residual's floating-point resolution.
+    /// Per-equation sensitivity `|J| * |x|` bounding floating-point residual resolution.
     resolution: Vec<f64>,
-    /// The last Newton step.
+    /// Most recent Newton step vector.
     step: Vec<f64>,
-    /// The charges' divided differences of the step a transient judges last, and then
-    /// those filtered through its equations, kept so that no step allocates them.
+    /// Reusable buffer for transient divided charge differences and their filtered form.
     pub(crate) differences: Vec<f64>,
-    /// The differences times the formula's coefficient, solved through the step's
-    /// equations, as the filter of the last judged step left them.
+    /// Reusable buffer holding scaled divided differences solved through the step Jacobian.
     pub(crate) moved: Vec<f64>,
-    /// The Newton iterations run, and the time spent while an analysis profiles.
+    /// Iteration counter and optional phase profiler.
     pub(crate) meter: Meter,
 }
 
 impl Workspace {
-    /// Zeroed buffers of the system of `elaborated`, and a meter that has counted nothing.
+    /// Allocates zeroed evaluation buffers for `elaborated` with a fresh work meter.
     pub(crate) fn new(elaborated: &Elaborated) -> Self {
         let (unknowns, stored) = (elaborated.unknowns.len(), elaborated.pattern.len());
         Self {
@@ -286,7 +271,7 @@ impl Workspace {
         }
     }
 
-    /// Zeroes every buffer and the meter, as [`Workspace::new`] makes them.
+    /// Zeroes all workspace buffers and resets the work meter.
     pub(crate) fn reset(&mut self) {
         let Contributions {
             residual,
@@ -312,8 +297,8 @@ impl Workspace {
         self.meter = Meter::default();
     }
 
-    /// A test workspace pre-filled with `conductance`, `capacitance`, and `jacobian` of
-    /// `pattern`.
+    /// Constructs a test workspace pre-filled with `conductance`, `capacitance`, and
+    /// `jacobian` for `pattern`.
     #[cfg(test)]
     pub(crate) fn from_matrices(
         pattern: &Pattern,
@@ -337,20 +322,18 @@ impl Workspace {
     }
 }
 
-/// The system a Newton iteration solves.
+/// Equation system solved by a Newton iteration.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode<'a> {
-    /// The DC equations `f(x) = 0`, with sources scaled by `source_scale` and a conductance
-    /// `shunt` from every node to the voltage `anchor` holds it at, or to the reference
-    /// without one, deflated by the solutions `deflated` already found, whose basins the
-    /// iteration is pushed out of.
+    /// DC system `f(x) = 0` with source scaling `source_scale`, optional node shunt `shunt`
+    /// toward `anchor` (or ground), and deflation against `deflated` roots.
     Dc {
         source_scale: f64,
         shunt: f64,
         anchor: Option<&'a [f64]>,
         deflated: &'a [Vec<f64>],
     },
-    /// The equations of a time step to `time`, `f(x) + α q(x) + history = 0`.
+    /// Transient step system `f(x) + α q(x) + history = 0` at `time`.
     Step {
         time: f64,
         alpha: f64,
@@ -359,8 +342,7 @@ pub(crate) enum Mode<'a> {
 }
 
 impl<'a> Mode<'a> {
-    /// The plain DC equations `f(x) = 0` at full source scale, with no shunt or anchor,
-    /// deflated by `deflated`.
+    /// Builds an unshunted DC system at full source scale deflated by `deflated`.
     pub(crate) fn direct(deflated: &'a [Vec<f64>]) -> Self {
         Self::Dc {
             source_scale: 1.0,
@@ -371,25 +353,22 @@ impl<'a> Mode<'a> {
     }
 }
 
-/// Why a Newton iteration stopped without converging.
+/// Reason a Newton iteration terminated without converging.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Failure {
-    /// The solver could not factor the Jacobian, or solve for its step: the error says
-    /// whether it was singular, naming the unknowns it leaves undetermined, or too large.
+    /// Sparse solver failure during factorization or solve (singular Jacobian or memory limit).
     Solver(SimulationError),
-    /// The iteration took every step its limit allows without converging.
+    /// Iteration limit exhausted before meeting convergence tolerances.
     Diverged,
 }
 
 impl Simulator {
-    /// Evaluates every device at `x`, at `time` in a transient analysis or, with `None`, at
-    /// an operating point or about one, filling the workspace's residuals, charges and
-    /// their derivatives, with their steps limited if `limiting`. Returns whether a device
-    /// limited its voltage.
+    /// Evaluates every device at `x` (at `time` for transient runs, or `None` for DC),
+    /// populating workspace residuals, charges, and derivatives.
     ///
-    /// The groups of the instances add their contributions in the order of the groups, of
-    /// their instances and of each instance's local unknowns and entries, however many
-    /// threads evaluate them.
+    /// Applies voltage limiting when `limiting` is true and reports whether any device
+    /// limited its step. Kernel groups accumulate contributions in a fixed order regardless
+    /// of thread count.
     pub(crate) fn evaluate(
         &mut self,
         x: &[f64],
@@ -433,25 +412,20 @@ impl Simulator {
         limited
     }
 
-    /// Solves the system of `mode` by Newton iteration from `x`, leaving the solution in `x`
-    /// and the workspace evaluated there. Returns the number of iterations.
+    /// Solves the equation system specified by `mode` via Newton iteration from `x`,
+    /// returning the iteration count and leaving the solution and workspace state in place.
     ///
-    /// The iteration has converged when the last step was within tolerance of the unknowns,
-    /// every residual is within tolerance of the terms it sums, and no device limited its
-    /// voltage.
+    /// Convergence requires the latest step to satisfy unknown tolerances, every residual to
+    /// meet equation tolerances, and no device voltage limiting on the final evaluation.
     ///
-    /// It takes at most `limit` steps, the iterate after the last judged as any other. A
-    /// step's size is its largest move of an unknown against that unknown's tolerance. A
-    /// DC solution's step is within tolerance when its size is at most 1, as SPICE judges
-    /// it. A time step's iteration measures its contraction `θ`, each step's size over the
-    /// one before it, between steps from evaluations no device limited, as a limited step
-    /// is the limiter's rather than Newton's: as an iteration that contracts by `θ` lies
-    /// within `θ/(1 − θ)` times its last step of the solution (Deuflhard, "Newton Methods
-    /// for Nonlinear Problems", 2004, section 2.1), its step is within tolerance once that
-    /// distance is, as Hairer and Wanner stop the Newton iteration of an implicit step
-    /// ("Solving Ordinary Differential Equations II", 2nd edition, 1996, section IV.8);
-    /// its first step, one from a limited evaluation or after one, and one no shorter
-    /// than the one before, are judged as a DC solution's.
+    /// Each run takes at most `limit` steps and evaluates the final iterate under the same
+    /// criteria. Step size is the maximum ratio of any unknown update to its tolerance; DC
+    /// solves accept steps up to 1.0 as in SPICE. Transient iterations also estimate the
+    /// contraction rate `θ` between consecutive unlimited steps. Stopping then requires the
+    /// Deuflhard bound `θ / (1 - θ) * step <= 1.0` (Deuflhard, *Newton Methods for Nonlinear
+    /// Problems*, 2004, §2.1; Hairer and Wanner, *Solving Ordinary Differential Equations II*,
+    /// 2nd ed., 1996, §IV.8). First steps, limited steps, and non-contracting steps fall back
+    /// to the direct DC step criterion.
     pub(crate) fn newton(
         &mut self,
         x: &mut [f64],
@@ -530,13 +504,11 @@ impl Simulator {
         }
     }
 
-    /// Turns the Newton step of `f(x) = 0` at `x` into that of the deflated equations
-    /// `m(x)·f(x) = 0`, with `m(x) = Π (1/‖x − r‖² + SHIFT)` over the `known` solutions
-    /// `r`, the distance taken over the node voltages: the step scaled by
-    /// `1 / (1 − ∇m·δ / m)`, which is infinite at each known solution, so the iteration
-    /// leaves it for another (Farrell, Birkisson and Funke, "Deflation techniques for
-    /// finding distinct solutions of nonlinear partial differential equations", SIAM
-    /// Journal on Scientific Computing 37(4), 2015).
+    /// Scales the Newton step of `f(x) = 0` into the deflated step of `m(x) * f(x) = 0`, where
+    /// `m(x) = Π (1 / ||x - r||^2 + SHIFT)` over `known` roots `r` in node-voltage space.
+    ///
+    /// Applying the scalar factor `1 / (1 - ∇m·δ / m)` repels iteration from known roots
+    /// (Farrell, Birkisson, and Funke, *SIAM Journal on Scientific Computing* 37(4), 2015).
     fn deflate(&mut self, x: &[f64], known: &[Vec<f64>], grain: Option<UnknownGrain>) {
         let step = &mut self.state.workspace.step;
         let natures = &self.elaborated.natures;
@@ -564,15 +536,13 @@ impl Simulator {
         }
     }
 
-    /// Turns the evaluated device contributions into the residual and Jacobian of `mode`,
-    /// and the residual into the right-hand side of the Newton step, its work split as
-    /// `grain` says. Returns whether every residual is within tolerance of the terms it
-    /// sums, or within the rounding of the unknowns it depends on, when `judged` gives the
-    /// options to judge them by, and else `false`: a node's residual is a current, a
-    /// branch's a voltage.
+    /// Assembles the residual, Jacobian, and Newton right-hand side for `mode`, parallelized
+    /// according to `grain`.
     ///
-    /// The matrix is found first, then each row's residual, the resolution `|J|·|x|` of its
-    /// equation, its judgement and its right-hand side, in one pass over the rows.
+    /// When `judged` provides options, checks whether every residual meets its equation
+    /// tolerance or floating-point rounding floor, returning `false` otherwise. Row residuals,
+    /// `|J| * |x|` resolution bounds, convergence checks, and negated right-hand sides run in
+    /// one pass after matrix assembly.
     fn combine(
         &mut self,
         x: &[f64],
@@ -669,10 +639,9 @@ impl Simulator {
                         within &= residual.abs()
                             <= options.relative_tolerance * *scale + absolute + rounding;
                     }
-                    // A residual within the rounding of the unknowns its equation reads is
-                    // noise: the step it would drive is one the unknowns cannot record, and
-                    // chasing it moves the others without end, as a source's current beside
-                    // a node at megavolts.
+                    // Residuals within the floating-point rounding floor of the row are
+                    // numerical noise. Chasing them drives unbounded tiny steps when a small
+                    // source current sits alongside megavolt node terms.
                     *step = if residual.abs() <= rounding {
                         0.0
                     } else {
@@ -686,9 +655,8 @@ impl Simulator {
         judged.is_some() && within
     }
 
-    /// Moves `x` by the step solved, and returns the largest of its moves of the unknowns,
-    /// each as a multiple of its tolerance, or NaN if one is, in one pass over the unknowns
-    /// split as `grain` says: the step is within tolerance when it is at most 1.
+    /// Advances `x` by the solved Newton step and returns the largest tolerance-normalized
+    /// unknown update (or `NaN` if any entry is `NaN`), parallelized according to `grain`.
     fn take_step(&self, x: &mut [f64], options: &Options, grain: Option<UnknownGrain>) -> f64 {
         let (step, natures) = (&self.state.workspace.step, &self.elaborated.natures);
         each_chunk_of([x], grain, 0.0, largest, |start, [chunk]| {
@@ -703,7 +671,8 @@ impl Simulator {
         })
     }
 
-    /// The names of the `count` unknowns whose last step was largest against its tolerance.
+    /// Returns the names of the `count` unknowns whose last step was largest relative to
+    /// tolerance.
     pub(crate) fn furthest_from_converging(
         &self,
         x: &[f64],
@@ -742,8 +711,8 @@ mod tests {
     use crate::test_helpers::{grounded_simulator, simulator_from_json};
     use crate::{Method, Options, Simulator, Transient};
 
-    /// A simulator of a voltage source of `waveform` driving `stages` sections of 1 kΩ in
-    /// series and 1 nF to the ground, with a diode from the last to the ground if `clamped`.
+    /// Builds a simulator for a voltage source with `waveform` driving `stages` RC sections
+    /// (1 kΩ series, 1 nF to ground), optionally terminated by a clamping diode if `clamped`.
     fn ladder(stages: usize, waveform: &Value, clamped: bool) -> Simulator {
         let node = |index: usize| format!("n{index}");
         let mut instances = vec![json!({
@@ -772,8 +741,8 @@ mod tests {
         grounded_simulator("ladder", "ground", &Value::Array(instances))
     }
 
-    /// A simulator of a behavioral current source of `expression` from `a` to the ground,
-    /// which reads `v(a)` and the voltage of `c`, which a voltage source holds at 0 V.
+    /// Builds a simulator with a behavioral current source (`expression`) from `a` to ground
+    /// reading `v(a)` and a grounded reference node `c` at 0 V.
     fn root(expression: &str) -> Simulator {
         grounded_simulator(
             "root",
@@ -789,8 +758,8 @@ mod tests {
         )
     }
 
-    /// A time step's Newton iteration on the circuit of `simulator`, from `a` at 1 V,
-    /// allowed `limit` steps: what it returned, and where it left `a`.
+    /// Runs a single transient Newton solve on `simulator` from `v(a) = 1 V` with iteration
+    /// cap `limit`, returning the iteration result and final `v(a)`.
     fn stepped(simulator: &mut Simulator, limit: usize) -> (Result<usize, Failure>, f64) {
         let a = simulator.unknown("a").expect("a node").index();
         let unknowns = simulator.elaborated.unknowns.len();
@@ -809,9 +778,9 @@ mod tests {
 
     #[test]
     fn a_time_step_takes_no_more_steps_than_its_limit() {
-        // At the double root of 1e-3·v(a)², Newton's iteration halves `a` at each step,
-        // from 1 V, and its step falls within its tolerance, 1e-6 V and a thousandth of
-        // `a`, after 20 steps: a limit of 10 stops it, though it contracts throughout.
+        // At the double root of `1e-3 * v(a)^2`, Newton halves `a` from 1 V each step and
+        // falls within tolerance after 20 steps. A limit of 10 stops early despite steady
+        // contraction.
         let mut simulator = root("1e-3 * v(a)^2 - v(c)");
         assert_eq!(stepped(&mut simulator, 10).0, Err(Failure::Diverged));
         assert_eq!(stepped(&mut simulator, 20).0, Ok(20));
@@ -819,9 +788,9 @@ mod tests {
 
     #[test]
     fn a_time_step_converges_within_its_tolerance_of_a_slowly_contracting_root() {
-        // At the triple root of 1e-3·v(a)³, Newton's iteration contracts by two thirds at
-        // each step, so a step within tolerance leaves twice as much to go: SPICE's test
-        // on the step alone would stop with `a` twice its tolerance from the root, 0 V.
+        // At the triple root of `1e-3 * v(a)^3`, Newton contracts by 2/3 each step, leaving
+        // twice the last step to go. SPICE's step-only test would stop at twice tolerance
+        // from the root at 0 V.
         let mut simulator = root("1e-3 * v(a)^3 - v(c)");
         let (found, a) = stepped(&mut simulator, 100);
         assert!(found.is_ok(), "{found:?}");
@@ -830,8 +799,7 @@ mod tests {
         assert!(a.abs() <= tolerance, "{a} V from the root");
     }
 
-    /// The factorizations that searched for pivots, from the first or from a pivot too
-    /// small, the refactorizations and the reuses of factors, from `before` to `after`.
+    /// Returns `(pivot_searches, refactorizations, reuses)` elapsed between `before` and `after`.
     fn work(before: Work, after: Work) -> (usize, usize, usize) {
         (
             after.factorizations + after.fallbacks - before.factorizations - before.fallbacks,
@@ -840,10 +808,9 @@ mod tests {
         )
     }
 
-    /// The sparse solver eliminates a MOSFET's three displacements before it factors, and
-    /// the currents through its series resistances below 1 Ω, so it factors the circuit's
-    /// nodes alone, as ngspice's matrix holds them: 504 of the 3,504 unknowns of the chain
-    /// of 500 inverters, and 13 of the buck's 23, its switches' internal nodes among them.
+    /// Verifies that static condensation eliminates MOSFET displacements and low-resistance
+    /// branch currents before factorization, matching ngspice's node-only matrix dimensions
+    /// (504 of 3,504 unknowns for the 500-inverter chain, and 13 of 23 for the buck converter).
     #[test]
     fn the_solver_factors_the_nodes_alone() {
         let circuits =
@@ -880,13 +847,11 @@ mod tests {
 
     #[test]
     fn a_linear_transient_factors_only_as_its_step_or_formula_changes() {
-        // A sine wave keeps the ladder moving, so that every step takes an iteration at
-        // least, each of which once made a factorization. The Jacobian, `G + αC`, now changes
-        // only with `α`, as the step's length or formula changes: while the first steps grow
-        // to the longest, a millionth of a second, on the last, landing on the stop, on each
-        // step tried and rejected, once as the formula turns from backward Euler, which
-        // starts the run, to the trapezoidal rule, and twice on each attempt at the second
-        // step, as it judges the first.
+        // A sine wave keeps the ladder changing so every step runs at least one iteration.
+        // The Jacobian `G + αC` changes only when `α` changes (step size or integration
+        // formula). Factorizations therefore occur during initial step growth up to `max_step`,
+        // on the final truncated step, on rejected steps, on the backward-Euler-to-trapezoidal
+        // transition, and twice per attempt at the second step when judging the first.
         let sine = json!({"sine": {"offset": 0.0, "amplitude": 1.0, "frequency": 1e3}});
         let mut simulator = ladder(5, &sine, false);
         let options = Options::default();
@@ -917,12 +882,11 @@ mod tests {
         let at_longest = |length: &f64| (length - longest).abs() < rounding;
         let ramp = lengths.iter().position(at_longest).unwrap_or(lengths.len());
         assert!(lengths[ramp..lengths.len() - 1].iter().all(at_longest));
-        // The lengths up to the longest, the longest's own, and the last's.
+        // Step lengths up to `max_step`, the `max_step` plateau, and the final step.
         let changes = ramp + 2;
         let formulas = 1;
-        // The start is the run's one corner: each attempt at the second step judges the
-        // first through the first's formula, then itself through its own, each with a
-        // factorization, and a rejected step may be one of those attempts.
+        // Each attempt at the second step judges the first step under its formula and then
+        // judges itself, requiring two factorizations per attempt (including rejections).
         let judgements = 2 * (1 + steps.rejected);
         assert!(
             searched + refactored <= changes + steps.rejected + formulas + judgements,
@@ -952,8 +916,8 @@ mod tests {
         let mut profiled = ladder(3, &sine, true)
             .transient(&transient, &profiling)
             .unwrap();
-        // The work counts the operating point's iterations and the rejected steps' beside
-        // the accepted steps', and each iteration factors its Jacobian once.
+        // Total work includes operating-point iterations and rejected steps in addition to
+        // accepted steps, with one factorization or reuse per iteration.
         let (steps, work) = (&plain.statistics, plain.statistics.work);
         assert!(work.iterations > steps.iterations, "{work:?} for {steps:?}");
         let factored = work.factorizations + work.refactorizations + work.fallbacks;

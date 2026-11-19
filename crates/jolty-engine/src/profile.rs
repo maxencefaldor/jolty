@@ -1,14 +1,11 @@
-//! What an analysis did: its work, counted always, and where its time went, measured when
-//! its options ask.
+//! Solver work counters (always enabled) and optional per-activity wall-clock profiling.
 //!
-//! A simulator's meter counts every Newton iteration it runs, and its sparse solver every
-//! factorization, from the moment it is made; an analysis reads both as it starts and as it
-//! ends, and its work is the difference. While an analysis profiles, the meter's clock
-//! charges each span of time to the one activity the simulator is in, the activities nested
-//! within another charged to themselves, so the activities sum to the whole. The clock, read
-//! some ten times a Newton iteration, adds about 0.23 µs to each on an Apple M2 Max, a tenth
-//! of a small circuit's transient, such as a buck converter's, so it runs only for an
-//! analysis whose options' `profile` is on; nothing it measures changes a result.
+//! Each simulator tracks cumulative Newton iterations and sparse factorization statistics
+//! from creation, taking differences across each analysis. When `options.profile` is
+//! enabled, an activity clock attributes non-overlapping durations so all buckets sum to
+//! total runtime. Clock sampling adds roughly 0.23 µs per iteration on Apple M2 Max (about
+//! 10% on small transients), so profiling stays disabled by default and never alters
+//! numeric results.
 
 use std::time::{Duration, Instant};
 
@@ -17,9 +14,8 @@ use crate::Simulator;
 /// The work an analysis did, counted whatever its options.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Work {
-    /// The Newton iterations it ran, each solving for one step of the unknowns: those of
-    /// the operating point it solved, unless the simulator took the one it remembered, and
-    /// those of every step it tried, rejected or accepted.
+    /// Total Newton iterations run across the operating point (unless cached) and all
+    /// attempted steps, both accepted and rejected.
     pub iterations: usize,
     /// The factorizations of its sparse solver that searched for every pivot: the first the
     /// simulator made, and any after a matrix the solver could not factor.
@@ -33,37 +29,32 @@ pub struct Work {
     pub reuses: usize,
 }
 
-/// Where an analysis spent its time, measured when its options' `profile` is on.
+/// Per-activity wall-clock time breakdown collected when `options.profile` is enabled.
 ///
-/// Each span of the analysis counts in the one activity it was spent in, so the activities
-/// sum to its whole time, [`Profile::total`].
+/// Activities are mutually exclusive so all fields sum to [`Profile::total`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Profile {
-    /// Checking the options, choosing the devices the analysis records, and gathering the
-    /// sources' breakpoints.
+    /// Option validation, recording setup, and source breakpoint collection.
     pub preparing: Duration,
-    /// Evaluating the devices.
+    /// Device kernel evaluation.
     pub evaluating: Duration,
-    /// Turning what the devices contributed into each Newton iteration's matrix and
-    /// right-hand side, and judging its residuals against their tolerances.
+    /// Matrix and right-hand-side assembly plus residual tolerance checks.
     pub assembling: Duration,
-    /// Factoring matrices.
+    /// Sparse matrix factorization.
     pub factoring: Duration,
-    /// Solving with the factors.
+    /// Linear triangular solves with existing factors.
     pub solving: Duration,
-    /// Judging each step of a transient by its error, choosing the next, and finding the
-    /// events a step lands on: the logic's changes and the devices' jumps.
+    /// Transient error estimation, step selection, and event/discontinuity localization.
     pub step_control: Duration,
-    /// Reading the recorded devices at each point kept.
+    /// Recording device currents, charges, derivatives, and variables at accepted points.
     pub recording: Duration,
-    /// Everything else: Newton iteration's updates and its tests of their steps, the
-    /// integration formula's terms and the prediction each step starts from, and what a
-    /// transient carries along its steps, such as sensitivities.
+    /// Remaining solver work: Newton updates, integration terms, predictions, and
+    /// sensitivity propagation.
     pub other: Duration,
 }
 
 impl Profile {
-    /// The whole time: the sum of every activity's.
+    /// Returns the total profiled wall-clock duration across all activities.
     #[must_use]
     pub fn total(&self) -> Duration {
         self.preparing
@@ -76,7 +67,7 @@ impl Profile {
             + self.other
     }
 
-    /// The time spent in `activity`.
+    /// Returns a mutable reference to the duration bucket for `activity`.
     fn spent(&mut self, activity: Activity) -> &mut Duration {
         match activity {
             Activity::Preparing => &mut self.preparing,
@@ -90,8 +81,7 @@ impl Profile {
         }
     }
 
-    /// The time spent since `earlier`, activity by activity: none is less, since time
-    /// is only ever added.
+    /// Computes the per-activity elapsed durations since `earlier`.
     fn since(&self, earlier: &Self) -> Self {
         Self {
             preparing: self.preparing.saturating_sub(earlier.preparing),
@@ -106,7 +96,7 @@ impl Profile {
     }
 }
 
-/// What a simulator is doing, for its clock.
+/// Active simulator phase tracked by the profiling clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Activity {
     Preparing,
@@ -119,8 +109,8 @@ pub(crate) enum Activity {
     Other,
 }
 
-/// The clock of a meter: the activity the simulator is in, since when, and the time spent
-/// in each activity before.
+/// Wall-clock accumulator tracking the current [`Activity`], start timestamp, and
+/// cumulative [`Profile`].
 #[derive(Debug)]
 struct Clock {
     activity: Activity,
@@ -129,7 +119,7 @@ struct Clock {
 }
 
 impl Clock {
-    /// Charges the time since the last charge to the current activity.
+    /// Charges elapsed wall-clock time since the last transition to the active phase.
     fn charge(&mut self) {
         let now = Instant::now();
         *self.spent.spent(self.activity) += now.saturating_duration_since(self.since);
@@ -137,15 +127,14 @@ impl Clock {
     }
 }
 
-/// The Newton iterations a simulator has run since it was made, and, while an analysis
-/// profiles, the time it has spent in each activity.
+/// Cumulative Newton iteration counter and optional wall-clock [`Clock`] for a simulator.
 #[derive(Debug, Default)]
 pub(crate) struct Meter {
     iterations: usize,
     clock: Option<Clock>,
 }
 
-/// A meter's and a sparse solver's readings as an analysis starts.
+/// Snapshot of meter and sparse-solver counters captured at analysis start.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Reading {
     iterations: usize,
@@ -154,17 +143,17 @@ pub(crate) struct Reading {
 }
 
 impl Meter {
-    /// Counts a Newton iteration.
+    /// Increments the cumulative Newton iteration counter.
     pub(crate) fn iterate(&mut self) {
         self.iterations += 1;
     }
 
-    /// The Newton iterations counted since the meter was made.
+    /// Returns the total Newton iterations counted since creation.
     pub(crate) fn iterations(&self) -> usize {
         self.iterations
     }
 
-    /// Enters `activity`, and returns the activity left, to [`Meter::leave`] for it.
+    /// Switches profiling to `activity` and returns the prior activity for [`Meter::leave`].
     pub(crate) fn enter(&mut self, activity: Activity) -> Activity {
         match &mut self.clock {
             Some(clock) => {
@@ -175,13 +164,13 @@ impl Meter {
         }
     }
 
-    /// Leaves the current activity for `previous`, which [`Meter::enter`] returned.
+    /// Restores the prior profiling phase `previous` returned by [`Meter::enter`].
     pub(crate) fn leave(&mut self, previous: Activity) {
         self.enter(previous);
     }
 
-    /// Reads the meter and the sparse solver's `solver` statistics as an analysis starts,
-    /// starting the clock if the analysis will `profile` and stopping it if not.
+    /// Captures starting meter and `solver` counters, starting or stopping the clock
+    /// according to `profile`.
     pub(crate) fn read(&mut self, profile: bool, solver: jolty_numerics::Work) -> Reading {
         match (&mut self.clock, profile) {
             (Some(clock), true) => clock.charge(),
@@ -201,8 +190,7 @@ impl Meter {
         }
     }
 
-    /// The work done since `start`, the sparse solver's statistics now `solver`, and the
-    /// time spent since, if the clock has run since.
+    /// Computes delta [`Work`] and optional [`Profile`] elapsed since `start`.
     pub(crate) fn since(
         &mut self,
         start: &Reading,
@@ -227,8 +215,8 @@ impl Meter {
 }
 
 impl Simulator {
-    /// Reads the meter and the sparse solver as an analysis starts, starting the clock if
-    /// the analysis will `profile` and stopping it if not.
+    /// Captures starting meter and solver counters for an analysis, toggling profiling via
+    /// `profile`.
     pub(crate) fn read_meter(&mut self, profile: bool) -> Reading {
         self.state
             .workspace
@@ -236,7 +224,7 @@ impl Simulator {
             .read(profile, self.state.solver.statistics())
     }
 
-    /// The work done since `reading`, and the time spent since, if the clock has run.
+    /// Computes [`Work`] and optional [`Profile`] accumulated since `reading`.
     pub(crate) fn metered_since(&mut self, reading: &Reading) -> (Work, Option<Profile>) {
         self.state
             .workspace

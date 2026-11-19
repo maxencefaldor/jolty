@@ -1,22 +1,18 @@
-//! Sensitivities: how the unknowns asked for move with every number of every device's
-//! parameters, at the operating point, along a DC sweep, over frequency, over time and
-//! along a periodic steady state's period.
+//! Exact parameter sensitivities across operating-point, DC-sweep, AC, transient, and
+//! periodic steady-state analyses.
 //!
-//! A sensitivity is the analysis's Jacobian, each output at each point against each
-//! parameter, which its JVP ([`Simulator::jvp`]) finds a column at a time and its VJP
-//! ([`Simulator::vjp`]) a row at a time: one tangent per parameter, or one cotangent per
-//! output at each point, and for an oscillator's period one more. It takes whichever
-//! costs the fewer solves, counted for the circuit at hand. At a DC point and over
-//! frequency each point is solved apart, so the VJP's `k` outputs cost `k` transposed
-//! solves a point and the JVP's `P` parameters `P` solves: the VJP unless there are fewer
-//! parameters than outputs. Over time, a cotangent at a point pulls back over every step
-//! before it, so `k` outputs at `N + 1` points cost `k (N + 1)(N + 2) / 2` transposed
-//! solves, where the JVP costs `P (N + 1)`, and along a period the VJP solves twice for
-//! each cotangent as the JVP does for each tangent, once from the end besides. A
-//! transient takes at least a point per longest step, so the JVP is taken at once when it
-//! costs no more at that least number, and for a circuit with logic, whose points the VJP
-//! cannot evaluate again as they were; otherwise the transient records its steps, and the
-//! cheaper goes through them once it has ended.
+//! A sensitivity table is the analysis Jacobian (outputs across points with respect to every
+//! numeric parameter). Forward mode ([`Simulator::jvp`]) builds columns one parameter at a
+//! time, while reverse mode ([`Simulator::vjp`]) builds rows one output point at a time
+//! (plus one row for an oscillator's period). The driver picks whichever direction requires
+//! fewer linear solves for the circuit and output set.
+//!
+//! For DC and AC analyses, points decouple, so reverse mode wins whenever `outputs <= parameters`.
+//! For transients over `N + 1` points, reverse mode requires `k (N + 1)(N + 2) / 2` transposed
+//! solves versus `P (N + 1)` forward solves; periodic steady-state reverse mode adds a second
+//! backward pass from the period end. Transients run forward immediately when the minimum
+//! step count favors forward mode or when logic devices prevent replay; otherwise steps are
+//! recorded so the cheaper mode replays them after integration.
 
 use std::collections::BTreeMap;
 
@@ -70,74 +66,66 @@ pub enum Differentiated {
     PeriodicSteadyState(PeriodicSteadyState),
 }
 
-/// One number of a device's parameters.
+/// Numeric parameter belonging to a single device instance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
-    /// The device's path, such as `X1/R1`.
+    /// Device instance path, such as `X1/R1`.
     pub instance: String,
-    /// The parameter's name, its keys joined by dots within an object and a list's
-    /// entries keyed by their index from 0, such as `resistance`, `waveform.dc` or
-    /// `waveform.piecewise.1.1`.
+    /// Dot-separated parameter path with zero-based list indices, such as `resistance`,
+    /// `waveform.dc`, or `waveform.piecewise.1.1`.
     pub name: String,
-    /// Its value, in SI base units.
+    /// Parameter value in SI base units.
     pub value: f64,
 }
 
-/// Derivatives at each point of an analysis, one at an operating point: of a sensitivity
-/// analysis, each output's derivative with respect to each parameter, by point, then
-/// output, then parameter, and of a JVP, each unknown's along each tangent, by point,
-/// then unknown, then tangent.
+/// Analysis derivatives indexed by `[point][output][parameter]` for sensitivities or
+/// `[point][unknown][tangent]` for JVPs (single point for operating-point analyses).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Derivatives {
-    /// The derivatives of values, at an operating point, along a sweep or over time.
+    /// Real derivatives for operating-point, DC-sweep, transient, or periodic analyses.
     Real(Vec<Vec<Vec<f64>>>),
-    /// The derivatives of phasors, over frequency.
+    /// Complex phasor derivatives for AC frequency responses.
     Complex(Vec<Vec<Vec<Complex64>>>),
 }
 
-/// The sensitivities of a [`Sensitivity`] analysis.
+/// Output of a [`Sensitivity`] analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SensitivityResult {
-    /// The unknowns, by name, in the order of the derivatives' outputs.
+    /// Output unknown names in the order of the derivative rows.
     pub outputs: Vec<String>,
-    /// Every parameter the derivatives are with respect to.
+    /// Differentiated parameters in column order.
     pub parameters: Vec<Parameter>,
-    /// The derivatives, by point, then output, then parameter; along a periodic steady
-    /// state's period, each point at its fraction of the period.
+    /// Sensitivity values indexed by `[point][output][parameter]`, evaluated at fixed period
+    /// fractions for periodic steady states.
     pub derivatives: Derivatives,
-    /// For an oscillator's periodic steady state, the derivative of its period with
-    /// respect to each parameter.
+    /// Period sensitivities with respect to each parameter for an autonomous oscillator.
     pub period_derivatives: Option<Vec<f64>>,
-    /// The result of the analysis differentiated.
+    /// Primal result of the differentiated analysis.
     pub result: Box<AnalysisResult>,
 }
 
-/// What [`Simulator::differentiate`] finds: the derivatives of the outputs with respect to
-/// the parameter of each column of the twins, in their order, and the result of the
-/// analysis differentiated.
+/// Internal output of [`Simulator::differentiate`] bundling final parameter twins,
+/// derivatives, optional oscillator period derivatives, and primal analysis results.
 pub(crate) struct Differentiation {
-    /// The twins, a column for each parameter, as they ended the analysis.
+    /// Parameter twins in column order as left at the end of the analysis.
     pub(crate) twins: Twins,
     pub(crate) derivatives: Derivatives,
-    /// For an oscillator's periodic steady state, its period's derivative with respect to
-    /// the number of each twin.
+    /// Period derivatives with respect to each twin for an autonomous periodic steady state.
     pub(crate) period_derivatives: Option<Vec<f64>>,
     pub(crate) result: AnalysisResult,
 }
 
 impl Simulator {
-    /// The derivative of each unknown of `sensitivity` with respect to every number of every
-    /// device's parameters, at each point of the analysis it differentiates.
+    /// Computes exact derivatives of each unknown in `sensitivity.outputs` with respect to
+    /// every numeric device parameter across `sensitivity.of`.
     ///
-    /// Every derivative is exact. A number the device's model reads as a choice, such as a
-    /// MOSFET's level, is no real parameter and has none.
+    /// Discrete choice parameters (such as a MOSFET level) are excluded from differentiation.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
-    /// [`SimulationError::TooMuchMemory`] when a periodic steady state's sensitivity would
-    /// hold more than the options' `max_memory`, [`SimulationError::Singular`] when a
-    /// Jacobian is, and the errors of the analysis differentiated.
+    /// Returns [`SimulationError::UnknownOutput`] for unrecognized outputs,
+    /// [`SimulationError::TooMuchMemory`] if periodic sensitivity exceeds `max_memory`,
+    /// [`SimulationError::Singular`] for singular Jacobians, and errors from `sensitivity.of`.
     pub fn sensitivity(
         &mut self,
         sensitivity: &Sensitivity,
@@ -158,15 +146,14 @@ impl Simulator {
         })
     }
 
-    /// The derivative of each unknown of `outputs` with respect to the parameter of each
-    /// column of `twins`, at each point of the analysis `of`, and that analysis's result.
+    /// Computes derivatives of `outputs` with respect to every column of `twins` across `of`,
+    /// automatically selecting forward JVP or reverse VJP based on solve count.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
-    /// [`SimulationError::TooMuchMemory`] when a periodic steady state's sensitivity would
-    /// hold more than the options' `max_memory`, [`SimulationError::Singular`] when a
-    /// Jacobian is, and the errors of the analysis differentiated.
+    /// Returns [`SimulationError::UnknownOutput`] for unrecognized outputs,
+    /// [`SimulationError::TooMuchMemory`] if periodic sensitivity exceeds `max_memory`,
+    /// [`SimulationError::Singular`] for singular Jacobians, and errors from `of`.
     pub(crate) fn differentiate(
         &mut self,
         outputs: &[String],
@@ -265,9 +252,8 @@ impl Simulator {
         })
     }
 
-    /// Whether the VJP of `of` costs fewer solves than its JVP, for the derivatives of
-    /// `outputs` unknowns at each of `points` points with respect to `parameters`
-    /// parameters, as the module's documentation counts them.
+    /// Checks whether reverse VJP requires fewer linear solves than forward JVP for `of` given
+    /// `outputs`, `parameters`, and `points`.
     fn cheaper_backward(
         of: &Differentiated,
         outputs: usize,
@@ -293,10 +279,8 @@ impl Simulator {
         }
     }
 
-    /// The derivatives of the unknowns `kept` at each of the `points` of the result
-    /// `result`, which left `saved`, with respect to the parameter of each column of
-    /// `twins`, a row at a time: the VJP of a cotangent on each unknown kept at each point,
-    /// and for an oscillator's period one more.
+    /// Computes sensitivities of `kept` unknowns across `points` via reverse-mode VJP,
+    /// seeding one unit cotangent per `(point, output)` pair plus one for an oscillator period.
     fn by_rows(
         &mut self,
         mut twins: Twins,
@@ -357,15 +341,15 @@ impl Simulator {
         })
     }
 
-    /// The operating point, and how far each of its unknowns moves, to first order, as
-    /// gmin doubles: `gmin ∂x/∂gmin`, which is `−x` for a node only gmin holds.
+    /// Computes the DC operating point and the exact first-order shift `gmin * ∂x/∂gmin` when
+    /// `gmin` doubles (yielding `-x` on nodes supported solely by `gmin`).
     ///
-    /// Every device's residual is linear in gmin, so doubling it changes the residuals by
-    /// `gmin ∂f/∂gmin` exactly, and the solution by that change through the Jacobian.
+    /// Device residuals are affine in `gmin`, so evaluating at `2 * gmin` recovers
+    /// `gmin * ∂f/∂gmin` exactly for a single linear solve.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the Jacobian is, and the errors of
+    /// Returns [`SimulationError::Singular`] if the DC Jacobian is singular, plus errors from
     /// [`Simulator::operating_point`].
     pub fn gmin_dependence(
         &mut self,
@@ -394,8 +378,8 @@ impl Simulator {
         })
     }
 
-    /// The twins of every number of every device's parameters its model reads as a real
-    /// number, a column each, in the devices' order then the numbers'.
+    /// Builds unit-seeded [`Twins`] for every differentiable real device parameter in device
+    /// and parameter order.
     pub(crate) fn every_twin(&self) -> Twins {
         let mut parameters = Vec::new();
         let origins = self.origins();
@@ -415,8 +399,8 @@ impl Simulator {
         self.unit_twins(parameters).0
     }
 
-    /// The number `name` of the device at `path`, and the device's index, its value as the
-    /// device is made now; none when the circuit has no device there, or no number there.
+    /// Looks up numeric parameter `name` on device `path`, returning `(device_index, Parameter)`
+    /// with the active effective value, or `None` if absent.
     pub(crate) fn parameter_at(&self, path: &str, name: &str) -> Option<(usize, Parameter)> {
         let index = self.elaborated.device(path)?;
         let origins = self.origins();
@@ -432,7 +416,8 @@ impl Simulator {
         Some((index, parameter))
     }
 
-    /// What the run's devices are made from.
+    /// Returns the active [`Origins`] view combining elaboration, value patches, sweeps, and
+    /// temperature.
     pub(crate) fn origins(&self) -> Origins<'_> {
         Origins {
             elaborated: &self.elaborated,
@@ -443,8 +428,8 @@ impl Simulator {
     }
 }
 
-/// A cotangent of `one` on each unknown of `kept`, among `unknowns`, at each of `points`
-/// points, by point then unknown kept.
+/// Builds unit cotangents with value `one` at each `(point, kept_unknown)` entry in
+/// point-major order.
 fn unit_rows<T: Copy + Default>(
     kept: &[usize],
     points: usize,
@@ -465,8 +450,7 @@ fn unit_rows<T: Copy + Default>(
     cotangents
 }
 
-/// The rows `pulled`, by point then output, `outputs` a point across `points` points, grouped
-/// by point.
+/// Reshapes flat point-major cotangent rows `pulled` into `points` groups of `outputs` rows.
 fn by_point<T>(pulled: Vec<Vec<T>>, points: usize, outputs: usize) -> Vec<Vec<Vec<T>>> {
     let mut rows = pulled.into_iter();
     (0..points)

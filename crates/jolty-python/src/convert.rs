@@ -30,7 +30,8 @@ fn array1<T: Element>(py: Python<'_>, values: Vec<T>) -> Bound<'_, PyArray1<T>> 
     PyArray1::from_vec(py, values)
 }
 
-/// The name of a quantity: `"voltage"`, `"current"`, `"temperature"` or `"state"`.
+/// Returns the quantity name for `nature`: `"voltage"`, `"current"`, `"temperature"`, or
+/// `"state"`.
 pub(crate) fn quantity_name(nature: Nature) -> &'static str {
     match nature {
         Nature::Temperature => "temperature",
@@ -78,7 +79,7 @@ pub(crate) fn excursions_to_python<'py>(
     Ok(found)
 }
 
-/// The result of an analysis as a dictionary whose `kind` names the analysis.
+/// Converts an analysis `result` into a Python dictionary tagged with its `kind` field.
 pub(crate) fn result_to_python(
     py: Python<'_>,
     result: AnalysisResult,
@@ -315,8 +316,8 @@ fn add_recorded(result: &Bound<'_, PyDict>, recorded: RecordedSeries) -> PyResul
     Ok(())
 }
 
-/// `rows`, all of one length, as a two-dimensional array with as many rows even when
-/// they are empty; each row is freed once copied, so the values are held about once.
+/// Packs equal-length `rows` into a two-dimensional `NumPy` array, freeing each row after
+/// copying so peak memory stays near one copy.
 fn stacked(py: Python<'_>, rows: Vec<Vec<f64>>) -> PyResult<Bound<'_, PyArray2<f64>>> {
     let (count, columns) = (rows.len(), rows.first().map_or(0, Vec::len));
     let mut flat = Vec::with_capacity(count * columns);
@@ -326,7 +327,7 @@ fn stacked(py: Python<'_>, rows: Vec<Vec<f64>>) -> PyResult<Bound<'_, PyArray2<f
     array1(py, flat).reshape([count, columns])
 }
 
-/// Logic levels as numbers: 0, 1, and NaN for an unknown level.
+/// Converts logic `levels` to floating-point numbers (`0.0`, `1.0`, or `NaN` for unknown).
 fn numbers(levels: &[LogicLevel]) -> Vec<f64> {
     levels
         .iter()
@@ -338,7 +339,8 @@ fn numbers(levels: &[LogicLevel]) -> Vec<f64> {
         .collect()
 }
 
-/// `rows` as a two-dimensional array, with as many rows even when they are empty.
+/// Converts `rows` into a two-dimensional `NumPy` array, preserving row count when rows are
+/// empty.
 fn matrix<'py, T: Element + Copy>(
     py: Python<'py>,
     rows: &[Vec<T>],
@@ -348,7 +350,8 @@ fn matrix<'py, T: Element + Copy>(
     array1(py, flat).reshape([rows.len(), columns])
 }
 
-/// `points` as a three-dimensional array, with as many points even when they are empty.
+/// Converts `points` into a three-dimensional `NumPy` array, preserving point count when
+/// inner slices are empty.
 fn cube<'py, T: Element + Copy>(
     py: Python<'py>,
     points: &[Vec<Vec<T>>],
@@ -362,8 +365,8 @@ fn cube<'py, T: Element + Copy>(
     array1(py, flat).reshape([points.len(), rows, columns])
 }
 
-/// Each of `found` as a dictionary of its `rule`, its `message`, its `instances` and its
-/// `nets`.
+/// Converts each diagnostic in `found` into a dictionary of `rule`, `message`, `instances`,
+/// and `nets`.
 pub(crate) fn diagnostics_to_python(
     py: Python<'_>,
     found: Vec<jolty_checks::Diagnostic>,
@@ -382,7 +385,8 @@ pub(crate) fn diagnostics_to_python(
     Ok(diagnostics)
 }
 
-/// Each problem of `error`, a dictionary of its `message` and its `instance` or `None`.
+/// Converts each elaboration problem in `error` into a dictionary of `message` and
+/// `instance` (or `None`).
 pub(crate) fn problems_to_python<'py>(
     py: Python<'py>,
     error: &jolty_engine::ElaborationError,
@@ -398,7 +402,7 @@ pub(crate) fn problems_to_python<'py>(
     Ok(problems)
 }
 
-/// An instance as a dictionary of its `path` and its `source_location`, or `None`.
+/// Converts `location` into a dictionary of `path` and `source_location` (or `None`).
 fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bound<'py, PyDict>> {
     let source = match &location.source_location {
         Some(source) => Some(py_dict!(py;

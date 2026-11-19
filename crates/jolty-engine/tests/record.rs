@@ -28,8 +28,7 @@ use serde_json::json;
 use sim::simulator;
 use transient::transient;
 
-/// A source stepping into a resistor and a capacitor, a diode across the capacitor, and a
-/// MOSFET whose gate and drain share a net and whose source and bulk join the reference.
+/// Builds a pulsed RC, diode, and diode-connected MOSFET test circuit.
 fn bench() -> Circuit {
     circuit([
         voltage_source(
@@ -62,7 +61,7 @@ fn bench() -> Circuit {
     ])
 }
 
-/// The record of the instances at `paths`.
+/// Builds a [`Record::Instances`] filter from `paths`.
 fn instances(paths: &[&str]) -> Record {
     Record::Instances(
         paths
@@ -72,7 +71,7 @@ fn instances(paths: &[&str]) -> Record {
     )
 }
 
-/// Every device recorded, at SPICE's tolerances.
+/// Returns solver options recording every device at default tolerances.
 fn everything() -> Options {
     Options {
         record: Record::All,
@@ -80,8 +79,7 @@ fn everything() -> Options {
     }
 }
 
-/// Every device recorded, at tolerances so tight that what Newton iteration leaves of each
-/// node's equation, the sum of the currents into it, is all but nothing.
+/// Returns solver options recording every device at tight Newton tolerances.
 fn tight() -> Options {
     Options {
         relative_tolerance: 1e-9,
@@ -91,10 +89,10 @@ fn tight() -> Options {
     }
 }
 
-/// The names of the values every recording holds under `record`, as [`Recording`] lays
-/// them out: each terminal of each recorded device, such as `R1.a`, then each recorded
-/// summed terminal; each pair of each recorded device's unknowns, its terminals then its
-/// internal unknowns, row by row; and each recorded device's variables.
+/// Column names for recorded values under `record`, matching [`Recording`] layout.
+///
+/// Includes device terminals (such as `R1.a`), summed terminals, row-major derivative pairs
+/// over terminals and internal unknowns, and device variables.
 #[derive(Debug, Default)]
 struct Columns {
     terminals: Vec<String>,
@@ -143,7 +141,7 @@ impl Columns {
         columns
     }
 
-    /// The index of the terminal `name`.
+    /// Returns the column index of terminal `name`.
     fn terminal(&self, name: &str) -> usize {
         self.terminals
             .iter()
@@ -151,7 +149,7 @@ impl Columns {
             .unwrap_or_else(|| panic!("no terminal {name}"))
     }
 
-    /// The index of the derivative of `equation` with respect to `unknown`.
+    /// Returns the column index of the derivative of `equation` with respect to `unknown`.
     fn derivative(&self, equation: &str, unknown: &str) -> usize {
         self.derivatives
             .iter()
@@ -160,16 +158,15 @@ impl Columns {
     }
 }
 
-/// The index of `name` among the terminals every device's record holds.
+/// Returns the column index of terminal `name` under [`Record::All`].
 fn terminal(simulator: &Simulator, name: &str) -> usize {
     Columns::from_record(simulator, &Record::All).terminal(name)
 }
 
-/// On each node, the sum of some values at the device terminals on it, the largest of them
-/// in magnitude, and the sum of their magnitudes.
+/// Per-node `(sum, max_magnitude, magnitude_sum)` aggregates of terminal quantities.
 type PerNode = Vec<(Complex64, f64, f64)>;
 
-/// [`PerNode`] of `values`, as every device's record holds them.
+/// Aggregates terminal `values` per node under [`Record::All`] into [`PerNode`].
 fn per_node<T: Copy + Into<Complex64>>(simulator: &Simulator, values: &[T]) -> PerNode {
     let mut nodes = vec![(Complex64::default(), 0.0_f64, 0.0_f64); simulator.unknowns().len()];
     let mut index = 0;
@@ -193,9 +190,8 @@ fn per_node<T: Copy + Into<Complex64>>(simulator: &Simulator, values: &[T]) -> P
     nodes
 }
 
-/// The sum of the currents into the device terminals on each node, which Kirchhoff's
-/// current law makes zero, relative to the largest of them, from `currents` as every
-/// device's record holds them.
+/// Computes the worst relative Kirchhoff current imbalance across nodes from recorded
+/// `currents` under [`Record::All`].
 fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -> f64 {
     per_node(simulator, currents)
         .iter()
@@ -306,16 +302,11 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             .unwrap();
         let (capacitor, resistor) = (terminal(&simulator, "C1.a"), terminal(&simulator, "R1.b"));
         let mut charging = 0.0_f64;
-        // Each node's currents sum to zero within Newton's tolerance on its equation, 1e-9 of
-        // its largest term, ten times over for the rounding of the terms it sums. The
-        // trapezoidal formula carries each charge's derivative on from step to step
-        // undamped, and the engine takes each node's from the node's charge, the rounded sum
-        // of its terminals', where the record takes each terminal's: the two part by the
-        // rounding of each step's `α q_{n+1} + β₀ q_n + γ q̇_n`, four roundings in each at
-        // most, of terms no larger than `2/h` times the charges and the derivative before,
-        // which here is no larger than twice the currents into the node, as every charge on
-        // it is a capacitance at its voltage, the capacitor's the largest; and the formula
-        // carries that rounding on.
+        // Node currents sum to zero within Newton tolerance (1e-9 of the largest term) plus
+        // carried trapezoidal rounding. Trapezoidal integration propagates charge derivatives
+        // undamped, so engine node charges and recorded terminal charges diverge by up to four
+        // roundings of `α q_{n+1} + β₀ q_n + γ q̇_n` per step. Divergence stays bounded by
+        // `2/h` times node charges plus twice node currents.
         let mut carried = vec![0.0_f64; simulator.unknowns().len()];
         let mut last: Option<(f64, PerNode, PerNode)> = None;
         let points = waveforms.times.iter().zip(&waveforms.values);
@@ -443,13 +434,12 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
     );
     assert!((variables[0] - 0.3).abs() < 1e-15);
     assert!((variables[1] - 0.7).abs() < 1e-15);
-    // Its overdrive is its saturation voltage, which it lies past in saturation.
+    // Overdrive equals saturation voltage, which the MOSFET exceeds in saturation.
     assert!((variables[6] - 0.7).abs() < 1e-15);
     assert!(variables[7] > 0.0, "{}", variables[7]);
 }
 
-/// The circuit of a cell, `R1` from `a` to `mid` and `R2` from `mid` to `b`, nested in a
-/// pair whose ports `p` and `q` are the cell's, with `in` driven by `V1`.
+/// Builds a simulator for nested components `cell` inside `pair`, driven at `in` by `V1`.
 fn nested(outside: (&str, &str)) -> Simulator {
     let resistor = |name: &str, a: &str, b: &str| {
         json!({"name": name, "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
@@ -480,7 +470,7 @@ fn nested(outside: (&str, &str)) -> Simulator {
     simulator(&circuit)
 }
 
-/// Each summed terminal's name, with the device terminals it sums, by name.
+/// Collects each summed terminal name paired with its member device terminal names.
 fn summed_terminals(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
     simulator
         .summed_terminals()
@@ -534,7 +524,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
         assert_exact(current(name), summed);
     }
 
-    // Ports tied together outside keep their own currents: here both join `in`.
+    // Ports tied externally still keep distinct currents when both join `in`.
     let mut tied = nested(("in", "in"));
     let point = tied.operating_point(&tight()).unwrap();
     let ports = &point.recorded.currents[point.recorded.currents.len() - 4..];
@@ -623,7 +613,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         assert!(sum.abs() < 1e-15, "the cell's currents sum to zero: {sum}");
         // An ideal driver draws nothing from its supply.
         assert_exact(pin(2, found), 0.0);
-        // Its equation holds the output at the fraction of the supply it ramps to.
+        // Driver branch equation clamps output to the ramped supply fraction.
         let held = -found.conductances[fraction];
         if *time < 2e-9 {
             high |= held.to_bits() == 1.0_f64.to_bits();
@@ -635,7 +625,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
     assert!(high && low, "the inverter falls after its input rises");
 }
 
-/// A transient of the bench's pulse, with steps at most 10 ns long.
+/// Builds a 1 µs transient of the benchmark pulse with a 10 ns maximum step.
 fn pulse() -> Transient {
     Transient {
         breakpoints: vec![2.5e-7],

@@ -42,7 +42,7 @@ struct Network {
     sources: Vec<(usize, f64)>,
 }
 
-/// A connected network on up to eight nodes: a spanning tree, then extra resistors.
+/// Builds a proptest strategy for connected resistor networks on up to eight nodes.
 fn network() -> impl Strategy<Value = Network> {
     (2usize..9).prop_flat_map(|nodes| {
         let resistors = connected_resistors(nodes, -3.0..6.0);
@@ -76,7 +76,7 @@ fn network_circuit(network: &Network, reversed: bool) -> Circuit {
 }
 
 impl Network {
-    /// The number of nodes, the ground included.
+    /// Returns the number of nodes, including ground.
     fn nodes(&self) -> usize {
         1 + self
             .resistors
@@ -86,7 +86,8 @@ impl Network {
             .unwrap_or(0)
     }
 
-    /// Every node's voltage at the operating point, by node number, the ground being zero.
+    /// Computes every node voltage at the operating point, indexed by node number with
+    /// ground at zero.
     fn voltages(&self, reversed: bool) -> Vec<f64> {
         let built = network_circuit(self, reversed);
         let mut simulator = simulator(&built);
@@ -103,7 +104,7 @@ impl Network {
     }
 }
 
-/// Options far tighter than SPICE's, which every network must still meet.
+/// Returns solver options tighter than SPICE defaults.
 fn tight() -> Options {
     Options {
         relative_tolerance: 1e-9,
@@ -113,10 +114,10 @@ fn tight() -> Options {
 }
 
 proptest! {
-    /// The currents into every node sum to zero, within the relative tolerance on the
-    /// currents meeting there, or within the rounding of the node voltages they flow
-    /// between: one unit in the last place of a voltage of hundreds of volts moves the
-    /// current through a milliohm by tens of picoamperes.
+    /// Checks that currents into every node sum to zero within relative tolerance and
+    /// floating-point voltage-rounding bounds.
+    ///
+    /// One ULP on hundreds of volts shifts milliohm branch currents by tens of picoamperes.
     #[test]
     fn currents_balance_at_every_node(network in network()) {
         let options = tight();
@@ -149,7 +150,7 @@ proptest! {
         }
     }
 
-    /// The solution does not depend on the order instances are placed in.
+    /// Verifies that the operating point is independent of instance placement order.
     #[test]
     fn instance_order_does_not_matter(network in network()) {
         let (forward, backward) = (network.voltages(false), network.voltages(true));
@@ -173,7 +174,7 @@ struct BoundaryCapacitor {
 }
 
 impl BoundaryCapacitor {
-    /// Analytical charge `C * (v + vc1 * v^2 / 2 + vc2 * v^3 / 3)` on terminal `a`.
+    /// Computes analytical charge `C * (v + vc1 * v^2 / 2 + vc2 * v^3 / 3)` on terminal `a`.
     fn charge(&self, voltage: f64) -> f64 {
         let squared = voltage * voltage;
         self.capacitance
@@ -335,7 +336,7 @@ impl ClosedIsland {
         circuit(instances)
     }
 
-    /// Initial conditions setting the floating island's starting voltage(s).
+    /// Builds initial conditions setting the starting voltages of the floating island.
     fn initial_conditions(&self) -> BTreeMap<String, f64> {
         let mut initial = BTreeMap::new();
         if self.operating_point {
@@ -350,7 +351,7 @@ impl ClosedIsland {
     }
 }
 
-/// Raw IEEE-754 bits of every value in `values`.
+/// Extracts raw IEEE-754 bits for every value in `values`.
 fn slice_bits(values: &[f64]) -> Vec<u64> {
     values.iter().copied().map(f64::to_bits).collect()
 }
@@ -496,10 +497,9 @@ fn check_closed_island(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
-    /// On any random closed capacitive island (linear or nonlinear capacitors, internal
-    /// resistors and diodes, pulsed corners or sine drive, operating-point or UIC start),
-    /// total island charge stays within the reported solver charge leak under backward Euler,
-    /// trapezoidal, and Gear2, and matches the signed integral to floating-point rounding.
+    /// Verifies that total charge on random closed capacitive islands stays within reported
+    /// solver charge leak under backward Euler, trapezoidal, and Gear2, matching the signed
+    /// integral to floating-point rounding.
     #[test]
     fn closed_capacitive_island_charge_matches_integrated_residual(
         island in closed_island(),

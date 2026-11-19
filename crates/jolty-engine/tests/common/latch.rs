@@ -5,8 +5,8 @@ use serde_json::json;
 
 use crate::common::{circuit, device, voltage_source};
 
-/// Two inverters in a loop, each a pair of MOSFETs: a latch, which holds either state and
-/// balances between them.
+/// Builds a cross-coupled CMOS inverter latch with two stable states and a metastable
+/// balance point.
 pub(crate) fn latch() -> Circuit {
     let channel = |name: &str, kind: &str, (drain, gate, source): (&str, &str, &str)| {
         let threshold = if kind == "n" { 0.7 } else { -0.7 };

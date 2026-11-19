@@ -1,13 +1,11 @@
-//! The Python extension module `jolty._core`.
+//! Python extension module `jolty._core`.
 //!
-//! It exposes a class, `Simulator`, that elaborates a circuit from its JSON text, checks
-//! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays;
-//! a circuit elaborated once, `Elaborated`, that simulators made at the `Values` of
-//! some parameters share; the `Pool` of threads the engine runs on, never rayon's global
-//! one; the draws of Monte Carlo samples, `sample`; and the table of the structural
-//! checks' `rules`. Every call that runs the engine releases the interpreter while it
-//! runs. Everything an agent or a person reads, from units to reports, is built on top of
-//! it in Python.
+//! The module exposes `Simulator` for elaborating JSON circuits, running structural checks,
+//! and executing JSON-configured analyses returning `NumPy` arrays. Additional exports
+//! include `Elaborated` (shared across simulators built at different `Values`), dedicated
+//! `Pool` thread pools isolated from rayon's global pool, Monte Carlo `sample` draws, and
+//! structural check `rules`. Every engine call releases the Python interpreter while
+//! executing, and all higher-level formatting and unit handling lives in Python.
 
 mod batch;
 mod convert;
@@ -36,10 +34,11 @@ use crate::helpers::{
     cotangent, elaboration_result, lock_unpoisoned, parse_json, simulation_result, value_result,
 };
 
-/// Every allocation of the engine's runs, which many threads make at once in a batch,
-/// goes to mimalloc and its heaps of each thread: the system's allocator, shared by the
-/// threads, made each run of a batch on eight threads take about a third more time than
-/// on one, where eight processes each running one take a tenth more.
+/// Global allocator using mimalloc per-thread heaps for concurrent batch allocations.
+///
+/// Benchmarks on eight threads showed the shared system allocator added about one-third
+/// wall-time overhead per run, compared with roughly one-tenth for eight separate
+/// processes.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -52,8 +51,9 @@ create_exception!(
 );
 create_exception!(_core, SimulationError, PyException, "An analysis failed.");
 
-/// The threads the engine runs on: a rayon pool of its own, which every call that runs
-/// the engine runs inside, never rayon's global pool. No result depends on its threads.
+/// Dedicated rayon thread pool for engine execution, isolated from rayon's global pool.
+///
+/// Simulation outputs remain bit-identical regardless of thread count.
 #[pyclass(module = "jolty._core", frozen)]
 struct Pool {
     pub(crate) inner: rayon::ThreadPool,
@@ -61,9 +61,10 @@ struct Pool {
 
 #[pymethods]
 impl Pool {
-    /// A pool of `threads` threads, or of one per processor with `None`.
+    /// Creates a dedicated thread pool with `threads` workers, or one per processor when
+    /// `threads` is `None`.
     ///
-    /// Raises `ValueError` for no thread, or when the threads cannot be started.
+    /// Raises `ValueError` when `threads` is zero or when worker threads cannot start.
     #[new]
     #[pyo3(signature = (threads = None))]
     fn new(threads: Option<usize>) -> PyResult<Self> {
@@ -80,7 +81,7 @@ impl Pool {
         Ok(Self { inner })
     }
 
-    /// The number of threads.
+    /// Returns the number of worker threads in the pool.
     #[getter]
     fn threads(&self) -> usize {
         self.inner.current_num_threads()
@@ -102,21 +103,22 @@ impl Pool {
     }
 }
 
-/// A circuit elaborated once, which simulators of it at the values of any parameters share.
+/// Circuit elaborated once and shared across simulators instantiated at different parameter
+/// values.
 #[pyclass(module = "jolty._core", frozen)]
 struct Elaborated {
     pub(crate) inner: Arc<jolty_engine::Elaborated>,
 }
 
-/// The values of some parameters of an elaborated circuit, and the temperature, that a
-/// simulator of it runs at.
+/// Parameter values and operating temperature applied to a simulator built from an
+/// elaborated circuit.
 #[pyclass(module = "jolty._core", frozen)]
 struct Values {
     inner: jolty_engine::Values,
 }
 
-/// The structure the values of some parameters give an elaborated circuit, against its
-/// own: equal for values that share a structure.
+/// Structural fingerprint of parameter overrides relative to the base elaborated circuit;
+/// equal values share an identical matrix structure.
 #[pyclass(module = "jolty._core", frozen, eq, hash)]
 #[derive(PartialEq, Eq, Hash)]
 struct StructureKey {
@@ -125,12 +127,10 @@ struct StructureKey {
 
 #[pymethods]
 impl Elaborated {
-    /// Elaborates the circuit whose JSON text is `circuit`, with the models of the JSON
-    /// object `substitutes`, each a `model` and its `parameters` by component instance
-    /// path, standing in for them.
+    /// Elaborates the circuit from JSON `circuit` with model `substitutes` mapping component
+    /// instance paths to `{model, parameters}`.
     ///
-    /// A circuit that does not elaborate raises `ElaborationError` as
-    /// [`Simulator`]'s constructor does.
+    /// Raises `ElaborationError` on invalid circuits, matching [`Simulator`].
     #[new]
     fn new(py: Python<'_>, circuit: &str, substitutes: &str) -> PyResult<Self> {
         let circuit = value_result(Circuit::from_json(circuit))?;
@@ -144,28 +144,29 @@ impl Elaborated {
         Ok(Self { inner })
     }
 
-    /// The values that replace the numbers of the JSON object `overrides`, by instance path
-    /// then by the number's path among its parameters, at `temperature`, in kelvins.
+    /// Builds [`Values`] from JSON `overrides` (nested by instance path and parameter path)
+    /// at `temperature` in kelvins.
     ///
-    /// Raises `ElaborationError` naming every number the circuit's devices do not write.
+    /// Raises `ElaborationError` naming every unrecognized parameter path.
     fn values(&self, py: Python<'_>, overrides: &str, temperature: f64) -> PyResult<Values> {
         let overrides = parse_json!(overrides)?;
         let inner = elaboration_result(py, self.inner.values(&overrides, Some(temperature)))?;
         Ok(Values { inner })
     }
 
-    /// The structure `values` give the circuit, against its own.
+    /// Computes the [`StructureKey`] induced by `values` relative to the base elaborated
+    /// circuit.
     ///
-    /// Raises `ElaborationError` naming every device whose numbers they put out of range.
+    /// Raises `ElaborationError` naming every device with out-of-range parameters.
     fn structure_of(&self, py: Python<'_>, values: &Values) -> PyResult<StructureKey> {
         let inner = elaboration_result(py, py.detach(|| self.inner.structure_of(&values.inner)))?;
         Ok(StructureKey { inner })
     }
 
-    /// The circuit elaborated for the structure `values` give it, its parameters and
-    /// everything else this one's.
+    /// Re-elaborates the circuit for the structural changes induced by `values`, preserving
+    /// all unchanged parameters.
     ///
-    /// Raises `ElaborationError` as [`Elaborated::structure_of`] does.
+    /// Raises `ElaborationError` under the same conditions as [`Elaborated::structure_of`].
     fn restructured(&self, py: Python<'_>, values: &Values) -> PyResult<Self> {
         let inner = elaboration_result(py, py.detach(|| self.inner.restructured(&values.inner)))?;
         Ok(Self { inner })
@@ -174,14 +175,14 @@ impl Elaborated {
 
 #[pymethods]
 impl StructureKey {
-    /// Whether the values keep the structure of the circuit that found the key.
+    /// Returns whether the parameter values preserve the base circuit structure.
     #[getter]
     fn unchanged(&self) -> bool {
         self.inner.is_empty()
     }
 }
 
-/// A circuit elaborated for simulation.
+/// Circuit elaborated for simulation.
 #[pyclass(module = "jolty._core", frozen)]
 struct Simulator {
     inner: Mutex<jolty_engine::Simulator>,
@@ -191,8 +192,7 @@ struct Simulator {
     foundry_devices: Vec<String>,
 }
 
-/// A VJP's pullback, as the engine found it: what carries a cotangent on an analysis's
-/// outputs back to the parameters it names.
+/// Reverse-mode pullback from a VJP analysis, mapping output cotangents back to parameters.
 #[pyclass(module = "jolty._core", frozen)]
 struct Pullback {
     inner: jolty_engine::Pullback,
@@ -212,7 +212,7 @@ type RecordedDevice = (
 type Recording = (Vec<RecordedDevice>, Vec<(String, bool)>);
 
 impl Simulator {
-    /// The simulator of `inner`, with what Python reads of it once.
+    /// Wraps an engine simulator and caches metadata read once from Python.
     pub(crate) fn wrapping(inner: jolty_engine::Simulator) -> Self {
         let unknowns = inner
             .unknowns()
@@ -242,14 +242,11 @@ impl Simulator {
 
 #[pymethods]
 impl Simulator {
-    /// Elaborates the circuit whose JSON text is `circuit`, its devices at `temperature`,
-    /// in kelvins, with the parameters of the JSON object `overrides`, by instance path,
-    /// replacing the circuit's own, and the models of the JSON object `substitutes`, each a
-    /// `model` and its `parameters` by component instance path, standing in for them.
+    /// Elaborates JSON `circuit` at `temperature` in kelvins, applying JSON `overrides`
+    /// by instance path and JSON `substitutes` by component instance path.
     ///
-    /// A circuit that does not elaborate raises `ElaborationError` with a list of its
-    /// problems, each a dictionary of its `message` and its `instance`, as a diagnostic's,
-    /// or `None`.
+    /// Raises `ElaborationError` with a list of problem dictionaries (`message` and
+    /// `instance`, or `None`) when elaboration fails.
     #[new]
     fn new(
         py: Python<'_>,
@@ -271,10 +268,10 @@ impl Simulator {
         Ok(Self::wrapping(inner))
     }
 
-    /// A simulator of `elaborated` at `values`, its devices made from the numbers they give,
-    /// on the circuit restructured for them where they give some device another structure.
+    /// Creates a simulator from `elaborated` at `values`, restructuring the circuit when
+    /// parameter values change device topology.
     ///
-    /// Raises `ElaborationError` naming every device whose numbers they put out of range.
+    /// Raises `ElaborationError` naming every device with out-of-range parameters.
     #[staticmethod]
     fn from_elaborated(py: Python<'_>, elaborated: &Elaborated, values: &Values) -> PyResult<Self> {
         let shared = Arc::clone(&elaborated.inner);
@@ -285,8 +282,7 @@ impl Simulator {
         Ok(Self::wrapping(inner))
     }
 
-    /// The circuit elaborated once that the simulator runs, which variants of its runs
-    /// vary.
+    /// Returns the shared elaborated circuit backing this simulator.
     #[getter]
     fn elaborated(&self) -> Elaborated {
         Elaborated {
@@ -294,32 +290,27 @@ impl Simulator {
         }
     }
 
-    /// Runs the runs `runs` of the circuit, from its start up to its stop, each at the
-    /// simulator's values with those of the run's variant of `variants` in their place,
-    /// releasing the interpreter while they run on the threads of `pool`, each run a pure
-    /// function of its index.
+    /// Executes the half-open range `runs` over `variants` on `pool`, releasing the Python
+    /// interpreter while running.
     ///
-    /// Each run runs `analyses` in order, each the JSON texts of an analysis and of its
-    /// options; reads `measures`, each the index of the analysis it reads and the measure;
-    /// and traces `traces`, each the index of an analysis and the indices of the unknowns
-    /// whose values it keeps at each of its points: an operating point's one, a DC sweep's
-    /// values, a response's frequencies, or a transient's times, interpolated linearly
-    /// between the times it accepted. Returns a dictionary of `NumPy` arrays, one row per
-    /// run: `values`, of each number the variants vary; `measured`, what each measure read,
-    /// or not a number; `causes`, -1 where it read a number and else the index among
-    /// `reasons` of why it read none, each `("failed", [], "")` where the analysis did not
-    /// end, or a `MeasureError`'s reason, numbers and message; `ended`, whether each
-    /// analysis ended; and each traced array, runs × points × unknowns, among `traces`.
-    /// `problems` holds, by row, the problems its run's values made, as
-    /// `ElaborationError`'s, and `errors`, by row, the index of each analysis that failed
-    /// and why. The run at `runs`' start is row 0.
+    /// Each run applies variant overrides on top of the simulator's base values as a pure
+    /// function of run index. Every run executes `analyses` (pairs of analysis and options
+    /// JSON), evaluates `measures` (`(analysis_index, measure)`), and records `traces`
+    /// (`(analysis_index, unknown_indices)`), linearly interpolating transient waveforms.
     ///
-    /// `each`, if given, is called under the interpreter's lock as each run ends, in no
-    /// particular order, with the run's index, the simulator of its structure when its
-    /// values gave the circuit another, its problems, if any, and each analysis's result,
-    /// as `run` returns it, or why it failed; the first exception it raises is raised once
-    /// every run has ended. Raises `ValueError` for input the engine cannot read, or runs
-    /// that do not lie within the variants'.
+    /// Returns a dictionary of `NumPy` arrays indexed from row 0 at `runs.0`:
+    /// - `values`: varied parameter values per run.
+    /// - `measured`: measure results (`NaN` on failure).
+    /// - `causes` and `reasons`: `-1` on success, otherwise index into `reasons`
+    ///   (`("failed", [], "")` or `(tag, numbers, message)`).
+    /// - `ended`: boolean completion matrix per run and analysis.
+    /// - `traces`: list of `(runs, points, unknowns)` arrays.
+    /// - `problems` and `errors`: per-row elaboration problems and analysis failure strings.
+    ///
+    /// When `each` is provided, the callback runs under the interpreter lock as runs finish
+    /// (in completion order) with `(run_index, restructured_simulator, problems, results)`.
+    /// The first callback exception propagates after all runs finish. Raises `ValueError`
+    /// for invalid JSON inputs or out-of-range run bounds.
     #[pyo3(signature = (analyses, variants, runs, measures, traces, pool, each = None))]
     #[expect(
         clippy::too_many_arguments,
@@ -348,16 +339,15 @@ impl Simulator {
         batch::run(py, (&elaborated, &base), variants, request, pool)
     }
 
-    /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
-    /// it, with the options whose JSON text is `options`, with respect to `parameters`,
-    /// each its instance's path and its name, on each of the runs `runs` of the circuit at
-    /// the simulator's values with those of the run's variant of `variants` in their place,
-    /// each a pure function of its index, on the threads of `pool`, the interpreter
-    /// released, as `batch` runs them: a dictionary of the `traces` of the unknowns at
-    /// `unknowns`, by their indices, runs × points × unknowns, as `batch` traces them, each
-    /// oscillator's `periods`, the `problems` by row and the `errors` by row; and the
-    /// pullbacks, a run each. Raises `ValueError` for input the engine cannot read, or runs
-    /// that do not lie within the variants'.
+    /// Computes batch reverse-mode VJPs of JSON `analysis` and `options` with respect to
+    /// `parameters` across `runs` of `variants` on `pool`.
+    ///
+    /// Each entry in `parameters` is `(instance_path, parameter_name)`, and `unknowns`
+    /// lists traced unknown indices. Work executes with the interpreter released and returns
+    /// `(result_dict, batch_pullback)`, where `result_dict` holds `traces`
+    /// (`runs x points x unknowns`), oscillator `periods`, `problems`, and `errors`.
+    ///
+    /// Raises `ValueError` for invalid JSON inputs or out-of-range run bounds.
     #[expect(
         clippy::too_many_arguments,
         reason = "a batch's VJP is its analysis, its options, its parameters, its runs, what \
@@ -385,22 +375,22 @@ impl Simulator {
         batch::vjp(py, (&elaborated, &base), variants, request, pool)
     }
 
-    /// Each unknown's name and quantity, `"voltage"`, `"current"`, `"temperature"` or
-    /// `"state"`, in the order of every solution's values.
+    /// Returns `(name, quantity)` for each unknown in solution vector order (`"voltage"`,
+    /// `"current"`, `"temperature"`, or `"state"`).
     #[getter]
     fn unknowns(&self) -> Vec<(String, &'static str)> {
         self.unknowns.clone()
     }
 
-    /// Each logic net's name, in the order of every result's logic levels.
+    /// Returns logic net names in result logic-level order.
     #[getter]
     fn nets(&self) -> Vec<String> {
         self.nets.clone()
     }
 
-    /// Every path a recording can name, in order: each device's, such as `X1/R1`, then each
-    /// component instance's and logic device's whose terminals the engine sums, such as
-    /// `X1`.
+    /// Returns all recordable instance paths in order: device paths (such as `X1/R1`)
+    /// followed by component instances and logic devices with summed terminals (such as
+    /// `X1`).
     #[getter]
     fn instances(&self) -> Vec<String> {
         let simulator = self.lock();
@@ -420,15 +410,16 @@ impl Simulator {
         paths
     }
 
-    /// What the record whose JSON text is `record` keeps, and every other transistor's
-    /// region when `regions`, in the order of every result's arrays: each recorded device,
-    /// as its path, its terminals' names, whether each is thermal, the index among the
-    /// unknowns of its first internal unknown and their number, its variables' names, and
-    /// the names of its regions and of its margins, none for a device that is no
-    /// transistor; then each transistor whose region alone is recorded, alike, with no
-    /// terminal, no internal unknown and its region variables alone; then each recorded
-    /// terminal of a component instance or a logic device, as its name, such as `X1.vdd`,
-    /// and whether it is thermal.
+    /// Resolves the device and summed-terminal layout recorded by JSON `record` and the
+    /// `regions` flag, matching result array order.
+    ///
+    /// Returns `(devices, summed_terminals)`. Each full device tuple gives path, terminal
+    /// names, thermal flags, first internal unknown index, internal unknown count, variable
+    /// names, region names, and margin names.
+    ///
+    /// Transistors recorded for regions only follow with empty terminals, zero internal
+    /// unknowns, and region variables only. Each summed terminal entry gives `(name,
+    /// is_thermal)` for a component instance or logic device pin (such as `X1.vdd`).
     fn recording(&self, record: &str, regions: bool) -> PyResult<Recording> {
         let record: Record = parse_json!(record)?;
         let simulator = self.lock();
@@ -482,10 +473,10 @@ impl Simulator {
         Ok((devices, summed_terminals))
     }
 
-    /// Where the terminal `terminal` of the device, component instance or logic device at
-    /// `instance` joins the circuit: the unknown that is its voltage, by name, or `None` on
-    /// ground, and whether it is thermal; `None` when there is no such terminal on an
-    /// electrical or a thermal net.
+    /// Resolves `terminal` of `instance` to `(unknown_name_or_none, is_thermal)`, where
+    /// `None` denotes ground.
+    ///
+    /// Returns `None` when the terminal does not exist on an electrical or thermal net.
     fn terminal(&self, instance: &str, terminal: &str) -> Option<(Option<String>, bool)> {
         let simulator = self.lock();
         let (node, thermal) = simulator.terminal(instance, terminal)?;
@@ -493,32 +484,33 @@ impl Simulator {
         Some((name, thermal))
     }
 
-    /// The paths of the foundry's devices, which ngspice simulates in the engine's place,
-    /// in the order they were placed.
+    /// Returns paths of foundry devices delegated to ngspice, in placement order.
     #[getter]
     fn foundry_devices(&self) -> Vec<String> {
         self.foundry_devices.clone()
     }
 
-    /// The number of devices, analog and logic, with every component instance unfolded.
+    /// Returns the total count of unfolded analog and logic devices.
     #[getter]
     fn devices(&self) -> usize {
         self.devices
     }
 
-    /// Every diagnostic of the structural checks, each a dictionary of its `rule`, its
-    /// `message`, its `instances` and its `nets`; each instance is a dictionary of its `path`
-    /// and its `source_location`, the script line that placed it or `None`.
+    /// Runs structural checks and returns a list of diagnostic dictionaries (`rule`,
+    /// `message`, `instances`, and `nets`).
+    ///
+    /// Each instance dictionary contains `path` and `source_location` (or `None`).
     fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let found = py.detach(|| jolty_checks::check(&self.lock()));
         diagnostics_to_python(py, found)
     }
 
-    /// Every diagnostic of the rules on the circuit linearized at its operating point under
-    /// `options`, a JSON object, as `check` gives them; none for a circuit of more unknowns
-    /// than the checks linearize. It runs releasing the interpreter, inside `pool` when its
-    /// options let it spread its work over threads. A circuit with no operating point
-    /// raises `SimulationError`.
+    /// Runs operating-point linearized checks under JSON `options` on `pool`, returning
+    /// diagnostic dictionaries matching `check`.
+    ///
+    /// Returns an empty list when the circuit exceeds the linearization size limit.
+    /// Execution releases the interpreter inside `pool` when parallelism applies, and
+    /// raises `SimulationError` if no operating point is found.
     fn check_operating_point<'py>(
         &self,
         py: Python<'py>,
@@ -536,19 +528,20 @@ impl Simulator {
         diagnostics_to_python(py, found)
     }
 
-    /// Where the last analysis used logic devices outside their domains, each a dictionary
-    /// of the device's `instance`, the `bound` it left, such as `"load"`, the domain's
-    /// `minimum` and `maximum`, the `value` furthest outside, the `time` it first left, and
-    /// the `count` of times it was read outside.
+    /// Returns domain excursions recorded for logic devices during the last analysis.
+    ///
+    /// Each dictionary contains `instance`, `bound` (such as `"load"`), `minimum`,
+    /// `maximum`, extreme `value`, first excursion `time`, and `count`.
     fn excursions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         excursions_to_python(py, &self.lock())
     }
 
-    /// The JVP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
-    /// it, with the options whose JSON text is `options`, along each of `tangents`, a
-    /// number per parameter of `parameters`, each its instance's path and its name:
-    /// a dictionary of the analysis's `result`, the `tangents`, by point, unknown and
-    /// tangent, and an oscillator's `period`'s along each tangent, or `None`.
+    /// Computes forward-mode directional derivatives (JVP) of JSON `analysis` under JSON
+    /// `options` along `tangents` with respect to `parameters`.
+    ///
+    /// Each parameter is `(instance_path, parameter_name)` and each tangent vector supplies
+    /// one value per parameter. Returns a dictionary with `result`, `tangents` (indexed by
+    /// point, unknown, and tangent), and optional oscillator `period` derivatives.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "PyO3 extracts owned Vec arguments from Python sequences"
@@ -573,9 +566,10 @@ impl Simulator {
         jvp_to_python(py, found)
     }
 
-    /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
-    /// it, with the options whose JSON text is `options`, with respect to `parameters`,
-    /// each its instance's path and its name: the analysis's result, and its pullback.
+    /// Computes reverse-mode VJP state for JSON `analysis` under JSON `options` with
+    /// respect to `parameters`, returning `(result, pullback)`.
+    ///
+    /// Each entry in `parameters` is `(instance_path, parameter_name)`.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "PyO3 extracts owned Vec arguments from Python sequences"
@@ -600,9 +594,8 @@ impl Simulator {
         Ok((result, Pullback { inner }))
     }
 
-    /// The value on each parameter of `pullback` of the cotangent `values`, on every
-    /// unknown at each point of its analysis, real or complex, by point then unknown, and
-    /// `period` on an oscillator's period, with the options whose JSON text is `options`.
+    /// Pulls output cotangents `values` (indexed by point and unknown, real or complex) and
+    /// oscillator `period` cotangent back to parameters via `pullback` under JSON `options`.
     fn pull_back<'py>(
         &self,
         py: Python<'py>,
@@ -636,9 +629,8 @@ impl Simulator {
         }
     }
 
-    /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
-    /// `options`, releasing the interpreter while it runs, inside `pool` when the options
-    /// let it spread its work over threads.
+    /// Runs JSON `analysis` under JSON `options`, releasing the interpreter inside `pool`
+    /// when options permit parallel execution.
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -712,8 +704,8 @@ fn differentiated(analysis: &str, options: &str) -> PyResult<(Differentiated, Op
     Ok((parse_json!(analysis)?, parse_json!(options)?))
 }
 
-/// The terminals of a device of `model` with `parameters`, a JSON object, in the order
-/// the model declares them.
+/// Returns the terminal names of `model` configured with JSON `parameters`, in declaration
+/// order.
 #[pyfunction]
 fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     let library = Library::standard();
@@ -735,30 +727,28 @@ fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a Arc<dyn Model>> 
         .ok_or_else(|| PyValueError::new_err(format!("no model is named `{name}`")))
 }
 
-/// The engine's default options, SPICE's, as the JSON object its runs read their options
-/// from: every option `jolty.plan.Options` sets has its default here alone.
+/// Returns the engine's SPICE-compatible default options as JSON, serving as the single
+/// source of defaults for `jolty.plan.Options`.
 #[pyfunction]
 fn default_options() -> PyResult<String> {
     value_result(serde_json::to_string(&Options::default()))
 }
 
-/// The break-evens each threshold of the engine's parallelism left unset takes, on each
-/// number of threads they were measured on, as a JSON object: the threads, then each
-/// threshold's break-evens, none where no size measured paid.
+/// Returns the measured parallelism break-even thresholds by thread count as JSON, using
+/// `null` where no measured size benefited from threading.
 #[pyfunction]
 fn break_evens() -> PyResult<String> {
     value_result(serde_json::to_string(&jolty_engine::BREAK_EVENS))
 }
 
-/// The name of every model, analog and logic, in alphabetical order.
+/// Returns all analog and logic model names in alphabetical order.
 #[pyfunction]
 fn models() -> Vec<&'static str> {
     Library::standard().names().collect()
 }
 
-/// The parameters of the model named `model`, as a JSON schema of an object, every type
-/// within it written in place: each parameter's type, its default, unless it is
-/// required, and its description, the documentation of its field in the engine.
+/// Returns the inlined JSON Schema describing all parameters of `model`, including types,
+/// defaults, and field documentation.
 #[pyfunction]
 fn schema(model: &str) -> PyResult<String> {
     let library = Library::standard();
@@ -769,12 +759,11 @@ fn schema(model: &str) -> PyResult<String> {
     Ok(schema.as_value().to_string())
 }
 
-/// The dimension or kind of each parameter of `model`, in SI base units: a 5-tuple of
-/// doubled SI base exponents `(kg, m, s, A, K)` for a physical quantity, `None` for a
-/// plain dimensionless number, `"choice"` for a discrete option, or a tag string when
-/// the dimension depends on another parameter.
+/// Returns the physical dimension or kind of each parameter of `model` in SI base units.
 ///
-/// Raises `ValueError` when no model is named `model`.
+/// Entries map parameter names to a 5-tuple of doubled SI exponents `(kg, m, s, A, K)`,
+/// `None` for dimensionless numbers, `"choice"` for discrete options, or a tag string for
+/// conditional dimensions. Raises `ValueError` when `model` is unknown.
 #[pyfunction]
 fn parameter_dimensions<'py>(py: Python<'py>, model: &str) -> PyResult<Bound<'py, PyDict>> {
     let library = Library::standard();
@@ -798,9 +787,10 @@ fn parameter_dimensions<'py>(py: Python<'py>, model: &str) -> PyResult<Bound<'py
     Ok(result)
 }
 
-/// The base names of the parameters of `model` that bin with length, width and area.
+/// Returns the base names of parameters of `model` that support length, width, and area
+/// binning.
 ///
-/// Raises `ValueError` when no model is named `model`.
+/// Raises `ValueError` when `model` is unknown.
 #[pyfunction]
 fn binned_parameters(model: &str) -> PyResult<Vec<&'static str>> {
     let library = Library::standard();
@@ -812,7 +802,8 @@ fn binned_parameters(model: &str) -> PyResult<Vec<&'static str>> {
     Ok(binned.to_vec())
 }
 
-/// The value of `expression`, an expression in jolty's language that reads no variable.
+/// Evaluates a constant `expression` in jolty's expression language with no circuit
+/// variables.
 #[pyfunction]
 fn constant(expression: &str) -> PyResult<f64> {
     let parsed: jolty_expressions::Expression = expression
@@ -827,10 +818,11 @@ fn constant(expression: &str) -> PyResult<f64> {
     Ok(parsed.evaluate(&[], &mut workspace, &mut []))
 }
 
-/// The tree of `expression`, an expression in jolty's language, as JSON: a number, the
-/// text `"time"`, `{"voltage": [a, b]}` with `b` null for the ground, `{"current": p}`,
-/// `{"operation": name, "operands": [...]}`, or `{"table": input, "abscissae": [...],
-/// "ordinates": [...], "rounding": r}`, as [`jolty_expressions::Term`] describes them.
+/// Parses `expression` and serializes its [`jolty_expressions::Term`] AST to JSON.
+///
+/// Node forms are numbers, `"time"`, `{"voltage": [a, b]}` (`b` null for ground),
+/// `{"current": p}`, `{"operation": name, "operands": [...]}`, and
+/// `{"table": input, "abscissae": [...], "ordinates": [...], "rounding": r}`.
 #[pyfunction]
 fn expression_tree(expression: &str) -> PyResult<String> {
     let parsed: jolty_expressions::Expression = expression
@@ -839,17 +831,15 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     value_result(term_to_json_string(&parsed.tree()))
 }
 
-/// The value of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
-/// zero, the value every analysis but a transient one reads.
+/// Evaluates a JSON source `waveform` at `time` in seconds (`time = 0` gives the DC value).
 #[pyfunction]
 fn waveform_value(waveform: &str, time: f64) -> PyResult<f64> {
     let waveform: jolty_models::waveform::Waveform = parse_json!(waveform)?;
     Ok(waveform.value(time))
 }
 
-/// The parameters `parameters`, a JSON object, of a device of `model`, as JSON, each one
-/// left out given the value the engine takes, so a SPICE netlist computes what the engine
-/// does.
+/// Returns JSON `parameters` for `model` with all omitted fields filled with engine
+/// defaults so exported SPICE netlists match engine behavior.
 #[pyfunction]
 fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
     let library = Library::standard();
@@ -929,8 +919,8 @@ fn term_to_json_string(root: &jolty_expressions::Term) -> serde_json::Result<Str
     Ok(output)
 }
 
-/// Every rule of the structural checks, in the order a check reports them: its name, its
-/// default level and its condition.
+/// Returns all structural check rules in reporting order as `(name, default_level,
+/// condition)` tuples.
 #[pyfunction]
 fn rules() -> Vec<(&'static str, &'static str, &'static str)> {
     jolty_checks::RULES
@@ -939,7 +929,8 @@ fn rules() -> Vec<(&'static str, &'static str, &'static str)> {
         .collect()
 }
 
-/// The values of the E series named `series`, such as `"E24"`, in the decade from 1 to 10.
+/// Returns the decade mantissas in `[1, 10)` for the IEC E-series `series` (such as
+/// `"E24"`).
 #[pyfunction]
 fn mantissas(series: &str) -> PyResult<Vec<f64>> {
     jolty_checks::preferred::Series::named(series)
@@ -947,12 +938,12 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
         .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
 }
 
-/// The value of each number of `toleranced`, a JSON list of objects of an `instance`, its path, a
-/// number's `parameter` path, its `nominal` value and its `tolerance`, in the sample `index`
-/// of a Monte Carlo analysis seeded with `seed`, in order: each drawn from the seed, the
-/// index and its own name alone, as the engine draws it in a batch.
+/// Draws Monte Carlo parameter values for sample `index` from `seed` for each entry in
+/// JSON `toleranced`.
 ///
-/// Raises `ValueError` for a list the engine cannot read.
+/// `toleranced` is a JSON list of objects with `instance`, `parameter`, `nominal`, and
+/// `tolerance` fields; each value depends only on `seed`, `index`, and its parameter path,
+/// matching batch sampling. Raises `ValueError` for invalid JSON input.
 #[pyfunction]
 fn sample(toleranced: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
     let toleranced: Vec<jolty_engine::variants::Toleranced> = parse_json!(toleranced)?;
@@ -962,11 +953,10 @@ fn sample(toleranced: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
         .collect())
 }
 
-/// The standard `variate`, `"normal"` or `"uniform"`, a process kit's statistical function
-/// draws in the sample `index` of a Monte Carlo analysis seeded with `seed`, at the call
-/// `call` within `scope`, as the engine draws its tolerances.
+/// Draws a standard `variate` (`"normal"` or `"uniform"`) for sample `index` from `seed`
+/// at `call` within `scope`, matching engine tolerance sampling.
 ///
-/// Raises `ValueError` for another variate.
+/// Raises `ValueError` for an unrecognized variate name.
 #[pyfunction]
 fn variate(variate: &str, seed: u64, index: u64, scope: &str, call: &str) -> PyResult<f64> {
     let kind = match variate {
@@ -983,12 +973,11 @@ fn variate(variate: &str, seed: u64, index: u64, scope: &str, call: &str) -> PyR
     ))
 }
 
-/// Every number of every device instance of the circuit whose JSON text is `circuit` that
-/// has a tolerance, in the order of the hierarchy, each instance's numbers by path: each
-/// as its instance's path, its own path, its nominal value and its tolerance's JSON text.
+/// Lists all toleranced device parameters in JSON `circuit` in hierarchical order as
+/// `(instance_path, parameter_path, nominal, tolerance_json)` tuples.
 ///
-/// Raises `ValueError` for a tolerance of a parameter given no number, or for a
-/// component cycle.
+/// Raises `ValueError` when a tolerance targets a non-numeric parameter or when component
+/// definitions form a cycle.
 #[pyfunction]
 fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
     let circuit = value_result(Circuit::from_json(circuit))?;

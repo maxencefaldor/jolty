@@ -31,9 +31,8 @@ use sim::simulator;
 use sine::voltage_sine;
 use transient::transient;
 
-/// A sine of 1 V about 1 V into a diode through 1 kΩ, a microfarad across the diode: a
-/// nonlinear circuit with a capacitance, which every analysis about an operating point can
-/// run.
+/// Builds a diode-capacitor rectifier driven by a 1 kHz sine wave for operating-point reuse
+/// tests.
 fn rectifier() -> Circuit {
     circuit([
         voltage_sine("V1", "in", 1.0, 1.0, 1e3),
@@ -48,8 +47,7 @@ fn rectifier() -> Circuit {
     ])
 }
 
-/// The benchmarks' synchronous buck converter, `benchmarks/speed/circuits/buck.json`: two transistors
-/// switching an inductor, whose sparse solver searches for new pivots as they switch.
+/// Loads the synchronous buck converter benchmark from `benchmarks/speed/circuits/buck.json`.
 fn buck() -> Circuit {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits/buck.json");
@@ -57,15 +55,15 @@ fn buck() -> Circuit {
     Circuit::from_json(&text).expect("a circuit")
 }
 
-/// `analysis` run with `options` on a simulator of its own.
+/// Runs `analysis` with `options` on a fresh simulator.
 fn afresh(circuit: &Circuit, analysis: &Analysis, options: &Options) -> AnalysisResult {
     simulator(circuit)
         .run(analysis, options)
         .expect("the analysis runs")
 }
 
-/// `outcome` apart from the work of its transients, which is less on a simulator that
-/// remembers the operating point they start from.
+/// Strips transient work counters from `outcome` so cached and fresh operating-point runs
+/// compare directly.
 fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
     match outcome {
         AnalysisResult::Transient(mut waveforms) => {
@@ -86,7 +84,7 @@ fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
     }
 }
 
-/// `outcome` without what it records of the devices.
+/// Strips recorded device data from `outcome`.
 fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
     let point = |point: OperatingPointResult| OperatingPointResult {
         recorded: RecordedValues::default(),
@@ -148,7 +146,7 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
     }
 }
 
-/// The Newton iterations of the transient or periodic steady state `outcome`, if it is one.
+/// Returns the Newton iteration count of a transient or periodic steady-state `outcome`.
 fn iterations(outcome: &AnalysisResult) -> Option<usize> {
     match outcome {
         AnalysisResult::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
@@ -265,7 +263,7 @@ fn options_that_change_the_dc_solution_solve_it_again() {
         AnalysisResult::OperatingPoint(simulator.operating_point(options).expect("a solution"))
     };
     point(&mut simulator, &Options::default());
-    // A transient's options and the memory leave the DC solution as it is.
+    // Transient options and memory limits leave the DC solution unchanged.
     let transient = Options {
         max_transient_iterations: 50,
         truncation_tolerance: 1.0,
@@ -278,7 +276,8 @@ fn options_that_change_the_dc_solution_solve_it_again() {
         afresh(&circuit, &Analysis::OperatingPoint, &transient)
     );
     assert_eq!(simulator.operating_point_solves(), 1);
-    // So does what the results record, which is read of the devices there.
+    // Recording options also leave the DC solution unchanged because values are evaluated
+    // from the converged devices.
     let recording = Options {
         record: Record::All,
         ..Options::default()
@@ -382,14 +381,10 @@ fn a_dc_sweep_leaves_the_operating_point_to_the_analyses_after_it() {
     assert_eq!(simulator.operating_point_solves(), 2);
 }
 
-/// What an analysis records is read of the devices at each solution, and changes nothing
-/// else: a plan of analyses finds the same numbers, every unknown's and every one it finds
-/// of them, its work counts among them, recording nothing, every device, or every device
-/// in one of its analyses alone. Before, an analysis that recorded other than the one
-/// before it solved the operating point again rather than take it: the rectifier's
-/// transient after a response that recorded counted the iterations of solving it, and the
-/// buck converter's second transient stepped from the pivots solving it left the sparse
-/// solver, not from those the first transient left, and found other numbers.
+/// Verifies that recording options leave every simulated unknown and work count unchanged.
+///
+/// Recording evaluates devices at each converged solution without re-solving the cached
+/// operating point or perturbing sparse solver pivots.
 #[test]
 fn what_an_analysis_records_changes_none_of_its_numbers() {
     let periods = Analysis::Transient(transient(2e-5, None, Method::Trapezoidal));

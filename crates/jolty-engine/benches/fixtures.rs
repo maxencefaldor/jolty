@@ -1,15 +1,12 @@
-//! The engine's benchmarks: each fixture of `benchmarks/speed/`, its circuit read from its JSON text
-//! and elaborated, then its analyses run in order, end to end.
+//! Engine benchmarks covering every fixture in `benchmarks/speed/`.
 //!
-//! For each fixture whose plan runs no Monte Carlo analysis, `<fixture>/setup` measures
-//! the setup alone, from the circuit's JSON text to a simulator ready to run,
-//! `<fixture>/shared` the setup of a run of the circuit elaborated once and shared, as each
-//! of many runs of one circuit makes it, and `<fixture>/run` the setup from the JSON text
-//! and then every analysis of the plan. For a fixture whose plan runs one,
-//! `<fixture>/batch/<threads>` measures its first [`SAMPLES`] samples run as one batch on a
-//! pool of that many threads: 1, 2, 4, 8 and every core, as far as there are cores.
-//! `scripts/bench` runs the suite's fixtures and reads what criterion measured; name
-//! others after `--` to run them, such as
+//! For fixtures without Monte Carlo analysis, `<fixture>/setup` times JSON parsing and
+//! simulator construction, `<fixture>/shared` times simulator creation from a shared
+//! [`Elaborated`] circuit, and `<fixture>/run` times setup plus every analysis in the plan.
+//! For Monte Carlo fixtures, `<fixture>/batch/<threads>` times the first [`SAMPLES`]
+//! samples as one batch across 1, 2, 4, 8, and full-core thread pools.
+//! `scripts/bench` runs the suite fixtures and summarizes criterion measurements; pass a
+//! filter after `--` to run others, such as
 //! `cargo bench -p jolty-engine --bench fixtures -- inverter_chain_5000/`.
 
 use std::error::Error;
@@ -69,19 +66,19 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A simulator of the circuit, read from its JSON text.
+    /// Parses the circuit JSON and constructs a fresh [`Simulator`].
     fn setup(&self, library: &Library) -> Result<Simulator, Box<dyn Error>> {
         let circuit = Circuit::from_json(&self.text)?;
         Ok(Simulator::new(&circuit, library, &Conditions::default())?)
     }
 
-    /// The circuit elaborated once, read from its JSON text, for runs to share.
+    /// Parses the circuit JSON and elaborates a shared [`Elaborated`] instance.
     fn elaborated(&self, library: &Library) -> Result<Arc<Elaborated>, Box<dyn Error>> {
         let circuit = Circuit::from_json(&self.text)?;
         Ok(Elaborated::new(&circuit, library, &Structure::default())?)
     }
 
-    /// The outcomes of the plan's analyses, run in order on a simulator set up afresh.
+    /// Runs every analysis in the fixture plan in order on a fresh [`Simulator`].
     fn run(&self, library: &Library) -> Result<Vec<AnalysisResult>, Box<dyn Error>> {
         let mut simulator = self.setup(library)?;
         let outcomes: Result<Vec<AnalysisResult>, SimulationError> = self
@@ -94,12 +91,12 @@ impl Fixture {
     }
 }
 
-/// The speed suite's directory, `benchmarks/speed`.
+/// Returns the speed benchmark directory (`benchmarks/speed`).
 fn speed() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed")
 }
 
-/// Every fixture, in the order of their names.
+/// Loads every fixture from `benchmarks/speed/plans`, sorted by name.
 fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
     let mut plans: Vec<PathBuf> = fs::read_dir(speed().join("plans"))?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -172,8 +169,8 @@ fn benchmark(c: &mut Criterion) {
     }
 }
 
-/// The first [`SAMPLES`] samples of `fixture`'s Monte Carlo analysis, run as one batch on
-/// pools of 1, 2, 4 and 8 threads and of every core, as far as there are cores.
+/// Measures the first [`SAMPLES`] Monte Carlo samples of `fixture` across 1, 2, 4, 8, and
+/// full-core thread pools.
 #[expect(
     clippy::expect_used,
     reason = "a benchmark whose fixture cannot be read, or that fails, has nothing to measure"

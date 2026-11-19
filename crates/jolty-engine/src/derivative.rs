@@ -1,61 +1,36 @@
-//! Derivatives of every analysis with respect to the parameters named: its JVP, which
-//! pushes tangents on the parameters forward to every unknown at every point of the
-//! analysis, and its VJP, whose pullback carries cotangents on those outputs back to the
-//! parameters.
+//! Forward (JVP) and reverse (VJP) differentiation of circuit analyses with respect to
+//! device parameters.
 //!
-//! Each point of an analysis solves the circuit's equations `F(x, p) = 0`, and its solution
-//! moves with the parameters by `dx/dp = −J⁻¹ ∂F/∂p`, where `J = ∂F/∂x` (the implicit
-//! function theorem). Both factors are exact: `J` from the devices' dual numbers, `∂F/∂p`
-//! from each parameter's twin, its instance prepared again computing with the derivative
-//! of every number with respect to the parameter and evaluated where the instance is, into
-//! a block of its own, so that a parameter costs what its instance does. The JVP evaluates
-//! the product from the right, one solve with `J` per tangent `t`, `ẋ = −J⁻¹ (∂F/∂p) t`;
-//! the VJP from the left, one solve with `Jᵀ` per cotangent `v`, `p̄ = −(J⁻ᵀ v)ᵀ ∂F/∂p`,
-//! which serves every parameter however many (the adjoint method). At each point one
-//! factorization serves every tangent and every cotangent. The two are transposes of one
-//! linear map, so `⟨v, ẋ⟩ = ⟨p̄, t⟩` to the rounding of their solves.
+//! At every analysis point, the circuit satisfies `F(x, p) = 0`, so the implicit function
+//! theorem gives `dx/dp = -J⁻¹ ∂F/∂p` with `J = ∂F/∂x`. Dual-number device evaluations give
+//! exact `J`, and parameter-seeded device twins evaluate `∂F/∂p` at per-instance cost. JVP
+//! computes `ẋ = -J⁻¹ (∂F/∂p) t` in one solve per tangent `t`, whereas VJP computes
+//! `p̄ = -(J⁻ᵀ v)ᵀ ∂F/∂p` in one transposed solve per cotangent `v` regardless of parameter
+//! count. Both maps reuse one factorization per point and satisfy `⟨v, ẋ⟩ = ⟨p̄, t⟩` up to
+//! solve rounding.
 //!
-//! At the operating point and at each level of a DC sweep, `F` is the DC equations; a
-//! number the sweep holds moves nothing there. Over frequency, the response to an
-//! excitation `b` solves `(G + jωC) x = b`, so it moves by `−(G + jωC)⁻¹ (dG + jω dC) x`,
-//! where `G` and `C` move with each parameter directly and through the operating point,
-//! both exactly: the JVP pushes each tangent's operating-point shift `s = −G⁻¹ ∂F/∂p t`
-//! through twins of the nonlinear devices that seed the unknowns along `s`, and the VJP
-//! contracts the frequency adjoints and phasors with unknown-seeded twins of those devices
-//! into `g = ∂/∂x Σ_k λ_kᵀ (G + jω_k C) x_k`, then solves `Gᵀ μ = g` once at the operating
-//! point whatever the number of parameters. A phasor's cotangent pulls back to a complex
-//! number, `vᵀ dx/dp`, bilinear; a real loss of the phasors `x = a + jb` takes the real
-//! part, with `v = ∂L/∂a − j ∂L/∂b`.
+//! Operating-point and DC-sweep analyses differentiate DC residuals directly, treating the
+//! swept value as fixed. Frequency-domain AC solves `(G + jωC) x = b`, differentiating both
+//! direct matrix terms and indirect bias shifts through nonlinear device twins. Reverse mode
+//! accumulates `g = ∂/∂x Σ_k λ_kᵀ (G + jω_k C) x_k` and performs a single transposed DC
+//! solve `Gᵀ μ = g`. Phasor pullbacks are bilinear (`vᵀ dx/dp`), so real losses over
+//! `x = a + jb` take the real part with `v = ∂L/∂a - j ∂L/∂b`.
 //!
-//! Over time, each step solves `f(x) + α q(x) + h = 0`, where the integration formula's
-//! `α` and history `h` stand for the charges' derivative. The JVP is the direct method: it
-//! carries each tangent's derivatives of `x`, of the charges and of their rate from step
-//! to step, `J ẋ = −(∂f/∂p t + α ∂q/∂p t + ḣ)`, each step's Jacobian evaluated again at its
-//! solution (D. E. Hocevar, P. Yang, T. N. Trick and B. D. Epler, "Transient sensitivity
-//! computation for MOSFET circuits", *IEEE Transactions on Computer-Aided Design* 4(4),
-//! 1985). The VJP is its transpose step for step, the discrete adjoint, one backward pass
-//! from the last point to the first for every cotangent at once, one transposed solve a
-//! step and cotangent whatever the number of parameters. A derivative moves no step and no
-//! logic event. The start's derivatives are those of the state the transient starts from:
-//! the operating point's, through the DC Jacobian, its rows of the nets the initial
-//! conditions hold while it is solved replaced by theirs, `v − v₀ = 0`, which no parameter
-//! moves; and none for a transient from its initial conditions alone, whose state is given.
+//! Transient steps solve `f(x) + α q(x) + h = 0`. JVP runs the forward direct method
+//! (Hocevar, Yang, Trick, and Epler, *IEEE Trans. CAD* 4(4), 1985), solving
+//! `J ẋ = -(∂f/∂p t + α ∂q/∂p t + ḣ)` at each accepted step. VJP runs the exact discrete
+//! adjoint backward across recorded step formulas in one transposed solve per step and
+//! cotangent, holding step times and logic events fixed. Initial-state derivatives propagate
+//! through the DC Jacobian with forced initial-condition rows replaced by `v - v₀ = 0`, or
+//! start at zero when skipping the operating point.
 //!
-//! Over a periodic steady state, a period from the start `x₀` it repeats carries each
-//! tangent's derivatives the same way, the start held, to its end `∂φ/∂p t`. The steady
-//! state moves so that it still repeats: `(Φ − I) ẋ₀ = −∂φ/∂p t`, by the same monodromy
-//! matrix and in the same units as shooting, or for an oscillator, whose period `T` moves
-//! too, the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [ẋ₀, Ṫ] = [−∂φ/∂p t, 0]`, its
-//! start still orthogonal to the flow. A second pass over the period then carries the
-//! tangent from `ẋ₀`, each step's charge terms also scaled by `−Ṫ / T`, every point at its
-//! fraction of the period. Where `Φ − I` is singular, a neutral direction, `ẋ₀` leaves
-//! every quantity a period conserves as it was, as shooting does, no singular value
-//! counting as zero but within the rounding. The VJP takes the same three steps backward:
-//! the adjoint over the period, the start held, gives the cotangent's own terms and its
-//! derivatives with respect to the start and the period; the transpose of the bordered
-//! solve carries those to the period's end; and the adjoint of the period from there gives
-//! the rest. Both passes read the steps the converged period took, evaluating the circuit
-//! and factoring its Jacobian again at each point.
+//! Periodic steady-state JVP replays the converged period with a fixed start to obtain
+//! `∂φ/∂p t` and solves `(Φ - I) ẋ₀ = -∂φ/∂p t` (bordered with `∂φ/∂T` and `Ṫ` for
+//! oscillators). A second pass replays the period from `ẋ₀` with step-stretch terms `-Ṫ / T`.
+//! Singular `Φ - I` preserves neutral invariants using the same minimum-norm solve as
+//! shooting. VJP runs those three stages in reverse: fixed-start adjoint over the period,
+//! transposed bordered solve mapping start and period adjoints to the period end, and a
+//! second backward pass from the period end.
 
 use std::collections::BTreeMap;
 
@@ -76,106 +51,99 @@ use crate::{
 };
 
 /// Analysis label for frequency-domain differentiation in delay-line refusals.
-/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const OVER_FREQUENCY: &str = "derivative over frequency";
 /// Explanation for refusing delay lines in frequency-domain differentiation.
-/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
-const LEFT_OUT_OVER_FREQUENCY: &str = "it leaves out those of the terms its lines delay";
+const LEFT_OUT_OVER_FREQUENCY: &str =
+    "frequency-domain differentiation omits derivatives of delayed transmission-line terms";
 /// Analysis label for time-domain differentiation in delay-line refusals.
-/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
 const OVER_TIME: &str = "derivative over time";
 /// Explanation for refusing delay lines in time-domain differentiation.
-/// Origin: shared jolty diagnostic text across `jvp` and `vjp` (no numeric parameter).
-const LEFT_OUT_OVER_TIME: &str = "it leaves out those of the past its lines read";
-/// A periodic steady state's sensitivity, as [`SimulationError::TooMuchMemory`] names it.
-/// Origin: shared jolty diagnostic text across `derivative` and `sensitivity` (no numeric parameter).
+const LEFT_OUT_OVER_TIME: &str =
+    "time-domain differentiation omits derivatives of historical transmission-line samples";
+/// Analysis label for periodic steady-state sensitivity in [`SimulationError::TooMuchMemory`].
 pub(crate) const PERIODIC_SENSITIVITY: &str = "periodic steady state sensitivity";
 
-/// Message text for cotangent kind mismatches in the pullback (`vjp`).
-/// Origin: shared jolty diagnostic text derived from real vs complex analysis returns.
+/// Error text for cotangent domain mismatches in [`Simulator::pull_back`].
 const KINDS: &str =
     "cotangents on a response's phasors are complex, and on any other analysis's values real";
 
-/// What [`Simulator::jvp`] finds: the analysis's result, and the derivative of every
-/// unknown at each of its points along each tangent.
+/// Result of [`Simulator::jvp`], pairing the primal analysis result with directional
+/// derivatives across every unknown and analysis point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JvpResult {
-    /// The parameters the tangents move, in their order, each at its value.
+    /// Differentiated parameters in tangent order along with their current values.
     pub parameters: Vec<Parameter>,
-    /// The derivatives, by point, then unknown, then tangent: of values, or over
-    /// frequency of phasors.
+    /// Directional derivatives indexed by `[point][unknown][tangent]` (real values or AC
+    /// phasors).
     pub tangents: Derivatives,
-    /// For an oscillator's periodic steady state, its period's derivative along each
-    /// tangent.
+    /// Period derivatives along each tangent for an autonomous periodic steady state.
     pub period: Option<Vec<f64>>,
-    /// The result of the analysis differentiated.
+    /// Primal result of the differentiated analysis.
     pub result: AnalysisResult,
 }
 
-/// A cotangent on an analysis's outputs, every unknown at every point: a linear function
-/// of them, such as a loss's derivative with respect to each.
+/// Linear functional (cotangent) over all unknowns at selected points of an analysis, such as
+/// the gradient of a scalar loss with respect to simulation outputs.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Cotangent<T> {
-    /// By the index of each point where it is not zero, its value on every unknown there,
-    /// in their order.
+    /// Nonzero per-unknown cotangent vectors keyed by analysis point index.
     pub points: BTreeMap<usize, Vec<T>>,
-    /// Its value on an oscillator's period; zero for any other analysis.
+    /// Cotangent weight on an autonomous oscillator's period; zero for other analyses.
     pub period: f64,
 }
 
-/// Cotangents on an analysis's outputs: on values, or over frequency on phasors.
+/// Collection of real or complex cotangents matching an analysis output type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cotangents {
-    /// On values: at an operating point, along a sweep or a period, or over time.
+    /// Cotangents for real-valued analyses (DC, sweep, transient, or periodic steady state).
     Real(Vec<Cotangent<f64>>),
-    /// On phasors, over frequency.
+    /// Cotangents for complex AC frequency responses.
     Complex(Vec<Cotangent<Complex64>>),
 }
 
-/// What a pullback finds of cotangents: each one's value on every parameter, by cotangent
-/// then parameter.
+/// Pulled-back parameter cotangents returned by [`Simulator::pull_back`], indexed by
+/// `[cotangent][parameter]`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParameterCotangents {
-    /// Of cotangents on values.
+    /// Pullback results for real-valued analyses.
     Real(Vec<Vec<f64>>),
-    /// Of cotangents on phasors.
+    /// Pullback results for complex AC analyses.
     Complex(Vec<Vec<Complex64>>),
 }
 
-/// What [`Simulator::vjp`] finds: the analysis's result, and what
-/// [`Simulator::pull_back`] reads to carry cotangents on it back to the parameters.
+/// Captured forward state from [`Simulator::vjp`] enabling reverse-mode pullbacks via
+/// [`Simulator::pull_back`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pullback {
-    /// The parameters the cotangents pull back to, in their order, each at its value.
+    /// Target parameters in pullback order along with their current values.
     pub parameters: Vec<Parameter>,
-    /// The result of the analysis differentiated.
+    /// Primal result of the differentiated analysis.
     pub result: AnalysisResult,
-    /// What else of the analysis the pullback reads.
+    /// Auxiliary analysis metadata retained for reverse replay.
     saved: Saved,
 }
 
-/// What a pullback reads of its analysis besides its result.
+/// Auxiliary analysis state saved alongside primal outputs for [`Simulator::pull_back`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Saved {
-    /// Nothing, at an operating point or over frequency.
+    /// No auxiliary state (operating point or AC analysis).
     Nothing,
-    /// The sweep, whose values it holds again.
+    /// DC sweep configuration needed to replay held sweep values.
     DcSweep(DcSweep),
-    /// The transient's start, and each step's formula and whether the integration
-    /// restarts after it.
+    /// Initial-state boundary mode and accepted step formulas for transient replay.
     Transient(Start, Vec<StepFormula>),
-    /// The converged period's steps, and shooting's bordered system.
+    /// Accepted period step formulas and bordered shooting system for periodic replay.
     Period(Vec<StepFormula>, ShootingSystem),
 }
 
-/// A transient's waveforms together with the step formulas that produced them.
+/// Borrowed transient waveforms paired with the step formulas that produced them.
 #[derive(Clone, Copy)]
 pub(crate) struct Trajectory<'a> {
     pub(crate) waveforms: &'a TransientResult,
     pub(crate) steps: &'a [StepFormula],
 }
 
-/// A periodic steady state's period, the steps it took and its shooting's bordered system.
+/// Borrowed periodic steady-state result paired with its step formulas and shooting system.
 #[derive(Clone, Copy)]
 pub(crate) struct Period<'a> {
     pub(crate) found: &'a PeriodicSteadyStateResult,
@@ -192,7 +160,7 @@ pub(crate) struct BackwardPass<'a> {
     pub(crate) stretch: Option<f64>,
 }
 
-/// Whether a periodic steady state holds a fixed period or solves for a free oscillator period.
+/// Period mode distinguishing forced-period circuits from autonomous oscillators.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeriodKind {
     Forced,
@@ -200,8 +168,8 @@ pub(crate) enum PeriodKind {
 }
 
 impl PeriodKind {
-    /// Returns [`Self::Free`] when shooting bordered the system with a period scale, else
-    /// [`Self::Forced`].
+    /// Returns [`Self::Free`] when shooting bordered the system with a period scale, or
+    /// [`Self::Forced`] otherwise.
     pub(crate) const fn from_scale(scale: Option<f64>) -> Self {
         match scale {
             Some(_) => Self::Free,
@@ -210,17 +178,17 @@ impl PeriodKind {
     }
 }
 
-/// Where a transient's derivatives start.
+/// Boundary condition for transient sensitivities at time zero.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Start {
-    /// At the operating point, solved with the unknowns given forced, as a transient's
-    /// initial conditions force theirs.
+    /// Operating-point start listing node unknowns held fixed by initial conditions.
     Solved(Vec<UnknownIndex>),
-    /// At a state held, given: its derivatives along each direction, or none, zero.
+    /// Fixed initial state with optional precomputed starting tangent shifts (zeros if `None`).
     Held(Option<Vec<Vec<f64>>>),
 }
 
-/// The total `f64` numbers held inside a transient's waveforms and recorded values.
+/// Counts the total `f64` values stored in `waveforms` across unknown vectors and recorded
+/// series.
 pub(crate) fn waveforms_numbers(waveforms: &TransientResult) -> f64 {
     let values = float_count(waveforms.values.len())
         * float_count(waveforms.values.first().map_or(0, Vec::len));
@@ -265,10 +233,8 @@ impl PullPeriodBudget {
     }
 }
 
-/// The peak `f64` numbers held during [`Simulator::along_period`], across the bordered solve
-/// (`DENSE_MATRICES` square matrices plus `directions` columns) and the replay passes (the
-/// saved waveforms, the bordered matrix, each direction's three charge-history vectors and
-/// step solution, an oscillator's charge tangent, and the recorded output derivatives).
+/// Estimates peak `f64` storage during [`Simulator::along_period`] across the bordered solve
+/// (`DENSE_MATRICES` square matrices plus `directions` columns) and forward replay passes.
 fn forward_period_numbers(budget: ForwardPeriodBudget) -> f64 {
     let ForwardPeriodBudget {
         unknowns,
@@ -296,9 +262,8 @@ fn forward_period_numbers(budget: ForwardPeriodBudget) -> f64 {
     solve_phase.max(replay_phase)
 }
 
-/// The peak `f64` numbers held during [`Simulator::pull_period`] together with caller buffers
-/// of `budget.extra` numbers (`unit_rows` and `pulled` in `Simulator::by_rows`, or `found` in
-/// [`Simulator::pull_back`]).
+/// Estimates peak `f64` storage during [`Simulator::pull_period`] plus caller buffers of
+/// `budget.extra` numbers (`unit_rows` and `pulled`, or `found` in [`Simulator::pull_back`]).
 fn pull_period_numbers(budget: PullPeriodBudget) -> f64 {
     let PullPeriodBudget {
         unknowns,
@@ -312,14 +277,12 @@ fn pull_period_numbers(budget: PullPeriodBudget) -> f64 {
     let rows_float = float_count(rows);
     let unknowns_float = float_count(unknowns);
     // During `solve_each_in_range(matrix, &mut map)`, `map` adds one `rows × rows` matrix
-    // beside `DENSE_MATRICES`, and `ends` holds one vector per cotangent.
+    // alongside `DENSE_MATRICES`, and `ends` holds one vector per cotangent.
     let solve_phase =
         (DENSE_MATRICES + 1.0) * rows_float * rows_float + cotangents * unknowns_float;
-    // In `backward`, each cotangent keeps 3 vectors (`charge`, `before`, `rate`, plus 2 for
-    // an oscillator's stretch charges) and builds up to 4 temporary vectors per step (`held`,
-    // `onward`, `solution`, `shifted`), with `ended` adding 1 vector in the second pass;
-    // `twins.dots` and its transpose hold up to `3 * cotangents * parameters` beside `6` (or
-    // `7`) vectors of unknowns.
+    // Each cotangent retains 3 state vectors (plus 2 for autonomous period stretch) and up to
+    // 4 temporary vectors per step (`ended` adds 1 in pass 2). Contraction buffers hold up to
+    // `3 * cotangents * parameters` alongside `6` (or `7`) unknown vectors.
     let (step_vectors, dot_vectors) = match kind {
         PeriodKind::Free => (9.0, 7.0),
         PeriodKind::Forced => (8.0, 6.0),
@@ -331,7 +294,7 @@ fn pull_period_numbers(budget: PullPeriodBudget) -> f64 {
     waveforms + extra + solve_phase.max(backward_phase)
 }
 
-/// The unit directions, one along each of `count` parameters.
+/// Constructs `count` standard basis unit vectors of length `count`.
 pub(crate) fn units(count: usize) -> Vec<Vec<f64>> {
     (0..count)
         .map(|index| {
@@ -342,15 +305,14 @@ pub(crate) fn units(count: usize) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Adds `scale` times `x` to `into`.
+/// Accumulates `scale * x` into `into` elementwise.
 fn add(into: &mut [f64], scale: f64, x: &[f64]) {
     for (value, term) in into.iter_mut().zip(x) {
         *value += scale * term;
     }
 }
 
-/// Adds to `into` the product of the transpose of the matrix of `pattern` whose stored
-/// values are `values` and the vector `x`, the matrix's rows in order.
+/// Accumulates the transposed sparse matrix-vector product `Aᵀ * x` into `into` in row order.
 fn add_transposed_product(pattern: &Pattern, values: &[f64], x: &[f64], into: &mut [f64]) {
     for (row, &factor) in x.iter().enumerate() {
         for &(slot, column) in pattern.row(row) {
@@ -359,7 +321,7 @@ fn add_transposed_product(pattern: &Pattern, values: &[f64], x: &[f64], into: &m
     }
 }
 
-/// `rows` by `columns` turned to `columns` by `rows`.
+/// Transposes a `rows × columns` nested vector into `columns × rows`.
 fn transposed<T: Copy>(rows: Vec<Vec<T>>, columns: usize) -> Vec<Vec<T>> {
     let mut turned = vec![Vec::with_capacity(rows.len()); columns];
     for row in rows {
@@ -370,32 +332,30 @@ fn transposed<T: Copy>(rows: Vec<Vec<T>>, columns: usize) -> Vec<Vec<T>> {
     turned
 }
 
-/// The direct method's state along a transient: each direction's derivatives of the
-/// charges, and those of the unknowns kept at every accepted point.
+/// Forward direct-method state tracking charge tangents and recorded output sensitivities
+/// across a transient or periodic replay.
 pub(crate) struct Forward {
     pub(crate) twins: Twins,
-    /// The directions, by direction then twin.
+    /// Tangent directions indexed by `[direction][twin]`.
     directions: Vec<Vec<f64>>,
-    /// The unknowns whose derivatives it keeps, by index.
+    /// Unknown indices whose sensitivities are recorded at each accepted point.
     kept: Vec<usize>,
     start: Start,
     tangents: Vec<Tangent>,
-    /// By point, then unknown kept, then direction.
+    /// Recorded directional derivatives indexed by `[point][kept_output][direction]`.
     pub(crate) found: Vec<Vec<Vec<f64>>>,
-    /// An oscillator's period, and its derivative along each direction, which scales
-    /// every step.
+    /// Autonomous oscillator period paired with its per-direction derivatives scaling each
+    /// step.
     pub(crate) stretch: Option<(f64, Vec<f64>)>,
-    /// The charges themselves, while the period stretches, whose formula's terms the
-    /// steps' lengths divide.
+    /// Raw charge trajectory used to compute step-scaled divided terms when stretching period.
     charges: Option<Tangent>,
-    /// Each direction's derivatives of the unknowns at the last point, kept for a period
-    /// whose end they are.
+    /// Endpoint unknown sensitivities retained per direction for periodic shooting replays.
     ends: Option<Vec<Vec<f64>>>,
 }
 
 impl Forward {
-    /// The direct method along `directions` of `twins`, keeping the derivatives of the
-    /// unknowns `kept`, from `start`.
+    /// Initializes forward sensitivity state for `twins` along `directions`, recording
+    /// unknowns `kept` from boundary condition `start`.
     pub(crate) fn new(
         twins: Twins,
         directions: Vec<Vec<f64>>,
@@ -415,16 +375,15 @@ impl Forward {
         }
     }
 
-    /// The derivatives of the unknowns kept in `moved`, by direction then unknown, by
-    /// unknown kept then direction.
+    /// Extracts derivatives for `self.kept` unknowns from `moved`, transposing to
+    /// `[kept_output][direction]`.
     fn keep(&self, moved: &[Vec<f64>]) -> Vec<Vec<f64>> {
         kept_of(&self.kept, moved)
     }
 }
 
-/// What a JVP finds: the twins, as they ended the analysis, the derivatives of the
-/// unknowns kept, by point, then unknown kept, then direction, an oscillator's period's
-/// along each direction, and the analysis's result.
+/// Internal JVP output pairing final twins, recorded derivatives, optional period
+/// derivatives, and the primal analysis result.
 pub(crate) struct Pushed {
     pub(crate) twins: Twins,
     pub(crate) tangents: Derivatives,
@@ -432,17 +391,14 @@ pub(crate) struct Pushed {
     pub(crate) result: AnalysisResult,
 }
 
-/// Each cotangent's derivatives, as the adjoint method carries them backward along a
-/// transient, with respect to the charges at the last point, at the one before it and to
-/// their rate, and while a period stretches the same of the stretch's terms, and the
-/// period's derivative found so far.
+/// Reverse-mode adjoint state carried backward across transient steps for one cotangent.
 struct Adjoint {
     charge: Vec<f64>,
     before: Vec<f64>,
     rate: Vec<f64>,
     stretch: Option<(Vec<f64>, Vec<f64>)>,
     period: f64,
-    /// The last point its cotangent is not zero at, before which it carries nothing.
+    /// Latest point index with a nonzero cotangent seed, skipping inactive trailing steps.
     last: Option<usize>,
 }
 
@@ -460,11 +416,8 @@ struct NonlinearTwins<'a> {
 }
 
 impl Adjoint {
-    /// Carries the derivatives back over `step` to a point where the charges are `charge`,
-    /// from `vectors` (`held` with respect to the point's charges, `onward` going on to the
-    /// point before, and `solution` as the step's `λ`); while a period of length `stretch`
-    /// stretches, its terms too. Returns `μ − α λ`, which the charges' partial derivatives
-    /// take.
+    /// Propagates adjoint state backward across `step` using `vectors` and `charge`, updating
+    /// period-stretch terms when `stretch` is set and returning `μ - α λ`.
     fn step_back(
         &mut self,
         vectors: &StepAdjoint,
@@ -508,29 +461,23 @@ impl Adjoint {
     }
 }
 
-/// What the adjoint method leaves of each cotangent at a transient's start: its derivative
-/// with respect to the state held there, and with respect to an oscillator's period.
+/// Boundary adjoints `(state_adjoint, period_adjoint)` produced at time zero for each
+/// cotangent.
 type Ends = Vec<(Vec<f64>, f64)>;
 
-/// What takes each term of a cotangent's value on every parameter, by its index, every
-/// parameter's at once; the terms sum to the values.
+/// Callback receiving additive parameter-cotangent contributions `(cotangent_index, terms)`.
 pub(crate) type Fold<'a> = &'a mut dyn FnMut(usize, &[f64]);
 
 impl Simulator {
-    /// The derivative of every unknown at each point of `analysis` along each of
-    /// `tangents`, each a number per parameter of `parameters`, every parameter by its
-    /// device's path and its name, such as `R1` and `resistance` or `V1` and
-    /// `waveform.dc`: the JVP of the analysis, by the direct method, one solve per tangent
-    /// at each point, exact.
+    /// Computes exact Jacobian-vector products (JVPs) of `analysis` along `tangents` with
+    /// respect to `parameters` (`(device_path, parameter_name)` pairs).
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownParameters`] for every parameter no device holds
-    /// as a real number, [`SimulationError::InvalidAnalysis`] for a tangent that is not a
-    /// finite number per parameter, [`SimulationError::TooMuchMemory`] when a periodic
-    /// steady state's bordered system and tangent columns would hold more than the options'
-    /// `max_memory`, [`SimulationError::Singular`] when a Jacobian is, and the errors of the
-    /// analysis.
+    /// Returns [`SimulationError::UnknownParameters`] for missing or non-numeric parameters,
+    /// [`SimulationError::InvalidAnalysis`] for malformed or non-finite tangents,
+    /// [`SimulationError::TooMuchMemory`] if periodic sensitivity exceeds `max_memory`,
+    /// [`SimulationError::Singular`] for singular Jacobians, and errors from `analysis`.
     pub fn jvp(
         &mut self,
         analysis: &Differentiated,
@@ -563,20 +510,15 @@ impl Simulator {
         })
     }
 
-    /// The result of `analysis`, and its pullback: what carries a cotangent on every
-    /// unknown at each of its points back to each parameter of `parameters`, each by its
-    /// device's path and its name, through [`Simulator::pull_back`]: the VJP of the
-    /// analysis, by the adjoint method, one transposed solve per cotangent at each point
-    /// whatever the number of parameters.
+    /// Runs `analysis` and returns a [`Pullback`] handle that maps output cotangents back to
+    /// `parameters` via [`Simulator::pull_back`] in one transposed solve per cotangent.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownParameters`] for every parameter no device holds
-    /// as a real number, [`SimulationError::Delayed`] over frequency or time for a circuit
-    /// with delay lines, whose terms the derivatives would leave out,
-    /// [`SimulationError::InvalidAnalysis`] over time for a circuit with logic, whose
-    /// drivers a point evaluated again after the run does not see as they were, and the
-    /// errors of the analysis.
+    /// Returns [`SimulationError::UnknownParameters`] for invalid parameters,
+    /// [`SimulationError::Delayed`] for AC or transient circuits with delay lines,
+    /// [`SimulationError::InvalidAnalysis`] for transient circuits with logic, and errors
+    /// from `analysis`.
     pub fn vjp(
         &mut self,
         analysis: &Differentiated,
@@ -595,16 +537,14 @@ impl Simulator {
         })
     }
 
-    /// The value of each of `cotangents` on every parameter of `pullback`, by cotangent
-    /// then parameter: its pullback, by the adjoint method.
+    /// Evaluates reverse-mode vector-Jacobian products for `cotangents` against `pullback`,
+    /// returning parameter sensitivities indexed by `[cotangent][parameter]`.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for cotangents of another kind than
-    /// the analysis's outputs, or at a point it does not have, or of another number of
-    /// unknowns, or not finite; [`SimulationError::TooMuchMemory`] when a periodic steady
-    /// state's pullback would hold more than the options' `max_memory`;
-    /// [`SimulationError::Singular`] when a Jacobian is.
+    /// Returns [`SimulationError::InvalidAnalysis`] for domain-mismatched, out-of-range,
+    /// wrong-length, or non-finite cotangents, [`SimulationError::TooMuchMemory`] if periodic
+    /// pullback exceeds `max_memory`, or [`SimulationError::Singular`] for singular Jacobians.
     pub fn pull_back(
         &mut self,
         pullback: &Pullback,
@@ -653,13 +593,12 @@ impl Simulator {
         })
     }
 
-    /// The twins of `parameters`, each by its device's path and its name, a column each,
-    /// in their order.
+    /// Builds unit-seeded parameter [`Twins`] for `parameters` in order.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownParameters`] naming every one no device holds as
-    /// a real number.
+    /// Returns [`SimulationError::UnknownParameters`] listing every missing or non-numeric
+    /// parameter.
     pub(crate) fn named_twins(
         &self,
         parameters: &[(String, String)],
@@ -672,13 +611,12 @@ impl Simulator {
         }
     }
 
-    /// Each of `parameters`, by its device's path and its name, its device's index and its
-    /// value as the device is made now.
+    /// Resolves `(device_path, parameter_name)` pairs to `(device_index, Parameter)` entries
+    /// reflecting current active device values.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownParameters`] naming every one no device holds as
-    /// a number.
+    /// Returns [`SimulationError::UnknownParameters`] listing every unresolved entry.
     pub(crate) fn named_parameters(
         &self,
         parameters: &[(String, String)],
@@ -698,7 +636,8 @@ impl Simulator {
         }
     }
 
-    /// Checks that `cotangents` have the points and unknowns of `result` and are finite.
+    /// Validates that `cotangents` have finite entries matching the point and unknown counts
+    /// of `result`.
     fn checked(
         &self,
         result: &AnalysisResult,
@@ -720,12 +659,12 @@ impl Simulator {
         }
     }
 
-    /// The JVP of `analysis` along `directions`, each a number per twin of `twins`,
-    /// keeping the derivatives of the unknowns `kept`.
+    /// Computes the forward JVP of `analysis` along `directions` over `twins`, recording only
+    /// `kept` unknowns.
     ///
     /// # Errors
     ///
-    /// As [`Simulator::jvp`].
+    /// Returns the same errors as [`Simulator::jvp`].
     pub(crate) fn push_forward(
         &mut self,
         analysis: &Differentiated,
@@ -812,11 +751,11 @@ impl Simulator {
         })
     }
 
-    /// The result of `analysis`, and what its pullback reads of it besides.
+    /// Runs `analysis` and captures the [`Saved`] replay state required for [`Simulator::pull_back`].
     ///
     /// # Errors
     ///
-    /// As [`Simulator::vjp`].
+    /// Returns the same errors as [`Simulator::vjp`].
     pub(crate) fn run_saving(
         &mut self,
         analysis: &Differentiated,
@@ -857,13 +796,12 @@ impl Simulator {
         })
     }
 
-    /// Fails for a circuit whose points the adjoint method cannot evaluate again after its
-    /// run as they were: one with delay lines, whose past the derivatives would leave out,
-    /// or with logic, whose drivers it does not see as they were.
+    /// Verifies that time-domain adjoint replay is supported, rejecting circuits with delay
+    /// lines or logic nets.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Delayed`] and [`SimulationError::InvalidAnalysis`].
+    /// Returns [`SimulationError::Delayed`] or [`SimulationError::InvalidAnalysis`].
     pub(crate) fn replayable(&self) -> Result<(), SimulationError> {
         self.undelayed(OVER_TIME, LEFT_OUT_OVER_TIME)?;
         if self.elaborated.logic.nets.is_empty() {
@@ -877,13 +815,12 @@ impl Simulator {
         ))
     }
 
-    /// Where the derivatives of `transient` start: at its operating point, with the nets
-    /// its initial conditions force there, or at its initial conditions alone, held.
+    /// Determines the initial-state sensitivity boundary condition [`Start`] for `transient`.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for initial conditions that name no
-    /// net, or a voltage that is not finite.
+    /// Returns [`SimulationError::InvalidAnalysis`] for unknown initial-condition nets or
+    /// non-finite voltages.
     pub(crate) fn start_of(&self, transient: &Transient) -> Result<Start, SimulationError> {
         if !transient.operating_point {
             return Ok(Start::Held(None));
@@ -898,8 +835,8 @@ impl Simulator {
         ))
     }
 
-    /// Pulls back `cotangents` on `result` (which left `saved`) to every twin, returning
-    /// accumulated sums by cotangent then twin.
+    /// Pulls back `cotangents` on `result` (with replay state `saved`) to every twin,
+    /// returning accumulated sums by cotangent then twin.
     pub(crate) fn pull_collected(
         &mut self,
         twins: &mut Twins,
@@ -918,9 +855,8 @@ impl Simulator {
         Ok(found)
     }
 
-    /// The real cotangents `cotangents` of the analysis whose result is `result`, which
-    /// left `saved`, pulled back to the twins: each term of each cotangent's values, by
-    /// its index, to `fold`.
+    /// Pulls back real `cotangents` over `result` and `saved` to `twins`, streaming each
+    /// additive contribution to `fold`.
     fn pull(
         &mut self,
         twins: &mut Twins,
@@ -967,8 +903,8 @@ impl Simulator {
         }
     }
 
-    /// Factors the DC conductance matrix currently in the workspace, replacing the rows of
-    /// `forced` with `v − v₀ = 0` when non-empty.
+    /// Factors the workspace DC conductance matrix, replacing `forced` rows with `v - v₀ = 0`
+    /// when non-empty.
     fn factor_dc_forced(
         &mut self,
         forced: &[UnknownIndex],
@@ -986,9 +922,8 @@ impl Simulator {
         self.state.solver.factor(&matrix)
     }
 
-    /// Each direction's derivative of the DC solution `x`, `−J⁻¹ Σ t_j ∂F/∂p_j`, by
-    /// direction then unknown, the rows of the unknowns `forced` held at their voltages,
-    /// `v − v₀ = 0`, which no parameter moves; the twins left evaluated at `x`.
+    /// Solves directional DC shifts `-J⁻¹ Σ t_j ∂F/∂p_j` at `x` with `forced` node rows held
+    /// fixed, leaving `twins` evaluated at `x`.
     fn dc_shifts(
         &mut self,
         twins: &mut Twins,
@@ -1024,8 +959,8 @@ impl Simulator {
         moved.into_iter().collect()
     }
 
-    /// Pulls back the cotangents `at`, each its index and its value on every unknown, at
-    /// the DC solution `x`: `−λᵀ ∂F/∂p` for each twin, where `Jᵀ λ = v`, to `fold`.
+    /// Pulls back active DC cotangents `at` at `x`, folding `-λᵀ ∂F/∂p` (where `Jᵀ λ = v`)
+    /// into `fold`.
     fn dc_cotangents(
         &mut self,
         twins: &mut Twins,
@@ -1065,9 +1000,8 @@ impl Simulator {
         Ok(())
     }
 
-    /// What `each` finds at each swept value of the sweep `result`, of `sweep`, given the
-    /// solution there, its source held there, and the twins of its device prepared again
-    /// there, from what its instance is made of: a number the sweep holds moves nothing.
+    /// Evaluates `each` across every point of `sweep` in `result`, holding the swept source
+    /// or parameter fixed and rebuilding its affected twins at each step.
     fn along_values<R>(
         &mut self,
         sweep: &DcSweep,
@@ -1090,8 +1024,8 @@ impl Simulator {
         ran.map(|()| found)
     }
 
-    /// The derivatives of the phasors of the unknowns `kept` in `response` along each of
-    /// `directions`, by frequency, then unknown kept, then direction.
+    /// Computes forward directional AC phasor sensitivities for `kept` unknowns along
+    /// `directions`, indexed by `[frequency][kept_output][direction]`.
     fn frequency_tangents(
         &mut self,
         twins: &mut Twins,
@@ -1152,9 +1086,8 @@ impl Simulator {
         )
     }
 
-    /// The values of `cotangents` on the phasors of `response` on every twin, by
-    /// cotangent then twin, summed over the frequencies in order and through the
-    /// operating point by one transposed DC solve.
+    /// Pulls back complex `cotangents` over `response` to `twins`, accumulating frequency
+    /// contributions in order and folding indirect bias shifts through one transposed DC solve.
     pub(crate) fn pull_frequencies(
         &mut self,
         twins: &mut Twins,
@@ -1318,9 +1251,9 @@ impl Simulator {
         Ok(())
     }
 
-    /// Each direction's derivatives along `period`: `forward`, carried over the period's steps
-    /// once from the start held to the period's end, then again from the start's own
-    /// derivatives, and with an oscillator's period's.
+    /// Computes forward directional sensitivities across `period` by replaying once from a
+    /// fixed start, solving the bordered shooting sensitivity system, and replaying from the
+    /// shifted start and optional period derivative.
     pub(crate) fn along_period(
         &mut self,
         period: Period<'_>,
@@ -1396,8 +1329,8 @@ impl Simulator {
         Ok(forward)
     }
 
-    /// Carries `forward` over the points of `trajectory`, as the transient carried it when it
-    /// took them.
+    /// Replays `forward` across every accepted point of `trajectory`, matching the forward
+    /// transient steps.
     pub(crate) fn replay(
         &mut self,
         forward: &mut Forward,
@@ -1416,9 +1349,9 @@ impl Simulator {
         Ok(())
     }
 
-    /// The values on every twin of `cotangents` on `period`, each term to `fold`: the adjoint
-    /// over the period, the start held, the transpose of the bordered solve, and the adjoint
-    /// over the period again from its end.
+    /// Pulls back `cotangents` across `period` to `twins` via `fold`, running a fixed-start
+    /// adjoint pass, a transposed bordered solve, and a second adjoint pass from the period
+    /// end.
     fn pull_period(
         &mut self,
         twins: &mut Twins,
@@ -1506,10 +1439,8 @@ impl Simulator {
         Ok(())
     }
 
-    /// Starts the direct method at the state `x` a transient starts from: each
-    /// direction's derivative of it, by the DC Jacobian at the operating point, with the
-    /// rows of the nets forced there held, or as given for a state held; and of the
-    /// charges there.
+    /// Initializes `forward` tangents at time-zero state `x`, solving initial DC shifts (with
+    /// forced initial-condition rows held) or applying precomputed held shifts.
     pub(crate) fn start_forward(
         &mut self,
         forward: &mut Forward,
@@ -1635,31 +1566,24 @@ impl Simulator {
         Ok(())
     }
 
-    /// The adjoint method over `pass.trajectory` from the last point back to the first, for
-    /// every cotangent of `pass.seeds` at once, each a value on every unknown at the points
-    /// where it is not zero: each term of each one's value on every twin to `fold`, by its
-    /// index. The derivatives start at `pass.start`; while an oscillator's period
-    /// `pass.stretch` stretches, each step's charge terms scale with it. Returns, for each
-    /// cotangent, its derivatives with respect to the state held at the start, zero for a
-    /// start solved, and to the period.
+    /// Runs the discrete adjoint backward across `pass.trajectory` for all `pass.seeds`
+    /// simultaneously, streaming twin terms to `fold` and returning start-state and period
+    /// boundary adjoints.
     ///
-    /// At the point `k`, where the cotangent is `c_k`, with `μ = λ_q + α λ_r`, and `+ λ_q'`
-    /// where the integration restarts after the point:
+    /// At step `k` with cotangent seed `c_k` and `μ = λ_q + α λ_r` (plus `λ_q'` when
+    /// restarting):
     ///
     /// ```text
     /// (G + α C)ᵀ λ = c_k + Cᵀ μ,          G and C evaluated at x_k
-    /// p̄ += −λᵀ ∂f/∂p + (μ − α λ)ᵀ ∂q/∂p
-    /// λ_q ← β₀ (λ_r − λ), and + λ_q' where it does not restart
-    /// λ_q' ← β₁ (λ_r − λ),  λ_r ← γ (λ_r − λ)
+    /// p̄ += -λᵀ ∂f/∂p + (μ - α λ)ᵀ ∂q/∂p
+    /// λ_q ← β₀ (λ_r - λ), plus λ_q' when not restarting
+    /// λ_q' ← β₁ (λ_r - λ),  λ_r ← γ (λ_r - λ)
     /// ```
     ///
-    /// At the start, where the charges' derivative is zero and the point before is the
-    /// point itself, `μ = λ_q + λ_q'` and `p̄ += μᵀ ∂q/∂p`; at an operating point, the DC
-    /// Jacobian, its forced rows held, takes the step's place, `Jᵀ λ = c_0 + Cᵀ μ`, and
-    /// `p̄ += −λᵀ ∂F/∂p`; a state held instead has the derivative `c_0 + Cᵀ μ`. A
-    /// stretching period's terms `−(Ṫ / T) (α q_k + β₀ q_{k-1} + β₁ q'_{k-1})` in each
-    /// step's history take `T̄ += −(λ_r − λ)ᵀ (…) / T`, carried back to the charges they
-    /// read as `λ_q` and `λ_q'` are.
+    /// At point `0`, `μ = λ_q + λ_q'` contributes `μᵀ ∂q/∂p`, and solved starts perform one
+    /// transposed DC solve `Jᵀ λ = c_0 + Cᵀ μ` (with forced rows held) contributing
+    /// `-λᵀ ∂F/∂p`. When `pass.stretch` is active, step-stretch terms accumulate into the
+    /// period adjoint `T̄`.
     pub(crate) fn backward(
         &mut self,
         twins: &mut Twins,
@@ -1749,8 +1673,8 @@ impl Simulator {
         self.backward_start(twins, pass, adjoints, fold, options)
     }
 
-    /// The adjoint method at a transient's start, the point `0` of `pass.trajectory`, from
-    /// what `adjoints` carried back to it, as [`Simulator::backward`] says.
+    /// Completes the backward adjoint pass at point `0` of `pass.trajectory` from accumulated
+    /// `adjoints`, folding initial charge and DC-operating-point terms into `fold`.
     fn backward_start(
         &mut self,
         twins: &mut Twins,
@@ -1867,8 +1791,8 @@ fn fold_dots(
     }
 }
 
-/// The number of points of `result`: one at an operating point, and a swept value's,
-/// frequency's or time's each otherwise.
+/// Returns the number of output points in `result` (1 for operating point, or the sweep,
+/// frequency, or time sample count).
 pub(crate) fn points(result: &AnalysisResult) -> usize {
     match result {
         AnalysisResult::DcSweep(sweep) => sweep.values.len(),
@@ -1879,15 +1803,15 @@ pub(crate) fn points(result: &AnalysisResult) -> usize {
     }
 }
 
-/// The derivatives of the unknowns `kept` of `moved`, by direction then unknown, by
-/// unknown kept then direction.
+/// Extracts `kept` unknown entries from directional shifts `moved`, transposing to
+/// `[kept_output][direction]`.
 fn kept_of(kept: &[usize], moved: &[Vec<f64>]) -> Vec<Vec<f64>> {
     kept.iter()
         .map(|&unknown| moved.iter().map(|shift| shift[unknown]).collect())
         .collect()
 }
 
-/// The paths and names of `parameters`, as an error names them.
+/// Maps `parameters` to `(instance_path, parameter_name)` pairs for error reporting.
 pub(crate) fn named_of(parameters: &[Parameter]) -> Vec<(String, String)> {
     parameters
         .iter()

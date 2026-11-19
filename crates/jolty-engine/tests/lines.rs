@@ -30,13 +30,13 @@ const DELAY: f64 = 1e-9;
 /// The time the source's edge starts rising, and the time it rises in, in seconds.
 const EDGE: (f64, f64) = (0.5e-9, 0.2e-9);
 
-/// The bound on a wave's error, in volts, where the waves are piecewise linear: each point
-/// a transient accepts is exact but for rounding, as no charge is integrated, and each
-/// delayed value an interpolation within a straight run between corners, exact but for
-/// rounding too, the corners each stepped onto. A thousand ulps of the 1 V the waves are.
+/// Error bound in volts for piecewise-linear waves (`1000 * f64::EPSILON`).
+///
+/// With no charge integration, accepted points and interpolated delays between stepped
+/// corners are exact up to floating-point rounding.
 const ROUNDING: f64 = 1e3 * f64::EPSILON;
 
-/// A line from port `a`, over the ground, to port `b`, over the ground.
+/// Builds a lossless transmission line between grounded ports `a` and `b`.
 fn line(name: &str, a: &str, b: &str) -> Instance {
     device(
         name,
@@ -51,7 +51,7 @@ fn line(name: &str, a: &str, b: &str) -> Instance {
     )
 }
 
-/// A source at `positive` of a 1 V edge, [`EDGE`], from 0 V.
+/// Builds a 1 V rising-edge voltage source at `positive` with timing [`EDGE`].
 fn edge(positive: &str) -> Instance {
     let (delay, rise) = EDGE;
     voltage_source(
@@ -64,14 +64,13 @@ fn edge(positive: &str) -> Instance {
     )
 }
 
-/// The source's level at `time`.
+/// Computes the analytical source voltage at `time`.
 fn source(time: f64) -> f64 {
     let (delay, rise) = EDGE;
     ((time - delay) / rise).clamp(0.0, 1.0)
 }
 
-/// The transient of `circuit` until `stop`, by `method`: its times, and the voltages of
-/// `nets` at each.
+/// Runs a transient analysis of `circuit` to `stop` with `method` and samples `nets`.
 fn waves(circuit: &Circuit, stop: f64, method: Method, nets: &[&str]) -> Vec<(f64, Vec<f64>)> {
     let mut simulator = simulator(circuit);
     let result = simulator
@@ -89,8 +88,8 @@ fn waves(circuit: &Circuit, stop: f64, method: Method, nets: &[&str]) -> Vec<(f6
         .collect()
 }
 
-/// Asserts each of `found`'s waves is `expected`'s at each time within [`ROUNDING`], and
-/// that the transient stepped onto every time of `corners`, to the rounding of its sums.
+/// Asserts that every sampled wave in `found` matches `expected` within [`ROUNDING`] and
+/// hits every corner time in `corners` within floating-point sum rounding.
 fn assert_waves(found: &[(f64, Vec<f64>)], expected: impl Fn(f64) -> Vec<f64>, corners: &[f64]) {
     for &(time, ref values) in found {
         for (net, (value, exact)) in values.iter().zip(expected(time)).enumerate() {
@@ -112,8 +111,8 @@ fn assert_waves(found: &[(f64, Vec<f64>)], expected: impl Fn(f64) -> Vec<f64>, c
     }
 }
 
-/// A source matched to the line sends half its edge down it, which a matched load takes
-/// whole a delay later: no reflection, every edge stepped onto.
+/// Verifies that a matched source and load transmit half the source edge cleanly with one
+/// delay and no reflection.
 #[test]
 fn a_matched_line_delays_half_the_edge() {
     let circuit = circuit([
@@ -133,9 +132,8 @@ fn a_matched_line_delays_half_the_edge() {
     }
 }
 
-/// An open end doubles the wave arriving and sends it back; a source of half the line's
-/// impedance sends a third of the wave arriving back again, inverted: the lattice of
-/// reflections, the source's reflection coefficient −1/3 and the open end's 1.
+/// Verifies the reflection lattice on an open-ended line driven through `Z₀ / 2` (open-end
+/// coefficient `+1`, source coefficient `-1/3`).
 #[test]
 fn an_open_line_rings_down_by_its_reflections() {
     let resistance = IMPEDANCE / 2.0;
@@ -179,8 +177,8 @@ fn an_open_line_rings_down_by_its_reflections() {
     );
 }
 
-/// A shorted end inverts the wave arriving, so a matched source sees its edge return
-/// inverted two delays later, and the short carries twice the wave's current.
+/// Verifies that a shorted far end reflects an inverted edge back to a matched source two
+/// delays later.
 #[test]
 fn a_shorted_line_returns_the_edge_inverted() {
     let circuit = circuit([
@@ -207,7 +205,7 @@ fn a_shorted_line_returns_the_edge_inverted() {
     );
 }
 
-/// At DC a line is a short through, from port to port.
+/// Verifies that a lossless transmission line acts as a DC short between ports.
 #[test]
 fn at_dc_a_line_is_a_short_through() {
     let circuit = circuit([
@@ -222,14 +220,13 @@ fn at_dc_a_line_is_a_short_through() {
         .expect("an operating point");
     for net in ["a", "b"] {
         let value = point.values[simulator.unknown(net).expect("a net").index()];
-        // The divider's 3/4 but for the solver's rounding.
+        // Ideal divider ratio 3/4 up to solver rounding.
         assert!((value - 0.75).abs() < 1e-12, "{net}: {value} V");
     }
 }
 
-/// A line's input impedance with a load `Z_L` at its far end is
-/// `Z₀ (Z_L + j Z₀ tan βl) / (Z₀ + j Z_L tan βl)`, `βl = ωτ`: a quarter wave inverts the
-/// load's impedance about `Z₀`, `Z₀² / Z_L`.
+/// Verifies the AC input impedance `Z₀ (Z_L + j Z₀ tan βl) / (Z₀ + j Z_L tan βl)` with
+/// `βl = ωτ`, including quarter-wave inversion `Z₀² / Z_L`.
 #[test]
 fn a_quarter_wave_inverts_its_load() {
     let load = 100.0;
@@ -264,7 +261,8 @@ fn a_quarter_wave_inverts_its_load() {
     assert!((inverted - IMPEDANCE * IMPEDANCE / load).norm() < 1e-9 * IMPEDANCE);
 }
 
-/// The analyses that cannot take a delay refuse it, naming the line.
+/// Verifies that analyses incompatible with time delays reject the circuit and name the
+/// offending transmission line.
 #[test]
 fn a_pole_zero_analysis_and_a_periodic_steady_state_refuse_a_line() {
     let circuit = circuit([

@@ -53,7 +53,7 @@ fn assert_close(actual: f64, expected: f64, tolerance: f64) {
     );
 }
 
-/// A default-parameter diode named `name` from `anode` to `cathode`.
+/// Builds a default-parameter diode named `name` from `anode` to `cathode`.
 fn diode(name: &str, anode: &str, cathode: &str) -> Instance {
     device(
         name,
@@ -63,7 +63,7 @@ fn diode(name: &str, anode: &str, cathode: &str) -> Instance {
     )
 }
 
-/// A piecewise-linear waveform through `points`.
+/// Builds a piecewise-linear waveform through `points`.
 fn piecewise(points: &[[f64; 2]]) -> Value {
     json!({"piecewise": {"points": points}})
 }
@@ -180,7 +180,7 @@ fn controlled_sources_amplify_their_control_voltage() {
     assert_close(solution.values[index(&simulator, "driven")], 1.0, 1e-12);
 }
 
-/// The diode current that a source through a resistor drives, by bisection on the closed form.
+/// Solves the closed-form resistor-diode load-line current via bisection.
 fn diode_current(source: f64, resistance: f64, saturation: f64) -> f64 {
     let (mut low, mut high) = (0.0, source / resistance);
     for _ in 0..200 {
@@ -235,13 +235,12 @@ fn a_dc_sweep_traces_the_diode_curve() {
     for (level, values) in levels.iter().zip(&result.values).skip(4) {
         assert_close(-values[current], diode_current(*level, 100.0, 1e-14), 1e-6);
     }
-    // The sweep releases the source: an operating point afterwards sees its own level again.
+    // The sweep releases the source so a subsequent operating point restores nominal level.
     let after = simulator.operating_point(&Options::default()).unwrap();
     assert!(after.values[current].abs() < 1e-12);
 }
 
-/// A divider of 5 V whose upper resistor a sweep steps, and a resistor in parallel with
-/// its lower one.
+/// Builds a 5 V resistive voltage divider (`R1` = 1 kΩ, `R2` = 2 kΩ) for parameter sweeps.
 fn swept_divider() -> Circuit {
     circuit([
         voltage_dc("V1", "in", 5.0),
@@ -273,8 +272,7 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
     for (level, values) in levels.iter().zip(&result.values) {
         assert_close(values[out], 5.0 * 2e3 / (level + 2e3), 1e-14);
     }
-    // The sweep leaves the resistor as it was: an operating point afterwards divides by
-    // its own resistance again.
+    // The sweep restores nominal resistance so a subsequent operating point uses 1 kΩ.
     let after = simulator.operating_point(&Options::default()).unwrap();
     assert_close(after.values[out], 5.0 * 2e3 / 3e3, 1e-14);
     // Along the sweep, the number it holds moves nothing, and the lower resistor moves the
@@ -311,7 +309,7 @@ fn a_dc_sweep_cannot_change_the_unknowns_of_its_device() {
         parameter: Some(parameter.to_owned()),
         values: levels,
     };
-    // Below 1 Ω, a resistor carries its current as an unknown of its own.
+    // Below 1 Ω, a resistor introduces an explicit branch current unknown.
     let crossed = simulator.dc_sweep(&sweep(vec![10.0, 0.5], "resistance"), &Options::default());
     assert!(
         matches!(&crossed, Err(SimulationError::InvalidAnalysis(message))
@@ -329,7 +327,7 @@ fn a_dc_sweep_cannot_change_the_unknowns_of_its_device() {
         matches!(&negative, Err(SimulationError::InvalidAnalysis(message)) if message.contains("R1")),
         "{negative:?}"
     );
-    // A failed sweep leaves the circuit as it was.
+    // A failed sweep leaves the circuit unchanged.
     let after = simulator.operating_point(&Options::default()).unwrap();
     assert_close(
         after.values[index(&simulator, "out")],
@@ -388,13 +386,11 @@ fn a_series_rlc_passes_everything_at_resonance() {
     assert!((gain - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{gain}");
 }
 
-/// A series RLC low-pass of quality factor 31.6, swept from 1 Hz to 1 GHz, keeps every
-/// digit of its response far above its resonance of 5 MHz, where the response falls to
-/// 2.5e-5 of the source: the sweep keeps the pivots it chose at 1 Hz, where conductances
-/// rule, and elimination with them computes the output as a difference of volts, losing
-/// four digits, which refinement against `G + jωC` recovers. The response's relative
-/// condition there is under 3, the refined solve's componentwise backward error at most ε,
-/// and the closed form rounds within a few ε, so the two agree within 32 ε.
+/// Verifies that iterative refinement preserves full accuracy on a high-Q (`Q = 31.6`)
+/// series RLC low-pass far above its 5 MHz resonance.
+///
+/// Reusing 1 Hz conductance-dominated pivots loses four digits at 1 GHz where gain drops to
+/// `2.5e-5`, and refinement against `G + jωC` recovers accuracy within `32 ε`.
 #[test]
 fn a_series_rlc_keeps_its_digits_far_above_resonance() {
     let (resistance, inductance, capacitance) = (1.0, 1e-6, 1e-9);
@@ -430,8 +426,8 @@ fn a_series_rlc_keeps_its_digits_far_above_resonance() {
     }
 }
 
-/// The response of an RC low-pass to a ramp from 0 to 1 that starts at `delay` and lasts
-/// `rise`, after the ramp ends.
+/// Computes the analytical RC low-pass response after a unit ramp starting at `delay` with
+/// duration `rise`.
 fn rc_ramp_response(time: f64, delay: f64, rise: f64, tau: f64) -> f64 {
     1.0 - tau / rise * ((rise / tau).exp() - 1.0) * (-(time - delay) / tau).exp()
 }
@@ -466,8 +462,8 @@ const FEMTOFARAD: Ramped = Ramped {
     stop: 6e-9,
 };
 
-/// The largest error of `ramped`'s response after its ramp, simulated with `method` and
-/// `options`, and the number of steps it took.
+/// Simulates `ramped` with `method` and `options`, returning peak post-ramp error and
+/// accepted step count.
 fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, usize) {
     let Ramped {
         resistance,
@@ -511,16 +507,11 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
     (error, waveforms.statistics.accepted)
 }
 
-/// At SPICE's default tolerances, each method stays within its order's accuracy, and every
-/// method converges at its order.
+/// Verifies that every integration method meets default SPICE accuracy and converges at
+/// expected order `p/(p+1)` under adaptive charge-error control.
 ///
-/// A step of order `p` whose error is held to a tolerance on the charge is as long as that
-/// tolerance to the power `1/(p+1)`, so the error the steps add up to shrinks as the
-/// tolerance to the power `p/(p+1)`. From a relative tolerance of 1e-6 to one of 1e-8, the
-/// tolerances and not the longest step limit every method's steps, and the error shrinks
-/// with an exponent within a tenth of that. The charge tolerance is the least charge the
-/// relative tolerance is taken of, so the floor its default sets shrinks with the relative
-/// tolerance too.
+/// An order-`p` step scales as `tol^(1/(p+1))`, so global error scales as `tol^(p/(p+1))`
+/// from `reltol = 1e-6` to `1e-8`, including the scaled charge-tolerance floor.
 #[test]
 fn an_rc_charges_exponentially_with_every_method() {
     let tight = |relative_tolerance| Options {
@@ -549,18 +540,12 @@ fn an_rc_charges_exponentially_with_every_method() {
     }
 }
 
-/// On a net whose charge stays below the charge tolerance, the tolerance on the charge is the
-/// relative tolerance of the charge tolerance itself, as SPICE's `reltol · max(|q|, chgtol)`
-/// (ngspice 47's `cktterr.c`, lines 40 and 41), so its error shrinks with the relative
-/// tolerance as any net's does.
+/// Verifies that sub-`chgtol` nets scale their charge tolerance with `reltol` via
+/// `reltol · max(|q|, chgtol)` (ngspice 47 `cktterr.c`, lines 40-41).
 ///
-/// The femtofarad low-pass's 1 fC is a tenth of the default charge tolerance, so its charge
-/// is held as a charge ten times its own would be: at relative tolerances of 1e-7 and 1e-9 its
-/// steps are as long, in its time constants, as the microsecond low-pass's at 1e-6 and 1e-8,
-/// and its error shrinks with an exponent within a tenth of `p/(p+1)`, as there. The current
-/// tolerance is set far below, so that its absolute part cannot hold the steps in the charge's
-/// place at 1e-9. A charge tolerance added to the relative one, `reltol · |q| + chgtol`,
-/// would hold every step of this net to it alone, so that its error would not move.
+/// The 1 fC femtofarad RC sits at one tenth of default `chgtol`, so at `reltol = 1e-7` and
+/// `1e-9` (with tiny `current_tolerance`) error shrinks with exponent near `p/(p+1)`.
+/// An additive `reltol · |q| + chgtol` floor would freeze step error across both runs.
 #[test]
 fn a_femtofarad_nets_error_shrinks_with_the_relative_tolerance() {
     let tight = |relative_tolerance| Options {
@@ -579,13 +564,13 @@ fn a_femtofarad_nets_error_shrinks_with_the_relative_tolerance() {
     }
 }
 
-/// A charge that settles within picoseconds of a corner is resolved to its tolerance, with
-/// steps no shorter than SPICE's shortest, 1e-11 of the longest: a current of 46 mA rising in
-/// 1 ps, a millisecond into a run of two, into 1 nF beside 10 mΩ, as the benchmarks' buck's
-/// lower switch's internal source takes its gate's displacement current when the gate starts
-/// to fall, settles within 10 ps, and at a relative tolerance of 1e-5 its 0.46 pC is held to
-/// 1e-19 C where it starts from nothing. That takes steps of about 2e-14 s, shorter than
-/// 1e-9 of the longest step, 40 µs.
+/// Verifies that picosecond charge settling near a corner resolves within tolerance without
+/// violating the SPICE minimum step floor (1e-11 of max step).
+///
+/// A 46 mA current rising in 1 ps at 1 ms into a parallel 1 nF / 10 mΩ load mimics gate
+/// displacement current into the internal source node of the buck benchmark's lower switch.
+/// At 1e-5 relative tolerance, the 0.46 pC transient requires roughly 2e-14 s steps (below
+/// 1e-9 of the 40 µs max step) to hold accuracy to 1e-19 C from rest.
 #[test]
 fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
     let (current, resistance, capacitance) = (0.046, 0.01, 1e-9);
@@ -631,9 +616,8 @@ fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
     assert!(checked > 10, "{checked} points within the settling");
 }
 
-/// No step is longer than the longest allowed, though its error would let it grow and a
-/// breakpoint or a time asked for lies within its reach: landing there, a step would be up
-/// to twice the longest, and on times asked for a step apart, the steps after it too.
+/// Verifies that no transient step exceeds `max_step`, even when error permits growth and a
+/// nearby breakpoint or requested time lies within reach.
 #[test]
 fn no_step_is_longer_than_the_longest_allowed() {
     // An RC low-pass of 1 µs, whose response to a pulse settles long before each corner.
@@ -684,8 +668,8 @@ const ORDERS: [(Method, f64); 3] = [
 /// The steps each method takes in turn, each half the last.
 const HALVED: [f64; 5] = [1e-7, 5e-8, 2.5e-8, 1.25e-8, 6.25e-9];
 
-/// Options under which no step is shortened for its error: each is the longest allowed
-/// once the steps after the start have grown to it, so that only the step sets the error.
+/// Returns options that disable truncation-error step shortening so every post-startup step
+/// runs at `max_step`.
 fn uniform_steps() -> Options {
     Options {
         truncation_tolerance: 1e12,
@@ -696,8 +680,8 @@ fn uniform_steps() -> Options {
     }
 }
 
-/// `out` at every time of a transient of `circuit` to `end` with `method`, every step at
-/// most `step` long and none shortened for its error.
+/// Runs a uniform-step transient of `circuit` to `end` with `method` and `step`, returning
+/// `(times, out_voltages)`.
 fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>, Vec<f64>) {
     let mut simulator = simulator(circuit);
     let waveforms = simulator
@@ -708,8 +692,8 @@ fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>,
     (waveforms.times, values)
 }
 
-/// An RC low-pass of 1 µs driven by a sine of 100 kHz and `amplitude`, a diode across its
-/// capacitor if `clamped`.
+/// Builds a 1 µs RC low-pass driven by a 100 kHz sine of `amplitude`, with a clamping diode
+/// across the capacitor when `clamped` is true.
 fn sine_low_pass(amplitude: f64, clamped: bool) -> Circuit {
     let mut instances = vec![
         voltage_sine("V1", "in", 0.0, amplitude, 1e5),
@@ -722,7 +706,7 @@ fn sine_low_pass(amplitude: f64, clamped: bool) -> Circuit {
     circuit(instances)
 }
 
-/// The order each halving of the step shows, from errors in the order of `HALVED`.
+/// Computes empirical convergence orders across successive step halvings in `HALVED`.
 fn observed_orders(errors: &[f64]) -> Vec<f64> {
     errors
         .windows(2)
@@ -1042,9 +1026,9 @@ fn a_multi_mode_lossless_lc_ladder_conserves_energy_at_coarse_tolerance() {
 
 #[test]
 fn a_lossless_lc_ladder_with_dc_bypass_and_zero_volt_sense_conserves_energy() {
-    // Two-mode lossless LC ladder coupled via a bypass capacitor to a 5 V grounded DC supply
-    // and carrying a floating 0 V sense source across a floating capacitor: both grounded and
-    // floating ideal voltage sources must produce zero false ringing triggers.
+    // Two-mode lossless LC ladder coupled via a bypass capacitor to a 5 V DC supply, with a
+    // floating 0 V sense source across a floating capacitor. Grounded and floating ideal
+    // voltage sources must produce zero false ringing triggers.
     let (bypass_capacitance, floating_capacitance, capacitance_2, inductance_1, inductance_2) =
         (1e-9, 0.5e-9, 0.68e-9, 1e-6, 2.2e-6);
     let circuit = circuit([
@@ -1175,9 +1159,8 @@ fn the_trapezoidal_formula_stops_ringing_beside_a_lossless_lc_tank() {
     }
 }
 
-/// A behavioral source steps from 0 to 5 V as `condition` turns true, through 1 kΩ into
-/// 1 nF, a time constant of 1 µs; a ramp of 5 V over 2 ms is at `ramp`, which the source
-/// reads if the condition does.
+/// Builds a behavioral voltage source stepping 0 V to 5 V when `condition` becomes true,
+/// driving a 1 µs RC load (1 kΩ, 1 nF) alongside a 2 ms 5 V `ramp` reference.
 fn jumping(condition: &str) -> Circuit {
     let terminals: &[(&str, &str)] = if condition.contains("v(ramp)") {
         &[("positive", "out"), ("negative", "0"), ("ramp", "ramp")]
@@ -1205,14 +1188,11 @@ fn jumping(condition: &str) -> Circuit {
 
 #[test]
 fn a_behavioral_jump_is_stepped_onto_and_followed() {
-    // Whether in time or in a voltage, the step falls within a step of 40 µs; located, it
-    // starts the capacitor's exponential there, with no overshoot. At 1.03 ms the jump
-    // comes late in a step of 40 µs, so the first step after it, a tenth of the one before,
-    // spans several of the capacitor's 1 µs time constants unless its error is judged.
-    // Judged, at a tenth of the default relative tolerance the steps after it hold the
-    // capacitor within 20 mV of its exponential, where an unjudged one would be off by
-    // volts at any tolerance; at the default one, backward Euler's steps after the jump,
-    // held to SPICE's truncation tolerance, are off by 46 mV.
+    // Whether triggered by time or voltage, locating the discontinuity starts the exponential
+    // cleanly without overshoot. At 1.03 ms, a jump late in a 40 µs step leaves the next
+    // trial step spanning multiple 1 µs time constants unless truncation error is checked.
+    // With error checking at `reltol = 1e-4`, post-jump steps stay within 20 mV of exact
+    // (46 mV at default tolerances), whereas skipping error checks errs by volts.
     let options = Options {
         relative_tolerance: 1e-4,
         ..Options::default()
@@ -1346,7 +1326,7 @@ fn analyses_name_what_they_cannot_find() {
     );
 }
 
-/// A transient of `circuit` until `stop`, in steps of at most a hundredth of it.
+/// Runs a trapezoidal transient of `circuit` to `stop` with maximum step `stop / 100`.
 fn run_transient(
     circuit: &Circuit,
     stop: f64,
@@ -1360,12 +1340,10 @@ fn run_transient(
 
 #[test]
 fn a_transient_names_the_unknowns_that_stopped_converging() {
-    // The only equation of `a`, v(a)² = v(c), loses its solution as the source falls below
-    // zero at 0.5 ms, so no step past it converges, however short. Its two roots meet there,
-    // where Newton's iteration converges linearly, halving its distance at each step; going
-    // on while it contracts, it follows the solution to the fold, and stops within the time
-    // the source takes to fall, at 2,000 V/s, by the 1e-9 V of `v(c)` the residual's
-    // tolerance, 1e-12 A, leaves at 1e-3 S: 5e-13 s.
+    // Equation `v(a)² = v(c)` loses real roots once `V1` crosses zero at 0.5 ms, so no step
+    // past the fold can converge. The two roots coalesce at 0.5 ms where Newton converges
+    // linearly by halving error each iteration. Continuing while iterates contract tracks the
+    // fold to within `1e-9 V / (2000 V/s) = 5e-13 s`, set by the 1e-12 A residual tolerance.
     let circuit = circuit([
         voltage_source("V1", "c", "0", piecewise(&[[0.0, 1.0], [1e-3, -1.0]])),
         device(
@@ -1449,9 +1427,9 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
 
 #[test]
 fn a_transient_follows_a_source_that_only_its_transistor_holds() {
-    // Nothing but the transistor holds its source, so as its gate steps up the source
-    // follows to a threshold below it, where the current falls to zero quadratically: a
-    // double root, toward which Newton iteration only halves its error each iteration.
+    // Only the transistor holds its source, so stepping the gate lifts the source to one
+    // threshold below the gate. Current vanishes quadratically at that double root, where
+    // Newton halves error per iteration.
     let (supply, threshold) = (5.0, 0.5);
     let circuit = circuit([
         voltage_dc("VD", "drain", supply),
@@ -1536,7 +1514,7 @@ fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
     );
 }
 
-/// A level 1 MOSFET of the given channel, its bulk on its source.
+/// Builds a level-1 MOSFET of the given `channel` with bulk tied to source.
 fn mosfet(name: &str, channel: &str, [drain, gate, source]: [&str; 3]) -> Instance {
     let (width, threshold, transconductance) = if channel == "n" {
         (1e-5, 0.5, 1e-4)
@@ -1684,7 +1662,7 @@ fn a_step_starts_from_its_prediction() {
     );
 }
 
-/// A source of 1 V charges 1 nF through 1 kΩ from `out`'s initial condition of 0.2 V.
+/// Builds a 1 V RC circuit (1 kΩ, 1 nF) paired with initial condition `out = initial`.
 fn rc_from(initial: f64) -> (Circuit, BTreeMap<String, f64>) {
     let circuit = circuit([
         voltage_dc("V1", "in", 1.0),
@@ -1694,12 +1672,11 @@ fn rc_from(initial: f64) -> (Circuit, BTreeMap<String, f64>) {
     (circuit, BTreeMap::from([("out".to_owned(), initial)]))
 }
 
-/// The RC charges from its initial condition alike whether the transient starts from the
-/// operating point solved with `out` forced, `in` at its source's 1 V, or from the initial
-/// conditions alone, `in` at zero until the first step: `out` is `1 − 0.8 e^{−t/τ}` either
-/// way, as only the capacitor's charge carries over the start. Both stay within the 2e-3 that
-/// the trapezoidal rule holds the RC's charge to at the default tolerances, as
-/// `an_rc_charges_exponentially_with_every_method` measures it.
+/// Verifies that an RC transient follows `1 − 0.8 e^{−t/τ}` from initial condition `out = 0.2 V`
+/// both with and without an initial DC operating point solve.
+///
+/// Both modes remain within the 2e-3 default trapezoidal error bound established in
+/// `an_rc_charges_exponentially_with_every_method`.
 #[test]
 fn an_initial_condition_starts_an_rc_from_its_voltage() {
     let (circuit, initial) = rc_from(0.2);
@@ -1732,8 +1709,8 @@ fn an_initial_condition_starts_an_rc_from_its_voltage() {
     }
 }
 
-/// An initial condition on a net its source holds is the source's: it agrees, and the
-/// transient starts as without it, or it contradicts the source, which the analysis states.
+/// Verifies that initial conditions on source-driven nets accept matching voltages and
+/// reject conflicting voltages or non-net unknown names.
 #[test]
 fn an_initial_condition_a_source_holds_must_agree_with_it() {
     let (circuit, _) = rc_from(0.2);
@@ -1766,9 +1743,8 @@ fn an_initial_condition_a_source_holds_must_agree_with_it() {
     );
 }
 
-/// A node whose current `2 mA · tanh(v)` flows into it, and out through 1 kΩ, has three
-/// solutions, `v = 2 tanh(v)`: zero, which Newton iteration finds from zero, and ±1.915 V. A
-/// nodeset of 1.5 V leads it to the positive one, and leaves the operating point there.
+/// Verifies that a 1.5 V nodeset steers `v = 2 tanh(v)` from the trivial `0 V` solution to
+/// the positive stable root near `+1.915 V`.
 #[test]
 fn a_nodeset_leads_the_operating_point_to_another_solution() {
     let circuit = circuit([

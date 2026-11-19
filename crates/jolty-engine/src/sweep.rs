@@ -1,10 +1,9 @@
-//! The DC sweep: operating points while an independent source steps through values, or a
-//! number of a device's parameters through values.
+//! DC sweep analysis computing operating points across values of an independent source or
+//! device parameter.
 //!
-//! A sweep makes the swept device again at each value, from the parameters of a source of
-//! that constant value or from its own with the number replaced, and leaves every other
-//! device as the value before left it: each operating point starts from the one before,
-//! as a chain of runs does from one run to the next.
+//! Each sweep step updates only the swept device (rebuilt as a constant source or with its
+//! swept parameter replaced), leaving all other devices unchanged and warm-starting Newton
+//! iteration from the previous solution.
 
 use jolty_models::{BranchKind, LogicLevel, Nature};
 use serde::Deserialize;
@@ -14,61 +13,52 @@ use crate::operating_point::Solved;
 use crate::state::Held;
 use crate::{OperatingPointResult, Options, RecordedSeries, SimulationError, Simulator, Strategy};
 
-/// The fraction of the way from one value of a sweep to the next below which continuation
-/// gives up, as a divisor.
-///
-/// Origin: jolty's own natural-parameter continuation floor (`2^10 = 1024`, i.e. 10
-/// consecutive exact power-of-two step halvings on Newton failure). By comparison, ngspice
-/// 47 solves a failed sweep point from scratch as an operating point (`dctrcurv.c`, lines
-/// 306 to 314).
+/// Reciprocal of the minimum natural-parameter continuation fraction (`2^10 = 1024`, ten
+/// exact power-of-two step halvings on Newton failure); ngspice 47 instead retries failed
+/// points from scratch (`dctrcurv.c`, lines 306 to 314).
 const MIN_CONTINUATION: f64 = 1024.0;
 
-/// A DC sweep: the operating point at each value of one independent source, or at each
-/// value of one number of a device's parameters.
+/// DC sweep specification stepping one independent source or one numeric device parameter.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcSweep {
-    /// The path of the swept instance, such as `V1` or `bias/I1`: an independent source,
-    /// whose value the sweep sets whatever its waveform, unless a parameter is named.
+    /// Instance path of the swept device (such as `V1` or `bias/I1`); sweeps the source's
+    /// DC value regardless of waveform unless `parameter` is set.
     pub source: String,
-    /// The number swept, by its path among the instance's parameters, such as
-    /// `resistance`; none for an independent source's value.
+    /// Parameter path within the instance (such as `resistance`), or `None` to sweep an
+    /// independent source value.
     #[serde(default)]
     pub parameter: Option<String>,
-    /// The values, in volts or amperes for a source, or the values of the parameter in SI
-    /// base units, in sweep order.
+    /// Ordered sweep values in volts, amperes, or SI base units of `parameter`.
     pub values: Vec<f64>,
 }
 
-/// The operating points of a DC sweep.
+/// Operating points collected across a DC sweep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DcSweepResult {
-    /// The path of the swept instance.
+    /// Instance path of the swept device.
     pub source: String,
-    /// The number swept, by its path among the instance's parameters; none for a source's
-    /// value.
+    /// Swept parameter path within the instance, or `None` for an independent source sweep.
     pub parameter: Option<String>,
-    /// Whether the values of a source are voltages or currents; none for a parameter.
+    /// Physical quantity (`Voltage` or `Current`) for a source sweep, or `None` for a
+    /// parameter sweep.
     pub nature: Option<Nature>,
-    /// The values swept.
+    /// Ordered swept values.
     pub swept: Vec<f64>,
-    /// The value of every unknown at each swept value.
+    /// Unknown values at each swept point.
     pub values: Vec<Vec<f64>>,
-    /// What the devices its options record did at each swept value: the current into each
-    /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
-    /// variables.
+    /// Recorded device currents, charges, derivatives, and variables across swept points.
     pub recorded: RecordedSeries,
-    /// The logic level of every logic net at each swept value.
+    /// Logic net levels at each swept point.
     pub logic: Vec<Vec<LogicLevel>>,
-    /// The strategy that found the operating point at each swept value.
+    /// Convergence strategy used at each swept point.
     pub strategies: Vec<Strategy>,
-    /// The Newton iterations that found the operating point at each swept value, as
-    /// [`OperatingPointResult::iterations`] counts them, from the value before it.
+    /// Newton iteration counts at each swept point, matching
+    /// [`OperatingPointResult::iterations`].
     pub iterations: Vec<usize>,
 }
 
-/// What a sweep sweeps: what it holds, the device whose instance it prepares again, and
-/// where the run's own values leave it.
+/// Resolved target of a DC sweep: held key, device index, and baseline value.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Swept {
     pub(crate) held: Held,
@@ -81,12 +71,11 @@ impl Simulator {
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::UnknownSource`] when there is no instance at the swept
-    /// path, [`SimulationError::NotASource`] when a sweep of a source value is not of an
-    /// independent source, [`SimulationError::InvalidAnalysis`] when no value is given, a
-    /// value is not finite, the instance writes no such number, or a value puts it out of
-    /// range or changes its unknowns, and the errors of [`Simulator::operating_point`] at
-    /// any value.
+    /// Returns [`SimulationError::UnknownSource`] for a missing instance path,
+    /// [`SimulationError::NotASource`] for a non-source value sweep,
+    /// [`SimulationError::InvalidAnalysis`] for empty or non-finite values, unknown
+    /// parameter paths, or topology-changing values, and any error from
+    /// [`Simulator::operating_point`].
     pub fn dc_sweep(
         &mut self,
         sweep: &DcSweep,
@@ -102,7 +91,7 @@ impl Simulator {
             }
             if let Some(value) = sweep.values.iter().find(|value| !value.is_finite()) {
                 return Err(SimulationError::InvalidAnalysis(format!(
-                    "a DC sweep's values must be finite, not {value:?}"
+                    "DC sweep values require finite numbers; got {value:?}"
                 )));
             }
             let swept = self.swept(sweep)?;
@@ -138,7 +127,7 @@ impl Simulator {
         })
     }
 
-    /// What `sweep` sweeps.
+    /// Resolves the target device, parameter handle, and baseline value for `sweep`.
     pub(crate) fn swept(&mut self, sweep: &DcSweep) -> Result<Swept, SimulationError> {
         let Some(name) = &sweep.parameter else {
             let device = self.source_index(&sweep.source)?;
@@ -177,8 +166,8 @@ impl Simulator {
         })
     }
 
-    /// The operating point at each of `swept_values` of `swept`. The logic settles at each from
-    /// where it settled at the one before.
+    /// Solves the operating point at each value in `swept_values`, carrying settled logic
+    /// state from each point to the next.
     fn sweep_values(
         &mut self,
         swept: Swept,
@@ -218,8 +207,8 @@ impl Simulator {
                         from_guess: solved.from_guess && continuation == 0,
                         ..solved
                     },
-                    // The first value may lie where no strategy finds the solution from
-                    // scratch: there, continue to it from the circuit's own operating point.
+                    // When the first point resists direct solve, continue from the nominal
+                    // operating point instead.
                     Err(error) if previous.is_none() => Solved {
                         values: self
                             .reach_first_value(swept, target, options)
@@ -239,8 +228,8 @@ impl Simulator {
         Ok(points)
     }
 
-    /// The solution with `swept` at `value`, continued from the operating point with it at
-    /// its own value, if both are found.
+    /// Reaches `value` by continuing from the operating point solved at `swept`'s baseline
+    /// value, returning `None` if either step fails.
     fn reach_first_value(
         &mut self,
         swept: Swept,
@@ -254,13 +243,13 @@ impl Simulator {
             .then_some(values)
     }
 
-    /// Moves the circuit along `spans`, each coordinate from its first value to its second,
-    /// each step putting it at a point through `set`, solving from each solution to the
-    /// next by Newton iteration alone: in one step if it converges, else in steps halved
-    /// after each failure and doubled after each success, every coordinate moving the same
-    /// fraction of its span. Leaves the solution in `values` and returns true, or returns
-    /// false, `values` untouched, once a step has shrunk to a thousandth of the way or
-    /// `set` cannot put the circuit at a point; the circuit is left at the last point set.
+    /// Continues the circuit along `spans` via adaptive Newton stepping, updating coordinates
+    /// through `set` at each step.
+    ///
+    /// Halves the step fraction after each Newton failure and doubles after each success.
+    /// Writes the final solution into `values` and returns `true` on completion, or leaves
+    /// `values` untouched and returns `false` if step size drops below `1 / MIN_CONTINUATION`
+    /// or `set` fails.
     pub(crate) fn continue_along(
         &mut self,
         spans: &[(f64, f64)],
@@ -308,7 +297,7 @@ impl Simulator {
         true
     }
 
-    /// The index of the device of the independent source at `path`.
+    /// Returns the device index of the independent source at `path`.
     pub(crate) fn source_index(&self, path: &str) -> Result<usize, SimulationError> {
         let index = self
             .elaborated
@@ -325,7 +314,7 @@ impl Simulator {
         Ok(index)
     }
 
-    /// Whether the source of the device at `index` holds a voltage or drives a current.
+    /// Returns whether the independent source at `index` drives voltage or current.
     pub(crate) fn source_nature(&self, index: usize) -> Nature {
         let drives_current = self.elaborated.devices[index]
             .branches()
@@ -338,15 +327,15 @@ impl Simulator {
         }
     }
 
-    /// Holds `swept` at `value`, or releases it to the run's own values with `None`:
-    /// prepares its instance again from the parameters of a source of that constant value,
-    /// or from the device's own with the number replaced. Every other instance stays as it
-    /// is.
+    /// Holds `swept` at `value`, or restores the baseline value when `value` is `None`.
+    ///
+    /// Re-prepares only the swept device instance from a constant source or patched
+    /// parameter set, leaving all other devices unchanged.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] when the value puts the device's numbers
-    /// out of range, or gives it other unknowns or entries; the device is left as it was.
+    /// Returns [`SimulationError::InvalidAnalysis`] without modifying the device when
+    /// `value` is out of range or alters the device's unknowns or matrix entries.
     pub(crate) fn hold(&mut self, swept: Swept, value: Option<f64>) -> Result<(), SimulationError> {
         let index = swept.device;
         let refused = |message: String| {
@@ -378,7 +367,7 @@ impl Simulator {
             Some(origin) => self.state.swept.insert(index, origin),
             None => self.state.swept.remove(&index),
         };
-        // Its instance is prepared again from what it is now made of.
+        // Re-prepare the swept device instance from its updated specification.
         let kept = self
             .state
             .prepare_again(&self.elaborated, index)
@@ -392,7 +381,7 @@ impl Simulator {
                 refused("it would claim other unknowns or entries, which a sweep cannot".to_owned())
             }));
         }
-        // At its own value, a device held leaves the DC equations as they are.
+        // Holding at the baseline value leaves the DC equations unchanged.
         match value.filter(|value| value.total_cmp(&swept.own).is_ne()) {
             Some(value) => self.state.held.insert(swept.held, value),
             None => self.state.held.remove(&swept.held),

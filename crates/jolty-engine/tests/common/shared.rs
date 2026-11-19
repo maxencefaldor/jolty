@@ -139,7 +139,8 @@ fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
     }
 }
 
-/// Every number of an analysis's outcome as its bits, and the outcome as debug text.
+/// Extracts every number of an analysis outcome as raw IEEE-754 bits alongside its debug
+/// representation.
 pub(crate) fn bits(outcome: &Result<AnalysisResult, SimulationError>) -> Bits {
     let mut numbers = Vec::new();
     if let Ok(found) = outcome {
@@ -148,13 +149,13 @@ pub(crate) fn bits(outcome: &Result<AnalysisResult, SimulationError>) -> Bits {
     (numbers, format!("{outcome:?}"))
 }
 
-/// `circuit` elaborated once, for runs to share.
+/// Elaborates `circuit` once with default structure for sharing across runs.
 pub(crate) fn shared(circuit: &Circuit) -> Arc<Elaborated> {
     Elaborated::new(circuit, &Library::standard(), &Structure::default())
         .expect("the circuit elaborates")
 }
 
-/// A plan of the engine's benchmarks, `benchmarks/speed/plans/<name>.json`.
+/// Benchmark plan loaded from `benchmarks/speed/plans/<name>.json`.
 #[derive(Deserialize)]
 struct Plan {
     circuit: String,
@@ -162,7 +163,7 @@ struct Plan {
     options: Options,
 }
 
-/// The circuit, the analyses and the options of the benchmark `name`.
+/// Loads the circuit, analyses, and solver options for speed benchmark `name`.
 pub(crate) fn benchmark(name: &str) -> (Circuit, Vec<Analysis>, Options) {
     let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
     let plan: Plan = serde_json::from_str(
@@ -191,10 +192,11 @@ pub(crate) struct Network {
     pub(crate) sources: Vec<(usize, f64)>,
 }
 
-/// A connected network on up to six nodes: a spanning tree of resistors from 0.1 Ω to
-/// 100 kΩ, so that some carry their current as an unknown, extra resistors, a capacitor
-/// at every node, the pulse at node 1, current sources, and optionally inductors and
-/// diodes when `with_nonlinear` is true.
+/// Builds a proptest strategy for connected driven networks on up to six nodes.
+///
+/// Each network pairs a 0.1 Ω to 100 kΩ resistor spanning tree with optional extra
+/// resistors, per-node capacitors, a pulse source at node 1, DC current sources, and
+/// optional inductors and diodes when `with_nonlinear` is true.
 pub(crate) fn network(with_nonlinear: bool) -> impl Strategy<Value = Network> {
     let count = if with_nonlinear { 0..3 } else { 0..1 };
     (2usize..7).prop_flat_map(move |nodes| {
@@ -285,7 +287,7 @@ impl Network {
     }
 }
 
-/// The values of `elaborated` with `R1.resistance` set to `ohms`.
+/// Builds parameter [`Values`] for `elaborated` with `R1.resistance` set to `ohms`.
 pub(crate) fn upper(elaborated: &Elaborated, ohms: f64) -> Values {
     let mut values = Values::default();
     values.set(

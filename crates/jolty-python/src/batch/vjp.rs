@@ -35,8 +35,8 @@ pub(crate) struct Differentiating {
 
 type Derived = Mapped<Result<Pullback, SimulationError>>;
 
-/// The pullbacks of a batch's VJP, a run each, as `jolty._core.Simulator.batch_vjp` finds
-/// them: what carries a cotangent on each run's traced unknowns back to the parameters.
+/// Per-run pullbacks returned by `jolty._core.Simulator.batch_vjp`, mapping output
+/// cotangents back to parameters.
 #[pyclass(module = "jolty._core", frozen)]
 pub(crate) struct BatchPullback {
     batch: Batch,
@@ -196,22 +196,22 @@ impl Cotangential for Complex64 {
 
 #[pymethods]
 impl BatchPullback {
-    /// How many runs the batch ran, a pullback each.
+    /// Returns the number of runs recorded in this batch pullback.
     #[getter]
     fn runs(&self) -> usize {
         self.runs.len()
     }
 
-    /// The value on each parameter of each cotangent of `values`, runs × points × unknowns,
-    /// on the unknowns traced at each point of the run at `runs` of the same row, as the
-    /// traces hold them, real or complex, and of the row of `periods` on an oscillator's
-    /// period, with the options whose JSON text is `options`: rows × parameters, complex
-    /// over frequency, each row pulled back on the threads of `pool`, the interpreter
-    /// released, as a batch runs its runs. A row may name a run more than once.
+    /// Pulls output cotangents `values` and oscillator period cotangents `periods` back to
+    /// parameters for each run index in `runs`.
     ///
-    /// Raises `ValueError` for cotangents of another shape, and `SimulationError` for a
-    /// run that failed, a cotangent on an unknown its run does not have, or a pullback
-    /// that fails.
+    /// `values` has shape `(len(runs), points, unknowns)` (real, or complex for AC
+    /// analyses), and `options` is the JSON options text. Work executes across `pool` with
+    /// the interpreter released, returning a `(len(runs), parameters)` array; `runs` may
+    /// repeat a run index.
+    ///
+    /// Raises `ValueError` for invalid shapes or out-of-range run indices, and
+    /// `SimulationError` for failed runs, missing unknowns, or pullback failures.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "PyO3 extracts owned Vec arguments from Python sequences"

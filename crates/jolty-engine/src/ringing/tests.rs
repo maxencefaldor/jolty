@@ -720,9 +720,9 @@ fn vcvs_inside_two_mode_lc_has_zero_loop_multiplier() {
 fn grounded_corner_source_coupled_through_capacitor_to_large_lc_tank_is_caught() {
     // A grounded source at node 0 couples via `coupling_capacitance` to a large single-mode
     // lossless LC tank at node 1 (`v = 3 V`, `omega * h = 2.17 > 2`). The tank dominates
-    // node 0's charge derivative so `is_harmonic_scalar` passes on every alternating unknown,
-    // yet stage 2d cancels the tank exactly and catches the 6.28 mA `|sin|` ringing while
-    // producing zero false damps when the grounded source is 5 V DC.
+    // node 0's charge derivative so `is_harmonic_scalar` passes on every alternating unknown.
+    // Stage 2d cancels the tank exactly, catching 6.28 mA `|sin|` ringing while producing
+    // zero false damps on 5 V DC.
     let mut circuit = Circuit::electrical(2, 2);
     circuit.capacitor(0, Some(1), 1e-6);
     circuit.capacitor(1, None, 1e-6);

@@ -26,10 +26,11 @@ const UPPER: f64 = 9e3;
 const LOWER: f64 = 1e3;
 const CAPACITANCE: f64 = 1e-9;
 
-/// An inverting amplifier of gain `GAIN` behind `OUTPUT` ohms, its output fed back to its
-/// input through a divider of `UPPER` over `LOWER` with `CAPACITANCE` across the lower,
-/// the probe `VP`, at `level`, between the amplifier's output, `y`, and the divider, `x`.
-/// The nets are renamed by `names`, so the reference can be any of them.
+/// Builds an inverting feedback amplifier of gain `GAIN` behind `OUTPUT` ohms with a
+/// capacitive divider (`UPPER`, `LOWER`, `CAPACITANCE`) and probe `VP` at `level` between
+/// output `y` and divider `x`.
+///
+/// Net overrides in `names` allow selecting any net as the reference node.
 fn amplifier(names: &[(&str, &str)], level: f64) -> Circuit {
     let net = |name: &str| {
         names
@@ -59,7 +60,7 @@ fn amplifier(names: &[(&str, &str)], level: f64) -> Circuit {
     ])
 }
 
-/// The loop gain: the amplifier's gain times the divider's, loaded by the output resistance.
+/// Computes the expected loop gain: amplifier gain times divider ratio loaded by `OUTPUT`.
 fn expected(frequency: f64) -> Complex64 {
     let lower = 1.0 / Complex64::new(1.0 / LOWER, TAU * frequency * CAPACITANCE);
     GAIN * lower / (OUTPUT + UPPER + lower)

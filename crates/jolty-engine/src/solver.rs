@@ -1,6 +1,5 @@
-//! The engine's sparse LU solvers: the simulator's, real, and those of the circuit
-//! linearized at its operating point, complex, all sharing one ordering, whose failures name
-//! the unknowns a singular matrix leaves undetermined.
+//! Sparse LU solvers for real DC/transient systems and complex linearized small-signal
+//! systems, sharing symbolic ordering and reporting undetermined unknown names on failure.
 
 use std::fmt;
 use std::sync::Arc;
@@ -10,16 +9,17 @@ use jolty_numerics::{LinearError, Ordering, Pattern, Scalar, SparseLu, Workspace
 use crate::SimulationError;
 use crate::newton::NAMED_UNKNOWNS;
 
-/// A sparse LU solver of the circuit's matrices, whose failures name the unknowns.
+/// Sparse LU solver for circuit matrices that annotates singularity errors with unknown
+/// names.
 #[derive(Clone)]
 pub(crate) struct Solver<T: Scalar> {
     lu: SparseLu<T>,
-    /// The name of every unknown, by index.
+    /// Unknown names indexed by matrix column.
     names: Arc<[String]>,
 }
 
 impl<T: Scalar> Solver<T> {
-    /// A solver of the matrices of `ordering`'s pattern, whose unknowns are `names`.
+    /// Creates a [`Solver`] for `ordering` with unknown `names`.
     pub(crate) fn new(ordering: Arc<Ordering>, names: Arc<[String]>) -> Self {
         Self {
             lu: SparseLu::new(ordering),
@@ -27,9 +27,8 @@ impl<T: Scalar> Solver<T> {
         }
     }
 
-    /// Factors with `ordering`, of the same pattern, from now on, keeping the counts of
-    /// work, as [`SparseLu::reorder`] does, unless it already does; and its dissected
-    /// blocks on up to `threads` threads at once.
+    /// Switches to `ordering` when distinct via [`SparseLu::reorder`] (preserving work
+    /// counts) and sets the factorization thread limit to `threads`.
     pub(crate) fn order(&mut self, ordering: &Arc<Ordering>, threads: usize) {
         if !Arc::ptr_eq(self.lu.ordering(), ordering) {
             self.lu.reorder(Arc::clone(ordering));
@@ -37,52 +36,50 @@ impl<T: Scalar> Solver<T> {
         self.lu.spread(threads);
     }
 
-    /// A solver of the same matrices in another scalar, sharing this one's ordering, whose
-    /// dissected blocks run on its calling thread alone: the analyses that share it spread
-    /// their own solves.
+    /// Creates a single-threaded [`Solver`] for scalar type `U` sharing this solver's
+    /// symbolic ordering (used by analyses that parallelize across solves instead).
     pub(crate) fn sharing<U: Scalar>(&self) -> Solver<U> {
         Solver::new(Arc::clone(self.lu.ordering()), Arc::clone(&self.names))
     }
 
-    /// The ordering this solver factors with.
+    /// Returns the active symbolic [`Ordering`].
     pub(crate) fn ordering(&self) -> &Arc<Ordering> {
         self.lu.ordering()
     }
 
-    /// The pattern of the matrices this solver factors.
+    /// Returns the sparse matrix [`Pattern`] factored by this solver.
     pub(crate) fn pattern(&self) -> &Arc<Pattern> {
         self.lu.pattern()
     }
 
-    /// Takes on `other`'s ordering, pivots and factors, keeping its own counts of work and
-    /// threads, as [`SparseLu::adopt`] does.
+    /// Adopts `other`'s ordering, pivots, and numeric factors via [`SparseLu::adopt`]
+    /// while preserving local work counters and thread count.
     pub(crate) fn adopt(&mut self, other: &Self) {
         self.lu.adopt(&other.lu);
     }
 
-    /// Forgets every factorization, as [`SparseLu::reset`] does.
+    /// Clears cached factorizations via [`SparseLu::reset`].
     pub(crate) fn reset(&mut self) {
         self.lu.reset();
     }
 
-    /// How much work the solver has done.
+    /// Returns cumulative factorization work counters.
     pub(crate) fn statistics(&self) -> jolty_numerics::Work {
         self.lu.statistics()
     }
 
-    /// Whether this solver factors every matrix from now on as `other` would, bit for bit,
-    /// as [`SparseLu::factors_alike`] says.
+    /// Returns whether this solver and `other` hold identical pivot state per
+    /// [`SparseLu::factors_alike`].
     pub(crate) fn factors_alike(&self, other: &Self) -> bool {
         self.lu.factors_alike(&other.lu)
     }
 
-    /// Factors the matrix whose stored values are `values`, as [`SparseLu::factor`] does.
+    /// Factors sparse matrix `values` via [`SparseLu::factor`].
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the matrix is singular, naming the
-    /// unknowns it leaves undetermined, and [`SimulationError::TooLarge`] when its factors
-    /// do not fit in memory.
+    /// Returns [`SimulationError::Singular`] naming undetermined unknowns, or
+    /// [`SimulationError::TooLarge`] when factor storage overflows memory limits.
     pub(crate) fn factor(&mut self, values: &[T]) -> Result<Factors<'_, T>, SimulationError> {
         let names = &self.names;
         match self.lu.factor(values) {
@@ -95,12 +92,12 @@ impl<T: Scalar> Solver<T> {
         }
     }
 
-    /// Factors the matrix whose stored values are `values`, as [`Solver::factor`] does,
-    /// each solve with its factors then refined against it, as [`Factors::solve`] says.
+    /// Factors sparse matrix `values` like [`Solver::factor`] and attaches `refinement` so
+    /// subsequent solves run iterative refinement per [`Factors::solve`].
     ///
     /// # Errors
     ///
-    /// As [`Solver::factor`].
+    /// Returns the same errors as [`Solver::factor`].
     pub(crate) fn factor_refined<'a>(
         &'a mut self,
         values: &'a [T],
@@ -112,8 +109,8 @@ impl<T: Scalar> Solver<T> {
         Ok(factors)
     }
 
-    /// The simulation error of the linear `error` of a system in the circuit's unknowns,
-    /// naming the unknowns it leaves undetermined.
+    /// Converts linear solver `error` into a [`SimulationError`] naming undetermined
+    /// unknowns.
     pub(crate) fn name(&self, error: LinearError) -> SimulationError {
         named(error, &self.names)
     }
@@ -127,18 +124,17 @@ impl<T: Scalar> fmt::Debug for Solver<T> {
     }
 }
 
-/// The LU factors of one of the circuit's matrices, ready to solve systems with it.
+/// Factored sparse LU handle ready to solve linear systems in circuit unknowns.
 pub(crate) struct Factors<'a, T: Scalar> {
     lu: jolty_numerics::Factors<'a, T>,
     names: &'a [String],
-    /// The matrix factored, its stored values and their pattern, and the buffers its
-    /// refinement works in, when each solve is refined against it.
+    /// Original matrix values, pattern, and scratch buffers used when iterative refinement
+    /// is enabled.
     refined: Option<(&'a [T], Arc<Pattern>, &'a mut Refinement<T>)>,
 }
 
-/// The buffers a refined solve works in, kept from one solve to the next so that none
-/// allocates: a sweep solves thousands of small systems, each in a few hundred
-/// nanoseconds.
+/// Reusable scratch buffers for working-precision iterative refinement, avoiding per-solve
+/// allocations during frequency sweeps.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Refinement<T> {
     given: Vec<T>,
@@ -148,7 +144,7 @@ pub(crate) struct Refinement<T> {
     scale: Vec<f64>,
 }
 
-/// Whether a linear solve operates on `A` or its transpose `Aᵀ`.
+/// Linear system orientation selecting `A` or `Aᵀ`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
     Direct,
@@ -156,39 +152,35 @@ enum Side {
 }
 
 impl<'a, T: Scalar> Factors<'a, T> {
-    /// Solves `A x = rhs` and leaves `x` in `rhs`.
+    /// Solves `A x = rhs` in place, writing `x` into `rhs`.
     ///
-    /// Factors kept for a matrix factored by [`Solver::factor_refined`] refine the
-    /// solution against it by iterative refinement in working precision while that pays
-    /// (Higham, *Accuracy and Stability of Numerical Algorithms*, 2002, §12.3): while the
-    /// componentwise backward error `ω = maxᵢ |b − A x|ᵢ / (|A| |x| + |b|)ᵢ` of Oettli and
-    /// Prager exceeds the machine epsilon, a correction solved from the residual is taken
-    /// if it at least halves `ω`. Elimination with pivots chosen for another matrix, as a
-    /// sweep keeps them from one frequency to the next, can lose the digits of a small
-    /// unknown that the system determines well; one step of this refinement makes the
-    /// solve componentwise backward stable (Skeel, *Mathematics of Computation* 35, 1980),
-    /// which keeps them.
+    /// When created via [`Solver::factor_refined`], runs working-precision iterative
+    /// refinement (Higham, *Accuracy and Stability of Numerical Algorithms*, 2002, §12.3).
+    /// Refinement iterates while the Oettli-Prager componentwise backward error
+    /// `ω = maxᵢ |b - A x|ᵢ / (|A| |x| + |b|)ᵢ` exceeds machine epsilon and each step at
+    /// least halves `ω`. One step restores componentwise backward stability when reused
+    /// pivots lose accuracy on small unknowns (Skeel, *Mathematics of Computation* 35,
+    /// 1980).
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
-    /// unknowns whose values are not.
+    /// Returns [`SimulationError::Singular`] naming non-finite solution unknowns.
     pub(crate) fn solve(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
         self.refine(rhs, Side::Direct)
     }
 
-    /// Solves the transposed system `Aᵀ x = rhs` and leaves `x` in `rhs`, refined as
-    /// [`Factors::solve`] refines.
+    /// Solves `Aᵀ x = rhs` in place, applying iterative refinement matching
+    /// [`Factors::solve`].
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
-    /// unknowns whose values are not.
+    /// Returns [`SimulationError::Singular`] naming non-finite solution unknowns.
     pub(crate) fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
         self.refine(rhs, Side::Transposed)
     }
 
-    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side`, then refines as [`Factors::solve`] says.
+    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side` and runs iterative refinement when
+    /// enabled.
     fn refine(&mut self, rhs: &mut [T], side: Side) -> Result<(), SimulationError> {
         let Some((matrix, pattern, work)) = self.refined.take() else {
             return self.plain(rhs, side);
@@ -198,8 +190,8 @@ impl<'a, T: Scalar> Factors<'a, T> {
         refined
     }
 
-    /// Refines as [`Factors::solve`] says, against the stored `matrix` of `pattern`, in
-    /// the buffers of `work`.
+    /// Performs working-precision iterative refinement against `matrix` and `pattern`
+    /// using scratch buffers in `work`.
     fn refine_with(
         &mut self,
         matrix: &[T],
@@ -246,7 +238,7 @@ impl<'a, T: Scalar> Factors<'a, T> {
         Ok(())
     }
 
-    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side`, with the factors alone.
+    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side` without iterative refinement.
     fn plain(&mut self, rhs: &mut [T], side: Side) -> Result<(), SimulationError> {
         let solved = match side {
             Side::Direct => self.lu.solve(rhs),
@@ -255,8 +247,8 @@ impl<'a, T: Scalar> Factors<'a, T> {
         solved.map_err(|error| named(error, self.names))
     }
 
-    /// The factors, to solve with from several threads at once, each with a workspace of
-    /// its own, as [`jolty_numerics::Factors::shared`] says.
+    /// Borrows read-only [`Shared`] factors for concurrent multi-threaded solves per
+    /// [`jolty_numerics::Factors::shared`].
     pub(crate) fn shared(&self) -> Shared<'a, T> {
         Shared {
             factors: self.lu.shared(),
@@ -265,8 +257,8 @@ impl<'a, T: Scalar> Factors<'a, T> {
     }
 }
 
-/// The LU factors of one of the circuit's matrices, which several threads solve with at
-/// once, each with a workspace of its own.
+/// Shared read-only sparse LU factors supporting concurrent solves with per-thread
+/// workspaces.
 #[derive(Clone, Copy)]
 pub(crate) struct Shared<'a, T: Scalar> {
     factors: jolty_numerics::Shared<'a, T>,
@@ -274,18 +266,16 @@ pub(crate) struct Shared<'a, T: Scalar> {
 }
 
 impl<T: Scalar> Shared<'_, T> {
-    /// A workspace for its solves, one for each thread that solves at once.
+    /// Allocates a thread-local solve [`Workspace`] sized for these factors.
     pub(crate) fn workspace(&self) -> Workspace<T> {
         self.factors.workspace()
     }
 
-    /// Solves `A x = rhs` and leaves `x` in `rhs`, as [`Factors::solve`] does, writing to
-    /// `workspace` as it goes.
+    /// Solves `A x = rhs` in place using `workspace`, matching [`Factors::solve`].
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
-    /// unknowns whose values are not.
+    /// Returns [`SimulationError::Singular`] naming non-finite solution unknowns.
     pub(crate) fn solve(
         &self,
         rhs: &mut [T],
@@ -296,13 +286,11 @@ impl<T: Scalar> Shared<'_, T> {
             .map_err(|error| named(error, self.names))
     }
 
-    /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, as [`Factors::solve_transpose`] does,
-    /// writing to `workspace` as it goes.
+    /// Solves `Aᵀ x = rhs` in place using `workspace`, matching [`Factors::solve_transpose`].
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
-    /// unknowns whose values are not.
+    /// Returns [`SimulationError::Singular`] naming non-finite solution unknowns.
     pub(crate) fn solve_transpose(
         &self,
         rhs: &mut [T],
@@ -314,12 +302,13 @@ impl<T: Scalar> Shared<'_, T> {
     }
 }
 
-/// The componentwise backward error of `x` as a solution of `A x = b` or `Aᵀ x = b` per
-/// `side`, `A` the stored `values` of `pattern`: `maxᵢ |rᵢ| / (|A| |x| + |b|)ᵢ`, the
-/// residual `r = b − A x` left in `residual` and the denominators in `scale`. A row whose
-/// denominator is zero has a zero residual too, and counts for nothing. Each `|·|` is a
-/// number's [`Scalar::size`], a complex number's `|re| + |im|`, which bounds `|a x|` by
-/// `|a| |x|` as the modulus does, within √2 of it, without a square root for each entry.
+/// Computes the componentwise backward error `maxᵢ |rᵢ| / (|A| |x| + |b|)ᵢ` for `x`
+/// solving `A x = b` (or `Aᵀ x = b`), storing `r = b - A x` in `residual` and denominators
+/// in `scale`.
+///
+/// Rows with zero denominator also have zero residual and contribute zero. Magnitudes use
+/// [`Scalar::size`] (`|re| + |im|` for complex numbers), bounding `|a x|` within `√2`
+/// without per-entry square roots.
 fn backward_error<T: Scalar>(
     pattern: &Pattern,
     values: &[T],
@@ -353,8 +342,8 @@ fn backward_error<T: Scalar>(
         })
 }
 
-/// The simulation error of the linear `error`, naming the first [`NAMED_UNKNOWNS`] of the
-/// columns it reports by the `names` of their unknowns.
+/// Converts linear solver `error` into a [`SimulationError`], naming up to
+/// [`NAMED_UNKNOWNS`] undetermined columns from `names`.
 fn named(error: LinearError, names: &[String]) -> SimulationError {
     match error {
         LinearError::Singular { columns } => SimulationError::Singular {

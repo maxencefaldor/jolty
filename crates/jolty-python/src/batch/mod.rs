@@ -1,13 +1,11 @@
-//! Many runs of one circuit in one call: the batch executor, which
-//! `jolty._core.Simulator.batch` runs through a sink that writes each run's numbers straight
-//! into `NumPy` arrays, at the run's row.
+//! Batch executor backing `jolty._core.Simulator.batch`, writing each run directly into
+//! its row of preallocated `NumPy` arrays.
 //!
-//! The arrays hold, one row per run of the range of runs asked for: the values of the
-//! numbers the variants vary, what each measure read or why it read nothing, whether each
-//! analysis ended, and the values of the unknowns traced at each point of their analyses.
-//! A run's row is its index less the range's start, so the order the runs end in never
-//! shows. A function Python gives sees each run's results too, under the interpreter's lock,
-//! as each run ends.
+//! Output arrays store one row per requested run: varied parameter values, measure values
+//! and failure causes, per-analysis completion flags, and traced unknowns along each
+//! analysis axis. Each row index equals `run_index - range.start`, independent of worker
+//! completion order. An optional Python callback receives each completed run under the
+//! interpreter lock.
 
 mod vjp;
 
@@ -70,7 +68,7 @@ impl TraceGuard<'_> {
     }
 }
 
-/// Where an analysis's traced unknowns lie along it.
+/// Sample axis points along which a batch traces unknowns.
 #[derive(Debug, Clone)]
 pub(crate) enum Points {
     Point,
@@ -80,7 +78,8 @@ pub(crate) enum Points {
 }
 
 impl Points {
-    /// The points of `analysis`, raising `ValueError` for an analysis without traceable points.
+    /// Extracts the traceable sample points of `analysis`, raising `ValueError` for
+    /// unsupported analyses.
     pub(crate) fn from_analysis(analysis: &Analysis) -> PyResult<Self> {
         Ok(match analysis {
             Analysis::OperatingPoint => Self::Point,
@@ -97,7 +96,7 @@ impl Points {
         })
     }
 
-    /// The points of a differentiated `analysis`, which a batch's VJP traces unknowns along.
+    /// Extracts the traceable sample points of a differentiated `analysis` for batch VJP.
     pub(crate) fn from_differentiated(analysis: &Differentiated) -> Self {
         match analysis {
             Differentiated::OperatingPoint => Self::Point,
@@ -147,7 +146,7 @@ impl Traced {
     }
 }
 
-/// Why a measure of a run read nothing.
+/// Reason a batch measure produced no value for a run.
 #[derive(Debug, Clone, Copy)]
 enum Cause {
     Failed,
@@ -485,14 +484,15 @@ pub(crate) fn trace_result(
     found
 }
 
-/// Where `time` lies among the accepted `times`: at one of them, or between two, the
-/// fraction of the way from the first to the second; none outside them.
+/// Position of a query `time` relative to accepted sample `times`: exact index or
+/// interpolation bracket with fraction.
 pub(crate) enum Located {
     At(usize),
     Between(usize, usize, f64),
 }
 
-/// Where `time` lies among the accepted `times`, as [`Located`] says.
+/// Locates `time` within sorted accepted `times`, returning an exact index, a linear
+/// interpolation bracket, or `None` outside the span.
 pub(crate) fn located(times: &[f64], time: f64) -> Option<Located> {
     match times.binary_search_by(|accepted| accepted.total_cmp(&time)) {
         Ok(found) => Some(Located::At(found)),

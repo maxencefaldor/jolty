@@ -1,22 +1,19 @@
-//! Measures of results: the numbers specs read from an analysis's result.
+//! Scalar measurements extracted from simulation results for specification checks.
 //!
-//! A [`Measure`] reads one number from the [`AnalysisResult`] of one analysis: a signal's value, a
-//! statistic of it over a window, the time of an edge, a gain, a margin, a noise density, a
-//! damping ratio. It holds its signals already resolved, each the index of an unknown and of
-//! the unknown it is taken relative to, and its times, values and frequencies in SI base
-//! units, so it reads a run's results with no names or units; the Python package resolves
-//! them, and says why a measure could not read a result from its [`MeasureError`].
+//! Each [`Measure`] evaluates one scalar quantity from an [`AnalysisResult`], including
+//! signal values, windowed statistics, edge timings, gains, stability margins, noise
+//! densities, and pole damping ratios. Signal indices and SI base units are pre-resolved so
+//! evaluation requires no string lookups or unit conversion; the Python layer resolves names
+//! and formats [`MeasureError`] diagnostics.
 //!
-//! Every measure reads the same bits jolty's measures read when numpy computed them, on a
-//! platform whose numpy rounds a product and a sum once, as arm64's does: its arithmetic
-//! follows numpy's operation for operation, from interpolation to the order of its sums. Only
-//! a distortion reads amplitudes numpy took from a fast Fourier transform, which it takes from
-//! the discrete Fourier transform's sum at each harmonic instead.
+//! Arithmetic matches `NumPy` operation for operation on platforms with fused multiply-add,
+//! including interpolation and pairwise summation order. Distortion computes harmonic
+//! amplitudes via direct discrete Fourier sums rather than an FFT.
 //!
 //! ```
 //! use jolty_engine::measure::{Measure, AnalysisResult, Signal, Window};
 //!
-//! // A ramp from 0 to 1 over a second, the first and only unknown.
+//! // Ramp from 0 to 1 over 1 s on the single unknown.
 //! let times = [0.0, 0.5, 1.0];
 //! let values = vec![vec![0.0], vec![0.5], vec![1.0]];
 //! let results = AnalysisResult::Transient { times: &times, values: &values };
@@ -39,264 +36,252 @@ use crate::{
 pub(crate) use arithmetic::trapezoid;
 pub use arithmetic::{dampings, density, integrate, natural_frequencies, referred};
 
-/// How far past an end of an axis, relative to its span, a point still lies on it.
+/// Relative endpoint tolerance (`1e-9` of axis span) within which a query snaps onto the
+/// axis bounds.
 ///
-/// Origin: jolty's own endpoint rounding margin (`1e-9` of span, about `4.5e6 * f64::EPSILON`),
-/// wide enough to absorb binary-decimal unit scaling and log-grid rounding at axis endpoints
-/// (such as `stop = N / fundamental` in period counting) while rejecting genuinely out-of-range
-/// requests.
+/// Derivation: endpoint rounding margin (`~4.5e6 * f64::EPSILON`) absorbing decimal-unit and
+/// log-grid rounding (such as `stop = N / fundamental`) while rejecting out-of-range queries.
 pub const ON_AXIS: f64 = 1e-9;
 
-/// The points a distortion samples each period of its fundamental at, interpolated.
+/// Uniformly interpolated samples per fundamental period used for harmonic distortion.
 ///
-/// Origin: jolty's own power-of-two sampling grid (`2^10 = 1024`; compare ngspice 47's
-/// `DEF_FOURGRIDSIZE = 200` in `src/frontend/fourier.c`, line 32). Divisibility by 4 keeps
-/// quarter-turn axes exact (`256` steps per quadrant), and `N / 2 = 512` resolves harmonics
-/// 1 through 511 below Nyquist without aliasing.
+/// Derivation: power-of-two grid (`2^10 = 1024`; compare ngspice 47 `DEF_FOURGRIDSIZE = 200`
+/// in `src/frontend/fourier.c`, line 32) keeping quadrant axes exact and resolving harmonics
+/// 1 through 511 below Nyquist.
 pub const SAMPLES_PER_PERIOD: usize = 1024;
 
-/// The least ratio of its harmonics to its fundamental a distortion reads, so that a signal
-/// without harmonics reads -6000 dB rather than minus infinity.
+/// Minimum harmonic-to-fundamental ratio reported by distortion, yielding -6000 dB instead
+/// of negative infinity for pure tones.
 ///
-/// Derivation: round power of ten (`20 * log10(1e-300) = -6000 dB`) safely above the smallest
-/// positive IEEE 754 binary64 normal `f64::MIN_POSITIVE` (`~2.225e-308`, margin `~4.5e7`),
-/// avoiding subnormals and `-inf` in `log10`.
+/// Derivation: round power of ten (`20 * log10(1e-300) = -6000 dB`) safely above IEEE 754
+/// binary64 `f64::MIN_POSITIVE` (`~2.225e-308`) to avoid subnormals and `-inf`.
 const MIN_DISTORTION: f64 = 1e-300;
 
-/// An unknown, or a voltage relative to another: their indices among a result's unknowns.
+/// Single unknown or differential pair of unknowns indexed into an analysis result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Signal {
-    /// The unknown's index.
+    /// Index of the primary unknown.
     pub unknown: usize,
-    /// The index of the unknown whose value is subtracted from the unknown's, such as the
-    /// voltage of a reference net; none for the unknown itself.
+    /// Optional index of a reference unknown subtracted from `unknown`.
     pub reference: Option<usize>,
 }
 
-/// From where to where a measure reads a transient's times or a sweep's values: each end a
-/// time or a swept value in SI base units, by default the axis's own end.
+/// Optional `[start, stop]` interval in SI base units over a transient or sweep axis,
+/// defaulting to the full axis span.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Window {
-    /// Where the window starts.
+    /// Inclusive window start in SI base units, or axis start if `None`.
     pub start: Option<f64>,
-    /// Where the window stops.
+    /// Inclusive window stop in SI base units, or axis stop if `None`.
     pub stop: Option<f64>,
 }
 
-/// Which way a signal crosses a threshold.
+/// Direction of a threshold crossing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
-    /// From below the threshold to the threshold or above.
+    /// Crossing from below the threshold to at or above the threshold.
     Rising,
-    /// From above the threshold to the threshold or below.
+    /// Crossing from above the threshold to at or below the threshold.
     Falling,
-    /// Either way.
+    /// Crossing in either direction.
     Either,
 }
 
-/// What a small-signal measure reads: a signal of a small-signal response, over another
-/// signal or per unit excitation, or the loop gain of a stability analysis.
+/// Target transfer quantity for small-signal measures: a response signal (optionally divided
+/// by a denominator signal) or a stability loop gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
-    /// The loop gain itself.
+    /// Loop gain from a stability analysis.
     Loop,
-    /// A signal of a response.
+    /// Signal phasor from an AC response, optionally divided by `over`.
     Signal {
-        /// The signal.
+        /// Numerator signal.
         signal: Signal,
-        /// The signal it is divided by, if any.
+        /// Optional denominator signal.
         over: Option<Signal>,
     },
 }
 
-/// One number read from the result of one analysis.
+/// Specification of one scalar measurement over an [`AnalysisResult`].
 ///
-/// Each reads the kinds of results its documentation names, in SI base units unless it says
-/// otherwise. A small-signal measure reads its transfer over log frequency, from the lowest
-/// frequency, and interpolates between frequencies linearly in log frequency; any other
-/// interpolates linearly between the points of its axis.
+/// Results are returned in SI base units unless documented otherwise. Small-signal measures
+/// interpolate linearly in log frequency from the lowest frequency; time and sweep measures
+/// interpolate linearly along their native axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Measure {
-    /// The value of `signal` at an operating point, or interpolated `at` a time of a transient
-    /// or a value of a DC sweep.
+    /// Value of `signal` at an operating point or interpolated `at` a transient time or DC
+    /// sweep coordinate.
     Value {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The time or the swept value; none at an operating point.
+        /// Axis coordinate in SI base units, or `None` for an operating point.
         at: Option<f64>,
     },
-    /// The gain at the frequency `at`, in decibels.
+    /// Small-signal gain at frequency `at` in decibels.
     Gain {
-        /// What the gain is of.
+        /// Transfer function being measured.
         transfer: Transfer,
-        /// The frequency.
+        /// Query frequency in hertz.
         at: f64,
     },
-    /// The phase at the frequency `at`, in degrees, unwrapped from the lowest frequency.
-    Phase {
-        /// What the phase is of.
-        transfer: Transfer,
-        /// The frequency.
-        at: f64,
-    },
-    /// The frequency where the gain first falls `drop` decibels below its gain at the lowest
+    /// Unwrapped small-signal phase at frequency `at` in degrees, starting from the lowest
     /// frequency.
-    Bandwidth {
-        /// What the gain is of.
+    Phase {
+        /// Transfer function being measured.
         transfer: Transfer,
-        /// The drop, in decibels.
+        /// Query frequency in hertz.
+        at: f64,
+    },
+    /// First frequency where gain drops `drop` decibels below its lowest-frequency value.
+    Bandwidth {
+        /// Transfer function being measured.
+        transfer: Transfer,
+        /// Gain drop in decibels.
         drop: f64,
     },
-    /// The frequency where the gain first falls through 0 dB.
+    /// First frequency where gain falls through 0 dB.
     Crossover {
-        /// What the gain is of.
+        /// Transfer function being measured.
         transfer: Transfer,
     },
-    /// 180° plus the phase where the gain first falls through 0 dB, in degrees.
+    /// Phase margin (`180° + phase`) in degrees at the first 0 dB unity-gain crossing.
     PhaseMargin {
-        /// What the gain and the phase are of.
+        /// Transfer function being measured.
         transfer: Transfer,
     },
-    /// Minus the gain where the phase first falls through -180°, in decibels.
+    /// Gain margin (`-gain`) in decibels at the first -180° phase crossing.
     GainMargin {
-        /// What the gain and the phase are of.
+        /// Transfer function being measured.
         transfer: Transfer,
     },
-    /// The highest value of `signal` in `window`, of a transient or a DC sweep.
+    /// Maximum value of `signal` across `window` in a transient or DC sweep.
     Maximum {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The lowest value of `signal` in `window`, of a transient or a DC sweep.
+    /// Minimum value of `signal` across `window` in a transient or DC sweep.
     Minimum {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The highest less the lowest value of `signal` in `window`, of a transient or a DC
+    /// Peak-to-peak amplitude (`max - min`) of `signal` across `window` in a transient or DC
     /// sweep.
     PeakToPeak {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The mean of `signal` in `window`, of a transient or a DC sweep, by the trapezoidal
-    /// rule.
+    /// Trapezoidal mean of `signal` across `window` in a transient or DC sweep.
     Mean {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The root mean square of `signal` in `window`, of a transient or a DC sweep, its square
-    /// integrated by the trapezoidal rule.
+    /// Root-mean-square value of `signal` across `window` via trapezoidal integration.
     Rms {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The time a transient's `signal` takes to rise or fall from `lower` to `upper` of its step,
-    /// from its value at the window's start to its value at the window's end.
+    /// Transition duration of `signal` between fractions `lower` and `upper` of its step
+    /// across `window`.
     RiseTime {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
-        /// The lower fraction of the step the time starts at.
+        /// Lower step fraction.
         lower: f64,
-        /// The upper fraction of the step the time ends at.
+        /// Upper step fraction.
         upper: f64,
     },
-    /// How far a transient's `signal` passes its final value, at the window's end, in percent
-    /// of its step from its value at the window's start.
+    /// Percentage overshoot of `signal` past its final value across `window`.
     Overshoot {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
     },
-    /// The time from the window's start until a transient's `signal` stays within `band` of
-    /// its step from its final value, at the window's end.
+    /// Elapsed time from window start until `signal` remains within `band` of its step around
+    /// its final value.
     SettlingTime {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
-        /// The band, a fraction of the step.
+        /// Relative settling band as a fraction of step height.
         band: f64,
     },
-    /// The first time a transient's `signal` crosses `threshold` the way `edge` says.
+    /// First time `signal` crosses `threshold` in direction `edge` within `window`.
     Crossing {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
-        /// The threshold.
+        /// Crossing threshold in SI base units.
         threshold: f64,
-        /// Which way.
+        /// Crossing direction.
         edge: Edge,
     },
-    /// How often a transient's `signal` rises through `threshold`: the rises less one over the
-    /// time from the first rise to the last.
+    /// Average rising-edge frequency of `signal` across `threshold` within `window`.
     Frequency {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
-        /// The threshold; by default the midpoint of the signal's lowest and highest values.
+        /// Crossing threshold, defaulting to the midpoint of the signal's range.
         threshold: Option<f64>,
     },
-    /// The total harmonic distortion of a transient's `signal`, in decibels: the root sum of
-    /// the squares of the amplitudes of harmonics 2 to `harmonics` of the `fundamental` over
-    /// the fundamental's amplitude, read over the last period of the fundamental before the
-    /// window's stop, or over every whole period of a window with a start.
+    /// Total harmonic distortion of `signal` in decibels across harmonics `2..=harmonics` of
+    /// `fundamental`, evaluated over the final period or all whole periods in `window`.
     Distortion {
-        /// The signal.
+        /// Target signal.
         signal: Signal,
-        /// The window.
+        /// Evaluation window.
         window: Window,
-        /// The fundamental frequency, positive.
+        /// Positive fundamental frequency in hertz.
         fundamental: f64,
-        /// The last harmonic counted.
+        /// Highest harmonic index included.
         harmonics: usize,
     },
-    /// The square root of a noise analysis's power density at the frequency `at`, a power law
-    /// between frequencies; referred, the density at the output over the gain's square.
+    /// Square-root noise density at frequency `at` interpolated by power law, optionally
+    /// input-referred.
     NoiseDensity {
-        /// The frequency.
+        /// Query frequency in hertz.
         at: f64,
-        /// Whether the noise is referred to the analysis's source.
+        /// Flag selecting input-referred noise over output noise.
         referred: bool,
     },
-    /// The square root of a noise analysis's power density integrated from `start` to
-    /// `stop`, by default the lowest and the highest frequency, a power law between
-    /// frequencies.
+    /// Root-mean-square noise integrated over `[start, stop]` using piecewise power-law
+    /// segments.
     IntegratedNoise {
-        /// Where the band starts.
+        /// Lower frequency bound in hertz, defaulting to the lowest frequency.
         start: Option<f64>,
-        /// Where the band stops.
+        /// Upper frequency bound in hertz, defaulting to the highest frequency.
         stop: Option<f64>,
-        /// Whether the noise is referred to the analysis's source.
+        /// Flag selecting input-referred noise over output noise.
         referred: bool,
     },
-    /// How many DC solutions a search for operating points found.
+    /// Count of distinct DC solutions returned by an operating-points search.
     Solutions,
-    /// The least damping ratio of a pole-zero analysis's poles.
+    /// Minimum damping ratio across all poles of a pole-zero analysis.
     Damping,
-    /// The least natural frequency of a pole-zero analysis's poles, in hertz.
+    /// Lowest natural frequency across all poles of a pole-zero analysis, in hertz.
     DominantPole,
 }
 
-/// The values of a result's unknowns at each of its points, one row per point.
+/// Row-indexed view of unknown values across analysis points.
 pub trait Table<T> {
-    /// The number of rows.
+    /// Returns the number of points (rows) in the table.
     fn rows(&self) -> usize;
-    /// The value at `row` of the unknown at `column`; none past either end.
+    /// Returns the entry at `(row, column)`, or `None` if either index is out of bounds.
     fn value(&self, row: usize, column: usize) -> Option<T>;
 }
 
@@ -361,8 +346,8 @@ pub enum AnalysisResult<'a> {
 }
 
 impl<'a> AnalysisResult<'a> {
-    /// The numbers of `result`; none for sensitivities and transfer functions, which no
-    /// measure reads.
+    /// Extracts a measurable view of `result`, returning `None` for sensitivity, mismatch,
+    /// and transfer-function results.
     #[must_use]
     pub fn from_result(result: &'a crate::AnalysisResult) -> Option<Self> {
         Some(match result {
@@ -442,14 +427,14 @@ impl<'a> From<&'a PoleZeroResult> for AnalysisResult<'a> {
     }
 }
 
-/// A point a measure places on an axis.
+/// Role of an axis boundary or query point reported in [`MeasureError::Outside`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
-    /// Where a value, a gain, a phase or a noise density is read.
+    /// Query coordinate for a point evaluation (value, gain, phase, or noise density).
     At,
-    /// Where a window or a band starts.
+    /// Lower bound of a window or frequency band.
     Start,
-    /// Where a window or a band stops.
+    /// Upper bound of a window or frequency band.
     Stop,
 }
 
@@ -463,111 +448,107 @@ impl std::fmt::Display for Point {
     }
 }
 
-/// Why Python's `math.fsum` would raise on a sum.
+/// Failure condition matching Python's `math.fsum` exceptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SumError {
-    /// A partial sum of finite values overflows.
+    /// Partial sum of finite values overflowed `f64`.
     #[error("intermediate overflow in fsum")]
     Overflow,
-    /// The values hold both infinities.
+    /// Input contained both positive and negative infinity.
     #[error("-inf + inf in fsum")]
     Indeterminate,
 }
 
-/// Why a measure could not read a result.
+/// Reason a [`Measure`] could not be evaluated on an [`AnalysisResult`].
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum MeasureError {
-    /// The result is not of a kind the measure reads.
+    /// Analysis result variant incompatible with this measure.
     #[error("the measure does not read this kind of result")]
     Kind,
-    /// The result has no unknown at an index the measure reads.
+    /// Unknown index missing from the analysis result.
     #[error("the result has no unknown at index {0}")]
     Unknown(usize),
-    /// The result's values are not as many as its points.
+    /// Mismatch between axis length and row count.
     #[error("the result's values are not as many as its points")]
     LengthMismatch,
-    /// The result holds no points.
+    /// Analysis result containing zero data points.
     #[error("the result holds no points")]
     Empty,
-    /// A point lies outside the axis, from `first` to `last`.
+    /// Query point outside `[first, last]` beyond [`ON_AXIS`] tolerance.
     #[error("the {point}, outside the axis from {first:?} to {last:?}")]
     Outside {
-        /// Which point.
+        /// Role of the out-of-range point.
         point: Point,
-        /// The axis's first point.
+        /// Lower axis bound.
         first: f64,
-        /// The axis's last point.
+        /// Upper axis bound.
         last: f64,
     },
-    /// The window does not start before it stops.
+    /// Window whose start is not strictly less than its stop.
     #[error("the window is empty")]
     EmptyWindow,
-    /// The signal ends the window at the value it starts it at.
+    /// Signal whose starting and ending window values are equal, giving a zero step.
     #[error("the signal ends the window where it starts it, at {0:?}")]
     Flat(f64),
-    /// The signal never crosses the threshold the measure looks for, the way it looks for: a
-    /// crossing's threshold, 0 dB, -180°, or a step's bounds.
+    /// Signal failing to cross the target threshold (edge level, 0 dB, -180°, or step level).
     #[error("the signal never crosses the threshold the measure looks for")]
     Uncrossed,
-    /// The gain stays within a bandwidth's drop of its gain at the lowest frequency.
+    /// Gain remaining within `drop` decibels of its lowest-frequency value across the sweep.
     #[error("the gain stays within the drop of its gain at {0:?} Hz")]
     Stays(f64),
-    /// The signal rises through the threshold fewer than twice.
+    /// Signal rising through the frequency threshold fewer than twice.
     #[error("the signal rises through {0:?} fewer than twice")]
     Rises(f64),
-    /// The signal a transfer is divided by vanishes.
+    /// Zero denominator phasor encountered while evaluating a signal ratio transfer.
     #[error("the divisor vanishes in the response")]
     Vanishes,
-    /// A transfer is read over log frequency, and its lowest frequency is not positive.
+    /// Non-positive frequency encountered in a log-frequency small-signal transfer.
     #[error("a response is read over log frequency, so not at {0:?} Hz")]
     Unpositive(f64),
-    /// The window spans less than a period of the fundamental.
+    /// Window shorter than one full period of the distortion fundamental.
     #[error("the window spans less than a period of the fundamental")]
     Short,
-    /// The signal has no component at the fundamental.
+    /// Zero amplitude at the distortion fundamental frequency.
     #[error("the signal has no component at the fundamental")]
     Silent,
-    /// The distortion's samples would not fit in memory.
+    /// Distortion resampling grid exceeding available memory or index range.
     #[error("the distortion's samples would not fit in memory")]
     Memory,
-    /// A band does not start before it stops.
+    /// Noise integration band with start not strictly below stop.
     #[error("the band is empty")]
     EmptyBand,
-    /// A band from `start` to `stop` does not lie within the frequencies, from `first` to
-    /// `last`, or is empty.
+    /// Noise integration band `[start, stop]` empty or outside `[first, last]`.
     #[error(
         "a band from {start:?} Hz to {stop:?} Hz does not lie within the frequencies, {first:?} Hz to {last:?} Hz"
     )]
     Band {
-        /// Where the band starts.
+        /// Band lower frequency in hertz.
         start: f64,
-        /// Where the band stops.
+        /// Band upper frequency in hertz.
         stop: f64,
-        /// The lowest frequency.
+        /// Lowest available frequency in hertz.
         first: f64,
-        /// The highest frequency.
+        /// Highest available frequency in hertz.
         last: f64,
     },
-    /// Summing a noise integral's segments fails, as Python's `math.fsum` does.
+    /// Exact summation error matching Python's `math.fsum` while integrating noise segments.
     #[error(transparent)]
     Sum(SumError),
-    /// The circuit has no poles.
+    /// Pole-zero result containing zero poles.
     #[error("the circuit has no poles")]
     NoPoles,
-    /// The noise analysis names no source to refer its noise to.
+    /// Input-referred noise requested without a source gain vector.
     #[error("the noise analysis names no source to refer its noise to")]
     Unreferred,
 }
 
 impl Measure {
-    /// The measure reading the same signals of a circuit whose unknowns lie elsewhere: each
-    /// signal's unknown, and its reference's, at the index `column` gives it, as a run on
-    /// another structure of the circuit holds them.
+    /// Remaps all unknown indices in this measure using `column` for a restructured circuit.
     ///
     /// # Errors
     ///
-    /// Returns [`MeasureError::Unknown`] with the index of the first unknown `column` gives
-    /// no index for.
+    /// Returns [`MeasureError::Unknown`] with the first unknown index for which `column`
+    /// returns `None`.
     pub fn moved(&self, column: impl Fn(usize) -> Option<usize>) -> Result<Self, MeasureError> {
         let at = |signal: Signal| -> Result<Signal, MeasureError> {
             let moved = |unknown| column(unknown).ok_or(MeasureError::Unknown(unknown));
@@ -614,11 +595,11 @@ impl Measure {
         Ok(moved)
     }
 
-    /// What the measure reads of `results`, in the unit its variant says.
+    /// Evaluates this measure on `results` in the unit documented on its variant.
     ///
     /// # Errors
     ///
-    /// Returns the [`MeasureError`] that says why the measure cannot read `results`.
+    /// Returns the [`MeasureError`] describing why `results` cannot satisfy this measure.
     pub fn measure(&self, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
         match *self {
             Self::Value { signal, at } => value(signal, at, results),
@@ -714,7 +695,7 @@ impl Measure {
     }
 }
 
-/// The gain of `transfer` at the frequency `at`, in decibels.
+/// Evaluates the gain of `transfer` at frequency `at` in decibels.
 fn gain(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let point = Axis(&frequencies).locate(at, Point::At)?.ln();
@@ -725,7 +706,7 @@ fn gain(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f64
     ))
 }
 
-/// The phase of `transfer` at the frequency `at`, in degrees.
+/// Evaluates the unwrapped phase of `transfer` at frequency `at` in degrees.
 fn phase(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let point = Axis(&frequencies).locate(at, Point::At)?.ln();
@@ -733,8 +714,8 @@ fn phase(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f6
     Ok(interpolated(point, &logarithms(&frequencies), &phases))
 }
 
-/// The frequency where the gain of `transfer` first falls `drop` decibels below its gain at
-/// the lowest frequency.
+/// Finds the first frequency where the gain of `transfer` drops `drop` decibels below its
+/// lowest-frequency value.
 fn bandwidth(
     transfer: Transfer,
     drop: f64,
@@ -749,7 +730,7 @@ fn bandwidth(
         .ok_or(MeasureError::Stays(frequencies[0]))
 }
 
-/// 180° plus the phase of `transfer` where its gain first falls through 0 dB.
+/// Computes phase margin (`180° + phase`) at the first 0 dB gain crossing of `transfer`.
 fn phase_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let logarithms = logarithms(&frequencies);
@@ -758,7 +739,7 @@ fn phase_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64,
     Ok(180.0 + interpolated(unity, &logarithms, &phases))
 }
 
-/// Minus the gain of `transfer` where its phase first falls through -180°.
+/// Computes gain margin (`-gain`) in decibels at the first -180° phase crossing of `transfer`.
 fn gain_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let logarithms = logarithms(&frequencies);
@@ -769,7 +750,8 @@ fn gain_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, 
     Ok(-interpolated(inverted, &logarithms, &decibels(&transfer)))
 }
 
-/// The time `signal` takes to pass from `lower` to `upper` of its step.
+/// Computes the transition duration of `signal` between fractions `lower` and `upper` of its
+/// step across `window`.
 fn rise_time(
     signal: Signal,
     window: Window,
@@ -792,7 +774,7 @@ fn rise_time(
     Ok(second - first)
 }
 
-/// How far `signal` passes its final value, in percent of its step.
+/// Computes percentage overshoot of `signal` past its final value across `window`.
 fn overshoot(
     signal: Signal,
     window: Window,
@@ -805,12 +787,12 @@ fn overshoot(
         arithmetic::minimum(&values)
     };
     let passed = (peak - values[values.len() - 1]) / step;
-    // Python's `max(0.0, passed)`, which keeps zero unless `passed` exceeds it.
+    // Python's `max(0.0, passed)` keeps zero unless `passed` exceeds it.
     Ok(100.0 * if passed > 0.0 { passed } else { 0.0 })
 }
 
-/// The time from the window's start until `signal` stays within `band` of its step from its
-/// final value.
+/// Computes the settling time from window start until `signal` stays within `band` of its
+/// step around its final value.
 fn settling_time(
     signal: Signal,
     window: Window,
@@ -827,7 +809,7 @@ fn settling_time(
     let Some(outside) = excess.iter().rposition(|&excess| excess > 0.0) else {
         return Ok(0.0);
     };
-    // The last value lies within the band, so the last outside it has one after it.
+    // The last sample lies inside the band, so `outside + 1` exists.
     let (Some(&next), Some(&after)) = (excess.get(outside + 1), times.get(outside + 1)) else {
         return Err(MeasureError::LengthMismatch);
     };
@@ -836,7 +818,8 @@ fn settling_time(
     Ok(settled - times[0])
 }
 
-/// How often `signal` rises through `threshold`, by default the midpoint of its range.
+/// Computes average rising-edge frequency of `signal` across `threshold` (or signal midpoint
+/// when `None`).
 fn frequency(
     signal: Signal,
     window: Window,
@@ -859,7 +842,7 @@ fn frequency(
     }
 }
 
-/// The RMS noise from `start` to `stop`, at the output or referred to the input.
+/// Computes integrated RMS noise over `[start, stop]`, optionally input-referred.
 fn integrated_noise(
     start: Option<f64>,
     stop: Option<f64>,
@@ -884,12 +867,12 @@ fn integrated_noise(
     Ok(integrate(frequencies, &densities, low, high)?.sqrt())
 }
 
-/// The gain of each of `transfer`, in decibels.
+/// Converts every complex entry of `transfer` to decibels.
 fn decibels(transfer: &[Complex64]) -> Vec<f64> {
     transfer.iter().map(|&z| arithmetic::decibels(z)).collect()
 }
 
-/// `count` as a float, exact below 2⁵³.
+/// Converts `count` to `f64` (exact for counts below `2⁵³`).
 #[expect(
     clippy::cast_precision_loss,
     reason = "a count of points or solutions is far below 2⁵³, where floats hold every integer"
@@ -899,7 +882,7 @@ fn count(count: usize) -> f64 {
 }
 
 impl Signal {
-    /// The signal's values in `table`, one per row: the unknown's, less the reference's.
+    /// Extracts this signal's per-row values from `table`, subtracting `self.reference` if set.
     fn trace<T: Copy + std::ops::Sub<Output = T>>(
         self,
         table: &dyn Table<T>,
@@ -921,12 +904,12 @@ impl Signal {
     }
 }
 
-/// The points of an axis, which a measure places its points on.
+/// Ordered axis coordinates validated against endpoint rounding tolerance [`ON_AXIS`].
 struct Axis<'a>(&'a [f64]);
 
 impl Axis<'_> {
-    /// `point`, after checking it lies on the axis, from its first point to its last, within
-    /// [`ON_AXIS`] of its span past either, and moved onto it if it lies past.
+    /// Validates `point` against this axis within [`ON_AXIS`] of its span and clamps boundary
+    /// rounding onto the endpoints.
     fn locate(&self, point: f64, which: Point) -> Result<f64, MeasureError> {
         let (Some(&first), Some(&last)) = (self.0.first(), self.0.last()) else {
             return Err(MeasureError::Empty);
@@ -939,13 +922,14 @@ impl Axis<'_> {
                 last,
             });
         }
-        // Python's `min(max(point, first), last)`, each keeping its first argument on a tie.
+        // Python's `min(max(point, first), last)` keeps its first argument on ties.
         let point = if first > point { first } else { point };
         Ok(if last < point { last } else { point })
     }
 }
 
-/// numpy's interpolation of `values`, given at `points`, at the one point `at`.
+/// Interpolates `(points, values)` linearly at scalar coordinate `at` matching `NumPy`'s
+/// `interp`.
 pub(crate) fn interpolated(at: f64, points: &[f64], values: &[f64]) -> f64 {
     arithmetic::interpolate(&[at], points, values)
         .first()
@@ -953,18 +937,17 @@ pub(crate) fn interpolated(at: f64, points: &[f64], values: &[f64]) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
-/// The natural logarithm of each of `frequencies`.
+/// Computes the natural logarithm of every frequency in `frequencies`.
 fn logarithms(frequencies: &[f64]) -> Vec<f64> {
     frequencies.iter().map(|frequency| frequency.ln()).collect()
 }
 
-/// The mean of `values` over `points`, by the trapezoidal rule.
+/// Computes the trapezoidal mean of `values` over `points`.
 fn mean(points: &[f64], values: &[f64]) -> f64 {
     trapezoid(points, values) / (points[points.len() - 1] - points[0])
 }
 
-/// The value of `signal` at an operating point, or `at` a time or a swept value of the axis of a
-/// transient or a DC sweep.
+/// Evaluates `signal` at an operating point or interpolates it at axis coordinate `at`.
 fn value(
     signal: Signal,
     at: Option<f64>,
@@ -993,15 +976,15 @@ fn value(
     }
 }
 
-/// Which sweep axes a trace-based measure accepts.
+/// Accepted sweep-axis categories for trace-based measures.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scope {
     Any,
     Transient,
 }
 
-/// The points of a transient's or a sweep's axis, increasing from its first to its last if
-/// they fall, and the signal's values at each; a transient's alone under [`Scope::Transient`].
+/// Extracts an ascending `(axis, values)` trace for `signal` from `results` under `scope`,
+/// reversing descending DC sweeps.
 fn traced<'a>(
     signal: Signal,
     results: &AnalysisResult<'a>,
@@ -1026,9 +1009,7 @@ fn traced<'a>(
     Ok((Cow::Borrowed(points), values))
 }
 
-/// The points of `window` on a transient's or a sweep's axis, a transient's alone under
-/// [`Scope::Transient`], and the signal's values at each: its ends, interpolated, and every
-/// point of the axis between them.
+/// Slices and endpoint-interpolates `signal` onto `window` within `results` under `scope`.
 fn windowed(
     signal: Signal,
     window: Window,
@@ -1059,7 +1040,7 @@ fn windowed(
     Ok((inside, interpolated))
 }
 
-/// The times and values of a transient's window, and the signal's step across it.
+/// Extracts windowed transient `(times, values, step)` for `signal`, rejecting zero steps.
 fn stepped(
     signal: Signal,
     window: Window,
@@ -1073,8 +1054,7 @@ fn stepped(
     Ok((times, values, step))
 }
 
-/// The frequencies of a response or a loop gain, increasing, and its transfer at each: the
-/// loop gain, or the signal over the signal it is divided by, if any.
+/// Extracts ascending positive frequencies and complex values for `transfer` from `results`.
 fn read_transfer(
     transfer: Transfer,
     results: &AnalysisResult<'_>,
@@ -1126,15 +1106,15 @@ fn read_transfer(
     Ok((sorted, order.iter().map(|&index| values[index]).collect()))
 }
 
-/// The log frequency where the gain of `transfer` first falls through 0 dB.
+/// Finds the first log frequency where the gain of `transfer` falls through 0 dB.
 fn unity(logarithms: &[f64], transfer: &[Complex64]) -> Result<f64, MeasureError> {
     arithmetic::crossings(logarithms, &decibels(transfer), 0.0, Edge::Falling)
         .next()
         .ok_or(MeasureError::Uncrossed)
 }
 
-/// A noise analysis's frequencies, and its output's densities, or its densities referred to
-/// its source if `referred`.
+/// Extracts noise frequencies and densities from `results`, referring densities to the input
+/// source when `referred` is true.
 fn noise<'a>(
     results: &AnalysisResult<'a>,
     referred: bool,
@@ -1158,7 +1138,7 @@ fn noise<'a>(
     Ok((frequencies, densities))
 }
 
-/// A pole-zero analysis's poles, at least one.
+/// Extracts a non-empty slice of poles from a pole-zero `results` value.
 fn poles<'a>(results: &AnalysisResult<'a>) -> Result<&'a [Complex64], MeasureError> {
     match *results {
         AnalysisResult::PoleZero([]) => Err(MeasureError::NoPoles),
@@ -1167,20 +1147,18 @@ fn poles<'a>(results: &AnalysisResult<'a>) -> Result<&'a [Complex64], MeasureErr
     }
 }
 
-/// How many periods of the fundamental frequency a distortion measure integrates over.
+/// Period-selection mode for total harmonic distortion evaluation.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PeriodSpan {
     Last,
     Whole,
 }
 
-/// The total harmonic distortion, in decibels, of `values`, given at `times`, at the
-/// `fundamental` frequency, harmonics 2 to `harmonics`: over the last period before the last
-/// time, or over every whole period of the times under [`PeriodSpan::Whole`].
+/// Computes total harmonic distortion in decibels over harmonics `2..=harmonics` of
+/// `fundamental` across the final period or all whole periods in `(times, values)`.
 ///
-/// The signal is sampled [`SAMPLES_PER_PERIOD`] times a period, interpolated, as SPICE's
-/// `.four` samples it, and each harmonic's amplitude is the magnitude of the discrete Fourier
-/// transform's sum at its frequency, each sum in numpy's pairwise order.
+/// Resamples each period at [`SAMPLES_PER_PERIOD`] uniform points (like SPICE `.four`) and
+/// sums each harmonic DFT bin in `NumPy`'s pairwise order.
 fn distortion(
     times: &[f64],
     values: &[f64],
@@ -1215,7 +1193,7 @@ fn distortion(
     let duration = periods / fundamental;
     at.extend((0..length).map(|index| last - duration * (1.0 - count(index) / samples)));
     let waveform = arithmetic::interpolate(&at, times, values);
-    // The sample `n` of a period turns harmonic `h` by `h · n` of its 1024 steps around.
+    // Sample `n` advances harmonic `h` by `(h * n) mod SAMPLES_PER_PERIOD` steps.
     let turns: Vec<(f64, f64)> = (0..SAMPLES_PER_PERIOD).map(turn).collect();
     let amplitude = |harmonic: usize| {
         let phase = |index: usize| {
@@ -1233,7 +1211,7 @@ fn distortion(
     let higher: Vec<f64> = (2..=harmonics).map(amplitude).collect();
     let total = arithmetic::sum(higher.len(), |index| higher[index] * higher[index]).sqrt();
     let ratio = total / fundamental;
-    // Python's `max(ratio, 1e-300)`, which keeps the ratio unless the floor exceeds it.
+    // Python's `max(ratio, 1e-300)` keeps `ratio` unless the floor exceeds it.
     let ratio = if MIN_DISTORTION > ratio {
         MIN_DISTORTION
     } else {
@@ -1242,8 +1220,8 @@ fn distortion(
     Ok(20.0 * ratio.log10())
 }
 
-/// The cosine and the sine of `step` of [`SAMPLES_PER_PERIOD`] steps around a circle, each
-/// quarter turn's from the first quarter's, so the steps on the axes are exact.
+/// Computes `(cos, sin)` at discrete angle index `step` of [`SAMPLES_PER_PERIOD`] via
+/// first-quadrant symmetry so axis points remain exact.
 fn turn(step: usize) -> (f64, f64) {
     let quarter = SAMPLES_PER_PERIOD / 4;
     let angle = std::f64::consts::FRAC_PI_2 * count(step % quarter) / count(quarter);

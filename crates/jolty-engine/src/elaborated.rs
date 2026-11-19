@@ -1,14 +1,12 @@
-//! An elaborated circuit: what a circuit is, built once per structure and shared by every
-//! run of it, and how each run's instances are prepared from it.
+//! Elaborated circuit representation built once per structure and shared across runs.
 //!
-//! An [`Elaborated`] circuit holds everything elaboration finds that no run changes: the
-//! unknowns, the devices placed and what each is made from, the groups of their kernels'
-//! instances, the logic, the matrix's pattern and the sparse solver's ordering of it, and
-//! the table of the instances' numbers. It never changes once built, so threads share it.
-//! Each run prepares its instances from it, with the numbers its [`Values`] replace; an
-//! instance whose shape changes under the new numbers claims other unknowns or entries, so
-//! has another structure, which a circuit elaborated for those numbers holds,
-//! [`Elaborated::restructured`].
+//! An [`Elaborated`] circuit stores everything fixed for a given topology: unknowns, placed
+//! devices and their origins, kernel instance groups, the logic partition, the matrix
+//! sparsity pattern, the sparse solver ordering, and the numeric parameter table. An
+//! [`Elaborated`] value is immutable after construction, so worker threads share it safely.
+//! Each run instantiates devices from it using numeric overrides in [`Values`]. When
+//! overridden numbers alter a device's internal unknowns or matrix entries,
+//! [`Elaborated::restructured`] builds a circuit for the updated topology.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -31,69 +29,61 @@ use crate::logic::LogicSystem;
 use crate::values::{ParameterId, Table, Values, each_number, each_number_mut};
 use crate::{SimulationError, Substitute};
 
-/// The structural half of the conditions a circuit is elaborated in: the models that stand
-/// in for some component instances, as a plan's fidelity chooses. The temperature and the
-/// numbers that replace the circuit's own are the other half, the [`Values`] each run
-/// gives on its own.
+/// Structural conditions for elaborating a circuit: substitute models replacing component
+/// instances according to plan fidelity.
+///
+/// Temperature and numeric parameter overrides belong to the per-run [`Values`] input.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Structure {
-    /// Models that stand in for component instances, by the instance's path, such as
-    /// `adder/U1`.
+    /// Substitute models replacing component instances, keyed by instance path (such as
+    /// `adder/U1`).
     pub substitutes: BTreeMap<String, Substitute>,
 }
 
-/// A circuit elaborated once for any number of runs: flattened into devices bound to
-/// unknowns, with the pattern of its matrix, the sparse solver's ordering of it, the logic
-/// devices joined by logic nets, and the table of its device instances' numbers.
+/// Elaborated circuit shared across simulation runs, holding flattened devices, unknowns,
+/// matrix sparsity pattern, sparse solver ordering, logic partition, and parameter table.
 ///
-/// The node voltages come first among the unknowns, in the order their nets are first met,
-/// then the devices' internal unknowns. A net that only logic pins join is a logic net; where
-/// a logic pin joins an electrical net, a connect element joins it to a logic net of its own.
+/// Node voltages occupy the leading unknown indices in net discovery order, followed by
+/// device internal unknowns. Nets joined exclusively by logic pins become logic nets; a
+/// logic pin on an electrical net bridges to a dedicated logic net via a connect element.
 ///
-/// It never changes once built: a [`Simulator`](crate::Simulator) made from it with some
-/// [`Values`] makes devices of its own, and every thread shares it.
+/// An [`Elaborated`] value is immutable after construction, so every thread shares it while
+/// each [`Simulator`](crate::Simulator) instantiates separate devices from its [`Values`].
 #[derive(Debug)]
 pub struct Elaborated {
     pub(crate) unknowns: Vec<Unknown>,
     pub(crate) devices: Vec<Placed>,
     pub(crate) logic: LogicSystem,
-    /// The name of ground: the top component's ground port.
+    /// Name of the reference ground port on the top component.
     pub(crate) reference: Name,
     pub(crate) pattern: Arc<Pattern>,
-    /// The unknowns of the pattern's matrices the sparse solver eliminates before it
-    /// factors the rest: the devices' internal unknowns whose pivots are proven.
+    /// Matrix unknowns eliminated by static condensation before sparse factorization
+    /// (device internal unknowns with proven pivots).
     pub(crate) condensation: Arc<Condensation>,
-    /// The sparse solver's ordering of the pattern, which every solver of a run shares: of
-    /// the unknowns the condensation keeps.
+    /// Shared minimum-degree ordering over the uncondensed unknowns.
     pub(crate) ordering: Arc<Ordering>,
-    /// The name of every unknown, by index, as the solvers name them.
+    /// Unknown names indexed by unknown position, matching solver diagnostics.
     pub(crate) names: Arc<[String]>,
-    /// The quantity of every unknown, by index, apart from its name: the tolerances of
-    /// Newton iteration and step control read one for every unknown at every iteration.
+    /// Physical quantity of each unknown, read during Newton tolerance checks and step control.
     pub(crate) natures: Vec<Nature>,
-    /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
-    /// conductance to the reference.
+    /// Diagonal matrix entry for each node-voltage equation, where gmin stepping adds
+    /// conductance to ground.
     pub(crate) node_diagonals: Vec<(UnknownIndex, Entry)>,
-    /// The groups of the instances of kernels, which every run evaluates together, and the
-    /// devices of no kernel, which it evaluates one by one.
+    /// Kernel instance groups evaluated in batches, together with ungrouped fallback devices.
     pub(crate) groups: Groups,
-    /// The devices' temperature, in kelvins, unless a run's values give another.
+    /// Default device temperature in kelvins when a run provides no override.
     pub(crate) temperature: f64,
-    /// The terminals of component instances and logic devices, each the sum of device
-    /// terminals.
+    /// Summed terminals for component ports and logic devices.
     pub(crate) summed_terminals: Vec<SummedTerminal>,
-    /// The index of the devices' paths and the table of their numbers, made the first time
-    /// either is read, as a single run of a circuit from its JSON text reads neither: a
-    /// function of the rest, which they never change.
+    /// Lazily initialized path index and parameter table, derived deterministically without
+    /// mutating logical state.
     lookup: OnceLock<Lookup>,
-    /// The orderings of the pattern as each [`Dissecting`] orders it, each made the first
-    /// time a run factors with it, the minimum degree's where it dissects no block: a
-    /// function of the pattern, which it never changes.
+    /// Lazily cached nested-dissection orderings keyed by [`Dissecting`], falling back to the
+    /// minimum-degree ordering when no block dissects.
     dissected: Mutex<BTreeMap<Dissecting, Arc<Ordering>>>,
 }
 
-/// The index of an elaborated circuit's devices and summed terminals by path and name,
-/// and the table of its devices' numbers in the order of their paths.
+/// Path index for devices and summed terminals paired with the sorted numeric parameter table.
 #[derive(Debug, Clone)]
 struct Lookup {
     index: Index,
@@ -101,7 +91,7 @@ struct Lookup {
 }
 
 impl Lookup {
-    /// The lookup of `devices` and `summed_terminals`.
+    /// Builds the path index and numeric parameter table for `devices` and `summed_terminals`.
     fn new(devices: &[Placed], summed_terminals: &[SummedTerminal]) -> Self {
         let index = Index::new(devices, summed_terminals);
         let parameters: Vec<Option<&Parameters>> = devices.iter().map(Placed::parameters).collect();
@@ -110,26 +100,25 @@ impl Lookup {
     }
 }
 
-/// A device placed in the flattened circuit: where its instance is, what model it is, and
-/// the node each of its terminals joins.
+/// Flattened device placement recording instance location, model name, and terminal nodes.
 #[derive(Debug, Clone)]
 pub struct Placed {
     template: Arc<Template>,
-    /// How many unknowns there were before the device added its own.
+    /// Starting unknown index for this device's internal unknowns.
     pub(crate) first_internal: usize,
-    /// How many internal unknowns the device added.
+    /// Number of internal unknowns added by this device.
     internals: usize,
-    /// The names of the variables it computes.
+    /// Names of operating-point variables computed by this device.
     variables: &'static [&'static str],
-    /// The regions of operation its equations distinguish.
+    /// Operating regions distinguished by this device's equations.
     regions: Regions,
-    /// Whether it claimed its unknowns and entries as made from its own parameters, at its
-    /// circuit's temperature, as a run that replaces none of its numbers makes it.
+    /// Flag indicating whether the device was bound from unmodified circuit parameters at the
+    /// circuit temperature.
     nominal: bool,
 }
 
-/// What a device is, whatever its numbers: where its instance is, what model it is, its
-/// terminals, the node each joins, and what it is made from.
+/// Parameter-independent device metadata: location, model name, terminal interface, nodes,
+/// and nominal origin.
 #[derive(Debug)]
 pub(crate) struct Template {
     pub(crate) location: Location,
@@ -139,22 +128,20 @@ pub(crate) struct Template {
     pub(crate) origin: Origin,
 }
 
-/// What a device is made from.
+/// Source backing a placed analog device.
 #[derive(Debug)]
 pub(crate) enum Origin {
-    /// A model, from the instance's parameters.
+    /// Standard or custom model instantiated from instance parameters.
     Model(Made),
-    /// A threshold detector, the connect element of a logic input.
+    /// Threshold detector connect element for a logic input.
     Detector(ThresholdDetectorParameters),
-    /// A logic driver, the connect element of a logic output.
+    /// Logic driver connect element for a logic output.
     Driver(LogicDriverParameters),
 }
 
-/// What a model made a device from: the instance's parameters, read once into the
-/// specification its kernel's instance is made of, and as they are written.
+/// Parsed model specification paired with the raw parameters and model handle.
 pub(crate) struct Made {
-    /// The model, which reads the parameters again when a run replaces some of their
-    /// numbers.
+    /// Model handle used to re-parse parameters when a run overrides numeric values.
     pub(crate) model: Arc<dyn Model>,
     pub(crate) specification: Box<dyn Specification>,
     pub(crate) parameters: Parameters,
@@ -170,11 +157,11 @@ impl fmt::Debug for Made {
     }
 }
 
-/// The run of the groups of a run's instances, prepared.
+/// Prepared kernel run storage for a single simulation.
 pub(crate) type Devices = Runs;
 
 impl Origin {
-    /// The device as an instance of a kernel.
+    /// Builds a kernel [`Instance`] from this device origin.
     pub(crate) fn kernel(&self) -> Instance<'_> {
         match self {
             Self::Model(made) => made.specification.kernel(),
@@ -187,77 +174,75 @@ impl Origin {
 }
 
 impl Placed {
-    /// Where the instance is: its path and the script line that placed it.
+    /// Returns the instance path and script source location.
     #[must_use]
     pub fn location(&self) -> &Location {
         &self.template.location
     }
 
-    /// The instance's path through the hierarchy, such as `amplifier/R1`.
+    /// Returns the hierarchical instance path, such as `amplifier/R1`.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.template.location.path
     }
 
-    /// The name of the device's model, such as `resistor`.
+    /// Returns the device model name, such as `resistor`.
     #[must_use]
     pub fn model(&self) -> &'static str {
         self.template.model
     }
 
-    /// The names of the device's terminals, in the order of [`Placed::nodes`].
+    /// Returns the device terminal names in the order of [`Placed::nodes`].
     #[must_use]
     pub fn terminals(&self) -> &[String] {
         &self.template.interface.terminals
     }
 
-    /// The device's thermal terminals, by index among [`Placed::terminals`].
+    /// Returns the indices of thermal terminals within [`Placed::terminals`].
     #[must_use]
     pub fn thermal(&self) -> &[usize] {
         &self.template.interface.thermal
     }
 
-    /// The device's branches between its terminals.
+    /// Returns the device branches connecting its terminals.
     #[must_use]
     pub fn branches(&self) -> &[jolty_models::Branch] {
         &self.template.interface.branches
     }
 
-    /// The node each terminal joins: a node voltage's unknown, or `None` for the reference.
+    /// Returns the node joined by each terminal, with `None` representing ground.
     #[must_use]
     pub fn nodes(&self) -> &[Node] {
         &self.template.nodes
     }
 
-    /// The device's internal unknowns, such as a transistor's internal drain behind its
-    /// series resistance, by index among the unknowns.
+    /// Returns the range of unknown indices for internal nodes such as a transistor's internal
+    /// drain behind series resistance.
     #[must_use]
     pub fn internals(&self) -> Range<usize> {
         self.first_internal..self.first_internal + self.internals
     }
 
-    /// The names of the variables the device computes, such as a transistor's
-    /// `threshold_voltage`.
+    /// Returns the names of computed device variables, such as `threshold_voltage`.
     #[must_use]
     pub fn variable_names(&self) -> &'static [&'static str] {
         self.variables
     }
 
-    /// The regions of operation the device's equations distinguish, which its variable
-    /// [`REGION`](jolty_models::REGION) numbers, and its margins to their boundaries: none
-    /// for a device that is no transistor.
+    /// Returns the operating regions numbered by [`REGION`](jolty_models::REGION) and their
+    /// boundary margins, or an empty set for non-transistors.
     #[must_use]
     pub const fn regions(&self) -> Regions {
         self.regions
     }
 
-    /// Whether the device was made from its own parameters, at its circuit's temperature,
-    /// as a run that replaces none of its numbers makes it.
+    /// Reports whether the device was bound from unmodified circuit parameters at the circuit
+    /// temperature.
     pub(crate) const fn nominal(&self) -> bool {
         self.nominal
     }
 
-    /// Whether the device is a foundry's, which no analysis solves.
+    /// Reports whether the device uses a foundry model unsupported by standard analyses.
     #[must_use]
     pub fn foundry(&self) -> bool {
         match &self.template.origin {
@@ -266,9 +251,10 @@ impl Placed {
         }
     }
 
-    /// The parameters a model made the device from, as the elaborated circuit gives them,
-    /// or `None` for a connect element. A run whose values replace some of their numbers
-    /// makes its device from those numbers instead.
+    /// Returns the nominal model parameters from elaboration, or `None` for connect elements.
+    ///
+    /// Runs whose [`Values`] override numeric entries instantiate devices from those overrides
+    /// instead.
     #[must_use]
     pub fn parameters(&self) -> Option<&Parameters> {
         match &self.template.origin {
@@ -278,31 +264,31 @@ impl Placed {
     }
 }
 
-/// The structure a circuit takes under some values, against that of the elaborated circuit
-/// that finds it, [`Elaborated::structure_of`]: each device whose unknowns or entries
-/// differ from those the circuit holds, with those it claims under the values. The values
-/// of one elaborated circuit share a structure when their keys are equal, and keep the
-/// circuit's own when their key is empty.
+/// Structural delta between an elaborated circuit and the topology induced by a [`Values`]
+/// override, returned by [`Elaborated::structure_of`].
+///
+/// Entries list every device whose internal unknowns or matrix entries differ from the base
+/// circuit. Two [`Values`] sets share a structure when their keys match, and an empty key
+/// indicates that the base circuit structure is preserved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StructureKey(Vec<(usize, Layout)>);
 
 impl StructureKey {
-    /// Whether the values keep the structure of the elaborated circuit that found the key.
+    /// Reports whether the evaluated values preserve the base elaborated circuit structure.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// The devices whose unknowns or entries the values change, by index among
-    /// [`Simulator::devices`](crate::Simulator::devices), in order.
+    /// Yields indices into [`Simulator::devices`](crate::Simulator::devices) for devices whose
+    /// unknowns or entries change, in order.
     pub fn devices(&self) -> impl Iterator<Item = usize> + '_ {
         self.0.iter().map(|&(device, _)| device)
     }
 }
 
-/// What a device claims: its internal unknowns, numbered from those of the elaborated
-/// circuit, the position of each of its entries, in order, and the variables it computes
-/// and the regions they number.
+/// Structural claims of a device: internal unknowns, matrix entry positions, variable names,
+/// and operating regions.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Layout {
     internals: Vec<Unknown>,
@@ -311,8 +297,7 @@ struct Layout {
     regions: Regions,
 }
 
-/// The devices and the summed terminals of a circuit, each by index, sorted by path and
-/// by name, to find one by either.
+/// Sorted index vectors enabling binary search of devices by path and summed terminals by name.
 #[derive(Debug, Clone)]
 struct Index {
     devices: Vec<usize>,
@@ -320,8 +305,7 @@ struct Index {
 }
 
 impl Index {
-    /// The index of `devices` and `summed_terminals`, whose paths and names are each
-    /// unique.
+    /// Builds path-sorted device indices and name-sorted summed-terminal indices.
     fn new(devices: &[Placed], summed_terminals: &[SummedTerminal]) -> Self {
         let mut by_path: Vec<usize> = (0..devices.len()).collect();
         by_path.sort_unstable_by(|&a, &b| devices[a].path().cmp(devices[b].path()));
@@ -334,8 +318,8 @@ impl Index {
     }
 }
 
-/// What binding devices one after another builds: the unknowns, the entries they claim, the
-/// devices placed, and the groups of their instances, with their numbers prepared.
+/// Accumulator binding devices sequentially into unknowns, sparsity pattern entries, and
+/// kernel groups.
 pub(crate) struct Binder {
     unknowns: Vec<Unknown>,
     builder: PatternBuilder,
@@ -346,7 +330,8 @@ pub(crate) struct Binder {
     temperature: f64,
 }
 
-/// What a [`Binder`] built, once every device is bound.
+/// Finalized device bindings, sparsity pattern, condensation map, and ordering from
+/// [`Binder::finish`].
 pub(crate) struct Bound {
     pub(crate) unknowns: Vec<Unknown>,
     pub(crate) placed: Vec<Placed>,
@@ -361,8 +346,8 @@ pub(crate) struct Bound {
 }
 
 impl Binder {
-    /// A binder of devices at `temperature`, in kelvins, after the node voltages `nodes`,
-    /// whose diagonal entries it claims first.
+    /// Creates a device binder at `temperature` (kelvins) initialized with `nodes` and their
+    /// diagonal entries.
     pub(crate) fn new(nodes: Vec<Unknown>, temperature: f64) -> Self {
         let mut builder = PatternBuilder::new();
         let node_diagonals = (0..nodes.len())
@@ -379,13 +364,15 @@ impl Binder {
         }
     }
 
-    /// Adds the instance of the device of `template` that `origin` makes, its template's own
-    /// unless given, to its group, binding it to new internal unknowns and entries;
-    /// `nominal` when it is made from its own parameters at its circuit's temperature.
+    /// Binds a device from `template` using `origin` (or the template's nominal origin) into
+    /// its kernel group, recording new internal unknowns and matrix entries.
+    ///
+    /// Sets `nominal` to indicate unmodified circuit parameters at the circuit temperature.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when a parameter is out of range; nothing is placed.
+    /// Returns [`ParameterError`] if any parameter is out of range, leaving the binder
+    /// unchanged.
     pub(crate) fn bind(
         &mut self,
         template: Arc<Template>,
@@ -416,12 +403,13 @@ impl Binder {
         Ok(())
     }
 
-    /// The devices bound, with the pattern of the entries they claimed and its ordering.
+    /// Finalizes all bound devices, building the sparsity pattern, static condensation, and
+    /// ordering.
     ///
     /// # Errors
     ///
-    /// Returns [`ElaborationProblem::TooLarge`] when the ordering does not fit in memory, or
-    /// the groups' slab more places than they index.
+    /// Returns [`ElaborationProblem::TooLarge`] if the ordering exceeds memory limits or a
+    /// kernel group slab overflows its index space.
     pub(crate) fn finish(mut self) -> Result<Bound, ElaborationError> {
         let pattern = Arc::new(self.builder.finish(self.unknowns.len()));
         let too_large = || ElaborationError::from(ElaborationProblem::TooLarge);
@@ -455,13 +443,12 @@ impl Binder {
     }
 }
 
-/// A circuit elaborated for the structure some values give it, the devices made for them,
-/// and the origins of those whose numbers they replace, by device.
+/// Tuple of a restructured [`Elaborated`] circuit, its bound [`Devices`], and per-device
+/// patched origins.
 pub(crate) type Rebound = (Elaborated, Devices, Vec<Option<Origin>>);
 
-/// What a run's devices are made from: an elaborated circuit, the origins its values
-/// give the devices whose numbers they replace, by device, none when they replace none,
-/// those of the devices a sweep holds elsewhere, by device, and its temperature.
+/// Effective device origins for a run, combining base elaboration, value patches, sweep
+/// overrides, and temperature.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Origins<'a> {
     pub(crate) elaborated: &'a Elaborated,
@@ -471,7 +458,8 @@ pub(crate) struct Origins<'a> {
 }
 
 impl Origins<'_> {
-    /// What the device at `index` is made from.
+    /// Returns the active [`Origin`] for device `index`, prioritizing sweep overrides over value
+    /// patches and nominal origins.
     pub(crate) fn of(&self, index: usize) -> &Origin {
         self.swept
             .get(&index)
@@ -481,13 +469,13 @@ impl Origins<'_> {
 }
 
 impl Elaborated {
-    /// Elaborates `circuit` with the models of `library`, in `structure`, at 27 °C, as a
-    /// run takes it whose values replace no number.
+    /// Elaborates `circuit` against `library` under `structure` at the reference temperature
+    /// (27 °C).
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing reference
-    /// node, an unknown model, wrongly connected terminals, or invalid parameters.
+    /// Returns every [`ElaborationProblem`] found, including invalid structure, missing ground,
+    /// unknown models, bad terminal connections, or invalid parameters.
     pub fn new(
         circuit: &Circuit,
         library: &Library,
@@ -503,8 +491,8 @@ impl Elaborated {
         Ok(Arc::new(elaborated))
     }
 
-    /// Assembles the circuit from what elaboration found and the devices `bound`, at
-    /// `temperature`.
+    /// Assembles an [`Elaborated`] circuit and its [`Devices`] from `bound`, `logic`,
+    /// `summed_terminals`, `reference`, and `temperature`.
     pub(crate) fn assemble(
         bound: Bound,
         logic: LogicSystem,
@@ -532,21 +520,21 @@ impl Elaborated {
         (elaborated, bound.devices)
     }
 
-    /// The positions of the largest diagonal block of the minimum degree's ordering.
+    /// Returns the dimension of the largest diagonal block in the minimum-degree ordering.
     pub(crate) fn largest_block(&self) -> usize {
         self.ordering.largest_block()
     }
 
-    /// The ordering a run's solver factors with, as `dissecting` orders the pattern: the
-    /// minimum degree's, shared by every run, without `dissecting` or where it dissects no
-    /// block, as where no block holds more unknowns than an interior, and else the one it
-    /// dissects, made the
-    /// first time a run asks for it and shared by every run after. Two runs that ask at
-    /// once may each make it, which gives the same ordering, and the first kept is shared.
+    /// Returns the sparse ordering for `dissecting`, computing and caching dissected orderings
+    /// on demand.
+    ///
+    /// Returns the shared minimum-degree ordering when `dissecting` is `None` or when no block
+    /// exceeds the interior threshold. Concurrent requests may compute the same ordering, and
+    /// the first stored entry is shared thereafter.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::TooLarge`] when the ordering does not fit in memory.
+    /// Returns [`SimulationError::TooLarge`] if the ordering does not fit in memory.
     pub(crate) fn ordering(
         &self,
         dissecting: Option<Dissecting>,
@@ -574,23 +562,20 @@ impl Elaborated {
         Ok(Arc::clone(kept().entry(dissecting).or_insert_with(|| made)))
     }
 
-    /// The unknowns, in the order of every solution's values.
+    /// Returns all system unknowns in solution-vector order.
     #[must_use]
     pub fn unknowns(&self) -> &[Unknown] {
         &self.unknowns
     }
 
-    /// The analog devices, with every component instance unfolded, in the order they were
-    /// placed, then the connect elements of the logic devices' pins that join electrical
-    /// nets.
+    /// Returns all placed analog devices in traversal order, followed by logic connect elements.
     #[must_use]
     pub fn devices(&self) -> &[Placed] {
         &self.devices
     }
 
-    /// The parameter of the number at the path `name` among the parameters of the device at
-    /// `path`, such as `X1/R1` and `resistance`, or `waveform.dc`, if the circuit writes one
-    /// there.
+    /// Looks up the [`ParameterId`] for numeric parameter `name` (such as `resistance` or
+    /// `waveform.dc`) on device `path`.
     #[must_use]
     pub fn parameter(&self, path: &str, name: &str) -> Option<ParameterId> {
         let device = self.device(path)?;
@@ -614,21 +599,20 @@ impl Elaborated {
         self.lookup().table.parameter(device, place?)
     }
 
-    /// The nominal value of every parameter, by its index: the number the circuit writes.
+    /// Returns the slice of nominal parameter values indexed by [`ParameterId`].
     #[must_use]
     pub fn nominal(&self) -> &[f64] {
         self.lookup().table.nominal()
     }
 
-    /// The values that replace the numbers `overrides` gives, by the device's path then by
-    /// the number's path among its parameters, such as `X1/R1` and `resistance`, at
-    /// `temperature`, in kelvins, or at the circuit's own with `None`.
+    /// Resolves `overrides` (keyed by device path then parameter path) and optional
+    /// `temperature` (kelvins) into a [`Values`] bundle.
     ///
     /// # Errors
     ///
-    /// Returns every path the circuit has no device at, every number a device's parameters
-    /// do not write, and every number of a logic device, which elaborating the circuit reads
-    /// once into the structure of its logic.
+    /// Returns problems for unknown device paths, unrecognized parameter paths, and overrides
+    /// targeting logic devices, whose parameters are baked into the logic partition during
+    /// elaboration.
     pub fn values(
         &self,
         overrides: &BTreeMap<String, BTreeMap<String, f64>>,
@@ -667,14 +651,13 @@ impl Elaborated {
         }
     }
 
-    /// The structure the circuit takes under `values`: each device whose unknowns or entries
-    /// differ, made from the numbers they give at their temperature, from those this
-    /// circuit holds.
+    /// Computes the [`StructureKey`] describing devices whose unknowns or matrix entries differ
+    /// under `values`.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make: each parameter the circuit
-    /// does not have, and each device whose numbers they put out of range.
+    /// Returns every [`ElaborationProblem`] caused by unknown parameter indices or out-of-range
+    /// numeric values.
     pub fn structure_of(&self, values: &Values) -> Result<StructureKey, ElaborationError> {
         let temperature = self.temperature_of(values);
         let patched = self.patch(values)?;
@@ -706,24 +689,23 @@ impl Elaborated {
         }
     }
 
-    /// The circuit elaborated for the structure `values` give it: its devices made from
-    /// their numbers at their temperature, each claiming its unknowns and entries afresh,
-    /// with the nominal numbers, the temperature and everything else of this circuit's, so
-    /// that the same values make the same devices of either.
+    /// Builds a new [`Elaborated`] circuit whose devices are bound with the structure induced by
+    /// `values`.
+    ///
+    /// Preserves the base circuit's nominal parameter table and reference temperature so the
+    /// same [`Values`] produce identical devices on either circuit.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make, as
-    /// [`Elaborated::structure_of`] does, and [`ElaborationProblem::TooLarge`] when the new
-    /// structure's system is too large to factor.
+    /// Returns any [`ElaborationProblem`] produced by `values`, or
+    /// [`ElaborationProblem::TooLarge`] if the rebuilt system exceeds factorization limits.
     pub fn restructured(&self, values: &Values) -> Result<Arc<Self>, ElaborationError> {
         let (restructured, _, _) = self.rebind(values)?;
         Ok(Arc::new(restructured))
     }
 
-    /// The circuit elaborated for the structure `values` give it, as
-    /// [`Elaborated::restructured`] says, with the devices made for them and the origins
-    /// of those whose numbers they replace.
+    /// Rebinds the circuit under `values`, returning the restructured circuit, bound devices,
+    /// and patched origins.
     pub(crate) fn rebind(&self, values: &Values) -> Result<Rebound, ElaborationError> {
         let temperature = self.temperature_of(values);
         let patched = self.patch(values)?;
@@ -764,27 +746,26 @@ impl Elaborated {
         Ok((restructured, bound.devices, patched))
     }
 
-    /// The temperature its devices are made at, in kelvins, unless a run's values give
-    /// another.
+    /// Returns the default device temperature in kelvins used when a run provides no override.
     #[must_use]
     pub fn temperature(&self) -> f64 {
         self.temperature
     }
 
-    /// The temperature a run of `values` makes its devices at, in kelvins.
+    /// Returns the effective device temperature in kelvins for `values`.
     pub(crate) fn temperature_of(&self, values: &Values) -> f64 {
         values.temperature.unwrap_or(self.temperature)
     }
 
-    /// What each device is made from under `values`, by device: those whose numbers they
-    /// replace, read again from their parameters with the numbers replaced, and `None` for
-    /// the others, which are made from their own; none at all when they replace none.
+    /// Re-parses modified devices under `values`, returning per-device patched origins.
+    ///
+    /// Unmodified devices receive `None`, and an empty vector is returned when `values` carries
+    /// no parameter patches.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make: a parameter the circuit does not
-    /// have, a parameter its model no longer reads, a number that is not finite, or numbers
-    /// that change the device's terminals.
+    /// Returns problems for out-of-range parameter indices, non-finite values, rejected model
+    /// parameters, or overrides that alter a device's terminal interface.
     pub(crate) fn patch(&self, values: &Values) -> Result<Vec<Option<Origin>>, ElaborationError> {
         let replaced = values.patches();
         let mut origins: Vec<Option<Origin>> = Vec::new();
@@ -820,7 +801,8 @@ impl Elaborated {
         }
     }
 
-    /// The numbers `values` replace among those of the device at `index`, in order.
+    /// Returns the sorted slice of `(ParameterId, f64)` overrides targeting device `index` in
+    /// `values`.
     pub(crate) fn patches_of<'a>(
         &self,
         values: &'a Values,
@@ -833,13 +815,12 @@ impl Elaborated {
         &patches[first..last]
     }
 
-    /// What the device at `index`, an independent source, is made from held at `value`:
-    /// its model's device from the parameters of a source of that constant value.
+    /// Builds a constant-source [`Origin`] holding independent source `index` at `value`.
     ///
     /// # Errors
     ///
-    /// Returns the problem of a device its model does not make from those parameters, or
-    /// whose terminals they change.
+    /// Returns an [`ElaborationProblem`] if the device is a connect element, rejects the held
+    /// parameters, or changes its terminal interface.
     pub(crate) fn held_at(
         &self,
         index: usize,
@@ -857,8 +838,7 @@ impl Elaborated {
         self.read(index, made, parameters)
     }
 
-    /// What the device at `index` is made from with the numbers `patches` replace, each a
-    /// parameter of it.
+    /// Re-parses device `index` with numeric `patches` applied to its nominal parameters.
     pub(crate) fn patched(
         &self,
         index: usize,
@@ -884,7 +864,7 @@ impl Elaborated {
                 .map_or_else(String::new, |(name, _)| name);
             return Err(Box::new(ElaborationProblem::Parameters {
                 at: at(),
-                message: format!("the value of `{name}` must be finite, not {value:?}"),
+                message: format!("parameter `{name}` requires a finite value; got {value:?}"),
             }));
         }
         let mut parameters = made.parameters.clone();
@@ -904,12 +884,13 @@ impl Elaborated {
         self.read(index, made, parameters)
     }
 
-    /// What the model of `made`, the origin of the device at `index`, makes of `parameters`.
+    /// Parses `parameters` with the model in `made` for device `index` and verifies its
+    /// interface.
     ///
     /// # Errors
     ///
-    /// Returns the problem of parameters the model does not read, or that change the
-    /// device's terminals.
+    /// Returns an [`ElaborationProblem`] if the model rejects `parameters` or if the resulting
+    /// terminal interface differs from the elaborated template.
     fn read(
         &self,
         index: usize,
@@ -939,7 +920,7 @@ impl Elaborated {
         }))
     }
 
-    /// What the device at `index` claims when its instance is made from `origin` at
+    /// Computes the structural [`Layout`] claimed by device `index` using `origin` at
     /// `temperature`.
     fn layout(
         &self,
@@ -966,7 +947,7 @@ impl Elaborated {
         })
     }
 
-    /// The problem of the device at `index` that `error` describes.
+    /// Wraps a [`ParameterError`] for device `index` as an [`ElaborationProblem::Parameters`].
     pub(crate) fn problem(&self, index: usize, error: ParameterError) -> ElaborationProblem {
         ElaborationProblem::Parameters {
             at: self.devices[index].location().clone(),
@@ -974,18 +955,18 @@ impl Elaborated {
         }
     }
 
-    /// The index of the devices' paths and the table of their numbers.
+    /// Returns the lazily initialized path index and numeric parameter table.
     fn lookup(&self) -> &Lookup {
         self.lookup
             .get_or_init(|| Lookup::new(&self.devices, &self.summed_terminals))
     }
 
-    /// Where the device at `path` is: its path and the script line that placed it.
+    /// Looks up the [`Location`] of the device at `path`.
     pub(crate) fn location(&self, path: &str) -> Option<Location> {
         Some(self.devices[self.device(path)?].location().clone())
     }
 
-    /// The device at `path`, by its index.
+    /// Looks up the device index for hierarchical `path`.
     pub(crate) fn device(&self, path: &str) -> Option<usize> {
         let found = self
             .lookup()
@@ -996,9 +977,8 @@ impl Elaborated {
         Some(self.lookup().index.devices[found])
     }
 
-    /// The node that the terminal `terminal` of the device, component instance or logic
-    /// device at `instance` joins, and whether it is thermal, as
-    /// [`Simulator::terminal`](crate::Simulator::terminal) says.
+    /// Looks up the node and thermal flag for `terminal` on `instance`, matching
+    /// [`Simulator::terminal`](crate::Simulator::terminal).
     pub(crate) fn terminal(&self, instance: &str, terminal: &str) -> Option<(Node, bool)> {
         if let Some(index) = self.device(instance) {
             let device = &self.devices[index];
@@ -1024,9 +1004,10 @@ impl Elaborated {
     }
 }
 
-/// The number `value` written where the parameters write `written`: as an integer where
-/// they write one and `value` is a whole number an integer holds exactly, so that a model
-/// reads it as the circuit's own, and else as a real number.
+/// Encodes `value` matching the JSON numeric type of `written`.
+///
+/// Preserves integer encoding when `written` is an integer and `value` is an exact whole
+/// number within IEEE 754 binary64 precision; otherwise encodes as floating point.
 fn written(written: &Value, value: f64) -> Value {
     /// The largest magnitude below which every whole number is exact in IEEE 754 binary64
     /// (`f64`): `2^53` (53-bit significand precision, `f64::MANTISSA_DIGITS`).
@@ -1044,14 +1025,14 @@ fn written(written: &Value, value: f64) -> Value {
     }
 }
 
-/// Disjoint sets of nodes, merged by union by size with path halving.
+/// Disjoint-set structure over indexed nodes using union by size with path halving.
 pub struct Partition {
     parents: Vec<usize>,
     sizes: Vec<usize>,
 }
 
 impl Partition {
-    /// `count` nodes, each in a set of its own.
+    /// Creates a partition of `count` singleton sets.
     #[must_use]
     pub fn new(count: usize) -> Self {
         Self {
@@ -1060,7 +1041,7 @@ impl Partition {
         }
     }
 
-    /// The representative of the set holding `node`.
+    /// Returns the representative element of the set containing `node`.
     pub fn find(&mut self, mut node: usize) -> usize {
         while self.parents[node] != node {
             self.parents[node] = self.parents[self.parents[node]];
@@ -1069,7 +1050,7 @@ impl Partition {
         node
     }
 
-    /// Merges the sets holding `a` and `b`; returns whether they were apart.
+    /// Merges the sets containing `a` and `b`, returning whether they were previously distinct.
     pub fn union(&mut self, a: usize, b: usize) -> bool {
         let (mut a, mut b) = (self.find(a), self.find(b));
         if a == b {

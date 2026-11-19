@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-# The types of the Rust extension module; its documentation lives with the Rust code.
+# Type stubs for the Rust extension module; documentation lives in the Rust source.
 
 from collections.abc import Callable
 from typing import Literal, Self, TypedDict, final

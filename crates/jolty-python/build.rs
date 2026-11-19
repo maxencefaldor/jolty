@@ -1,5 +1,5 @@
 // Copyright 2026 Maxence Faldor
-//! Bundle the offline guide pages and example scripts into `OUT_DIR/docs.json`.
+//! Build script that bundles offline guide pages and example scripts into `OUT_DIR/docs.json`.
 //!
 //! `maturin` includes `docs.json` from `OUT_DIR` into `jolty/assets/` so wheels and
 //! editable installs carry the guide and examples offline without duplicating their

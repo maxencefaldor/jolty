@@ -5,12 +5,12 @@ use serde_json::{Value, json};
 
 use crate::common::voltage_source;
 
-/// A sinusoidal waveform of `offset`, `amplitude` and `frequency`.
+/// Builds a sinusoidal waveform of `offset`, `amplitude`, and `frequency`.
 pub(crate) fn sine(offset: f64, amplitude: f64, frequency: f64) -> Value {
     json!({"sine": {"offset": offset, "amplitude": amplitude, "frequency": frequency}})
 }
 
-/// A grounded sinusoidal voltage source named `name` at `positive` over `0`.
+/// Builds a grounded sinusoidal voltage source named `name` at `positive` over `0`.
 pub(crate) fn voltage_sine(
     name: &str,
     positive: &str,

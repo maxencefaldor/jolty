@@ -1,14 +1,10 @@
-//! The twins a derivative evaluates: each device's instance prepared again, computing with
-//! the derivatives of every number along some directions of its parameters, its seeds, so
-//! that one evaluation gives `∂F/∂p` along all of them.
+//! Dual-number device twins for exact parameter and unknown directional differentiation.
 //!
-//! A derivative is with respect to columns, each a direction of the parameters on one
-//! device. For a VJP, and for the sensitivity and mismatch analyses and the objectives
-//! built on it, each column is one parameter, its unit; for a JVP, each is one tangent's
-//! components on one device's parameters, so that a tangent costs a device one seed
-//! however many of its parameters it moves. A device's columns share its twins, up to
-//! [`Seeds::MAX`] to a twin, each prepared once and evaluated once for all its seeds;
-//! each seed's numbers are those of a twin of that seed alone, bit for bit.
+//! Each derivative column represents a parameter perturbation direction on one device. VJP,
+//! sensitivity, mismatch, and objective analyses use unit parameter columns, whereas JVP
+//! packs all parameter rates for one tangent on a device into a single seed. Columns on the
+//! same device share batched twins of up to [`Seeds::MAX`] seeds, producing bit-identical
+//! derivatives to single-seed evaluation.
 
 use std::collections::BTreeMap;
 
@@ -22,62 +18,62 @@ use crate::sensitivity::Parameter;
 use crate::state::Held;
 use crate::sweep::Swept;
 
-/// What a column differentiates along: a direction of one device's parameters.
+/// Parameter perturbation direction on a single device.
 struct Direction {
-    /// The device, by its index.
+    /// Target device index.
     device: usize,
-    /// Each number of its parameters the direction moves, by its path, with its rate.
+    /// Parameter path and rate pairs moved along this direction.
     rates: Vec<(String, f64)>,
 }
 
-/// Which of a twin's derivatives a quantity reads.
+/// Selector between residual and charge partial derivatives from a twin.
 #[derive(Clone, Copy)]
 pub(crate) enum Part {
-    /// `∂f/∂p`.
+    /// Residual partial derivative `∂f/∂p`.
     Residual,
-    /// `∂q/∂p`.
+    /// Charge partial derivative `∂q/∂p`.
     Charge,
 }
 
-/// One device's twin, and the columns its seeds are, in their order.
+/// Batched dual-number twin for one device together with the column indices mapped to its
+/// seeds.
 struct Chunk {
     device: usize,
     twin: Twin,
     columns: Vec<usize>,
 }
 
-/// Where a column's derivatives lie: its chunk, by its index, and its seed there.
+/// Location of a derivative column inside `Twins`: chunk index and seed slot.
 #[derive(Clone, Copy)]
 struct Place {
     chunk: usize,
     seed: usize,
 }
 
-/// The twins of some columns: each chunk, each column's place, and the columns along a
-/// number no model reads as a real one, which no twin carries, in increasing order.
+/// Chunked twin collection along with column locations and sorted indices of unread
+/// non-real parameter columns.
 struct Chunked {
     chunks: Vec<Chunk>,
     places: Vec<Place>,
     unread: Vec<usize>,
 }
 
-/// The twins of a derivative's columns.
+/// Batched dual-number twins covering all active derivative columns.
 pub(crate) struct Twins {
-    /// The parameters the derivative is with respect to, in their order, each at its value.
+    /// Differentiated parameters in output order, each carrying its nominal value.
     pub(crate) parameters: Vec<Parameter>,
     chunks: Vec<Chunk>,
-    /// Each column's direction.
+    /// Perturbation direction for each kept column.
     directions: Vec<Direction>,
-    /// Each column's place.
+    /// Chunk and seed location for each kept column.
     places: Vec<Place>,
-    /// Whether a sweep holds each column's numbers, which then moves nothing: its device's
-    /// value, or every number of the column.
+    /// Flags marking columns held fixed by an active DC sweep (yielding zero derivative).
     fixed: Vec<bool>,
 }
 
 impl Twins {
-    /// The twins `chunked` of `directions`, the derivative being with respect to
-    /// `parameters`, the columns no twin carries left out.
+    /// Builds [`Twins`] from `parameters`, `directions`, and `chunked`, discarding columns
+    /// omitted as unread.
     fn new(parameters: Vec<Parameter>, directions: Vec<Direction>, chunked: Chunked) -> Self {
         let Chunked {
             mut chunks,
@@ -109,13 +105,13 @@ impl Twins {
         }
     }
 
-    /// How many columns there are.
+    /// Returns the number of active derivative columns.
     pub(crate) const fn len(&self) -> usize {
         self.directions.len()
     }
 
-    /// Evaluates each twin where its device is: at the solution `x`, at `time` in a
-    /// transient analysis or, with `None`, at an operating point or about one.
+    /// Evaluates every twin at solution `x`, optional transient `time`, and `gmin` across
+    /// `parallelism`.
     pub(crate) fn evaluate(
         &mut self,
         x: &[f64],
@@ -132,9 +128,8 @@ impl Twins {
         );
     }
 
-    /// `sign · aᵀ ∂f/∂p` or `sign · aᵀ ∂q/∂p`, as `part` names, along each column for each
-    /// `a` of `vectors`, by column then vector, as the twins were last evaluated: each
-    /// twin's own terms alone, zero for a column a sweep holds.
+    /// Computes `sign * a^T ∂f/∂p` or `sign * a^T ∂q/∂p` (selected by `part`) for every
+    /// column and adjoint vector in `vectors`, returning zero for sweep-held columns.
     pub(crate) fn dots(
         &mut self,
         part: Part,
@@ -169,9 +164,8 @@ impl Twins {
         found
     }
 
-    /// `Σ t_j ∂f/∂p_j` or `Σ t_j ∂q/∂p_j` along `direction`, a number per column, by
-    /// unknown, among `dimension`, as the twins were last evaluated; a column a sweep holds
-    /// moves nothing.
+    /// Computes the weighted sum `Σ direction[j] ∂(part)/∂p_j` across unknowns of length
+    /// `dimension`, skipping sweep-held columns.
     pub(crate) fn combined(&self, direction: &[f64], dimension: usize, part: Part) -> Vec<f64> {
         let mut values = vec![0.0; dimension];
         for (column, &along) in direction.iter().enumerate() {
@@ -187,9 +181,8 @@ impl Twins {
         values
     }
 
-    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` along `column` at the angular frequency `omega` and the
-    /// phasors `x`, for the vector `a` of the equations, as last evaluated: its twin's own
-    /// entries alone, each at its row and column of `positions`.
+    /// Evaluates `a^T (∂G/∂p + jω ∂C/∂p) x` for `column` at angular frequency `omega` and
+    /// phasors `x` using sparse slot `positions`.
     pub(crate) fn product(
         &self,
         column: usize,
@@ -210,8 +203,8 @@ impl Twins {
             .sum()
     }
 
-    /// Adds `scale (∂G/∂p + jω ∂C/∂p) x` along `column` at the angular frequency `omega`
-    /// and the phasors `x` to `into`, as last evaluated.
+    /// Accumulates `scale * (∂G/∂p + jω ∂C/∂p) x` for `column` at angular frequency
+    /// `omega` and phasors `x` into `into`.
     pub(crate) fn add_product(
         &self,
         column: usize,
@@ -229,10 +222,8 @@ impl Twins {
         }
     }
 
-    /// Holds the columns of the device a sweep holds, `swept`, as it now is: every one, a
-    /// source held at a value, whose waveform the value replaces; or of a number held, the
-    /// columns that move it alone, its device's twins made again from what its instance is
-    /// made of now, without it.
+    /// Freezes columns overridden by a DC sweep on `swept` and rebuilds remaining twins on
+    /// that device excluding the held parameter.
     pub(crate) fn hold(&mut self, simulator: &Simulator, swept: &Swept, parameter: Option<&str>) {
         let held = match swept.held {
             Held::Value(_) => None,
@@ -270,14 +261,15 @@ impl Twins {
     }
 }
 
-/// The input that evaluates a twin at `x`, at `time`, with `gmin`, its steps unlimited.
+/// Builds an evaluation [`Input`] at `x`, `time`, and `gmin` with voltage limiting
+/// disabled.
 fn unlimited(x: &[f64], time: Option<f64>, gmin: f64) -> Input<'_> {
     let mut input = Input::new(x, time, gmin);
     input.limiting = false;
     input
 }
 
-/// One of the two unboxed iterators over a [`Twin`]'s residuals or charges.
+/// Unboxed iterator unifying [`Twin`] residual and charge contribution streams.
 enum ContributionIterator<R, C> {
     /// Residual contributions.
     Residual(R),
@@ -307,7 +299,7 @@ where
     }
 }
 
-/// The residuals or charges, `part`, `twin` adds, as last evaluated.
+/// Returns an iterator over residual or charge dual contributions from `twin` per `part`.
 fn contributions(
     twin: &Twin,
     part: Part,
@@ -318,16 +310,15 @@ fn contributions(
     }
 }
 
-/// `aᵀ ∂f/∂p` or `aᵀ ∂q/∂p` along the seed `seed` of `twin`, as last evaluated.
+/// Computes the dot product `a^T ∂(part)/∂p` along `seed` of `twin`.
 fn dot(twin: &Twin, part: Part, seed: usize, a: &[f64]) -> f64 {
     contributions(twin, part)
         .map(|(unknown, (_, derivatives))| a[unknown] * derivatives[seed])
         .sum()
 }
 
-/// The seeds of `columns`, each direction one seed, every number it moves at its rate
-/// along it; the number `held` left out. [`Seeds::new`] sums the rates of a number that
-/// several directions, or one direction twice, move.
+/// Builds [`Seeds`] assigning one seed per column in `columns` while excluding `held`;
+/// [`Seeds::new`] sums duplicate parameter rates.
 fn seeds(columns: &[&Direction], held: Option<&str>) -> Option<Seeds> {
     let count = columns.len();
     let numbers = columns
@@ -348,8 +339,7 @@ fn seeds(columns: &[&Direction], held: Option<&str>) -> Option<Seeds> {
     Seeds::new(numbers, count)
 }
 
-/// A direction for each of `parameters`, each a device's index and one of its numbers,
-/// that moves that number alone, at the unit rate.
+/// Builds unit perturbation directions for each `(device, parameter)` entry in `parameters`.
 fn units(parameters: &[(usize, Parameter)]) -> Vec<Direction> {
     parameters
         .iter()
@@ -360,8 +350,8 @@ fn units(parameters: &[(usize, Parameter)]) -> Vec<Direction> {
         .collect()
 }
 
-/// The order `items` first name each device in, and the indices of the items of each, in
-/// their order: linear in the items, however many devices they name.
+/// Groups indices of `items` by device in first-seen order in linear time regardless of
+/// device count.
 fn by_device<T>(items: &[T], device: impl Fn(&T) -> usize) -> Vec<(usize, Vec<usize>)> {
     let mut position: BTreeMap<usize, usize> = BTreeMap::new();
     let mut grouped: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -377,9 +367,8 @@ fn by_device<T>(items: &[T], device: impl Fn(&T) -> usize) -> Vec<(usize, Vec<us
 }
 
 impl Simulator {
-    /// The twins of `parameters`, each a device's index and one of its numbers, a column
-    /// each, the unit along it; and the parameters no model reads as a real number, as it
-    /// reads a choice, such as a level, or out of range, which they leave out.
+    /// Builds unit-seeded [`Twins`] for `parameters` and returns any parameters unread as
+    /// real numbers (such as discrete choices or out-of-range fields).
     pub(crate) fn unit_twins(
         &self,
         parameters: Vec<(usize, Parameter)>,
@@ -398,11 +387,10 @@ impl Simulator {
         (Twins::new(kept, directions, chunked), left_out)
     }
 
-    /// The twins of `tangents`, each a number per parameter of `parameters`, each a
-    /// device's index and one of its numbers: a column for each tangent and device, the
-    /// tangent's components on that device's numbers, in the order of the tangents then
-    /// of the devices; and the direction of each tangent among the columns. Fails with
-    /// the parameters no model reads as a real number.
+    /// Builds tangent-seeded [`Twins`] for `tangents` over `parameters`, packing each
+    /// tangent's components per device and returning per-tangent column selector vectors.
+    ///
+    /// Fails with the list of parameters not read as real numbers by their device models.
     pub(crate) fn tangent_twins(
         &self,
         parameters: Vec<(usize, Parameter)>,
@@ -444,9 +432,8 @@ impl Simulator {
         Ok((Twins::new(named, directions, chunked), along))
     }
 
-    /// Each device's twins of `directions`, the columns, up to [`Seeds::MAX`] to a twin,
-    /// each column's place among them, and the columns along a number no model reads as a
-    /// real one, which no twin carries.
+    /// Packs `directions` into per-device twins of up to [`Seeds::MAX`] seeds and collects
+    /// indices of columns rejected as unread real parameters.
     fn chunked(&self, directions: &[Direction]) -> Chunked {
         let mut chunks = Vec::new();
         let mut places = vec![
@@ -467,8 +454,7 @@ impl Simulator {
                 let mut members = members.to_vec();
                 let mut twin = twin_of(device, &members);
                 if twin.is_none() {
-                    // A column moves a number no model reads: each is found alone, and the
-                    // rest seeded together.
+                    // Isolate unreadable parameter columns individually, then batch the rest.
                     members.retain(|&column| {
                         let read = twin_of(device, &[column]).is_some();
                         if !read {
@@ -505,8 +491,8 @@ impl Simulator {
         }
     }
 
-    /// The twin of the device at `index` along `seeds`, made from what the device is made
-    /// from now; none when its model reads no real number at a seed's path.
+    /// Instantiates a dual-number [`Twin`] for device `index` along `seeds`, returning
+    /// `None` if any seed path is not read as a real parameter.
     pub(crate) fn twin_of(&self, index: usize, seeds: &Seeds) -> Option<Twin> {
         let origins = self.origins();
         let origin = origins.of(index);
@@ -519,15 +505,15 @@ impl Simulator {
             .twin(&self.elaborated.groups, index, instance, seeds)
     }
 
-    /// The indices of the devices whose kernels are not linear, in their order.
+    /// Returns device indices of all nonlinear kernels in placement order.
     pub(crate) fn nonlinear_devices(&self) -> Vec<usize> {
         (0..self.elaborated.devices.len())
             .filter(|&device| !self.elaborated.groups.is_linear(device))
             .collect()
     }
 
-    /// The unknown-seeded twins of every nonlinear device in `nonlinear`, and the sorted,
-    /// deduplicated matrix slots those twins write to.
+    /// Instantiates unknown-seeded twins for every nonlinear device in `nonlinear` and
+    /// returns the sorted, deduplicated matrix slots written by those twins.
     pub(crate) fn unknown_twins(&self, nonlinear: &[usize]) -> (Vec<Twin>, Vec<usize>) {
         let origins = self.origins();
         let twins: Vec<Twin> = nonlinear
@@ -546,9 +532,8 @@ impl Simulator {
         (twins, slots)
     }
 
-    /// How `G` and `C` move, by `(stored position, ∂G/∂x · s, ∂C/∂x · s)` in increasing
-    /// slot order, as the unknowns at `x` move along each vector of `shifts`, summed over
-    /// the nonlinear devices in `nonlinear` in their order.
+    /// Computes directional Jacobian derivatives `(slot, ∂G/∂x · s, ∂C/∂x · s)` in
+    /// ascending slot order along each shift vector in `shifts` over `nonlinear` devices.
     pub(crate) fn entries_along(
         &self,
         nonlinear: &[usize],
@@ -618,9 +603,8 @@ impl Simulator {
         moved
     }
 
-    /// For each active `(W_G, W_C)` of `weights`, indexed by `slots`, the gradient at `x`
-    /// with respect to the unknowns of `Σ_s (W_G[s] G[s](x) + W_C[s] C[s](x))`, summed
-    /// over `twins` in their order.
+    /// Computes unknown gradients of `Σ_s (W_G[s] G[s](x) + W_C[s] C[s](x))` at `x` for
+    /// each active weight pair `(W_G, W_C)` indexed by `slots` across `twins`.
     pub(crate) fn entries_cotangents(
         &self,
         twins: &mut [Twin],

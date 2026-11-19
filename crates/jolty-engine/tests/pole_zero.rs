@@ -147,8 +147,8 @@ fn a_long_rc_ladder_has_every_pole_its_closed_form_gives() {
     assert_roots(&found.poles, &expected);
 }
 
-/// A transconductance that feeds `node`'s own voltage back into it as current: a negative
-/// conductance of `transconductance`.
+/// Builds a transconductance feeding the voltage of `node` back into `node` as current,
+/// acting as a negative conductance of `transconductance`.
 fn negative_conductance(name: &str, transconductance: f64, node: &str) -> Instance {
     device(
         name,
@@ -243,9 +243,8 @@ fn rejects_what_it_cannot_measure() {
 
 #[test]
 fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
-    // A random circuit of 73 unknowns, of coupled windings among its devices, on whose
-    // pencil faer 0.24's QZ iteration stops before its eigenvalues converge, without an
-    // error; reversed, the pencil's iteration converges, as LAPACK's does on it.
+    // Random 73-unknown circuit with coupled windings whose pencil stalls faer 0.24's QZ
+    // iteration without error; reversing the pencil converges, matching LAPACK.
     let circuit = Circuit::from_json(include_str!("data/stalled_qz.json")).expect("a circuit");
     let mut simulator = simulator(&circuit);
     assert_eq!(simulator.unknowns().len(), 73);
@@ -310,11 +309,10 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
 
 #[test]
 fn a_symmetric_rings_growing_mode_has_its_stages_swing_in_turn() {
-    // Three stages, each drawing 3 mS times the last's voltage out of 1 kΩ and 1 nF, a
-    // gain of −3 round a ring that a rotation of its stages leaves as it is. The mode
-    // whose stages swing a third of a turn apart grows: C s = −1/R + 3 mS e^(±2πi/3),
-    // 5e5 ± 2.6e6i per second; equal amplitudes have no part along it, being the mode
-    // of the stages swinging together, which decays at −4e6 per second.
+    // Three stages, each drawing 3 mS times the previous voltage from 1 kΩ and 1 nF, form a
+    // rotationally symmetric ring with loop gain −3. The 120-degree phase-shifted mode grows
+    // at C s = −1/R + 3 mS e^(±2πi/3) = 5e5 ± 2.6e6i per second. The equal-amplitude mode
+    // decays at −4e6 per second and has no projection onto the growing mode.
     let stages = ["a", "b", "c"];
     let mut instances = Vec::new();
     for (index, node) in stages.iter().enumerate() {

@@ -1,11 +1,9 @@
-//! numpy's arithmetic, operation for operation, as jolty's measures were first written in
-//! numpy.
+//! Operation-for-operation `NumPy` and Python arithmetic matching jolty's original Python
+//! measures.
 //!
-//! Each function names the numpy or Python function it follows, as numpy 2.5 and Python 3.15
-//! define them, so a measure reads the same bits those did on the same platform. Where numpy's
-//! compiler fuses a multiplication and an addition into one rounding, as clang does on arm64
-//! and as numpy's SIMD loops do on every processor with a fused multiply-add, the function does
-//! too, with [`f64::mul_add`], which rounds once on every platform.
+//! Each helper mirrors the corresponding `NumPy` 2.5 or Python 3.15 routine so measurements
+//! stay bit-identical on platforms with fused multiply-add. Where `NumPy` SIMD loops or
+//! arm64 Clang fuse multiply-adds into a single rounding, these helpers use [`f64::mul_add`].
 
 use std::f64::consts::PI;
 
@@ -13,22 +11,23 @@ use jolty_numerics::Complex64;
 
 use super::{Edge, MeasureError, Point, SumError};
 
-/// How many values numpy's search of an interpolation's points looks around its guess before it
-/// bisects, `LIKELY_IN_CACHE_SIZE` in numpy's `compiled_base.c`.
+/// Local search window around a guess scanned linearly before bisecting (`LIKELY_IN_CACHE_SIZE`
+/// in `NumPy`'s `compiled_base.c`).
 const LIKELY_IN_CACHE: usize = 8;
 
-/// Where numpy's search of increasing points places a key.
+/// Interval classification returned by `NumPy`-compatible binary search over ascending points.
 enum Found {
     /// Before the first point.
     Below,
-    /// At the index `j` where `points[j] <= key < points[j + 1]`, or the last when the key is
-    /// the last point.
+    /// Index `j` satisfying `points[j] <= key < points[j + 1]`, or the last index at the upper
+    /// endpoint.
     At(usize),
     /// After the last point.
     Above,
 }
 
-/// numpy's `binary_search_with_guess` of `key` among `points`, at least five, from `guess`.
+/// Locates `key` in `points` starting from `guess`, mirroring `NumPy`'s
+/// `binary_search_with_guess`.
 fn search(key: f64, points: &[f64], guess: usize) -> Found {
     let len = points.len();
     if key > points[len - 1] {
@@ -77,14 +76,12 @@ fn search(key: f64, points: &[f64], guess: usize) -> Found {
     Found::At(low.saturating_sub(1))
 }
 
-/// numpy's `interp(at, points, values)`: `values`, given at `points`, interpolated linearly at
-/// each of `at`, and the first or the last value past either end.
+/// Interpolates `(points, values)` linearly at each coordinate in `at`, mirroring `NumPy`'s
+/// `interp` (`arr_interp` in `compiled_base.c`).
 ///
-/// It follows `arr_interp` of numpy's `compiled_base.c`: each of `at` is searched for from
-/// where the last was found, so points out of order give what numpy gives; a point of `at`
-/// that is not a number gives itself; and the interpolation rounds once, as numpy's does on
-/// arm64, where clang fuses its `slope * (x - points[j]) + values[j]`. `points` and `values`
-/// are as long as each other; with none, every value is not a number.
+/// Each lookup resumes from the preceding index so out-of-order inputs match `NumPy` exactly,
+/// `NaN` queries propagate unchanged, and interpolation uses a single fused multiply-add
+/// rounding. Returns all `NaN` when `points` or `values` is empty.
 pub(crate) fn interpolate(at: &[f64], points: &[f64], values: &[f64]) -> Vec<f64> {
     let len = points.len().min(values.len());
     let (points, values) = (&points[..len], &values[..len]);
@@ -142,8 +139,8 @@ pub(crate) fn interpolate(at: &[f64], points: &[f64], values: &[f64]) -> Vec<f64
         .collect()
 }
 
-/// Whether `a` and `b` are the same number, as `==` compares them: the comparison numpy's and
-/// Python's arithmetic makes where these functions follow it.
+/// Compares `a` and `b` for exact IEEE-754 equality (`==`), matching `NumPy` and Python
+/// float equality checks.
 #[expect(
     clippy::float_cmp,
     reason = "numpy and Python compare these floats exactly, and so must the functions that \
@@ -153,9 +150,8 @@ pub(crate) fn same(a: f64, b: f64) -> bool {
     a == b
 }
 
-/// numpy's `abs` of a complex number, as its SIMD loop `simd_cabsolute` computes it: the
-/// larger part's magnitude times the square root of one plus the square of the smaller's over
-/// it, by a fused multiply-add; infinite when a part is, else not a number when one is.
+/// Computes `|z|` matching `NumPy`'s `simd_cabsolute` loop using fused multiply-add,
+/// returning infinity if either part is infinite and `NaN` if either is `NaN`.
 pub(crate) fn magnitude(z: Complex64) -> f64 {
     let (mut real, mut imaginary) = (z.re.abs(), z.im.abs());
     let (real_infinite, imaginary_infinite) = (real == f64::INFINITY, imaginary == f64::INFINITY);
@@ -182,8 +178,8 @@ pub(crate) fn magnitude(z: Complex64) -> f64 {
     ratio.mul_add(ratio, 1.0).sqrt() * larger
 }
 
-/// numpy's complex division of `a` by `b`, Smith's algorithm as its `CDOUBLE_divide` writes
-/// it, each sum of a product rounded once, as clang fuses them on arm64.
+/// Computes complex quotient `a / b` via Smith's algorithm matching `CDOUBLE_divide` in
+/// `NumPy` with fused multiply-add rounding.
 pub(crate) fn divide(a: Complex64, b: Complex64) -> Complex64 {
     let (real, imaginary) = (b.re.abs(), b.im.abs());
     if real >= imaginary {
@@ -206,13 +202,13 @@ pub(crate) fn divide(a: Complex64, b: Complex64) -> Complex64 {
     }
 }
 
-/// numpy's `log10` of the magnitude of `z`, in decibels: minus infinity where it vanishes.
+/// Computes `20 * log10(|z|)` in decibels matching `NumPy`, returning `-inf` at zero.
 pub(crate) fn decibels(z: Complex64) -> f64 {
     20.0 * magnitude(z).log10()
 }
 
-/// numpy's `degrees(unwrap(angle(transfer)))`: the phase of each of `transfer`, in degrees,
-/// unwrapped from the first.
+/// Computes unwrapped phases of `transfer` in degrees, matching `NumPy`'s
+/// `degrees(unwrap(angle(transfer)))`.
 pub(crate) fn phases(transfer: &[Complex64]) -> Vec<f64> {
     let angles: Vec<f64> = transfer.iter().map(|z| z.im.atan2(z.re)).collect();
     unwrap(&angles)
@@ -221,9 +217,8 @@ pub(crate) fn phases(transfer: &[Complex64]) -> Vec<f64> {
         .collect()
 }
 
-/// numpy's `unwrap` of `angles`, in radians, with its default period, 2π: each step between
-/// two angles of more than half a period, taken back into the half periods about zero, and
-/// the corrections summed in order from the first.
+/// Unwraps radian `angles` with period `2π` matching `NumPy`'s `unwrap`, folding steps wider
+/// than `π` back into `[-π, π]` and accumulating corrections from the first sample.
 pub(crate) fn unwrap(angles: &[f64]) -> Vec<f64> {
     let period = 2.0 * PI;
     let high = period / 2.0;
@@ -245,7 +240,7 @@ pub(crate) fn unwrap(angles: &[f64]) -> Vec<f64> {
         } else {
             wrapped - step
         };
-        // numpy's cumulative sum starts from the first correction itself, not from zero.
+        // `NumPy` starts cumulative sum from the first correction rather than zero.
         let sum = total.map_or(correction, |sum| sum + correction);
         total = Some(sum);
         unwrapped.push(pair[1] + sum);
@@ -253,8 +248,8 @@ pub(crate) fn unwrap(angles: &[f64]) -> Vec<f64> {
     unwrapped
 }
 
-/// numpy's `remainder(a, b)` of two floats, `npy_remainder`: the remainder of `a` over `b`
-/// with the sign of `b`, as Python's `%` gives it.
+/// Computes floored remainder `a mod b` carrying the sign of `b`, matching `npy_remainder`
+/// in `NumPy` and `%` in Python.
 fn remainder(a: f64, b: f64) -> f64 {
     let modulus = a % b;
     if b == 0.0 {
@@ -269,21 +264,21 @@ fn remainder(a: f64, b: f64) -> f64 {
     }
 }
 
-/// numpy's `sum` of `count` terms, `term(index)` for each index in order: zero plus the
-/// terms' pairwise sum in numpy's order, `pairwise_sum` of its `loops_utils.h.src`.
+/// Sums `count` terms produced by `term` in `NumPy`'s `pairwise_sum` order
+/// (`loops_utils.h.src`), adding `0.0` at the end to normalize `-0.0`.
 pub(crate) fn sum(count: usize, term: impl Fn(usize) -> f64) -> f64 {
     0.0 + pairwise(0, count, &term)
 }
 
-/// The size of the blocks numpy's pairwise sum adds with eight accumulators,
-/// `PW_BLOCKSIZE` in numpy's `loops_utils.h.src`.
+/// Block size summed with eight lanes in `NumPy`'s pairwise reduction (`PW_BLOCKSIZE` in
+/// `loops_utils.h.src`).
 const BLOCK: usize = 128;
 
-/// numpy's pairwise sum of the `count` terms from `start`: blocks of up to [`BLOCK`] summed by
-/// eight accumulators, each half of a longer run summed so, then the halves added.
+/// Reduces `count` terms from `start` recursively using `NumPy`'s eight-accumulator pairwise
+/// block summation up to [`BLOCK`].
 fn pairwise(start: usize, count: usize, term: &impl Fn(usize) -> f64) -> f64 {
     if count < 8 {
-        // numpy starts from minus zero, so that a sum of minus zeros stays minus zero.
+        // `NumPy` starts at `-0.0` so summing all `-0.0` preserves negative zero within a block.
         let mut total = -0.0;
         for index in start..start + count {
             total += term(index);
@@ -316,13 +311,13 @@ fn pairwise(start: usize, count: usize, term: &impl Fn(usize) -> f64) -> f64 {
     }
 }
 
-/// Python's `math.fsum` of `values`: their sum correctly rounded, by Shewchuk's exact partial
-/// sums, rounded half to even across them, as Python's own `math_fsum` computes it.
+/// Computes a correctly rounded sum over `values` via Shewchuk's exact partial-sum algorithm,
+/// matching Python's `math.fsum` (`math_fsum`).
 ///
 /// # Errors
 ///
-/// Returns [`SumError::Overflow`] when a partial sum of finite values overflows, and
-/// [`SumError::Indeterminate`] when the values hold both infinities, as `math.fsum` raises.
+/// Returns [`SumError::Overflow`] if an intermediate finite sum overflows, or
+/// [`SumError::Indeterminate`] if `values` contains both `+inf` and `-inf`.
 pub(crate) fn exact_sum(values: impl IntoIterator<Item = f64>) -> Result<f64, SumError> {
     let mut partials: Vec<f64> = Vec::new();
     let (mut special, mut infinite) = (0.0, 0.0);
@@ -391,23 +386,23 @@ pub(crate) fn exact_sum(values: impl IntoIterator<Item = f64>) -> Result<f64, Su
     Ok(high)
 }
 
-/// numpy's `max` of `values`: not a number if any is, and plus zero above minus zero, as its
-/// SIMD reduction gives them; not a number when there are none.
+/// Returns the maximum of `values` matching `NumPy`'s `max`, propagating `NaN` and preferring
+/// `+0.0` over `-0.0` (or `NaN` when empty).
 pub(crate) fn maximum(values: &[f64]) -> f64 {
     extreme(values, |value, best| {
         value > best || (same(value, best) && best.is_sign_negative())
     })
 }
 
-/// numpy's `min` of `values`: not a number if any is, and minus zero below plus zero, as its
-/// SIMD reduction gives them; not a number when there are none.
+/// Returns the minimum of `values` matching `NumPy`'s `min`, propagating `NaN` and preferring
+/// `-0.0` over `+0.0` (or `NaN` when empty).
 pub(crate) fn minimum(values: &[f64]) -> f64 {
     extreme(values, |value, best| {
         value < best || (same(value, best) && value.is_sign_negative())
     })
 }
 
-/// The value of `values` that `beats` every other, or not a number if any is.
+/// Reduces `values` under comparator `beats`, propagating `NaN` immediately.
 fn extreme(values: &[f64], beats: impl Fn(f64, f64) -> bool) -> f64 {
     let mut best = f64::NAN;
     for (index, &value) in values.iter().enumerate() {
@@ -421,8 +416,8 @@ fn extreme(values: &[f64], beats: impl Fn(f64, f64) -> bool) -> f64 {
     best
 }
 
-/// numpy's `trapezoid(values, points)`: the integral of `values` over `points` by the
-/// trapezoidal rule, each trapezoid's area as numpy writes it, summed in numpy's order.
+/// Integrates `values` over `points` using the trapezoidal rule in `NumPy`'s pairwise order,
+/// matching `NumPy`'s `trapezoid`.
 pub(crate) fn trapezoid(points: &[f64], values: &[f64]) -> f64 {
     let count = points.len().min(values.len()).saturating_sub(1);
     sum(count, |index| {
@@ -430,9 +425,8 @@ pub(crate) fn trapezoid(points: &[f64], values: &[f64]) -> f64 {
     })
 }
 
-/// Where `values`, given at `points`, cross `threshold` the way `edge` says, in order, each
-/// interpolated linearly between the two points around it, as numpy computed it for jolty's
-/// `_crossings`. A value that reaches the threshold crosses it only once it passes it.
+/// Yields linearly interpolated coordinates where `(points, values)` crosses `threshold` in
+/// direction `edge`, matching jolty's Python `_crossings`.
 pub(crate) fn crossings<'a>(
     points: &'a [f64],
     values: &'a [f64],
@@ -458,8 +452,8 @@ pub(crate) fn crossings<'a>(
         })
 }
 
-/// The order that sorts `values` increasingly, the values that are not numbers last, equal
-/// values in their own order, as numpy's `argsort` orders distinct values.
+/// Computes ascending sort indices for `values`, placing `NaN` last and preserving relative
+/// order on ties, matching `NumPy`'s `argsort`.
 pub(crate) fn order(values: &[f64]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..values.len()).collect();
     order.sort_by(|&a, &b| {
@@ -470,12 +464,12 @@ pub(crate) fn order(values: &[f64]) -> Vec<usize> {
     order
 }
 
-/// `frequencies` sorted increasingly, and `densities` in their order.
+/// Sorts `frequencies` ascending and reorders `densities` to match.
 ///
 /// # Errors
 ///
-/// Returns [`MeasureError::Empty`] when there is no frequency, and
-/// [`MeasureError::LengthMismatch`] when the two are not as long as each other.
+/// Returns [`MeasureError::Empty`] for empty inputs and [`MeasureError::LengthMismatch`] when
+/// lengths differ.
 fn sorted(frequencies: &[f64], densities: &[f64]) -> Result<(Vec<f64>, Vec<f64>), MeasureError> {
     if frequencies.len() != densities.len() {
         return Err(MeasureError::LengthMismatch);
@@ -490,14 +484,14 @@ fn sorted(frequencies: &[f64], densities: &[f64]) -> Result<(Vec<f64>, Vec<f64>)
     ))
 }
 
-/// The noise density at the frequency `at`, a power law between the frequencies around it, as
-/// jolty's `NoiseResult.density` computed it.
+/// Evaluates power-law interpolated noise power density at frequency `at` over
+/// `(frequencies, densities)`.
 ///
 /// # Errors
 ///
-/// Returns [`MeasureError::Outside`] for the point `at` when it lies outside the frequencies,
-/// [`MeasureError::Empty`] when there are none, and [`MeasureError::LengthMismatch`] when there are
-/// not as many densities.
+/// Returns [`MeasureError::Outside`] when `at` falls outside the frequency range,
+/// [`MeasureError::Empty`] for empty inputs, and [`MeasureError::LengthMismatch`] when
+/// lengths differ.
 pub fn density(frequencies: &[f64], densities: &[f64], at: f64) -> Result<f64, MeasureError> {
     let (points, values) = sorted(frequencies, densities)?;
     let (first, last) = (points[0], points[points.len() - 1]);
@@ -511,16 +505,14 @@ pub fn density(frequencies: &[f64], densities: &[f64], at: f64) -> Result<f64, M
     Ok(power_law(&points, &values, at))
 }
 
-/// The integral of `densities` over `frequencies` from `start` to `stop`, by default the
-/// lowest and the highest frequency, each density a power law between frequencies, as SPICE
-/// integrates noise and jolty's `integrate` computed it.
+/// Integrates piecewise power-law noise `densities` over `frequencies` from `start` to `stop`
+/// (defaulting to the full range), matching SPICE noise integration.
 ///
 /// # Errors
 ///
-/// Returns [`MeasureError::Band`] when the band does not lie within the frequencies or is
-/// empty, [`MeasureError::Sum`] when `math.fsum` would raise on its segments,
-/// [`MeasureError::Empty`] when there is no frequency, and [`MeasureError::LengthMismatch`] when
-/// there are not as many densities.
+/// Returns [`MeasureError::Band`] for invalid or out-of-range bands, [`MeasureError::Sum`]
+/// on exact summation overflow or indeterminate infinity, [`MeasureError::Empty`] for empty
+/// inputs, and [`MeasureError::LengthMismatch`] when lengths differ.
 pub fn integrate(
     frequencies: &[f64],
     densities: &[f64],
@@ -556,11 +548,11 @@ pub fn integrate(
     .map_err(MeasureError::Sum)
 }
 
-/// The density at `at`, a power law between the two of the increasing `points` around it,
-/// linear when either density is not positive, as jolty's `_power_law` computed it.
+/// Interpolates density at `at` between adjacent ascending `points` using power-law scaling
+/// (falling back to linear interpolation when either endpoint is non-positive).
 fn power_law(points: &[f64], values: &[f64], at: f64) -> f64 {
     let count = points.len();
-    // numpy's `clip` to 1 and the last index, which gives 0 for a single point.
+    // Clip index to `[1, count - 1]` (yielding 0 for a single point), matching `NumPy`.
     let index = points
         .partition_point(|&point| point < at)
         .max(1)
@@ -580,8 +572,8 @@ fn power_law(points: &[f64], values: &[f64], at: f64) -> f64 {
     low * ((high / low).ln() * (at / first).ln() / (last / first).ln()).exp()
 }
 
-/// The integral from `first` to `last` of the power law from `low` to `high`, as jolty's
-/// `_segment` computed it.
+/// Integrates a single power-law segment from `(first, low)` to `(last, high)`, falling back
+/// to trapezoidal area when either endpoint density is non-positive.
 fn segment(first: f64, last: f64, low: f64, high: f64) -> f64 {
     if low <= 0.0 || high <= 0.0 {
         #[expect(
@@ -592,7 +584,7 @@ fn segment(first: f64, last: f64, low: f64, high: f64) -> f64 {
         return mean * (last - first);
     }
     let span = (last / first).ln();
-    // With the density ∝ f^a, the integral is low·first·(e^{(a+1)·span} - 1)/(a + 1).
+    // With density proportional to `f^a`, the integral is `low * first * (e^{(a+1) * span} - 1) / (a + 1)`.
     let growth = (high / low).ln() + span;
     let factor = if growth == 0.0 {
         1.0
@@ -602,9 +594,8 @@ fn segment(first: f64, last: f64, low: f64, high: f64) -> f64 {
     low * first * span * factor
 }
 
-/// The noise densities `densities` referred to an input through `gains`, each over the
-/// square of the gain's magnitude, as numpy computed jolty's `NoiseResult.referred`:
-/// infinite where a gain vanishes. As long as the shorter of the two.
+/// Computes input-referred noise densities `density / |gain|^2` over `densities` and `gains`,
+/// producing infinity where gain vanishes.
 #[must_use]
 pub fn referred(densities: &[f64], gains: &[Complex64]) -> Vec<f64> {
     densities
@@ -617,9 +608,8 @@ pub fn referred(densities: &[f64], gains: &[Complex64]) -> Vec<f64> {
         .collect()
 }
 
-/// The damping ratio of each of `roots`, minus its real part over its magnitude: 1 for a real
-/// root in the left half-plane, between 0 and 1 for a conjugate pair that rings, negative in
-/// the right half-plane, and not a number at the origin.
+/// Computes damping ratios `-Re(s) / |s|` for `roots` (`1` for negative real roots, `(0, 1)`
+/// for damped conjugate pairs, negative in the right half-plane, and `NaN` at zero).
 #[must_use]
 pub fn dampings(roots: &[Complex64]) -> Vec<f64> {
     roots
@@ -628,7 +618,7 @@ pub fn dampings(roots: &[Complex64]) -> Vec<f64> {
         .collect()
 }
 
-/// The natural frequency of each of `roots`, its magnitude over 2π, in hertz.
+/// Computes natural frequencies `|s| / (2π)` in hertz for each root in `roots`.
 #[must_use]
 pub fn natural_frequencies(roots: &[Complex64]) -> Vec<f64> {
     roots

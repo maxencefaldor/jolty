@@ -30,7 +30,7 @@ pub enum Analysis {
     /// Sensitivities of some unknowns to every device parameter across operating point,
     /// DC sweep, AC, transient, or periodic steady state analyses.
     Sensitivity(Sensitivity),
-    /// How far some unknowns spread with the numbers a sample draws at random.
+    /// Mismatch variance analysis with respect to random parameter draws.
     Mismatch(Mismatch),
     /// The loop gain through a probe.
     Stability(Stability),
@@ -75,14 +75,13 @@ pub enum AnalysisResult {
 }
 
 impl Simulator {
-    /// Whether a run of `analysis` with `options` in a pool of `threads` threads may spread
-    /// any of its work, as [`crate::Parallelism::fills_threads`] says of what it spreads:
-    /// the circuit's device instances, its unknowns, whether the ordering the options ask
-    /// for dissects a block, which it makes here if no run has, and the frequencies of a
-    /// small-signal analysis, or a sensitivity's right-hand sides, which it counts only as
-    /// it runs, so that a sensitivity may always spread. A run that may not spreads
-    /// nothing on any number of threads, so it may run on its caller's thread alone,
-    /// outside any pool; one whose ordering does not fit in memory fails as it prepares.
+    /// Returns whether `analysis` under `options` can parallelize work on a pool of
+    /// `threads` workers, according to [`crate::Parallelism::fills_threads`].
+    ///
+    /// Considers device instance count, unknown count, whether the nested-dissection
+    /// ordering splits a block (built lazily here if needed), and small-signal frequency
+    /// counts. Sensitivity and mismatch analyses always allow parallel right-hand sides.
+    /// When `false`, execution stays on the caller thread outside any pool.
     #[must_use]
     pub fn spreads(&self, analysis: &Analysis, options: &Options, threads: usize) -> bool {
         let solves = match analysis {

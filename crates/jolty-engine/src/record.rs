@@ -1,25 +1,16 @@
-//! What the recorded devices do at every solution: the current into each of their terminals
-//! and the charge each holds, the derivatives of their equations with respect to their
-//! unknowns, and the variables they compute on their way.
+//! Device recording capturing terminal currents, charges, equation derivatives, and
+//! internal variables at each solution point.
 //!
-//! The engine solves for node voltages and a few branch currents, so a device's own currents
-//! are not among its unknowns. Each device's instance writes its contributions into a block
-//! of its own of the run's slab: a residual and a charge for each of its local unknowns, its
-//! terminals first, and a conductance and a capacitance for each pair of them it claims,
-//! every terminal its own even where two share a net or one joins ground. So the
-//! current into a terminal is its block's residual there, alone, the charge the terminal
-//! holds its block's charge, and the derivatives of the device's equations its block's
-//! entries, over its terminals apart and its internal unknowns: the device's own
-//! small-signal model, exactly, read from the evaluation that solved the circuit. In a
-//! transient, the current adds the charge's derivative, taken by the very integration
-//! formula the step was solved with, so the currents into a node sum to zero as the node's
-//! equation does.
+//! Individual device terminal currents are not circuit unknowns because the engine solves
+//! for node voltages and select branch currents. Instead, each device writes
+//! residuals, charges, conductances, and capacitances into a dedicated slab block over
+//! unmerged local terminals and internal unknowns. Terminal current equals the local
+//! terminal residual (plus `dq/dt` from the active integration formula in transient runs,
+//! preserving KCL), while local matrix entries yield exact small-signal parameters.
 //!
-//! An analysis records only what its options' [`Record`] names: a device's terminals,
-//! derivatives and variables, and a component instance's or a logic device's terminals,
-//! each summed from the device terminals behind it, which are read but not kept; and, when
-//! its options ask for [`regions`](Options::regions), each other transistor's region of
-//! operation and its margins alone.
+//! Analyses record only devices and summed component or logic terminals matched by
+//! [`Record`], plus operating regions and boundary margins for unselected transistors when
+//! [`regions`](Options::regions) is enabled.
 
 use std::iter;
 use std::ops::{Add, Range};
@@ -32,62 +23,63 @@ use crate::profile::Activity;
 use crate::transient::StepFormula;
 use crate::{Options, Placed, Record, SimulationError, Simulator};
 
-/// What the recorded devices did at one solution, laid out as [`Recording`] says.
+/// Recorded device quantities at a single solution point, laid out according to
+/// [`Recording`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RecordedValues {
-    /// The current into each recorded terminal, in amperes: each terminal of each recorded
-    /// device, then each recorded terminal of a component instance or a logic device.
+    /// Current entering each recorded terminal in amperes: individual device terminals
+    /// followed by summed component or logic terminals.
     pub currents: Vec<f64>,
-    /// The charge each recorded terminal holds, in coulombs, in the same order.
+    /// Charge stored at each recorded terminal in coulombs, matching `currents` order.
     pub charges: Vec<f64>,
-    /// For each recorded device, the derivative of each of its equations' residuals with
-    /// respect to each of its unknowns, row by row: a conductance where the equation sums
-    /// currents and the unknown is a voltage.
+    /// Row-major partial derivatives `∂f/∂x` of each recorded device's local equations with
+    /// respect to its local unknowns (conductances for current-voltage pairs).
     pub conductances: Vec<f64>,
-    /// The derivative of each equation's charge with respect to each unknown, in the same
-    /// order: a capacitance where the equation sums currents and the unknown is a voltage.
+    /// Row-major partial derivatives `∂q/∂x` of each recorded device's local charges with
+    /// respect to its local unknowns (capacitances for current-voltage pairs).
     pub capacitances: Vec<f64>,
-    /// The value of each variable of each recorded device, in order.
+    /// Recorded internal variable values across all recorded devices and region-only
+    /// transistors.
     pub variables: Vec<f64>,
 }
 
-/// What the recorded devices did at each point of a sweep or a transient.
+/// Recorded device quantities across all points of a DC sweep or transient analysis.
 ///
-/// Each quantity's rows lie end to end, one row per point, so a long analysis holds each
-/// quantity in one allocation; [`RecordedSeries::point`] views one point's rows.
+/// Rows for consecutive points are stored contiguously in a single allocation per quantity;
+/// [`RecordedSeries::point`] borrows one point's slice view.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RecordedSeries {
-    /// The number of points.
+    /// Number of recorded points.
     pub points: usize,
-    /// Each point's [`RecordedValues::currents`], one after another.
+    /// Concatenated [`RecordedValues::currents`] across all points.
     pub currents: Vec<f64>,
-    /// Each point's [`RecordedValues::charges`], one after another.
+    /// Concatenated [`RecordedValues::charges`] across all points.
     pub charges: Vec<f64>,
-    /// Each point's [`RecordedValues::conductances`], one after another.
+    /// Concatenated [`RecordedValues::conductances`] across all points.
     pub conductances: Vec<f64>,
-    /// Each point's [`RecordedValues::capacitances`], one after another.
+    /// Concatenated [`RecordedValues::capacitances`] across all points.
     pub capacitances: Vec<f64>,
-    /// Each point's [`RecordedValues::variables`], one after another.
+    /// Concatenated [`RecordedValues::variables`] across all points.
     pub variables: Vec<f64>,
 }
 
-/// What the recorded devices did at one point of [`RecordedSeries`], as views of its rows.
+/// Borrowed slice view of one solution point inside a [`RecordedSeries`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecordedView<'a> {
-    /// The current into each recorded terminal, as [`RecordedValues::currents`].
+    /// Terminal currents matching [`RecordedValues::currents`].
     pub currents: &'a [f64],
-    /// The charge each recorded terminal holds, as [`RecordedValues::charges`].
+    /// Terminal charges matching [`RecordedValues::charges`].
     pub charges: &'a [f64],
-    /// The derivatives of the residuals, as [`RecordedValues::conductances`].
+    /// Residual derivatives matching [`RecordedValues::conductances`].
     pub conductances: &'a [f64],
-    /// The derivatives of the charges, as [`RecordedValues::capacitances`].
+    /// Charge derivatives matching [`RecordedValues::capacitances`].
     pub capacitances: &'a [f64],
-    /// The value of each variable, as [`RecordedValues::variables`].
+    /// Device variables matching [`RecordedValues::variables`].
     pub variables: &'a [f64],
 }
 
 impl RecordedSeries {
-    /// Appends what the recorded devices did at one more point.
+    /// Appends one recorded solution point to the series.
     pub fn push(&mut self, point: &RecordedValues) {
         self.points += 1;
         self.currents.extend_from_slice(&point.currents);
@@ -97,11 +89,11 @@ impl RecordedSeries {
         self.variables.extend_from_slice(&point.variables);
     }
 
-    /// What the recorded devices did at the point `index`.
+    /// Returns a borrowed [`RecordedView`] for solution point `index`.
     ///
     /// # Panics
     ///
-    /// When `index` is not below [`RecordedSeries::points`].
+    /// Panics when `index` is greater than or equal to [`RecordedSeries::points`].
     #[must_use]
     pub fn point(&self, index: usize) -> RecordedView<'_> {
         assert!(index < self.points, "no point {index} of {}", self.points);
@@ -119,38 +111,37 @@ impl RecordedSeries {
         }
     }
 
-    /// What the recorded devices did at each point, in order.
+    /// Returns an iterator yielding a [`RecordedView`] for each recorded point in order.
     pub fn iter(&self) -> impl Iterator<Item = RecordedView<'_>> {
         (0..self.points).map(|index| self.point(index))
     }
 }
 
-/// What a [`Record`] keeps of a circuit's devices, and where every [`RecordedValues`] of an
-/// analysis run with it holds each value.
+/// Layout map describing which devices and summed terminals a [`Record`] selection stores
+/// in each [`RecordedValues`].
 ///
-/// A recording's currents and charges hold each terminal of each recorded device, in
-/// order, then each recorded summed terminal, the sum of the device terminals behind it.
-/// Its conductances and capacitances hold, for each recorded device, the derivative of each
-/// of its equations with respect to each of its unknowns, row by row: its terminals, each
-/// on a node of its own, then its [internal unknowns](crate::Placed::internals). Its variables
-/// hold each recorded device's [variables](crate::Placed::variable_names), then each
-/// transistor's whose region alone is recorded, its [region variables](Simulator::region_variables).
+/// Current and charge buffers list each recorded device's terminals in order, followed by
+/// recorded summed terminals. Conductance and capacitance buffers store row-major local
+/// equation derivatives for each recorded device over its unmerged terminals and
+/// [internal unknowns](crate::Placed::internals). Variable buffers list full device
+/// [variables](crate::Placed::variable_names) followed by
+/// [region variables](Simulator::region_variables) for region-only transistors.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Recording {
-    /// The devices whose terminals, derivatives and variables are recorded, by index among
-    /// [`Simulator::devices`], in order.
+    /// Device indices in [`Simulator::devices`] recorded in full (terminals, derivatives,
+    /// and variables).
     pub devices: Vec<usize>,
-    /// The terminals of component instances and logic devices recorded, by index among
-    /// [`Simulator::summed_terminals`], in order.
+    /// Summed terminal indices in [`Simulator::summed_terminals`] recorded for component
+    /// instances and logic devices.
     pub summed_terminals: Vec<usize>,
-    /// The transistors whose region of operation and margins alone are recorded, by index
-    /// among [`Simulator::devices`], in order: those whose models distinguish regions and
-    /// that `devices` leaves out, when the options ask for [`regions`](Options::regions).
+    /// Device indices in [`Simulator::devices`] recorded for operating region and boundary
+    /// margins only (transistors excluded from `devices` when [`regions`](Options::regions)
+    /// is enabled).
     pub regions: Vec<usize>,
 }
 
 impl Recording {
-    /// What `record`, and the regions when `regions`, keep of `system`'s devices.
+    /// Builds a [`Recording`] layout from `record` and `regions` for `system`.
     fn from_record(system: &Elaborated, record: &Record, regions: bool) -> Self {
         let devices = &system.devices;
         let recorded = |index: usize| record.names(devices[index].path());
@@ -170,8 +161,8 @@ impl Recording {
     }
 }
 
-/// The variables of `device` that recording its region alone keeps, by index among its
-/// [variables](Placed::variable_names): its region, then each of its margins.
+/// Returns indices into [`Placed::variable_names`] for the operating region and region
+/// boundary margins of `device`.
 fn region_variables(device: &Placed) -> Vec<usize> {
     let names = device.variable_names();
     iter::once(REGION)
@@ -181,17 +172,16 @@ fn region_variables(device: &Placed) -> Vec<usize> {
 }
 
 impl Simulator {
-    /// What `record`, and every other transistor's region when `regions`, keep of the
-    /// circuit's devices, and where every [`RecordedValues`] of an analysis run with them
-    /// holds each value.
+    /// Computes the [`Recording`] layout selected by `record` and `regions`, matching the
+    /// element ordering in [`RecordedValues`].
     #[must_use]
     pub fn recorded(&self, record: &Record, regions: bool) -> Recording {
         Recording::from_record(&self.elaborated, record, regions)
     }
 
-    /// The variables of the device at `index` that recording its region alone keeps, by
-    /// index among its [variables](Placed::variable_names): its region, then each of its
-    /// margins; none for a device that is no transistor or no device at all.
+    /// Returns indices into [`Placed::variable_names`] for the region and margin variables
+    /// of the device at `index`, or an empty vector for non-transistors or out-of-range
+    /// indices.
     #[must_use]
     pub fn region_variables(&self, index: usize) -> Vec<usize> {
         self.elaborated
@@ -200,13 +190,13 @@ impl Simulator {
             .map_or_else(Vec::new, region_variables)
     }
 
-    /// Checks `options`, gives the solver the ordering and the threads their parallelism
-    /// asks for, and readies the recorder to record what they name.
+    /// Validates `options`, configures the solver ordering and parallelism thread count,
+    /// and updates the recorder selection.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidOptions`] for options out of range, and
-    /// [`SimulationError::TooLarge`] when a dissected ordering does not fit in memory.
+    /// Returns [`SimulationError::InvalidOptions`] for invalid options, or
+    /// [`SimulationError::TooLarge`] when a dissected ordering exceeds memory limits.
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let checked = options.check().and_then(|()| {
@@ -227,8 +217,8 @@ impl Simulator {
         checked
     }
 
-    /// What the recorded devices do at the DC solution `x`, every device evaluated there
-    /// first, its steps not limited, when the recorder records any.
+    /// Evaluates devices without voltage limiting at DC solution `x` (when recording is
+    /// active) and returns the [`RecordedValues`].
     pub(crate) fn record_dc(&mut self, x: &[f64], options: &Options) -> RecordedValues {
         if self.state.recorder.records() {
             self.evaluate(x, None, 1.0, options.gmin, false);
@@ -236,14 +226,13 @@ impl Simulator {
         self.record_evaluated()
     }
 
-    /// What the recorded devices do at the DC solution every device was last evaluated
-    /// at, its steps not limited.
+    /// Extracts DC [`RecordedValues`] from the most recent unlimited device evaluation.
     pub(crate) fn record_evaluated(&mut self) -> RecordedValues {
         let read = self.read_recorded();
         self.state.recorder.dc(&read)
     }
 
-    /// What the recorded devices did at the last evaluation, as the slab holds it.
+    /// Reads raw slab values for all recorded devices from the most recent evaluation.
     pub(crate) fn read_recorded(&mut self) -> Read {
         // The check compares what is read with each device's instance evaluated alone.
         #[cfg(test)]
@@ -263,65 +252,63 @@ impl Simulator {
     }
 }
 
-/// A recorded device, and where its values lie.
+/// Output buffer offsets for a device recorded in full.
 #[derive(Debug)]
 struct Slot {
-    /// The device, by its index among the circuit's.
+    /// Index of the device in the elaborated device list.
     device: usize,
-    /// Its terminals, by index among the evaluated devices' terminals.
+    /// Index range of the device's terminals within the evaluated terminal buffer.
     terminals: Range<usize>,
-    /// Its local unknowns: its terminals, then its internal unknowns.
+    /// Local unknown count: terminals followed by internal unknowns.
     unknowns: usize,
-    /// The index of its first derivative among a recording's.
+    /// Starting offset of this device's dense local derivatives in the derivative buffer.
     first_derivative: usize,
-    /// Its variables' range among a recording's.
+    /// Index range of this device's variables in the recorded variable buffer.
     variables: Range<usize>,
 }
 
-/// A transistor whose region and margins alone are recorded, and where they lie.
+/// Output buffer offsets for a transistor recorded for operating region and margins only.
 #[derive(Debug)]
 struct RegionSlot {
-    /// The transistor, by its index among the circuit's devices.
+    /// Index of the transistor in the elaborated device list.
     device: usize,
-    /// The variables it computes.
+    /// Total number of variables computed by the transistor model.
     computed: usize,
-    /// Its region variables, by index among those it computes.
+    /// Indices of region and margin variables within the transistor's computed variables.
     picked: Vec<usize>,
-    /// Their range among a recording's variables.
+    /// Index range of region variables within the recorded variable buffer.
     variables: Range<usize>,
 }
 
-/// What the analyses record, and where each value comes from.
+/// Precomputed index tables mapping slab entries to recorded output buffers.
 #[derive(Debug, Default)]
 struct Selection {
-    /// The record it was made for.
+    /// Active [`Record`] filter used to build this selection.
     record: Record,
-    /// Whether it was made to record the other transistors' regions.
+    /// Flag indicating whether unselected transistors record regions and margins.
     regions: bool,
-    /// The devices read at each point, those recorded and those behind a recorded summed
-    /// terminal, in order: each one's index among the circuit's devices, the index of its
-    /// first terminal among the read devices' terminals, and its number of terminals.
+    /// Devices read at each point (recorded directly or contributing to a summed terminal)
+    /// as `(device_index, first_terminal_offset, terminal_count)`.
     evaluated: Vec<(usize, usize, usize)>,
-    /// The number of the read devices' terminals.
+    /// Total number of evaluated device terminals tracked across `evaluated`.
     tracked: usize,
-    /// The recorded devices, in order.
+    /// Full recording slots in output order.
     recorded: Vec<Slot>,
-    /// The transistors whose region and margins alone are recorded, in order.
+    /// Region-only transistor slots in output order.
     transistors: Vec<RegionSlot>,
-    /// The terminals of each recorded summed terminal, by index among the read devices'
-    /// terminals.
+    /// Member indices in the tracked terminal buffer for each recorded summed terminal.
     sums: Vec<Vec<usize>>,
-    /// The terminals a recording holds: the recorded devices' and the summed terminals'.
+    /// Total output terminal count (recorded device terminals plus summed terminals).
     terminals: usize,
-    /// The derivatives a recording holds.
+    /// Total scalar entries in conductance and capacitance output buffers.
     derivatives: usize,
-    /// The variables a recording holds.
+    /// Total scalar entries in the variable output buffer.
     variables: usize,
 }
 
 impl Selection {
-    /// The values of the read terminals' `tracked` that a recording holds: the recorded
-    /// devices' terminals, then each recorded summed terminal's sum.
+    /// Gathers per-terminal values from `tracked` into output order (recorded device
+    /// terminals followed by summed terminal totals).
     fn gather<T: Copy + Default + Add<Output = T>>(&self, tracked: &[T]) -> Vec<T> {
         let mut found = Vec::with_capacity(self.terminals);
         for slot in &self.recorded {
@@ -336,10 +323,8 @@ impl Selection {
     }
 }
 
-/// What the recorded devices did at the last evaluation, as their blocks of the slab hold
-/// it: the current into each read terminal, without a charge's derivative, and the charge
-/// each holds, and the recorded devices' derivatives and variables, laid out as an
-/// [`RecordedValues`]'s.
+/// Raw device slab snapshot from the latest evaluation before adding transient `dq/dt`
+/// currents, laid out to populate [`RecordedValues`].
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Read {
     currents: Vec<f64>,
@@ -349,19 +334,19 @@ pub(crate) struct Read {
     variables: Vec<f64>,
 }
 
-/// The charges of every read terminal at the last accepted point of a transient, and their
-/// derivatives, as the transient's own history keeps the nodes'.
+/// Per-terminal charge history maintained across accepted transient steps to compute
+/// terminal `dq/dt` currents.
 #[derive(Debug, Default)]
 struct History {
     last: Vec<f64>,
     before: Vec<f64>,
     derivative: Vec<f64>,
-    /// Whether the last point began the integration afresh, so has no point before it.
+    /// Flag indicating that the last accepted point restarted integration without prior
+    /// step history.
     restarted: bool,
 }
 
-/// What the analyses record of the devices, and the history of the charges a transient
-/// carries.
+/// Stateful recorder managing device selection and transient terminal charge history.
 #[derive(Debug, Default)]
 pub(crate) struct Recorder {
     selection: Selection,
@@ -369,24 +354,23 @@ pub(crate) struct Recorder {
 }
 
 impl Recorder {
-    /// A recorder that records nothing yet.
+    /// Creates an empty [`Recorder`] selecting no devices.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Forgets what was recorded, as [`Recorder::new`] makes it.
+    /// Clears the active selection and transient history, restoring [`Recorder::new`] state.
     pub(crate) fn reset(&mut self) {
         self.selection = Selection::default();
         self.history = History::default();
     }
 
-    /// Whether the recorder reads any device.
+    /// Returns whether the recorder currently tracks any devices or transistor regions.
     pub(crate) fn records(&self) -> bool {
         self.selection.tracked > 0 || !self.selection.transistors.is_empty()
     }
 
-    /// Records what `record` names of `system`, and every other transistor's region when
-    /// `regions`, from the next point on.
+    /// Updates the recording selection for `system` from `record` and `regions`.
     fn select(&mut self, system: &Elaborated, record: &Record, regions: bool) {
         if self.selection.record == *record && self.selection.regions == regions {
             return;
@@ -470,15 +454,15 @@ impl Recorder {
         };
     }
 
-    /// The numbers a recording holds: the currents and the charges of the recorded
-    /// terminals, and the recorded devices' derivatives and variables.
+    /// Returns the total scalar count stored per recorded point across currents, charges,
+    /// derivatives, and variables.
     pub(crate) fn width(&self) -> usize {
         let selection = &self.selection;
         2 * (selection.terminals + selection.derivatives) + selection.variables
     }
 
-    /// What the recorded devices did at the last evaluation of `runs`, the run of `groups`,
-    /// as their blocks of its slab hold it.
+    /// Reads raw currents, charges, derivatives, and variables for all selected devices
+    /// from the latest slab evaluation of `runs`.
     pub(crate) fn read(&self, groups: &Groups, runs: &Runs) -> Read {
         let selection = &self.selection;
         let tracked = selection.tracked;
@@ -529,14 +513,13 @@ impl Recorder {
         read
     }
 
-    /// What the recorded devices do at a DC solution, as `read` reads them there: each
-    /// current without a charge's derivative.
+    /// Assembles DC [`RecordedValues`] from `read` without charge time derivatives.
     pub(crate) fn dc(&self, read: &Read) -> RecordedValues {
         self.recorded(read, &read.currents)
     }
 
-    /// What the recorded devices do at the DC solution that begins a transient, as `read`
-    /// reads them there, whose charges stand still.
+    /// Initializes transient terminal charge history from `read` at the initial DC point
+    /// and returns the initial [`RecordedValues`].
     pub(crate) fn start(&mut self, read: &Read) -> RecordedValues {
         let found = self.recorded(read, &read.currents);
         self.history = History {
@@ -548,8 +531,8 @@ impl Recorder {
         found
     }
 
-    /// What the recorded devices do at a point a transient accepted, as `read` reads them
-    /// there, the point solved by `step`.
+    /// Advances transient terminal charge history using `step` and returns the accepted
+    /// point's [`RecordedValues`] with `dq/dt` included in terminal currents.
     pub(crate) fn step(&mut self, read: &Read, step: StepFormula) -> RecordedValues {
         let history = &mut self.history;
         let derivative: Vec<f64> = read
@@ -582,8 +565,7 @@ impl Recorder {
         found
     }
 
-    /// What the recorded devices did, as `read` reads them, with the current into each
-    /// read terminal `currents`.
+    /// Gathers terminal `currents` and `read` quantities into a [`RecordedValues`] buffer.
     fn recorded(&self, read: &Read, currents: &[f64]) -> RecordedValues {
         let selection = &self.selection;
         RecordedValues {
@@ -595,9 +577,8 @@ impl Recorder {
         }
     }
 
-    /// The small-signal currents into the recorded terminals about the DC solution `runs`,
-    /// the run of `groups`, was last evaluated at, with the source at `excited` driven by a
-    /// unit excitation: ready at any frequency, and read by any number of threads at once.
+    /// Builds a thread-safe [`Currents`] evaluator for small-signal AC terminal currents
+    /// around the last operating point with unit excitation on device `excited`.
     pub(crate) fn currents(&self, groups: &Groups, runs: &Runs, excited: usize) -> Currents<'_> {
         let mut excitation = Vec::new();
         let mut linear = Vec::with_capacity(self.selection.evaluated.len());
@@ -639,28 +620,26 @@ impl Recorder {
     }
 }
 
-/// The linearized equations of a read device's terminals: the index of its first terminal
-/// among the read devices' terminals, each entry of a terminal's row with its column, its
-/// conductance and its capacitance, and the circuit's unknown of each local unknown.
+/// Linearized terminal rows extracted from one evaluated device block for AC current
+/// calculation.
 struct Linear {
     first: usize,
     entries: Vec<(usize, usize, f64, f64)>,
     nodes: Vec<u32>,
 }
 
-/// The small-signal currents into the recorded terminals about a DC solution, with a
-/// source driven by a unit excitation, at any frequency.
+/// Linearized small-signal terminal-current evaluator for recorded devices at any AC
+/// frequency.
 pub(crate) struct Currents<'a> {
     linear: Vec<Linear>,
-    /// What the excited source adds to each of its terminals, by index among the read
-    /// devices' terminals.
+    /// Direct source excitation terms `(tracked_terminal, value)` for the excited source.
     excitation: Vec<(usize, f64)>,
     selection: &'a Selection,
 }
 
 impl Currents<'_> {
-    /// The small-signal current into each recorded terminal at angular frequency `omega`,
-    /// for the phasors `values` of the unknowns.
+    /// Computes complex small-signal currents entering each recorded terminal at angular
+    /// frequency `omega` for solution phasors `values`.
     pub(crate) fn at(&self, values: &[Complex64], omega: f64) -> Vec<Complex64> {
         let mut tracked = vec![Complex64::default(); self.selection.tracked];
         for linear in &self.linear {
@@ -677,8 +656,7 @@ impl Currents<'_> {
                     Complex64::new(conductance, omega * capacitance) * phasor(column);
             }
         }
-        // Each of the excited source's terminals takes its excitation after its own
-        // conductances, which only its own block adds to it.
+        // Apply direct excitation after the excited source's own conductance stamps.
         for &(terminal, value) in &self.excitation {
             tracked[terminal] += Complex64::new(value, 0.0);
         }
@@ -695,7 +673,8 @@ mod tests {
     use super::*;
     use crate::test_helpers::simulator_from_json;
 
-    /// A source driving a resistor into a MOSFET, inside a component instance `X1`.
+    /// Builds a test simulator with a voltage source driving a resistor and MOSFET inside
+    /// component instance `X1`.
     fn amplifier() -> Simulator {
         let resistor = json!({"name": "R1", "of": {"model": "resistor"},
                               "parameters": {"resistance": 1e3},
@@ -722,7 +701,7 @@ mod tests {
         simulator_from_json(&document.to_string())
     }
 
-    /// Options that record `record`.
+    /// Returns default [`Options`] configured with `record`.
     fn recording(record: Record) -> Options {
         Options {
             record,

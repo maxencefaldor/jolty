@@ -31,7 +31,7 @@ fn search(
     Ok((simulator, points))
 }
 
-/// The value of `name` in each of `points`, sorted.
+/// Returns the sorted values of unknown `name` across `points`.
 fn sorted(simulator: &Simulator, points: &[OperatingPointResult], name: &str) -> Vec<f64> {
     let unknown = simulator.unknown(name).expect("an unknown");
     let mut values: Vec<f64> = points

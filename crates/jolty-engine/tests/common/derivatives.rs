@@ -8,8 +8,7 @@ use serde_json::{Value, json};
 
 use crate::common::{device, resistor, two_terminal, voltage_source};
 
-/// A sine through a resistor into a diode and a capacitor across it: a rectifier, whose
-/// waveforms bend where the diode conducts.
+/// Builds a diode rectifier driven by a 1 MHz sine wave through a resistor into an RC load.
 pub(crate) fn rectifier() -> Vec<Instance> {
     vec![
         voltage_source(
@@ -31,9 +30,8 @@ pub(crate) fn rectifier() -> Vec<Instance> {
     ]
 }
 
-/// Tight tolerances; when `fixed_steps` is true, also sets an infinite truncation
-/// tolerance so every run takes the same steps and finite differences see what the
-/// parameters move, not where the steps fall.
+/// Returns tight solver options, disabling truncation step control when `fixed_steps` is
+/// true so finite differences isolate parameter shifts rather than step placement.
 pub(crate) fn tight_options(fixed_steps: bool) -> Options {
     Options {
         relative_tolerance: 1e-12,
@@ -48,7 +46,8 @@ pub(crate) fn tight_options(fixed_steps: bool) -> Options {
     }
 }
 
-/// The simulator of `circuit` with the parameter `name` of `device_name` set to `value`.
+/// Builds a simulator for `circuit` with parameter `name` of `device_name` overridden to
+/// `value`.
 pub(crate) fn moved(circuit: &Circuit, device_name: &str, name: &str, value: f64) -> Simulator {
     let mut parameters = circuit.components[&circuit.top]
         .instances

@@ -1,32 +1,27 @@
-//! The poles and zeros of the circuit linearized at its operating point.
+//! Poles, zeros, and growing natural modes of the circuit linearized at its DC operating
+//! point.
 //!
-//! Linearized, the circuit's equations are `(G + sC) x = −u · b` at the complex frequency
-//! `s`, where `u` is an input source's level and `b` the derivative of the residual with
-//! respect to it. Its poles, its natural frequencies, are the `s` at which `G + sC` is singular: the
-//! finite generalized eigenvalues of the pencil `(G, −C)`. The transfer function from the
-//! source to an output read by `e`, `H(s) = −eᵀ (G + sC)⁻¹ b`, vanishes where the bordered
-//! matrix `[[G + sC, b], [eᵀ, 0]]` is singular, so its zeros are the finite eigenvalues of
-//! the bordered pencil. A natural frequency that the source cannot excite, or the output
-//! cannot see, is a root of both, and both list it.
+//! At complex frequency `s`, the linearized circuit satisfies `(G + sC) x = -u * b`, where
+//! `u` is an input source level and `b` is its residual derivative. Poles are the finite
+//! generalized eigenvalues of `(G, -C)` where `G + sC` becomes singular. For an output
+//! selector `e`, the transfer function `H(s) = -eᵀ (G + sC)⁻¹ b` vanishes where the bordered
+//! pencil `[[G + sC, b], [eᵀ, 0]]` is singular, yielding the finite zeros. Uncontrollable or
+//! unobservable natural frequencies appear in both lists.
 //!
-//! Both pencils are dense and solved by the QZ algorithm, after scaling the frequency by
-//! the circuit's own, `‖G‖ / ‖C‖`, and equilibrating rows and columns, so that their
-//! entries are of one order; an eigenvalue beyond `10¹²` times that frequency is infinite.
-//! The circuit has an operating point, so `G` is regular and no pole lies at the origin;
-//! a zero within `10⁻¹⁰` times the largest pole or zero lies there, as a coupling
-//! capacitor's does. The pencils are real, so their roots are real or come in conjugate
-//! pairs, which the roots found are made exactly.
+//! Dense QZ solves compute eigenvalues after scaling frequency by `||G|| / ||C||` and
+//! equilibrating rows and columns to unit scale. Eigenvalues above `10¹²` times the
+//! characteristic frequency are classified as infinite, and zeros within `10⁻¹⁰` of the
+//! largest root snap to the origin. Real pencils yield roots snapped to exact real values or
+//! exact complex conjugate pairs.
 //!
-//! A pole with a positive real part is a natural mode that grows away from the operating
-//! point: an oscillation that builds up, or a latch that tips. Its shape, the amplitude of
-//! each unknown in it, solves `(G + sC) x = 0` at the pole, found by inverse iteration
-//! with the sparse factorization of `G + sC` just beside it, from pseudo-random
-//! amplitudes, as LAPACK's inverse iteration starts (`xLARNV` in `xSTEIN`): a start of
-//! equal amplitudes has no part along a mode of a circuit that a permutation of its
-//! unknowns leaves as it is, such as a ring oscillator's, whose stages swing in turn.
+//! Poles with positive real parts correspond to growing natural modes such as oscillating
+//! loops or tipping latches. Mode shapes solve `(G + sC) x = 0` via shifted sparse inverse
+//! iteration near the pole from pseudo-random seeds (as in LAPACK `xLARNV` / `xSTEIN`).
+//! Random seeds preserve nonzero projections onto symmetric modes, such as ring-oscillator
+//! stages, where uniform seeds vanish.
 //!
-//! The dense pencils take memory as the square of the unknowns, so an analysis checks
-//! them against its options' `max_memory` before it makes them, and fails if they pass it.
+//! Dense pencil memory grows quadratically with unknown count, so analyses validate memory
+//! bounds against `options.max_memory` before allocating.
 
 use std::cmp::Ordering;
 
@@ -38,83 +33,68 @@ use serde::Deserialize;
 use crate::ac::selector_vector;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
-/// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
-/// root beyond `10¹²` times the circuit's characteristic frequency.
+/// Ratio `|beta| / |alpha|` below which a generalized eigenvalue is classified as infinite
+/// (beyond `10¹²` times the circuit's characteristic frequency).
 ///
-/// Origin: jolty's own QZ rounding threshold (`~4.5e3 * f64::EPSILON`), above typical
-/// `O(n * eps)` backward error of the QZ factorization on algebraic (infinite) eigenvalues
-/// of the scaled, equilibrated pencil `(G, -C)`.
+/// Derivation: QZ rounding threshold (`~4.5e3 * f64::EPSILON`) above `O(n * eps)` backward
+/// error on algebraic infinite eigenvalues of the equilibrated pencil `(G, -C)`.
 const INFINITE: f64 = 1e-12;
 
-/// The fraction of the largest root below which a zero is at the origin: no closer than the
-/// linearized circuit, solved to Newton's tolerance, resolves it.
+/// Fraction of the largest finite root below which a zero snaps to the origin.
 ///
-/// Origin: jolty's own QZ origin-snapping threshold (`100 * INFINITE`), wide enough to absorb
-/// Newton operating-point and QZ cancellation noise on exact DC zeros (such as coupling
-/// capacitors) while preserving low-frequency finite zeros.
+/// Derivation: `100 * INFINITE` threshold absorbing Newton operating-point and QZ
+/// cancellation rounding on exact DC zeros (such as coupling capacitors) without discarding
+/// low-frequency finite zeros.
 const ORIGIN: f64 = 1e-10;
 
-/// The size below which both parts of an eigenvalue of the equilibrated pencil vanish, as
-/// they do for a pencil whose determinant is zero everywhere.
+/// Magnitude threshold below which both `alpha` and `beta` vanish, signaling a singular
+/// pencil with an identically zero determinant.
 ///
-/// Origin: jolty's own QZ singular-pencil threshold (`~4.5e3 * f64::EPSILON`, matching
-/// `INFINITE`) on the equilibrated pencil whose entries have norm near `1`, detecting `0 / 0`
-/// eigenvalues.
+/// Derivation: QZ singular-pencil rounding threshold (`~4.5e3 * f64::EPSILON`, matching
+/// `INFINITE`) on the unit-norm equilibrated pencil.
 const DEGENERATE: f64 = 1e-12;
 
-/// The imaginary part, relative to its magnitude, below which a root is real: the error of
-/// the complex QZ iteration on a real pencil.
+/// Relative imaginary-part threshold below which a root of a real pencil is snapped to real.
 ///
-/// Origin: jolty's own threshold (`~4.5e6 * f64::EPSILON`, three decades above `INFINITE`),
-/// stripping spurious QZ imaginary noise from real roots while retaining lightly damped
-/// conjugate pairs.
+/// Derivation: `~4.5e6 * f64::EPSILON` (three decades above `INFINITE`), removing QZ
+/// imaginary rounding noise from real roots while keeping lightly damped conjugate pairs.
 const REAL: f64 = 1e-9;
 
-/// The equilibration passes, each of which brings every row's and column's largest entry
-/// nearer to 1.
+/// Number of Ruiz equilibration passes scaling row and column infinity norms toward unity.
 ///
-/// Source: Ruiz equilibration (D. Ruiz, "A scaling algorithm to equilibrate both rows and
-/// columns norms in matrices", Technical Report `RAL-TR-2001-034`, 2001), which converges
-/// quadratically in the infinity norm; 4 passes is jolty's fixed iteration count, sufficient
-/// to bring typical `G`/`C` imbalances close to unit row and column norms.
+/// Source: D. Ruiz, "A scaling algorithm to equilibrate both rows and columns norms in
+/// matrices", Technical Report `RAL-TR-2001-034`, 2001 (quadratic convergence; 4 passes
+/// balance typical `G`/`C` pencils).
 const PASSES: usize = 4;
 
-/// The real part, relative to its magnitude, above which a pole grows: well above the
-/// error of the QZ iteration, so that a lossless resonator's poles do not.
+/// Minimum relative real part (`Re(s) / |s|`) required to classify a pole as growing.
 ///
-/// Origin: jolty's own stability threshold (equivalent to negative damping ratio `zeta < -1e-6`,
-/// three decades above `REAL`), keeping numerical perturbation of imaginary-axis LC resonator
-/// poles from triggering false positive growth.
+/// Derivation: stability threshold (`zeta < -1e-6`, three decades above `REAL`) preventing
+/// QZ rounding of lossless LC resonator poles from triggering spurious growth.
 const GROWING: f64 = 1e-6;
 
-/// The distance from a pole, relative to its magnitude, at which inverse iteration factors
-/// `G + sC`: near enough that the pole's mode dominates the solution a million times over,
-/// far enough that the factorization stays regular.
+/// Relative imaginary frequency shift applied to a pole before sparse inverse iteration.
 ///
 /// Source: shifted inverse iteration (Golub and Van Loan, *Matrix Computations*, 4th ed.,
-/// 2013); jolty's relative imaginary shift `1e-6` amplifies the target mode by `~1e6` per
-/// solve while leaving `G + sC` conditioned by `~1e6` (~10 digits preserved in `f64`).
+/// 2013); `1e-6` amplifies the target mode by `~1e6` per solve while keeping `G + sC`
+/// conditioned to ~10 digits in `f64`.
 const BESIDE: f64 = 1e-6;
 
-/// The steps of inverse iteration, each of which multiplies the mode's lead by `1 / BESIDE`.
+/// Number of shifted inverse-iteration solves per growing mode.
 ///
-/// Derivation: with `BESIDE = 1e-6`, two solves suppress competing modes by `~1 / BESIDE^2 =
-/// 1e12` (near `f64` accuracy relative to the shifted matrix conditioning `~1e6`).
+/// Derivation: two solves at shift `1e-6` suppress competing modes by `~1e12`, matching `f64`
+/// accuracy at the shifted matrix's `~1e6` conditioning.
 const ITERATIONS: usize = 2;
 
-/// The most dense real matrices a pole-zero analysis holds at once, each of a row per
-/// unknown, and one more where it borders them for the zeros: the circuit's `G` and `C`,
-/// and, for the pencil it solves, the two it equilibrates and the two complex ones its QZ
-/// iteration works on, each the size of two real ones.
+/// Peak number of dense real `n × n` matrices live during a pole-zero solve (or
+/// `(n + 1) × (n + 1)` when bordered for zeros).
 ///
 /// Derivation: exact count `1 (G) + 1 (C) + 2 (equilibrated) + 2 * 2 (complex QZ) = 8`.
 const PENCIL_MATRICES: f64 = 8.0;
-/// The analysis's name in its messages.
-/// Origin: shared jolty diagnostic label (no numeric parameter).
+/// Analysis label used in pole-zero diagnostic messages.
 const POLE_ZERO: &str = "pole-zero analysis";
-/// Why a pole-zero analysis, and the search for growing modes, take no delay line: its
-/// `e^{−sτ}` makes the circuit's determinant transcendental in `s`, whose roots are
-/// infinitely many, where the pencil `G + sC` has as many as its unknowns at most.
+/// Refusal message for circuits with delay lines, whose `e^{-sτ}` factors make `det(G + sC)`
+/// transcendental with infinitely many poles.
 const INFINITELY_MANY_POLES: &str = "a delay gives a circuit infinitely many poles";
 
 /// A pole-zero analysis: the poles of the circuit linearized at its operating point, and,
@@ -152,31 +132,28 @@ pub struct PoleZeroResult {
     pub zeros: Option<Vec<Complex64>>,
 }
 
-/// A natural mode of the circuit linearized at its operating point.
+/// Natural mode of the circuit linearized at its operating point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mode {
-    /// Its pole, in radians per second; of a conjugate pair, the member above the real
-    /// axis.
+    /// Mode pole in radians per second; for a conjugate pair, the member with non-negative
+    /// imaginary part.
     pub pole: Complex64,
-    /// The amplitude of each unknown in the mode, the largest of magnitude 1.
+    /// Per-unknown complex mode amplitude normalized to unit maximum magnitude.
     pub shape: Vec<Complex64>,
 }
 
 impl Simulator {
-    /// Linearizes the circuit at its operating point and finds its poles, and the zeros
-    /// of the transfer function from the source to the output, given both.
+    /// Linearizes the circuit at its operating point and computes its poles, plus transfer
+    /// function zeros when both a source and an output are specified.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] for a source without an output, an
-    /// output or a reference without a source, an output over itself or a current over a
-    /// node, or a transfer function that is zero at every frequency;
-    /// [`SimulationError::UnknownOutput`], [`SimulationError::UnknownSource`] or
-    /// [`SimulationError::NotASource`] when they name no such unknown or source;
-    /// [`SimulationError::Singular`] when the linearized circuit is singular at every
-    /// frequency; [`SimulationError::Unconverged`] when the QZ iteration does not
-    /// converge; [`SimulationError::TooMuchMemory`] when its dense matrices would hold
-    /// more than the options' `max_memory`; and the errors of [`Simulator::operating_point`].
+    /// Returns [`SimulationError::InvalidAnalysis`] for incomplete source/output pairs,
+    /// invalid references, or identically zero transfer functions. Other failure variants
+    /// include [`SimulationError::UnknownOutput`], [`SimulationError::UnknownSource`],
+    /// [`SimulationError::NotASource`], [`SimulationError::Singular`],
+    /// [`SimulationError::Unconverged`], [`SimulationError::TooMuchMemory`], and errors from
+    /// [`Simulator::operating_point`].
     pub fn pole_zero(
         &mut self,
         analysis: &PoleZero,
@@ -249,9 +226,8 @@ impl Simulator {
         })
     }
 
-    /// The natural modes that grow away from the operating point: those whose poles have a
-    /// real part above a millionth of their magnitude, a conjugate pair once, by
-    /// decreasing real part.
+    /// Computes growing natural modes (`Re(s) > 1e-6 * |s|`) ordered by decreasing growth rate,
+    /// listing each conjugate pair once.
     ///
     /// # Errors
     ///
@@ -301,7 +277,7 @@ impl Simulator {
         })
     }
 
-    /// The matrices `G` and `C` the workspace holds, dense in column-major order.
+    /// Copies workspace matrices `G` and `C` into dense column-major buffers.
     fn dense_pencil(&self) -> (Vec<f64>, Vec<f64>) {
         let n = self.elaborated.unknowns.len();
         let mut conductance = vec![0.0; n * n];
@@ -321,8 +297,8 @@ impl Simulator {
     }
 }
 
-/// The dense matrices `[[g, level], [readᵀ, 0]]` and `[[c, 0], [0, 0]]` of `n + 1` rows,
-/// column-major, from `g` and `c` of `n`.
+/// Builds bordered `(n + 1) × (n + 1)` column-major pencil matrices `[[g, level], [readᵀ, 0]]`
+/// and `[[c, 0], [0, 0]]`.
 fn bordered(n: usize, g: &[f64], c: &[f64], level: &[f64], read: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let size = n + 1;
     let mut bordered_g = vec![0.0; size * size];
@@ -339,16 +315,15 @@ fn bordered(n: usize, g: &[f64], c: &[f64], level: &[f64], read: &[f64]) -> (Vec
     (bordered_g, bordered_c)
 }
 
-/// The error of a linearized circuit whose `det(G + sC)` is zero at every `s`: singular,
-/// with no unknown standing out.
+/// Constructs a [`SimulationError::Singular`] error for a pencil singular at every frequency.
 fn everywhere() -> SimulationError {
     SimulationError::Singular {
         unknowns: Vec::new(),
     }
 }
 
-/// The finite roots of `det(g + s·c)`, of two dense matrices of `n` rows in column-major
-/// order, sorted, or `None` when the determinant is zero at every `s`.
+/// Computes sorted finite roots of `det(g + s * c)` for `n × n` column-major matrices, or
+/// returns `None` if the pencil is identically singular.
 fn roots(
     n: usize,
     mut g: Vec<f64>,
@@ -356,7 +331,7 @@ fn roots(
 ) -> Result<Option<Vec<Complex64>>, SimulationError> {
     let norm = |matrix: &[f64]| matrix.iter().map(|value| value * value).sum::<f64>().sqrt();
     let (g_norm, c_norm) = (norm(&g), norm(&c));
-    // The circuit's characteristic frequency, by which the roots are scaled to order 1.
+    // Characteristic frequency scaling the pencil roots to order 1.
     let frequency = if c_norm > 0.0 && g_norm > 0.0 {
         g_norm / c_norm
     } else {
@@ -369,7 +344,7 @@ fn roots(
     let eigenvalues = generalized_eigenvalues(n, &g, &c).map_err(|error| match error {
         PencilError::Unconverged => SimulationError::Unconverged,
     })?;
-    // A pencil whose determinant vanishes everywhere has an eigenvalue 0/0.
+    // Identically singular pencils produce `0 / 0` generalized eigenvalues.
     if eigenvalues
         .iter()
         .any(|Eigenvalue { alpha, beta }| alpha.norm() <= DEGENERATE && beta.norm() <= DEGENERATE)
@@ -391,9 +366,8 @@ fn roots(
     Ok(Some(found))
 }
 
-/// `roots` of a real pencil, made exactly real or exactly conjugate in pairs: the roots
-/// within [`REAL`] of the real axis lose their imaginary parts, and each root above it is
-/// averaged with the conjugate of the nearest below it.
+/// Snaps `roots` of a real pencil to exact real values (within [`REAL`]) or averaged exact
+/// complex conjugate pairs.
 fn conjugated(roots: Vec<Complex64>) -> Vec<Complex64> {
     let (mut real, mut upper, mut lower) = (Vec::new(), Vec::new(), Vec::new());
     for root in roots {
@@ -427,9 +401,8 @@ fn conjugated(roots: Vec<Complex64>) -> Vec<Complex64> {
     paired
 }
 
-/// Scales the rows and columns of the pencil `(g, c)`, of `n` rows in column-major order,
-/// so that each row's and column's largest entry nears 1, which leaves its eigenvalues as
-/// they are (Ruiz's equilibration).
+/// Applies Ruiz row-and-column equilibration to the `n × n` column-major pencil `(g, c)` so
+/// row and column infinity norms approach 1 without changing eigenvalues.
 fn equilibrate(n: usize, g: &mut [f64], c: &mut [f64]) {
     let scale = |largest: f64| {
         if largest > 0.0 {

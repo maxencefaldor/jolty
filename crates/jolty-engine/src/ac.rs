@@ -102,14 +102,14 @@ impl Simulator {
             .find(|&&frequency| !(frequency >= 0.0 && frequency.is_finite()))
         {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "frequencies must be at least 0 and finite, not {frequency:?}"
+                "frequencies require non-negative finite values; got {frequency:?}"
             )));
         }
         self.linearized(options)
     }
 
-    /// Solves the operating point and evaluates the devices there, so the workspace holds
-    /// `G` and `C`.
+    /// Solves the operating point and evaluates devices there so the workspace holds `G`
+    /// and `C`.
     pub(crate) fn linearized(
         &mut self,
         options: &Options,
@@ -119,16 +119,15 @@ impl Simulator {
         Ok(operating_point)
     }
 
-    /// The matrices of the circuit linearized at the operating point the workspace was
-    /// last evaluated at, to factor at any frequency: `G + sC`, and the parts of `G` its
-    /// delay lines read in the past each times `e^{−s·delay}`.
+    /// Builds a [`Linearization`] for the current operating point, forming `G + sC` plus
+    /// delay-line phase terms `e^{-s*delay}`.
     pub(crate) fn linearization(&self) -> Linearization {
         let delayed = self.state.runs.delayed(&self.elaborated.groups);
         Linearization::new(&self.state.solver, delayed)
     }
 
-    /// Fails with [`SimulationError::Delayed`], for `analysis` and the `reason` it gives,
-    /// when the circuit holds a delay line.
+    /// Fails with [`SimulationError::Delayed`] for `analysis` and `reason` when the
+    /// circuit contains any delay line.
     pub(crate) fn undelayed(
         &self,
         analysis: &'static str,
@@ -156,9 +155,8 @@ impl Simulator {
         })
     }
 
-    /// The unknown named `output`, and the one named `reference` it is taken over, if
-    /// any, with what the difference is: a voltage over a node, or any unknown alone.
-    /// Ground's name names no unknown.
+    /// Resolves `output` and optional differential `reference` to unknown indices and
+    /// quantity [`Nature`], mapping ground to `None`.
     pub(crate) fn measured(
         &self,
         output: &str,
@@ -188,7 +186,8 @@ impl Simulator {
         Ok((found, base, nature))
     }
 
-    /// `∂f/∂s` of the independent source at `device`, with one entry per unknown.
+    /// Computes the right-hand excitation vector `∂f/∂s` for the independent source at
+    /// `device`.
     pub(crate) fn source_excitation(&self, device: usize) -> Vec<f64> {
         let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
         self.state
@@ -197,7 +196,7 @@ impl Simulator {
         excitation
     }
 
-    /// The node or unknown named `name`: none for ground.
+    /// Resolves node or unknown `name`, returning `None` for ground.
     fn node(&self, name: &str) -> Result<Option<UnknownIndex>, SimulationError> {
         if name == self.reference() {
             return Ok(None);
@@ -208,7 +207,8 @@ impl Simulator {
     }
 }
 
-/// A vector of length `unknowns` with `+1` at `positive` and `−1` at `negative`.
+/// Builds a selector vector of length `unknowns` with `+1` at `positive` and `-1` at
+/// `negative`.
 pub(crate) fn selector_vector<T>(
     unknowns: usize,
     positive: Option<UnknownIndex>,
@@ -226,27 +226,22 @@ where
     values
 }
 
-/// What a small-signal analysis finds at one frequency, from the factors of `G + jωC`
-/// there, the frequency's index among the analysis's, and the frequency.
+/// Callback invoked at one frequency with factored `G + jωC`, frequency index, and
+/// frequency in hertz.
 pub(crate) type At<'a, R> =
     dyn Fn(&mut Factors<'_, Complex64>, usize, f64) -> Result<R, SimulationError> + Sync + 'a;
 
-/// What `at` finds at each of `frequencies`, in order, from the matrix `G + jωC` of
-/// `contributions` factored there: as `start` factors them going through the frequencies
-/// in order, each factorization keeping the pivots the one before it left, while they
-/// hold.
+/// Evaluates `at` across `frequencies` in order using factored `G + jωC` matrices from
+/// `contributions`, reusing pivots across consecutive frequencies.
 ///
-/// Spread over the tasks `parallelism` allows, it finds the same bits. The first frequency
-/// is factored first, then each task takes a run of the others from the pivots it left.
-/// A run's results stand when it started from the pivots the run before it left, which
-/// compare alike unless a factorization of that run searched for new ones; every run that
-/// did not is taken again, from the pivots the run before it left that time, until each
-/// stands: as many rounds as the frequencies have runs whose pivots change, and one where
-/// they hold throughout.
+/// Parallel execution under `parallelism` produces bit-identical results. The first
+/// frequency is factored sequentially, and subsequent chunks run in parallel from those
+/// pivots. Any chunk whose predecessor selected new pivots re-runs from the updated pivots
+/// until all chunks match sequential pivot order.
 ///
 /// # Errors
 ///
-/// Returns the first error, by frequency, of a factorization or of `at`.
+/// Returns the earliest error (by frequency index) from factorization or `at`.
 pub(crate) fn over_frequencies<R: Send>(
     start: Linearization,
     contributions: &Contributions,
@@ -335,8 +330,7 @@ pub(crate) fn over_frequencies<R: Send>(
     Ok(found)
 }
 
-/// Where the run before `part` ended: where the first frequency left `first`, for the
-/// first run.
+/// Returns the ending [`Linearization`] of the chunk before `part`, or `first` for chunk 0.
 fn end_before<'a, R>(
     runs: &'a [Option<FrequencyRun<R>>],
     part: usize,
@@ -347,15 +341,15 @@ fn end_before<'a, R>(
         .map_or(first, |run| &run.end)
 }
 
-/// A contiguous slice of frequencies and the index of its first frequency.
+/// Contiguous slice of frequencies together with its starting index.
 #[derive(Clone, Copy)]
 struct FrequencyChunk<'a> {
     first: usize,
     frequencies: &'a [f64],
 }
 
-/// What `at` found at a run of frequencies, from one linearization going through them in
-/// order: each frequency's, up to the first error, and the linearization as it ended.
+/// Results, optional first error, and ending linearization produced by evaluating a single
+/// frequency chunk sequentially.
 struct FrequencyRun<R> {
     found: Vec<R>,
     error: Option<SimulationError>,
@@ -363,7 +357,8 @@ struct FrequencyRun<R> {
 }
 
 impl<R> FrequencyRun<R> {
-    /// `at` at each frequency in `chunk` in order, from `linearization`, up to the first error.
+    /// Evaluates `at` sequentially across `chunk` from `linearization`, stopping at the
+    /// first error.
     fn from(
         mut linearization: Linearization,
         chunk: FrequencyChunk<'_>,
@@ -391,7 +386,7 @@ impl<R> FrequencyRun<R> {
         }
     }
 
-    /// `found` with the run's results after it, or the run's error.
+    /// Appends this chunk's results to `found`, or returns the first encountered error.
     fn finish(self, mut found: Vec<R>) -> Result<Vec<R>, SimulationError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -401,23 +396,20 @@ impl<R> FrequencyRun<R> {
     }
 }
 
-/// The matrix `G + jωC` of a circuit linearized at its operating point, factored at any
-/// frequency, each part of `G` a delay line reads in the past multiplied by `e^{−jωτ}`,
-/// `τ` its delay.
+/// Complex matrix `G + jωC` of a linearized operating point, scaling delayed transmission
+/// line entries by `e^{-jωτ}` for each delay `τ`.
 #[derive(Clone)]
 pub(crate) struct Linearization {
     solver: Solver<Complex64>,
     matrix: Vec<Complex64>,
     refinement: Refinement<Complex64>,
-    /// Each part of `G` that a delay line reads in the past, which `G` holds whole, as
-    /// at DC.
+    /// Delayed conductance entries included at full DC weight in `G`.
     delayed: Vec<DelayedEntry>,
 }
 
 impl Linearization {
-    /// A linearization over the matrices of `solver`, the simulator's, whose ordering it
-    /// shares, of a circuit whose delay lines read the parts `delayed` of its `G` in the
-    /// past.
+    /// Creates a complex [`Linearization`] sharing the symbolic ordering of `solver` with
+    /// the specified `delayed` conductance entries.
     pub(crate) fn new(solver: &Solver<f64>, delayed: Vec<DelayedEntry>) -> Self {
         Self {
             solver: solver.sharing(),
@@ -427,7 +419,7 @@ impl Linearization {
         }
     }
 
-    /// `G + jωC` at `frequency`, from the `contributions` at the operating point, factored.
+    /// Factors `G + jωC` at `frequency` (in hertz) from operating-point `contributions`.
     pub(crate) fn factor(
         &mut self,
         contributions: &Contributions,
@@ -436,14 +428,12 @@ impl Linearization {
         self.factor_at(contributions, Complex64::new(0.0, TAU * frequency))
     }
 
-    /// Whether this linearization factors every matrix from now on as `other` would, bit
-    /// for bit: they keep the same pivots.
+    /// Returns whether this linearization and `other` hold identical pivot sequences.
     fn factors_alike(&self, other: &Self) -> bool {
         self.solver.factors_alike(&other.solver)
     }
 
-    /// `G + sC` at the complex frequency `s`, from the `contributions` at the operating
-    /// point, factored.
+    /// Factors `G + sC` at complex frequency `s` from operating-point `contributions`.
     pub(crate) fn factor_at(
         &mut self,
         contributions: &Contributions,

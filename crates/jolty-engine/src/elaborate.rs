@@ -18,67 +18,67 @@ use crate::Substitute;
 use crate::elaborated::{Binder, Devices, Elaborated, Made, Origin, Template};
 use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
 
-/// A terminal of a component instance or a logic device, whose current and charge are those
-/// of device terminals summed: a port's are those of every device terminal inside its
-/// instance that joins the port's net there, and a logic pin's those of its connect
-/// element's terminal on the pin's electrical net.
+/// Terminal of a component instance or a logic device whose current and charge sum
+/// underlying device terminals.
 ///
-/// A port on a thermal net is thermal, its current the heat flowing into it. The reference
-/// is the ambient as well as the ground, so a port on it sums its electrical terminals
-/// only: heat into the ambient is no current.
+/// A component port sums every device terminal inside the instance that joins the port's
+/// net, while a logic pin sums the terminal of its connect element on the pin's electrical
+/// net. A port on a thermal net is thermal, and its current represents heat flowing into
+/// the port. Ground also serves as the ambient thermal reference, so a port on ground sums
+/// only electrical terminals because heat into ambient is not electrical current.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummedTerminal {
-    /// Its instance's path and its own name, such as `X1.vdd`.
+    /// Qualified terminal name combining instance path and terminal name, such as `X1.vdd`.
     pub(crate) name: String,
-    /// Its instance's path, such as `X1`.
+    /// Hierarchical path of the owning component instance or logic device, such as `X1`.
     pub(crate) owner: String,
-    /// The node it joins, or `None` for the reference.
+    /// Node joined by this terminal, or `None` for the reference node.
     pub(crate) node: Node,
-    /// Whether it is on a thermal net.
+    /// Flag indicating whether the terminal lies on a thermal net.
     pub(crate) thermal: bool,
-    /// Each device terminal summed, by the device's index and the terminal's.
+    /// Summed device terminals stored as `(device_index, terminal_index)` pairs.
     pub(crate) members: Vec<(usize, usize)>,
 }
 
 impl SummedTerminal {
-    /// Its instance's path and its own name, such as `X1.vdd`.
+    /// Returns the qualified terminal name combining instance path and terminal name, such as `X1.vdd`.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// The path of its component instance or logic device, such as `X1`.
+    /// Returns the hierarchical path of the owning component instance or logic device, such as `X1`.
     #[must_use]
     pub fn owner(&self) -> &str {
         &self.owner
     }
 
-    /// The node it joins: a node voltage's unknown, or `None` for the reference.
+    /// Returns the node joined by this terminal: a node-voltage unknown, or `None` for ground.
     #[must_use]
     pub fn node(&self) -> Node {
         self.node
     }
 
-    /// Whether it is on a thermal net, its current the heat flowing into it.
+    /// Reports whether this terminal lies on a thermal net, where current represents heat flow.
     #[must_use]
     pub fn thermal(&self) -> bool {
         self.thermal
     }
 
-    /// Each device terminal whose current and charge it sums, by the device's index among
-    /// [`Simulator::devices`](crate::Simulator::devices) and the terminal's among its own.
+    /// Returns the summed device terminals as `(device_index, terminal_index)` pairs indexing
+    /// into [`Simulator::devices`](crate::Simulator::devices) and each device's terminal list.
     #[must_use]
     pub fn members(&self) -> &[(usize, usize)] {
         &self.members
     }
 }
 
-/// Where an instance is: its hierarchical path and the source line that placed it.
+/// Hierarchical path of an instance paired with the source line that placed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
-    /// The instance's path through the hierarchy, such as `amplifier/R1`.
+    /// Instance path through the circuit hierarchy, such as `amplifier/R1`.
     pub path: String,
-    /// The line of the build script that placed it.
+    /// Line in the build script that placed the instance, if recorded.
     pub source_location: Option<SourceLocation>,
 }
 
@@ -92,99 +92,99 @@ impl fmt::Display for Location {
     }
 }
 
-/// A reason a circuit cannot be elaborated.
+/// Reason a circuit cannot be elaborated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElaborationProblem {
-    /// The circuit's structure is invalid.
+    /// Structural validation failure in the circuit.
     Structure(Problem),
-    /// The top component has no ground port, so the circuit has no ground.
+    /// Top component declaring no ground port, leaving the circuit without a reference node.
     NoGround(Name),
-    /// The top component has several ground ports.
+    /// Top component declaring multiple ground ports.
     SeveralGrounds {
-        /// The top component.
+        /// Name of the top component.
         top: Name,
-        /// How many ground ports it declares.
+        /// Number of ground ports declared by the top component.
         count: usize,
     },
-    /// An instance is of a model the library does not hold.
+    /// Instance referencing a model absent from the library.
     UnknownModel {
-        /// The instance.
+        /// Location of the offending instance.
         at: Location,
-        /// The model's name.
+        /// Unrecognized model name.
         model: Name,
     },
-    /// An instance leaves a terminal of its model unconnected.
+    /// Instance leaving a required model terminal unconnected.
     UnconnectedTerminal {
-        /// The instance.
+        /// Location of the offending instance.
         at: Location,
-        /// The model's name.
+        /// Model name.
         model: Name,
-        /// The terminal.
+        /// Missing terminal name.
         terminal: String,
     },
-    /// An instance connects a terminal its model does not have.
+    /// Instance connecting a terminal not declared by the model.
     UnknownTerminal {
-        /// The instance.
+        /// Location of the offending instance.
         at: Location,
-        /// The model's name.
+        /// Model name.
         model: Name,
-        /// The terminal.
+        /// Unrecognized terminal name.
         terminal: Name,
     },
-    /// An instance's parameters are invalid for its model.
+    /// Instance parameters rejected by the model.
     Parameters {
-        /// The instance.
+        /// Location of the offending instance.
         at: Location,
-        /// What is wrong with the parameters.
+        /// Description of the parameter failure.
         message: String,
     },
-    /// A logic pin joins an electrical net, and its model cannot cross to one.
+    /// Logic pin connected to an electrical net when the model cannot bridge domains.
     LogicPinOnElectricalNet {
-        /// The instance.
+        /// Location of the logic instance.
         at: Location,
-        /// The model's name.
+        /// Logic model name.
         model: Name,
-        /// The pin.
+        /// Pin name on the electrical net.
         pin: String,
-        /// The net's path.
+        /// Path of the electrical net.
         net: String,
     },
-    /// A thermal terminal joins a net that electrical terminals or logic pins join too.
+    /// Thermal terminal sharing a net with electrical terminals or logic pins.
     ThermalOnElectricalNet {
-        /// The instance.
+        /// Location of the instance owning the thermal terminal.
         at: Location,
-        /// The thermal terminal.
+        /// Thermal terminal name.
         terminal: String,
-        /// The net's path.
+        /// Path of the conflicting net.
         net: String,
     },
-    /// A model stands in for a component instance the circuit does not have.
+    /// Substitute model targeting a component instance path absent from the circuit.
     UnknownSubstitute(String),
-    /// Parameters replace those of an instance the circuit does not have.
+    /// Parameter override targeting a device path absent from the circuit.
     UnknownOverride(String),
-    /// A number replaces one that a device's parameters do not write.
+    /// Numeric override targeting a parameter path absent from the device's parameters.
     UnknownParameter {
-        /// The device.
+        /// Location of the target device.
         at: Location,
-        /// The number's path among the device's parameters, such as `waveform.dc`.
+        /// Parameter path inside the device's parameters, such as `waveform.dc`.
         parameter: String,
     },
-    /// A number replaces one of a logic device's, which elaborating the circuit reads once
-    /// into its logic's structure.
+    /// Numeric override targeting a logic device parameter, which elaboration reads once into
+    /// the logic structure.
     LogicParameter {
-        /// The logic device.
+        /// Location of the logic device.
         at: Location,
-        /// The number's path among the device's parameters.
+        /// Parameter path inside the logic device's parameters.
         parameter: String,
     },
-    /// A number replaces a parameter the circuit's table does not hold, by its index.
+    /// Numeric override referencing a parameter index outside the circuit's parameter table.
     NoParameter(usize),
-    /// The circuit's system is too large to factor.
+    /// Circuit system exceeding the size limit of sparse factorization.
     TooLarge,
 }
 
 impl ElaborationProblem {
-    /// The instance the problem is about, if it is about one.
+    /// Returns the instance associated with the problem, if any.
     #[must_use]
     pub fn location(&self) -> Option<&Location> {
         match self {
@@ -200,7 +200,8 @@ impl ElaborationProblem {
         }
     }
 
-    /// What is wrong, without the instance [`ElaborationProblem::location`] names.
+    /// Formats the problem description without the instance prefix from
+    /// [`ElaborationProblem::location`].
     #[must_use]
     pub fn message(&self) -> String {
         match self {
@@ -267,17 +268,17 @@ impl From<Problem> for ElaborationProblem {
     }
 }
 
-/// Every [`ElaborationProblem`] of a circuit.
+/// Collection of every [`ElaborationProblem`] found while elaborating a circuit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElaborationError(Vec<ElaborationProblem>);
 
 impl ElaborationError {
-    /// The error of `problems`, which are not none.
+    /// Wraps a non-empty list of elaboration `problems` into an error.
     pub(crate) const fn new(problems: Vec<ElaborationProblem>) -> Self {
         Self(problems)
     }
 
-    /// The problems, in the order they were found.
+    /// Returns the elaboration problems in discovery order.
     #[must_use]
     pub fn problems(&self) -> &[ElaborationProblem] {
         &self.0
@@ -304,18 +305,18 @@ impl fmt::Display for ElaborationError {
 
 impl std::error::Error for ElaborationError {}
 
-/// The models that stand in for component instances, by path, and the parameters that
-/// replace devices' own, by path.
+/// Substitute models for component instances and parameter overrides for devices, keyed by path.
 #[derive(Clone, Copy)]
 pub(crate) struct Replaced<'a> {
     pub(crate) substitutes: &'a BTreeMap<String, Substitute>,
     pub(crate) overrides: &'a BTreeMap<String, Parameters>,
 }
 
-/// Flattens `circuit` and binds each device to its unknowns at `temperature`, in kelvins,
-/// with the models that stand in for some component instances and the parameters that
-/// replace some devices' own, `replaced`, which the circuit then holds as its own. Returns
-/// the elaborated circuit and the devices made.
+/// Flattens `circuit` and binds each device to its unknowns at `temperature` (kelvins).
+///
+/// Applies substitute models and parameter overrides from `replaced`, storing overridden
+/// parameters on the elaborated circuit. Returns the elaborated circuit and its bound
+/// devices.
 pub(crate) fn elaborate(
     circuit: &Circuit,
     library: &Library,
@@ -397,7 +398,7 @@ pub(crate) fn elaborate(
     } = elements;
     partition.index(&detected, &templates);
     problems.extend(unclaimed(replaced, &substituted, &overridden));
-    // Without a single ground, a problem says so.
+    // Absence of a single ground is already recorded in `problems`.
     let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
     };
@@ -412,10 +413,11 @@ pub(crate) fn elaborate(
     ))
 }
 
-/// The terminals of every component instance and logic device on a node, electrical or
-/// thermal, each with the device terminals it sums: the ports, in the order the walk met
-/// them, then the logic devices' pins and terminals. The analog devices were placed in the
-/// order the walk found them, so the walk's index of each is its index among the devices.
+/// Builds summed terminals for every component port and electrical logic pin or rail.
+///
+/// Component ports appear in traversal order, followed by logic device pins and rails.
+/// Analog devices are placed in traversal order, so each walk index matches the device
+/// index in the elaborated circuit.
 fn summed_terminals(
     ports: &[PortRecord],
     pins: &[LogicPins],
@@ -465,23 +467,23 @@ fn summed_terminals(
     ports.chain(logic).collect()
 }
 
-/// The pins and terminals of a logic device, and the connect element of each pin that
-/// joins an electrical net.
+/// Pins and rail terminals of a logic device together with connect elements for electrical pins.
 struct LogicPins {
-    /// The device's path.
+    /// Hierarchical path of the logic device.
     path: String,
-    /// Its pins' and terminals' names, in the order of [`Pins::names`].
+    /// Pin and terminal names in the order of [`Pins::names`].
     names: Vec<String>,
-    /// The net of each pin and terminal, in the same order.
+    /// Net reference for each pin and terminal in the same order.
     nets: Vec<NetReference>,
-    /// The connect element of each pin, inputs then outputs, on an electrical net.
+    /// Connect element device index for each signal pin (inputs then outputs) on an electrical net.
     elements: Vec<Option<usize>>,
 }
 
 impl LogicPins {
-    /// The device terminals whose currents sum to that into pin or terminal `pin`: its
-    /// connect element's on the electrical net, or for the supply or the ground, that
-    /// terminal of every connect element of the device.
+    /// Returns the `(device_index, terminal_index)` pairs whose currents sum into `pin`.
+    ///
+    /// Signal pins map to terminal 0 of their connect element, while supply and ground rails
+    /// map to the matching rail terminal across every connect element on the device.
     fn members(&self, pin: usize) -> Vec<(usize, usize)> {
         let signals = self.elements.len();
         if pin < signals {
@@ -500,8 +502,7 @@ impl LogicPins {
     }
 }
 
-/// The top component's ground port, the reference, or the problem that it has none or
-/// several.
+/// Locates the unique top-level ground port, or returns the problem when zero or multiple exist.
 fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
     let grounds: Vec<&Name> = circuit.components[&circuit.top]
         .ports
@@ -525,8 +526,8 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
     }
 }
 
-/// The problem of each substitute and override of `replaced` whose path the walk did not
-/// find: those it `stood_in` and `overridden`.
+/// Yields an error for each substitute or override path in `replaced` absent from `stood_in`
+/// or `overridden`.
 fn unclaimed<'a>(
     replaced: Replaced<'a>,
     stood_in: &'a BTreeSet<String>,
@@ -545,8 +546,8 @@ fn unclaimed<'a>(
     standing.chain(unused)
 }
 
-/// The problem of each net a thermal terminal joins that an electrical terminal or a logic
-/// pin joins too.
+/// Yields an error for each net joined by both a thermal terminal and an electrical or logic
+/// terminal.
 fn mixed_domains(nets: &[NetRecord]) -> impl Iterator<Item = ElaborationProblem> + '_ {
     nets.iter().filter_map(|net| {
         let (at, terminal) = net.thermal.as_ref()?;
@@ -558,10 +559,11 @@ fn mixed_domains(nets: &[NetRecord]) -> impl Iterator<Item = ElaborationProblem>
     })
 }
 
-/// Classifies the walk's `nets`: those an electrical terminal joins become node voltages,
-/// and those a thermal terminal joins temperatures above the ambient, in the order they
-/// were first met, and the others logic nets. Returns the nodes' unknowns, the classes, and
-/// the logic partition with its nets.
+/// Classifies traversed `nets` into voltage unknowns, thermal unknowns, and pure logic nets.
+///
+/// Electrical and thermal nets receive sequential unknown indices in discovery order;
+/// remaining nets populate the returned [`LogicSystem`]. Returns the node unknowns, net
+/// classifications, and initialized logic partition.
 fn classify(nets: &[NetRecord], ground: String) -> (Vec<Unknown>, Classes<'_>, LogicSystem) {
     let mut unknowns = Vec::new();
     let mut nodes: Vec<Node> = vec![None; nets.len()];
@@ -597,7 +599,7 @@ fn classify(nets: &[NetRecord], ground: String) -> (Vec<Unknown>, Classes<'_>, L
     (unknowns, classes, partition)
 }
 
-/// The name of the reference net, the top component's ground port's.
+/// Returns the name of the top component's ground port, or an empty string if absent.
 fn ground_name(circuit: &Circuit) -> String {
     circuit.components[&circuit.top]
         .ports
@@ -606,14 +608,14 @@ fn ground_name(circuit: &Circuit) -> String {
         .map_or_else(String::new, |port| port.name.to_string())
 }
 
-/// How the walk's nets were classified.
+/// Classification of every net discovered during the hierarchy walk.
 struct Classes<'a> {
     nets: &'a [NetRecord],
-    /// The node of each electrical net.
+    /// Node unknown assigned to each electrical or thermal net.
     nodes: Vec<Node>,
-    /// The logic net of each net only logic pins join.
+    /// Logic net index assigned to each pure logic net.
     logic: Vec<Option<usize>>,
-    /// The reference net's name.
+    /// Name of the reference ground net.
     ground: String,
 }
 
@@ -623,15 +625,15 @@ impl Classes<'_> {
     }
 }
 
-/// What devices, logic devices and their connect elements are placed into.
+/// Accumulator for binding analog devices, logic devices, and connect elements.
 struct Elements<'a> {
-    /// The binder of every device placed, in order.
+    /// Binder receiving every placed analog device and connect element in order.
     binder: Binder,
-    /// What each device placed is, in order, those that failed to bind among them.
+    /// Device templates placed in order, including those that failed to bind.
     templates: Vec<Arc<Template>>,
-    /// Each detector's input node and capacitance.
+    /// Input node and load capacitance recorded for each threshold detector.
     detected: Vec<(Node, f64)>,
-    /// Each logic device's pins, in the order the walk found the devices.
+    /// Logic pin records in device traversal order.
     pins: Vec<LogicPins>,
     partition: &'a mut LogicSystem,
     problems: &'a mut Vec<ElaborationProblem>,
@@ -672,9 +674,11 @@ impl Elements<'_> {
         );
     }
 
-    /// Places the logic device `pending`: each pin on a net only logic pins join joins its
-    /// logic net, and each pin on an electrical net joins a logic net of its own, which a
-    /// connect element joins to the electrical net.
+    /// Places logic device `pending` into the logic partition and inserts connect elements.
+    ///
+    /// Pins on pure logic nets join their shared logic net directly. Pins on electrical nets
+    /// receive a dedicated single-pin logic net bridged to the electrical net by a connect
+    /// element.
     fn logic(&mut self, pending: PendingLogic<'_>, classes: &Classes<'_>) {
         let signals = pending.pins.inputs.len() + pending.pins.outputs.len();
         self.pins.push(LogicPins {
@@ -769,10 +773,10 @@ impl Elements<'_> {
         });
     }
 
-    /// Joins `pin` of a logic device to the electrical net of `terminals`' first, through a
-    /// connect element at `at` that reads it against a threshold and loads it with
-    /// capacitance, or drives it, on a logic net of their own. Returns the element's index
-    /// among the devices and the logic net's.
+    /// Connects a logic `pin` to the electrical net at `terminals[0]` through a connect element.
+    ///
+    /// Places a threshold detector (for inputs) or logic driver (for outputs) at `at` on a
+    /// dedicated logic net, returning `(device_index, logic_net_index)`.
     fn cross(&mut self, at: Location, pin: CrossingPin, terminals: [Node; 3]) -> (usize, usize) {
         let own = self.partition.nets.len();
         let (element, sources, loads, load) = match pin {
@@ -810,7 +814,7 @@ impl Elements<'_> {
         (element, own)
     }
 
-    /// Places a threshold detector at `at` on `terminals`: its input, supply and ground.
+    /// Places a threshold detector at `at` on `terminals` (input, supply, and ground).
     fn detector(
         &mut self,
         at: Location,
@@ -834,7 +838,7 @@ impl Elements<'_> {
         )
     }
 
-    /// Places a logic driver at `at` on `terminals`: its output, supply and ground.
+    /// Places a logic driver at `at` on `terminals` (output, supply, and ground).
     fn driver(&mut self, at: Location, terminals: [Node; 3]) -> usize {
         let interface = LogicDriver::interface::<f64>(&LogicDriverParameters {});
         self.place(
@@ -846,8 +850,8 @@ impl Elements<'_> {
         )
     }
 
-    /// Places the device at `at` of `model`, with `interface`, its terminals on `nodes`,
-    /// made from `origin`, and binds it; returns its index among the devices.
+    /// Places and binds a device of `model` from `origin` at `location` with `interface` and
+    /// `nodes`, returning its device index.
     fn place(
         &mut self,
         location: Location,
@@ -874,46 +878,45 @@ impl Elements<'_> {
     }
 }
 
-/// A net as the walk finds it, by its index in the walk's nets, or `None` for ground.
+/// Index of a discovered net in the walk's net table, or `None` for ground.
 type NetReference = Option<usize>;
 
-/// A net found by the walk.
+/// Metadata accumulated for a net during the hierarchy walk.
 struct NetRecord {
-    /// The net's path.
+    /// Hierarchical path of the net.
     name: String,
-    /// Whether an electrical terminal joins it.
+    /// Flag indicating whether any electrical terminal joins the net.
     electrical: bool,
-    /// Whether a logic pin joins it.
+    /// Flag indicating whether any logic pin joins the net.
     logic: bool,
-    /// The first thermal terminal that joins it, if one does: its instance and its name.
+    /// First thermal terminal joining the net as `(location, terminal_name)`, if any.
     thermal: Option<(Location, String)>,
 }
 
-/// A device instance found by the walk, waiting for every net to be classified.
+/// Analog device instance collected during traversal while waiting for net classification.
 struct Pending<'a> {
     at: Location,
     model: &'a Arc<dyn Model>,
-    /// The instance's parameters, with those the conditions replace, read.
+    /// Validated model specification parsed from the effective instance parameters.
     specification: Box<dyn Specification>,
-    /// The same parameters, as the circuit and the conditions give them.
+    /// Effective parameter map after merging any run-level overrides.
     parameters: Cow<'a, Parameters>,
     interface: Interface,
     terminals: Vec<NetReference>,
 }
 
-/// A logic device instance found by the walk, made from its parameters.
+/// Logic device instance instantiated from its parameters during traversal.
 struct PendingLogic<'a> {
     at: Location,
     name: Name,
     model: &'a Arc<dyn LogicModel>,
     device: Arc<dyn Logic>,
     pins: Pins,
-    /// The net of each pin and terminal, in the order of [`Pins::names`].
+    /// Net reference for each pin and terminal in the order of [`Pins::names`].
     nets: Vec<NetReference>,
 }
 
-/// A device the walk places: the nets its terminals join in their component, its
-/// parameters, where it is, and its model's name.
+/// Pending device placement carrying terminal net bindings, parameters, location, and model name.
 struct Placement<'a, 'm> {
     terminals: &'a BTreeMap<Name, Name>,
     parameters: Cow<'a, Parameters>,
@@ -921,66 +924,64 @@ struct Placement<'a, 'm> {
     model: &'m Name,
 }
 
-/// The state of a walk down the hierarchy.
+/// Traversal state for flattening a circuit hierarchy.
 struct Walk<'a> {
     circuit: &'a Circuit,
     library: &'a Library,
     overrides: &'a BTreeMap<String, Parameters>,
-    /// The paths of the devices whose parameters the overrides replace.
+    /// Device paths matched by entries in `overrides`.
     overridden: BTreeSet<String>,
     substitutes: &'a BTreeMap<String, Substitute>,
-    /// The paths of the component instances a model stands in for.
+    /// Component instance paths matched by entries in `substitutes`.
     substituted: BTreeSet<String>,
     nets: Vec<NetRecord>,
-    /// Each net met, by the number of the component instance it is in and its name there.
+    /// Net index lookup keyed by `(scope_number, local_net_name)`.
     named: HashMap<(usize, &'a Name), usize>,
-    /// How many component instances the walk has entered, the top's among them.
+    /// Count of component instances entered during traversal, including the top component.
     entered: usize,
-    /// Every port of every component instance, in the order they were met.
+    /// Port records for every component instance in discovery order.
     ports: Vec<PortRecord>,
     devices: Vec<Pending<'a>>,
     logic: Vec<PendingLogic<'a>>,
     problems: Vec<ElaborationProblem>,
 }
 
-/// A component instance the walk is in.
+/// Active component instance scope during hierarchy traversal.
 #[derive(Debug, Clone, Copy)]
 struct Scope<'p> {
-    /// The start of the paths of the instances within it, such as `X1/`.
+    /// Hierarchical path prefix for child instances in the scope, such as `X1/`.
     prefix: &'p str,
-    /// Its number, in the order the walk enters component instances, from 0, the top's.
+    /// Sequential scope identifier assigned on entry, starting at 0 for the top component.
     number: usize,
 }
 
-/// A net as a component sees it: the net, and the port of the component's instance it is,
-/// if it is one.
+/// Net reference inside a component paired with the enclosing port index when the net is a port.
 #[derive(Debug, Clone, Copy)]
 struct Joined {
     net: NetReference,
     port: Option<usize>,
 }
 
-/// A port of a component instance, as the walk finds it.
+/// Component instance port recorded during hierarchy traversal.
 struct PortRecord {
-    /// Its instance's path and its own name, such as `X1.vdd`.
+    /// Qualified port name combining instance path and port name, such as `X1.vdd`.
     name: String,
-    /// Its instance's path, such as `X1`.
+    /// Hierarchical path of the owning component instance, such as `X1`.
     owner: String,
-    /// The net it joins.
+    /// Net joined by the port.
     net: NetReference,
-    /// The port of the enclosing instance that its net is outside, if it is one.
+    /// Enclosing instance port index when this port maps directly to a parent port.
     parent: Option<usize>,
-    /// Each device terminal and logic pin inside the instance that joins it.
+    /// Device terminals and logic pins inside the instance that connect to the port.
     members: Vec<Member>,
 }
 
-/// A device terminal or a logic pin that joins a port inside its instance.
+/// Device terminal or logic pin contributing current to an enclosing component port.
 #[derive(Debug, Clone, Copy)]
 enum Member {
-    /// Terminal `terminal` of the analog device found `device`-th.
+    /// Terminal `terminal` of analog device `device`.
     Analog { device: usize, terminal: usize },
-    /// Pin or terminal `pin`, in the order of [`Pins::names`], of the logic device found
-    /// `device`-th.
+    /// Pin or rail `pin` (ordered by [`Pins::names`]) of logic device `device`.
     Logic { device: usize, pin: usize },
 }
 
@@ -1092,8 +1093,7 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Places the device of `placement`, analog or logic, in the component instance
-    /// `scope`.
+    /// Places an analog or logic device from `placement` within component `scope`.
     fn device(
         &mut self,
         placement: Placement<'a, '_>,
@@ -1113,8 +1113,8 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Places the analog device of `placement`, of `model`, which reads its parameters
-    /// once, as [`Walk::device`] does.
+    /// Parses parameters and records an analog device from `placement` using `model` in
+    /// `scope`.
     fn analog(
         &mut self,
         placement: Placement<'a, '_>,
@@ -1175,8 +1175,7 @@ impl<'a> Walk<'a> {
         });
     }
 
-    /// Places the logic device of `placement`, of `model`, which it makes from its
-    /// parameters, as [`Walk::device`] does.
+    /// Instantiates and records a logic device from `placement` using `model` in `scope`.
     fn logic(
         &mut self,
         placement: Placement<'a, '_>,
@@ -1227,9 +1226,10 @@ impl<'a> Walk<'a> {
         });
     }
 
-    /// The net of each of `expected`, the terminals a model declares, as `connected` joins
-    /// them, or `None` after reporting a terminal left unconnected or that it does not have.
-    /// Each net comes with the port of the enclosing instance it is, if it is one.
+    /// Resolves `connected` nets against the model's `expected` terminal list.
+    ///
+    /// Records errors for unknown or unconnected terminals and returns `None` if any check
+    /// fails. Each resolved entry includes the enclosing port index when the net is a port.
     fn terminals(
         &mut self,
         connected: &'a BTreeMap<Name, Name>,
@@ -1266,9 +1266,9 @@ impl<'a> Walk<'a> {
         complete.then_some(terminals)
     }
 
-    /// The net `net` of the component instance `scope`: a port's net from the parent, with
-    /// the port, or the component's own net, recorded and named by its path when first
-    /// met.
+    /// Resolves local `net` in `scope`, returning a parent port net or allocating a local net.
+    ///
+    /// Newly encountered local nets are recorded in `self.nets` under their hierarchical path.
     fn net(
         &mut self,
         scope: Scope<'_>,

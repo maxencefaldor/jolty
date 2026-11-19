@@ -53,7 +53,7 @@ pub(crate) fn into_inner_unpoisoned<T>(mutex: Mutex<T>) -> T {
     mutex.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A new one-dimensional `NumPy` array of `len` elements, each initialized to `value`.
+/// Allocates a one-dimensional `NumPy` array of `len` elements, each initialized to `value`.
 pub(crate) fn filled<T: Element + Copy>(
     py: Python<'_>,
     len: usize,
@@ -63,15 +63,15 @@ pub(crate) fn filled<T: Element + Copy>(
 }
 
 /// Borrows every element of `array` as a mutable contiguous slice, raising `ValueError`
-/// when it is not contiguous.
+/// when `array` is not contiguous.
 pub(crate) fn slice_mut<'a, T: Element>(
     array: &'a mut PyReadwriteArray1<'_, T>,
 ) -> PyResult<&'a mut [T]> {
     value_result(array.as_slice_mut())
 }
 
-/// The cotangent of `values`, by point then unknown, each point's row left out where it is
-/// zero, and of `period` on an oscillator's period.
+/// Builds a [`Cotangent`] from `values` (indexed by point and unknown) and an oscillator
+/// `period`, omitting all-zero point rows.
 pub(crate) fn cotangent<T: Element + Copy + Default + PartialEq>(
     values: &PyReadonlyArray2<'_, T>,
     period: f64,

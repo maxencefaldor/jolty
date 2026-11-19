@@ -1,35 +1,34 @@
-//! The simulation engine of jolty.
+//! Simulation engine for jolty.
 //!
-//! A circuit is elaborated once into an [`Elaborated`] circuit, its hierarchy flattened into
-//! devices bound to unknowns, the sparsity pattern of its matrix claimed and its sparse
-//! solver's ordering found, and its devices' numbers listed in a table of parameters. It
-//! never changes after, so threads share it. A [`Simulator`] is one run of it: the
-//! [`Values`] it runs at, which replace some numbers and the temperature, and the state the
-//! run writes, its devices made for those values among it. A simulator
-//! [reset](Simulator::reset) for other values makes its devices again and keeps every
-//! buffer, and runs as one made afresh would, bit for bit.
+//! A circuit elaborates once into an immutable [`Elaborated`] representation that flattens
+//! hierarchy into devices bound to unknowns, builds the matrix sparsity pattern and sparse
+//! solver ordering, and indexes device parameters in a table. Threads share [`Elaborated`]
+//! directly because it never mutates after construction. A [`Simulator`] executes runs
+//! against an [`Elaborated`] circuit at specific [`Values`] (parameter overrides and
+//! temperature), owning per-run devices and solver state. Calling
+//! [`Simulator::reset`] rebuilds devices for new values while reusing buffers, producing
+//! bit-identical results to a freshly constructed simulator.
 //!
-//! A simulator runs any number of analyses: an [operating
-//! point](Simulator::operating_point), [operating points](Simulator::operating_points), a
-//! [DC sweep](Simulator::dc_sweep), a [small-signal frequency response](Simulator::ac), a
-//! [transient](Simulator::transient), a [periodic steady
+//! Supported analyses include [operating point](Simulator::operating_point), [operating
+//! points](Simulator::operating_points), [DC sweep](Simulator::dc_sweep), [small-signal
+//! frequency response](Simulator::ac), [transient](Simulator::transient), [periodic steady
 //! state](Simulator::periodic_steady_state), [sensitivities](Simulator::sensitivity),
-//! [mismatch](Simulator::mismatch), the [loop gain](Simulator::stability) through a probe,
-//! the [noise](Simulator::noise) at an output, the [poles and zeros](Simulator::pole_zero),
-//! and the [transfer function](Simulator::transfer_function).
-//! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
-//! iteration with one sparse LU solver, whose ordering all of them share, real and complex,
-//! and which refactors each new Jacobian with the pivots of the last; every analysis about
-//! the operating point takes the one the simulator solved last.
-//! Logic devices join logic nets, which an event scheduler simulates beside the analog
-//! circuit, joined to it by connect elements where a logic pin meets an electrical net.
+//! [mismatch](Simulator::mismatch), [loop gain](Simulator::stability),
+//! [noise](Simulator::noise), [poles and zeros](Simulator::pole_zero), and [transfer
+//! function](Simulator::transfer_function).
+//! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` via Newton
+//! iteration with a shared sparse LU ordering (real and complex) that reuses pivots from
+//! previous factorizations. Linearized analyses reuse the most recently solved operating
+//! point when conditions match.
+//! Logic devices communicate across logic nets driven by an event scheduler running
+//! alongside the analog solver, bridged by connect elements where logic pins meet
+//! electrical nets.
 //!
-//! Many runs of one circuit, its Monte Carlo samples, corners, sweeps and candidate
-//! designs, run as one [batch](batch::Batch) across the threads of the caller's rayon pool,
-//! their values the [`variants`] of each run's index; a run spreads its own
-//! frequencies and right-hand sides across threads as its options'
-//! [parallelism](Parallelism) allows. Every number is the same bits however many threads
-//! run it.
+//! Multi-run studies (Monte Carlo samples, corners, sweeps, and design sweeps) execute as
+//! a [batch](batch::Batch) across the caller's rayon pool using [`variants`] indexed by
+//! run number. Individual runs can also parallelize frequencies and right-hand sides
+//! according to [`Parallelism`]. All results remain bit-identical regardless of thread
+//! count.
 //!
 //! ```
 //! use jolty_engine::{Conditions, Elaborated, Options, Simulator, Structure, Values};
@@ -141,40 +140,37 @@ const _: () = {
     sent::<Simulator>();
 };
 
-/// What a circuit is simulated in, apart from its analyses: its devices' temperature,
-/// parameters that replace the circuit's own for some device instances, as a Monte Carlo
-/// sample's do, and models that stand in for some component instances, as a plan's
-/// fidelity chooses.
+/// Simulation environment for a single run: operating temperature, per-instance parameter
+/// overrides, and component model substitutes.
 ///
-/// The models that stand in are the circuit's [`Structure`], and the temperature and the
-/// numbers the [`Values`] of a run of it; [`Simulator::new`] elaborates the circuit with
-/// all of them, its parameters those the conditions give, for one run.
+/// Substitutes define the circuit [`Structure`], while temperature and numeric overrides
+/// define run [`Values`]. [`Simulator::new`] elaborates the circuit with all of these
+/// applied for a single run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conditions {
-    /// The devices' temperature, in kelvins.
+    /// Device operating temperature in kelvins.
     pub temperature: f64,
-    /// Parameters that replace an instance's own, by the instance's path, such as `X1/R1`,
-    /// then by the parameter's [path](jolty_ir::parameter()), such as `waveform.dc`.
+    /// Parameter overrides indexed by instance path (such as `X1/R1`) and parameter
+    /// [path](jolty_ir::parameter()), such as `waveform.dc`.
     pub overrides: BTreeMap<String, Parameters>,
-    /// Models that stand in for component instances, by the instance's path, such as
-    /// `adder/U1`.
+    /// Model substitutes replacing component instances, indexed by instance path (such as
+    /// `adder/U1`).
     pub substitutes: BTreeMap<String, Substitute>,
 }
 
-/// A model that stands in for a component instance: a device whose terminals are the
-/// component's ports, joined to the same nets.
+/// Model substituting for a component instance, mapping component ports onto device
+/// terminals connected to the same nets.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Substitute {
-    /// The model's name, such as `logic_cell`.
+    /// Model name, such as `logic_cell`.
     pub model: Name,
-    /// The device's parameters.
+    /// Device parameters for the substitute model.
     pub parameters: Parameters,
 }
 
 impl Conditions {
-    /// The conditions at `temperature`, in kelvins, with no parameter replaced and no
-    /// model standing in.
+    /// Creates conditions at `temperature` in kelvins with no overrides or substitutes.
     #[must_use]
     pub const fn at(temperature: f64) -> Self {
         Self {
@@ -186,17 +182,17 @@ impl Conditions {
 }
 
 impl Default for Conditions {
-    /// The conditions at 27 °C, with no parameter replaced and no model standing in.
+    /// Returns default conditions at 27 °C with no overrides or substitutes.
     fn default() -> Self {
         Self::at(REFERENCE_TEMPERATURE)
     }
 }
 
-/// A run of an elaborated circuit, ready to run analyses: the circuit, the values it runs
-/// at, and what the run writes, its devices made for those values among it.
+/// Simulator instance holding an elaborated circuit, active parameter values, and mutable
+/// solver and device state.
 ///
-/// Every analysis returns [`SimulationError::Foundry`] for a circuit that holds a foundry's
-/// device, which ngspice simulates in the engine's place.
+/// Every analysis returns [`SimulationError::Foundry`] when the circuit contains foundry
+/// devices delegated to ngspice.
 #[derive(Debug)]
 pub struct Simulator {
     elaborated: Arc<Elaborated>,
@@ -205,14 +201,14 @@ pub struct Simulator {
 }
 
 impl Simulator {
-    /// Elaborates `circuit` with the models of `library`, in `conditions`, for one run: the
-    /// parameters the conditions replace are the elaborated circuit's own.
+    /// Elaborates `circuit` with models from `library` under `conditions` for a single run,
+    /// baking condition overrides into the elaborated circuit.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing ground,
-    /// an unknown model, wrongly connected terminals, invalid parameters, or
-    /// parameters replaced for a device the circuit does not have.
+    /// Returns every [`ElaborationProblem`] found: invalid structure, missing ground,
+    /// unknown model, invalid terminal connections, invalid parameters, or overrides
+    /// targeting nonexistent devices.
     pub fn new(
         circuit: &Circuit,
         library: &Library,
@@ -232,15 +228,17 @@ impl Simulator {
         })
     }
 
-    /// A run of `elaborated` at `values`: its devices made from the numbers the values
-    /// give, each claiming the unknowns and entries the circuit holds. Where the values
-    /// give a device others, as a resistance below 1 Ω carries its current as an unknown,
-    /// the run is of the circuit [restructured](Elaborated::restructured) for them.
+    /// Creates a simulator from `elaborated` at `values`, instantiating devices for those
+    /// parameter values.
+    ///
+    /// When `values` alter device unknowns or matrix entries (such as a resistor dropping
+    /// below 1 Ω and adding a branch current), the simulator builds on the
+    /// [restructured](Elaborated::restructured) circuit.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make: each parameter the circuit
-    /// does not have, and each device whose numbers they put out of range.
+    /// Returns every [`ElaborationProblem`] triggered by `values`, including unknown
+    /// parameters and out-of-range device parameters.
     pub fn from_elaborated(
         elaborated: Arc<Elaborated>,
         values: Values,
@@ -262,15 +260,13 @@ impl Simulator {
         })
     }
 
-    /// Readies the simulator to run at `values`, as one made [from its elaborated
-    /// circuit](Simulator::from_elaborated) at them would: its instances prepared again for
-    /// the numbers they give, and everything the runs before left forgotten, its buffers
-    /// kept.
+    /// Resets the simulator to `values`, rebuilding devices and clearing cached solutions
+    /// while reusing buffers to match [`Simulator::from_elaborated`].
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
-    /// was.
+    /// Returns every [`ElaborationProblem`] triggered by `values` without modifying the
+    /// simulator.
     pub fn reset(&mut self, values: Values) -> Result<(), ElaborationError> {
         if !self.state.reset(&self.elaborated, &values)? {
             let (restructured, devices, patched) = self.elaborated.rebind(&values)?;
@@ -282,14 +278,13 @@ impl Simulator {
         Ok(())
     }
 
-    /// Readies the simulator to run at `values`, as [`Simulator::reset`] does, but only on
-    /// the circuit it runs: returns false, and leaves the simulator as it was, when the
-    /// values give that circuit another structure.
+    /// Resets the simulator to `values` in place like [`Simulator::reset`], returning
+    /// `false` without modification if `values` require restructuring.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
-    /// was.
+    /// Returns every [`ElaborationProblem`] triggered by `values` without modifying the
+    /// simulator.
     pub(crate) fn try_reset(&mut self, values: Values) -> Result<bool, ElaborationError> {
         if !self.state.reset(&self.elaborated, &values)? {
             return Ok(false);
@@ -298,18 +293,16 @@ impl Simulator {
         Ok(true)
     }
 
-    /// Readies the simulator to run at `values` from where its last run left it, as the
-    /// next run of a chain: the instances whose numbers or temperature differ prepared
-    /// again, every other instance as it is, and everything else forgotten as a reset forgets it,
-    /// but for the sparse solver's pivots and the last operating point solved, which the
-    /// next operating point starts from. Returns false, and leaves the simulator as it
-    /// was, when the values give the circuit another structure, or the last run solved no
-    /// operating point to start from.
+    /// Advances the simulator to `values` as the next step in a warm-started chain.
+    ///
+    /// Re-prepares only devices whose parameters or temperature changed, preserving sparse
+    /// solver pivots and the last operating point as a warm start. Returns `false` without
+    /// modification if `values` require restructuring or if no prior operating point exists.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
-    /// was.
+    /// Returns every [`ElaborationProblem`] triggered by `values` without modifying the
+    /// simulator.
     pub(crate) fn advance(&mut self, values: Values) -> Result<bool, ElaborationError> {
         let Some(solution) = self
             .state
@@ -334,14 +327,12 @@ impl Simulator {
         Ok(true)
     }
 
-    /// Prepares again the instances whose numbers or temperature differ at `values` from
-    /// the run's, as [`Simulator::advance`] does, and runs at `values` from now on,
-    /// forgetting nothing. Returns false, and leaves the simulator as it was, when the
-    /// values give the circuit another structure.
+    /// Updates changed devices to `values` like [`Simulator::advance`] without clearing
+    /// cached state, returning `false` if restructuring is required.
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] the values make.
+    /// Returns every [`ElaborationProblem`] triggered by `values`.
     pub(crate) fn move_to(&mut self, values: Values) -> Result<bool, ElaborationError> {
         if !self
             .state
@@ -353,49 +344,50 @@ impl Simulator {
         Ok(true)
     }
 
-    /// The elaborated circuit the simulator runs.
+    /// Returns the elaborated circuit backing this simulator.
     #[must_use]
     pub fn elaborated(&self) -> &Arc<Elaborated> {
         &self.elaborated
     }
 
-    /// The values the simulator runs at.
+    /// Returns the active parameter and temperature values of this simulator.
     #[must_use]
     pub fn values(&self) -> &Values {
         &self.values
     }
 
-    /// How many times the simulator has solved for an operating point, or for a DC sweep's
-    /// first value, since it was made. An analysis about the operating point the circuit
-    /// was last solved at, with the same sources held and under the same options, save
-    /// those only a transient reads, takes that solution again instead, and solves for
-    /// none.
+    /// Returns the number of operating-point solves (including initial DC sweep points)
+    /// performed since construction.
+    ///
+    /// Subsequent analyses matching the cached operating point, source settings, and
+    /// non-transient options reuse that solution without re-solving.
     #[must_use]
     pub fn operating_point_solves(&self) -> usize {
         self.state.solves
     }
 
-    /// The terminals of every component instance and logic device on an electrical or a
-    /// thermal net, such as `X1.vdd`, each with the device terminals whose currents and
-    /// charges sum to its own. One on the reference, which is the ambient as well as the
-    /// ground, sums its electrical terminals only.
+    /// Returns summed terminals for component instances and logic devices on electrical or
+    /// thermal nets (such as `X1.vdd`).
+    ///
+    /// Each entry aggregates currents and charges of its constituent device terminals; a
+    /// terminal on the shared ground/ambient reference aggregates electrical terminals only.
     #[must_use]
     pub fn summed_terminals(&self) -> &[SummedTerminal] {
         &self.elaborated.summed_terminals
     }
 
-    /// The node that the terminal `terminal` of the device, component instance or logic
-    /// device at the path `instance` joins, such as `X1/R1` and `a`, and whether it is
-    /// thermal: its voltage a temperature above the ambient, and its current the heat
-    /// flowing into it. `None` when the instance has no such terminal on an electrical or a
-    /// thermal net.
+    /// Resolves `terminal` of `instance` (such as `X1/R1` and `a`) to `(node, is_thermal)`.
+    ///
+    /// For thermal nodes, voltage represents temperature rise above ambient and current
+    /// represents heat flow into the terminal. Returns `None` when no matching electrical
+    /// or thermal terminal exists.
     #[must_use]
     pub fn terminal(&self, instance: &str, terminal: &str) -> Option<(Node, bool)> {
         self.elaborated.terminal(instance, terminal)
     }
 
-    /// Starts the logic driver at `element` among the devices on a ramp at `time` to
-    /// `level` over `transition`; returns when the ramp ends.
+    /// Starts the logic driver at device index `element` ramping to `level` from `time`
+    /// over `transition`, returning the ramp completion time.
     fn drive(
         &mut self,
         element: usize,
@@ -409,22 +401,20 @@ impl Simulator {
             .drive(groups, element, (time, level, transition))
     }
 
-    /// The unknowns, in the order of every solution's values.
+    /// Returns all circuit unknowns in solution vector order.
     #[must_use]
     pub fn unknowns(&self) -> &[Unknown] {
         &self.elaborated.unknowns
     }
 
-    /// The analog devices, with every component instance unfolded, in the order they were
-    /// placed, then the connect elements of the logic devices' pins that join electrical
-    /// nets.
+    /// Returns unfolded analog devices in placement order, followed by logic connect
+    /// elements attached to electrical nets.
     #[must_use]
     pub fn devices(&self) -> &[Placed] {
         &self.elaborated.devices
     }
 
-    /// The paths of the foundry's devices the circuit holds, which no analysis solves, in
-    /// the order they were placed.
+    /// Returns paths of foundry devices delegated to ngspice, in placement order.
     #[must_use]
     pub fn foundry_devices(&self) -> Vec<&str> {
         self.elaborated
@@ -435,11 +425,11 @@ impl Simulator {
             .collect()
     }
 
-    /// Checks that the engine solves every device of the circuit.
+    /// Checks that the engine can solve every device in the circuit.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Foundry`] naming the foundry's devices it holds.
+    /// Returns [`SimulationError::Foundry`] listing any foundry devices present.
     pub(crate) fn solvable(&self) -> Result<(), SimulationError> {
         let foundry = self.foundry_devices();
         if foundry.is_empty() {
@@ -451,42 +441,41 @@ impl Simulator {
         }
     }
 
-    /// Where the last analysis used logic devices outside their domains: each device and
-    /// bound once, with the value furthest outside and when it first left.
+    /// Returns logic-device domain excursions recorded during the last analysis, one entry
+    /// per `(device, bound)` with peak excursion and first occurrence time.
     #[must_use]
     pub fn excursions(&self) -> Vec<Excursion> {
         self.state.events.excursions()
     }
 
-    /// The number of connect elements among [`Simulator::devices`], all at its end.
+    /// Returns the number of logic connect elements appended at the end of
+    /// [`Simulator::devices`].
     #[must_use]
     pub fn elements(&self) -> usize {
         self.elaborated.logic.detectors.len() + self.elaborated.logic.drivers.len()
     }
 
-    /// The logic devices, with every component instance unfolded, in the order they were
-    /// placed.
+    /// Returns unfolded logic devices in placement order.
     #[must_use]
     pub fn logic_devices(&self) -> &[PlacedLogic] {
         &self.elaborated.logic.devices
     }
 
-    /// The logic nets, in the order of every result's levels: the nets only logic pins join,
-    /// in the order they were first met, then the nets between logic pins and their connect
-    /// elements.
+    /// Returns logic nets in result logic-level order: pure logic nets first, followed by
+    /// nets bridging logic pins to connect elements.
     #[must_use]
     pub fn logic_nets(&self) -> &[LogicNet] {
         &self.elaborated.logic.nets
     }
 
-    /// The name of ground, the net of the top component's ground port.
+    /// Returns the ground net name declared by the top component's ground port.
     #[must_use]
     pub fn reference(&self) -> &str {
         self.elaborated.reference.as_str()
     }
 
-    /// The unknown named `name`: a net's path such as `amplifier/mid`, or an instance's path
-    /// and label such as `V1:current`.
+    /// Looks up the [`UnknownIndex`] named `name` (such as net path `amplifier/mid` or
+    /// branch label `V1:current`).
     #[must_use]
     pub fn unknown(&self, name: &str) -> Option<UnknownIndex> {
         self.elaborated
@@ -497,138 +486,136 @@ impl Simulator {
     }
 }
 
-/// Why the transient analysis rejected a step.
+/// Reason a transient analysis rejected a time step.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Rejection {
     /// Newton iteration did not converge.
     #[error("Newton iteration did not converge; furthest from converging: {}", .worst.join(", "))]
     Unconverged {
-        /// The unknowns furthest from converging at the last iteration, worst first.
+        /// Unknowns furthest from converging at the final iteration, worst first.
         worst: Vec<String>,
     },
-    /// The estimated truncation error exceeded its tolerance.
+    /// Estimated local truncation error exceeded tolerance.
     #[error("the truncation error of `{0}` exceeded its tolerance")]
     Inaccurate(String),
 }
 
-/// Why an analysis failed.
+/// Failure returned by a simulation analysis.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SimulationError {
     /// No operating point was found, even with gmin and source stepping.
     #[error("no operating point found; furthest from converging: {}", .worst.join(", "))]
     NoOperatingPoint {
-        /// The unknowns furthest from converging at the last attempt, worst first.
+        /// Unknowns furthest from converging on the final attempt, worst first.
         worst: Vec<String>,
     },
-    /// The circuit's equations are singular at every attempt, or a system made from them
-    /// is: the circuit linearized at its operating point at a frequency, or the shooting
-    /// equations of a periodic steady state.
+    /// Singular circuit equations, linearized small-signal system, or periodic shooting
+    /// equations.
     #[error(
         "the circuit's equations are singular{}: a node may have no DC path to the reference, \
          or sources may fix conflicting values",
         undetermined(.unknowns)
     )]
     Singular {
-        /// Up to three of the unknowns the equations leave undetermined, as the sparse
-        /// solver found them: a set of unknowns that appear in fewer equations than there
-        /// are of them, the unknown whose column elimination left with no nonzero pivot, or
-        /// those whose values in a solution are not finite. None when no unknown stands
-        /// out, as when the pencil of a pole-zero analysis is singular at every frequency.
+        /// Up to three undetermined unknowns reported by the sparse solver (structural
+        /// under-determination, zero pivot column, or non-finite solution entries). Empty
+        /// when no specific unknown stands out, such as an identically singular pole-zero
+        /// pencil.
         unknowns: Vec<String>,
     },
-    /// The circuit's system is too large to factor.
+    /// Circuit system exceeds sparse factorization size limits.
     #[error("the circuit's system is too large to factor")]
     TooLarge,
-    /// The transient analysis shortened its step below the smallest it allows.
+    /// Transient analysis reduced the time step below the allowed minimum.
     #[error("the time step fell below {minimum:e} s at t = {time:e} s: {rejection}")]
     StepTooSmall {
-        /// The time the analysis could not step past, in seconds.
+        /// Simulation time at which the solver stalled, in seconds.
         time: f64,
-        /// The smallest step allowed, in seconds.
+        /// Minimum permitted time step, in seconds.
         minimum: f64,
-        /// Why the analysis rejected its last step.
+        /// Reason the final step was rejected.
         rejection: Rejection,
     },
-    /// A transient's results would hold more numbers than its options let it keep.
+    /// Transient waveform storage would exceed configured memory budget.
     #[error(
         "the transient's results would pass {max_memory:?} GiB before it stops, its steps \
          {step:?} s long at t = {time:?} s"
     )]
     TooManyPoints {
-        /// The time the analysis reached, in seconds.
+        /// Simulation time reached before aborting, in seconds.
         time: f64,
-        /// The length of its steps there, in seconds.
+        /// Step size at the point of failure, in seconds.
         step: f64,
-        /// The gibibytes its results may hold: its `max_memory` option, less what a periodic
-        /// steady state's dense matrices hold beside them.
+        /// Available memory budget in gibibytes (`max_memory` minus dense matrix storage
+        /// held by periodic steady state).
         max_memory: f64,
     },
-    /// An analysis's dense matrices would hold more numbers than its options let it.
+    /// Dense matrices required by an analysis would exceed configured memory budget.
     #[error(
         "the {analysis}'s dense matrices of {rows} rows would hold {needed:?} GiB, more than \
          its `max_memory` option's {max_memory:?} GiB"
     )]
     TooMuchMemory {
-        /// The analysis, such as `pole-zero analysis`.
+        /// Name of the analysis, such as `pole-zero analysis`.
         analysis: &'static str,
-        /// The rows of its matrices, one per unknown, and one more where it borders them.
+        /// Dense matrix dimension (one per unknown, plus one when bordered).
         rows: usize,
-        /// The gibibytes it would hold at once.
+        /// Estimated memory requirement in gibibytes.
         needed: f64,
-        /// The gibibytes it may hold, its `max_memory` option.
+        /// Configured `max_memory` limit in gibibytes.
         max_memory: f64,
     },
-    /// A sensitivity analysis names an output that is no unknown.
+    /// Sensitivity analysis references an unknown name not present in the circuit.
     #[error("there is no unknown named `{0}`")]
     UnknownOutput(String),
-    /// An analysis names a source that does not exist.
+    /// Analysis references a source instance path not present in the circuit.
     #[error("there is no instance at `{0}`")]
     UnknownSource(String),
-    /// A derivative is asked with respect to numbers, or a mismatch analysis's random
-    /// variables move numbers, that no device's parameters hold as a real number: each by
-    /// the device's path and the number's.
+    /// Derivative or mismatch analysis references device parameters that do not exist as
+    /// real-valued numbers, listed as `(device_path, parameter_path)`.
     #[error("no device holds a real number at {}", numbered(.0))]
     UnknownParameters(Vec<(String, String)>),
-    /// An analysis names an instance that is not an independent source.
+    /// Analysis references an instance that is not an independent source.
     #[error("`{0}` is not an independent source")]
     NotASource(String),
-    /// A stability analysis's probe is not an independent voltage source between two nodes
-    /// other than ground.
-    #[error("`{0}` is not a voltage source off ground, as a probe must be")]
+    /// Stability analysis probe is not a floating independent voltage source.
+    #[error(
+        "`{0}` is not a floating voltage source (probe requires a voltage source not connected \
+         across ground)"
+    )]
     NotAProbe(String),
-    /// An analysis's settings are out of range.
+    /// Analysis parameters are invalid or out of range.
     #[error("invalid analysis: {0}")]
     InvalidAnalysis(String),
-    /// The QZ iteration of a pole-zero analysis did not converge.
+    /// QZ eigenvalue iteration for pole-zero analysis failed to converge.
     #[error("the eigenvalues of the linearized circuit did not converge")]
     Unconverged,
-    /// Shooting found no state that a period carries back to itself.
+    /// Periodic steady-state shooting failed to converge within the iteration limit.
     #[error(
         "no periodic steady state found in {periods} periods; furthest from repeating: {}",
         .worst.join(", ")
     )]
     NoSteadyState {
-        /// The periods shooting simulated.
+        /// Number of shooting periods simulated.
         periods: usize,
-        /// The unknowns furthest from repeating over the last period, worst first.
+        /// Unknowns furthest from periodicity on the final period, worst first.
         worst: Vec<String>,
     },
-    /// No natural mode of an oscillator linearized at its operating point grows, so no
-    /// oscillation starts from it.
+    /// Linearized autonomous circuit has no growing mode to initiate oscillation.
     #[error(
         "no natural mode of the circuit linearized at its operating point grows, so no \
          oscillation starts from it"
     )]
     NoGrowingMode,
-    /// An oscillator's shooting found a state every period repeats because nothing moves:
-    /// its operating point, not an oscillation.
+    /// Autonomous shooting converged to a stationary equilibrium rather than an
+    /// oscillation.
     #[error(
         "shooting found a state that does not move: no unknown changes by its tolerance as \
          the period changes by its relative tolerance, so it is an equilibrium the \
          oscillation left, not an oscillation"
     )]
     Stationary,
-    /// An oscillator's transient from its operating point did not stop growing.
+    /// Autonomous oscillator startup transient failed to settle into a bounded orbit.
     #[error(
         "the oscillation from the operating point, kicked along its fastest-growing mode, \
          did not stop growing in {time:e} s: none of its {returns} returns to the hyperplane \
@@ -636,34 +623,33 @@ pub enum SimulationError {
          that one came to its own"
     )]
     Unsettled {
-        /// The time the transient ran, in seconds.
+        /// Elapsed startup transient duration, in seconds.
         time: f64,
-        /// Its returns to the hyperplane through the operating point across its kick.
+        /// Number of Poincaré hyperplane crossings observed during startup.
         returns: usize,
     },
-    /// The analysis takes no circuit with a delay line, an instance that reads its past.
+    /// Analysis does not support circuits containing transmission-line delay elements.
     #[error("a {analysis} takes no delay line, as {reason}: {}", .devices.join(", "))]
     Delayed {
-        /// The analysis, such as `pole-zero analysis`.
+        /// Name of the analysis, such as `pole-zero analysis`.
         analysis: &'static str,
-        /// Why it takes none.
+        /// Explanation of why delay lines are unsupported.
         reason: &'static str,
-        /// The path of each delay line.
+        /// Paths of the delay-line instances present in the circuit.
         devices: Vec<String>,
     },
-    /// The options are out of range.
+    /// Simulation options contain invalid or out-of-range values.
     #[error("invalid options: {0}")]
     InvalidOptions(String),
-    /// The pool of the threads a run's parallelism confines it to could not be made.
+    /// Worker thread pool configured by parallelism options could not be spawned.
     #[error("the run's {threads} threads could not be started: {reason}")]
     Threads {
-        /// The threads the run may use, its parallelism's `threads`.
+        /// Requested worker thread count from parallelism options.
         threads: usize,
-        /// Why they could not be started.
+        /// Operating-system error message describing thread creation failure.
         reason: String,
     },
-    /// The circuit holds a foundry's devices, which ngspice simulates with the foundry's
-    /// models, and which the engine does not solve.
+    /// Circuit contains foundry devices delegated to ngspice rather than solved natively.
     #[error(
         "the engine solves no foundry's device, which ngspice simulates with its foundry's \
          models: {}",
@@ -672,8 +658,8 @@ pub enum SimulationError {
     Foundry(Vec<String>),
 }
 
-/// The numbers `numbers` names, each a device's path and a number's path, as a message lists
-/// them: `` `X1/R1` `resistance` ``.
+/// Formats `(device_path, parameter_path)` pairs for error messages, such as
+/// `` `X1/R1` `resistance` ``.
 fn numbered(numbers: &[(String, String)]) -> String {
     numbers
         .iter()
@@ -682,8 +668,7 @@ fn numbered(numbers: &[(String, String)]) -> String {
         .join(", ")
 }
 
-/// The clause of a singular error's message naming the `unknowns` its equations leave
-/// undetermined, if any.
+/// Formats the optional undetermined-unknowns clause for singular-system error messages.
 fn undetermined(unknowns: &[String]) -> String {
     if unknowns.is_empty() {
         String::new()
@@ -724,7 +709,7 @@ pub(crate) mod test_helpers {
         simulator_from_json(&document.to_string())
     }
 
-    /// A minimal 1 V DC source driving a 1 kΩ resistor to ground (`"0"`).
+    /// Builds a minimal 1 V DC source driving a 1 kΩ resistor to ground (`"0"`).
     pub(crate) fn source_resistor_simulator() -> Simulator {
         grounded_simulator(
             "test",

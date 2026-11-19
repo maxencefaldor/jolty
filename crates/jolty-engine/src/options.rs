@@ -8,14 +8,11 @@ use std::num::NonZeroUsize;
 
 use crate::SimulationError;
 
-/// The numbers of eight bytes a gibibyte holds.
-///
-/// Derivation: `2^30 / 8 = 1_073_741_824 / 8 = 134_217_728` IEEE 754 `f64` values per
-/// gibibyte (IEC 80000-13 binary prefix).
+/// Number of 8-byte IEEE 754 `f64` values per gibibyte (`2^30 / 8 = 134_217_728`, IEC
+/// 80000-13 binary prefix).
 pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
 
-/// `size` as a floating-point count of numbers for memory limits, where a 64-bit platform's
-/// `usize` exceeds `f64`'s 53-bit significand only at sizes far above any memory limit.
+/// Converts element count `size` to `f64` for memory-limit calculations (exact up to `2^53`).
 #[expect(
     clippy::cast_precision_loss,
     reason = "memory-limit counts need only floating-point precision"
@@ -24,34 +21,34 @@ pub(crate) fn float_count(size: usize) -> f64 {
     size as f64
 }
 
-/// The break-evens of the thresholds of [`Parallelism`] that spread a kind of work in
-/// tasks: on each number of [`BreakEvens::threads`], the least size of a task from which
-/// spreading that work over every thread made a run faster than a serial one, on circuits
-/// of the speed suite's fixtures' scripts at several sizes; none where no size measured
-/// did. Measured by `scripts/bench --break-even` on an AMD Ryzen Threadripper 3970X of 32
-/// cores and 64 threads, as the guide states each measurement.
+/// Measured break-even thresholds for [`Parallelism`] work-splitting options across thread
+/// counts.
+///
+/// For each count in [`BreakEvens::threads`], entries give the minimum task size where
+/// parallel execution outperformed serial execution across speed-suite benchmark circuits,
+/// or `None` when no measured size benefited. Measurements come from
+/// `scripts/bench --break-even` on a 32-core / 64-thread AMD Ryzen Threadripper 3970X.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BreakEvens {
-    /// The numbers of threads they were measured on, in increasing order.
+    /// Thread counts at which break-even thresholds were measured, in ascending order.
     pub threads: [usize; 4],
-    /// [`Parallelism::min_solves_per_task`]'s, on the amplifier's response at 1 to 1,111
-    /// frequencies a decade.
+    /// Measured defaults for [`Parallelism::min_solves_per_task`] across 1 to 1,111
+    /// frequencies per decade on the amplifier fixture.
     pub min_solves_per_task: [Option<usize>; 4],
-    /// [`Parallelism::min_instances_per_task`]'s, on chains of 1 to 1,000 inverters.
+    /// Measured defaults for [`Parallelism::min_instances_per_task`] on chains of 1 to
+    /// 1,000 inverters.
     pub min_instances_per_task: [Option<usize>; 4],
-    /// [`Parallelism::min_unknowns_per_task`]'s, on chains of 100 to 2,000 inverters and
-    /// meshes of 10 to 300 nodes a side.
+    /// Measured defaults for [`Parallelism::min_unknowns_per_task`] on 100 to 2,000
+    /// inverter chains and 10x10 to 300x300 meshes.
     pub min_unknowns_per_task: [Option<usize>; 4],
-    /// [`Parallelism::max_unknowns_per_interior`]'s, the most unknowns of an interior from
-    /// which dissecting a block into a thread's interior or more made a run faster, on
-    /// meshes of 10 to 300 nodes a side.
+    /// Measured defaults for [`Parallelism::max_unknowns_per_interior`] on 10x10 to
+    /// 300x300 meshes, giving the maximum interior size where block dissection paid off.
     pub max_unknowns_per_interior: [Option<usize>; 4],
 }
 
 impl BreakEvens {
-    /// The break-even, of those `measured` on each of [`BreakEvens::threads`], that a run
-    /// on `threads` threads takes: the one measured on the most threads no more than
-    /// `threads`; none on one thread, which spreads nothing.
+    /// Returns the break-even threshold from `measured` for `threads`, picking the highest
+    /// measured thread count not exceeding `threads`, or `None` on one thread.
     #[must_use]
     pub fn on(&self, measured: [Option<usize>; 4], threads: usize) -> Option<usize> {
         self.threads
@@ -62,18 +59,17 @@ impl BreakEvens {
             .and_then(|(_, least)| least)
     }
 
-    /// The least of those `measured`, which no run's break-even is below.
+    /// Returns the smallest defined threshold across all measured thread counts.
     fn least(measured: [Option<usize>; 4]) -> Option<usize> {
         measured.into_iter().flatten().min()
     }
 }
 
-/// The break-evens each threshold of [`Parallelism`] left unset takes, on 2, 4, 8 and 64
-/// threads.
+/// Default parallelism break-even thresholds measured on 2, 4, 8, and 64 threads.
 ///
-/// Source: measured by `scripts/bench --break-even` on `cedar` (AMD Ryzen Threadripper 3970X,
-/// 32 cores / 64 threads, 16 November 2026); see `docs/guide/simulation.md` and
-/// `benchmarks/speed/README.md` for each fixture and load average.
+/// Source: `scripts/bench --break-even` on `cedar` (AMD Ryzen Threadripper 3970X, 32 cores
+/// / 64 threads, 16 November 2026); see `docs/guide/simulation.md` and
+/// `benchmarks/speed/README.md`.
 pub const BREAK_EVENS: BreakEvens = BreakEvens {
     threads: [2, 4, 8, 64],
     min_solves_per_task: [Some(4_999), Some(11), Some(11), Some(4)],
@@ -82,31 +78,29 @@ pub const BREAK_EVENS: BreakEvens = BreakEvens {
     max_unknowns_per_interior: [Some(5_001), Some(2_501), Some(1_251), Some(157)],
 };
 
-/// What an analysis records of the circuit's devices beside the unknowns: the current into
-/// each terminal and the charge it holds, and each device's derivatives and variables.
+/// Selection of devices whose terminal currents, charges, derivatives, and internal
+/// variables are recorded alongside circuit unknowns.
 ///
-/// In JSON, every instance is the string `"all"`, and some instances an object with one
-/// key, such as `{"instances": ["M1", "X1"]}`.
+/// Serializes as `"all"` or `{"instances": ["M1", "X1"]}` in JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Record {
-    /// Every device, and the terminals of every component instance and logic device.
+    /// Records every analog device and every summed component or logic terminal.
     All,
-    /// The devices at these paths, such as `X1/M1`, and the terminals of the component
-    /// instances and logic devices at them, such as `X1`'s ports; a path that names none
-    /// records nothing.
+    /// Records devices and component/logic terminals at the listed hierarchical paths (such
+    /// as `X1/M1` or `X1`); unmatched paths record nothing.
     Instances(BTreeSet<String>),
 }
 
 impl Default for Record {
-    /// Nothing beyond the unknowns.
+    /// Returns an empty recording selection capturing circuit unknowns only.
     fn default() -> Self {
         Self::Instances(BTreeSet::new())
     }
 }
 
 impl Record {
-    /// Whether the record names the device or the component instance at `path`.
+    /// Returns whether this recording configuration selects `path`.
     #[must_use]
     pub fn names(&self, path: &str) -> bool {
         match self {
@@ -116,68 +110,49 @@ impl Record {
     }
 }
 
-/// How a run spreads its own work across the threads of the rayon pool it runs in: the
-/// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, its
-/// devices' instances, its Newton iteration's and step control's work on each unknown, and
-/// the factorization of its matrix's large blocks. Every result is the same bits however
-/// the work is split.
-/// No setting but [`Parallelism::max_unknowns_per_interior`] changes any result: that one
-/// orders the factorization's operations otherwise, so results agree with those of another
-/// to within its rounding rather than bit for bit, as they do on another number of threads
-/// where its default dissects a block.
+/// Configuration for distributing work within a single simulation across threads in the
+/// active rayon pool.
 ///
-/// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
-/// run that spreads its work uses at most its `max_threads`, on a pool of exactly that
-/// many threads of its own when they are fewer than its caller's pool has, and a
-/// [batch](crate::batch::Batch) runs each of its runs on one thread whenever it has a run
-/// for every thread of its pool. Spreading work costs the time of waking threads, which a
-/// small run's work does not repay, so each kind of work spreads only in tasks of at least
-/// its threshold, its least size per task, once it fills such a task for every thread the
-/// run may use, as the break-evens were measured: one task, on the run's own thread, for
-/// less. Each threshold defaults to its break-even on the threads
-/// the run may use, [`BREAK_EVENS`], the least size of a task from which spreading made a
-/// run faster, measured on an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads;
-/// the guide states each measurement.
+/// Covers small-signal frequencies, sensitivity right-hand sides, device evaluation,
+/// Newton/step-control vector passes, and nested-dissection sparse factorization. Every
+/// setting except [`Parallelism::max_unknowns_per_interior`] preserves bit-identical output
+/// across thread counts; changing interior size alters elimination order and agrees within
+/// floating-point rounding.
+///
+/// The caller owns the rayon pool and enters it with `ThreadPool::install`. When
+/// `max_threads` is smaller than the caller pool, the engine runs in a dedicated sub-pool
+/// of that size; a [batch](crate::batch::Batch) runs single-threaded per run when runs
+/// already saturate the pool. Each work category parallelizes only once items fill a full
+/// threshold task per thread, defaulting to [`BREAK_EVENS`].
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {
-    /// The most threads a run spreads its own work over; none for every thread of the pool
-    /// it runs in, and 1 to run it on one thread alone. A run that may spread its work over
-    /// two or more, fewer than the pool it is called in has, runs on a pool of exactly that
-    /// many threads of its own, which every task it spreads runs on.
+    /// Maximum worker threads for a single run (`None` uses all pool threads; `Some(1)`
+    /// forces serial execution). Values of two or more below the caller pool size run in a
+    /// dedicated sub-pool of that thread count.
     pub max_threads: Option<usize>,
-    /// The fewest frequencies, right-hand sides or parameters' derivatives a task takes
-    /// when a run spreads them, at most one task a thread; none, by default, for its
-    /// break-even on the threads the run may use, [`BREAK_EVENS`].
+    /// Minimum frequencies, right-hand sides, or parameter derivatives per parallel task
+    /// (at most one task per thread); defaults to [`BREAK_EVENS`].
     pub min_solves_per_task: Option<usize>,
-    /// The fewest device instances of a group a task evaluates when a run spreads its
-    /// devices' evaluation, at most one task of a group a thread, a linear group's
-    /// instances, evaluated once a run, for their entries, taking their residuals and
-    /// charges from them in one task; none, by default, for its break-even on the threads
-    /// the run may use, [`BREAK_EVENS`].
+    /// Minimum nonlinear device instances per parallel evaluation task (at most one task
+    /// per thread); linear groups run in one task. Defaults to [`BREAK_EVENS`].
     pub min_instances_per_task: Option<usize>,
-    /// The fewest unknowns, or stored entries of the matrix, a task takes when a run
-    /// spreads its Newton iteration's and its transient step control's work on each, in
-    /// whole chunks of [`jolty_numerics::reduce::CHUNK`], which the threads take as they
-    /// free; none, by default, for its break-even on the threads the run may use,
+    /// Minimum unknowns or matrix nonzeros per task for parallel Newton and step-control
+    /// passes, scheduled in [`jolty_numerics::reduce::CHUNK`] blocks; defaults to
     /// [`BREAK_EVENS`].
     pub min_unknowns_per_task: Option<usize>,
-    /// The most unknowns of an interior when a run's ordering dissects a block of its
-    /// matrix's block triangular form: each block of more is ordered by nested dissection
-    /// into interiors of at most as many, unless one cannot split, and the separators
-    /// between them, whose factorizations and solves spread over the threads a run may
-    /// use, wherever that costs the block's elimination fewer multiply-adds than its
-    /// minimum degree ordering, as [`Dissecting::Cheaper`] counts them, and is otherwise
-    /// ordered by the minimum degree, on the run's thread. It changes the order of the
-    /// factorization's operations, so the last digits of results, which it gives the same
-    /// bits on any number of threads; none, by default, for its break-even on the threads
-    /// the run may use, [`BREAK_EVENS`], and the minimum degree's ordering on one, so that
-    /// results agree across numbers of threads to within the factorization's rounding.
+    /// Maximum interior unknown count for nested dissection of large block-triangular
+    /// matrix blocks. Blocks exceeding this size use nested dissection when
+    /// [`Dissecting::Cheaper`] estimates fewer multiply-adds than minimum degree; otherwise
+    /// serial minimum degree is used. Changing dissection alters elimination order within
+    /// factorization rounding while staying bit-identical across thread counts for a fixed
+    /// ordering. Defaults to [`BREAK_EVENS`].
     pub max_unknowns_per_interior: Option<usize>,
 }
 
 impl Default for Parallelism {
-    /// Every thread of the pool, and each threshold at its break-even.
+    /// Returns default parallelism using all pool threads and measured break-even
+    /// thresholds.
     fn default() -> Self {
         Self {
             max_threads: None,
@@ -190,23 +165,22 @@ impl Default for Parallelism {
 }
 
 impl Parallelism {
-    /// How many tasks a run splits `items` independent solves into: one for each thread it
-    /// may use, each of at least [`Parallelism::min_solves_per_task`] of them, when they
-    /// fill a task for every one, and else one.
+    /// Computes the number of parallel tasks for `items` independent solves, returning `1`
+    /// unless `items` fill one [`Parallelism::min_solves_per_task`] task per usable thread.
     #[must_use]
     pub fn tasks(&self, items: usize) -> usize {
         self.split(Kind::Solves, items)
             .map_or(1, |tasks| tasks.count(items))
     }
 
-    /// The least items a task of `kind` takes on `threads` threads: its threshold, if set,
-    /// and else its break-even there; none, never to spread it.
+    /// Returns the minimum items per task for `kind` on `threads`, falling back to
+    /// [`BREAK_EVENS`], or `None` to stay serial.
     fn least(&self, kind: Kind, threads: usize) -> Option<usize> {
         let (set, measured) = self.threshold(kind);
         set.or_else(|| BREAK_EVENS.on(measured, threads))
     }
 
-    /// The threshold of `kind`, if set, and its break-evens.
+    /// Returns the explicit threshold and measured break-even table for `kind`.
     const fn threshold(&self, kind: Kind) -> (Option<usize>, [Option<usize>; 4]) {
         match kind {
             Kind::Solves => (self.min_solves_per_task, BREAK_EVENS.min_solves_per_task),
@@ -221,17 +195,18 @@ impl Parallelism {
         }
     }
 
-    /// Tasks of at least `least` items, one for each of `threads`, two or more, when
-    /// `items` fill a task for every one; none else.
+    /// Builds a [`Tasks`] plan of at least `least` items per thread when `threads >= 2` and
+    /// `items` fill every thread, returning `None` otherwise.
     fn filled(least: usize, items: usize, threads: usize) -> Option<Tasks> {
         let tasks = tasks_of(least, threads);
         (threads >= 2 && items / tasks.least >= threads).then_some(tasks)
     }
 
-    /// Tasks of at least the least items of `kind`, one for each thread a run may use,
-    /// when `items` fill a task for every one of them; none else. Items that do not fill
-    /// two however many threads there are never ask for the pool, which would start
-    /// rayon's global one when a run is called in none.
+    /// Computes a [`Tasks`] split for `kind` and `items` across usable threads, or `None`
+    /// to run serially.
+    ///
+    /// Small workloads that cannot fill two tasks return early without querying rayon,
+    /// avoiding lazy initialization of rayon's global pool.
     fn split(&self, kind: Kind, items: usize) -> Option<Tasks> {
         let (set, measured) = self.threshold(kind);
         let fewest = set.or_else(|| BreakEvens::least(measured))?;
@@ -240,10 +215,8 @@ impl Parallelism {
         Self::filled(self.least(kind, threads)?, items, threads)
     }
 
-    /// Whether some kind of work of a run of `sizes` fills a task of its threshold for
-    /// every one of `threads` threads, those of the pool it would run in, or as many as
-    /// its [`Parallelism::max_threads`] if fewer, so that the run spreads it: its instances
-    /// or its unknowns, its ordering dissects a block, or its solves fill them.
+    /// Returns whether any work category in `sizes` meets its parallel threshold on
+    /// `threads` (capped by [`Parallelism::max_threads`]).
     #[must_use]
     pub fn fills_threads(&self, sizes: Sizes, threads: usize) -> bool {
         let threads = self.max_threads.map_or(threads, |most| most.min(threads));
@@ -260,30 +233,28 @@ impl Parallelism {
                 || fills(Kind::Solves, sizes.solves))
     }
 
-    /// The threads a run may spread its work over: its [`Parallelism::max_threads`], but no
-    /// more than the rayon pool it runs in has.
+    /// Returns the usable thread count: [`Parallelism::max_threads`] capped by the active
+    /// rayon pool size.
     fn usable(&self) -> usize {
         let threads = rayon::current_num_threads();
         self.max_threads.map_or(threads, |most| most.min(threads))
     }
 
-    /// Runs `run`, a run's work, on at most its [`Parallelism::max_threads`]. When the run
-    /// may spread its work, and its threads are two or more but fewer than the pool it is
-    /// called in has, it runs on a pool of exactly that many threads, made for it: rayon
-    /// runs every task that a task of a pool spawns on that pool, so every task the run
-    /// spreads runs on one of them. Else it runs where it is called, and a run that spreads
-    /// nothing on the calling thread alone.
+    /// Executes `run` confined to at most [`Parallelism::max_threads`] threads.
+    ///
+    /// When `max_threads` is at least 2 and smaller than the enclosing rayon pool, builds a
+    /// dedicated pool of that size so nested rayon tasks stay bounded. Otherwise runs on
+    /// the current thread or enclosing pool.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::Threads`] when the pool's threads cannot be started, and
-    /// else the errors of `run`.
+    /// Returns [`SimulationError::Threads`] when worker threads cannot start, or any error
+    /// returned by `run`.
     pub(crate) fn confined<T: Send>(
         &self,
         run: impl FnOnce() -> Result<T, SimulationError> + Send,
     ) -> Result<T, SimulationError> {
-        // A run that spreads nothing never asks for the pool it is called in, which would
-        // start rayon's global one when it is called in none.
+        // Serial runs return directly without querying rayon, avoiding global pool startup.
         let Some(most) = self.max_threads.filter(|&most| most >= 2) else {
             return run();
         };
@@ -300,20 +271,18 @@ impl Parallelism {
         pool.install(run)
     }
 
-    /// Whether a run may spread any of its work across threads, and so must run inside
-    /// its caller's pool: unless its [`Parallelism::max_threads`] is one. A run that may
-    /// not touches no thread but its own.
+    /// Returns whether this configuration permits multi-threaded execution (true unless
+    /// [`Parallelism::max_threads`] is 1).
     #[must_use]
     pub const fn spreads(&self) -> bool {
         !matches!(self.max_threads, Some(..2))
     }
 
-    /// How a run whose matrix's largest block holds `largest_block` unknowns orders it:
-    /// by [`Dissecting::Cheaper`] with [`Parallelism::max_unknowns_per_interior`], or its
-    /// break-even on the threads the run may use; none, for the minimum degree's ordering,
-    /// where it has no break-even or the block holds no more. A block no break-even could
-    /// dissect never asks for the pool, which would start rayon's global one when a run
-    /// is called in none.
+    /// Chooses the [`Dissecting`] policy for a matrix whose largest block has
+    /// `largest_block` unknowns, returning `None` for serial minimum degree.
+    ///
+    /// Blocks below every possible interior threshold return `None` without querying rayon,
+    /// avoiding lazy initialization of rayon's global pool.
     #[must_use]
     pub(crate) fn dissecting(&self, largest_block: usize) -> Option<Dissecting> {
         let measured = BREAK_EVENS.max_unknowns_per_interior;
@@ -326,8 +295,8 @@ impl Parallelism {
         self.dissecting_on(self.usable())
     }
 
-    /// How a run on `threads` threads orders its matrix's blocks, as
-    /// [`Parallelism::dissecting`] says.
+    /// Chooses the [`Dissecting`] policy for `threads` workers, matching
+    /// [`Parallelism::dissecting`].
     #[must_use]
     pub(crate) fn dissecting_on(&self, threads: usize) -> Option<Dissecting> {
         self.max_unknowns_per_interior
@@ -335,8 +304,8 @@ impl Parallelism {
             .map(Dissecting::Cheaper)
     }
 
-    /// The threads a run's factorization of `ordering` spreads over: all it may use, for
-    /// one that dissects a block, and one for a run that spreads nothing.
+    /// Returns the thread count used to factor `ordering`: all usable threads when
+    /// dissected, otherwise `1`.
     #[must_use]
     pub(crate) fn factorization(&self, ordering: &Ordering) -> usize {
         if self.spreads() && ordering.is_dissected() {
@@ -346,24 +315,19 @@ impl Parallelism {
         }
     }
 
-    /// How a run's devices split their evaluation among threads: every group at once, each
-    /// that is not linear in tasks of at least [`Parallelism::min_instances_per_task`] of
-    /// its instances, as [`Tasks::count`] says, then the values of the circuit's equations gathered in parts
-    /// where their contributions balance, as many as the threads ask for as they take
-    /// them; none, to evaluate them on the run's thread, when the `instances` it evaluates,
-    /// those of its groups that are not linear, fill no task for every thread it may use,
-    /// or it may use one alone. The bits found are the same either way.
+    /// Returns a [`Tasks`] split for parallel device evaluation over `instances` nonlinear
+    /// devices, or `None` to evaluate serially.
+    ///
+    /// Nonlinear groups split into tasks of at least [`Parallelism::min_instances_per_task`]
+    /// instances via [`Tasks::count`] with balanced gather partitions, producing
+    /// bit-identical results to serial evaluation.
     #[must_use]
     pub fn evaluation(&self, instances: usize) -> Option<Tasks> {
         self.split(Kind::Instances, instances)
     }
 
-    /// Whether a run spreads its work on each of the circuit's `unknowns` unknowns and on
-    /// each stored entry of its matrix among threads, in Newton iteration and in a
-    /// transient's step control, as [`UnknownGrain`] does: once its unknowns fill a task of at
-    /// least [`Parallelism::min_unknowns_per_task`] for every thread the run may use, two
-    /// or more; none, to do it all on the run's thread. The bits found are the same either
-    /// way.
+    /// Returns an [`UnknownGrain`] when `unknowns` meet [`Parallelism::min_unknowns_per_task`]
+    /// across usable threads, or `None` for serial Newton and step-control loops.
     #[must_use]
     pub(crate) fn unknown_grain(&self, unknowns: usize) -> Option<UnknownGrain> {
         self.split(Kind::Unknowns, unknowns)
@@ -372,10 +336,9 @@ impl Parallelism {
             })
     }
 
-    /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
-    /// tasks of consecutive items, each task with scratch space of its own that `scratch`
-    /// makes; on the calling thread alone for one task. Each item's result is the same
-    /// whichever task finds it.
+    /// Applies `each` to every item in `items` in order across [`Parallelism::tasks`]
+    /// contiguous chunks, providing per-task `scratch` state while preserving bit-identical
+    /// results.
     pub(crate) fn spread<T: Send, S, R: Send>(
         &self,
         items: &mut [T],
@@ -402,18 +365,19 @@ impl Parallelism {
     }
 }
 
-/// A kind of work a run spreads in tasks, each with a threshold of [`Parallelism`].
+/// Work category governed by a threshold in [`Parallelism`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// Frequencies, right-hand sides or parameters' derivatives.
+    /// Frequencies, right-hand sides, or parameter derivatives.
     Solves,
-    /// Device instances.
+    /// Nonlinear device instances.
     Instances,
-    /// Unknowns and stored entries.
+    /// Unknowns and matrix nonzeros.
     Unknowns,
 }
 
-/// Tasks of at least `least` items, one a thread of `threads`, one at least of each.
+/// Constructs a [`Tasks`] descriptor with at least `least` items per task and `threads`
+/// workers (clamping both to at least 1).
 fn tasks_of(least: usize, threads: usize) -> Tasks {
     Tasks {
         least: NonZeroUsize::new(least).unwrap_or(NonZeroUsize::MIN),
@@ -421,87 +385,91 @@ fn tasks_of(least: usize, threads: usize) -> Tasks {
     }
 }
 
-/// What a run's work counts, which [`Parallelism::fills_threads`] reads.
+/// Workload sizes inspected by [`Parallelism::fills_threads`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sizes {
-    /// The device instances it evaluates, those of the groups that are not linear.
+    /// Count of evaluated nonlinear device instances.
     pub instances: usize,
-    /// The circuit's unknowns.
+    /// Count of circuit unknowns.
     pub unknowns: usize,
-    /// Whether its ordering dissects a block of its matrix's block triangular form.
+    /// Flag indicating whether the matrix ordering dissects at least one BTF block.
     pub dissected: bool,
-    /// The independent solves of its analysis: its frequencies, or its right-hand sides.
+    /// Count of independent solves (frequencies or right-hand sides).
     pub solves: usize,
 }
 
-/// That a run spreads its work on each unknown and each stored entry over the threads of
-/// its pool: in chunks of [`jolty_numerics::reduce::CHUNK`] of them, whatever the number of
-/// threads, which rayon splits among the threads as they take them, so that a fast thread
-/// takes more chunks than a slow one, each task at least `chunks` of them; a sum adds the
-/// chunks' totals in their order.
+/// Granularity for parallel unknown and matrix-entry loops, dividing work into
+/// [`jolty_numerics::reduce::CHUNK`] blocks with at least `chunks` blocks per task while
+/// combining reductions in deterministic order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UnknownGrain {
-    /// The fewest chunks a task takes.
+    /// Minimum number of chunks per parallel task.
     pub(crate) chunks: usize,
 }
 
-/// The numerical settings of a simulation: tolerances and iteration limits, and what its
-/// results record.
+/// Numerical solver settings, iteration limits, recording options, and parallelism
+/// configuration.
 ///
-/// The defaults are SPICE's, so results compare with SPICE simulators run at their defaults.
+/// Defaults match SPICE so simulations compare directly against SPICE defaults.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Options {
-    /// The tolerance on every unknown and residual, relative to its magnitude; default 1e-3.
+    /// Relative tolerance applied to unknowns and residuals (default `1e-3`).
     pub relative_tolerance: f64,
-    /// The absolute tolerance on voltages, in volts; default 1e-6.
+    /// Absolute voltage tolerance in volts (default `1e-6`).
     pub voltage_tolerance: f64,
-    /// The absolute tolerance on currents, in amperes; default 1e-12.
+    /// Absolute current tolerance in amperes (default `1e-12`).
     pub current_tolerance: f64,
-    /// The least charge a time step's tolerance on a charge is relative to, in coulombs, as
-    /// SPICE's `CHGTOL`: the tolerance on a charge `q` is `relative_tolerance` times the
-    /// larger of `|q|` and this, or the tolerance on the current it carries over the step
-    /// where that is larger, either times the truncation tolerance; default 1e-14.
+    /// Minimum reference charge floor in coulombs, matching SPICE `CHGTOL` (default
+    /// `1e-14`).
+    ///
+    /// Charge truncation tolerance scales `relative_tolerance * max(|q|, charge_tolerance)`
+    /// (or the equivalent current tolerance over the step when larger) by
+    /// `truncation_tolerance`.
     pub charge_tolerance: f64,
-    /// The conductance placed across every nonlinear junction, in siemens; default 1e-12.
+    /// Minimum shunt conductance placed across nonlinear junctions in siemens (default
+    /// `1e-12`).
     pub gmin: f64,
-    /// The Newton iterations allowed for one DC solution; default 100.
+    /// Maximum Newton iterations permitted per DC solve (default `100`).
     pub max_dc_iterations: usize,
-    /// The most Newton iterations one time step takes, SPICE's `ITL4`, the iterate after
-    /// the last judged as any other; default 10.
+    /// Maximum Newton iterations permitted per transient time step, matching SPICE `ITL4`
+    /// (default `10`).
     pub max_transient_iterations: usize,
-    /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
-    /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate
-    /// leaves out a factorial, so the error itself may reach twice as many after a step of
-    /// backward Euler, and six times as many after one of the second-order formulas. Set to
-    /// `f64::INFINITY` to disable truncation error rejection and take fixed steps.
+    /// Multiplier on local truncation error bounds matching SPICE `TRTOL` (default `7.0`).
+    ///
+    /// SPICE omits the Taylor factorial, so true error may reach twice this bound for
+    /// backward Euler and six times for second-order methods. Setting `f64::INFINITY`
+    /// disables truncation-error rejection for fixed-step integration.
     pub truncation_tolerance: f64,
-    /// The gibibytes of numbers an analysis may hold at once: a transient's results, every
-    /// unknown's and every device's at each point, and the dense matrices of a pole-zero
-    /// analysis or a periodic steady state, of a row and a column per unknown. An analysis
-    /// that would hold more fails instead of filling the memory: a transient whose steps
-    /// shrink to a crawl, once it passes the limit, and a dense analysis before it begins;
-    /// default 2.
+    /// Maximum memory budget in gibibytes for transient waveforms or dense analysis
+    /// matrices (default `2.0`).
+    ///
+    /// Analyses exceeding this budget abort cleanly instead of exhausting RAM: dense
+    /// analyses fail upfront and transients fail if step shrinkage exceeds the limit.
     pub max_memory: f64,
-    /// What the results record of the devices beside the unknowns; by default nothing.
+    /// Device recording selection beyond circuit unknowns (empty by default).
     pub record: Record,
-    /// Whether the results record, of every transistor `record` leaves out, its region of
-    /// operation and its margins to the regions' boundaries alone; by default not.
+    /// Flag enabling operating-region and boundary-margin recording for transistors not
+    /// already included in `record` (default `false`).
     pub regions: bool,
-    /// Whether a transient measures where its time goes, into its statistics' profile; by
-    /// default not, as the clock adds about a tenth to a small circuit's transient. It
-    /// changes no other result.
+    /// Flag enabling per-activity timing instrumentation in transient statistics (default
+    /// `false`).
+    ///
+    /// Clock reads add roughly 10% overhead on small transients while leaving all numeric
+    /// results unchanged.
     pub profile: bool,
-    /// How a run spreads its own work across threads, which changes no result but for
-    /// the last digits a dissected factorization's order of operations gives; by default
-    /// over every thread of its pool, each kind of work from its break-even on.
+    /// Multi-threading policy for work inside a single run (defaults to all pool threads
+    /// with measured break-even thresholds).
+    ///
+    /// Preserves bit-identical results except for minor rounding differences when nested
+    /// dissection changes elimination order.
     pub parallelism: Parallelism,
-    /// The voltage, in volts, each net named, such as `amplifier/mid`, is held at while
-    /// a DC solution is first solved from zero, which is then released and solved again
-    /// from there, as SPICE's `.nodeset` starts an operating point: a guess that leads
-    /// Newton iteration to one solution of several. A net that voltage sources and
-    /// inductors join to the reference, or to a net named before it, is not held, as
-    /// they fix its voltage. None by default.
+    /// Initial DC node-voltage hints in volts by net path (such as `amplifier/mid`),
+    /// matching SPICE `.nodeset` (empty by default).
+    ///
+    /// Hints hold target nodes during the first Newton solve and are then released to find
+    /// the true operating point. Nets already constrained by voltage sources or inductors
+    /// are ignored.
     pub nodesets: BTreeMap<String, f64>,
 }
 
@@ -527,9 +495,8 @@ impl Default for Options {
 }
 
 impl Options {
-    /// The absolute tolerance on the value of an unknown of `nature`: the current
-    /// tolerance for a current, the voltage tolerance for a voltage, a temperature or a
-    /// device's state.
+    /// Returns the absolute value tolerance for `nature`: `current_tolerance` for currents
+    /// and `voltage_tolerance` for voltages, temperatures, and states.
     pub(crate) fn value_tolerance(&self, nature: Nature) -> f64 {
         if nature.is_current() {
             self.current_tolerance
@@ -538,9 +505,9 @@ impl Options {
         }
     }
 
-    /// The absolute tolerance on the residual of an unknown of `nature`'s equation: the
-    /// current tolerance for an equation that sums currents, the voltage tolerance for one
-    /// that constrains a voltage or moves a device's state.
+    /// Returns the absolute equation-residual tolerance for `nature`: `current_tolerance`
+    /// for current-summing equations and `voltage_tolerance` for voltage or state
+    /// equations.
     pub(crate) fn equation_tolerance(&self, nature: Nature) -> f64 {
         if nature.sums_currents() {
             self.current_tolerance
@@ -549,18 +516,19 @@ impl Options {
         }
     }
 
-    /// The convergence tolerance for an unknown of `nature` comparing `first` and `second`:
-    /// `relative_tolerance * max(|first|, |second|) + value_tolerance(nature)`.
+    /// Returns the convergence tolerance comparing `first` and `second` for an unknown of
+    /// `nature`: `relative_tolerance * max(|first|, |second|) + value_tolerance(nature)`.
     pub(crate) fn unknown_tolerance(&self, nature: Nature, first: f64, second: f64) -> f64 {
         self.relative_tolerance * first.abs().max(second.abs()) + self.value_tolerance(nature)
     }
 
-    /// Checks that `analysis`, whose dense matrices have `rows` rows, may hold `numbers`
-    /// numbers at once.
+    /// Checks that `analysis`, whose dense matrices have `rows` rows, fits `numbers` `f64`
+    /// values within `max_memory`.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `max_memory`.
+    /// Returns [`SimulationError::TooMuchMemory`] when the memory estimate exceeds
+    /// `max_memory`.
     pub(crate) fn hold(
         &self,
         analysis: &'static str,
@@ -585,7 +553,8 @@ impl Options {
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `max_memory`.
+    /// Returns [`SimulationError::TooMuchMemory`] when the memory estimate exceeds
+    /// `max_memory`.
     pub(crate) fn hold_square(
         &self,
         analysis: &'static str,
@@ -621,11 +590,12 @@ impl Options {
         Ok(())
     }
 
-    /// Checks that tolerances and limits lie in range and every limit allows an iteration.
+    /// Validates that all tolerances, memory limits, iteration counts, and parallelism
+    /// thresholds lie in range.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidOptions`] naming the first setting out of range.
+    /// Returns [`SimulationError::InvalidOptions`] naming the first out-of-range setting.
     pub fn check(&self) -> Result<(), SimulationError> {
         let tolerances = [
             ("relative_tolerance", self.relative_tolerance),
@@ -639,24 +609,24 @@ impl Options {
             .find(|&(_, value)| !(value > 0.0 && value.is_finite()))
         {
             return Err(SimulationError::InvalidOptions(format!(
-                "{name} must be positive and finite, not {value:?}"
+                "{name} requires a positive finite value; got {value:?}"
             )));
         }
         if self.truncation_tolerance.is_nan() || self.truncation_tolerance <= 0.0 {
             return Err(SimulationError::InvalidOptions(format!(
-                "truncation_tolerance must be positive, not {:?}",
+                "truncation_tolerance requires a positive value; got {:?}",
                 self.truncation_tolerance
             )));
         }
         if !(self.gmin >= 0.0 && self.gmin.is_finite()) {
             return Err(SimulationError::InvalidOptions(format!(
-                "gmin must be at least 0 and finite, not {:?}",
+                "gmin requires a non-negative finite value; got {:?}",
                 self.gmin
             )));
         }
         if self.max_dc_iterations == 0 || self.max_transient_iterations == 0 {
             return Err(SimulationError::InvalidOptions(
-                "iteration limits must be at least 1".to_owned(),
+                "iteration limits require at least 1".to_owned(),
             ));
         }
         let parallelism = &self.parallelism;
@@ -672,7 +642,7 @@ impl Options {
         ];
         if let Some((name, _)) = counts.into_iter().find(|&(_, count)| count == Some(0)) {
             return Err(SimulationError::InvalidOptions(format!(
-                "parallelism's {name} must be at least 1, not 0"
+                "parallelism `{name}` requires at least 1; got 0"
             )));
         }
         Ok(())

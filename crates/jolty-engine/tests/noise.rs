@@ -23,7 +23,7 @@ use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE, Nature, REFERENCE_TEMPERATURE, 
 use serde_json::json;
 use sim::simulator;
 
-/// `4kT` at the reference temperature, the default conditions'.
+/// Thermal noise factor `4kT` at the reference temperature under default conditions.
 const FOUR_KT: f64 = 4.0 * BOLTZMANN * REFERENCE_TEMPERATURE;
 
 const FREQUENCIES: [f64; 4] = [1.0, 1e3, 1e5, 1e7];
@@ -51,7 +51,7 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
-/// The contribution of `device` to the spectrum's density at each frequency.
+/// Returns the noise density contribution of `device` at each frequency in `spectrum`.
 fn share<'a>(spectrum: &'a NoiseResult, device: &str) -> &'a [f64] {
     let mut shares = spectrum
         .contributions
