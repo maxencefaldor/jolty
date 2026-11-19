@@ -951,7 +951,7 @@ def sensitivities() -> list[Fixture]:
         }
 
     # d/dR of 1/(1 + jωRC) is -jωC/(1 + jωRC)².
-    def d_ac(frequency: float) -> complex:
+    def derivative_ac(frequency: float) -> complex:
         jw = 1j * 2 * math.pi * frequency
         return -jw * 1e-9 / (1 + jw * RC_TAU) ** 2
 
@@ -965,7 +965,7 @@ def sensitivities() -> list[Fixture]:
         return {n: complex(d) for n, d in zip(names, derivative, strict=True)}
 
     # dv/dR of the ramp response: v depends on τ = RC, so dv/dR = C·dv/dτ.
-    def diode_transient(time: float) -> float:
+    def derivative_transient(time: float) -> float:
         step = 1e-6 * RC_TAU
         return (
             1e-9
@@ -1027,7 +1027,10 @@ def sensitivities() -> list[Fixture]:
             category=Category.ANALYSIS,
             name="Sensitivities over frequency",
             known=Known(
-                values={n: d_ac(f) for n, f in zip(names, FREQUENCIES, strict=True)},
+                values={
+                    n: derivative_ac(f)
+                    for n, f in zip(names, FREQUENCIES, strict=True)
+                },
                 source="closed form: a low pass's derivative in its resistance",
             ),
             jolty=over_frequency,
@@ -1049,7 +1052,7 @@ def sensitivities() -> list[Fixture]:
             name="Sensitivities over time",
             known=Known(
                 values={
-                    n: diode_transient(t)
+                    n: derivative_transient(t)
                     for n, t in zip(transient_names, times, strict=True)
                 },
                 source="closed form: the ramp response's derivative in its time "
