@@ -497,6 +497,7 @@ def _asset_tags(assets: str | None) -> tuple[str, str]:
 def page(
     scene_: Mapping[str, JsonValue],
     three: str = _THREE,
+    *,
     assets: str | None = None,
 ) -> str:
     """The HTML page of a scene, loading three.js from `three`.
@@ -529,6 +530,7 @@ def write_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset ba
     analyses: Mapping[str, results.AnalysisResult],
     title: str = "",
     three: str = _THREE,
+    *,
     assets: str | None = None,
 ) -> None:
     """Writes the viewer of `circuit` and its `analyses` to `path`.
