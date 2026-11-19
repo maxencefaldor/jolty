@@ -10,103 +10,93 @@ use crate::preferred::Series;
 use crate::structure::{NAMED, REFERENCE, Structure, ends, index, list, plural};
 use crate::{Diagnostic, Level, Rule};
 
-/// Rule definition for `unconnected-terminal` (structural connectivity check; `AGENTS.md`,
-/// "Rules, as in ty").
+/// Structural rule reporting isolated device terminals and logic pins.
 const UNCONNECTED_TERMINAL: Rule = Rule {
     name: "unconnected-terminal",
     level: Level::Error,
-    condition: "A device's terminal or logic pin joins a net that no other terminal or pin \
-                joins and that is not the ground: nothing connects to it.",
+    condition: "A device terminal or logic pin joins a non-ground net that no other terminal \
+                or pin connects to.",
 };
 
-/// Rule definition for `shorted-source` (structural topology check; `AGENTS.md`, "Rules, as
-/// in ty").
+/// Structural rule reporting voltage sources, current sources, or sensing ports with shorted
+/// terminals.
 const SHORTED_SOURCE: Rule = Rule {
     name: "shorted-source",
     level: Level::Error,
-    condition: "A voltage or current source, independent or controlled, has both ends of its \
-                output on one node, or a current-controlled source has both ends of the port \
-                that senses its control current on one node. A voltage source then holds its \
-                voltage across nothing, a current source drives its current through nothing, \
-                and a sensing port senses no current.",
+    condition: "A voltage or current source (independent or controlled) has both output \
+                terminals on the same node, or a current-controlled source has both \
+                sensing-port terminals on the same node. Shorting a voltage source creates an \
+                inconsistent voltage constraint, shorting a current source bypasses its \
+                output, and shorting a sensing port eliminates the sensed current.",
 };
 
-/// Rule definition for `shorted-device` (structural topology check; `AGENTS.md`, "Rules, as
-/// in ty").
+/// Structural rule reporting passive or semiconductor devices with all terminals on one node.
 const SHORTED_DEVICE: Rule = Rule {
     name: "shorted-device",
     level: Level::Warn,
-    condition: "A resistor, capacitor, inductor, diode or transistor has every terminal on \
-                one node, so it carries no current and does nothing. A transistor with only \
-                some terminals joined, such as a diode-connected one, raises nothing.",
+    condition: "A resistor, capacitor, inductor, diode, or transistor has every terminal on \
+                the same node, carrying no current. A transistor with only some terminals \
+                joined, such as a diode-connected transistor, does not trigger this rule.",
 };
 
-/// Rule definition for `voltage-loop` (Kirchhoff's voltage law structural check; `AGENTS.md`,
-/// "Rules, as in ty").
+/// Structural rule reporting closed loops of voltage sources and inductors.
 const VOLTAGE_LOOP: Rule = Rule {
     name: "voltage-loop",
     level: Level::Error,
-    condition: "Voltage sources and inductors, independent or controlled, form a loop. At DC \
-                an inductor is a short, so the loop's sources alone fix the voltages around \
-                it: they conflict, or leave the current around the loop undefined. Each \
-                independent loop raises one diagnostic.",
+    condition: "Voltage sources and inductors (independent or controlled) form a closed loop. \
+                At DC an inductor acts as a short circuit, so the loop's sources either \
+                conflict or leave the loop current undefined. Each independent loop raises \
+                one diagnostic.",
 };
 
-/// Rule definition for `no-dc-path` (DC graph connectivity check; `AGENTS.md`, "Rules, as in
-/// ty").
+/// Structural rule reporting floating node groups with no DC path to ground.
 const NO_DC_PATH: Rule = Rule {
     name: "no-dc-path",
     level: Level::Error,
-    condition: "A group of nodes has no path to the ground through resistors, diodes, \
-                inductors or voltage sources, and no current source drives it: it reaches \
-                the ground only through capacitors, control inputs or nothing, so its DC \
-                voltage is undefined. A group whose every node joins a single terminal is \
-                left to unconnected-terminal.",
+    condition: "A group of nodes has no path to ground through resistors, diodes, inductors, \
+                or voltage sources, and no current source drives the group. The nodes couple \
+                to ground only through capacitors or control inputs, leaving their DC voltage \
+                undefined. Groups whose nodes each join only a single terminal are reported \
+                under unconnected-terminal.",
 };
 
-/// Rule definition for `current-cutset` (Kirchhoff's current law structural check;
-/// `AGENTS.md`, "Rules, as in ty").
+/// Structural rule reporting current sources driving node groups with no DC return path.
 const CURRENT_CUTSET: Rule = Rule {
     name: "current-cutset",
     level: Level::Error,
-    condition: "Current sources, independent or controlled, drive a group of nodes that has \
-                no DC path to the ground, as no-dc-path defines it: at DC their current has \
-                nowhere to go. A group whose every node joins a single terminal is left to \
-                unconnected-terminal.",
+    condition: "Current sources (independent or controlled) drive a group of nodes that has \
+                no DC path to ground, as defined by no-dc-path, leaving their DC current with \
+                no return path. Groups whose nodes each join only a single terminal are \
+                reported under unconnected-terminal.",
 };
 
-/// Rule definition for `driver-conflict` (mixed-signal logic contention check; `AGENTS.md`,
-/// "Rules, as in ty").
+/// Mixed-signal rule reporting logic nets driven by multiple outputs.
 const DRIVER_CONFLICT: Rule = Rule {
     name: "driver-conflict",
     level: Level::Error,
-    condition: "Two or more logic outputs drive one logic net. Wherever they drive different \
-                levels, the net's level is unknown.",
+    condition: "Two or more logic outputs drive the same logic net. Whenever those outputs \
+                drive different logic levels, the net level is unknown.",
 };
 
-/// Rule definition for `floating-input` (mixed-signal undriven-net check; `AGENTS.md`,
-/// "Rules, as in ty").
+/// Mixed-signal rule reporting logic nets read by inputs with no driver.
 const FLOATING_INPUT: Rule = Rule {
     name: "floating-input",
     level: Level::Error,
-    condition: "Logic inputs read a logic net that no output drives, so its level is always \
-                unknown. A net that a single input joins is left to unconnected-terminal.",
+    condition: "Logic inputs read a logic net that no output drives, leaving the net level \
+                permanently unknown. A net joined by only a single input is reported under \
+                unconnected-terminal.",
 };
 
-/// Rule definition for `non-standard-value` (preferred-value check against IEC 60063 E
-/// series; `AGENTS.md`, "Rules, as in ty").
+/// Preferred-value rule reporting passive components outside standard IEC 60063 E series.
 const NON_STANDARD_VALUE: Rule = Rule {
     name: "non-standard-value",
     level: Level::Warn,
-    condition: "A resistor's resistance is in no E series of IEC 60063 from E3 to E192, or a \
-                capacitor's capacitance or an inductor's inductance in none from E3 to E24, \
-                but for rounding: no standard part has the value.",
+    condition: "A resistor value falls outside the IEC 60063 E3 through E192 series, or a \
+                capacitor or inductor value falls outside E3 through E24 (beyond rounding \
+                precision). No standard preferred part matches the value.",
 };
 
-/// Every rule, in the order a check reports them.
-///
-/// Origin: registry enumerating all 9 structural and 3 operating-point rules in `jolty-checks`
-/// (`AGENTS.md`, "Rules, as in ty").
+/// All structural and operating-point rules in diagnostic reporting order.
 pub const RULES: &[Rule] = &[
     UNCONNECTED_TERMINAL,
     SHORTED_SOURCE,
@@ -122,7 +112,7 @@ pub const RULES: &[Rule] = &[
     UNSTABLE_POLE,
 ];
 
-/// Each terminal or logic pin alone on a net other than the reference.
+/// Emits diagnostics for terminals or logic pins alone on a non-ground net.
 pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
     let alone = |node| {
         let node = index(node);
@@ -165,7 +155,7 @@ pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut
     }
 }
 
-/// Where the logic device or connect element at `end` is.
+/// Returns the source location of the logic device or connect element at `end`.
 fn location(simulator: &Simulator, end: Endpoint) -> &Location {
     match end {
         Endpoint::Pin { device, .. } => simulator.logic_devices()[device].location(),
@@ -173,7 +163,7 @@ fn location(simulator: &Simulator, end: Endpoint) -> &Location {
     }
 }
 
-/// The diagnostic of `rule` for `net`, naming `ends` in `message`'s `{}`.
+/// Builds a logic-net diagnostic for `rule` on `net`, formatting `ends` through `message`.
 fn logic(
     simulator: &Simulator,
     rule: &Rule,
@@ -194,7 +184,7 @@ fn logic(
     }
 }
 
-/// Each logic net that several outputs drive.
+/// Emits diagnostics for logic nets driven by more than one output.
 pub(crate) fn driver_conflicts(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
     for net in simulator.logic_nets() {
         if net.sources.len() > 1 {
@@ -209,7 +199,8 @@ pub(crate) fn driver_conflicts(simulator: &Simulator, diagnostics: &mut Vec<Diag
     }
 }
 
-/// Each logic net that inputs read and nothing drives, but for a single input alone.
+/// Emits diagnostics for undriven logic nets read by multiple inputs (single-input nets are
+/// handled by `unconnected-terminal`).
 pub(crate) fn floating_inputs(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
     for net in simulator.logic_nets() {
         if net.sources.is_empty() && net.loads.len() > 1 {
@@ -229,7 +220,8 @@ pub(crate) fn floating_inputs(simulator: &Simulator, diagnostics: &mut Vec<Diagn
     }
 }
 
-/// Each source branch, an output or a sensing port, that joins a node to itself.
+/// Emits diagnostics for source outputs or sensing ports whose terminals connect to the same
+/// node.
 pub(crate) fn shorted_sources(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
     for device in structure.devices() {
         for &branch in device.branches() {
@@ -249,8 +241,7 @@ pub(crate) fn shorted_sources(structure: &Structure<'_>, diagnostics: &mut Vec<D
     }
 }
 
-/// Each resistor, capacitor, inductor, diode or transistor with every terminal on one
-/// node.
+/// Emits diagnostics for passive or semiconductor devices with every terminal on one node.
 pub(crate) fn shorted_devices(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
     for device in structure.devices() {
         let Some(&first) = device.nodes().first() else {
@@ -285,7 +276,7 @@ fn format_joined_terminals(terminals: &[String]) -> String {
     }
 }
 
-/// The diagnostic of `rule` for `device`, whose `terminals` all sit on `node`.
+/// Builds a shorted-terminal diagnostic for `rule` on `device` where `terminals` share `node`.
 fn joined(
     structure: &Structure<'_>,
     rule: &Rule,
@@ -306,10 +297,10 @@ fn joined(
     }
 }
 
-/// Each independent loop of branches that fix their voltage at DC.
+/// Emits one diagnostic per independent loop of DC voltage-fixing branches.
 ///
-/// The branches grow a spanning forest one by one; a branch whose ends the forest already
-/// joins closes a loop, made of that branch and the forest's path between its ends.
+/// Branches grow a spanning forest; any branch connecting two already-linked nodes closes a
+/// fundamental cycle formed by that branch and the forest path between its endpoints.
 pub(crate) fn voltage_loops(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
     let devices = structure.devices();
     let mut partition = Partition::new(structure.len());
@@ -353,7 +344,7 @@ pub(crate) fn voltage_loops(structure: &Structure<'_>, diagnostics: &mut Vec<Dia
     }
 }
 
-/// The nodes and the devices on the forest's path from `start` to `goal`, which it joins.
+/// Returns the nodes and devices along the spanning-forest path connecting `start` to `goal`.
 fn path(forest: &[Vec<(usize, usize)>], start: usize, goal: usize) -> (Vec<usize>, Vec<usize>) {
     let mut came_from: HashMap<usize, (usize, usize)> = HashMap::new();
     let mut queue = VecDeque::from([start]);
@@ -378,7 +369,7 @@ fn path(forest: &[Vec<(usize, usize)>], start: usize, goal: usize) -> (Vec<usize
     (nodes, devices)
 }
 
-/// Each floating group that no current source drives.
+/// Emits `no-dc-path` diagnostics for floating groups not driven by any current source.
 pub(crate) fn no_dc_paths(
     structure: &Structure<'_>,
     floating: &[Group],
@@ -393,7 +384,7 @@ pub(crate) fn no_dc_paths(
     }
 }
 
-/// Each floating group that current sources drive.
+/// Emits `current-cutset` diagnostics for floating groups driven by current sources.
 pub(crate) fn current_cutsets(
     structure: &Structure<'_>,
     floating: &[Group],
@@ -456,8 +447,8 @@ impl Group {
     }
 }
 
-/// The groups of nodes that branches conducting at DC join to each other but not to the
-/// reference, leaving out the groups whose every node joins a single terminal.
+/// Finds DC-connected node groups isolated from ground, excluding groups whose every node
+/// joins only a single terminal.
 pub(crate) fn floating_groups(structure: &Structure<'_>) -> Vec<Group> {
     let devices = structure.devices();
     let mut partition = Partition::new(structure.len());
@@ -533,7 +524,8 @@ pub(crate) fn floating_groups(structure: &Structure<'_>) -> Vec<Group> {
     groups
 }
 
-/// Each resistor, capacitor and inductor whose value no E series it comes in holds.
+/// Emits `non-standard-value` diagnostics for resistors, capacitors, and inductors outside
+/// their standard IEC 60063 E series.
 pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
     for device in simulator.devices() {
         let (parameter, unit, densest) = match device.model() {
@@ -586,8 +578,7 @@ mod tests {
         terminals: Vec<(&'static str, &'static str)>,
     }
 
-    /// The diagnostics of a circuit whose top component has a ground port `0` and places
-    /// `devices`.
+    /// Runs structural checks on a test circuit with ground port `0` and `devices`.
     fn diagnostics(devices: &[Device]) -> Vec<Diagnostic> {
         let instances: Vec<Value> = devices
             .iter()
@@ -936,8 +927,7 @@ mod tests {
         }
     }
 
-    /// A NAND of `a` and the inverse of its own output: every net one output drives and an
-    /// input reads.
+    /// Builds a valid logic latch where every net has one output driver and one input load.
     fn latch() -> Vec<Device> {
         vec![
             logic_source("A", "a"),
@@ -992,7 +982,7 @@ mod tests {
                 "terminal `supply` of `U1` connects to nothing",
             ]
         );
-        // Its connect elements' supply and ground are its own, which a source joins.
+        // Connect elements share the gate's supply and ground rails, driven here by `V1`.
         let joined = diagnostics(&[
             voltage("V1", "vdd", "0"),
             voltage("V2", "in", "0"),

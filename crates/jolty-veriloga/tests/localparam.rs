@@ -13,9 +13,8 @@ fn compile_va(source: &str) -> String {
         .unwrap_or_else(|error| panic!("expected module to compile, got: {error}"))
 }
 
-/// Pure constant `localparam`s (typed, untyped, comma-separated, math builtins, named
-/// blocks, analog functions, and `$limit` functions) fold directly into expressions with
-/// no `Constants` struct and no fields added to `Parameters`.
+/// Verifies that pure constant `localparam`s fold directly into expressions without emitting a
+/// `Constants` struct or exposing fields in `Parameters`.
 #[test]
 fn constant_folded_localparams_omit_constants_struct_and_parameters() {
     let source = r#"
@@ -74,9 +73,8 @@ endmodule
     );
 }
 
-/// Parameter- and temperature-dependent `localparam`s are kept out of `Parameters`,
-/// emitted into `struct Constants<R: Real>` in ascending declaration order before
-/// `struct Locals` and statements, and unused `localparam`s are omitted.
+/// Verifies that parameter- and temperature-dependent `localparam`s emit into
+/// `struct Constants<R: Real>` in declaration order while omitting unused entries.
 #[test]
 fn parameter_dependent_localparams_emit_constants_struct_with_derivatives() {
     let source = r#"
@@ -130,9 +128,8 @@ endmodule
     );
 }
 
-/// `parameter` defaults and `from`/`exclude` ranges may reference `localparam`s:
-/// folded constants keep the parameter non-optional, while parameter-dependent ones
-/// make the parameter optional (`Option<R>`) with `unwrap_or(c.<name>)`.
+/// Verifies that parameter defaults and ranges can reference `localparam`s, keeping folded
+/// defaults non-optional and dependent defaults optional (`Option<R>`).
 #[test]
 fn parameter_defaults_and_ranges_use_localparams() {
     let source = r#"
@@ -173,8 +170,8 @@ endmodule
     );
 }
 
-/// `localparam`s work in shaped `if` conditions, `$warning` checks (`warnings()`), and
-/// `@(initial_step)` blocks, without leaking `prepare`-only `localparam`s into `warnings`.
+/// Verifies `localparam` usage in shaped conditionals, `$warning` checks, and `@(initial_step)`
+/// blocks without leaking `prepare`-only constants into `warnings`.
 #[test]
 fn localparams_in_shaped_conditions_warnings_and_initial_events() {
     let source = r#"
@@ -215,8 +212,8 @@ endmodule
     assert!(code.contains("conditions: [bool; 1],"), "{code}");
 }
 
-/// `localparam`s named `temperature`, `parameters`, or `conditions`, or colliding in
-/// snake case with a `parameter`, do not confuse parameter bindings or duplicate fields.
+/// Verifies that `localparam` names such as `temperature`, `parameters`, or `conditions` never
+/// collide with generated bindings or prepared struct fields.
 #[test]
 fn localparam_names_do_not_collide_with_prepare_bindings_or_prepared_fields() {
     let temp_named = r#"
@@ -282,8 +279,8 @@ endmodule
     assert!(prepared_def.contains("foo_bar2: R,"), "{prepared_def}");
 }
 
-/// A zero-parameter `localparam`-only module emits concrete non-generic structs
-/// (avoiding Rust E0392) and derives `Default` (avoiding `clippy::derivable_impls`).
+/// Verifies that zero-parameter `localparam`-only modules emit non-generic parameter and
+/// prepared structs and derive `Default`.
 #[test]
 fn zero_parameter_localparam_module_emits_non_generic_structs() {
     let fixed_cap = r#"
@@ -326,9 +323,8 @@ endmodule
     );
 }
 
-/// Integer-only modules emit non-generic structs, derive `Default` when all defaults
-/// are zero, and emit `i32::wrapping_*` when the left operand is a literal (avoiding
-/// Rust E0689).
+/// Verifies that integer-only modules emit non-generic structs, derive `Default` when
+/// zero-initialized, and use `i32::wrapping_*` for literal left operands.
 #[test]
 fn integer_only_parameter_modules_handle_default_and_wrapping_arithmetic() {
     let zero_int = r#"
@@ -383,8 +379,8 @@ endmodule
     assert!(code.contains("pub struct PreparedNonZeroInt {"), "{code}");
 }
 
-/// A two-terminal MOM capacitor matching IHP SG13G2 `cap_cmomf` constructs, plus a pure
-/// inductor, compile cleanly as linear kernels with DC-conducting inductor interfaces.
+/// Verifies that a two-terminal MOM capacitor (IHP SG13G2 `cap_cmomf` pattern) and a pure
+/// inductor compile as linear kernels with DC-conducting inductor interfaces.
 #[test]
 fn two_terminal_mom_capacitor_and_pure_inductor_compile_linear() {
     let two_terminal = r#"
@@ -445,9 +441,8 @@ endmodule
     );
 }
 
-/// A three-terminal RF MOM capacitor matching IHP SG13G2 `cap_cmomi` constructs (two
-/// pure inductors, three capacitors, `localparam` constants, `sqrt`, `ln`, nested
-/// ternary, and `` `M_TWO_PI ``) compiles cleanly as a linear kernel.
+/// Verifies that a three-terminal RF MOM capacitor (IHP SG13G2 `cap_cmomi` pattern) compiles
+/// cleanly as a linear kernel.
 #[test]
 fn three_terminal_rf_mom_capacitor_compiles_linear() {
     let three_terminal_rf = r#"
@@ -722,8 +717,8 @@ mod fixed_cap_kernel {
     }
 }
 
-/// Exact derivatives propagate from `parameter` through a prepared `localparam` into
-/// charge, schema and serde exclude `localparam` names, and `Lift` matches serde.
+/// Verifies that exact derivatives propagate through prepared `localparam`s while schema,
+/// `serde`, and `Lift` exclude `localparam` names.
 #[test]
 fn runtime_derivatives_schema_and_lift_through_localparam() {
     let source = r#"
@@ -824,8 +819,8 @@ endmodule
     );
 }
 
-/// Non-generic zero-parameter `localparam`-only kernels compile with `Lift` (`holding_none`),
-/// `Default`, `deny_unknown_fields`, and exact runtime charge/capacitance.
+/// Verifies runtime evaluation, `serde`, and `Lift` behavior for a non-generic zero-parameter
+/// `localparam`-only kernel.
 #[test]
 fn runtime_non_generic_zero_parameter_kernel() {
     assert!(serde_json::from_str::<fixed_cap_kernel::FixedCapParameters>("{}").is_ok());
@@ -844,9 +839,8 @@ fn runtime_non_generic_zero_parameter_kernel() {
     );
 }
 
-/// Three-level nested ternary chains flatten into idiomatic `else if` chains with no
-/// redundant `let t = ...; t` binding (avoids `clippy::let_and_return`, as in IHP
-/// `cap_cmomi.va`'s `density` selector).
+/// Verifies that nested ternary chains flatten into `else if` chains without redundant `let`
+/// bindings.
 #[test]
 fn nested_ternary_chains_flatten_to_else_if_without_let_and_return() {
     let source = r#"

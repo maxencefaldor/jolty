@@ -1,4 +1,4 @@
-//! The rules on the circuit at its operating point, and linearized there.
+//! Operating-point and linearized stability rules.
 
 use std::f64::consts::TAU;
 
@@ -10,91 +10,80 @@ use jolty_models::Nature;
 use crate::structure::{NAMED, list, prose};
 use crate::{Diagnostic, Level, Rule};
 
-/// The most unknowns of a circuit the checks linearize: the dense pencil of 500 unknowns
-/// takes the QZ algorithm about a second.
+/// Maximum unknown count linearized during operating-point checks; dense QZ takes about one
+/// second at 500 unknowns.
 ///
-/// Origin: jolty's own runtime budget for the `O(n^3)` dense QZ eigenvalue solve inside
-/// `check_operating_point` (`500^3 = 1.25e8` flops scale; matches the condition strings of
-/// `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
+/// Origin: runtime budget for the `O(n^3)` dense QZ eigenvalue solve in
+/// `check_operating_point`, matching `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`.
 pub const MAX_LINEARIZED: usize = 500;
 
-/// The fraction of a mode's largest net amplitude, or of the largest difference between two
-/// DC solutions, from which a net is named.
+/// Minimum fraction of peak mode amplitude or voltage difference required to list a net in a
+/// diagnostic.
 ///
-/// Origin: jolty's own 50% (`-6 dB`) prominence threshold for diagnostic focus (matches the
-/// condition strings of `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
+/// Origin: 50% (`-6 dB`) prominence threshold matching the condition text of
+/// `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`.
 const PROMINENCE_THRESHOLD: f64 = 0.5;
 
-/// The fraction of the larger of a node's voltage and [`VOLT`] that doubling gmin may move
-/// it by before `gmin-dependence` names it.
+/// Minimum relative voltage shift from doubling `gmin` before `gmin-dependence` flags a net.
 ///
-/// Origin: jolty's own 1% (`1e-2`) warning threshold, one decade above default `reltol =
-/// 1e-3` so normal simulator convergence noise is not reported as `gmin` dependence.
+/// Origin: 1% (`1e-2`) warning threshold, one decade above default `reltol = 1e-3` so normal
+/// convergence noise does not trigger warnings.
 const GMIN_MOVE: f64 = 1e-2;
 
-/// One volt, below which `gmin-dependence` measures a node's move against it instead.
+/// Reference voltage floor (1 V) below which `gmin-dependence` normalizes voltage shifts
+/// against 1 V.
 ///
-/// Origin: jolty's own `1 V` reference floor (typical circuit voltage scale), preventing
-/// near-zero node voltages from triggering relative `GMIN_MOVE` warnings on tiny shifts.
+/// Origin: 1 V nominal circuit scale preventing near-zero node voltages from triggering
+/// warnings on tiny absolute shifts.
 const VOLT: f64 = 1.0;
 
-/// Rule definition for `gmin-dependence` (jolty operating-point rule; uses `GMIN_MOVE` and
-/// `VOLT` per `AGENTS.md`, "Rules, as in ty").
+/// Operating-point rule flagging nets strongly sensitive to `gmin` regularization.
 pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
     name: "gmin-dependence",
     level: Level::Warn,
-    condition: "Doubling gmin, the conductance the engine places across every junction to \
-                help Newton iteration converge, would move a net's voltage at the operating \
-                point, to first order, by more than a hundredth of the larger of that \
-                voltage and 1 V: little but gmin holds the net, as between reverse-biased \
-                junctions, so its voltage comes from the simulator rather than the circuit. \
-                One diagnostic names every such net, by decreasing move. A simulation \
-                checks it at its plan's operating point.",
+    condition: "Doubling gmin (the shunt conductance placed across every junction to aid \
+                Newton convergence) moves a net's operating-point voltage to first order by \
+                more than 1% of max(|V|, 1 V). Little other than gmin sets that net's \
+                potential, as between reverse-biased junctions, so the voltage reflects \
+                simulator regularization rather than circuit behavior. One diagnostic lists \
+                all affected nets in decreasing order of shift during operating-point checks.",
 };
 
-/// Rule definition for `multiple-operating-points` (jolty operating-point rule; bounded by
-/// `MAX_LINEARIZED` and `PROMINENCE_THRESHOLD` per `AGENTS.md`, "Rules, as in ty").
+/// Operating-point rule flagging circuits with multiple DC solutions.
 pub(crate) const MULTIPLE_OPERATING_POINTS: Rule = Rule {
     name: "multiple-operating-points",
     level: Level::Warn,
-    condition: "The circuit's DC equations have a solution besides its operating point, as \
-                an operating-points analysis finds them: the circuit can rest in more than \
-                one state, as a latch does, or a bias circuit that can also rest with no \
-                current, and which it rests in depends on how it starts. The diagnostic \
-                names the nets whose voltages differ between the two by at least half the \
-                largest difference. A simulation checks it at its plan's operating point, \
-                on circuits of at most 500 unknowns.",
+    condition: "The circuit's DC equations admit an additional solution distinct from the \
+                operating point, as found by operating-points analysis. Circuits such as \
+                latches or self-biased stages can settle into more than one state depending \
+                on startup. The diagnostic names every net whose voltage differs by at least \
+                half the maximum difference, checked during operating-point analysis on \
+                circuits with at most 500 unknowns.",
 };
 
-/// Rule definition for `unstable-pole` (jolty linearized operating-point rule; growth
-/// threshold `1e-6` matches `growing_modes` in `jolty-engine`, per `AGENTS.md`, "Rules, as in
-/// ty").
+/// Linearized operating-point rule flagging right-half-plane poles.
 pub(crate) const UNSTABLE_POLE: Rule = Rule {
     name: "unstable-pole",
     level: Level::Warn,
-    condition: "The circuit linearized at its operating point has a pole whose real part is \
-                above a millionth of its magnitude: a natural mode grows away from the \
-                operating point, as an oscillation that builds up or a latch that tips, so \
-                the circuit does not rest there. A real pole, or a conjugate pair, raises one \
-                diagnostic, naming the nets where its mode's amplitude is at least half its \
-                largest. A simulation checks it at its plan's operating point, on circuits \
-                of at most 500 unknowns whose linearization fits its max_memory option.",
+    condition: "The circuit linearized at its operating point has a pole whose real part \
+                exceeds 1e-6 times its magnitude. A natural mode therefore grows away from \
+                the operating point, such as an emerging oscillation or a tipping latch. \
+                Each real pole or conjugate pair raises one diagnostic naming nets with at \
+                least half the peak mode amplitude, checked on circuits of at most 500 \
+                unknowns whose linearization fits within max_memory.",
 };
 
-/// Every diagnostic of the rules on the circuit `simulator` elaborated, at its operating
-/// point under `options` and linearized there, rule by rule: the nets gmin holds, then, on
-/// circuits of at most [`MAX_LINEARIZED`] unknowns, another DC solution and the modes
-/// that grow, by decreasing growth.
+/// Runs operating-point and linearized stability rules on `simulator` under `options`.
 ///
-/// The operating point is the one the simulator remembers, if an analysis solved it under
-/// the same options, or else solved once for every rule.
+/// Reports `gmin-dependence` first; for circuits of at most [`MAX_LINEARIZED`] unknowns, also
+/// checks `multiple-operating-points` and `unstable-pole` (ordered by decreasing growth rate).
+/// Reuses the cached operating point when already solved under matching options.
 ///
 /// # Errors
 ///
-/// Returns the errors of [`Simulator::gmin_dependence`], [`Simulator::operating_points`]
-/// and [`Simulator::growing_modes`], but its memory's and a delay line's: a circuit whose
-/// linearization would pass the options' `max_memory`, or with a delay line, is not
-/// checked for growing modes.
+/// Returns errors from [`Simulator::gmin_dependence`], [`Simulator::operating_points`], and
+/// [`Simulator::growing_modes`], except memory-limit and transmission-line errors from
+/// linearization, which skip `unstable-pole` silently.
 pub fn check_operating_point(
     simulator: &mut Simulator,
     options: &Options,
@@ -108,9 +97,8 @@ pub fn check_operating_point(
         if let [point, other] = points.as_slice() {
             diagnostics.push(multiple_operating_points(simulator, point, other));
         }
-        // Like a circuit too large to linearize, one whose linearization would pass the
-        // options' max_memory goes unchecked for growing modes, and keeps its other rules;
-        // so does one with a delay line, whose modes are infinitely many.
+        // Circuits whose linearization exceeds `options.max_memory` or contains a delay line
+        // skip `unstable-pole` while keeping the other operating-point checks.
         match simulator.growing_modes(options) {
             Ok(growing) => {
                 diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
@@ -122,7 +110,7 @@ pub fn check_operating_point(
     Ok(diagnostics)
 }
 
-/// The external voltage unknowns of `simulator`, paired with their values in `items`.
+/// Pairs external voltage unknown names from `simulator` with corresponding entries of `items`.
 fn voltage_nets<T>(
     simulator: &Simulator,
     items: impl IntoIterator<Item = T>,
@@ -169,7 +157,8 @@ fn net_diagnostic<'a>(
     }
 }
 
-/// The diagnostic of the nets at `values` that doubling gmin `moves` too far, if any.
+/// Builds the `gmin-dependence` diagnostic for nets whose shifts in `moves` exceed the
+/// threshold relative to `values`, if any.
 fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Option<Diagnostic> {
     let mut nets: Vec<(&str, f64, f64)> = voltage_nets(simulator, values.iter().zip(moves))
         .filter(|&(_, (&value, &moved))| moved.abs() > GMIN_MOVE * value.abs().max(VOLT))
@@ -191,7 +180,7 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
     ))
 }
 
-/// The diagnostic of the DC solution `other` besides the operating point `point`.
+/// Builds the `multiple-operating-points` diagnostic comparing `other` against `point`.
 fn multiple_operating_points(
     simulator: &Simulator,
     point: &OperatingPointResult,
@@ -214,7 +203,7 @@ fn multiple_operating_points(
     )
 }
 
-/// The diagnostic of the growing `mode`.
+/// Builds the `unstable-pole` diagnostic for a growing natural `mode`.
 fn unstable_pole(simulator: &Simulator, mode: &Mode) -> Diagnostic {
     let mut nets: Vec<(f64, &str)> = voltage_nets(simulator, &mode.shape)
         .map(|(net, amplitude)| (amplitude.norm(), net))
@@ -253,8 +242,7 @@ mod tests {
     use super::*;
     use crate::testing::simulator;
 
-    /// The diagnostics at the operating point of a circuit whose top component has a ground
-    /// port `0` and places `instances`.
+    /// Runs operating-point checks on a test circuit with ground port `0` and `instances`.
     fn diagnostics(instances: &Value) -> Vec<Diagnostic> {
         check_operating_point(&mut simulator(instances), &Options::default())
             .expect("an operating point")
@@ -280,8 +268,8 @@ mod tests {
                "terminals": {"a": a, "b": "0"}})
     }
 
-    /// A tank of 1 nF and 1 mH at `node`, losing 1e-4 S through 10 kΩ, and a transconductance
-    /// of `feedback` feeding the node's voltage back into it.
+    /// Builds an RLC tank (1 nF, 1 mH, 10 kΩ) on node `n` with positive transconductance
+    /// `feedback`.
     fn tank(feedback: f64) -> Value {
         json!([
             two_terminal("R1", ("resistor", "resistance", 1e4), "n"),
@@ -294,8 +282,8 @@ mod tests {
         ])
     }
 
-    /// A current source of `current` into `n`, across a reverse-biased diode, with `load`
-    /// from `n` to the ground, if any.
+    /// Builds a circuit driving `current` into node `n` across a reverse-biased diode and an
+    /// optional resistive `load` to ground.
     fn leaking(current: f64, load: Option<f64>) -> Value {
         let mut instances = vec![
             json!({"name": "I1", "of": {"model": "current_source"},
@@ -425,7 +413,7 @@ mod tests {
 
     #[test]
     fn a_transmission_line_skips_growing_modes_alone() {
-        // Its delay gives the circuit infinitely many poles, which no pencil holds.
+        // Transmission-line delay produces infinitely many poles that no finite pencil holds.
         let found = diagnostics(&json!([
             {"name": "V1", "of": {"model": "voltage_source"},
              "parameters": {"waveform": {"dc": 1}},

@@ -17,8 +17,8 @@ use super::{
     Parameter, Probe, Statement, apart, identifier,
 };
 
-/// What a resolved `localparam` evaluates to: either a compile-time constant folded
-/// directly into expressions, or an index into [`Sink::local_parameters`].
+/// Resolved representation of a `localparam`: either a folded compile-time constant or an
+/// index into [`Sink::local_parameters`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum LocalValue {
     Real(f64),
@@ -26,33 +26,31 @@ pub(super) enum LocalValue {
     Prepared(usize),
 }
 
-/// A lexical binding in a [`Scope`]: either a mutable variable or an immutable
-/// `localparam`.
+/// Lexical binding in a [`Scope`]: either a mutable variable or an immutable `localparam`.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Binding {
     Variable(usize),
     LocalParameter(LocalValue),
 }
 
-/// What resolution adds to as it reads: the limited probes, the branches, and the
-/// variables, to which named blocks and inlined analog functions add their own.
+/// Mutable resolution state accumulating limits, branches, local parameters, and variables
+/// across nested scopes.
 #[derive(Default)]
 pub(super) struct Sink {
     pub(super) limits: Vec<Limit>,
     pub(super) branches: Vec<Branch>,
     pub(super) local_parameters: Vec<LocalParameter>,
     pub(super) variables: Vec<(String, Type)>,
-    /// The statements the expression being read needs before it: the bodies of the
-    /// analog functions it calls, inlined.
+    /// Inlined analog function bodies emitted immediately before the current statement.
     prelude: Vec<Statement>,
-    /// How many calls have been inlined, which numbers their variables.
+    /// Count of inlined analog function calls, used to disambiguate generated variable names.
     calls: usize,
-    /// The variables that code under an initial event assigns.
+    /// Variables assigned inside an initial event.
     pub(super) initial: BTreeSet<usize>,
 }
 
 impl Sink {
-    /// A new variable of `kind`, named `name` unless that is taken.
+    /// Allocates a new variable of `kind`, choosing a unique Rust identifier derived from `name`.
     pub(super) fn variable(&mut self, name: &str, kind: Type) -> usize {
         let unique = apart(&identifier(name), |taken| {
             self.variables.iter().any(|(variable, _)| variable == taken)
@@ -61,7 +59,8 @@ impl Sink {
         self.variables.len() - 1
     }
 
-    /// A new non-constant `localparam` of `kind`, named `name` unless that is taken.
+    /// Allocates a new prepared `localparam` of `kind`, choosing a unique Rust identifier derived
+    /// from `name`.
     fn local_parameter(&mut self, name: &str, kind: Type, value: Expression) -> usize {
         let unique = apart(&identifier(name), |taken| {
             self.local_parameters
@@ -83,18 +82,18 @@ impl Sink {
 pub(super) struct Context<'a> {
     pub(super) module: &'a ast::Module,
     pub(super) nodes: &'a [String],
-    /// Whether each node is thermal rather than electrical.
+    /// Per-node flag distinguishing thermal nodes from electrical nodes.
     pub(super) thermal: &'a [bool],
 }
 
-/// The names a module's expressions may read, in a scope: the module's, a named
-/// block's, an analog function's, or a constant declaration's.
+/// Lexical name resolution environment for a module, named block, analog function, or constant
+/// declaration.
 #[derive(Clone, Copy)]
 pub(super) struct Scope<'a> {
     context: Context<'a>,
-    /// Lexical bindings in scope, the innermost last.
+    /// Lexical bindings in scope, with innermost entries last.
     bindings: &'a [(&'a str, Binding)],
-    /// Module-scope `localparam` bindings, available to inlined analog functions.
+    /// Module-scope `localparam` bindings available to inlined analog functions.
     module_locals: &'a [(&'a str, LocalValue)],
     /// Parameters visible when resolving a constant declaration (`None` means all module
     /// parameters are visible).
@@ -105,16 +104,16 @@ pub(super) struct Scope<'a> {
     /// Owner label when resolving a constant expression (`Some` rejects variables and
     /// probes).
     constant_owner: Option<&'a str>,
-    /// Whether the scope reads probes, as the analog block does and a function does not.
+    /// Flag enabling probe access (`true` in the analog block, `false` in functions and constant
+    /// scopes).
     probes: bool,
-    /// Whether the scope lies under an initial event, whose code runs at an analysis's
-    /// first step only and so may read only what does not change after it.
+    /// Flag marking statements inside an initial event, restricting reads to invariant values.
     initial: bool,
 }
 
 impl<'a> Scope<'a> {
-    /// A scope for resolving a constant expression (`parameter` default, range, or
-    /// `localparam` initializer).
+    /// Constructs a [`Scope`] for resolving constant expressions such as parameter defaults,
+    /// ranges, and `localparam` initializers.
     const fn constant(
         context: Context<'a>,
         bindings: &'a [(&'a str, Binding)],
@@ -140,7 +139,7 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// A scope for resolving the statements of an analog block or analog function.
+    /// Constructs a [`Scope`] for resolving statements in an analog block or analog function.
     pub(super) const fn block(
         context: Context<'a>,
         bindings: &'a [(&'a str, Binding)],
@@ -414,8 +413,8 @@ fn resolve_local_parameter(
     )))
 }
 
-/// The variables of an analog function: its inputs first, then its locals, then its
-/// result, which bears its name.
+/// Collects an analog function's variable list ordered as inputs, local variables, then the
+/// return variable.
 fn function_variables(function: &ast::Function) -> Vec<(&str, Type)> {
     let mut variables: Vec<(&str, Type)> = Vec::new();
     for input in &function.inputs {
@@ -435,7 +434,7 @@ fn function_variables(function: &ast::Function) -> Vec<(&str, Type)> {
     variables
 }
 
-/// An analog function that limits a probe, resolved in a scope of its own.
+/// Resolves an analog function used as a probe limiter in an isolated scope.
 pub(super) fn resolve_function<'a>(
     context: Context<'a>,
     module_locals: &[(&'a str, LocalValue)],
@@ -502,7 +501,7 @@ fn resolve_scoped_locals<'a>(
     Ok(())
 }
 
-/// The names of the parameters `$param_given` reads across `module`.
+/// Collects the names of all parameters queried by `$param_given` anywhere in `module`.
 fn given_parameters(module: &ast::Module) -> BTreeSet<String> {
     let mut given = BTreeSet::new();
     collect_given_stmt(&module.analog, &mut given);
@@ -721,8 +720,7 @@ impl<'a> Scope<'a> {
                 arguments,
                 line,
             } => {
-                // `$finish` and `$stop` end the simulation, which jolty does by refusing
-                // the instance; their arguments only say what to print.
+                // Map `$finish` and `$stop` to preparation failure, discarding formatting arguments.
                 if matches!(name.as_str(), "$finish" | "$stop") {
                     return Ok(before(
                         sink,
@@ -765,9 +763,8 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// The branch an access function reads or contributes to: a named one, or the
-    /// unnamed one of two nodes, added on first use; its nodes of the discipline that
-    /// the access `nature` reads.
+    /// Resolves the branch targeted by access function `nature(operands)`, creating unnamed
+    /// node-pair branches on first use and checking discipline compatibility.
     fn branch(
         &self,
         nature: &str,
@@ -902,7 +899,7 @@ impl<'a> Scope<'a> {
         })
     }
 
-    /// The noise source `name(arguments)`, white or flicker.
+    /// Resolves a `white_noise` or `flicker_noise` call into a [`Noise`] term.
     fn noise(
         &self,
         name: &str,
@@ -1058,7 +1055,8 @@ impl<'a> Scope<'a> {
         Err(Error::at(line, format!("{name} is not declared")))
     }
 
-    /// The probe `nature(arguments)`: a potential or a flow.
+    /// Resolves a potential or flow probe access `nature(arguments)` into an
+    /// [`Expression::Probe`].
     fn access(
         &self,
         nature: &str,
@@ -1132,7 +1130,7 @@ impl<'a> Scope<'a> {
             "V" | "I" | "Temp" | "Pwr" if self.probes => self.access(name, arguments, line, sink),
             "ddx" if self.probes => self.resolve_ddx(arguments, line, sink),
             "$temperature" if arguments.is_empty() => Ok(Expression::Temperature),
-            // jolty's circuits place each instance once: none has a multiplicity but 1.
+            // jolty instantiates every device individually with unit multiplicity.
             "$mfactor" if arguments.is_empty() => Ok(Expression::Real(1.0)),
             // A jolty instance connects each of its terminals.
             "$port_connected" => match arguments {
@@ -1243,8 +1241,8 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// `$limit(arguments)`: a voltage limited from its last evaluation's, by an analog
-    /// function of the module's or one of the simulator's, named as a string.
+    /// Resolves a `$limit(arguments)` call into a registered [`Limit`] entry and returns its
+    /// [`Probe::Limited`] reference.
     fn limit(
         &self,
         arguments: &[ast::Expression],
@@ -1305,9 +1303,8 @@ impl<'a> Scope<'a> {
         Ok(Expression::Probe(Probe::Limited(sink.limits.len() - 1)))
     }
 
-    /// A call of the analog function `function` with `arguments`, inlined: its inputs
-    /// assigned and its body run before the statement that calls it, in variables of
-    /// its own, and its result read.
+    /// Inlines a call to analog `function` with `arguments`, emitting input assignments and body
+    /// statements into `sink.prelude` using fresh local variables.
     fn inline(
         &self,
         function: &'a ast::Function,

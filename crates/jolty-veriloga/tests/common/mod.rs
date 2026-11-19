@@ -1,20 +1,15 @@
-//! What the tests of the compiled kernels share: how close a compiled kernel lies to its
-//! hand-written twin.
+//! Shared differential comparison helpers for compiled Verilog-A kernel tests.
 
 use jolty_models::NoiseSource;
 use jolty_models::testing::Evaluation;
 
-/// How far apart two numbers computed in a different order may lie, in units of the
-/// machine epsilon times their magnitude.
+/// Maximum rounding distance between hand-written and compiled values, in units of machine
+/// epsilon times magnitude.
 ///
-/// The two kernels compute the same values in the same order, operation for operation,
-/// but derivatives in their own: the hand-written ones as closed forms, such as
-/// `Is · e^{v/nVt} / nVt`, the compiled ones through dual numbers, `Is · (e^{v/nVt} ·
-/// (1/nVt))`. Each form rounds at most once per operation, by half an epsilon; the
-/// longest chains, a parameter's gradient through the temperature scaling of a
-/// junction, take some forty operations, so the two lie within 2 × 40 × ε/2 = 40 ε of
-/// each other, and a sum of terms of opposite signs within as much of its largest term.
-/// On the points below, the resistors lie within 1.7 ε and the diodes within 6.4 ε.
+/// Hand-written kernels compute closed-form derivatives while compiled kernels evaluate them
+/// through dual numbers, changing operation grouping. The longest parameter-gradient chain
+/// spans roughly 40 operations (`2 * 40 * eps / 2 = 40 eps`). Measured resistor states stay
+/// within 1.7 ε and diode states stay within 6.4 ε.
 const ROUNDING: f64 = 40.0;
 
 /// The worst distance seen, in units of [`ROUNDING`]'s.
@@ -44,9 +39,8 @@ impl Worst {
 
     /// Checks that the evaluations `hand` and `compiled` at `x` agree to rounding.
     ///
-    /// A linear instance's residual and charge are its entries times the unknowns, as
-    /// its groups compute them once it says it is linear, and round to the magnitude of
-    /// those terms; any other's round to the magnitude of its largest.
+    /// A linear instance computes residual and charge as matrix-vector products scaled to those
+    /// term magnitudes; nonlinear instances scale to the largest entry magnitude.
     pub(crate) fn evaluations(
         &mut self,
         what: &str,

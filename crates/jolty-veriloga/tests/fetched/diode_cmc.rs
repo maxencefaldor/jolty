@@ -1,12 +1,9 @@
-//! `DIODE_CMC` 2.0.0, compiled from its Verilog-A source as VA-Models publishes it, against
-//! an ideal diode's closed form where its equations reduce to one.
+//! Closed-form verification of `DIODE_CMC` 2.0.0 compiled from published VA-Models source.
 //!
-//! With its recombination, trap-assisted and band-to-band tunnelling off, its breakdown
-//! beyond its reach, its ideality factors one, no series resistance, no sidewall or gate
-//! edge, its recovery model off, and the junction at its reference temperature, the model
-//! is an ideal diode of the bottom area `ab`: a current `ab · idsatrbot · (exp(V/φ) − 1)`
-//! from anode to cathode, `φ = kT/q` in the model's own constants. Its QA tests, which the
-//! CMC hands out only through its own form, wait for the owner.
+//! With recombination, tunneling, series resistance, sidewall/gate edges, and recovery
+//! disabled at the reference temperature, the model reduces to an ideal bottom-area diode
+//! `ab * idsatrbot * (exp(V / phi) - 1)` with `phi = kT / q` using model constants. Full CMC
+//! QA vectors remain gated behind CMC distribution terms.
 
 #![cfg(test)]
 
@@ -19,11 +16,8 @@ use jolty_models::testing::Bench;
 
 use crate::closed::Closed;
 
-/// How far a value the compiled model computes may lie from the closed form computed
-/// here, in units of the machine epsilon times its magnitude: the closed form takes the
-/// model's own operations, the exponential of the same argument, and the two scale the
-/// saturation current, the area and the polarity in their own orders, three roundings of
-/// half an epsilon each, with one to spare.
+/// Closed-form tolerance in units of machine epsilon times magnitude, allowing three
+/// independent scaling-order roundings plus headroom.
 const CLOSED: Closed = Closed(4.0);
 
 /// Boltzmann's constant and the elementary charge as `DIODE_CMC` defines them
@@ -31,14 +25,14 @@ const CLOSED: Closed = Closed(4.0);
 const KBOL: f64 = 1.380_650_5e-23;
 const QELE: f64 = 1.602_191_8e-19;
 
-/// The model's reference temperature, its default `TRJ`, in degrees Celsius.
+/// Reference junction temperature (`TRJ` default), in degrees Celsius.
 const TRJ: f64 = 21.0;
 
-/// The current from anode to cathode and its conductance, both polarities, at voltages
-/// from deep reverse to strong forward bias, for three areas and saturation currents.
+/// Verifies anode-cathode current and conductance in both polarities from reverse to forward
+/// bias across three area and saturation-current pairs.
 #[test]
 fn reduced_to_an_ideal_diode_it_is_one() {
-    // The junction's temperature, as the model writes its reference one in kelvins.
+    // Reference junction temperature converted to kelvins using the model offset.
     let temperature = 273.15 + TRJ;
     let phit_inverse = 1.0 / (KBOL / QELE * temperature);
     for (ab, idsatrbot, kind) in [(1e-12, 1e-12, 1), (4e-10, 3e-9, -1), (2.5e-11, 7e-15, 1)] {
@@ -46,11 +40,11 @@ fn reduced_to_an_ideal_diode_it_is_one() {
             r#"{{"AB": {ab}, "LS": 0, "LG": 0, "IDSATRBOT": {idsatrbot}, "CSRHBOT": 0, "CTATBOT": 0, "CBBTBOT": 0, "VBRBOT": 2000, "TRJ": {TRJ}, "TYPE": {kind}}}"#
         );
         let mut bench = Bench::at::<kernel::DiodeCmc>(&parameters, temperature);
-        // The terminals alone, the internal nodes collapsed into them and into the ground.
+        // Internal nodes collapse so only the two terminal unknowns remain.
         assert_eq!(bench.unknowns().len(), 2, "{parameters}");
         let polarity = f64::from(kind);
         for v in [-5.0, -0.4, 0.05, 0.3, 0.75] {
-            // The anode at `v` above the cathode in the junction's own polarity.
+            // Apply voltage `v` across the junction according to device polarity.
             let evaluation = bench.evaluate(&[polarity * v, 0.0]);
             let what = format!("{parameters} at {v} V");
             let x = phit_inverse * v;

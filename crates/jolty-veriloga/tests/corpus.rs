@@ -1,7 +1,5 @@
-//! The compiled kernels against their hand-written twins at every state the kernel corpus
-//! visits: each circuit of `crates/jolty-engine/tests/data/kernels.json` runs every
-//! analysis its tests run, its hand-written resistors and diodes recording each state
-//! they are evaluated at, and both twins are evaluated again at each, to rounding.
+//! Corpus replay tests comparing compiled kernels against hand-written twins across every
+//! evaluation state visited by `crates/jolty-engine/tests/data/kernels.json`.
 
 #![cfg(test)]
 
@@ -42,9 +40,8 @@ struct State {
 /// The states recorded, in the order of their evaluations.
 static STATES: Mutex<Vec<State>> = Mutex::new(Vec::new());
 
-/// Serializes the recording phase across threads when run inside one process under plain
-/// `cargo test`; under `cargo-nextest` every shard runs in its own process with zero
-/// contention, and `replay` always runs outside this lock.
+/// Mutex serializing state recording under single-process `cargo test` (`replay` runs outside
+/// the lock; `cargo-nextest` runs each shard in a separate process).
 static RECORD_GUARD: Mutex<()> = Mutex::new(());
 
 /// The kernel `K`, recording each state it is evaluated at on plain numbers.
@@ -177,8 +174,8 @@ static CORPUS: LazyLock<Vec<CorpusCircuit>> = LazyLock::new(|| {
     serde_json::from_str(&text).expect("the corpus reads")
 });
 
-/// Clears `STATES` on drop so an unwind inside a shard cannot leak recorded states into a
-/// subsequent shard running in the same process.
+/// RAII guard clearing `STATES` on drop so a shard unwind cannot leak states into another
+/// shard running in the same process.
 struct ClearStatesOnDrop;
 
 impl Drop for ClearStatesOnDrop {
@@ -190,10 +187,11 @@ impl Drop for ClearStatesOnDrop {
     }
 }
 
-/// At every state in shard `shard` (`index % shards == shard`) of the corpus's runs that
-/// evaluates a resistor or a diode, checks that the compiled kernel is its hand-written
-/// twin, to rounding: across all 16 shards (on 16 November 2026), 1,423,039 states of
-/// resistors and 823,769 of diodes, of 80 instances, all within 3.1 ε of each other.
+/// Replays every resistor and diode evaluation state in corpus shard `shard` (`index % shards
+/// == shard`) against its hand-written twin.
+///
+/// Across all 16 shards (as of 16 November 2026), 1,423,039 resistor states and 823,769 diode
+/// states across 80 instances agree within 3.1 ε.
 fn check_corpus_shard(shard: usize, shards: usize) {
     let mut library = Library::standard();
     library.add(Thermal::<StateRecorder<Resistor>>::new());

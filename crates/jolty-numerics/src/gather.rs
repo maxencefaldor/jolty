@@ -1,51 +1,41 @@
-//! Assembly in a fixed order: each value of a system, a residual or a stored entry of its
-//! matrix, gathered as the sum of the contributions a slab holds for it, in the order a
-//! [`GatherMap`] lists them.
+//! Deterministic fixed-order gather assembly from per-contribution slabs via [`GatherMap`].
 //!
-//! Whoever writes the slab writes each contribution to a place of its own, so writers never
-//! share a value, and the gather adds a target's contributions one after another in the
-//! map's order. Splitting the targets among threads changes nothing of that order, so the
-//! sums are the same bits however the work is split.
+//! Each writer records contributions into dedicated slab slots without sharing state. During
+//! assembly, each target accumulates its slab entries sequentially in map order, yielding
+//! bit-identical results regardless of how targets are partitioned across threads.
 
 use rayon::iter::ParallelIterator;
 
-/// The position that stands for no target, or no source: ground's row, or an entry with
-/// ground in its row or its column.
-///
-/// Origin: sentinel value `u32::MAX` (`2^32 - 1`), reserved outside all valid slab indices.
+/// Sentinel index representing an unmapped target or source (such as ground rows and columns).
 pub const UNMAPPED: u32 = u32::MAX;
 
-/// How a gather folds a target's sources into it: adding each, or raising the target to the
-/// largest of them, as [`f64::max`] takes them.
+/// Combination rule used by a gather pass to fold slab contributions into each target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fold {
-    /// Adds each source to the target.
+    /// Sum of all source contributions into the target.
     Add,
-    /// Raises the target to each source larger than it.
+    /// Maximum of all source contributions via [`f64::max`].
     Raise,
 }
 
-/// For each target, the positions in a slab of the values that add into it, in the order
-/// they add: a compressed row of sources per target.
+/// Compressed per-target index map of slab contribution slots in fixed accumulation order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GatherMap {
-    /// Where each target's sources begin, and after the last target's, where they end.
+    /// Starting offset in `sources` for each target, plus the total length sentinel.
     starts: Vec<usize>,
-    /// The position in the slab of each source, target after target.
+    /// Slab indices of all source contributions concatenated target by target.
     sources: Vec<u32>,
 }
 
-/// A run of consecutive targets of a parallel gather, from `first` on, and the part of each
-/// plane that holds them.
+/// Contiguous slice of targets and corresponding output planes for parallel gather splitting.
 struct Part<'a, const N: usize> {
     first: usize,
     planes: [&'a mut [f64]; N],
 }
 
 impl GatherMap {
-    /// The map onto `targets` targets of the sources `pairs` lists as `(target, source)`,
-    /// each target's sources in the order `pairs` gives them. A pair whose target is
-    /// [`UNMAPPED`] or not below `targets` adds nowhere and is left out.
+    /// Builds a gather map for `targets` destinations from `(target, source)` pairs, keeping
+    /// each target's sources in input order and ignoring [`UNMAPPED`] or out-of-range targets.
     #[must_use]
     pub fn new(targets: usize, pairs: impl Iterator<Item = (u32, u32)> + Clone) -> Self {
         let index = |target: u32| {
@@ -73,25 +63,25 @@ impl GatherMap {
         Self { starts, sources }
     }
 
-    /// The number of targets.
+    /// Returns the number of target slots.
     #[must_use]
     pub fn targets(&self) -> usize {
         self.starts.len().saturating_sub(1)
     }
 
-    /// The number of sources, over every target.
+    /// Returns the total number of mapped source contributions across all targets.
     #[must_use]
     pub fn len(&self) -> usize {
         self.sources.len()
     }
 
-    /// Whether no target has a source.
+    /// Returns whether the gather map contains no source contributions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
 
-    /// The positions in the slab of the sources of `target`, in the order they add.
+    /// Returns the slab indices contributing to `target` in accumulation order.
     #[must_use]
     pub fn sources_of(&self, target: usize) -> &[u32] {
         match (self.starts.get(target), self.starts.get(target + 1)) {
@@ -100,39 +90,35 @@ impl GatherMap {
         }
     }
 
-    /// Adds to each target of `into` the values its sources hold in `slab`, one after
-    /// another in the map's order.
+    /// Adds each target's mapped slab contributions into `into` in map order.
     ///
     /// # Panics
     ///
-    /// Panics if `into` has fewer values than the map has targets, or a source lies
-    /// outside `slab`.
+    /// Panics if `into` has fewer entries than [`GatherMap::targets`] or if a source index
+    /// lies outside `slab`.
     pub fn add(&self, slab: &[f64], into: &mut [f64]) {
         self.fold_into(slab, into, |value, term| value + term);
     }
 
-    /// Raises each target of `into` to the largest of the values its sources hold in
-    /// `slab`, as [`f64::max`] takes them.
+    /// Updates each target in `into` to the maximum of its existing value and its mapped slab
+    /// contributions via [`f64::max`].
     ///
     /// # Panics
     ///
-    /// Panics as [`GatherMap::add`] does.
+    /// Panics under the same bounds conditions as [`GatherMap::add`].
     pub fn raise(&self, slab: &[f64], into: &mut [f64]) {
         self.fold_into(slab, into, f64::max);
     }
 
-    /// Sets each target of the plane of `into` of the same place to the fold of the values
-    /// its sources hold in each of the `N` slabs `slabs`, as its fold of `folds` says: from
-    /// zero, each added as [`GatherMap::add`] adds them, or raised to as
-    /// [`GatherMap::raise`] raises them, one after another in the map's order. The targets
-    /// split among the threads of the current rayon pool where their sources balance, into
-    /// as many parts as rayon's adaptive splitting asks for as the threads take them, and
-    /// each target's sources are read once for every plane: the same bits as each plane
-    /// zeroed and folded alone, for any number of threads.
+    /// Folds `N` parallel slabs into `N` destination planes from zero according to `folds`.
+    ///
+    /// Each target traverses its source list once across all planes in map order using
+    /// [`GatherMap::add`] or [`GatherMap::raise`] semantics. Targets split adaptively across
+    /// rayon threads by source count, producing bit-identical results on any thread count.
     ///
     /// # Panics
     ///
-    /// Panics as [`GatherMap::add`] does, for any plane.
+    /// Panics under the same bounds conditions as [`GatherMap::add`] for any plane.
     pub fn fold_in_parallel<const N: usize>(
         &self,
         slabs: [&[f64]; N],
@@ -148,8 +134,8 @@ impl GatherMap {
             .for_each(|part| self.fold_from(part.first, slabs, part.planes, folds));
     }
 
-    /// `part` split in two at the target where its sources balance, or whole with `None`
-    /// when it holds one target or none.
+    /// Splits `part` at the target balancing source counts, or returns `(part, None)` when
+    /// `part` contains fewer than two targets.
     fn halve<'a, const N: usize>(&self, part: Part<'a, N>) -> (Part<'a, N>, Option<Part<'a, N>>) {
         let count = part.planes.first().map_or(0, |plane| plane.len());
         if count < 2 {
@@ -157,7 +143,7 @@ impl GatherMap {
         }
         let starts = &self.starts[part.first..=part.first + count];
         let middle = starts[0] + (starts[count] - starts[0]) / 2;
-        // The first target whose sources start at the middle or after, kept off both ends.
+        // Pick the first interior target whose sources start at or past the midpoint.
         let at = starts
             .partition_point(|&start| start < middle)
             .clamp(1, count - 1);
@@ -177,8 +163,7 @@ impl GatherMap {
         )
     }
 
-    /// Sets the targets from `first` on, held by `into`, to the fold of their sources from
-    /// zero, each plane as its fold says.
+    /// Folds targets starting at `first` from zero into `into` according to `folds`.
     fn fold_from<const N: usize>(
         &self,
         first: usize,
@@ -267,9 +252,8 @@ mod tests {
     }
 
     proptest! {
-        /// A sum is the sources added one after another in the map's order; folded in
-        /// parallel, from zero, it is the same bits however many threads take the targets,
-        /// at 1, 2, 3 and 8.
+        /// Verifies that parallel gather produces bit-identical results to sequential gather
+        /// across 1, 2, 3, and 8 threads.
         #[test]
         fn any_split_gives_the_same_bits(
             pairs in prop::collection::vec((0..40u32, any::<f64>()), 0..400),

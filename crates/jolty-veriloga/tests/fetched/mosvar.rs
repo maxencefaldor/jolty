@@ -1,14 +1,11 @@
-//! MOSVAR 1.3.0, compiled from its Verilog-A source as IHP's open process kit publishes
-//! it, against the closed forms of its parasitic network.
+//! Closed-form verification of MOSVAR 1.3.0 compiled from IHP open-PDK Verilog-A source
+//! against its linear parasitic network.
 //!
-//! Its series resistances and its fringe capacitance are each a closed form of the
-//! geometry, linear at every bias: the gate's salicide resistance `rshg · w / (3 · l)`
-//! from the gate to the inner gate, with one more contact the gate's sheet split `3 + 9`
-//! ways; the vertical resistance `rpv / (w · l)` from the inner gate on; the end
-//! resistance `rend / (2 · (w + dwr))` between the bulk's two terminals; and the fringe
-//! capacitance `2 · (cfrw · w + cfrl · l)` from the inner gate to the inner bulk. Its
-//! temperature coefficients idle at their defaults, and its QA tests, which the CMC hands
-//! out only through its own form, wait for the owner.
+//! At default temperature, the geometry yields exact closed forms for gate salicide
+//! resistance `rshg * w / (3 * l)` (split `3 + 9` ways for dual contacts) and vertical
+//! poly resistance `rpv / (w * l)`. Bulk end resistance `rend / (2 * (w + dwr))` and
+//! fringe capacitance `2 * (cfrw * w + cfrl * l)` also follow closed forms. Full CMC QA
+//! vectors remain gated behind CMC distribution terms.
 
 #![cfg(test)]
 
@@ -22,21 +19,19 @@ use jolty_models::testing::Bench;
 
 use crate::closed::Closed;
 
-/// How far a value the compiled model computes may lie from the closed form computed
-/// here, in units of the machine epsilon times its magnitude: the model computes each in
-/// some four operations, the closed form in the same, each rounding by half an epsilon.
+/// Closed-form tolerance in units of machine epsilon times magnitude for roughly four rounding
+/// operations.
 const CLOSED: Closed = Closed(4.0);
 
-/// The local unknowns: the terminals, gate, inner bulk and bulk, then the inner gate and
-/// the gate below its vertical resistance.
+/// Local unknown indices: terminals (gate, inner bulk, bulk) followed by internal gate nodes.
 const G: usize = 0;
 const BI: usize = 1;
 const B: usize = 2;
 const GII: usize = 3;
 const GI: usize = 4;
 
-/// The conductances and the capacitance of the parasitic network, at two biases, for
-/// three geometries and both counts of gate contacts.
+/// Verifies parasitic network conductances and fringe capacitance at two biases across three
+/// geometries and both gate-contact counts.
 #[test]
 fn its_parasitic_network_is_its_closed_forms() {
     for (w, l, ngcon) in [(1e-5, 2e-6, 1), (3e-6, 5e-7, 2), (2e-5, 1e-5, 1)] {

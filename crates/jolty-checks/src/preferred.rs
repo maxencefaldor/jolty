@@ -11,24 +11,16 @@ use std::sync::LazyLock;
 /// `log10` and `10^k`, well below the tightest E192 step spacing (~1.2%).
 const MATCH_TOLERANCE: f64 = 1e-9;
 
-/// IEC 60063 historical E3 mantissas in `[1, 10)`.
-///
-/// Source: IEC 60063 preferred-number E3 series.
+/// Historical IEC 60063 E3 mantissas in `[1, 10)`.
 const E3_VALUES: &[f64] = &[1.0, 2.2, 4.7];
 
-/// IEC 60063 historical E6 mantissas in `[1, 10)`.
-///
-/// Source: IEC 60063 preferred-number E6 series.
+/// Historical IEC 60063 E6 mantissas in `[1, 10)`.
 const E6_VALUES: &[f64] = &[1.0, 1.5, 2.2, 3.3, 4.7, 6.8];
 
-/// IEC 60063 historical E12 mantissas in `[1, 10)`.
-///
-/// Source: IEC 60063 preferred-number E12 series.
+/// Historical IEC 60063 E12 mantissas in `[1, 10)`.
 const E12_VALUES: &[f64] = &[1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2];
 
-/// IEC 60063 historical E24 mantissas in `[1, 10)`.
-///
-/// Source: IEC 60063 preferred-number E24 series.
+/// Historical IEC 60063 E24 mantissas in `[1, 10)`.
 const E24_VALUES: &[f64] = &[
     1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6,
     6.2, 6.8, 7.5, 8.2, 9.1,
@@ -78,10 +70,7 @@ pub enum Series {
 }
 
 impl Series {
-    /// Every series, from the sparsest.
-    ///
-    /// Source: IEC 60063 preferred-number E series (`E3`, `E6`, `E12`, `E24`, `E48`, `E96`,
-    /// `E192`).
+    /// All IEC 60063 preferred-number E series, ordered from sparsest to densest.
     pub const ALL: [Self; 7] = [
         Self::E3,
         Self::E6,
@@ -92,7 +81,7 @@ impl Series {
         Self::E192,
     ];
 
-    /// How many values the series has a decade.
+    /// Returns the number of preferred values per decade in this series.
     #[must_use]
     pub const fn count(self) -> u32 {
         match self {
@@ -106,7 +95,7 @@ impl Series {
         }
     }
 
-    /// The series named `name`, such as `E24`.
+    /// Parses a series identifier such as `"E24"` into a [`Series`].
     #[must_use]
     pub const fn named(name: &str) -> Option<Self> {
         match name.as_bytes() {
@@ -134,16 +123,17 @@ impl Series {
         }
     }
 
-    /// The values of the series in the decade from 1 to 10.
+    /// Returns the series mantissas in the decade `[1, 10)`.
     ///
-    /// E3 to E24 are IEC 60063's historical values; E48 to E192 round 10 to the power of
-    /// each step to three significant digits, but for E192's 9.20.
+    /// E3 through E24 use the historical IEC 60063 values; E48 through E192 round powers of
+    /// 10 to three significant digits, except for the E192 entry `9.20`.
     #[must_use]
     pub fn mantissas(self) -> Vec<f64> {
         self.values().to_vec()
     }
 
-    /// Whether `value`, finite and positive, is one of the series' values, but for rounding.
+    /// Returns whether finite positive `value` matches a preferred value of this series within
+    /// rounding precision.
     #[must_use]
     pub fn holds(self, value: f64) -> bool {
         if !value.is_finite() || value <= 0.0 {
@@ -233,9 +223,8 @@ mod tests {
 
     #[test]
     fn named_round_trips_every_series_in_const_context() {
-        /// Compile-time check that `Series::named` is usable in `const` evaluation.
-        ///
-        /// Origin: IEC 60063 E24 series name check in unit tests.
+        /// Compile-time check that `Series::named` evaluates in `const` context for IEC 60063
+        /// E24.
         const CHECK_E24: Option<Series> = Series::named("E24");
         assert_eq!(CHECK_E24, Some(Series::E24));
         for series in Series::ALL {

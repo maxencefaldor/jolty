@@ -1,31 +1,25 @@
-//! Sums of many terms in one fixed order, whether one thread adds them or many.
+//! Deterministic chunked reductions producing bit-identical results across thread counts.
 //!
-//! [`sum`] adds its terms in chunks of [`CHUNK`] consecutive terms, each chunk from its first
-//! term to its last, then the chunks' totals in their order. [`sum_in_parallel`] adds the
-//! same chunks, each on whichever thread of the current rayon pool takes it, and their
-//! totals in the same order, so the two give the same bits, whatever the threads. [`fold`]
-//! folds terms of any kind into a value in the same chunks, the first chunk into the value
-//! and each later one from zero, on the calling thread or spread, so that a long sum spreads
-//! and one of a chunk or less is its terms one after another. Never rayon's own `sum`,
-//! whose grouping follows the threads' work.
+//! [`sum`] accumulates terms in consecutive chunks of [`CHUNK`] and sums the chunk totals in
+//! order. [`sum_in_parallel`] evaluates the same chunks on the current rayon pool and combines
+//! totals in identical order. [`fold`] generalizes this scheme to arbitrary accumulators,
+//! avoiding rayon's non-deterministic tree reduction.
 
 use rayon::prelude::*;
 
-/// The terms a chunk adds before its total joins the others'.
+/// Number of terms accumulated per reduction chunk before combining chunk totals.
 ///
-/// Origin: jolty's own power-of-two deterministic-reduction chunk size (`2^10 = 1024` `f64`
-/// values, 8,192 bytes), fitting within a typical L1 data cache while amortizing rayon
-/// task-scheduling overhead across threads.
+/// Origin: power-of-two deterministic-reduction chunk size (`2^10 = 1024` `f64` values,
+/// 8 KiB) fitting in L1 data cache while amortizing rayon scheduling overhead.
 pub const CHUNK: usize = 1024;
 
-/// The sum of the `count` terms `term` gives for the indices from 0, in chunks of
-/// [`CHUNK`].
+/// Sums `count` terms produced by `term` in fixed sequential chunks of [`CHUNK`].
 pub fn sum(count: usize, term: impl Fn(usize) -> f64) -> f64 {
     (0..count.div_ceil(CHUNK)).fold(0.0, |total, chunk| total + chunk_sum(chunk, count, &term))
 }
 
-/// The sum [`sum`] gives, its chunks added on the threads of the current rayon pool, at
-/// least `least` of them a task.
+/// Sums `count` terms across rayon threads with at least `least` chunks per task, matching
+/// [`sum`] bit for bit.
 pub fn sum_in_parallel(count: usize, term: impl Fn(usize) -> f64 + Sync, least: usize) -> f64 {
     let totals: Vec<f64> = (0..count.div_ceil(CHUNK))
         .into_par_iter()
@@ -35,25 +29,18 @@ pub fn sum_in_parallel(count: usize, term: impl Fn(usize) -> f64 + Sync, least: 
     totals.into_iter().fold(0.0, |total, chunk| total + chunk)
 }
 
-/// The sum of the terms of the chunk `chunk` of `count` terms, from its first to its last.
+/// Sums the terms belonging to chunk index `chunk` out of `count` total terms.
 fn chunk_sum(chunk: usize, count: usize, term: &impl Fn(usize) -> f64) -> f64 {
     let start = chunk * CHUNK;
     (start..count.min(start + CHUNK)).fold(0.0, |total, index| total + term(index))
 }
 
-/// Folds `items` into `start`, one after another, when they fill one chunk of [`CHUNK`] or
-/// less; and else in chunks of [`CHUNK`] consecutive items, the first folded into `start`
-/// and each later one into `zero`, each from its first item to its last, then the later
-/// chunks' totals joined into the first's, in their order. `fold` folds one item into a
-/// total, and `join` one chunk's total into another's.
+/// Folds `items` deterministically using per-item `fold` and chunk combiner `join`.
 ///
-/// The chunks are the same however many threads take them, so the result is the same bits
-/// on the calling thread alone or, `spread`, with the chunks spread over the threads of the
-/// current rayon pool; and for a fold of no more than [`CHUNK`] items it is their fold one
-/// after another, so that a long sum spreads where a short one stays as it was.
-///
-/// A short fold is inlined where it is called, as the loop it is, so that the many short
-/// sums of a small circuit's solve pay nothing for the long ones'.
+/// Inputs of at most [`CHUNK`] items fold sequentially into `start` inline. Larger inputs fold
+/// consecutive chunks of [`CHUNK`] items (the first into `start`, subsequent chunks into
+/// `zero`) and join chunk totals in order, producing identical bits whether `spread` is false
+/// or parallelized across rayon threads.
 #[inline]
 pub fn fold<T: Sync, A: Copy + Send + Sync>(
     items: &[T],
@@ -68,8 +55,7 @@ pub fn fold<T: Sync, A: Copy + Send + Sync>(
     fold_by_chunks(items, (start, zero), fold, join, spread)
 }
 
-/// [`fold`] of more than [`CHUNK`] items, by its chunks. Never inlined, so that a short fold
-/// stays the loop it is where it is called.
+/// Executes the multi-chunk path of [`fold`] out of line so short folds inline cleanly.
 #[inline(never)]
 fn fold_by_chunks<T: Sync, A: Copy + Send + Sync>(
     items: &[T],
@@ -108,8 +94,8 @@ mod tests {
     use super::*;
 
     proptest! {
-        /// Summed on 1 to 8 threads, in tasks of 1 to 3 chunks at least, the terms give the
-        /// bits one thread gives.
+        /// Verifies that parallel chunked summation matches single-threaded summation bit for
+        /// bit across 1 to 8 threads.
         #[test]
         fn a_sum_on_many_threads_is_the_sum_on_one_bit_for_bit(
             terms in proptest::collection::vec(-1e3..1e3f64, 0..5000),
@@ -127,10 +113,8 @@ mod tests {
     }
 
     proptest! {
-        /// A fold of up to a chunk of terms takes them one after another into its start; a
-        /// longer one takes each chunk from its first term to its last, the first into the
-        /// start and each later one from zero, then their totals in order: the same bits on
-        /// the calling thread and spread over 1, 2, 3 and 8 threads.
+        /// Verifies that chunked [`fold`] matches sequential reduction for up to [`CHUNK`]
+        /// items and produces identical bits across 1, 2, 3, and 8 threads.
         #[test]
         fn a_fold_by_chunks_is_the_same_bits_on_any_number_of_threads(
             terms in proptest::collection::vec(-1e3..1e3f64, 0..5000),

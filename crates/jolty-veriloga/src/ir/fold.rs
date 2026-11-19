@@ -16,7 +16,7 @@ pub(crate) enum ConstVal {
 }
 
 impl ConstVal {
-    /// This constant interpreted as a Verilog-A truth value (non-zero is true).
+    /// Interprets the constant as a Verilog-A boolean (nonzero is `true`).
     pub(crate) fn as_bool(self) -> bool {
         match self {
             Self::Bool(truth) => truth,
@@ -25,7 +25,7 @@ impl ConstVal {
         }
     }
 
-    /// This constant as a 32-bit integer, or `None` when it is a real number.
+    /// Converts the constant to a 32-bit integer, returning `None` for real values.
     pub(crate) fn as_int(self) -> Option<i32> {
         match self {
             Self::Bool(truth) => Some(i32::from(truth)),
@@ -34,7 +34,7 @@ impl ConstVal {
         }
     }
 
-    /// This constant promoted to a finite `f64`.
+    /// Promotes the constant to a finite `f64`.
     pub(crate) fn as_real(self) -> f64 {
         match self {
             Self::Bool(truth) => f64::from(u8::from(truth)),
@@ -44,7 +44,7 @@ impl ConstVal {
     }
 }
 
-/// `left operator right`, of two real constants, as Rust computes it at run time.
+/// Evaluates binary arithmetic `left operator right` on two `f64` constants.
 pub(crate) fn fold(operator: &str, left: f64, right: f64) -> f64 {
     match operator {
         "+" => left + right,
@@ -184,12 +184,13 @@ pub(crate) fn fold_const(expr: &Expression) -> Result<Option<ConstVal>, String> 
     }
 }
 
-/// The value of `expr` if it folds to a finite compile-time constant.
+/// Returns the `f64` value of `expr` if it folds to a finite compile-time constant.
 pub(crate) fn constant(expr: &Expression) -> Option<f64> {
     fold_const(expr).ok().flatten().map(ConstVal::as_real)
 }
 
-/// The Verilog-A numeric type of `expr` (boolean expressions count as `Type::Integer`).
+/// Infers the Verilog-A numeric [`Type`] of `expr`, treating boolean expressions as
+/// [`Type::Integer`].
 pub(super) fn expr_type(
     expr: &Expression,
     module: &ast::Module,

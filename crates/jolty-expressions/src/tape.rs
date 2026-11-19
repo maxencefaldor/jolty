@@ -35,7 +35,7 @@ enum Build<'a> {
     Table(&'a Points),
 }
 
-/// The instructions of `node`, its root last, compiled iteratively in constant stack space.
+/// Compiles `node` into a post-order instruction tape iteratively in constant stack space.
 pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
     let mut tape = Vec::new();
     let mut frames: Vec<Build<'_>> = Vec::new();
@@ -110,8 +110,8 @@ pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
     }
 }
 
-/// Evaluates `tape` at `variables` in `workspace`, then, backwards, the derivatives of its
-/// root with respect to each variable into `gradient`. Returns the root's value.
+/// Evaluates `tape` at `variables` in `workspace`, writes the reverse-mode gradient into
+/// `gradient`, and returns the root value.
 pub(crate) fn evaluate(
     tape: &[Instruction],
     variables: &[f64],
@@ -161,8 +161,8 @@ pub(crate) fn evaluate(
     adjoints[root] = 1.0;
     for (index, instruction) in tape.iter().enumerate().rev() {
         let adjoint = adjoints[index];
-        // A part the root does not depend on here, such as a conditional's other branch,
-        // passes nothing on, even where its own derivatives are not finite.
+        // Inactive subexpressions (such as untaken conditional branches) propagate zero
+        // adjoints even when their local derivatives are non-finite.
         if adjoint == 0.0 {
             continue;
         }
@@ -185,10 +185,12 @@ pub(crate) fn evaluate(
     values[root]
 }
 
-/// Differentiates the value and gradient that [`evaluate`] last left in `workspace` along
-/// `tangent`, one rate per variable: forward for each instruction's tangent, then backward
-/// for each adjoint's tangent, writing the gradient's directional derivative into
-/// `gradient_tangent` and returning the root's.
+/// Differentiates the value and gradient cached by [`evaluate`] in `workspace` along
+/// `tangent`.
+///
+/// Runs a forward tangent pass followed by a reverse adjoint-tangent pass, writing the
+/// directional gradient derivative into `gradient_tangent` and returning the directional
+/// value derivative.
 pub(crate) fn along(
     tape: &[Instruction],
     tangent: &[f64],
@@ -215,7 +217,8 @@ pub(crate) fn along(
     tangents[tape.len() - 1]
 }
 
-/// Forward tangent pass of [`along`], guarding zero tangents so `0 * inf` never becomes `NaN`.
+/// Runs the forward tangent pass of [`along`], guarding zero tangents so `0 * inf` never
+/// becomes `NaN`.
 fn along_forward(
     tape: &[Instruction],
     tangent: &[f64],
@@ -264,8 +267,8 @@ fn along_forward(
     }
 }
 
-/// Reverse adjoint-tangent pass of [`along`], skipping zero adjoints and zero tangents so
-/// infinite second derivatives along unmoved directions do not produce `NaN`.
+/// Runs the reverse adjoint-tangent pass of [`along`], skipping zero adjoints and zero
+/// tangents so infinite second derivatives along unmoved directions never produce `NaN`.
 fn along_backward(
     tape: &[Instruction],
     (values, slopes, curvatures): (&[f64], &[f64], &[f64]),
@@ -350,7 +353,7 @@ fn along_backward(
     }
 }
 
-/// How a choice's value turns on its input.
+/// Discontinuity classification for a tracked expression choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     /// A comparison, a step or a sign: it changes where its input crosses zero.
@@ -407,7 +410,7 @@ pub(crate) fn choices(tape: &[Instruction], values: &[f64], found: &mut Vec<Choi
     }
 }
 
-/// The branch index selected by `Conditional([condition, then, otherwise])`.
+/// Returns the selected branch index for `Conditional([condition, then, otherwise])`.
 #[inline]
 fn choose([condition, then, otherwise]: [usize; 3], values: &[f64]) -> usize {
     if values[condition] == 0.0 {
@@ -417,15 +420,15 @@ fn choose([condition, then, otherwise]: [usize; 3], values: &[f64]) -> usize {
     }
 }
 
-/// The operand index selected by `Limit([x, a, b])`.
+/// Returns the active operand index for `Limit([x, a, b])`.
 #[inline]
 fn limit_chosen(operands: [usize; 3], values: &[f64]) -> usize {
     let [x, a, b] = operands;
     operands[limit(values[x], values[a], values[b]).1]
 }
 
-/// `x` held between `a` and `b`, in either order, as SPICE's `limit` holds it, and which of
-/// the three it is: 0 for `x`, 1 for `a`, 2 for `b`.
+/// Clamps `x` between `a` and `b` (in either order) and returns `(clamped, selected_index)`
+/// (`0` for `x`, `1` for `a`, `2` for `b`), matching SPICE `limit`.
 pub(crate) fn limit(x: f64, a: f64, b: f64) -> (f64, usize) {
     let (low, high, low_index, high_index) = if a > b { (b, a, 2, 1) } else { (a, b, 1, 2) };
     if x > high {
@@ -437,13 +440,12 @@ pub(crate) fn limit(x: f64, a: f64, b: f64) -> (f64, usize) {
     }
 }
 
-/// Points with ascending abscissae, interpolated linearly between, held or extended beyond
-/// the first and the last, with each corner rounded by a parabola over `rounding` times the
-/// shorter of the segments beside it, and Newton's steps through them limited if `limits`:
-/// the interpolation of XSPICE's `pwl`.
+/// Piecewise-linear breakpoint table with ascending abscissae and optional XSPICE-style
+/// parabolic corner rounding.
 ///
-/// The points are stored with one more at each end, along which the interpolation runs
-/// beyond them: the end's own ordinate to hold it, or the end segment's to extend it.
+/// Each corner is rounded over `rounding` times the shorter adjacent segment, and Newton
+/// steps are limited when `limits` is enabled. Synthetic sentinel points at both ends
+/// implement constant clamping or linear extrapolation beyond the declared breakpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Points {
     abscissae: Box<[f64]>,
@@ -452,18 +454,18 @@ pub(crate) struct Points {
     pub(crate) limits: bool,
 }
 
-/// What the interpolation of points is beyond the first and the last.
+/// Extrapolation behavior beyond the first and last table breakpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Beyond {
-    /// The first or the last point's ordinate.
+    /// Constant hold at the first or last breakpoint ordinate.
     Hold,
-    /// The first or the last segment extended.
+    /// Linear extrapolation along the first or last segment.
     Extend,
 }
 
 impl Points {
-    /// The interpolation of `points`, at least one, with ascending abscissae, rounded and
-    /// its input's steps limited, as XSPICE's `pwl` does, if `rounding` is positive.
+    /// Builds a [`Points`] interpolator from sorted breakpoint pairs, enabling parabolic
+    /// corner rounding and XSPICE Newton step limiting when `rounding` is positive.
     pub(crate) fn new(points: &[(f64, f64)], beyond: Beyond, rounding: f64) -> Self {
         let last = points.len() - 1;
         // A lone point is held, one unit away on each side.
@@ -500,24 +502,24 @@ impl Points {
         }
     }
 
-    /// The abscissae, with one added before the first point and one after the last.
+    /// Returns the stored abscissae including the synthetic sentinel points at both ends.
     pub(crate) fn abscissae(&self) -> &[f64] {
         &self.abscissae
     }
 
-    /// The ordinates, with the added points' holding or extending the ends.
+    /// Returns the stored ordinates including the synthetic endpoint ordinates for holding or
+    /// extending.
     pub(crate) fn ordinates(&self) -> &[f64] {
         &self.ordinates
     }
 
-    /// The fraction of the shorter segment beside each corner its parabola spans.
+    /// Returns the corner-rounding fraction applied to the shorter adjacent segment.
     pub(crate) const fn rounding(&self) -> f64 {
         self.rounding
     }
 
-    /// The input a Newton step from `last` to `x` may reach, as XSPICE's `pwl` limits it:
-    /// no further than 30% of the segment `last` lies in, and not past its ends. Returns
-    /// `None` when the step needs no limiting.
+    /// Limits a Newton step from `last` toward `x` to at most 30% of the active segment
+    /// (matching XSPICE `pwl`), returning `None` when no limiting is needed.
     pub(crate) fn limit(&self, x: f64, last: f64) -> Option<f64> {
         /// Maximum fraction of a segment crossed in one Newton step.
         ///
@@ -573,7 +575,7 @@ impl Points {
         }
     }
 
-    /// The interpolation at `x`, its slope there, and its second derivative there.
+    /// Evaluates the interpolated value, first derivative, and second derivative at `x`.
     pub(crate) fn interpolate(&self, x: f64) -> (f64, f64, f64) {
         if x.is_nan() {
             return (f64::NAN, f64::NAN, f64::NAN);
@@ -590,7 +592,7 @@ impl Points {
         if x >= f64::midpoint(xs[last - 1], xs[last]) {
             return line(last, last - 1, last);
         }
-        // The corner at `xs[i]` holds the inputs between the midpoints beside it.
+        // Breakpoint `xs[i]` owns inputs between its two adjacent segment midpoints.
         let j = xs.partition_point(|&abscissa| abscissa <= x);
         let i = if x < f64::midpoint(xs[j - 1], xs[j]) {
             j - 1
@@ -655,7 +657,7 @@ mod tests {
     #[test]
     fn rounding_meets_both_segments_smoothly() {
         let points = Points::new(&[(0.0, 0.0), (1.0, 1.0), (3.0, 1.0)], Beyond::Hold, 0.1);
-        // The corner at 1 is rounded over 0.1, a tenth of the shorter segment beside it.
+        // Breakpoint at 1 is rounded over 0.1, one tenth of the shorter adjacent segment.
         for x in [0.9, 1.1] {
             let (rounded, slope, _) = points.interpolate(x);
             let (sharp, sharp_slope, _) =

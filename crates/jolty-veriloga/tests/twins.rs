@@ -1,7 +1,6 @@
-//! The kernels compiled from Verilog-A against their hand-written twins in
-//! `jolty-models`, whose equations their sources follow operation for operation: the same
-//! unknowns, and at every point the same residuals, charges, conductances, capacitances,
-//! limiting, noise and exact gradient by every parameter, to rounding.
+//! Differential tests comparing compiled Verilog-A kernels against their hand-written twins
+//! in `jolty-models` across residuals, charges, Jacobians, limiting, noise, and exact
+//! parameter gradients.
 
 #![cfg(test)]
 
@@ -19,10 +18,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Compares the twins `H` and `C` with `parameters`, a JSON object, at each point of
-/// `points`, the values of the hand-written kernel's unknowns: evaluated in order, so
-/// that each limits its step from the last, then settled, then each parameter's
-/// gradient and the noise.
+/// Compares the hand-written kernel `H` against compiled kernel `C` for JSON `parameters`
+/// across `points`. Evaluates points in order to exercise step limiting, then checks
+/// settled evaluations, parameter gradients, and noise.
 fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &mut Worst)
 where
     H::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -52,9 +50,9 @@ where
     numbers(&value, &mut Vec::new(), &mut paths);
     let (hand, compiled) = (Differentiable::<H>::new(), Differentiable::<C>::new());
     let (hand, compiled) = (Rig { model: &hand }, Rig { model: &compiled });
-    // The compiled kernel may claim entries it never stamps, where a variable that one
-    // shape's branch reads depends on a probe in another shape alone: the conductances
-    // are compared by their places in the matrix, an entry one claims alone zero.
+    // Compiled kernels can claim entries they never stamp when a variable in one shape's
+    // branch depends only on a probe in another shape. Compare conductances by matrix
+    // position, treating unallocated entries in either kernel as zero.
     let places = [hand.positions(&object), compiled.positions(&object)];
     let mut union: Vec<(usize, usize)> = places.concat();
     union.sort_unstable();
@@ -121,8 +119,8 @@ where
     }
 }
 
-/// Every point of a sweep of the first unknown from `low` to `high` in `steps`, the
-/// others at `rest`.
+/// Generates evenly spaced state vectors sweeping the first unknown from `low` to `high` in
+/// `steps` while holding remaining unknowns at `rest`.
 fn sweep((low, high): (f64, f64), steps: u32, rest: &[f64]) -> Vec<Vec<f64>> {
     (0..=steps)
         .map(|step| {
@@ -157,7 +155,7 @@ fn the_compiled_resistor_is_its_hand_written_twin() {
         &sweep((-3.0, 3.0), 6, &[0.0]),
         &mut worst,
     );
-    // Below 1 Ω, the current is an unknown of its own.
+    // Below 1 ohm, the branch current becomes an explicit unknown.
     let small = r#"{"resistance": 0.25, "voltage_coefficient": 0.1, "flicker_coefficient": 1e-14}"#;
     let points: Vec<Vec<f64>> = sweep((-1.0, 1.0), 10, &[0.1])
         .into_iter()
@@ -267,7 +265,7 @@ fn out_of_range_parameters_are_refused_as_by_hand() {
     assert_eq!(hand, compiled);
 }
 
-/// Whether an instance of `K` with `parameters`, a JSON object, says it is linear.
+/// Returns whether kernel `K` reports linearity for the JSON `parameters` object.
 fn linear<K: Kernel>(parameters: &str) -> bool
 where
     K::Parameters<f64>: DeserializeOwned,
@@ -279,8 +277,8 @@ where
     K::linear(&shape, &prepared)
 }
 
-/// The compiled kernels find the same instances linear as their twins do: a resistor
-/// without voltage coefficients, whether its current is an unknown or not, and no diode.
+/// Verifies that compiled resistor and diode kernels match their hand-written twins on
+/// `Kernel::linear`.
 #[test]
 fn the_compiled_kernels_are_linear_where_their_twins_are() {
     for parameters in [
@@ -304,8 +302,8 @@ fn the_compiled_kernels_are_linear_where_their_twins_are() {
     }
 }
 
-/// The compiled kernels differentiate their conductances and capacitances with respect to
-/// their unknowns, including when self-heated or behind small series resistances.
+/// Verifies unknown derivatives of conductances and capacitances for compiled kernels,
+/// including self-heating and small series resistances.
 #[test]
 fn the_compiled_kernels_differentiate_by_their_unknowns() {
     let resistor_model = Thermal::<resistor::Resistor>::new();
@@ -334,9 +332,8 @@ fn the_compiled_kernels_differentiate_by_their_unknowns() {
     );
 }
 
-/// The compiled resistor and diode kernels' derived `Lift` visits the exact real parameter
-/// paths that `serde` writes, with optional parameters both absent and present, and skips
-/// integer selectors cleanly.
+/// Verifies that derived `Lift` on compiled resistor and diode kernels visits the exact real
+/// parameter paths serialized by `serde`.
 #[test]
 fn the_compiled_kernels_lift_matches_serde() {
     let resistor_model = Thermal::<resistor::Resistor>::new();

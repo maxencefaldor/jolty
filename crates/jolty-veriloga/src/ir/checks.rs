@@ -94,7 +94,8 @@ pub(super) fn check_aliases(module: &ast::Module) -> Result<(), Error> {
     Ok(())
 }
 
-/// The nodes of `module`, its ports first, and whether each is thermal.
+/// Collects the ordered node list of `module` (ports first) together with a per-node thermal
+/// discipline flag.
 pub(super) fn nodes_of(module: &ast::Module) -> Result<(Vec<String>, Vec<bool>), Error> {
     let mut nodes: Vec<String> = module.ports.clone();
     for (node, _) in &module.nodes {
@@ -119,7 +120,7 @@ pub(super) fn nodes_of(module: &ast::Module) -> Result<(Vec<String>, Vec<bool>),
     Ok((nodes, thermal))
 }
 
-/// The index of the node `name` among `nodes`.
+/// Returns the index of node `name` in `nodes`, or an error when undeclared.
 pub(super) fn node_index(nodes: &[String], name: &str, line: usize) -> Result<usize, Error> {
     nodes
         .iter()
@@ -127,7 +128,7 @@ pub(super) fn node_index(nodes: &[String], name: &str, line: usize) -> Result<us
         .ok_or_else(|| Error::at(line, format!("{name} is not a node")))
 }
 
-/// `branches`, each by its Rust name.
+/// Replaces each branch name in `branches` with a deduplicated Rust snake-case identifier.
 pub(super) fn named_apart(branches: Vec<Branch>) -> Vec<Branch> {
     let names: Vec<String> = branches.iter().map(|branch| branch.name.clone()).collect();
     branches
@@ -137,7 +138,7 @@ pub(super) fn named_apart(branches: Vec<Branch>) -> Vec<Branch> {
         .collect()
 }
 
-/// The Rust names of `names`, in snake case, each apart from those before it.
+/// Converts `names` into deduplicated Rust snake-case identifiers.
 pub(super) fn rust_names(names: &[String]) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for name in names {

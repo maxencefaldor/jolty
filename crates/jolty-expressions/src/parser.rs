@@ -23,12 +23,12 @@ pub(crate) enum Node {
     Variable(usize),
     Unary(Unary, Box<Node>),
     Binary(Binary, Box<Node>, Box<Node>),
-    /// `limit(x, a, b)`: `x` held between `a` and `b`, in either order.
+    /// Clamping operation `limit(x, a, b)` bounding `x` between `a` and `b` in either order.
     Limit(Box<[Node; 3]>),
-    /// `c ? a : b`.
+    /// Ternary conditional `c ? a : b` (or `if(c, a, b)`).
     Conditional(Box<[Node; 3]>),
-    /// `table(x, x1, y1, …)`, `pwl(x, x1, y1, …)` or `rounded_table(x, r, x1, y1, …)`:
-    /// the points' interpolation at `x`.
+    /// Piecewise-linear table interpolation (`table`, `pwl`, or `rounded_table`) evaluated at
+    /// `x`.
     Table(Box<(Node, Points)>),
 }
 
@@ -69,7 +69,7 @@ fn detach_children(node: &mut Node, stack: &mut Vec<Node>) {
 }
 
 impl Node {
-    /// The node's value, if it is a constant.
+    /// Returns the numeric value if this node is a constant.
     fn constant(&self) -> Option<f64> {
         match self {
             Self::Constant(value) => Some(*value),
@@ -78,7 +78,7 @@ impl Node {
     }
 }
 
-/// The tree of `text`, and the variables it reads, in the order first read.
+/// Parses `text` into a constant-folded expression tree and ordered variable list.
 pub(crate) fn parse(text: &str) -> Result<(Node, Vec<Variable>), SyntaxError> {
     let mut parser = Parser {
         tokens: tokenize(text)?,
@@ -128,7 +128,8 @@ enum Step {
     Done(Node),
 }
 
-/// Precedence (`1..=6`, loosest first) and operation for left-associative binary operators.
+/// Returns the precedence (`1..=6`, loosest first) and binary operation for left-associative
+/// operator tokens.
 const fn binary_operator(kind: &Kind) -> Option<(u8, Binary)> {
     let Kind::Symbol(symbol) = kind else {
         return None;
@@ -269,7 +270,7 @@ impl Parser {
         Ok(())
     }
 
-    /// Iteratively parses the complete token stream using an explicit operator stack.
+    /// Parses the complete token stream iteratively using an explicit operator stack.
     fn parse_all(&mut self) -> Result<Node, SyntaxError> {
         let mut stack: Vec<Pending> = Vec::new();
         loop {
@@ -411,7 +412,7 @@ impl Parser {
         }
     }
 
-    /// A terminal's or a port's name.
+    /// Parses a terminal or sensing-port identifier token.
     fn name(&mut self) -> Result<String, SyntaxError> {
         let token = self.next();
         match token.kind {
@@ -423,7 +424,7 @@ impl Parser {
         }
     }
 
-    /// The node reading `variable`, numbered when first read.
+    /// Returns the AST node for `variable`, interning its index on first occurrence.
     fn variable(&mut self, variable: Variable) -> Node {
         let index = self
             .variables
@@ -463,7 +464,7 @@ fn finish_call(name: &str, arguments: Vec<Node>, column: usize) -> Result<Node, 
     }
 }
 
-/// The `N` arguments of a call of `function`, at `column`.
+/// Validates that `arguments` contains exactly `N` expressions for `function` at `column`.
 fn take<const N: usize>(
     arguments: Vec<Node>,
     function: &str,
@@ -512,9 +513,8 @@ fn conditional(arguments: [Node; 3]) -> Node {
     }
 }
 
-/// `table(x, x1, y1, …)`, `pwl(x, x1, y1, …)` or, if `rounded`,
-/// `rounded_table(x, r, x1, y1, …)`, whose points are constants in pairs, ascending, and
-/// whose rounding is a constant from 0 to ½.
+/// Builds a `table`, `pwl`, or `rounded_table` node from constant breakpoint pairs with
+/// strictly ascending abscissae and (when `rounded` is set) a rounding fraction in `[0, 0.5]`.
 fn table(
     arguments: Vec<Node>,
     beyond: Beyond,
@@ -576,7 +576,7 @@ fn table(
     })
 }
 
-/// A token as messages name it.
+/// Formats a token kind for syntax error messages.
 fn describe(kind: &Kind) -> String {
     match kind {
         Kind::Number(value) => format!("the number `{value}`"),

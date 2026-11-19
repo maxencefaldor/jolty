@@ -1,12 +1,11 @@
-//! Parameters by path: a parameter's own name, or its keys joined by dots within an object
-//! and a list's entries keyed by their index from 0, such as `resistance`, `waveform.dc`
-//! or `waveform.piecewise.1.1`.
+//! Dot-separated parameter path addressing (for example, `resistance`, `waveform.dc`, or
+//! `waveform.piecewise.1.1`), using object keys and zero-based array indices.
 
 use serde_json::Value;
 
 use crate::Parameters;
 
-/// A path that has no place among a device's parameters.
+/// Error returned when a parameter path cannot be reached in a device's parameter map.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` has no place among the parameters")]
 pub struct Unreachable(pub String);
@@ -20,7 +19,7 @@ fn parse_index(key: &str) -> Option<usize> {
     }
 }
 
-/// The value at `path` among `parameters`, if one is there.
+/// Returns the parameter value at `path` within `parameters`, if present.
 #[must_use]
 pub fn parameter<'a>(parameters: &'a Parameters, path: &str) -> Option<&'a Value> {
     let mut keys = path.split('.');
@@ -32,7 +31,7 @@ pub fn parameter<'a>(parameters: &'a Parameters, path: &str) -> Option<&'a Value
     })
 }
 
-/// The value at `path` among `parameters`, to change, if one is there.
+/// Returns a mutable reference to the parameter value at `path` within `parameters`, if present.
 #[must_use]
 pub fn parameter_mut<'a>(parameters: &'a mut Parameters, path: &str) -> Option<&'a mut Value> {
     let mut keys = path.split('.');
@@ -40,13 +39,13 @@ pub fn parameter_mut<'a>(parameters: &'a mut Parameters, path: &str) -> Option<&
     keys.try_fold(first, |value, key| inner_mut(value, key))
 }
 
-/// Sets the value at `path` among `parameters`: within an object, whether or not one is
-/// there, and within a list, at an entry that is.
+/// Sets the value at `path` within `parameters`, inserting into objects and updating existing
+/// array entries.
 ///
 /// # Errors
 ///
-/// When the keys before the last reach no object or list, or the last no entry of a
-/// list.
+/// Returns [`Unreachable`] when the prefix keys do not reach an object or array, or when the
+/// final key does not index an existing array entry.
 pub fn set_parameter(
     parameters: &mut Parameters,
     path: &str,
@@ -67,7 +66,8 @@ pub fn set_parameter(
     Ok(())
 }
 
-/// Every number among `parameters`, with its path, in the order of their keys.
+/// Returns every numeric value in `parameters` paired with its dot-separated path in key
+/// order.
 #[must_use]
 pub fn numbers(parameters: &Parameters) -> Vec<(String, f64)> {
     fn walk(path: String, value: &Value, found: &mut Vec<(String, f64)>) {
@@ -97,8 +97,8 @@ pub fn numbers(parameters: &Parameters) -> Vec<(String, f64)> {
     found
 }
 
-/// The value `key` names within `value`, to change: an object's entry, or a list's by
-/// its index.
+/// Returns a mutable reference to the object field or array element named by `key` within
+/// `value`.
 fn inner_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
     match value {
         Value::Object(object) => object.get_mut(key),

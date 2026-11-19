@@ -1,13 +1,10 @@
-//! The checks of jolty: facts about a circuit's topology, found before any analysis, and
-//! about the circuit linearized at its operating point.
+//! Circuit diagnostics covering pre-analysis topology checks and operating-point checks.
 //!
-//! Each [`Rule`] names one fact a check can state, with its default [`Level`] and the exact
-//! condition it checks. [`check`] reads an elaborated circuit through the branches each
-//! device declares, and returns a [`Diagnostic`] for every instance of every structural
-//! rule, each naming the instances and nets involved; [`check_operating_point`] returns
-//! those of the rules on the circuit linearized at its operating point, such as a natural
-//! mode that grows away from it. A diagnostic states a fact and never how to change the
-//! circuit.
+//! Each [`Rule`] defines a diagnostic condition and default [`Level`]. [`check`] inspects the
+//! branches declared by devices in an elaborated circuit and emits a [`Diagnostic`] for each
+//! structural rule violation, naming the affected instances and nets. [`check_operating_point`]
+//! evaluates linearized operating-point rules such as growing natural modes. Every diagnostic
+//! states a factual condition without prescribing circuit edits.
 //!
 //! ```
 //! use jolty_engine::{Conditions, Simulator};
@@ -46,19 +43,19 @@ use jolty_engine::{Location, Simulator};
 pub use point::{MAX_LINEARIZED, check_operating_point};
 pub use rules::RULES;
 
-/// How a check reports a rule's diagnostics, by the names ty gives its levels.
+/// Reporting severity for a rule's diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Level {
-    /// The fact surely breaks the circuit.
+    /// Severity indicating a definite circuit error.
     Error,
-    /// The fact may break the circuit.
+    /// Severity indicating a likely or conditional circuit defect.
     Warn,
-    /// The check leaves the rule out.
+    /// Severity suppressing diagnostics for the rule.
     Ignore,
 }
 
 impl Level {
-    /// The level's name: `error`, `warn` or `ignore`.
+    /// Returns the lowercase level name: `error`, `warn`, or `ignore`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -75,33 +72,35 @@ impl fmt::Display for Level {
     }
 }
 
-/// One fact a check can state about a circuit.
+/// Definition of a circuit check rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rule {
-    /// The rule's name: lowercase words joined by hyphens, such as `no-dc-path`.
+    /// Kebab-case rule identifier, such as `no-dc-path`.
     pub name: &'static str,
-    /// The level a check reports the rule at, unless configured otherwise.
+    /// Default reporting severity unless overridden by configuration.
     pub level: Level,
-    /// The exact condition the rule checks.
+    /// Complete factual description of the condition detected by the rule.
     pub condition: &'static str,
 }
 
-/// One instance of a rule's fact in a circuit.
+/// Single diagnostic reported for a rule violation in a circuit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
-    /// The name of the rule.
+    /// Identifier of the triggered rule.
     pub rule: &'static str,
-    /// What is true, naming the instances and nets involved.
+    /// Factual diagnostic message naming the involved instances and nets.
     pub message: String,
-    /// The instances involved, each with the script line that placed it.
+    /// Involved device instances with their source locations.
     pub instances: Vec<Location>,
-    /// The nets involved, by path.
+    /// Involved net paths.
     pub nets: Vec<String>,
 }
 
-/// Every diagnostic of every rule in the circuit `simulator` elaborated, rule by rule in
-/// the order of [`RULES`], and within a rule in the order the instances were placed, analog
-/// devices before logic ones.
+/// Runs all structural rules on the circuit elaborated by `simulator` and returns the
+/// resulting diagnostics in [`RULES`] order.
+///
+/// Within each rule, diagnostics follow instance placement order with analog devices before
+/// logic devices.
 #[must_use]
 pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     let structure = structure::Structure::new(simulator);
@@ -126,8 +125,7 @@ pub(crate) mod testing {
     use jolty_models::Library;
     use serde_json::{Value, json};
 
-    /// A simulator of a circuit whose top component has a ground port `0` and places
-    /// `instances`.
+    /// Builds a simulator whose top component declares ground port `0` and places `instances`.
     pub(crate) fn simulator(instances: &Value) -> Simulator {
         let document = json!({
             "format": "jolty-circuit", "version": 5, "top": "test",

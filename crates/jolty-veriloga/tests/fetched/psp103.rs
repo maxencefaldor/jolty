@@ -1,12 +1,11 @@
-//! PSP 103.8.2 with JUNCAP 200.6.2, compiled from its Verilog-A source as IHP's open
-//! process kit publishes it, against closed forms where its equations reduce to them.
+//! Closed-form verification of PSP 103.8.2 with JUNCAP 200.6.2 compiled from IHP open-PDK
+//! Verilog-A source.
 //!
-//! Its source and drain junctions are JUNCAP's: with recombination, trap-assisted and
-//! band-to-band tunnelling off, breakdown beyond their reach, and no sidewall or gate
-//! edge, at JUNCAP's reference temperature each is an ideal diode of its bottom area,
-//! `ab · idsatrbot · (exp(V/φ) − 1)`, `φ = kT/q` in the model's own constants. Its source
-//! and drain series resistances are `nrs · rsh` and `nrd · rsh`. Its QA tests, which the CMC
-//! hands out only through its own form, wait for the owner.
+//! With recombination, tunneling, and perimeter terms disabled at the JUNCAP reference
+//! temperature, the source and drain junctions reduce to ideal bottom-area diodes
+//! `ab * idsatrbot * (exp(V / phi) - 1)` with `phi = kT / q` using model constants. Source and
+//! drain series resistances equal `nrs * rsh` and `nrd * rsh`. Full CMC QA vectors remain
+//! gated behind CMC distribution terms.
 
 #![cfg(test)]
 
@@ -20,11 +19,8 @@ use jolty_models::testing::Bench;
 
 use crate::closed::Closed;
 
-/// How far a value the compiled model computes may lie from the closed form computed
-/// here, in units of the machine epsilon times its magnitude: the closed form takes the
-/// model's own operations, the exponential of the same argument, and the two scale the
-/// saturation current, the area and the polarity and sum the two junctions in their own
-/// orders, four roundings of half an epsilon each, with two to spare.
+/// Closed-form tolerance in units of machine epsilon times magnitude, allowing four rounding
+/// operations plus headroom.
 const CLOSED: Closed = Closed(4.0);
 
 /// Boltzmann's constant and the elementary charge as PSP defines them
@@ -32,17 +28,16 @@ const CLOSED: Closed = Closed(4.0);
 const KBOL: f64 = 1.380_650_5e-23;
 const QELE: f64 = 1.602_191_8e-19;
 
-/// JUNCAP's reference temperature, its default `TRJ`, in degrees Celsius.
+/// JUNCAP reference temperature (`TRJ` default), in degrees Celsius.
 const TRJ: f64 = 21.0;
 
-/// The terminals' local unknowns.
+/// Terminal local unknown indices.
 const D: usize = 0;
 const S: usize = 2;
 const B: usize = 3;
 
-/// The bulk's current into both junctions and its conductances to the source and the
-/// drain, with the source, drain and gate at the ground and the bulk from deep reverse
-/// to strong forward bias, both channel types, for three pairs of areas.
+/// Verifies bulk junction currents and conductances across reverse and forward bias for both
+/// channel types and three area pairs.
 #[test]
 fn its_junctions_reduced_to_ideal_diodes_are_ones() {
     // The junctions' temperature, as the model writes its reference one in kelvins.
@@ -92,8 +87,8 @@ fn its_junctions_reduced_to_ideal_diodes_are_ones() {
     }
 }
 
-/// The conductances of the source's and the drain's series resistances, for three sheet
-/// resistances and counts of squares.
+/// Verifies source and drain series conductances across three sheet resistances and square
+/// counts.
 #[test]
 fn its_series_resistances_are_their_squares() {
     for (rsh, nrs, nrd) in [(20.0, 2.0, 3.0), (7.5, 0.4, 0.4), (150.0, 1.0, 12.0)] {

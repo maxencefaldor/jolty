@@ -1,41 +1,39 @@
-//! Which instances of a kernel are linear: whose equations are their entries times their
-//! local unknowns, entries that the parameters and the temperature alone set, as
-//! [`jolty_models::Kernel::linear`] asks.
+//! Linearity analysis determining when a kernel instance satisfies
+//! [`jolty_models::Kernel::linear`], meaning all equations depend linearly on local unknowns
+//! with coefficients fixed by parameters and temperature.
 //!
-//! Each expression the evaluation computes has a form in the probes: zero, a constant, a
-//! linear one with no constant term, an affine one, or any other. A form may hold only
-//! when some static numbers are zero, as `vc · v² + 1` is a constant only when `vc` is:
-//! each expression has the forms it can take, each with the static expressions that must
-//! be zero for it. An instance is linear when each contribution its shape makes can be
-//! zero or linear, the static expressions it requires zero.
+//! Each expression is classified into a probe dependence form (`Zero`, `Constant`, `Linear`,
+//! `Affine`, or `Other`), together with any static expressions required to vanish for that
+//! form to hold. An instance is linear whenever every active contribution can take form `Zero`
+//! or `Linear` under its zero-conditions.
 
 use std::collections::BTreeMap;
 
 use crate::ir::{Expression, Module, Probe, Statement, constant};
 
-/// How an expression depends on the probes.
+/// Probe dependence classification of an expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Form {
     Zero,
     Constant,
-    /// A sum of constants times probes, with no constant term.
+    /// Sum of constants times probes with no constant term.
     Linear,
-    /// A linear form plus a constant.
+    /// Linear combination of probes plus a constant offset.
     Affine,
     Other,
 }
 
-/// The forms an expression can take, each with the static expressions that must be zero
-/// for it, the fewest for each form.
+/// Reachable [`Form`] variants for an expression, each mapped to the shortest set of static
+/// expressions required to vanish.
 pub(crate) type TermOptions = BTreeMap<Form, Vec<Expression>>;
 
-/// The options of an expression that is `form` whatever the static numbers are.
+/// Constructs [`TermOptions`] holding a single unconditional `form`.
 fn only(form: Form) -> TermOptions {
     TermOptions::from([(form, Vec::new())])
 }
 
-/// The options of each pair of an option of `left` and one of `right`, combined by
-/// `combine`, each requiring what both do.
+/// Combines every pair of options from `left` and `right` via `combine`, keeping the shortest
+/// zero-condition list per resulting [`Form`].
 fn product(
     left: &TermOptions,
     right: &TermOptions,
@@ -62,7 +60,7 @@ fn product(
     options
 }
 
-/// The form of a sum or a difference of `left` and `right`.
+/// Returns the combined [`Form`] of a sum or difference of `left` and `right`.
 fn sum(left: Form, right: Form) -> Form {
     match (left, right) {
         (Form::Other, _) | (_, Form::Other) => Form::Other,
@@ -73,7 +71,7 @@ fn sum(left: Form, right: Form) -> Form {
     }
 }
 
-/// The form of a product of `left` and `right`.
+/// Returns the combined [`Form`] of a product of `left` and `right`.
 fn times(left: Form, right: Form) -> Form {
     match (left, right) {
         (Form::Zero, _) | (_, Form::Zero) => Form::Zero,
@@ -82,28 +80,26 @@ fn times(left: Form, right: Form) -> Form {
     }
 }
 
-/// The form a variable has when its assignments give it `left` and `right`.
+/// Returns the joined [`Form`] across assignments or branches yielding `left` and `right`.
 fn either(left: Form, right: Form) -> Form {
     sum(left, right)
 }
 
-/// The forms of each dynamic variable of a module, found from its assignments.
+/// Fixed-point probe-dependence options for every dynamic variable in a module.
 pub(crate) struct Linearity<'m> {
     module: &'m Module,
     variables: Vec<TermOptions>,
 }
 
 impl<'m> Linearity<'m> {
-    /// The forms of `module`'s variables, each the join of its assignments' and zero,
-    /// where Verilog-A's variables start; `None` when they do not settle within as many
-    /// rounds as the forms' order allows each variable to rise.
+    /// Computes the fixed-point [`Form`] options for every dynamic variable in `module`,
+    /// returning `None` if iteration does not converge.
     pub(crate) fn new(module: &'m Module) -> Option<Self> {
         let mut linearity = Self {
             module,
             variables: vec![only(Form::Zero); module.variables.len()],
         };
-        // Each round raises a variable's form or adds what it requires, at most once per
-        // form and per static expression it can require; a bound of the rounds that many.
+        // Bound iteration count by variables times lattice height (five forms).
         let rounds = (module.variables.len() + 1) * 5;
         for _ in 0..rounds {
             let before = linearity.variables.clone();
@@ -143,7 +139,7 @@ impl<'m> Linearity<'m> {
         }
     }
 
-    /// The forms `expr` can take.
+    /// Returns the reachable [`Form`] options for `expr`.
     pub(crate) fn options(&self, expr: &Expression) -> TermOptions {
         if !self.module.is_dynamic(expr) {
             return match constant(expr) {
@@ -168,7 +164,7 @@ impl<'m> Linearity<'m> {
             Expression::Binary("*", left, right) => {
                 product(&self.options(left), &self.options(right), times)
             }
-            // A quotient keeps its numerator's form where its divisor is a constant.
+            // A quotient preserves its numerator form when the divisor is constant.
             Expression::Binary("/", left, right) => product(
                 &self.options(left),
                 &self.options(right),
@@ -180,11 +176,11 @@ impl<'m> Linearity<'m> {
                     }
                 },
             ),
-            // A choice the shape makes is one of its two forms.
+            // A shape-guarded conditional joins the forms of its two branches.
             Expression::Conditional(condition, then, otherwise) if shaped(condition) => {
                 product(&self.options(then), &self.options(otherwise), either)
             }
-            // A function of constants is a constant, of anything else any form.
+            // A function of constants stays constant; any dynamic argument yields `Other`.
             Expression::Call(_, arguments) => {
                 arguments
                     .iter()
@@ -198,14 +194,14 @@ impl<'m> Linearity<'m> {
                         })
                     })
             }
-            // A limited probe reads the memory, gmin the simulator's state, and the rest
-            // are no real numbers.
+            // Limited probes read memory, gmin reads simulator state, and remaining expressions
+            // are non-real.
             _ => only(Form::Other),
         }
     }
 }
 
-/// Whether `condition` reads the shape's conditions alone.
+/// Returns `true` when `condition` depends solely on kernel shape predicates.
 fn shaped(condition: &Expression) -> bool {
     match condition {
         Expression::Shape(_) => true,

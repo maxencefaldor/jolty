@@ -1,6 +1,5 @@
-//! The static condensation of a pattern's matrices: some of their unknowns eliminated, each
-//! by its own pivot, before the sparse factorization of the rest, and recovered after each
-//! solve.
+//! Static condensation of sparse circuit matrices, eliminating pre-selected unknowns by fixed
+//! pivots before sparse factorization and recovering them after each solve.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -9,94 +8,74 @@ use std::sync::Arc;
 use super::{LinearError, NONE, Scalar};
 use crate::{Entry, Pattern, PatternBuilder};
 
-/// Which unknowns of a pattern's matrices are eliminated before the sparse factorization,
-/// each by its pivot, and the pattern of the unknowns kept.
+/// Symbolic static-condensation plan identifying eliminated unknowns, their pivots, and the
+/// reduced Schur-complement [`Pattern`] of retained unknowns.
 ///
-/// Eliminating the unknown `e` by the pivot `p = A_re` of the row `r`, its own or another's,
-/// subtracts `A_ke/p` times the row `r` from every other row `k` with an entry in the column
-/// `e`, and leaves out the row `r` and the column `e`: one step of Gaussian elimination
-/// with a pivot fixed in advance. The eliminations, in turn, leave the kept unknowns a Schur
-/// complement, which the sparse factorization factors; a system `A x = b` is then solved as
-/// the kept unknowns' system with the right-hand side the same steps make of `b`, and each
-/// unknown eliminated is recovered from its pivot's row, the last first: the static
-/// condensation of finite elements (Wilson, "The static condensation algorithm",
-/// International Journal for Numerical Methods in Engineering 8(1), 1974). A pivot off the
-/// diagonal leaves its row `e` among the kept equations in the place of the unknown `r`.
+/// Eliminating unknown `e` using pivot `p = A_re` subtracts `A_ke / p` times row `r` from
+/// every other row `k` with an entry in column `e`, omitting row `r` and column `e`. Repeating
+/// this step forms a Schur complement on the retained unknowns, matching finite-element static
+/// condensation (Wilson, "The static condensation algorithm", International Journal for
+/// Numerical Methods in Engineering 8(1), 1974). An off-diagonal pivot places row `e` in the
+/// retained equation slot of unknown `r`.
 ///
-/// The pivots given are those their matrices' makers prove to be at least every other entry
-/// of their columns, so that each passes the factorization's threshold without a search,
-/// and each multiplier `A_ke/p` is at most 1. Of them, in increasing order of their columns,
-/// one is eliminated only if its pivot is stored, its row and its column are no other's
-/// eliminated before it, and its column is still as proven: every elimination before it
-/// either left the column alone or moved the column's entry in the row it eliminated by,
-/// times a multiplier of at most 1, into rows where the column held nothing, so that no
-/// entry grew past the pivot. A pivot off the diagonal is taken only if its row is no other
-/// pivot's column and its column no other pivot's row. The others stay among the unknowns
-/// kept.
+/// Candidate pivots are assumed to dominate every other entry in their columns so multipliers
+/// stay bounded by 1 without runtime pivot search. Candidates are accepted in ascending column
+/// order only if the pivot is stored, its row and column remain uneliminated, and prior
+/// eliminations did not touch existing entries in that column (leaving dominance intact).
+/// Off-diagonal pivots are accepted only when their row and column do not appear as another
+/// candidate's column or row; remaining unknowns stay in the kept system.
 ///
-/// Every sum runs in one order: the unknowns eliminated in increasing order, each one's
-/// column in increasing row and its row in increasing column.
+/// All accumulations execute in a fixed order: ascending eliminated column, ascending column
+/// row index, and ascending pivot-row column index.
 pub struct Condensation {
-    /// The pattern of the matrices condensed.
+    /// Original uncondensed matrix pattern.
     full: Arc<Pattern>,
-    /// The pattern of the kept unknowns' matrix: the full pattern's entries among them, and
-    /// those the eliminations fill.
+    /// Reduced Schur-complement pattern over retained unknowns (original plus fill entries).
     kept: Arc<Pattern>,
-    /// The full pattern's unknown of each kept unknown, in increasing order.
+    /// Full-system unknown index for each retained unknown, in ascending order.
     unknowns: Vec<usize>,
-    /// The full pattern's row of each kept unknown's equation: its own, or the row of an
-    /// unknown eliminated by another's row.
+    /// Full-system equation row index corresponding to each retained unknown.
     rows: Vec<usize>,
-    /// The full matrix's slot of each value the eliminations write, or [`NONE`] for one
-    /// only they fill: the kept unknowns' matrix, then each entry of a row or a column
-    /// eliminated later that an elimination writes to first.
+    /// Full-matrix slot for each written value (or [`NONE`] for pure fill), starting with the
+    /// kept matrix followed by later-eliminated intermediates.
     sources: Vec<usize>,
-    /// Each unknown eliminated, in increasing order.
+    /// Accepted elimination steps in ascending eliminated-column order.
     eliminated: Vec<Eliminated>,
-    /// The entries of each eliminated unknown's column but its pivot, unknown after
-    /// unknown, each one's in increasing row: their rows and their places among the values
-    /// worked on.
+    /// Non-pivot entries of each eliminated column (ascending row), concatenated across steps.
     column: Vec<Reference>,
-    /// The entries of each eliminated unknown's pivot row but its pivot, unknown after
-    /// unknown, each one's in increasing column: their columns and their places among the
-    /// values worked on.
+    /// Non-pivot entries of each eliminated pivot row (ascending column), concatenated across
+    /// steps.
     row: Vec<Reference>,
-    /// Where among the values the eliminations write each product of an elimination goes:
-    /// unknown after unknown, for each entry of its column, for each entry of its row.
+    /// Target write-buffer indices for outer-product updates, concatenated across steps.
     updates: Vec<usize>,
-    /// The eliminations whose pivots' rows, and those whose unknowns, an elimination before
-    /// reads, by their indices, in increasing order.
+    /// Elimination indices whose pivot rows and columns are read by earlier steps, sorted.
     shared: (Vec<usize>, Vec<usize>),
 }
 
-/// An entry of an eliminated unknown's column or row, as an elimination reads it: where a
-/// solve keeps the value of its row, or of its column, and where its own value lies.
+/// Entry reference within an eliminated column or row, pairing its solve-buffer index with its
+/// matrix value location.
 #[derive(Debug, Clone, Copy)]
 struct Reference {
-    /// Where a solve keeps the value of the entry's row, for an entry of a column, or of
-    /// its column, for an entry of a row: a kept unknown's index, or the number of kept
-    /// unknowns and the elimination's index among the eliminated, for a pivot's row or an
-    /// eliminated unknown.
+    /// Index in the solve buffer: a retained unknown index, or `kept_count + step_index` for a
+    /// shared eliminated row or unknown.
     solved: usize,
-    /// Where its value lies.
+    /// Storage address of the matrix entry value.
     at: At,
 }
 
-/// Where an elimination reads a value: at its slot in the full matrix, where no elimination
-/// before writes it, as most are, or, with [`WRITTEN`] set, among the values the
-/// eliminations write.
+/// Matrix entry address pointing either to a full-matrix slot or (when [`WRITTEN`] is set) to
+/// the elimination write buffer.
 #[derive(Debug, Clone, Copy)]
 struct At(usize);
 
-/// The bit of an [`At`] that says it lies among the values the eliminations write: no slot
-/// reaches it, as no vector holds that many values.
+/// High-bit tag on [`At`] marking an entry stored in the elimination write buffer rather than
+/// the input matrix.
 ///
-/// Derivation: high bit `1 << (usize::BITS - 1)` of `usize`; disjoint from all valid Rust
-/// `Vec` indices, which cannot exceed `isize::MAX`.
+/// Derivation: high bit `1 << (usize::BITS - 1)` of `usize`, disjoint from valid Rust `Vec`
+/// indices (bounded by `isize::MAX`).
 const WRITTEN: usize = 1 << (usize::BITS - 1);
 
-/// An elimination as it is laid out: its unknown, its pivot's row and where its pivot
-/// lies, where its column's and its row's entries lie, and where its updates begin.
+/// Intermediate symbolic layout for one elimination step before final slot resolution.
 struct Laid {
     unknown: usize,
     row: usize,
@@ -106,8 +85,8 @@ struct Laid {
     updates: usize,
 }
 
-/// One accepted elimination: its pivot's row and column, and the sorted active rows of its
-/// column and columns of its row at the moment it was eliminated.
+/// Accepted elimination step recording its pivot `(row, unknown)` and sorted active column
+/// rows and row columns at elimination time.
 struct Step {
     row: usize,
     unknown: usize,
@@ -125,10 +104,8 @@ fn slot_in(starts: &[usize], rows: &[usize], row: usize, column: usize) -> Optio
         .map(|offset| start + offset)
 }
 
-/// The eliminations `laid` out, each pivot where `resolve` puts it, each flagged by the
-/// entries of `column` and `row`, every elimination's, of `count` kept unknowns: whether one
-/// before it reads its pivot's row or its unknown, and whether it reads the full matrix
-/// alone.
+/// Finalizes laid-out eliminations by resolving pivot addresses and flagging shared
+/// solve-buffer dependencies and input-only (`simple`) steps.
 fn eliminations(
     laid: Vec<Laid>,
     (column, row): (&[Reference], &[Reference]),
@@ -177,9 +154,8 @@ fn eliminations(
         .collect()
 }
 
-/// Where an entry lies while the eliminations are laid out: in the full matrix at its
-/// slot, at a claim among the kept entries, or after them, among those of rows and columns
-/// eliminated later.
+/// Pre-resolution entry location: a full-matrix slot, a claimed kept-pattern entry, or an
+/// intermediate entry eliminated by a later step.
 #[derive(Debug, Clone, Copy)]
 enum Place {
     Full(usize),
@@ -188,7 +164,7 @@ enum Place {
 }
 
 impl At {
-    /// The value at this place, of the full matrix's `values` and the `written` ones.
+    /// Reads the scalar at this address from either `values` or `written`.
     #[inline]
     fn of<T: Copy>(self, values: &[T], written: &[T]) -> T {
         if self.0 & WRITTEN == 0 {
@@ -199,14 +175,14 @@ impl At {
     }
 }
 
-/// How an elimination reads its values: [`Full`], from the full matrix alone, for one that
-/// reads nothing an elimination before it wrote, or [`Either`], from wherever each lies.
+/// Strategy for reading matrix values during condensation: [`Full`] for input-only steps and
+/// [`Either`] when prior steps may have written updated values.
 trait Read {
-    /// The value at `at`, of the full matrix's `values` and the `written` ones.
+    /// Reads the value addressed by `at` from `values` or `written`.
     fn read<T: Copy>(at: At, values: &[T], written: &[T]) -> T;
 }
 
-/// Reads the full matrix alone.
+/// Value reader accessing the unmodified input matrix directly.
 struct Full;
 
 impl Read for Full {
@@ -216,7 +192,7 @@ impl Read for Full {
     }
 }
 
-/// Reads the full matrix or the values written, as each [`At`] says.
+/// Value reader dispatching between the input matrix and the write buffer via [`At`].
 struct Either;
 
 impl Read for Either {
@@ -226,48 +202,43 @@ impl Read for Either {
     }
 }
 
-/// One unknown eliminated: where its pivot, its column, its row and its updates lie.
+/// Metadata for a single eliminated unknown, indexing its pivot, column, row, and updates.
 #[derive(Debug, Clone, Copy)]
 struct Eliminated {
-    /// The unknown, in the full pattern: its column.
+    /// Column index of the eliminated unknown in the full pattern.
     unknown: usize,
-    /// The row of its pivot.
+    /// Pivot equation row index in the full pattern.
     row: usize,
-    /// Where its pivot lies.
+    /// Storage address of the pivot entry.
     pivot: At,
-    /// Where its column's entries lie among [`Condensation::column`].
+    /// Slice bounds in [`Condensation::column`] for this unknown's column entries.
     column: (usize, usize),
-    /// Where its row's entries lie among [`Condensation::row`].
+    /// Slice bounds in [`Condensation::row`] for this unknown's pivot-row entries.
     entries: (usize, usize),
-    /// Where its updates begin among [`Condensation::updates`].
+    /// Starting offset in [`Condensation::updates`] for this step's outer-product updates.
     updates: usize,
-    /// Whether an elimination before it reads the value of its pivot's row, as a column's
-    /// entry there, and of its unknown, as a row's entry there: a solve keeps what it makes
-    /// of those after the kept unknowns' values, and else reads and writes the right-hand
-    /// side alone, as an unknown that shares nothing with another needs.
+    /// Flags `(row_shared, unknown_shared)` indicating whether earlier steps reference this
+    /// pivot row or unknown in the solve buffer instead of directly in `right_hand_side`.
     shared: (bool, bool),
-    /// Whether every value it reads, its pivot and the other entries of its column and its
-    /// row, is the full matrix's, which no elimination before it wrote, as for an unknown
-    /// that shares nothing with another eliminated.
+    /// Flag indicating that every entry read by this step comes directly from the unmodified
+    /// full matrix.
     simple: bool,
 }
 
 impl Eliminated {
-    /// The range of its column's entries.
+    /// Returns the index range of this step's column entries in [`Condensation::column`].
     const fn column(&self) -> std::ops::Range<usize> {
         self.column.0..self.column.1
     }
 
-    /// The range of its row's entries.
+    /// Returns the index range of this step's pivot-row entries in [`Condensation::row`].
     const fn entries(&self) -> std::ops::Range<usize> {
         self.entries.0..self.entries.1
     }
 }
 
-/// What a factorization of a condensed matrix keeps for its solves: the values the
-/// eliminations wrote, the kept unknowns' matrix first, each eliminated unknown's pivot,
-/// the multipliers of its column, each entry over the pivot, and the entries of its row,
-/// in the order [`Condensation`] lists them.
+/// Numerical state saved during [`Condensation::condense`] for subsequent solves: written
+/// Schur-complement values, pivots, column multipliers, and pivot-row entries.
 #[derive(Debug, Clone)]
 pub(super) struct Saved<T> {
     written: Vec<T>,
@@ -277,7 +248,7 @@ pub(super) struct Saved<T> {
 }
 
 impl<T> Saved<T> {
-    /// Nothing saved yet.
+    /// Creates an empty [`Saved`] buffer with no allocated entries.
     pub(super) const fn new() -> Self {
         Self {
             written: Vec::new(),
@@ -288,26 +259,26 @@ impl<T> Saved<T> {
     }
 }
 
-/// Where each unknown and each equation of a full pattern lies once some of its unknowns
-/// are eliminated, each by its pivot's row, in turn.
+/// Index mapping between full-system rows/columns and reduced retained-system indices after
+/// condensation.
 struct Numbering {
-    /// The kept index of each unknown, or [`NONE`] for one eliminated.
+    /// Retained index for each full unknown, or [`NONE`] when eliminated.
     index: Vec<usize>,
-    /// The full pattern's unknown of each kept one, in increasing order.
+    /// Full unknown index for each retained unknown, in ascending order.
     unknowns: Vec<usize>,
-    /// The kept index of each row: its own unknown's, or, for the row of an unknown
-    /// eliminated by another's row, that row's unknown's; [`NONE`] for a pivot's row.
+    /// Retained index for each full row (remapped for off-diagonal pivots), or [`NONE`] for
+    /// eliminated pivot rows.
     row_index: Vec<usize>,
-    /// The full pattern's row of each kept index.
+    /// Full row index corresponding to each retained index.
     rows: Vec<usize>,
-    /// The elimination each row is the pivot's row of, and each column the unknown of, or
+    /// Elimination step indices `(row_step, column_step)` for eliminated rows and columns, or
     /// [`NONE`].
     eliminated: (Vec<usize>, Vec<usize>),
 }
 
 impl Numbering {
-    /// The numbering of a full pattern of `dimension` unknowns once each of `taken`, a
-    /// pivot's row and column, is eliminated.
+    /// Builds full-to-retained index maps for a matrix of `dimension` unknowns given accepted
+    /// elimination steps `taken`.
     fn new(dimension: usize, taken: &[Step]) -> Self {
         let (mut eliminated_row, mut eliminated_column) =
             (vec![NONE; dimension], vec![NONE; dimension]);
@@ -345,15 +316,14 @@ impl Numbering {
         }
     }
 
-    /// Claims in `builder` the kept unknowns' entry at the full pattern's `row` and
-    /// `column`, if both are kept.
+    /// Claims `(row, column)` in `builder` when both the row and column are retained.
     fn claim(&self, builder: &mut PatternBuilder, (row, column): (usize, usize)) -> Option<Entry> {
         let (row, column) = (self.row_index[row], self.index[column]);
         (row != NONE && column != NONE).then(|| builder.entry(row, column))
     }
 
-    /// Where a solve keeps the value of `row`: its kept index, or after the kept unknowns,
-    /// that of its elimination.
+    /// Returns the solve-buffer index for `row`: its retained index, or `kept + step` if
+    /// eliminated.
     fn solved_row(&self, row: usize) -> usize {
         match self.eliminated.0[row] {
             NONE => self.row_index[row],
@@ -361,7 +331,7 @@ impl Numbering {
         }
     }
 
-    /// Where a solve keeps the value of `column`'s unknown, as [`Numbering::solved_row`].
+    /// Returns the solve-buffer index for `column`, analogous to [`Numbering::solved_row`].
     fn solved_column(&self, column: usize) -> usize {
         match self.eliminated.1[column] {
             NONE => self.index[column],
@@ -370,8 +340,8 @@ impl Numbering {
     }
 }
 
-/// The entries of a pattern as eliminations change it: those of the full pattern, which
-/// it searches by column, and those the eliminations fill, by row and by column.
+/// Dynamic sparsity tracker combining the original pattern with fill-in added by accepted
+/// eliminations.
 struct Evolving<'a> {
     starts: &'a [usize],
     rows: &'a [usize],
@@ -379,7 +349,7 @@ struct Evolving<'a> {
     filled: HashSet<(usize, usize)>,
     filled_rows: HashMap<usize, Vec<usize>>,
     filled_columns: HashMap<usize, Vec<usize>>,
-    /// Whether each row, and each column, has been eliminated.
+    /// Flags `(rows_gone, columns_gone)` marking eliminated rows and columns.
     gone: (Vec<bool>, Vec<bool>),
 }
 
@@ -398,18 +368,17 @@ impl<'a> Evolving<'a> {
         }
     }
 
-    /// The full pattern's slot at `row` and `column`, if it stores one.
+    /// Looks up the full-pattern slot at `(row, column)`, if stored.
     fn slot(&self, row: usize, column: usize) -> Option<usize> {
         slot_in(self.starts, self.rows, row, column)
     }
 
-    /// Whether the pattern holds an entry at `row` and `column`, of its own or filled.
+    /// Returns whether `(row, column)` exists in the original pattern or accumulated fill-in.
     fn holds(&self, row: usize, column: usize) -> bool {
         self.slot(row, column).is_some() || self.filled.contains(&(row, column))
     }
 
-    /// The rows of `column`'s entries, but `pivot`'s and those eliminated, in increasing
-    /// order.
+    /// Returns sorted active row indices in `column`, excluding `pivot` and eliminated rows.
     fn column(&self, column: usize, pivot: usize) -> Vec<usize> {
         let own = &self.rows[self.starts[column]..self.starts[column + 1]];
         let filled = self.filled_rows.get(&column).map_or(&[][..], Vec::as_slice);
@@ -423,8 +392,7 @@ impl<'a> Evolving<'a> {
         rows
     }
 
-    /// The columns of `row`'s entries, but `pivot`'s and those eliminated, in increasing
-    /// order.
+    /// Returns sorted active column indices in `row`, excluding `pivot` and eliminated columns.
     fn row(&self, row: usize, pivot: usize) -> Vec<usize> {
         let own = self.full.row(row).iter().map(|&(_, column)| column);
         let filled = self.filled_columns.get(&row).map_or(&[][..], Vec::as_slice);
@@ -436,17 +404,15 @@ impl<'a> Evolving<'a> {
         columns
     }
 
-    /// Fills the entry at `row` and `column`.
+    /// Records a new fill-in entry at `(row, column)`.
     fn fill(&mut self, row: usize, column: usize) {
         self.filled.insert((row, column));
         self.filled_rows.entry(column).or_default().push(row);
         self.filled_columns.entry(row).or_default().push(column);
     }
 
-    /// Eliminates the column `unknown` by the row `row`: fills each product of the other
-    /// entries of its column and its row where the pattern held nothing, clears `proven` for
-    /// every column where a product landed on an entry held before, and returns the sorted
-    /// active rows and columns of the elimination.
+    /// Eliminates `unknown` using pivot `row`, adding fill-in, clearing `proven` for columns
+    /// modified in place, and returning sorted active `(rows, columns)`.
     fn eliminate(
         &mut self,
         (row, unknown): (usize, usize),
@@ -558,9 +524,8 @@ impl Layout {
 }
 
 impl Condensation {
-    /// The condensation of `full`'s matrices that eliminates those of the `pivots`, each a
-    /// row and the column of an unknown, that it can, as [`Condensation`] says. The pivot of
-    /// each is to be at least every other entry of its column in every matrix condensed.
+    /// Builds a [`Condensation`] for `full`, accepting every column-dominant `(row, column)`
+    /// candidate in `pivots` whose dominance remains proven through elimination.
     #[must_use]
     pub fn new(full: Arc<Pattern>, pivots: &[(usize, usize)]) -> Self {
         let dimension = full.dimension();
@@ -604,7 +569,7 @@ impl Condensation {
         Self::from_taken(full, &taken)
     }
 
-    /// The condensation of `full`'s matrices that eliminates each step of `taken` in order.
+    /// Assembles the symbolic [`Condensation`] tables for accepted steps `taken` on `full`.
     fn from_taken(full: Arc<Pattern>, taken: &[Step]) -> Self {
         let numbering = Numbering::new(full.dimension(), taken);
         let Layout {
@@ -664,37 +629,36 @@ impl Condensation {
         }
     }
 
-    /// The pattern of the matrices condensed.
+    /// Returns the original uncondensed matrix pattern.
     #[must_use]
     pub fn full(&self) -> &Arc<Pattern> {
         &self.full
     }
 
-    /// The pattern of the kept unknowns' matrix, which the sparse factorization factors.
+    /// Returns the reduced Schur-complement pattern factored by sparse LU.
     #[must_use]
     pub fn kept(&self) -> &Arc<Pattern> {
         &self.kept
     }
 
-    /// The number of unknowns eliminated.
+    /// Returns the number of eliminated unknowns.
     #[must_use]
     pub fn eliminated(&self) -> usize {
         self.eliminated.len()
     }
 
-    /// The full pattern's unknown of the kept unknown at `index`.
+    /// Maps retained unknown `index` back to its full-system unknown index.
     pub(super) fn unknown(&self, index: usize) -> usize {
         self.unknowns[index]
     }
 
-    /// Writes into `saved` what the eliminations make of the full matrix whose stored
-    /// values are `values`, and what its solves need, and returns the kept unknowns'
-    /// matrix.
+    /// Eliminates all condensed unknowns from `values` into `saved` and returns the slice of
+    /// reduced Schur-complement matrix entries.
     ///
     /// # Errors
     ///
     /// Returns [`LinearError::Singular`] naming an eliminated unknown whose pivot is zero
-    /// or not finite.
+    /// or non-finite.
     pub(super) fn condense<'a, T: Scalar>(
         &self,
         values: &[T],
@@ -759,20 +723,17 @@ impl Condensation {
         Ok(())
     }
 
-    /// The number of values a solve keeps, as [`Condensation::reduce`] and
-    /// [`Condensation::expand`] read and write them: one per kept unknown, then one per
-    /// unknown eliminated.
+    /// Returns the required solve-buffer length for [`Condensation::reduce`] and
+    /// [`Condensation::expand`] (retained unknowns plus eliminated unknowns).
     pub(super) fn solved(&self) -> usize {
         self.unknowns.len() + self.eliminated.len()
     }
 
-    /// Writes into `into`, of [`Condensation::solved`] values, the right-hand side of the
-    /// kept unknowns' system of the full system whose right-hand side is `right_hand_side`,
-    /// one value per kept unknown, as the eliminations make it of `b`, and after them what
-    /// each elimination left of its pivot's row's value; or, when `transposed`, the right-hand
-    /// side of the transposed kept system, each pivot's row `r` taking each other column
-    /// `c` of the row's `A_rc/p` times its unknown's value, and after them what each left of
-    /// its unknown's.
+    /// Reduces `right_hand_side` into `into` (of length [`Condensation::solved`]) for the
+    /// kept-unknown system or its transpose.
+    ///
+    /// Forward elimination updates retained entries and any shared eliminated rows (or shared
+    /// eliminated columns when `transposed` is true).
     pub(super) fn reduce<T: Scalar>(
         &self,
         saved: &Saved<T>,
@@ -828,11 +789,11 @@ impl Condensation {
         }
     }
 
-    /// Writes into `right_hand_side` the solution of the full system from `solved`, the kept
-    /// unknowns' solution and what `reduce` kept beyond it, each eliminated unknown recovered
-    /// from its pivot's row, the last first: `(b_r − Σ A_rc x_c)/p`, or, when `transposed`,
-    /// `b_e/p − Σ (A_ke/p) x_k` for the row `r` of the pivot, where `b` is still
-    /// `right_hand_side`'s value for a row or an unknown `reduce` kept nothing of.
+    /// Recovers all eliminated unknowns into `right_hand_side` from the kept solution and
+    /// reduced buffer in `solved` (in reverse elimination order).
+    ///
+    /// Evaluates `(b_r − Σ A_rc x_c) / p` for direct solves, or `b_e / p − Σ (A_ke / p) x_k`
+    /// when `transposed` is true, reading unshared entries directly from `right_hand_side`.
     pub(super) fn expand<T: Scalar>(
         &self,
         saved: &Saved<T>,
@@ -905,7 +866,7 @@ mod tests {
     use super::*;
     use crate::lu::{Ordering, SparseLu};
 
-    /// The pattern with an entry at each of `positions`, of `dimension` unknowns.
+    /// Builds a [`Pattern`] of `dimension` unknowns containing the given `(row, column)` entries.
     fn pattern(dimension: usize, positions: &[(usize, usize)]) -> Arc<Pattern> {
         let mut builder = PatternBuilder::new();
         for &(row, column) in positions {
@@ -927,9 +888,8 @@ mod tests {
 
     #[test]
     fn keeps_an_unknown_whose_column_an_elimination_added_to() {
-        // Eliminating 1 adds its row's (1, 2) times its column's (0, 1) to (0, 2), an entry
-        // of 2's column, which 2's proof bounds no longer: 2 stays. 3, alone in its row and
-        // column but for 0, goes.
+        // Eliminating 1 modifies existing entry (0, 2), invalidating column 2's dominance
+        // proof so unknown 2 stays kept; unknown 3 couples only to 0 and is eliminated.
         let full = pattern(
             4,
             &[
@@ -955,9 +915,9 @@ mod tests {
 
     #[test]
     fn eliminates_a_series_current_by_its_inner_nodes_row() {
-        // A terminal 0 of conductance 1, an inner node 1 of conductance 2, and the current
-        // 2 through 0.5 ohm between them: the current goes by the inner node's row, whose
-        // entry is −1, and the current's row takes the inner node's place.
+        // Terminal 0 (conductance 1), inner node 1 (conductance 2), and current 2 through
+        // 0.5 ohm between them. Current 2 eliminates via node 1's row (entry −1), and the
+        // current row takes node 1's place.
         let positions = [
             ((0, 0), 1.0),
             ((0, 2), 1.0),

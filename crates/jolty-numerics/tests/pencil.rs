@@ -4,8 +4,8 @@
 use jolty_numerics::{Complex64, Eigenvalue, generalized_eigenvalues};
 use proptest::prelude::*;
 
-/// The finite eigenvalues of `found`, those whose denominator is not negligible beside their
-/// numerator.
+/// Returns the finite generalized eigenvalues from `found` whose denominator is non-negligible
+/// relative to their numerator.
 fn finite(found: &[Eigenvalue]) -> Vec<Complex64> {
     found
         .iter()
@@ -14,8 +14,8 @@ fn finite(found: &[Eigenvalue]) -> Vec<Complex64> {
         .collect()
 }
 
-/// Asserts that every one of `expected` lies within `tolerance` of its own one of `found`,
-/// relative to its magnitude, taking each of `found` once, nearest first.
+/// Asserts that each value in `expected` matches a distinct value in `found` within relative
+/// `tolerance`, greedily pairing nearest values first.
 fn assert_match(found: &[Complex64], expected: &[Complex64], tolerance: f64) {
     assert_eq!(
         found.len(),
@@ -40,10 +40,9 @@ fn assert_match(found: &[Complex64], expected: &[Complex64], tolerance: f64) {
 
 #[test]
 fn a_pencil_faer_did_not_converge_on_agrees_with_lapack() {
-    // The pencil of a random circuit of 193 devices, on which faer 0.24's QZ iteration ran
-    // out of sweeps on Apple silicon. Its eigenvalues' condition numbers reach 4.4e10, so
-    // rounding alone may move them by that times ε, 1e-5 of their magnitude; this
-    // iteration and LAPACK's agree within 4e-8.
+    // Pencil from a random 193-device circuit where faer 0.24's QZ exhausted sweeps on Apple
+    // silicon. Eigenvalue condition numbers reach 4.4e10, so rounding alone can shift values
+    // by up to 1e-5 relative; this QZ implementation agrees with LAPACK within 4e-8.
     let text = include_str!("pencils/stalled.txt");
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let n: usize = lines
@@ -69,8 +68,8 @@ fn a_pencil_faer_did_not_converge_on_agrees_with_lapack() {
     assert_match(&finite(&found), &expected, 1e-5);
 }
 
-/// A real orthogonal matrix of `n` rows, column-major: the product of plane rotations by
-/// `angles`, each turning a pair of neighboring rows, cycling through them.
+/// Constructs a column-major `n × n` real orthogonal matrix by applying Givens rotations for
+/// `angles` across cycling adjacent row pairs.
 fn orthogonal(n: usize, angles: &[f64]) -> Vec<f64> {
     let mut matrix = vec![0.0; n * n];
     for index in 0..n {
@@ -91,7 +90,7 @@ fn orthogonal(n: usize, angles: &[f64]) -> Vec<f64> {
     matrix
 }
 
-/// `left · diagonal · right` of `n` rows, column-major.
+/// Computes column-major `left · diag(diagonal) · right` for `n × n` factors.
 fn transformed(n: usize, left: &[f64], diagonal: &[f64], right: &[f64]) -> Vec<f64> {
     let mut product = vec![0.0; n * n];
     for column in 0..n {
@@ -105,10 +104,8 @@ fn transformed(n: usize, left: &[f64], diagonal: &[f64], right: &[f64]) -> Vec<f
 }
 
 proptest! {
-    /// A diagonal pencil `(diag(α), diag(β))` turned by orthogonal matrices on both sides
-    /// keeps its eigenvalues `α / β`, infinite where `β` is zero; with entries of order one
-    /// and `β` at least a tenth where it is not zero, the rotations' rounding moves the
-    /// finite ones by far less than 1e-9.
+    /// Verifies that orthogonal equivalence preserves finite and infinite eigenvalues of a
+    /// diagonal pencil `(diag(α), diag(β))` within `1e-9` relative tolerance.
     #[test]
     fn eigenvalues_survive_orthogonal_equivalence(
         pairs in proptest::collection::vec(

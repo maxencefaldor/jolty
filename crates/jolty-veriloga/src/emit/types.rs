@@ -17,8 +17,8 @@ pub(super) const PRODUCT: u8 = 5;
 pub(super) const UNARY: u8 = 6;
 pub(super) const ATOM: u8 = 7;
 
-/// The clippy bound on a function's lines, its `too-many-lines-threshold`, beyond which a
-/// generated function says why it is long.
+/// Clippy `too-many-lines-threshold` above which generated functions emit an
+/// `#[expect(clippy::too_many_lines)]` attribute.
 const LONGEST: usize = 100;
 
 /// Returns `code`, parenthesized unless `precedence` is at least `least`.
@@ -128,44 +128,44 @@ impl CodeWriter {
     }
 }
 
-/// What a part of the generated code computes for.
+/// Emission target controlling variable liveness and expression lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
-    /// The static numbers, in `prepare`.
+    /// Static preparation values in `prepare`.
     Prepare,
-    /// The static numbers and the facts `$warning` and its like state, in `warnings`.
+    /// Static preparation values and `$warning` messages in `warnings`.
     Warnings,
-    /// The contributions and their derivatives, in `evaluate`.
+    /// Dynamic branch contributions and derivatives in `evaluate`.
     Evaluate,
-    /// The noise sources, in `noise`.
+    /// Noise source spectral densities in `noise`.
     Noise,
-    /// An analog function that limits a probe, on plain floats.
+    /// Analog limiting function over plain `f64` values.
     Function,
 }
 
 impl Mode {
-    /// Whether the mode computes the static numbers, as preparation does.
+    /// Returns `true` for static preparation modes ([`Mode::Prepare`] and [`Mode::Warnings`]).
     pub(super) const fn prepares(self) -> bool {
         matches!(self, Self::Prepare | Self::Warnings)
     }
 }
 
-/// The kind of a generated expression.
+/// Rust value representation of a lowered expression.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Kind {
     Bool,
     Integer,
-    /// A plain float: a constant, which the compiler folds, or a number of the
-    /// simulator's, such as gmin.
+    /// Plain `f64` literal (known constant) or simulator scalar such as `gmin`.
     Float(Option<f64>),
-    /// A number of the kernel's type `R`, with no derivative by a probe.
+    /// Generic kernel scalar `R` carrying parameter sensitivities without probe derivatives.
     Real,
-    /// A dual number carrying the derivatives by the probes listed, in their order.
+    /// Dual number carrying derivatives with respect to the listed probes in order.
     Dual(Vec<Probe>),
 }
 
 impl Kind {
-    /// The emitted kind of a scalar Verilog-A type, using plain `f64` when `plain` is set.
+    /// Maps Verilog-A scalar [`Type`] to its emitted [`Kind`], using plain `f64` when `plain` is
+    /// `true`.
     pub(super) const fn from_type(kind: Type, plain: bool) -> Self {
         match (kind, plain) {
             (Type::Integer, _) => Self::Integer,
@@ -175,8 +175,7 @@ impl Kind {
     }
 }
 
-/// A generated expression: its code, the precedence of its outermost operator, and its
-/// kind.
+/// Generated Rust expression with its outermost operator precedence and [`Kind`].
 #[derive(Debug, Clone)]
 pub(super) struct Operand {
     pub(super) code: String,
@@ -193,13 +192,13 @@ impl Operand {
         }
     }
 
-    /// The code, parenthesized unless its precedence is at least `least`.
+    /// Returns `self.code`, parenthesized when its precedence is below `least`.
     pub(super) fn at(&self, least: u8) -> String {
         parenthesize(&self.code, self.precedence, least)
     }
 }
 
-/// A generated statement, before the printer simplifies and indents it.
+/// Structured Rust statement prior to simplification and indentation.
 #[derive(Debug, Clone)]
 pub(super) enum Rust {
     Line(String),
@@ -207,8 +206,8 @@ pub(super) enum Rust {
     While(String, Vec<Self>),
 }
 
-/// What an instance requires to be linear: nothing, the impossible, or a disjunction
-/// (`||`) of one or more clauses `(code, precedence)`.
+/// Boolean condition required for a kernel instance to be linear: unconditional, impossible,
+/// or a disjunction (`||`) of `(code, precedence)` clauses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Requirement {
     Always,
@@ -238,7 +237,7 @@ impl Requirement {
         }
     }
 
-    /// Both this requirement and `other`.
+    /// Conjoins `self` with `other` using logical AND.
     pub(super) fn and(self, other: Self) -> Self {
         match (self, other) {
             (Self::Never, _) | (_, Self::Never) => Self::Never,
@@ -259,8 +258,8 @@ impl Requirement {
         }
     }
 
-    /// `first` where `condition` holds, and `second` where it does not, factoring any
-    /// common disjuncts so `if c { a || b } else { b }` simplifies to `(c && a) || b`.
+    /// Combines branch requirements `first` (when `condition` holds) and `second` (otherwise),
+    /// factoring common disjuncts so `if c { a || b } else { b }` simplifies to `(c && a) || b`.
     pub(super) fn choose(condition: &str, first: Self, second: Self) -> Self {
         let not = format!("!{condition}");
         let prepend = |prefix: String, precedence: u8, mut clauses: Vec<(String, u8)>| {
@@ -337,8 +336,7 @@ pub(super) enum Place {
     Current(usize),
 }
 
-/// What a contribution makes its branch: a flow, a potential, or a collapse of its
-/// internal node into the other.
+/// Contribution role of a branch: flow, potential, or internal-node collapse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Site {
     Flow,
@@ -346,17 +344,18 @@ pub(super) enum Site {
     Collapse,
 }
 
-/// Whether a branch's flow or potential, or its collapse, is active in an instance.
+/// Activation status of a branch site: never active, always active, or controlled by a shape
+/// flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Activity {
     Never,
     Always,
-    /// As the flag at that index among the shape's says.
+    /// Controlled by the boolean flag at this index in `shape.active`.
     Flag(usize),
 }
 
 impl Activity {
-    /// The index of its flag, if the shape decides it.
+    /// Returns the `shape.active` flag index when activation is conditional.
     pub(super) const fn index(self) -> Option<usize> {
         match self {
             Self::Flag(index) => Some(index),
@@ -365,16 +364,14 @@ impl Activity {
     }
 }
 
-/// What the generated code reads of the prepared numbers: each field's name, the kind
-/// it has, and the static expression `prepare` computes it as.
+/// Hoisted static fields read by generated dynamic methods as `(name, kind, expression)`.
 #[derive(Debug, Default)]
 pub(super) struct Prepared {
     pub(super) fields: Vec<(String, Kind, Expression)>,
 }
 
 impl Prepared {
-    /// The field for `expr`, added once, named apart from earlier fields and
-    /// `conditions`.
+    /// Interns static expression `expr` into `Prepared`, returning its unique field name.
     pub(super) fn field(
         &mut self,
         name: impl FnOnce(usize) -> String,
@@ -393,8 +390,7 @@ impl Prepared {
     }
 }
 
-/// The rendered body of a generated `evaluate` or `noise` method, before its signature
-/// is formatted with the finalized `Prepared` type.
+/// Rendered body of a generated `evaluate` or `noise` method prior to signature formatting.
 pub(super) struct MethodBody {
     pub(super) shape: &'static str,
     pub(super) prepared: &'static str,
@@ -403,7 +399,7 @@ pub(super) struct MethodBody {
     pub(super) body: String,
 }
 
-/// The names of a kernel's types.
+/// Generated Rust type names for a compiled kernel.
 pub(super) struct Names {
     pub(super) kernel: String,
     pub(super) parameters: String,
@@ -415,9 +411,8 @@ pub(super) struct Names {
 }
 
 impl Names {
-    /// The names of the kernel of `module`, in upper camel case, each word of the
-    /// module's name, which its underscores part, capitalized as Rust capitalizes an
-    /// acronym.
+    /// Derives PascalCase kernel, parameter, shape, prepared, and memory type names from
+    /// Verilog-A `module`.
     pub(super) fn from_module(
         module: &str,
         parameters_generic: bool,
@@ -463,7 +458,7 @@ impl Names {
     }
 }
 
-/// The Rust type of `kind`.
+/// Formats the Rust type string corresponding to `kind`.
 pub(super) fn rust_type(kind: &Kind) -> String {
     match kind {
         Kind::Bool => "bool".to_owned(),
@@ -474,7 +469,7 @@ pub(super) fn rust_type(kind: &Kind) -> String {
     }
 }
 
-/// The zero of `kind`.
+/// Formats the zero literal expression for `kind`.
 pub(super) fn zero(kind: &Kind) -> String {
     match kind {
         Kind::Bool => "false".to_owned(),
@@ -485,14 +480,14 @@ pub(super) fn zero(kind: &Kind) -> String {
     }
 }
 
-/// The probes of `left` and of `right`, together, in order.
+/// Merges probe lists `left` and `right` into a sorted, deduplicated vector.
 pub(super) fn union(left: &[Probe], right: &[Probe]) -> Vec<Probe> {
     let mut all: BTreeSet<Probe> = left.iter().copied().collect();
     all.extend(right.iter().copied());
     all.into_iter().collect()
 }
 
-/// The kinds of two operands joined: the kind that holds both.
+/// Returns the narrowest [`Kind`] capable of representing both `left` and `right`.
 pub(super) fn join(left: &Kind, right: &Kind) -> Kind {
     match (left, right) {
         (Kind::Dual(left), Kind::Dual(right)) => Kind::Dual(union(left, right)),
@@ -504,7 +499,7 @@ pub(super) fn join(left: &Kind, right: &Kind) -> Kind {
     }
 }
 
-/// Whether `text` holds `name` as a whole word.
+/// Returns `true` when identifier `name` appears as a whole word in `text`.
 pub(super) fn mentions(text: &str, name: &str) -> bool {
     text.match_indices(name).any(|(at, _)| {
         let before = text[..at].chars().next_back();
@@ -516,8 +511,8 @@ pub(super) fn mentions(text: &str, name: &str) -> bool {
     })
 }
 
-/// The attribute that excuses a function of `body` for its length, when clippy's bound
-/// is exceeded, indented by `indent`.
+/// Emits an indented `#[expect(clippy::too_many_lines)]` attribute when `body` exceeds
+/// [`LONGEST`] code lines.
 pub(super) fn too_long(body: &str, indent: &str) -> String {
     let counted = body
         .lines()
@@ -535,8 +530,8 @@ pub(super) fn too_long(body: &str, indent: &str) -> String {
     }
 }
 
-/// A float written as Rust writes it, its long runs of digits grouped by three, as
-/// clippy's `unreadable_literal` asks.
+/// Formats `value` as a Rust float literal or named constant, grouping long digit runs by
+/// threes to satisfy clippy.
 pub(super) fn literal(value: f64) -> String {
     let named = CONSTANTS.iter().find(|(_, name, constant)| {
         constant.to_bits() == value.abs().to_bits()
@@ -557,8 +552,8 @@ pub(super) fn literal(value: f64) -> String {
         .strip_prefix('-')
         .map_or(("", mantissa), |rest| ("-", rest));
     let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    // A part of five digits or more is grouped, and then the other too, if it has more
-    // than three, as clippy's `inconsistent_digit_grouping` asks.
+    // Group digits by threes when either part has at least five digits, matching clippy's
+    // `unreadable_literal` and `inconsistent_digit_grouping` lints.
     let grouped = whole.len() >= 5 || fraction.len() >= 5;
     let group = |digits: &str, from_left: bool| -> String {
         if !grouped || digits.len() <= 3 {
@@ -593,7 +588,7 @@ pub(super) fn literal(value: f64) -> String {
     format!("{sign}{}{fraction}{exponent}", group(whole, false))
 }
 
-/// The operand of the float `value`.
+/// Builds a literal [`Operand`] representing float `value`.
 pub(super) fn float(value: f64) -> Operand {
     let precedence = if value.is_sign_negative() {
         UNARY

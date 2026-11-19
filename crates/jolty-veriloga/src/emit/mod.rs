@@ -1,12 +1,11 @@
-//! The emitter: a resolved module written as a plain Rust kernel, the same form a person
-//! writes, generic over jolty's number types.
+//! Rust kernel emitter translating resolved Verilog-A IR into plain Rust generic over jolty's
+//! number types.
 //!
-//! Its parameters become a `Parameters<R>` struct with their defaults; what depends on no
-//! probe is computed in `prepare`, whose numbers the evaluation reads; the branches its
-//! parameters switch, collapse or leave out are decided in `layout`, which claims the
-//! internal unknowns and the entries of the shape they give; and `evaluate` runs the
-//! analog block on jolty's dual numbers, each variable carrying the derivatives of the
-//! probes it depends on and no others, then stamps each branch once.
+//! Model parameters emit into a `Parameters<R>` struct with defaults, and probe-independent
+//! expressions compute once in `prepare`. Topology-switching parameter conditions decide
+//! internal unknowns and matrix entries in `layout`. During `evaluate`, the analog block runs
+//! on jolty's dual numbers carrying only each variable's required probe derivatives, then
+//! stamps every branch once.
 
 mod decl;
 mod expr;
@@ -25,7 +24,8 @@ use expr::Emitter;
 use facts::{Facts, makes_noise};
 use types::{CodeWriter, Kind, MethodBody, Mode, Names, Prepared, mentions, too_long};
 
-/// The kernel of `module`, compiled from `source`, as the text of a Rust module.
+/// Emits Rust kernel source text for resolved `module`, recording `source` and `header` in the
+/// file preamble.
 ///
 /// # Errors
 ///
@@ -166,7 +166,7 @@ fn write_kernel_method(
     out.line("}");
 }
 
-/// `text` with the imports its code uses, after its module documentation.
+/// Inserts required `use` imports and any `NOWHERE` sentinel after the module header in `text`.
 fn imports(text: &str) -> String {
     const CANDIDATES: [&str; 19] = [
         "BOLTZMANN",

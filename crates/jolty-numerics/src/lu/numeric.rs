@@ -3,11 +3,11 @@
 //!
 //! Each column is eliminated by the left-looking method of Gilbert and Peierls ("Sparse
 //! partial pivoting in time proportional to arithmetic operations", SIAM Journal on
-//! Scientific and Statistical Computing 9(5), 1988): a depth-first search through the
-//! columns of `L` already found gives the column's pattern in an order that respects their
-//! dependencies, and a sparse triangular solve in that order its values. Rows are indexed as
-//! in the ordered matrix throughout, and each column's pivot row is recorded, so a
-//! refactorization replays the same eliminations in the same order with neither search.
+//! Scientific and Statistical Computing 9(5), 1988). A depth-first search through existing
+//! columns of `L` yields the column's sparsity pattern in dependency order, and a sparse
+//! triangular solve computes the entries. Rows stay indexed in ordered-matrix coordinates
+//! and each column records its pivot row, so refactorization replays the same eliminations
+//! without repeating either search.
 
 use rayon::prelude::*;
 
@@ -16,31 +16,25 @@ use super::tree::Tree;
 use super::{LinearError, NONE, Ordering, Scalar, Workspace};
 use crate::reduce::{self, CHUNK};
 
-/// The least fraction of the largest candidate in its column that a pivot is: a
-/// factorization takes the ordering's diagonal entry as the pivot when it reaches this
-/// fraction, and else the largest, and a refactorization keeps each pivot while it reaches
-/// it. It bounds every entry of `L` by its inverse, ten, against a thousand for the
-/// thousandth that KLU and SPICE take (threshold partial pivoting: Duff, Erisman and Reid,
-/// *Direct Methods for Sparse Matrices*, 2nd ed., 2017; compare Davis and Palamadai
-/// Natarajan, "Algorithm 907: KLU", *ACM Transactions on Mathematical Software* 37(3),
-/// 2010, whose default is `0.001`), which keeps the rounding of the solutions close to
-/// that of strict partial pivoting: over 20,000 of the tests' random circuits, the largest
-/// backward error of a solution is 4.5e-15 with a tenth, against 7.7e-9 with a thousandth.
-/// On the matrices of the example circuits, meshes and inverter chains measured, the
-/// factors fill alike with either, but for one entry of one. The price is that a
-/// refactorization keeps its pivots less often: in the transients of the examples' buck and
-/// boost converters, one or two factorizations in a hundred search afresh, where with a
-/// thousandth almost none does.
+/// Minimum fraction of the largest candidate in a column required to accept a pivot during
+/// threshold partial pivoting and refactorization.
+///
+/// Source: Duff, Erisman, and Reid (*Direct Methods for Sparse Matrices*, 2nd ed., 2017)
+/// and Davis and Palamadai Natarajan ("Algorithm 907: KLU", *ACM TOMS* 37(3), 2010).
+/// Bounding `L` entries by `1 / PIVOT_TOLERANCE = 10` (versus `1000` at the `0.001` KLU
+/// and SPICE default) keeps max backward error at `4.5e-15` versus `7.7e-9` across 20,000
+/// random test circuits. Fill stays virtually identical, with a 1 to 2% fallback rate on
+/// switching-converter transients.
 pub(super) const PIVOT_TOLERANCE: f64 = 0.1;
 
-/// A triangular factor stored by columns.
+/// Triangular factor stored in compressed sparse column format.
 #[derive(Clone)]
 pub(super) struct Triangle<T> {
-    /// Where each column's entries start, then their number.
+    /// Column start offsets in `indices` and `values`, followed by total length.
     starts: Vec<usize>,
-    /// Each entry's index: a row of the ordered matrix in `L`, a position in `U`.
+    /// Row index (for `L`) or step position (for `U`) of each stored entry.
     indices: Vec<usize>,
-    /// Each entry's value.
+    /// Scalar value of each stored entry.
     values: Vec<T>,
 }
 
@@ -55,17 +49,17 @@ impl<T: Scalar> Triangle<T> {
         }
     }
 
-    /// The number of stored entries.
+    /// Returns the total number of stored entries.
     pub(super) fn entries(&self) -> usize {
         self.indices.len()
     }
 
-    /// Whether `self` and `other` hold the same sparsity pattern.
+    /// Returns whether `self` and `other` have identical sparsity patterns.
     pub(super) fn pattern_eq(&self, other: &Self) -> bool {
         self.starts == other.starts && self.indices == other.indices
     }
 
-    /// The indices and values of `column`'s entries.
+    /// Returns the index and value slices for `column`.
     fn column(&self, column: usize) -> (&[usize], &[T]) {
         let range = self.starts[column]..self.starts[column + 1];
         (&self.indices[range.clone()], &self.values[range])
@@ -159,9 +153,9 @@ pub(super) struct ColumnFactors<T> {
     pub(super) pivot_rows: Vec<usize>,
     /// The step or position whose pivot each row is, or [`NONE`].
     pub(super) positions: Vec<usize>,
-    /// `L` below its unit diagonal.
+    /// Lower-triangular factor `L` below its unit diagonal.
     pub(super) lower: Triangle<T>,
-    /// `U` above its diagonal, each column's entries in the order of their eliminations.
+    /// Upper-triangular factor `U` above its diagonal, stored in elimination order per column.
     pub(super) upper: Triangle<T>,
     /// The diagonal of `U`: the pivots.
     pub(super) pivots: Vec<T>,
@@ -171,8 +165,8 @@ pub(super) struct ColumnFactors<T> {
     marks: Vec<usize>,
     /// The rows being visited by the search, each with its next entry of `L` to follow.
     visits: Vec<(usize, usize)>,
-    /// The rows of the column being eliminated, in an order whose reverse puts every row
-    /// after each row whose elimination changes it.
+    /// Active rows of the column being eliminated in postorder, so reversing yields
+    /// topological elimination order.
     reach: Vec<usize>,
 }
 
@@ -206,14 +200,15 @@ impl<T: Scalar> ColumnFactors<T> {
         self.upper.truncate(0);
     }
 
-    /// Whether `self` and `other` hold the same pivot rows and triangular sparsity patterns.
+    /// Returns whether `self` and `other` hold identical pivot rows and triangular sparsity
+    /// patterns.
     pub(super) fn patterns_alike(&self, other: &Self) -> bool {
         self.pivot_rows == other.pivot_rows
             && self.lower.pattern_eq(&other.lower)
             && self.upper.pattern_eq(&other.upper)
     }
 
-    /// The number of entries of `L` below its diagonal and of `U` on and above it.
+    /// Returns the total entry count in strict lower `L` plus diagonal and upper `U`.
     pub(super) fn entries(&self) -> usize {
         let pivoted = self.pivot_rows.iter().filter(|&&row| row != NONE).count();
         self.lower.entries() + self.upper.entries() + pivoted
@@ -377,8 +372,7 @@ impl<T: Scalar> ColumnFactors<T> {
         }
     }
 
-    /// Where the entries of `L` to follow from `row` start: its pivot's column, if it is a
-    /// pivot.
+    /// Returns the starting offset in `lower` for `row`'s pivot column, or `0` if unpivoted.
     fn first_entry(&self, row: usize) -> usize {
         match self.positions[row] {
             NONE => 0,
@@ -387,33 +381,32 @@ impl<T: Scalar> ColumnFactors<T> {
     }
 }
 
-/// How a factorization went.
+/// Strategy taken by a completed numeric factorization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Factorization {
-    /// It searched for every pivot, there being no pivots to keep.
+    /// Full pivot search performed because no reusable pivots were cached.
     Searched,
-    /// It kept every pivot of the last factorization.
+    /// Complete refactorization reusing every cached pivot.
     Refactored,
-    /// It kept the pivots of the last factorization up to one that had become too small,
-    /// and searched for the pivots from that one on.
+    /// Partial refactorization that fell back to pivot search after a cached pivot violated
+    /// threshold tolerance.
     FellBack,
 }
 
-/// The factors `L U` of the rows of an ordered matrix's diagonal blocks, permuted within
-/// each block by its pivots, and the workspace that finds them: of the blocks the ordering
-/// dissects, by their trees, and of the others, column by column.
+/// Numeric `L U` factors and workspaces for all diagonal blocks of an ordered matrix, using
+/// multifrontal trees for dissected blocks and left-looking columns for remaining blocks.
 #[derive(Clone)]
 pub(super) struct Numeric<T> {
-    /// The factors of each dissected block, in the ordering's order.
+    /// Multifrontal tree factors for each dissected block in ordering order.
     trees: Vec<Tree<T>>,
-    /// The column-by-column factors and workspace of the non-dissected blocks.
+    /// Column-by-column factors and workspace for non-dissected blocks.
     factors: ColumnFactors<T>,
-    /// Whether every position has its pivot, so that a refactorization can keep them.
+    /// Flag indicating that every position holds a valid cached pivot for refactorization.
     complete: bool,
 }
 
 impl<T: Scalar> Numeric<T> {
-    /// No factors yet of the matrices of `ordering`'s pattern.
+    /// Allocates empty numeric factor storage for `ordering`.
     pub(super) fn new(ordering: &Ordering) -> Self {
         let dimension = ordering.factored().dimension();
         Self {
@@ -423,9 +416,8 @@ impl<T: Scalar> Numeric<T> {
         }
     }
 
-    /// Forgets the pivots of the last factorization, so that the next searches for every
-    /// pivot, as a new one's first does: with no pivot kept, a factorization reads nothing
-    /// the last left but its allocations.
+    /// Discards cached pivots while preserving buffer capacity so the next factorization
+    /// searches fresh pivots identically to a new solver.
     pub(super) fn forget(&mut self) {
         self.complete = false;
         for tree in &mut self.trees {
@@ -433,11 +425,8 @@ impl<T: Scalar> Numeric<T> {
         }
     }
 
-    /// Whether the next factorization of any matrix keeps the same pivots, in the same
-    /// patterns of `L` and `U`, as `other`'s would: both are complete, with the same pivot
-    /// rows and the same patterns, or neither is, so that both search afresh. A
-    /// refactorization reads nothing else: not the values of the factors, nor the
-    /// workspace, which every elimination leaves zero.
+    /// Returns whether future factorizations will select identical pivots and factor patterns
+    /// as `other` (both complete with matching pivot rows and sparsity, or both empty).
     pub(super) fn pivots_alike(&self, other: &Self) -> bool {
         match (self.complete, other.complete) {
             (false, false) => true,
@@ -453,22 +442,20 @@ impl<T: Scalar> Numeric<T> {
         }
     }
 
-    /// The number of columns the last factorization delayed from a node of a dissected
-    /// block to its parent.
+    /// Returns the total number of pivot columns delayed across all dissected block trees.
     pub(super) fn delays(&self) -> usize {
         self.trees.iter().map(Tree::delays).sum()
     }
 
-    /// The number of entries of `L` below its diagonal and of `U` on and above it.
+    /// Returns the total stored entry count across strict lower `L` and upper `U` (including
+    /// diagonal pivots).
     pub(super) fn entries(&self) -> usize {
         let dissected: usize = self.trees.iter().map(Tree::entries).sum();
         self.factors.entries() + dissected
     }
 
-    /// Factors the matrix of `ordering`'s pattern whose values are `values`, keeping the
-    /// last factorization's pivots while each passes, and searching for the pivots from the
-    /// first that does not: in each dissected block, in each node whose pivot does not and
-    /// in the nodes above it. Returns how it went.
+    /// Factors the matrix `values` under `ordering`, reusing prior pivots where acceptable and
+    /// searching fresh pivots from the first failing position or dissected node upward.
     pub(super) fn factor(
         &mut self,
         ordering: &Ordering,
@@ -696,15 +683,11 @@ impl<T: Scalar> Numeric<T> {
     }
 }
 
-/// Has each of `rows`, rows above a diagonal block, take in the block's columns, whose
-/// solution `by_position` holds, through its entries' `values`: of `by_row`, the values of
-/// the rows from `first` on. Each row takes them in in increasing position, as
-/// [`take_in`] does, the order in which a pass over the columns would take them in; the
-/// rows are independent, so for two `threads` or more they spread over the current rayon
-/// pool's threads in runs of [`CHUNK`] rows, the same bits either way.
+/// Subtracts off-diagonal block contributions from `rows` above a diagonal block into
+/// `by_row[row - first]`, parallelizing across rayon in [`CHUNK`] runs when `threads >= 2`.
 ///
-/// The rows taken in on the calling thread are inlined where it is called, so that a small
-/// circuit's solve, a few rows above each of its blocks, pays nothing for spreading.
+/// The sequential path stays inlined so small circuits with few rows above each block incur no
+/// dispatch overhead, while producing bit-identical results to parallel execution.
 #[expect(
     clippy::inline_always,
     reason = "called once a block; on the buck's solves, a call cost 28 million instructions where the loop inlined costs 21"
@@ -726,9 +709,8 @@ fn take_in_above<T: Scalar>(
     spread_above(rows, (values, by_position), (by_row, first), threads);
 }
 
-/// [`take_in_above`] of more than [`CHUNK`] rows on two `threads` or more: each half of
-/// them as a task of its own. Never inlined, so that the rows taken in on the calling
-/// thread stay a loop small enough to inline where they are called.
+/// Splits [`take_in_above`] recursively across rayon tasks when more than [`CHUNK`] rows run
+/// on two or more threads, kept out of line so the sequential path stays inlineable.
 #[inline(never)]
 fn spread_above<T: Scalar>(
     rows: RowsAbove<'_>,
@@ -747,11 +729,8 @@ fn spread_above<T: Scalar>(
     );
 }
 
-/// `value` less each of `entries`' `values` times the value `solved` holds at its index, in
-/// the entries' order: one after another for no more than [`CHUNK`] entries, and else by
-/// [`reduce::fold`]'s chunks of them, which spread over the current rayon pool's threads
-/// for two `threads` or more, so that a long row, such as a supply's joined to every
-/// device, is no single sum on one thread.
+/// Subtracts `Σ values[slot] * solved[at]` over `entries` from `value` using deterministic
+/// [`reduce::fold`] chunks, parallelizing long rows when `threads >= 2`.
 #[inline]
 fn take_in<T: Scalar>(
     entries: &[(usize, usize)],
@@ -794,8 +773,8 @@ mod tests {
     use super::*;
     use crate::PatternBuilder;
 
-    /// The values by slot of `ordering`'s dense 3 × 3 pattern that make its ordered matrix
-    /// `matrix`.
+    /// Packs the dense 3 × 3 `matrix` into slot order matching `ordering`'s row and column
+    /// permutations.
     fn ordered(ordering: &Ordering, matrix: [[f64; 3]; 3]) -> Vec<f64> {
         let at = |order: &[usize], wanted: usize| {
             order

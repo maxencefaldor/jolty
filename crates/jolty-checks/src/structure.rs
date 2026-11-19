@@ -3,31 +3,32 @@
 use jolty_engine::{Endpoint, Placed, Simulator};
 use jolty_models::{Branch, Node};
 
-/// The index of ground among a structure's nodes.
+/// Index of the ground node within the circuit graph.
 ///
 /// Source: SPICE / modified nodal analysis datum node convention (`0` is ground; L. W. Nagel,
 /// "SPICE2: A computer program to simulate semiconductor circuits", Memorandum ERL-M520,
 /// University of California, Berkeley, 1975).
 pub(crate) const REFERENCE: usize = 0;
 
-/// The most nets or instances a diagnostic names before it counts the rest.
+/// Maximum number of nets or instances named explicitly in a diagnostic before summarizing the
+/// remainder.
 ///
-/// Origin: jolty's own diagnostic formatting cap shared across structural and
-/// operating-point rules.
+/// Origin: diagnostic formatting cap shared across structural and operating-point rules.
 pub(crate) const NAMED: usize = 5;
 
-/// The nodes of an elaborated circuit and the devices that join them.
+/// Graph representation of an elaborated circuit's nodes and attached devices.
 ///
-/// Nodes are numbered from the reference, at [`REFERENCE`], then one per unknown in the
-/// engine's order; only the unknowns that are node voltages are ever joined.
+/// Nodes are numbered from ground at [`REFERENCE`], followed by each simulator unknown in
+/// order; only node-voltage unknowns participate in connectivity edges.
 ///
-/// A logic device's supply and ground join nodes too. Its connect elements' supply and
-/// ground are its own, so only their first terminal, the pin's, counts as theirs.
+/// Logic device supply and ground terminals join nodes as well. Connect elements share the
+/// owning gate's supply and ground rails, so only their first (pin) terminal increments node
+/// degree.
 pub(crate) struct Structure<'a> {
     simulator: &'a Simulator,
-    /// How many terminals join each node.
+    /// Terminal degree (number of attached terminals) for each node.
     degrees: Vec<usize>,
-    /// Whether each device is a connect element.
+    /// Flag per device indicating whether the device is a mixed-signal connect element.
     elements: Vec<bool>,
 }
 
@@ -60,32 +61,32 @@ impl<'a> Structure<'a> {
         }
     }
 
-    /// The simulator the structure reads.
+    /// Returns the underlying simulator referenced by this structure.
     pub(crate) fn simulator(&self) -> &'a Simulator {
         self.simulator
     }
 
-    /// Whether the device at `device` is a connect element.
+    /// Returns whether the device at index `device` is a connect element.
     pub(crate) fn is_element(&self, device: usize) -> bool {
         self.elements[device]
     }
 
-    /// The number of nodes, the reference included.
+    /// Returns the total number of graph nodes, including the ground reference.
     pub(crate) fn len(&self) -> usize {
         self.degrees.len()
     }
 
-    /// The devices, in the order they were placed.
+    /// Returns all placed analog devices in elaboration order.
     pub(crate) fn devices(&self) -> &'a [Placed] {
         self.simulator.devices()
     }
 
-    /// How many terminals join `node`.
+    /// Returns the number of terminals attached to `node`.
     pub(crate) fn degree(&self, node: usize) -> usize {
         self.degrees[node]
     }
 
-    /// The name of `node`: a net's path, or the reference's name.
+    /// Returns the net path of `node`, or the ground reference name for [`REFERENCE`].
     pub(crate) fn name(&self, node: usize) -> &'a str {
         if node == REFERENCE {
             self.simulator.reference()
@@ -95,12 +96,12 @@ impl<'a> Structure<'a> {
     }
 }
 
-/// The index of `node` among a structure's nodes.
+/// Maps a simulator [`Node`] to its graph index, mapping ground to [`REFERENCE`].
 pub(crate) fn index(node: Node) -> usize {
     node.map_or(REFERENCE, |unknown| unknown.index() + 1)
 }
 
-/// The nodes a branch of `device` joins, by index.
+/// Returns the `(from, to)` graph node indices connected by `branch` on `device`.
 pub(crate) fn ends(device: &Placed, branch: Branch) -> (usize, usize) {
     let nodes = device.nodes();
     (index(nodes[branch.from]), index(nodes[branch.to]))
@@ -115,8 +116,7 @@ pub(crate) const fn plural(
     if count == 1 { singular } else { many }
 }
 
-/// Names in backticks, joined as prose: `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` ``;
-/// past `limit` names, the rest are counted.
+/// Formats `names` in backticks joined as prose, summarizing any entries beyond `limit`.
 pub(crate) fn list<'s>(names: impl IntoIterator<Item = &'s str>, limit: usize) -> String {
     prose(names, limit, |name| format!("`{name}`"))
 }

@@ -7,35 +7,28 @@ use faer::linalg::svd::SvdError;
 use crate::LinearError;
 use crate::lu::finite;
 
-/// Solves the dense square system `A x = b`, for the matrix `a` of `right_hand_side.len()` rows
-/// in column-major order and `b` in `right_hand_side`, by the least squares among the `x` in
-/// the range of `A` it keeps, the least of them in norm; leaves `x` in `right_hand_side` and
-/// returns the rank of the part of `A` it keeps.
+/// Solves the dense square system `A x = b` in the range of `A`, writing `x` into
+/// `right_hand_side` and returning the numerical rank retained.
 ///
-/// Where `A` is regular, `x = A⁻¹ b`. Where it is singular, the system has many solutions
-/// or none, and `x` is orthogonal to every `u` with `uᵀ A = 0`, which no solution's
-/// residual depends on: where `A` is `Φ − I` for a map with Jacobian `Φ`, each such `uᵀ x`
-/// is a quantity the map conserves, which a step by `x` leaves as it was. Where `A` maps
-/// part of its range onto its null space, the least-squares solution in its range is not
-/// unique, and `x` is the least in norm.
+/// Matrix `a` holds `right_hand_side.len()` rows in column-major order. When `A` is
+/// nonsingular, `x = A⁻¹ b`. When `A` is singular, `x` is the minimum-norm least-squares
+/// solution orthogonal to every left null vector `u` (`uᵀ A = 0`), preserving invariants
+/// conserved by a map `Φ` when `A = Φ − I`.
 ///
-/// With the singular value decomposition `A = U Σ Vᵀ`, a singular value at most `n ε` times
-/// the largest, within the rounding of the matrix, counts as zero; so does each least one
-/// in turn, as the discrepancy principle leaves out the directions a right-hand side known
-/// to within `slack` cannot resolve, while it is at most `cutoff` and the part of `b` along
-/// its direction and those left out before stays within `slack` in norm. With `r` singular
-/// values kept, `x = U_r y`, where `y` is the least-squares solution of least norm of
-/// `Σ_r V_rᵀ U_r y = U_rᵀ b`; a regular `A` has `x = V Σ⁻¹ Uᵀ b`.
+/// Using the SVD `A = U Σ Vᵀ`, singular values at most `n ε σ_max` are treated as zero.
+/// Additional trailing singular values at most `cutoff` are dropped under the discrepancy
+/// principle while the omitted projection norm of `b` stays within `slack`. With `r`
+/// singular values retained, `x = U_r y` where `y` is the minimum-norm least-squares
+/// solution of `Σ_r V_rᵀ U_r y = U_rᵀ b`.
 ///
 /// # Errors
 ///
-/// Returns [`LinearError::Singular`] when no finite solution is found: naming the columns
-/// whose values in the solution are not finite, or none when the matrix's singular values
-/// do not converge, as a number in it that is not finite makes them.
+/// Returns [`LinearError::Singular`] when no finite solution exists, listing columns with
+/// non-finite solution entries (or empty columns when the SVD fails to converge).
 ///
 /// # Panics
 ///
-/// Panics unless `a` holds the square of `right_hand_side.len()` values.
+/// Panics unless `a` holds `right_hand_side.len().pow(2)` values.
 pub fn solve_in_range(
     a: &[f64],
     right_hand_side: &mut [f64],
@@ -62,14 +55,16 @@ pub fn solve_in_range(
     Ok(rank)
 }
 
-/// Solves `A x = b` for each right-hand side `b` of `columns`, each of as many rows as `A`,
-/// as [`solve_in_range`] solves one with no singular value counting as zero but those within
-/// the rounding, the matrix decomposed once for all of them; leaves each `x` in its column
-/// and returns the rank of `A`.
+/// Solves `A x = b` in the range of `A` for each right-hand side in `columns`, reusing one
+/// SVD across all columns, and returns the numerical rank of `A`.
+///
+/// Each column is overwritten in place with its solution, treating only singular values within
+/// rounding precision as zero (matching [`solve_in_range`] with zero discrepancy thresholds).
 ///
 /// # Errors
 ///
-/// Returns [`LinearError::Singular`] as [`solve_in_range`] does, for any column.
+/// Returns [`LinearError::Singular`] if the SVD does not converge or any column yields a
+/// non-finite solution.
 ///
 /// # Panics
 ///
@@ -105,16 +100,15 @@ struct Decomposed {
     rounding: f64,
 }
 
-/// What solving in the range of a decomposed matrix keeps of it: its first `rank` singular
-/// values, and where it keeps fewer than all, the decomposition of the reduced system
-/// `Σ_r V_rᵀ U_r`.
+/// Truncated SVD state retaining the first `rank` singular values and (when rank-deficient)
+/// the SVD of the reduced operator `Σ_r V_rᵀ U_r`.
 struct Kept<'a> {
     decomposed: &'a Decomposed,
     rank: usize,
     reduced: Option<(Svd<f64>, Vec<f64>)>,
 }
 
-/// The error of a decomposition whose singular values did not converge.
+/// Converts an unconverged SVD error into [`LinearError::Singular`].
 fn unconverged(_: SvdError) -> LinearError {
     LinearError::Singular {
         columns: Vec::new(),
@@ -122,8 +116,7 @@ fn unconverged(_: SvdError) -> LinearError {
 }
 
 impl Decomposed {
-    /// The decomposition of the matrix `a` of `n` rows in column-major order; none when it
-    /// has none.
+    /// Computes the SVD of column-major `n × n` matrix `a`, returning `None` when `n == 0`.
     fn new(a: &[f64], n: usize) -> Result<Option<Self>, LinearError> {
         assert_eq!(
             a.len(),
@@ -145,7 +138,7 @@ impl Decomposed {
         }))
     }
 
-    /// The singular values above the rounding.
+    /// Counts singular values strictly above the rounding threshold.
     fn rounded_rank(&self) -> usize {
         self.values
             .iter()
@@ -153,7 +146,7 @@ impl Decomposed {
             .count()
     }
 
-    /// What solving in the range keeps of the first `rank` singular values.
+    /// Prepares the reduced range-space solver for the leading `rank` singular values.
     fn kept(&self, rank: usize) -> Result<Kept<'_>, LinearError> {
         let reduced = if rank == self.values.len() {
             None
@@ -178,9 +171,9 @@ impl Decomposed {
 }
 
 impl Kept<'_> {
-    /// The solution in the range kept, of the least norm among the least-squares ones, for
-    /// a right-hand side of parts `projected` along `U`'s columns: `x = U_r y`, where `y`
-    /// solves `Σ_r V_rᵀ U_r y = U_rᵀ b`, or `x = V Σ⁻¹ Uᵀ b` where all are kept.
+    /// Computes the minimum-norm least-squares solution in the retained range from
+    /// `projected = Uᵀ b` (`x = U_r y` for rank-deficient systems or `x = V Σ⁻¹ Uᵀ b` at
+    /// full rank).
     fn solve(&self, projected: &[f64]) -> Vec<f64> {
         let decomposed = self.decomposed;
         let (u, v) = (decomposed.svd.U(), decomposed.svd.V());
@@ -198,17 +191,15 @@ impl Kept<'_> {
     }
 }
 
-/// `uᵀ vector`, the dot product of each of the first `vector.len()` columns of `u` with
-/// `vector`.
+/// Computes `uᵀ vector`, taking the dot product of each leading column of `u` with `vector`.
 fn project(u: MatRef<'_, f64>, vector: &[f64]) -> Vec<f64> {
     (0..vector.len())
         .map(|column| u.col(column).iter().zip(vector).map(|(x, y)| x * y).sum())
         .collect()
 }
 
-/// `V Σ⁺ c` for the parts `c = Uᵀ b` of a right-hand side along the left singular vectors
-/// of the decomposition `(U, Σ, V)`, `(V, Σ)` given, a singular value at most `cutoff`
-/// counting as zero.
+/// Computes `V Σ⁺ projected` from `(v, values)` and `projected = Uᵀ b`, zeroing singular
+/// values at or below `cutoff`.
 fn truncated((v, values, cutoff): (MatRef<'_, f64>, &[f64], f64), projected: &[f64]) -> Vec<f64> {
     let mut solution = vec![0.0; v.nrows()];
     for (k, (&value, &part)) in values.iter().zip(projected).enumerate() {
@@ -227,11 +218,11 @@ fn truncated((v, values, cutoff): (MatRef<'_, f64>, &[f64], f64), projected: &[f
 mod tests {
     use super::*;
 
-    /// No singular value counts as zero but those within the rounding: exact zero
-    /// `(relative, absolute)` threshold tuple for unit tests of `solve_in_range`.
+    /// Zero `(cutoff, slack)` threshold tuple disabling extra singular-value dropping beyond
+    /// rounding precision in unit tests of `solve_in_range`.
     const EXACT: (f64, f64) = (0.0, 0.0);
 
-    /// `A x` for the dense matrix `a` of `x.len()` rows, in column-major order.
+    /// Computes `A x` for column-major dense matrix `a` of dimension `x.len()`.
     fn product(a: &[f64], x: &[f64]) -> Vec<f64> {
         let n = x.len();
         (0..n)
@@ -296,8 +287,8 @@ mod tests {
             (right_hand_side[0] + 2.0).abs() < 1e-15 && right_hand_side[1].abs() < 1e-15,
             "{right_hand_side:?}"
         );
-        // So does an inconsistent system, whose second row asks for a change of x₂ that no
-        // x gives: the least-squares solution solves the first row alone.
+        // An inconsistent system whose second row demands an unattainable change in x₂ also
+        // keeps x₂ fixed; the least-squares solution satisfies the first row alone.
         let mut right_hand_side = [1.0, 1e-3];
         assert_eq!(
             solve_in_range(&[-0.5, 0.0, 0.2, 0.0], &mut right_hand_side, EXACT),
@@ -358,9 +349,9 @@ mod tests {
 
     #[test]
     fn a_direction_the_right_hand_side_cannot_resolve_is_left_out() {
-        // diag(1, 1e-4): the second direction is resolved to 1e4 times the right-hand
-        // side's error. Known to within 1, a part of 0.5 along it is left out; a part of 2
-        // is not, nor is any part along a singular value above the cutoff.
+        // diag(1, 1e-4): the second direction amplifies right-hand-side error by 1e4. With
+        // slack 1, a component of 0.5 is omitted; a component of 2 or a singular value above
+        // cutoff is retained.
         let a = [1.0, 0.0, 0.0, 1e-4];
         let mut right_hand_side = [3.0, 0.5];
         assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(1));
@@ -376,8 +367,8 @@ mod tests {
         );
         let mut right_hand_side = [3.0, 0.5];
         assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-5, 1.0)), Ok(2));
-        // The parts left out add up: with a third direction of 2e-4 and 0.9 along it, the
-        // two together pass 1, so only the second, the least, is left out.
+        // Omitted projections accumulate in norm: with a third direction of 2e-4 and 0.9
+        // along it, omitting both exceeds slack 1, so only the smallest direction is omitted.
         let a = [1.0, 0.0, 0.0, 0.0, 1e-4, 0.0, 0.0, 0.0, 2e-4];
         let mut right_hand_side = [3.0, 0.5, 0.9];
         assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(2));

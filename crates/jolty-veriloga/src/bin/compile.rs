@@ -1,7 +1,9 @@
-//! Writes each kernel of [`jolty_veriloga::MODELS`] from its Verilog-A source, or with
-//! two arguments, a source and a kernel, the kernel of that source, the files it
-//! includes read beside it, and with a third the name its header gives the source, such
-//! as the address a third party publishes it at.
+//! CLI binary that compiles every model in [`jolty_veriloga::MODELS`] from Verilog-A into its
+//! Rust kernel file.
+//!
+//! Passing two arguments compiles a single source file into the given output path, resolving
+//! non-standard includes from the source directory. An optional third argument overrides the
+//! source path written into the generated file header.
 
 use std::path::{Path, PathBuf};
 

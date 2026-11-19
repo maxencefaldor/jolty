@@ -9,7 +9,7 @@ pub(crate) struct Token {
     pub(crate) column: usize,
 }
 
-/// What a token is.
+/// Lexical token kind.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Kind {
     Number(f64),
@@ -43,7 +43,7 @@ pub(crate) enum Symbol {
 }
 
 impl Symbol {
-    /// How the symbol is written.
+    /// Returns the source spelling of this symbol.
     pub(crate) const fn text(self) -> &'static str {
         match self {
             Self::Open => "(",
@@ -92,7 +92,7 @@ const SYMBOLS: [Symbol; 19] = [
     Symbol::Greater,
 ];
 
-/// The tokens of `text`, ending with [`Kind::End`].
+/// Tokenizes `text` into a sequence ending with [`Kind::End`].
 pub(crate) fn tokenize(text: &str) -> Result<Vec<Token>, SyntaxError> {
     let mut tokens = Vec::new();
     let mut rest = text;
@@ -126,7 +126,8 @@ pub(crate) fn tokenize(text: &str) -> Result<Vec<Token>, SyntaxError> {
     }
 }
 
-/// The number at the start of `text`: digits with an optional fraction and exponent.
+/// Scans a floating-point literal (digits with optional fraction and exponent) at the start
+/// of `text`.
 fn number(text: &str, column: usize) -> Result<(Kind, usize), SyntaxError> {
     let bytes = text.as_bytes();
     let digits = |from: usize| {

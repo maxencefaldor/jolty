@@ -3,10 +3,10 @@ use std::fmt;
 
 use crate::{Circuit, Component, Lot, Name, Of, Stress};
 
-/// A reason a circuit's structure is invalid.
+/// Structural validation failure in a circuit definition.
 ///
-/// These are the facts the format itself can state. Whether a device model exists and what
-/// terminals and parameters it takes is checked when the circuit is elaborated.
+/// Format validation covers structural invariants only; device model existence, terminals, and
+/// parameters are checked during elaboration.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Problem {
     /// The top component is not defined.
@@ -94,8 +94,7 @@ pub enum Problem {
     /// [take](crate::Distribution::takes).
     #[error(
         "instance `{component}/{instance}` takes `{parameter}` from lot `{lot}` with a tolerance \
-         of {relative}, which needs to be at least 0, and below 1 unless its logarithm \
-         spreads"
+         of {relative}; lot tolerance requires a value at least 0 and below 1 unless logarithmic"
     )]
     InvalidLot {
         /// The component that places the instance.
@@ -123,13 +122,13 @@ pub enum Problem {
         instance: Name,
         /// The stress rated: `voltage`, `current`, `power` or `temperature`.
         stress: String,
-        /// Where, as the terminals named, such as `at `collector`, `emitter` `.
+        /// Formatted terminal list for the rating, such as `at `collector`, `emitter` `.
         at: String,
         /// The minimum, in its shortest exact form, or `none`.
         minimum: String,
         /// The maximum, in its shortest exact form, or `none`.
         maximum: String,
-        /// How many terminals the stress needs, in words.
+        /// Human-readable description of the terminal count required by the stress.
         needed: &'static str,
     },
     /// An instance names a part whose number is empty or spaced at either end.
@@ -173,18 +172,18 @@ pub enum Problem {
 pub struct Problems(Vec<Problem>);
 
 impl Problems {
-    /// The problems, in the order they were found.
+    /// Returns an iterator over validation problems in discovery order.
     pub fn iter(&self) -> std::slice::Iter<'_, Problem> {
         self.0.iter()
     }
 
-    /// The number of problems, never zero.
+    /// Returns the non-zero count of validation problems.
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Always false: a [`Problems`] holds at least one problem.
+    /// Returns `false` because [`Problems`] always contains at least one problem.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -318,7 +317,7 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
                     .maximum
                     .map_or_else(|| "none".to_owned(), |maximum| format!("{maximum:?}")),
                 needed: match rating.stress {
-                    Stress::Voltage => "two distinct terminals of its own",
+                    Stress::Voltage => "two distinct terminals",
                     Stress::Current => "one of its terminals",
                     Stress::Power | Stress::Temperature => "no terminals",
                 },
@@ -618,8 +617,8 @@ mod tests {
         assert_eq!(
             messages[0],
             "instance `top/Q1` states a rating of its voltage at `collector` from none to 40.0, \
-             which needs two distinct terminals of its own and finite bounds, at least one \
-             and in order, a power only a positive maximum and a temperature positive bounds"
+             which needs two distinct terminals and finite bounds, at least one and in order, a \
+             power only a positive maximum and a temperature positive bounds"
         );
         assert!(messages[1].contains("its voltage at `collector` over `emitter` from none"));
         assert!(messages[3].contains("its power from none to 0.0, which needs no terminals"));
@@ -750,8 +749,8 @@ mod tests {
         assert_eq!(
             messages,
             [
-                "instance `top/R4` takes `resistance` from lot `die` with a tolerance of 1.5, \
-                 which needs to be at least 0, and below 1 unless its logarithm spreads",
+                "instance `top/R4` takes `resistance` from lot `die` with a tolerance of 1.5; lot \
+                 tolerance requires a value at least 0 and below 1 unless logarithmic",
                 "instances `top/R1` and `top/R3` spread `resistance` of lot `die` differently, \
                  and a lot spreads each parameter one way",
                 "instances `top/R1` and `top/R4` spread `resistance` of lot `die` differently, \

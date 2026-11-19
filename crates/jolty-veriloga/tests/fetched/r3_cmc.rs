@@ -1,11 +1,8 @@
-//! `R3_CMC` 1.1.2, compiled from its Verilog-A source as IHP's open process kit
-//! publishes it, against a resistor's closed form where its equations reduce to one.
+//! Closed-form verification of `R3_CMC` 1.1.2 compiled from IHP open-PDK Verilog-A source.
 //!
-//! Forced linear, `sw_lin = 1`, the model drops its depletion and its self-heating, and
-//! at its nominal temperature its body is a sheet of `rsh` ohms per square, `l` long and
-//! `w` wide: a resistance of `rsh · l / w` between its internal nodes, which its
-//! contacts, of no resistance at their default, join to its terminals. Its QA tests,
-//! which the CMC hands out only through its own form, wait for the owner.
+//! With `sw_lin = 1` at the nominal temperature, depletion and self-heating disable and the
+//! resistor body reduces to `rsh * l / w` between internal nodes joined by zero-resistance
+//! contacts. Full CMC QA vectors remain gated behind CMC distribution terms.
 
 #![cfg(test)]
 
@@ -19,13 +16,11 @@ use jolty_models::testing::Bench;
 
 use crate::closed::Closed;
 
-/// How far a value the compiled model computes may lie from the closed form computed
-/// here, in units of the machine epsilon times its magnitude: the model computes the
-/// resistance in some eight operations, its geometry scaled to micrometers and back,
-/// each rounding by half an epsilon.
+/// Closed-form tolerance in units of machine epsilon times magnitude for roughly eight
+/// geometry-scaling rounding operations.
 const CLOSED: Closed = Closed(8.0);
 
-/// The local index of the unknown `name` on `bench`.
+/// Returns the local unknown index matching `name` on `bench`.
 fn unknown(bench: &Bench, name: &str) -> usize {
     bench
         .unknowns()
@@ -34,9 +29,8 @@ fn unknown(bench: &Bench, name: &str) -> usize {
         .expect("an unknown")
 }
 
-/// The body's current and conductance are a resistor's, `rsh · l / w`, at every voltage
-/// across it, for n and p bodies alike, its temperature coefficients idle at the nominal
-/// temperature.
+/// Verifies linear body current and conductance (`rsh * l / w`) across voltage sweeps for both
+/// n-type and p-type resistors.
 #[test]
 fn forced_linear_at_its_nominal_temperature_it_is_a_resistor() {
     for (rsh, l, w, kind) in [

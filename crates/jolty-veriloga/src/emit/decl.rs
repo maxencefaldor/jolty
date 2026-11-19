@@ -198,7 +198,7 @@ impl Facts<'_> {
         out.blank();
     }
 
-    /// The kernel's output variables: their names, and how they are read from its memory.
+    /// Emits `variable_names` and `variables` methods when the module declares output variables.
     pub(super) fn output_functions(&self, names: &Names, out: &mut CodeWriter) {
         let module = self.module;
         if module.outputs.is_empty() {
@@ -363,7 +363,7 @@ impl Facts<'_> {
         out.blank();
     }
 
-    /// The analog functions that limit probes, each a function of plain floats.
+    /// Emits plain-`f64` Rust functions for analog functions referenced as probe limiters.
     pub(super) fn functions(&self, out: &mut CodeWriter) -> Result<(), Error> {
         let used: BTreeSet<usize> = self
             .module
@@ -551,8 +551,8 @@ impl Facts<'_> {
         body.line(format!("let [{}] = local;", names.join(", ")));
     }
 
-    /// The layout's claim of the entry at `key`, where one of `users` is active and each
-    /// branch current and each node it reads exists.
+    /// Builds the `layout.entry(...)` expression for `key`, guarded by `users` activity and
+    /// node/branch existence.
     fn entry_claim(&self, key: (Place, Place), users: &BTreeSet<(usize, Site)>) -> String {
         let active = |(branch, site): (usize, Site)| {
             self.flag(branch, site)
@@ -623,8 +623,7 @@ impl Facts<'_> {
         }
     }
 
-    /// The layout's walk of `statements`: each flag set once where the shape's conditions
-    /// make its branch active.
+    /// Walks `statements` to record branch activity flags under shape-determining conditionals.
     fn walk_layout(
         &self,
         statements: &[Statement],
@@ -717,7 +716,8 @@ impl Facts<'_> {
         Ok(())
     }
 
-    /// The inherent `impl` holding `warnings` and `warned`, when the module defines any.
+    /// Emits the inherent `impl` block containing `warnings` and `warned` when the module
+    /// defines any diagnostics.
     pub(super) fn warnings_impl(
         &self,
         prepared: &Prepared,
@@ -773,8 +773,8 @@ impl Facts<'_> {
         ))
     }
 
-    /// The fields of the prepared numbers, as `prepare` writes them at its end, in
-    /// [`Mode::Prepare`]: each of `fields`, and the conditions that shape the kernel.
+    /// Computes the final struct field initializers for `prepare` (or `warnings`), including shape
+    /// conditions in [`Mode::Prepare`].
     fn prepared_values(
         &self,
         emitter: &mut Emitter<'_, '_>,
@@ -923,7 +923,7 @@ fn write_parameter_field(parameter: &Parameter, out: &mut CodeWriter) -> String 
     format!("{}: {value}", parameter.name)
 }
 
-/// The static variables kept for preparation, each with its emitted kind.
+/// Collects live static local variables paired with their emitted [`Kind`]s.
 fn static_locals(module: &Module, live: &[bool]) -> Vec<(String, Kind)> {
     module
         .variables
@@ -1055,8 +1055,8 @@ struct Bound {
     included: bool,
 }
 
-/// The check that the parameter `name`, named `external` in its source, of `kind`, lies
-/// in the range of `lower` and `upper`, or, when `exclude`, does not.
+/// Emits the range validation check for parameter `name` (`external` in source) against
+/// `(lower, upper)`.
 fn check(
     (name, external): (&str, &str),
     kind: Type,
@@ -1142,9 +1142,8 @@ fn check(
     )
 }
 
-/// The code that makes the message of a task, `message` with each of its `%g`s and
-/// their like the value that code of `values` at its place makes, and each value past
-/// them after it, as Verilog's `$display` prints an argument no format takes.
+/// Builds a Rust string expression substituting `values` into `%g`-style placeholders of
+/// `message`, appending extra arguments as Verilog `$display` does.
 pub(super) fn format_message(message: &str, values: &[String]) -> String {
     let mut format = message.replace('{', "{{").replace('}', "}}");
     let mut taken = 0;
@@ -1166,9 +1165,8 @@ pub(super) fn format_message(message: &str, values: &[String]) -> String {
     }
 }
 
-/// `text`, the source's prose, as documentation writes it: each word that reads as code,
-/// with an underscore or a capital after a small letter, in backticks, as clippy's
-/// `doc_markdown` asks.
+/// Wraps code-like identifiers (snake_case or camelCase) in `text` with backticks to satisfy
+/// clippy's `doc_markdown` lint.
 fn prose(text: &str) -> String {
     text.split(' ')
         .map(|word| {

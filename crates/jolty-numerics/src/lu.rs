@@ -1,27 +1,20 @@
-//! A sparse LU solver for the matrices of circuits, after KLU (Davis and Palamadai Natarajan,
+//! Sparse LU solver for circuit matrices modeled on KLU (Davis and Palamadai Natarajan,
 //! "Algorithm 907: KLU, a direct sparse solver for circuit simulation problems", ACM
 //! Transactions on Mathematical Software 37(3), 2010).
 //!
-//! An [`Ordering`] analyzes a pattern once: it matches every column with a row so that the
-//! matched entries make a diagonal free of structural zeros, splits the matrix into its
-//! block triangular form, and orders each diagonal block to reduce its fill. A [`SparseLu`]
-//! then factors the matrices of the pattern, real or complex, by left-looking Gaussian
-//! elimination with threshold partial pivoting that prefers the ordering's diagonal, and
-//! refactors each new matrix with the pivots of the last, searching afresh only from a pivot
-//! that has become too small.
+//! [`Ordering`] analyzes a sparsity pattern once: matching columns to rows for a zero-free
+//! diagonal, partitioning into block triangular form, and ordering each diagonal block to
+//! limit fill. [`SparseLu`] then factors real or complex matrices using left-looking Gaussian
+//! elimination with threshold partial pivoting and pivot reuse across refactorizations.
 //!
-//! An ordering [dissected](Ordering::dissected) orders each large block by nested dissection
-//! into interiors and the separators between them, and the factorization of such a block is
-//! multifrontal over the tree they make: the interiors factor at once, by the same
-//! left-looking elimination, each pivoting within itself, and each separator factors a
-//! dense front of the updates the parts below it leave, once they are done. The work
-//! spreads over the threads a solver is given, and its factors are the same bits on any
-//! number.
+//! A [dissected](Ordering::dissected) ordering splits large blocks via nested dissection into
+//! interiors and separators for multifrontal parallel factorization. Interiors factor
+//! concurrently with local pivoting, and separators factor dense fronts from child updates,
+//! producing bit-identical results across any thread count.
 //!
-//! An ordering of a [`Condensation`] orders the unknowns it keeps: its solvers eliminate the
-//! others from each matrix, each by its own pivot, before they factor it, and recover them
-//! after each solve, so that their callers give and take the whole system's matrices and
-//! vectors.
+//! An ordering built with [`Condensation`] orders only the kept unknowns; its solvers
+//! eliminate the remaining unknowns prior to factorization and recover them after each solve
+//! so callers still pass full-system matrices and vectors.
 
 mod condensation;
 mod dissection;
@@ -46,14 +39,11 @@ use self::tree::Scratch;
 use crate::Pattern;
 use crate::reduce::CHUNK;
 
-/// No index: an absent row, column, vertex, pivot, or slot.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index (allocations are
-/// bounded by `isize::MAX`).
+/// Sentinel index representing an absent row, column, vertex, pivot, or slot.
 const NONE: usize = usize::MAX;
 
-/// A scalar the sparse solver works in: `f64` for DC and transient analyses, [`Complex64`]
-/// for small-signal analyses.
+/// Scalar field supported by the sparse solver: `f64` for DC and transient analyses, and
+/// [`Complex64`] for small-signal frequency-domain analyses.
 pub trait Scalar:
     Copy
     + PartialEq
@@ -68,27 +58,26 @@ pub trait Scalar:
     + AddAssign
     + SubAssign
 {
-    /// Additive identity (`0`) of the scalar field.
+    /// Zero element of the scalar field.
     const ZERO: Self;
 
-    /// The value's magnitude: its absolute value, or a complex number's modulus.
+    /// Returns the scalar magnitude (absolute value for reals, modulus for complex values).
     fn magnitude(self) -> f64;
 
-    /// The value's size in the 1-norm: its absolute value, or a complex number's
-    /// `|re| + |im|`, between its modulus and √2 times it, and cheaper, needing no square
-    /// root.
+    /// Returns the 1-norm size (`|x|` for reals, `|re| + |im|` for complex values), avoiding a
+    /// square root while staying within `sqrt(2)` of the modulus.
     fn size(self) -> f64;
 
-    /// Whether the value is neither infinite nor NaN.
+    /// Returns whether the scalar is finite (neither infinite nor NaN).
     fn is_finite(self) -> bool;
 
-    /// Whether the value has the same bits as `other`: unlike `==`, a zero is not a
-    /// negative zero, and a NaN can be identical to itself.
+    /// Returns whether `self` and `other` have identical bit patterns (distinguishing `-0.0`
+    /// from `0.0` and treating identical NaN payloads as equal).
     fn is_identical(self, other: Self) -> bool;
 }
 
 impl Scalar for f64 {
-    /// Additive identity of IEEE 754 binary64 reals (`0.0`).
+    /// Real zero (`0.0`).
     const ZERO: Self = 0.0;
 
     fn magnitude(self) -> f64 {
@@ -109,7 +98,7 @@ impl Scalar for f64 {
 }
 
 impl Scalar for Complex64 {
-    /// Additive identity of complex numbers (`0.0 + 0.0i`).
+    /// Complex zero (`0.0 + 0.0i`).
     const ZERO: Self = Self::new(0.0, 0.0);
 
     fn magnitude(self) -> f64 {
@@ -129,20 +118,18 @@ impl Scalar for Complex64 {
     }
 }
 
-/// Why a linear system could not be solved.
+/// Error returned when a linear system cannot be factored or solved.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LinearError {
-    /// The matrix is singular, structurally or numerically.
+    /// Structurally or numerically singular matrix.
     #[error("the system matrix is singular")]
     Singular {
-        /// The columns, by index, whose unknowns the system leaves undetermined, as far as
-        /// the solver found them, in increasing order: those of a set of columns with
-        /// entries in fewer rows than there are columns, for a structurally singular
-        /// pattern; the column that has no nonzero pivot left, when elimination finds
-        /// one; or else the columns whose values in the solution are not finite.
+        /// Sorted column indices left undetermined by the solver: structurally rank-deficient
+        /// columns, the column lacking a nonzero pivot during elimination, or columns with
+        /// non-finite solution values.
         columns: Vec<usize>,
     },
-    /// The system exceeds the memory or index range available.
+    /// Matrix or factor storage exceeds available memory or index limits.
     #[error("the system is too large to factor")]
     TooLarge,
 }
@@ -165,71 +152,65 @@ impl From<std::collections::TryReserveError> for LinearError {
     }
 }
 
-/// How much work a [`SparseLu`] has done, by kind, over the factorizations that succeeded.
+/// Cumulative factorization statistics recorded by a [`SparseLu`] solver.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Work {
-    /// Factorizations that searched for every pivot: the first, and one after a failure.
+    /// Full factorizations that searched for every pivot (initial or post-failure).
     pub factorizations: usize,
-    /// Factorizations that kept every pivot of the last, with no search.
+    /// Refactorizations that reused every pivot from the prior factorization without search.
     pub refactorizations: usize,
-    /// Factorizations that kept the pivots of the last up to one their matrix made too
-    /// small, and searched for the pivots from that one on.
+    /// Partial refactorizations that fell back to pivot search after a reused pivot dropped
+    /// below threshold.
     pub fallbacks: usize,
-    /// Calls given the very matrix last factored, which kept its factors.
+    /// Factor calls given a bitwise-identical matrix that reused existing factors unchanged.
     pub reuses: usize,
 }
 
-/// A sparse LU solver for matrices of one [`Pattern`].
+/// Sparse LU solver for square matrices sharing one [`Pattern`].
 ///
-/// It shares its pattern's [`Ordering`] with any other solver of the pattern, real or
-/// complex. Each [`SparseLu::factor`] keeps the factors of the last when given the same
-/// matrix, refactors with the last pivots when given another, and searches for pivots only
-/// where one has become too small; its workspaces are kept, so the Newton iterations of a
-/// whole simulation allocate nothing once the first has run.
+/// A solver shares its pattern's [`Ordering`] with any other real or complex solver for the
+/// same pattern. [`SparseLu::factor`] reuses factors on bitwise-identical matrices, reuses
+/// prior pivots when acceptable, and retains workspaces across Newton iterations without extra
+/// allocations.
 ///
-/// A clone factors every matrix after as the solver it was cloned from would, bit for bit,
-/// which lets several threads each go on from one solver's pivots.
-///
-/// The blocks its ordering [dissects](Ordering::dissected) factor and solve as rayon tasks
-/// on the pool they run in when it is [spread](SparseLu::spread) over two threads or more,
-/// and on the calling thread alone by default; the factors and the solutions are the same
-/// bits either way.
+/// Cloning preserves pivot state so multiple threads can factor subsequent matrices bit for
+/// bit identically from the same baseline. When [`SparseLu::spread`] configures two or more
+/// threads, [dissected](Ordering::dissected) blocks factor and solve across rayon tasks with
+/// bit-identical results.
 #[derive(Clone)]
 pub struct SparseLu<T: Scalar> {
     ordering: Arc<Ordering>,
-    /// The threads its work spreads over, as [`SparseLu::spread`] says: one for none.
+    /// Target thread count configured by [`SparseLu::spread`] (`1` runs single-threaded).
     threads: usize,
     numeric: Numeric<T>,
-    /// The values of the matrix last factored, condensed if its ordering condenses, which
-    /// the solves read outside the diagonal blocks.
+    /// Values of the last factored (and optionally condensed) matrix read outside diagonal
+    /// blocks during solves.
     factored: Vec<T>,
-    /// Whether the factors are those of `factored`.
+    /// Flag indicating that `numeric` holds valid factors for `factored`.
     current: bool,
-    /// What the eliminations made of the last matrix condensed, for an ordering that
-    /// condenses, the kept unknowns' matrix first, and what its solves read of the unknowns
-    /// eliminated.
+    /// Condensed matrix values and elimination multipliers saved for condensing orderings.
     condensed: Saved<T>,
-    /// The solves' workspace.
+    /// Reusable solve workspace owned by the solver.
     workspace: Workspace<T>,
     statistics: Work,
 }
 
-/// What a solve with [`Shared`] factors writes as it goes: a value for each row of the
-/// ordered matrix and for each position. Each thread that solves at once needs its own.
+/// Per-thread scratch storage for solving with [`Shared`] LU factors.
+///
+/// Each concurrent thread solving with shared factors requires a separate workspace instance.
 #[derive(Debug, Clone)]
 pub struct Workspace<T: Scalar> {
     by_row: Vec<T>,
     by_position: Vec<T>,
-    /// Each node's, for the blocks dissected, made at the first solve.
+    /// Per-node scratch buffers for dissected blocks, allocated lazily on first solve.
     dissected: Vec<Vec<Scratch<T>>>,
-    /// The kept unknowns' right-hand side and solution, for an ordering that condenses,
-    /// then what its solves keep of the unknowns eliminated, made at the first solve.
+    /// Reduced right-hand side and elimination scratch for condensing orderings.
     kept: Vec<T>,
 }
 
 impl<T: Scalar> Workspace<T> {
-    /// A workspace for the solves of a matrix whose factored pattern, as
-    /// [`Ordering::factored`] gives it, has `dimension` rows.
+    /// Allocates a solve workspace for a factored pattern of `dimension` rows
+    /// ([`Ordering::factored`]).
     #[must_use]
     pub fn new(dimension: usize) -> Self {
         Self {
@@ -242,7 +223,7 @@ impl<T: Scalar> Workspace<T> {
 }
 
 impl<T: Scalar> SparseLu<T> {
-    /// A solver for the matrices of `ordering`'s pattern.
+    /// Creates a sparse LU solver for matrices matching `ordering`.
     #[must_use]
     pub fn new(ordering: Arc<Ordering>) -> Self {
         let dimension = ordering.factored().dimension();
@@ -258,10 +239,10 @@ impl<T: Scalar> SparseLu<T> {
         }
     }
 
-    /// Forgets every factorization, keeping the allocations: the next [`SparseLu::factor`]
-    /// searches for every pivot, and the statistics count from zero, as a solver made anew
-    /// for the same ordering does, so that it factors every matrix as that one would, bit for
-    /// bit.
+    /// Clears cached factors, pivots, and work statistics while retaining workspace memory.
+    ///
+    /// Subsequent [`SparseLu::factor`] calls behave bit for bit identically to a freshly
+    /// constructed solver with the same ordering.
     pub fn reset(&mut self) {
         self.numeric.forget();
         self.factored.clear();
@@ -269,13 +250,12 @@ impl<T: Scalar> SparseLu<T> {
         self.statistics = Work::default();
     }
 
-    /// Factors with `ordering`, of the same pattern, from now on, forgetting every
-    /// factorization as [`SparseLu::reset`] does but keeping its counts of work: it factors
-    /// every matrix as a solver made anew for `ordering` would, bit for bit.
+    /// Switches to `ordering` for the same pattern, clearing cached factors while preserving
+    /// work statistics and thread count.
     ///
     /// # Panics
     ///
-    /// Panics if `ordering` is of another pattern.
+    /// Panics if `ordering` belongs to a different pattern.
     pub fn reorder(&mut self, ordering: Arc<Ordering>) {
         assert!(
             Arc::ptr_eq(ordering.pattern(), self.ordering.pattern()),
@@ -287,9 +267,8 @@ impl<T: Scalar> SparseLu<T> {
         self.threads = threads;
     }
 
-    /// Takes on `other`'s ordering, pivots and factors, keeping its own counts of work and
-    /// the threads it spreads over, as [`SparseLu::reorder`] keeps them: from now on it
-    /// factors every matrix as `other` would, bit for bit, and counts the work as its own.
+    /// Adopts the ordering, pivots, and cached factors of `other` while keeping this solver's
+    /// work statistics and thread count.
     pub fn adopt(&mut self, other: &Self) {
         let (statistics, threads) = (self.statistics, self.threads);
         self.clone_from(other);
@@ -297,91 +276,85 @@ impl<T: Scalar> SparseLu<T> {
         self.threads = threads;
     }
 
-    /// Spreads its work over the rayon pool it runs in, for two `threads` or more: the
-    /// factorizations and solves of the blocks its ordering dissects as rayon tasks, one for
-    /// each subtree of a block's dissection down to its interiors, which the pool's threads
-    /// take as they free, each separator's front spreading its columns over its share of
-    /// `threads`, in proportion to its subtree's positions; and the solves' permutations,
-    /// the copy of the values factored and the check of the solutions in chunks of
-    /// [`crate::reduce::CHUNK`]. A pool of `threads` threads keeps the work to as many at
-    /// once. For one, everything runs on the calling thread alone. The factors and
-    /// solutions are the same bits either way.
+    /// Configures parallel execution over `threads` rayon worker threads (`1` runs solely on
+    /// the calling thread).
+    ///
+    /// For two or more threads, dissected subtrees execute as rayon tasks, separator fronts
+    /// distribute columns proportionally across threads, and permutations, copies, and
+    /// finiteness checks run in [`crate::reduce::CHUNK`] slices. Factors and solutions are
+    /// bit-identical for any thread count.
     pub fn spread(&mut self, threads: usize) {
         self.threads = threads.max(1);
     }
 
-    /// The threads its work spreads over, as [`SparseLu::spread`] says: one when it
-    /// spreads none.
+    /// Returns the thread count configured via [`SparseLu::spread`] (`1` when sequential).
     #[must_use]
     pub fn threads(&self) -> usize {
         self.threads
     }
 
-    /// The ordering of the pattern this solver factors.
+    /// Returns the shared [`Ordering`] used by this solver.
     #[must_use]
     pub fn ordering(&self) -> &Arc<Ordering> {
         &self.ordering
     }
 
-    /// The pattern of the matrices this solver factors.
+    /// Returns the underlying matrix [`Pattern`] used by this solver.
     #[must_use]
     pub fn pattern(&self) -> &Arc<Pattern> {
         self.ordering.pattern()
     }
 
-    /// How much work the solver has done.
+    /// Returns cumulative factorization statistics recorded by this solver.
     #[must_use]
     pub fn statistics(&self) -> Work {
         self.statistics
     }
 
-    /// Whether this solver factors every matrix from now on as `other` would, bit for bit:
-    /// both share one ordering and keep the same pivots, and so the same patterns of `L`
-    /// and `U`, or neither keeps any. A factorization depends on nothing else the solvers
-    /// hold: the factors a solver keeps for the matrix it factored last are those a
-    /// refactorization of it with the same pivots makes. Only their counts of work may
-    /// differ. Solvers of two orderings are never alike, even of one pattern.
+    /// Returns whether this solver and `other` share the same [`Ordering`] and identical pivot
+    /// state, guaranteeing bit-identical future factorizations.
+    ///
+    /// Work statistics may differ, and solvers using distinct [`Ordering`] instances always
+    /// return `false`.
     #[must_use]
     pub fn factors_alike(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.ordering, &other.ordering) && self.numeric.pivots_alike(&other.numeric)
     }
 
-    /// The entries the solves read: those of `L` below its unit diagonal, those of `U` on
-    /// and above its diagonal, and the matrix's own entries above its diagonal blocks, as
-    /// the last factorization left them. The fill is their number less the matrix's.
+    /// Returns the total nonzero count read during solves: subdiagonal `L`, upper-triangular
+    /// `U`, and off-diagonal block entries from the matrix.
+    ///
+    /// Fill-in equals this count minus the original matrix entry count.
     #[must_use]
     pub fn entries(&self) -> usize {
         self.numeric.entries() + self.ordering.entries_above()
     }
 
-    /// The number of columns the last factorization delayed, in the blocks its ordering
-    /// [dissects](Ordering::dissected): each a column whose best pivot among the rows of its
-    /// interior or separator fell short of a tenth of the largest entry below it, moved
-    /// with a row its node did not pivot to the separator above, which pivoted it among
-    /// more rows.
+    /// Returns the number of delayed pivot columns in the last factorization across
+    /// [dissected](Ordering::dissected) blocks.
+    ///
+    /// A column is delayed to its parent separator when its best local pivot falls below
+    /// one-tenth of the largest column entry.
     #[must_use]
     pub fn delays(&self) -> usize {
         self.numeric.delays()
     }
 
-    /// Factors the matrix whose stored values, in the pattern's order, are `values`.
+    /// Factors the matrix whose stored values in pattern order are `values`.
     ///
-    /// The factors of the last matrix are kept when every value is bitwise identical to its
-    /// own. Otherwise the pivots of the last factorization are kept while each stays at
-    /// least a tenth of the largest entry below it in its column, and the pivots are
-    /// searched for from the first that does not, each the diagonal entry of the ordering
-    /// where it is that large, and else the largest.
+    /// Cached factors are reused unchanged when `values` matches the previous matrix bit for
+    /// bit. Otherwise prior pivots are reused while each stays at least one-tenth of the
+    /// largest entry in its column, falling back to threshold partial pivoting when violated.
     ///
-    /// An ordering that condenses has the matrix condensed first, and the factors are those
-    /// of its kept unknowns' matrix, kept when that is bitwise identical to the last.
+    /// Condensing orderings eliminate condensed unknowns first and factor the reduced system,
+    /// reusing factors when the reduced values match bit for bit.
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] for every matrix of a structurally singular
-    /// pattern, naming its [undetermined](Ordering::undetermined) columns, and for a matrix
-    /// with a column that has no nonzero pivot left once the columns before it are
-    /// eliminated, or an unknown condensed whose pivot is zero or not finite, naming that
-    /// column; and [`LinearError::TooLarge`] when the factors do not fit in memory.
+    /// Returns [`LinearError::Singular`] for structurally singular patterns (listing
+    /// [undetermined](Ordering::undetermined) columns), zero pivots during elimination, or
+    /// zero/non-finite condensation pivots. Returns [`LinearError::TooLarge`] when factor
+    /// storage exceeds memory limits.
     ///
     /// # Panics
     ///
@@ -441,8 +414,8 @@ impl<T: Scalar> SparseLu<T> {
     }
 }
 
-/// `error`, of the factorization of `ordering`'s factored pattern, naming the columns of its
-/// whole pattern: those of the unknowns its condensation keeps, if it condenses.
+/// Maps singular column indices in `error` from the condensed pattern back to full-system
+/// indices when `ordering` uses condensation.
 fn kept_to_full(ordering: &Ordering, error: LinearError) -> LinearError {
     match (ordering.condensation(), error) {
         (Some(condensation), LinearError::Singular { columns }) => LinearError::Singular {
@@ -481,8 +454,8 @@ impl<'a, T: Scalar> Factors<'a, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes, naming the columns whose values are not.
+    /// Returns [`LinearError::Singular`] when a pivot is too small for the matrix scale and
+    /// yields a non-finite solution, naming the affected columns.
     ///
     /// # Panics
     ///
@@ -497,8 +470,8 @@ impl<'a, T: Scalar> Factors<'a, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes, naming the columns whose values are not.
+    /// Returns [`LinearError::Singular`] when a pivot is too small for the matrix scale and
+    /// yields a non-finite solution, naming the affected columns.
     ///
     /// # Panics
     ///
@@ -507,24 +480,24 @@ impl<'a, T: Scalar> Factors<'a, T> {
         self.shared.solve_transpose(right_hand_side, self.workspace)
     }
 
-    /// The factors, to solve with from several threads at once, each with a [`Workspace`]
-    /// of its own: each solve gives the bits [`Factors::solve`] would.
+    /// Returns a read-only [`Shared`] handle for solving across concurrent threads, each using
+    /// a dedicated [`Workspace`], bit-identical to [`Factors::solve`].
     #[must_use]
     pub fn shared(&self) -> Shared<'a, T> {
         self.shared
     }
 }
 
-/// The LU factors of one matrix, which any number of threads solve systems with at once,
-/// each writing to a [`Workspace`] of its own.
+/// Shared read-only LU factors supporting concurrent solves from multiple threads with
+/// per-thread [`Workspace`] buffers.
 #[derive(Clone, Copy)]
 pub struct Shared<'a, T: Scalar> {
     ordering: &'a Ordering,
     numeric: &'a Numeric<T>,
     values: &'a [T],
-    /// What the solves read of the unknowns a condensing ordering eliminates.
+    /// Saved condensation values and multipliers used to reduce and expand solves.
     saved: &'a Saved<T>,
-    /// The threads a solve spreads over, as [`SparseLu::spread`] says.
+    /// Target thread count configured by [`SparseLu::spread`].
     threads: usize,
 }
 
@@ -537,8 +510,8 @@ impl<T: Scalar> fmt::Debug for Shared<'_, T> {
 }
 
 impl<T: Scalar> Shared<'_, T> {
-    /// A workspace for its solves, as [`Workspace::new`] makes one for its factored
-    /// pattern.
+    /// Allocates a [`Workspace`] sized for this solver's factored pattern via
+    /// [`Workspace::new`].
     #[must_use]
     pub fn workspace(&self) -> Workspace<T> {
         Workspace::new(self.ordering.factored().dimension())
@@ -549,8 +522,8 @@ impl<T: Scalar> Shared<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes, naming the columns whose values are not.
+    /// Returns [`LinearError::Singular`] when a pivot is too small for the matrix scale and
+    /// yields a non-finite solution, naming the affected columns.
     ///
     /// # Panics
     ///
@@ -568,8 +541,8 @@ impl<T: Scalar> Shared<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes, naming the columns whose values are not.
+    /// Returns [`LinearError::Singular`] when a pivot is too small for the matrix scale and
+    /// yields a non-finite solution, naming the affected columns.
     ///
     /// # Panics
     ///
@@ -634,9 +607,8 @@ impl<T: Scalar> Shared<'_, T> {
     }
 }
 
-/// Sets `into` to the values of `from`, in chunks of [`CHUNK`] spread over the current rayon
-/// pool's threads when `threads` is two or more, `from` spans more than one chunk, and `into`
-/// holds as many already.
+/// Copies `from` into `into`, parallelizing across rayon in [`CHUNK`] slices when `threads >= 2`
+/// and `from` spans multiple chunks into a matching-length buffer.
 fn copy<T: Scalar>(into: &mut Vec<T>, from: &[T], threads: usize) {
     if threads < 2 || from.len() <= CHUNK || into.len() != from.len() {
         if into.len() == from.len() {
@@ -652,9 +624,8 @@ fn copy<T: Scalar>(into: &mut Vec<T>, from: &[T], threads: usize) {
         .for_each(|(into, from)| into.copy_from_slice(from));
 }
 
-/// [`finite`], whose check of the values runs in chunks of [`CHUNK`] spread over the
-/// current rayon pool's threads when `threads` is two or more and `solution` spans more than
-/// one chunk.
+/// Runs [`finite`] in parallel [`CHUNK`] slices across rayon when `threads >= 2` and
+/// `solution` spans multiple chunks.
 fn finite_on<T: Scalar>(solution: &[T], threads: usize) -> Result<(), LinearError> {
     let all = |chunk: &[T]| chunk.iter().all(|&value| value.is_finite());
     if threads >= 2 && solution.len() > CHUNK && solution.par_chunks(CHUNK).all(all) {
@@ -663,8 +634,8 @@ fn finite_on<T: Scalar>(solution: &[T], threads: usize) -> Result<(), LinearErro
     finite(solution)
 }
 
-/// `Ok` when every value of a solution is finite, and else the singular error that names
-/// the columns whose values are not.
+/// Checks that every entry in `solution` is finite, returning [`LinearError::Singular`] with
+/// all non-finite column indices otherwise.
 pub(crate) fn finite<T: Scalar>(solution: &[T]) -> Result<(), LinearError> {
     if solution.iter().all(|&value| value.is_finite()) {
         return Ok(());

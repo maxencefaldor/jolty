@@ -1,24 +1,20 @@
-//! The factorization of a dissected block, by the multifrontal method over its dissection's
-//! tree (Duff and Reid, "The multifrontal solution of indefinite sparse symmetric linear
-//! equations", ACM Transactions on Mathematical Software 9(3), 1983), and the solves with
-//! its factors.
+//! Multifrontal factorization and triangular solves over a dissected diagonal block (Duff and
+//! Reid, "The multifrontal solution of indefinite sparse symmetric linear equations", ACM
+//! Transactions on Mathematical Software 9(3), 1983).
 //!
-//! Each interior factors its own columns by the left-looking elimination of the block's
-//! other columns, choosing each pivot among its own rows, and leaves its update: the
-//! Schur complement of its rows and columns on its border, dense. Each separator assembles
-//! its frame, dense: the entries of the matrix it owns, then its children's updates in
-//! their order, and eliminates its own columns, choosing each pivot among its own rows and
-//! those its children could not pivot, and leaves the update of the rest. A column whose
-//! best pivot within its node falls short of the threshold moves, with a row its node did
-//! not pivot, to its parent's frame, delayed rather than perturbed, so the factors stay
-//! exact; the root pivots on any row left.
+//! Each interior factors its local columns by left-looking elimination, choosing pivots from
+//! its local rows and producing a dense Schur complement update on its border. Each separator
+//! assembles a dense frontal matrix from its local entries and its children's updates in order.
+//! The separator eliminates its local columns and any delayed child columns, producing an update
+//! for its parent. A column whose best local pivot falls below threshold is delayed with an
+//! unpivoted local row to the parent front so that factors remain exact; the root pivots on any
+//! remaining row.
 //!
-//! The subtrees of a node's children share no entry, so given two threads or more they
-//! factor at once, as rayon tasks split down to the interiors, which the pool's threads
-//! take as they free, and a front's columns spread over its share of the threads given, in
-//! proportion to its subtree's positions; every number is computed by the same operations
-//! in the same order however they are spread, so the factors and the solutions are the same
-//! bits on any number of threads.
+//! Child subtrees share no matrix entries and factor concurrently as rayon tasks when two or
+//! more threads are requested. Frontal columns are distributed across a subtree's thread share
+//! proportional to its position count. Every floating-point value undergoes the exact same
+//! operation sequence regardless of scheduling, yielding bit-identical factors and solutions
+//! across thread counts.
 
 use rayon::prelude::*;
 
@@ -26,41 +22,40 @@ use super::dissection::{Dissection, Node};
 use super::numeric::{ColumnFactors, PIVOT_TOLERANCE, Triangle};
 use super::{LinearError, NONE, Scalar};
 
-/// The factors of a dissected block: each node's, in the order of the dissection's nodes.
+/// Multifrontal factors for a dissected diagonal block, stored in dissection node order.
 #[derive(Clone)]
 pub(super) struct Tree<T> {
     parts: Vec<Part<T>>,
 }
 
-/// The factors of one node of a dissection.
+/// Factors for a single node of a dissection tree.
 #[derive(Clone)]
 enum Part<T> {
     Interior(Box<Interior<T>>),
     Front(Box<Front<T>>),
 }
 
-/// What a node leaves its parent: the Schur complement of the rows and columns it did not
-/// pivot, and of its border's, dense by columns; its rows and its columns are those it
-/// delayed, in their order, then its border's.
+/// Borrowed view of the dense column-major Schur complement update passed from a node to its
+/// parent, ordered with delayed rows and columns before border entries.
 struct Update<'a, T> {
-    /// The number of rows, and of columns, it delayed.
+    /// Number of delayed rows and delayed columns.
     delayed: usize,
     values: &'a [T],
-    /// The index in `values` of its first row's entry in its first column.
+    /// Starting offset in `values` of entry `(0, 0)`.
     first: usize,
-    /// The distance in `values` from one column to the next.
+    /// Stride in `values` between consecutive columns.
     leading: usize,
 }
 
 impl<T: Scalar> Update<'_, T> {
-    /// The entry in `row` and `column`.
+    /// Returns the update entry at `(row, column)`.
     fn get(&self, row: usize, column: usize) -> T {
         self.values[self.first + row + column * self.leading]
     }
 }
 
 impl<T: Scalar> Tree<T> {
-    /// No factors yet of the block `dissection` dissects.
+    /// Allocates an unfactored multifrontal tree matching `dissection`.
     pub(super) fn new(dissection: &Dissection) -> Self {
         let parts = dissection
             .nodes
@@ -76,7 +71,7 @@ impl<T: Scalar> Tree<T> {
         Self { parts }
     }
 
-    /// Forgets every pivot, so that the next factorization searches for each.
+    /// Invalidates every cached pivot so the next factorization searches afresh.
     pub(super) fn forget(&mut self) {
         for part in &mut self.parts {
             match part {
@@ -86,7 +81,7 @@ impl<T: Scalar> Tree<T> {
         }
     }
 
-    /// Whether every node keeps its pivots, so that a factorization can refactor with them.
+    /// Returns `true` when every node retains valid pivots for refactorization.
     pub(super) fn is_complete(&self) -> bool {
         self.parts.iter().all(|part| match part {
             Part::Interior(interior) => interior.complete,
@@ -94,16 +89,16 @@ impl<T: Scalar> Tree<T> {
         })
     }
 
-    /// Factors the block of `values`, the matrix's values by slot, spread as the module says
-    /// over `threads` threads, or on the calling thread alone for one: each node keeps its
-    /// pivots while they reach the threshold and its children kept theirs, and else
-    /// searches for them. Returns whether any node searched.
+    /// Factors the dissected block from matrix `values` indexed by slot across up to `threads`
+    /// threads (or sequentially on the calling thread when `threads <= 1`).
+    ///
+    /// Each node reuses cached pivots while every pivot meets the threshold and all children
+    /// reused theirs; otherwise the node searches afresh. Returns `true` if any node searched.
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] naming the position of the first column left with
-    /// no nonzero pivot, and [`LinearError::TooLarge`] when the factors do not fit in
-    /// memory.
+    /// Returns [`LinearError::Singular`] naming the first column with no nonzero pivot, or
+    /// [`LinearError::TooLarge`] when factor buffers exceed available memory.
     pub(super) fn factor(
         &mut self,
         dissection: &Dissection,
@@ -141,8 +136,8 @@ impl<T: Scalar> Tree<T> {
         )
     }
 
-    /// Whether every factorization from now on keeps the same pivots as `other`'s, as
-    /// [`super::numeric::Numeric::pivots_alike`] says.
+    /// Returns `true` when subsequent factorizations reuse the exact same pivots as `other`,
+    /// matching [`super::numeric::Numeric::pivots_alike`].
     pub(super) fn pivots_alike(&self, other: &Self) -> bool {
         self.parts.iter().zip(&other.parts).all(|pair| match pair {
             (Part::Interior(one), Part::Interior(another)) => one.pivots_alike(another),
@@ -154,7 +149,8 @@ impl<T: Scalar> Tree<T> {
         })
     }
 
-    /// The number of columns the last factorization delayed from a node to its parent.
+    /// Returns the total number of columns delayed from child nodes to parents in the last
+    /// factorization.
     pub(super) fn delays(&self) -> usize {
         self.parts
             .iter()
@@ -165,7 +161,7 @@ impl<T: Scalar> Tree<T> {
             .sum()
     }
 
-    /// The number of entries of the factors.
+    /// Returns the total number of stored entries across all node factors.
     pub(super) fn entries(&self) -> usize {
         self.parts
             .iter()
@@ -179,11 +175,11 @@ impl<T: Scalar> Tree<T> {
             .sum()
     }
 
-    /// Solves the block's system with the scratch space `scratch`, its subtrees spread as
-    /// the module says for two `threads` or more: from the right-hand side by row of the
-    /// ordered matrix in `given`, the solution by column in `solution`, the block's
-    /// positions of the ordered matrix; or, `transposed`, from the right-hand side by
-    /// column, the solution by row.
+    /// Solves the block system (or its transpose when `transposed` is `true`) using `scratch`
+    /// across up to `threads` threads.
+    ///
+    /// Reads the ordered right-hand side from `given` and writes the block solution into
+    /// `solution` (indexed by ordered column, or by ordered row when transposed).
     pub(super) fn solve(
         &self,
         dissection: &Dissection,
@@ -230,7 +226,7 @@ impl<T: Scalar> Tree<T> {
 }
 
 impl<T: Scalar> Part<T> {
-    /// The positions of the rows it delayed, in their order.
+    /// Returns the ordered positions of the rows delayed by the node.
     fn delayed_rows(&self) -> &[usize] {
         match self {
             Self::Interior(interior) => &interior.delayed_rows,
@@ -238,7 +234,7 @@ impl<T: Scalar> Part<T> {
         }
     }
 
-    /// The positions of the columns it delayed, in their order.
+    /// Returns the ordered positions of the columns delayed by the node.
     fn delayed_columns(&self) -> &[usize] {
         match self {
             Self::Interior(interior) => &interior.delayed_columns,
@@ -246,7 +242,7 @@ impl<T: Scalar> Part<T> {
         }
     }
 
-    /// Its update.
+    /// Returns a view of the Schur complement update for the parent front.
     fn update(&self) -> Update<'_, T> {
         match self {
             Self::Interior(interior) => {
@@ -271,16 +267,16 @@ impl<T: Scalar> Part<T> {
     }
 }
 
-/// The scratch space of one node's solves.
+/// Per-node scratch buffers reused across multifrontal solves.
 #[derive(Debug, Clone)]
 pub(super) struct Scratch<T> {
-    /// The node's frame: a value for each of its rows, or for each of its columns.
+    /// Node frontal vector: one entry per row (or per column when transposed).
     frame: Vec<T>,
-    /// A value for each step, or for each column of its frame.
+    /// Eliminated step values (or frontal column entries during backward substitution).
     steps: Vec<T>,
-    /// The values it passes its parent: one for each row of its update, or each column.
+    /// Forward-pass contribution passed upward to the parent.
     up: Vec<T>,
-    /// The values its parent passes it: one for each column of its update, or each row.
+    /// Backward-pass solution values received from the parent.
     down: Vec<T>,
 }
 
@@ -295,11 +291,11 @@ impl<T> Default for Scratch<T> {
     }
 }
 
-/// Where the subtrees of `children`, consecutive in the nodes' order, split for two tasks
-/// sharing `threads` threads: the number of the children before the split, the number of
-/// their subtrees' nodes, and the share of the threads their task's fronts spread over,
-/// in proportion to their positions, the split where the positions balance; each task's
-/// fronts spread over at least one thread, the other's over the rest.
+/// Splits consecutive `children` into two balanced groups for parallel execution across
+/// `threads` threads.
+///
+/// Returns `(split_index, subtree_nodes, first_thread_share)`, partitioning where cumulative
+/// position counts balance and assigning threads proportionally.
 fn split(nodes: &[Node], children: &[usize], threads: usize) -> (usize, usize, usize) {
     let positions = |child: usize| nodes[child].end - nodes[child].first;
     let total: usize = children.iter().map(|&child| positions(child)).sum();
@@ -318,9 +314,8 @@ fn split(nodes: &[Node], children: &[usize], threads: usize) -> (usize, usize, u
     (middle, subtrees, share)
 }
 
-/// How the nodes of a subtree are visited: their fronts' share of the threads, and whether
-/// its subtrees are rayon tasks, which any thread of the pool takes as it frees, or are
-/// visited one after another on the calling thread.
+/// Traversal policy specifying a subtree's frontal thread share and whether child subtrees
+/// spawn rayon tasks.
 #[derive(Clone, Copy)]
 struct Visits {
     threads: usize,
@@ -328,7 +323,7 @@ struct Visits {
 }
 
 impl Visits {
-    /// The visits of a tree spread over `threads` threads: as tasks for two or more.
+    /// Creates a traversal policy for `threads` threads, enabling rayon tasks when `threads >= 2`.
     fn on(threads: usize) -> Self {
         Self {
             threads,
@@ -336,7 +331,7 @@ impl Visits {
         }
     }
 
-    /// The visits of one of two subtrees, whose fronts take `share` of the threads.
+    /// Returns a copy of the traversal policy with `share` threads assigned to frontal work.
     fn sharing(self, share: usize) -> Self {
         Self {
             threads: share,
@@ -345,11 +340,11 @@ impl Visits {
     }
 }
 
-/// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// each node after its children, as `visits` says: with its index and its fronts' share of
-/// the threads, its state, its descendants', from its subtree's earliest node, and whether
-/// any visit of them returned `true`. Returns whether any visit returned `true`, or the
-/// error of the first that failed, in the nodes' order.
+/// Runs `visit` in postorder over the subtree rooted at `index`, passing each node's index,
+/// thread share, mutable state, descendant states from `earliest`, and whether any descendant
+/// returned `true`.
+///
+/// Returns `true` if any visit returned `true`, or the first error in node order.
 fn upward<S: Send, E: Send>(
     nodes: &[Node],
     (index, visits): (usize, Visits),
@@ -363,11 +358,10 @@ fn upward<S: Send, E: Send>(
     Ok(visit((index, visits.threads), state, below, any)? || any)
 }
 
-/// Runs [`upward`] on the subtree of each of `children`, whose states tile `states` in
-/// their order, as `visits` says: as tasks, those of the children where their positions
-/// balance on one with their share of the threads, the rest on another with the rest, each
-/// splitting again down to the interiors, so that a thread that frees takes whichever is
-/// left; or else one after another.
+/// Runs [`upward`] across `children`, whose states partition `states` in order.
+///
+/// When tasks are enabled, recursively bisects `children` by position count via `rayon::join`
+/// down to interiors; otherwise visits children sequentially.
 fn upward_all<S: Send, E: Send>(
     nodes: &[Node],
     (children, visits): (&[usize], Visits),
@@ -401,9 +395,8 @@ fn upward_all<S: Send, E: Send>(
     Ok(one? | other?)
 }
 
-/// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// each node before its children, as `visits` says: with its state, its descendants' to
-/// write to, and the part of `solution` at its subtree's positions.
+/// Runs `visit` in preorder over the subtree rooted at `index`, passing each node's state,
+/// mutable descendant states, and the corresponding slice of `solution`.
 fn downward<S: Send, T: Send>(
     nodes: &[Node],
     (index, visits): (usize, Visits),
@@ -424,8 +417,8 @@ fn downward<S: Send, T: Send>(
     );
 }
 
-/// Runs [`downward`] on the subtree of each of `children`, whose states tile `states` and
-/// whose positions tile `solution`'s first, in their order, as [`upward_all`] does.
+/// Runs [`downward`] across `children`, following [`upward_all`] scheduling with child states
+/// tiling `states` and child positions tiling the prefix of `solution`.
 fn downward_all<S: Send, T: Send>(
     nodes: &[Node],
     (children, visits): (&[usize], Visits),
@@ -465,29 +458,28 @@ fn downward_all<S: Send, T: Send>(
     );
 }
 
-/// The factors of an interior: of its own rows and columns, by columns, its pivots chosen
-/// among its own rows, and its update.
+/// Sparse left-looking factors and dense Schur update for an interior node.
 ///
-/// Its frame's rows and columns are its own, then its border's. A column whose best pivot
-/// falls short is delayed, and so is each own row not pivoted, as many.
+/// The interior frame orders local rows and columns before border entries. Any local column
+/// whose best local pivot falls below threshold is delayed alongside an equal number of
+/// unpivoted local rows.
 #[derive(Clone)]
 struct Interior<T> {
-    /// Whether it keeps the pivots of its last factorization.
+    /// Flag indicating whether cached pivots from the last factorization remain valid.
     complete: bool,
-    /// The column-by-column sparse `L U` factors and elimination workspace.
+    /// Column-by-column sparse `L U` factors and elimination workspace.
     factors: ColumnFactors<T>,
-    /// The column of the frame eliminated at each step.
+    /// Frame column index eliminated at each step.
     pivot_columns: Vec<usize>,
-    /// The own columns delayed, in order.
+    /// Delayed local column indices, in order.
     delayed: Vec<usize>,
-    /// The rows of the update: the own rows not pivoted, in order, then the border's.
+    /// Row indices of the update: unpivoted local rows followed by border rows.
     update_rows: Vec<usize>,
-    /// `U`'s entries in each column of the update, by step, in the order of the
-    /// eliminations.
+    /// Upper-triangular `U` entries for each update column, indexed by elimination step.
     outer: Triangle<T>,
-    /// The update, dense by columns.
+    /// Dense column-major Schur complement update.
     update: Vec<T>,
-    /// The positions of the rows and of the columns delayed.
+    /// Ordered matrix positions of the delayed rows and delayed columns.
     delayed_rows: Vec<usize>,
     delayed_columns: Vec<usize>,
 }
@@ -508,8 +500,8 @@ impl<T: Scalar> Default for Interior<T> {
     }
 }
 
-/// The entries `node` assembles of the column of its frame `column`: one of its own, or
-/// after them, one of its border's, whose entries in its own rows only it assembles.
+/// Returns the sparse entries assembled by `node` for frame `column`, covering local columns
+/// and border-column entries in local rows.
 fn frame_column(node: &Node, column: usize) -> &[(usize, usize)] {
     let own = node.size();
     if column < own {
@@ -520,8 +512,8 @@ fn frame_column(node: &Node, column: usize) -> &[(usize, usize)] {
 }
 
 impl<T: Scalar> Interior<T> {
-    /// Whether it keeps the same pivots, in the same patterns, as `other`, or neither keeps
-    /// any.
+    /// Returns `true` when both interiors hold matching cached pivot patterns or neither holds
+    /// cached pivots.
     fn pivots_alike(&self, other: &Self) -> bool {
         match (self.complete, other.complete) {
             (false, false) => true,
@@ -535,7 +527,7 @@ impl<T: Scalar> Interior<T> {
         }
     }
 
-    /// Factors `node`'s columns of the matrix of `values`, searching for every pivot.
+    /// Factors the local columns of `node` from `values`, searching afresh for every pivot.
     fn search(&mut self, node: &Node, values: &[T]) -> Result<(), LinearError> {
         let own = node.size();
         let size = own + node.border.len();
@@ -581,9 +573,8 @@ impl<T: Scalar> Interior<T> {
         Ok(())
     }
 
-    /// Eliminates its own `column` of the matrix of `values`, pivoting on the row it
-    /// matched with the column, else on its own row of the largest magnitude, if either
-    /// reaches the threshold, and else delaying it.
+    /// Eliminates local `column` of `node` from `values`, choosing the matched row or largest
+    /// local pivot above threshold and delaying the column otherwise.
     fn eliminate(&mut self, node: &Node, values: &[T], column: usize) -> Result<(), LinearError> {
         let entries = node.columns.of(column);
         let step = self.factors.pivots.len();
@@ -600,8 +591,7 @@ impl<T: Scalar> Interior<T> {
         Ok(())
     }
 
-    /// The column of the frame that is the update's `index`th: a delayed one, or after
-    /// them one of the border's.
+    /// Returns the frame column index corresponding to column `index` of the update.
     fn update_column(&self, index: usize, own: usize) -> usize {
         match self.delayed.get(index) {
             Some(&column) => column,
@@ -609,8 +599,8 @@ impl<T: Scalar> Interior<T> {
         }
     }
 
-    /// Moves the column being eliminated, at the update's rows, into the update's
-    /// `index`th column, leaving it zero.
+    /// Copies the active work vector at update rows into column `index` of `update` and clears
+    /// those work slots.
     fn gather(&mut self, index: usize) {
         let width = self.update_rows.len();
         let column = &mut self.update[index * width..(index + 1) * width];
@@ -620,9 +610,8 @@ impl<T: Scalar> Interior<T> {
         }
     }
 
-    /// Factors `node`'s columns of the matrix of `values` with the last factorization's
-    /// pivots. Returns whether every pivot reaches the threshold; the factors are those of
-    /// a search that chose them.
+    /// Refactors the local columns of `node` from `values` using cached pivots, returning `true`
+    /// when every pivot meets the threshold.
     fn refactor(&mut self, node: &Node, values: &[T]) -> bool {
         for step in 0..self.factors.pivots.len() {
             let entries = node.columns.of(self.pivot_columns[step]);
@@ -645,9 +634,8 @@ impl<T: Scalar> Interior<T> {
         true
     }
 
-    /// The pass up of a solve (or transposed solve when `transposed`): from the right-hand
-    /// side in `given`, each step's value, and the values of its update's rows (or columns)
-    /// for its parent.
+    /// Executes the upward solve pass (or transposed pass when `transposed` is `true`) from
+    /// `given`, writing step values and upward border contributions into `space`.
     fn forward(&self, node: &Node, given: &[T], space: &mut Scratch<T>, transposed: bool) {
         let own = node.size();
         let Scratch {
@@ -681,9 +669,8 @@ impl<T: Scalar> Interior<T> {
         }
     }
 
-    /// The pass down of a solve (or transposed solve when `transposed`): from the values of
-    /// its update its parent left, the solution at its own columns (or rows) in `solution`,
-    /// its subtree's.
+    /// Executes the downward solve pass (or transposed pass when `transposed` is `true`),
+    /// writing local solution components into `solution`.
     fn backward(&self, node: &Node, space: &mut Scratch<T>, solution: &mut [T], transposed: bool) {
         let offset = node.own - node.first;
         if transposed {
@@ -713,9 +700,8 @@ impl<T: Scalar> Interior<T> {
     }
 }
 
-/// Has `column` of a frame, dense, take in the `steps` whose columns `earlier` holds, in
-/// order, the columns of `column`'s length: each subtracts its multipliers below its
-/// diagonal times the column's entry in its row.
+/// Applies elimination steps in `steps` from dense factor columns `earlier` to dense `column`,
+/// subtracting each step's subdiagonal multipliers scaled by `column[step]`.
 fn take_in<T: Scalar>(earlier: &[T], column: &mut [T], steps: std::ops::Range<usize>) {
     let size = column.len();
     for step in steps {
@@ -729,12 +715,12 @@ fn take_in<T: Scalar>(earlier: &[T], column: &mut [T], steps: std::ops::Range<us
     }
 }
 
-/// What the elimination of a front did with one of its columns.
+/// Elimination action recorded for a single frontal column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
-    /// It pivoted on the row at this slot, swapped into the step's.
+    /// Pivot chosen at the recorded row slot and swapped into the current step.
     Pivot(usize),
-    /// It delayed the column, swapped with the last not yet eliminated, at this slot.
+    /// Column delayed and swapped with the final uneliminated slot.
     Delay(usize),
 }
 
@@ -759,32 +745,30 @@ fn replay_swaps<U>(operations: &[Operation], values: &mut [U], rows: bool) {
     }
 }
 
-/// The factors of a separator: its frame, dense, its own rows and those its children
-/// delayed then its border's by its own columns and those its children delayed then its
-/// border's, eliminated in place.
+/// Dense in-place frontal factors for a separator node, ordering local and delayed entries
+/// before border entries.
 #[derive(Clone)]
 struct Front<T> {
-    /// Whether it keeps the pivots of its last factorization.
+    /// Flag indicating whether cached pivots from the last factorization remain valid.
     complete: bool,
-    /// The positions of the frame's rows and columns, slot by slot, as eliminated.
+    /// Ordered matrix positions of the frontal rows and columns in eliminated slot order.
     rows: Vec<usize>,
     columns: Vec<usize>,
-    /// The slot, as eliminated, of each row and each column of the frame as assembled.
+    /// Mapping from assembled frame slot to eliminated slot for rows and columns.
     row_slots: Vec<usize>,
     column_slots: Vec<usize>,
-    /// The number of rows, and of columns, it may pivot: its own and those delayed to it.
+    /// Number of fully summed rows and columns (local plus delayed from children).
     fully: usize,
-    /// The number of steps it eliminated.
+    /// Number of elimination steps completed.
     steps: usize,
-    /// The frame, dense by columns: `L` below its unit diagonal, `U` on and above it, and
-    /// the update after the steps.
+    /// Dense column-major front storing unit-diagonal `L` below the diagonal, `U` on and above
+    /// it, and the trailing Schur update.
     frame: Vec<T>,
-    /// What it did with each column, in order.
+    /// Recorded pivot and delay sequence in elimination order.
     operations: Vec<Operation>,
-    /// How many steps each column of the frame has taken in, by slot.
+    /// Count of earlier elimination steps already applied to each column slot.
     applied: Vec<usize>,
-    /// Scratch space: the slot as assembled of each slot of the frame, the slots of a
-    /// child's update in the frame.
+    /// Scratch buffers for replaying slot permutations and mapping child updates into the front.
     origins: Vec<usize>,
     slots: Vec<usize>,
 }
@@ -809,9 +793,8 @@ impl<T> Default for Front<T> {
 }
 
 impl<T: Scalar> Front<T> {
-    /// The slot of `node`'s frame, as assembled, of each row of the update of `child`,
-    /// its `which`th child, whose delayed rows come at `offset`, after `delayed_in` rows
-    /// delayed into the frame in all; and alike of each column.
+    /// Returns the assembled frame slot of each row or column in child `which`'s update, placing
+    /// delayed entries at `offset`.
     fn child_slots(
         node: &Node,
         (child, which): (&Part<T>, usize),
@@ -829,8 +812,8 @@ impl<T: Scalar> Front<T> {
         }))
     }
 
-    /// Assembles the frame of `node` from the matrix of `values` and the updates of its
-    /// children, whose parts `below` holds from `base` on.
+    /// Assembles the dense front of `node` from matrix `values` and child updates in `below`
+    /// (offset by `base`).
     fn assemble(
         &mut self,
         node: &Node,
@@ -897,9 +880,8 @@ impl<T: Scalar> Front<T> {
         Ok(())
     }
 
-    /// Factors `node`'s frame on up to `threads` threads, searching for every pivot, its
-    /// children's parts `below` from their subtree's earliest node. A column delayed at the
-    /// root, `root`, has no nonzero pivot left.
+    /// Factors the front of `node` across up to `threads` threads, searching for pivots and
+    /// reporting [`LinearError::Singular`] if any column remains delayed at the root.
     fn search(
         &mut self,
         node: &Node,
@@ -920,8 +902,8 @@ impl<T: Scalar> Front<T> {
         Ok(())
     }
 
-    /// Factors `node`'s frame on up to `threads` threads with the last factorization's
-    /// operations. Returns whether every pivot reaches the threshold.
+    /// Refactors the front of `node` across up to `threads` threads by replaying cached
+    /// operations, returning `true` when every pivot meets the threshold.
     fn refactor(
         &mut self,
         node: &Node,
@@ -935,18 +917,14 @@ impl<T: Scalar> Front<T> {
         Ok(held)
     }
 
-    /// Eliminates the frame's fully summed columns on up to `threads` threads: choosing
-    /// each pivot, and recording what it did with each column, or, `replay`, doing again
-    /// what the last factorization did. Returns the number of steps, and whether every
-    /// pivot replayed reaches the threshold, the steps stopping at the first that does not.
+    /// Eliminates fully summed columns of the front across up to `threads` threads, searching
+    /// for pivots or replaying cached operations when `replay` is `true`.
     ///
-    /// A column takes in the steps it has not yet taken, in their order, just before it is
-    /// eliminated; and every column after the last step takes them in after each panel of
-    /// steps, the fully summed columns' share of a thread, the panels' columns spread over
-    /// the threads. A row swapped by a later step is swapped in every column at once, which
-    /// moves each entry with its multiplier, so every entry undergoes the same operations
-    /// in the same order whatever the panels: those of a step that eliminated every column
-    /// after it at once.
+    /// Returns `(steps, held)` where `held` indicates whether every replayed pivot met the
+    /// threshold, stopping at the first failure. Each column absorbs pending earlier steps in
+    /// order right before elimination, and trailing columns absorb panels in parallel across
+    /// `threads`. Row swaps apply across the full width immediately so every entry receives
+    /// the exact same operation sequence regardless of panel size.
     fn eliminate(&mut self, replay: bool, threads: usize) -> (usize, bool) {
         let size = self.rows.len();
         let panel = if threads < 2 {
@@ -994,7 +972,7 @@ impl<T: Scalar> Front<T> {
         (step, true)
     }
 
-    /// The frame's `step` column and the least pivot magnitude it requires.
+    /// Returns frontal column `step` together with its minimum acceptable pivot magnitude.
     fn column_threshold(&self, step: usize) -> (&[T], f64) {
         let size = self.rows.len();
         let column = &self.frame[step * size..(step + 1) * size];
@@ -1005,10 +983,8 @@ impl<T: Scalar> Front<T> {
         (column, PIVOT_TOLERANCE * largest)
     }
 
-    /// What to do with the frame's column `step`, all its earlier steps taken in, the
-    /// columns from `left` on delayed: pivot on the row the ordering matched with it, if it
-    /// reaches the threshold, else on the row of the largest magnitude that may be pivoted,
-    /// if it does, and else delay it.
+    /// Chooses the elimination [`Operation`] for frontal column `step`, preferring the matched
+    /// row or largest eligible pivot above threshold and delaying to slot `left - 1` otherwise.
     fn choose(&self, step: usize, left: usize) -> Operation {
         let (column, least) = self.column_threshold(step);
         let (mut best, mut chosen, mut diagonal) = (0.0, NONE, NONE);
@@ -1033,15 +1009,14 @@ impl<T: Scalar> Front<T> {
         }
     }
 
-    /// Whether the pivot of `step` reaches the threshold: at least a tenth of the largest
-    /// magnitude in its column from its diagonal down, and not zero.
+    /// Returns `true` when the pivot at `step` is nonzero and meets the column threshold.
     fn holds(&self, step: usize) -> bool {
         let (column, least) = self.column_threshold(step);
         let magnitude = column[step].magnitude();
         magnitude > 0.0 && magnitude >= least
     }
 
-    /// Divides the frame's column `step` below its diagonal by its pivot: `L`'s column.
+    /// Scales the subdiagonal entries of frontal column `step` by its diagonal pivot to form `L`.
     fn divide(&mut self, step: usize) {
         let size = self.rows.len();
         let column = &mut self.frame[step * size..(step + 1) * size];
@@ -1051,7 +1026,7 @@ impl<T: Scalar> Front<T> {
         }
     }
 
-    /// Has the frame's column `column` take in every step before `until` it has not.
+    /// Applies all pending earlier elimination steps up to `until` to frontal `column`.
     fn catch_up(&mut self, column: usize, until: usize) {
         let size = self.rows.len();
         let (earlier, rest) = self.frame.split_at_mut(column * size);
@@ -1059,8 +1034,8 @@ impl<T: Scalar> Front<T> {
         self.applied[column] = until;
     }
 
-    /// Has every column of the frame from `step` on take in every step before it, the
-    /// columns spread over up to `threads` threads.
+    /// Applies all pending earlier elimination steps up to `step` across trailing columns from
+    /// `step` onward using up to `threads` threads.
     fn catch_up_after(&mut self, step: usize, threads: usize) {
         let size = self.rows.len();
         let (earlier, rest) = self.frame.split_at_mut(step * size);
@@ -1087,12 +1062,11 @@ impl<T: Scalar> Front<T> {
             });
     }
 
-    /// Records the slots, as eliminated, of the frame's rows and columns, after `steps`.
+    /// Records final eliminated row and column slot mappings after `steps` eliminations.
     fn finish(&mut self, steps: usize) {
         self.steps = steps;
         let size = self.rows.len();
-        // The slot each row and column of the frame as assembled went to, by replaying the
-        // swaps on the identity.
+        // Replay swaps on the identity permutation to map assembled slots to eliminated slots.
         for (slots, rows) in [(&mut self.row_slots, true), (&mut self.column_slots, false)] {
             self.origins.clear();
             self.origins.extend(0..size);
@@ -1105,7 +1079,7 @@ impl<T: Scalar> Front<T> {
         }
     }
 
-    /// Swaps two rows of the frame, whole.
+    /// Swaps rows `one` and `other` across the entire frontal matrix.
     fn swap_rows(&mut self, one: usize, other: usize) {
         if one == other {
             return;
@@ -1117,7 +1091,7 @@ impl<T: Scalar> Front<T> {
         self.rows.swap(one, other);
     }
 
-    /// Swaps two columns of the frame, whole, the first before the second.
+    /// Swaps columns `one` and `other` (`one < other`) across the entire frontal matrix.
     fn swap_columns(&mut self, one: usize, other: usize) {
         if one == other {
             return;
@@ -1128,9 +1102,8 @@ impl<T: Scalar> Front<T> {
         self.columns.swap(one, other);
     }
 
-    /// The pass up of a solve (or transposed solve when `transposed`): from the right-hand
-    /// side in `given` and its children's values, each step's value, and the values of its
-    /// update's rows (or columns).
+    /// Executes the upward solve pass (or transposed pass when `transposed` is `true`),
+    /// assembling `given` and child updates and writing the upward contribution into `space`.
     fn forward(
         &self,
         node: &Node,
@@ -1157,8 +1130,8 @@ impl<T: Scalar> Front<T> {
             }
             offset += part.delayed_rows().len();
         }
-        // Each step swapped its rows (or delayed columns) across the whole frame, so the
-        // right-hand side takes every swap first.
+        // Each step swapped rows (or delayed columns) across the whole frame, so apply all
+        // recorded swaps to the right-hand side first.
         replay_swaps(&self.operations, frame, !transposed);
         if transposed {
             for column in 0..size {
@@ -1186,9 +1159,8 @@ impl<T: Scalar> Front<T> {
         up.extend_from_slice(&frame[self.steps..]);
     }
 
-    /// The pass down of a solve (or transposed solve when `transposed`): from the values of
-    /// its update its parent left, the solution at its columns (or rows) in `solution`, its
-    /// subtree's, and the values of its children's updates.
+    /// Executes the downward solve pass (or transposed pass when `transposed` is `true`),
+    /// writing eliminated solution entries into `solution` and passing updates to children.
     fn backward(
         &self,
         node: &Node,
@@ -1241,8 +1213,8 @@ impl<T: Scalar> Front<T> {
         self.pass_down(node, (parts, below), steps, slots);
     }
 
-    /// Leaves each child the values of its update's rows or columns, from `values`, by slot
-    /// of the frame as eliminated, whose slots as assembled went to `slots`.
+    /// Extracts each child's backward-pass update values from `values` via `slots` and writes
+    /// them into child scratch buffers.
     fn pass_down(
         &self,
         node: &Node,

@@ -22,7 +22,8 @@ struct Site {
     dynamic: bool,
 }
 
-/// The sites of `statements`, under `shape` and `dynamic`.
+/// Collects all resistive and reactive contribution [`Site`]s in `statements` under the active
+/// `shape` and `dynamic` guards.
 fn sites(
     module: &Module,
     statements: &[Statement],
@@ -66,7 +67,7 @@ fn sites(
     }
 }
 
-/// The truth of the shape's conditions `shape`, all of them.
+/// Conjoins the shape predicates in `shape` into a single boolean [`Expression`].
 fn guard(shape: &[(usize, bool)]) -> Option<Expression> {
     shape
         .iter()
@@ -80,9 +81,11 @@ fn guard(shape: &[(usize, bool)]) -> Option<Expression> {
         .reduce(|left, right| Expression::Binary("&&", Box::new(left), Box::new(right)))
 }
 
-/// The current of `branch`, as a probe reads it: the sum of its flow's contributions,
-/// each where the shape makes it, and its own unknown where the shape makes it hold a
-/// potential; `None` when it carries no flow, so that the probe reads its unknown.
+/// Builds an inline expression for the current of flow-carrying `branch` from its
+/// contributions in `found`, falling back to the branch unknown wherever `branch` carries a
+/// potential.
+///
+/// Returns `None` when `branch` has no flow contributions so probes keep its branch unknown.
 fn flow_current(
     module: &Module,
     branch: usize,
@@ -161,7 +164,7 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
     if replacements.is_empty() {
         return Ok(noisy);
     }
-    // Where each variable is last assigned, and where each statement lies, in order.
+    // Record each statement's sequence index and each variable's last assignment index.
     let mut last = vec![0_usize; module.variables.len()];
     let mut position = 0;
     let mut probed: Vec<(usize, usize)> = Vec::new();
@@ -198,7 +201,7 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
     Ok(true)
 }
 
-/// The branches whose currents `module` probes.
+/// Returns the indices of all branches whose currents are probed in `module`.
 pub(crate) fn probed_currents(module: &Module) -> BTreeSet<usize> {
     let mut read = BTreeSet::new();
     let mut visit = |expr: &Expression| {
@@ -262,15 +265,12 @@ fn collect_noisy_branches(module: &mut Module) -> Result<BTreeMap<usize, (usize,
     Ok(rewritten)
 }
 
-/// Gives each branch whose current is probed and whose flow carries noise its current as
-/// an unknown, so that what reads the current reads its noise too, as PSP's drain does
-/// its induced gate noise's: a node of the branch's name, of a current's nature, whose
-/// equation is its value less the branch's flow, the noise entering it, and through which
-/// the branch's flow then passes. Returns whether it gave any.
+/// Introduces a current-unknown node for every probed flow branch that carries noise so
+/// readers observe the branch noise (for example, PSP induced gate noise).
 ///
-/// The noise enters the equation as the branch's flow does, with the opposite sign, which
-/// changes no response's power or correlation: a noise source and its negative are the
-/// same random process.
+/// Each rewritten branch gets a [`Nature::Current`] node whose auxiliary equation equates the
+/// node unknown with the branch flow plus noise, and returns `true` if any branch was
+/// rewritten. Negating a noise source preserves its spectral density and correlations.
 fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
     let rewritten = collect_noisy_branches(module)?;
     if rewritten.is_empty() {

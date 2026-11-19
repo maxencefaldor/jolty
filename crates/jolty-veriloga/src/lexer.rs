@@ -1,7 +1,5 @@
-//! Verilog-A's tokens, read from a source with its compiler directives carried out:
-//! `` `include `` of the standard headers, `` `define `` with and without arguments, their
-//! expansion, `` `undef ``, and `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` and
-//! `` `endif ``.
+//! Verilog-A lexer and preprocessor handling `` `include `` for standard headers,
+//! `` `define ``/`` `undef `` macros, and conditional directives.
 
 use std::collections::BTreeMap;
 use std::f64::consts;
@@ -10,49 +8,48 @@ use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE};
 
 use crate::Error;
 
-/// A token of the language, after preprocessing.
+/// Preprocessed Verilog-A token.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Token {
-    /// A name, such as `resistance` or `V`.
+    /// Identifier such as `resistance` or `V`.
     Identifier(String),
-    /// A system function or task, such as `$temperature`, with its `$`.
+    /// System function or task name, such as `$temperature`, including the leading `$`.
     System(String),
-    /// A real number, its scale factor applied.
+    /// Real number literal with any Verilog-A scale factor applied.
     Real(f64),
-    /// An integer.
+    /// Integer literal.
     Integer(i64),
-    /// A string, its quotes and escapes removed.
+    /// String literal with enclosing quotes and escape sequences resolved.
     Text(String),
-    /// An operator or a punctuation mark.
+    /// Operator or punctuation symbol.
     Symbol(&'static str),
 }
 
-/// A token and the line of the source it starts on.
+/// Token paired with its 1-based starting source line.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Spanned {
     pub(crate) token: Token,
     pub(crate) line: usize,
 }
 
-/// The operators and punctuation marks, longest first, so that each matches before its
-/// prefixes.
+/// Operators and punctuation marks ordered longest-first so multi-character tokens match
+/// before prefixes.
 const SYMBOLS: [&str; 40] = [
     "<+", "**", "&&", "||", "==", "!=", "<=", ">=", "<<", ">>", "(*", "*)", "+", "-", "*", "/",
     "%", "!", "<", ">", "?", ":", "(", ")", "[", "]", "{", "}", ",", ";", "=", "@", "#", ".", "~",
     "&", "|", "^", "'", "$",
 ];
 
-/// The standard headers a source includes, which the compiler knows: the disciplines,
-/// whose natures it holds itself, under the standard's name and under `discipline.h`, the
-/// name the CMC's code standard gives it, and the constants, defined below.
+/// Standard headers built into the compiler: discipline definitions (`disciplines.vams`,
+/// `discipline.h`) and physical constants (`constants.vams`).
 const HEADERS: [&str; 3] = ["disciplines.vams", "discipline.h", "constants.vams"];
 
-/// What reads the text of a file a source includes, by the name it gives, `None` for
-/// one it cannot read.
+/// Callback resolving non-standard included file names to source text, returning `None` when
+/// unreadable.
 pub(crate) type Files<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-/// What raw lexing gives: a token, a directive's name, or the end of a line, which ends a
-/// directive.
+/// Raw lexing unit prior to preprocessing: a token, a directive name, or a line break
+/// terminating a directive.
 #[derive(Debug, Clone, PartialEq)]
 enum Raw {
     Token(Token),
@@ -60,8 +57,8 @@ enum Raw {
     Newline,
 }
 
-/// A raw item, its line, and whether a space came before it, which tells a macro's
-/// arguments from its body.
+/// Raw lexed item with its source line and preceding-whitespace flag distinguishing macro
+/// argument lists from replacement bodies.
 #[derive(Debug, Clone)]
 struct Item {
     raw: Raw,
@@ -69,19 +66,18 @@ struct Item {
     spaced: bool,
 }
 
-/// A macro: its arguments' names, `None` for one without, and its body.
+/// Macro definition holding optional parameter names and replacement tokens.
 #[derive(Debug, Clone)]
 struct Macro {
     arguments: Option<Vec<String>>,
     body: Vec<Spanned>,
 }
 
-/// The tokens of `source`, its directives carried out, the files it includes read by
-/// `files`.
+/// Lexes and preprocesses `source`, resolving included files through `files`.
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] at the line of the first token or directive it cannot read.
+/// Returns an [`Error`] at the line of the first malformed token or directive.
 pub(crate) fn tokens(source: &str, files: Files<'_>) -> Result<Vec<Spanned>, Error> {
     let mut macros = constants();
     let mut out = Vec::new();
@@ -89,11 +85,11 @@ pub(crate) fn tokens(source: &str, files: Files<'_>) -> Result<Vec<Spanned>, Err
     Ok(out)
 }
 
-/// The constants of the standard `constants.vams`: each one's macro, the Rust constant
-/// the kernels name it by, and its value. Each comes from the definition it names: the
-/// mathematical constants from Rust's, the elementary charge and Boltzmann's constant
-/// from jolty's models, which take them from the SI's exact values, and 0 °C in kelvins,
-/// which the SI defines.
+/// Standard `constants.vams` definitions as `(macro_name, rust_constant, value)`.
+///
+/// Mathematical constants come from `std::f64::consts`, elementary charge and Boltzmann's
+/// constant come from exact SI definitions in `jolty_models`, and `P_CELSIUS0` is the SI
+/// Celsius-kelvin offset (273.15 K).
 pub(crate) const CONSTANTS: [(&str, &str, f64); 17] = [
     ("M_PI", "std::f64::consts::PI", consts::PI),
     ("M_TWO_PI", "std::f64::consts::TAU", consts::TAU),
@@ -122,7 +118,7 @@ pub(crate) const CONSTANTS: [(&str, &str, f64); 17] = [
     ("P_CELSIUS0", "273.15", 273.15),
 ];
 
-/// The macros of [`CONSTANTS`].
+/// Builds the initial macro map populated from [`CONSTANTS`].
 fn constants() -> BTreeMap<String, Macro> {
     CONSTANTS
         .into_iter()
@@ -140,7 +136,7 @@ fn constants() -> BTreeMap<String, Macro> {
         .collect()
 }
 
-/// The raw items of `source`: tokens, directives and ends of lines.
+/// Scans `source` into raw tokens, directives, and line breaks.
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per kind of token, which read best side by side"
@@ -265,8 +261,8 @@ fn raw(source: &str) -> Result<Vec<Item>, Error> {
     Ok(items)
 }
 
-/// The string whose text starts at `at` among `characters`, its escapes read, and where
-/// it ends, after its closing quote.
+/// Parses a quoted string literal starting at `at` in `characters`, returning the unescaped
+/// text and ending index.
 fn string(characters: &[char], mut at: usize) -> Result<(String, usize), String> {
     let mut text = String::new();
     loop {
@@ -290,8 +286,8 @@ fn string(characters: &[char], mut at: usize) -> Result<(String, usize), String>
     }
 }
 
-/// The number that starts at `at` among `characters`, and where it ends: an integer, or
-/// a real with a fraction, an exponent or one of Verilog-A's scale factors.
+/// Parses an integer or real literal (including Verilog-A scale suffixes) starting at `at` in
+/// `characters`.
 fn number(characters: &[char], mut at: usize) -> Result<(Token, usize), String> {
     let start = at;
     let digits = |at: &mut usize| {
@@ -366,15 +362,14 @@ fn number(characters: &[char], mut at: usize) -> Result<(Token, usize), String> 
     Ok((token, at))
 }
 
-/// Carries out the directives of `items`, appending the tokens they leave to `out`, with
-/// the macros `macros` defines, which they change.
+/// Processes preprocessor directives in `items` against `macros` and `files`, appending active
+/// tokens to `out`.
 fn preprocess(
     items: &[Item],
     (macros, files): (&mut BTreeMap<String, Macro>, Files<'_>),
     out: &mut Vec<Spanned>,
 ) -> Result<(), Error> {
-    // Whether each enclosing conditional's text is kept, and whether one of its branches
-    // has been taken yet.
+    // Track for each active conditional whether text is kept and whether any branch matched.
     let mut conditions: Vec<(bool, bool)> = Vec::new();
     let mut at = 0;
     while let Some(item) = items.get(at) {
@@ -459,8 +454,8 @@ fn preprocess(
     }
 }
 
-/// Reads the definition of a macro, from `at` on among `items`, after `` `define ``,
-/// into `macros`, and returns where it ends.
+/// Parses a `` `define `` macro starting at `at` in `items`, inserts it into `macros`, and
+/// returns the resuming index.
 fn define(
     items: &[Item],
     mut at: usize,
@@ -517,8 +512,8 @@ fn define(
     Ok(at)
 }
 
-/// Expands the macro `name`, used at `at` among `items` on `line`, with its arguments,
-/// appending the tokens it leaves to `out`, and returns where its use ends.
+/// Expands macro `name` invoked at `at` on `line`, appending resulting tokens to `out` and
+/// returning the resuming index.
 fn expand(
     name: &str,
     (items, mut at, line): (&[Item], usize, usize),
@@ -560,8 +555,8 @@ fn expand(
     Ok(at)
 }
 
-/// A macro's arguments, the items from `at` on, between balanced parentheses and split
-/// at their top-level commas, and where they end.
+/// Extracts parenthesized comma-separated macro arguments starting at `at`, returning the
+/// argument token lists and ending index.
 fn arguments(items: &[Item], mut at: usize) -> Option<(Vec<Vec<Spanned>>, usize)> {
     while items.get(at)?.raw == Raw::Newline {
         at += 1;
@@ -599,7 +594,8 @@ fn arguments(items: &[Item], mut at: usize) -> Option<(Vec<Vec<Spanned>>, usize)
     }
 }
 
-/// `body` with each identifier among `names` replaced by the tokens of its value.
+/// Replaces parameter identifiers from `names` in `body` with their corresponding token slices
+/// in `values`.
 fn substitute(body: &[Spanned], names: &[String], values: &[Vec<Spanned>]) -> Vec<Spanned> {
     body.iter()
         .flat_map(|spanned| {

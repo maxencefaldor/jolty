@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, Serializer};
 #[serde(try_from = "String")]
 pub struct Name(String);
 
-/// Why a string is not a valid [`Name`].
+/// Error indicating why a string is not a valid [`Name`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("invalid name {text:?}: {reason}")]
 pub struct InvalidName {
@@ -46,7 +46,7 @@ impl Name {
         }
     }
 
-    /// The name as a string slice.
+    /// Returns the name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

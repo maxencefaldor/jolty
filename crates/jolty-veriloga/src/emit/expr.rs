@@ -17,17 +17,15 @@ use super::types::{
     Site, UNARY, float, join, parenthesize, rust_type, union,
 };
 
-/// A smooth function of one real number, as the emitter writes it: its plain floats'
-/// method, its value, slope and curvature at the float `{a}`, and its slope as one of
-/// jolty's numbers, of the argument `{x}` and the value `{r}`.
+/// Emission template for a smooth unary function: plain `f64` method name, value/first/second
+/// derivatives at `{a}`, and dual slope over `{x}` and `{r}`.
 struct Smooth {
     method: &'static str,
     plain: [&'static str; 3],
     slope: &'static str,
 }
 
-/// The smooth function `builtin` is, if it is one that jolty's numbers compute through
-/// their chain rule.
+/// Returns the [`Smooth`] emission table for `builtin` when computed via jolty's chain rule.
 #[expect(
     clippy::too_many_lines,
     reason = "one table, a row for each smooth function"
@@ -142,35 +140,33 @@ const fn smooth(builtin: Builtin) -> Option<Smooth> {
     })
 }
 
-/// The emitter of one function of the kernel.
+/// Code emitter state for a single generated kernel method.
 pub(super) struct Emitter<'f, 'm> {
     pub(super) facts: &'f Facts<'m>,
     pub(super) mode: Mode,
-    /// The analog block as this mode runs it: each assignment that no statement after it
-    /// reads left out.
+    /// Pruned analog block for the active mode with dead assignments removed.
     pub(super) analog: Vec<Statement>,
-    /// Whether each variable is kept, in this mode.
+    /// Per-variable liveness flag for the active mode.
     pub(super) live: Vec<bool>,
-    /// The function being emitted, in [`Mode::Function`].
+    /// Index of the analog function currently emitted in [`Mode::Function`].
     pub(super) function: Option<usize>,
     temporaries: usize,
     pub(super) prepared: &'f mut Prepared,
-    /// The probes read, which the function binds first.
+    /// Probes read by the emitted method, bound at method entry.
     pub(super) probes: BTreeSet<Probe>,
-    /// The fields of the shape read.
+    /// Shape fields referenced by the emitted method.
     pub(super) shape: BTreeSet<String>,
-    /// The entries of the stamp, which the shape holds, each by its row and column.
+    /// Stamp Jacobian entries `(row, column)` and the `(branch, site)` pairs using each entry.
     pub(super) entries: &'f mut BTreeMap<(Place, Place), BTreeSet<(usize, Site)>>,
-    /// The limited probes whose applied and limited voltages the stamp extends along.
+    /// Limited probe indices requiring linear extrapolation from limited to applied voltage.
     pub(super) extended: BTreeSet<usize>,
-    /// The parameters read, in preparation.
+    /// Parameter indices read during preparation.
     pub(super) parameters_read: BTreeSet<usize>,
-    /// The non-constant `localparam`s read, in preparation.
+    /// Non-constant `localparam` indices read during preparation.
     pub(super) locals_read: BTreeSet<usize>,
-    /// Whether `$temperature` was read, in preparation.
+    /// Flag recording whether `$temperature` was read during preparation.
     pub(super) uses_temperature: bool,
-    /// The kind of each branch's accumulated flow or potential, and of its charge or
-    /// flux, by the branch and whether it is the latter.
+    /// Emitted [`Kind`] of each branch accumulator keyed by `(branch, site, is_reactive)`.
     pub(super) accumulators: BTreeMap<(usize, Site, bool), Kind>,
 }
 
@@ -237,7 +233,7 @@ const fn is_literal_factor(expr: &Expression) -> bool {
     matches!(expr, Expression::Real(_) | Expression::Integer(_))
 }
 
-/// Whether `code` names a value, so that reading it again costs nothing.
+/// Returns `true` when `code` is a simple variable or field path safe to evaluate repeatedly.
 fn is_name(code: &str) -> bool {
     !code.is_empty()
         && code
@@ -251,22 +247,22 @@ impl Emitter<'_, '_> {
         self.facts.module
     }
 
-    /// A new temporary's name, numbered in four digits, so that no two differ by a digit
-    /// more, which clippy's `similar_names` reads as a slip.
+    /// Allocates a fresh zero-padded temporary name (`t0000`, `t0001`, ...) to avoid clippy
+    /// `similar_names` warnings.
     pub(super) fn temporary(&mut self) -> String {
         let name = format!("t{:04}", self.temporaries);
         self.temporaries += 1;
         name
     }
 
-    /// `operand` bound to a temporary, unless it names a value already.
+    /// Binds `operand` to a temporary variable unless `operand.code` is already a cheap name.
     fn bind(&mut self, operand: Operand, out: &mut Vec<Rust>) -> Operand {
         if is_name(&operand.code) {
             return operand;
         }
         let name = self.temporary();
-        // A dual number made from a constant takes its size from where it is used, which
-        // a comparison of its value does not tell, so its type is written.
+        // Annotate constant `Dual::` initializers because later value comparisons alone do not
+        // constrain the const-generic derivative count.
         let typed = if matches!(operand.kind, Kind::Dual(_)) && operand.code.starts_with("Dual::") {
             format!(": {}", rust_type(&operand.kind))
         } else {
@@ -276,7 +272,7 @@ impl Emitter<'_, '_> {
         Operand::new(name, ATOM, operand.kind)
     }
 
-    /// The `Locals` field name for `probe`, or `None` for limited probes (which bind inline).
+    /// Returns the `Locals` field name for `probe`, or `None` for limited probes bound inline.
     pub(super) fn probe_field(&self, probe: Probe) -> Option<String> {
         let module = self.facts.module;
         match probe {
@@ -290,7 +286,7 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The kind of the variable at `variable`, in this mode.
+    /// Returns the emitted [`Kind`] of `variable` in the active mode.
     pub(super) fn variable_kind(&self, variable: usize) -> Kind {
         if let Some(function) = self.function {
             return Kind::from_type(
@@ -312,7 +308,7 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The emitted kind of a non-constant static expression `expr`.
+    /// Infers the emitted [`Kind`] of non-constant static expression `expr`.
     fn static_kind(&self, expr: &Expression) -> Kind {
         let module = self.module();
         match expr {
@@ -355,8 +351,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// A static expression read in a dynamic mode: a constant folded in place, a
-    /// constant of jolty's, or a prepared number.
+    /// Lowers a static expression `expr` in dynamic mode via constant folding or a hoisted
+    /// `prepared` field.
     pub(super) fn static_operand(&mut self, expr: &Expression) -> Operand {
         if let Ok(Some(value)) = fold_const(expr) {
             return match value {
@@ -439,7 +435,7 @@ impl Emitter<'_, '_> {
         Operand::new(format!("prepared.{name}"), ATOM, kind)
     }
 
-    /// The value of `operand` as a plain float.
+    /// Extracts the plain `f64` value of `operand`.
     pub(super) fn value_of(operand: &Operand) -> Operand {
         match operand.kind {
             Kind::Float(_) => operand.clone(),
@@ -477,7 +473,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// `operand` as a truth value, Verilog-A's: true when it is not zero.
+    /// Converts `operand` to a Rust boolean condition following Verilog-A truthiness (nonzero is
+    /// true).
     pub(super) fn truth(&self, operand: Operand) -> (String, u8) {
         let _ = self;
         match operand.kind {
@@ -492,7 +489,7 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// `operand` converted to `kind`.
+    /// Converts `operand` to target [`Kind`] `kind`, widening duals via `Dual::embed` when needed.
     pub(super) fn convert(operand: Operand, kind: &Kind) -> Result<Operand, Error> {
         let unsupported = || Error::at(0, format!("a {:?} cannot become a {kind:?}", operand.kind));
         Ok(match (&operand.kind, kind) {
@@ -702,10 +699,8 @@ impl Emitter<'_, '_> {
             }
             Expression::Binary(operator, left, right) => {
                 let left = self.expression(left, out)?;
-                // A dual number divided by a number the probes do not move: its value
-                // divided, as the source writes it, and its derivatives multiplied by the
-                // reciprocal, which the preparation computes once, a product for each
-                // quotient.
+                // Divide a dual number by a static divisor directly for the value and multiply
+                // derivatives by the hoisted reciprocal.
                 if *operator == "/"
                     && matches!(left.kind, Kind::Dual(_))
                     && !module.is_dynamic(right)
@@ -792,8 +787,8 @@ impl Emitter<'_, '_> {
         })
     }
 
-    /// `ddx(operand, V(node))`: the derivative of `operand` by the node's potential, the
-    /// sum of its derivatives by the probes that read the node, each by its side.
+    /// Lowers `ddx(operand, V(node))` by summing the gradient components of probes incident on
+    /// `node`.
     fn ddx(
         &mut self,
         operand: &Expression,
@@ -862,9 +857,8 @@ impl Emitter<'_, '_> {
         Ok(Operand::new(code, precedence, Kind::Real))
     }
 
-    /// The negation of `operand`, a truth value: a comparison with its operator flipped
-    /// where the flip is exact, as equality's is and an integers' order's is, a number
-    /// compared with zero, or the truth negated.
+    /// Lowers logical negation of `operand`, flipping exact integer or equality comparisons when
+    /// possible.
     fn negation(&mut self, operand: &Expression, out: &mut Vec<Rust>) -> Result<Operand, Error> {
         if let Expression::Given(parameter) = operand {
             self.parameters_read.insert(*parameter);
@@ -912,7 +906,8 @@ impl Emitter<'_, '_> {
         })
     }
 
-    /// A probe's value: with its derivative in an evaluation, plain in a noise analysis.
+    /// Lowers `probe` into a dual variable in `evaluate` or a plain real value in `noise`,
+    /// handling `$limit` clamping inline.
     fn probe(&mut self, probe: Probe, out: &mut Vec<Rust>) -> Result<Operand, Error> {
         let module = self.facts.module;
         let voltage = |emitter: &mut Self, plus: usize, minus: usize, read: &str| {
@@ -1232,9 +1227,8 @@ impl Emitter<'_, '_> {
         })
     }
 
-    /// The function `smooth` of `x`: on plain floats by their own method, on jolty's
-    /// numbers through their chain rule, to the second order, and on dual numbers through
-    /// theirs, its slope one of jolty's numbers.
+    /// Lowers smooth unary `smooth` on `x` using plain methods for floats and chain-rule
+    /// derivatives for `Real` and `Dual`.
     fn smooth(&mut self, smooth: &Smooth, x: Operand, out: &mut Vec<Rust>) -> Operand {
         let fill = |template: &str, a: &str, x: &str, r: &str| {
             template
@@ -1278,7 +1272,7 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// `base` raised to `exponent`.
+    /// Lowers `base` raised to `exponent` across float, `Real`, and `Dual` combinations.
     fn power(
         &mut self,
         base: Operand,
@@ -1308,7 +1302,7 @@ impl Emitter<'_, '_> {
                 let x = self.bind(base, out);
                 let e = Self::convert(exponent, &Kind::Real)?;
                 let e = self.bind(e, out);
-                // The power's derivative from the power itself, `e · x^e / x`, but at zero.
+                // Compute the derivative via `e * x^e / x`, falling back to `e * x^(e - 1)` at zero.
                 let power = self.temporary();
                 out.push(Rust::Line(format!(
                     "let {power} = {}.value.pow({});",
@@ -1358,8 +1352,8 @@ impl Emitter<'_, '_> {
     }
 }
 
-/// The statements of a block and the code of its value, `value`, the last statement's
-/// expression in its place where that statement only binds it.
+/// Simplifies a block ending in `let {value} = expr;` by returning the preceding statements
+/// and `expr` directly.
 fn block_value(mut statements: Vec<Rust>, value: String) -> (Vec<Rust>, String) {
     let bound = format!("let {value} = ");
     if let Some(Rust::Line(last)) = statements.last()
@@ -1374,7 +1368,7 @@ fn block_value(mut statements: Vec<Rust>, value: String) -> (Vec<Rust>, String) 
     (statements, value)
 }
 
-/// The negation of `operand`: exact, so a double one cancels.
+/// Negates `operand`, folding constants and cancelling double negation.
 fn negate(operand: Operand) -> Operand {
     match operand.kind {
         Kind::Float(Some(value)) => float(-value),
@@ -1400,7 +1394,8 @@ fn negate(operand: Operand) -> Operand {
     }
 }
 
-/// The comparison `left operator right`, of their values.
+/// Lowers comparison `left operator right`, folding constant operands and using `partial_cmp`
+/// for nonzero float equality.
 fn compare(operator: &str, left: &Operand, right: &Operand) -> Operand {
     // Two constants compare as they do, which the code need not repeat.
     let constant = |operand: &Operand| match operand.kind {

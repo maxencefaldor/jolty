@@ -22,9 +22,8 @@ pub(super) fn reads(expr: &Expression, module: &Module, found: &mut BTreeSet<usi
     });
 }
 
-/// Which variables `mode` keeps: those `roots` holds, and those a kept statement reads,
-/// until none is added; in a dynamic mode only dynamic variables, in preparation only
-/// static ones.
+/// Computes the per-variable liveness flags retained by `mode`, seeded from `roots` and
+/// propagated to a fixed point.
 pub(super) fn live(
     module: &Module,
     statements: &[Statement],
@@ -51,11 +50,11 @@ pub(super) fn live(
     }
 }
 
-/// `statements` as `mode` runs them, each assignment that nothing after it reads left
-/// out, `live` the variables read after them, which it leaves those read before: a
-/// backward pass over the structured code, a loop's body to its fixed point. An
-/// assignment of a variable to itself does nothing, and one that limits a voltage is
-/// kept for the memory it writes.
+/// Removes assignments whose targets are never read in `mode`, updating `live` backward to the
+/// variables live on entry.
+///
+/// Iterates loop bodies to a fixed point, drops self-assignments, and retains assignments
+/// evaluating `$limit` for their memory side effects.
 pub(super) fn prune(
     statements: &[Statement],
     module: &Module,
@@ -183,7 +182,7 @@ pub(super) fn mark(
     }
 }
 
-/// Whether `mode` keeps `statement`.
+/// Returns `true` when `statement` participates in code emission for `mode`.
 pub(super) fn kept(statement: &Statement, module: &Module, mode: Mode, live: &[bool]) -> bool {
     statement.any(&|inner| match inner {
         Statement::Assign(variable, _) => match mode {

@@ -1,18 +1,17 @@
-//! The procedural macros of jolty.
+//! Procedural macros for `jolty`.
 //!
-//! [`Lift`](macro@Lift) writes `jolty_models::Lift` for a type generic over its kind of
-//! number, `R`: the type of `R`s made from the same type of plain numbers, `f64`s, each
-//! number by the path serde writes it at, so that a twin seeds a parameter's derivatives
-//! where the parameter is named, with no detour through the parameters' written form.
+//! [`Lift`](macro@Lift) implements `jolty_models::Lift` for a type generic over a scalar type
+//! `R`, lifting each `f64` value at its serde field path. Differentiable evaluations can then
+//! seed parameter derivatives directly by name without serializing through text.
 //!
 //! [`ParameterMetadata`](macro@ParameterMetadata) writes `jolty_models::ParameterMetadata`
-//! for a kernel's parameter struct, recording each field's physical dimension, plain-number,
+//! for a kernel parameter struct, recording each field's physical dimension, plain-number,
 //! discrete-choice, or conditional kind from inline `#[dimension(...)]` attributes.
 //!
 //! [`binned_parameters`](macro@binned_parameters) declares a geometry-binned parameter struct
-//! (such as BSIM3's and BSIM4's), its `Default` and `ParameterMetadata` implementations, its
-//! companion binned struct, and the `binned` method that adds each binned parameter's length,
-//! width, and area dependences.
+//! (such as BSIM3 and BSIM4), its `Default` and `ParameterMetadata` implementations, its
+//! companion binned struct, and the `binned` method that adds length, width, and area
+//! dependences.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as Tokens, TokenTree};
@@ -25,16 +24,14 @@ use syn::{
     braced, bracketed, parenthesized, parse_macro_input,
 };
 
-/// Writes `jolty_models::Lift<R>` for a struct or an enum generic over one kind of number,
-/// `R`, whose plain form is the same type of `f64`s; or, for a type of no kind of number,
-/// whose values hold no real number, for every `R`, each value its own plain form.
+/// Implements `jolty_models::Lift<R>` for a struct or enum generic over a single scalar type
+/// `R` (with `f64` as its plain form), or for a non-generic type holding no real numbers.
 ///
-/// Each field that holds an `R`, as itself or within another type, is lifted at the path
-/// serde writes it at: under its name, its `#[serde(rename)]`, or the name the container's
-/// `#[serde(rename_all)]` gives it; within a list or a tuple, under its index; within an
-/// enum, under its variant's name, unless the enum is `#[serde(untagged)]`; and through a
-/// newtype, a newtype variant or a `#[serde(transparent)]` struct, at the path of what
-/// holds it. Every other field is cloned.
+/// Fields containing `R` directly or inside compound types are lifted at their serde paths: by
+/// field name, `#[serde(rename)]`, or container `#[serde(rename_all)]`. Sequence and tuple
+/// elements use their indices, enum variants use their variant names unless the enum is
+/// `#[serde(untagged)]`, and newtypes or `#[serde(transparent)]` structs forward the parent
+/// path. All other fields are cloned.
 #[proc_macro_derive(Lift)]
 pub fn lift(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -65,10 +62,10 @@ pub fn parameter_metadata(input: TokenStream) -> TokenStream {
 /// Fields are written in the exact order they appear on the parameter struct, each with its
 /// default expression after `=` and an optional trailing `[DIM]` or `[conditional("tag")]`
 /// dimension specification. A field prefixed with `binned` expands into four consecutive
-/// fields on the parameter struct: itself and its `l`, `w`, and `p` dependences (escaped as
-/// raw identifiers such as `r#pub` when a prefixed name is a Rust keyword), each defaulting to
-/// `R::constant(0.0)`, together with a field on the companion binned struct and its evaluation
-/// in `binned`.
+/// fields on the parameter struct: the base field plus its `l`, `w`, and `p` dependences,
+/// defaulting to `R::constant(0.0)`. Prefixed names that collide with Rust keywords are
+/// escaped as raw identifiers (such as `r#pub`), and each binned field adds a matching entry
+/// on the companion binned struct evaluated in `binned`.
 ///
 /// An optional binned field (`Option<R>`) either remains `Option<R>` on the binned struct
 /// (mapped when present) or carries a fallback expression after `=>` (unwrapped before adding
@@ -83,7 +80,7 @@ pub fn binned_parameters(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// The implementation of `Lift` for `input`.
+/// Generates the `Lift` implementation for `input`.
 fn derived(input: &DeriveInput) -> Result<Tokens> {
     if matches!(input.data, Data::Union(_)) {
         return Err(Error::new_spanned(
@@ -176,8 +173,9 @@ fn derived(input: &DeriveInput) -> Result<Tokens> {
     })
 }
 
-/// The implementation of `Lift` for `name`, a type of no kind of number, whose values hold
-/// no real number to lift: each is its own plain form.
+/// Generates a `Lift` implementation for `name` when the type holds no real numbers.
+///
+/// Each lifted value is cloned directly from the plain value.
 fn holding_none(name: &Ident) -> Tokens {
     quote! {
         impl<Number> ::jolty_models::Lift<Number> for #name {
@@ -194,9 +192,10 @@ fn holding_none(name: &Ident) -> Tokens {
     }
 }
 
-/// The pattern that binds each of `fields` of the plain value, and the expression that
-/// makes the value, `constructor`, of them lifted, each at its key under the path: its
-/// name, as `case` renames it, or its index, unless the fields are `transparent`.
+/// Builds the destructuring pattern and lifted construction expression for `fields`.
+///
+/// Each field is lifted under its serde key (renamed by `case`) or tuple index unless
+/// `transparent` forwards the parent path directly.
 fn lifted_fields(
     fields: &Fields,
     number: &Ident,
@@ -245,7 +244,8 @@ fn lifted_fields(
     })
 }
 
-/// Whether `fields` are a newtype's, which serde writes as the one value it holds.
+/// Returns whether `fields` is a single-field tuple (newtype), which serde serializes
+/// transparently.
 fn is_newtype(fields: &Fields) -> bool {
     matches!(fields, Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1)
 }
@@ -360,7 +360,7 @@ fn return_type_holds(output: &ReturnType, number: &Ident) -> bool {
     }
 }
 
-/// The name serde gives `ident`: itself, without the prefix of a raw identifier.
+/// Returns the serde identifier name of `ident` with any `r#` raw-identifier prefix removed.
 fn unraw(ident: &Ident) -> String {
     let name = ident.to_string();
     match name.strip_prefix("r#") {
@@ -369,23 +369,23 @@ fn unraw(ident: &Ident) -> String {
     }
 }
 
-/// What a type's, a variant's or a field's `#[serde(...)]` attributes say of the path it
-/// is written at.
+/// Path-mapping metadata extracted from `#[serde(...)]` attributes on a type, variant, or
+/// field.
 #[derive(Default)]
 struct Naming {
-    /// Its `rename`.
+    /// Explicit `#[serde(rename = "...")]` override for the item.
     rename: Option<String>,
-    /// Its `rename_all`.
+    /// Container-level `#[serde(rename_all = "...")]` casing rule.
     rename_all: Option<Case>,
-    /// Whether it is `untagged`.
+    /// Flag indicating that the enum uses `#[serde(untagged)]`.
     untagged: bool,
-    /// Whether it is `transparent`.
+    /// Flag indicating that the struct uses `#[serde(transparent)]`.
     transparent: bool,
 }
 
 impl Naming {
-    /// What `attributes` say, failing on any that writes a value elsewhere than its path,
-    /// as `flatten` or `with` do, which `Lift` does not follow.
+    /// Parses serde naming attributes from `attributes`, rejecting path-altering attributes
+    /// such as `flatten` or `with` that `Lift` does not support.
     fn from_attributes(attributes: &[Attribute]) -> Result<Self> {
         let mut naming = Self::default();
         for attribute in attributes
@@ -426,17 +426,17 @@ fn skip(meta: &ParseNestedMeta<'_>) -> Result<()> {
     Ok(())
 }
 
-/// A case `rename_all` names fields and variants in.
+/// Casing convention supported by `#[serde(rename_all)]`.
 #[derive(Clone, Copy)]
 enum Case {
-    /// `lowercase`.
+    /// Lowercase naming convention (`lowercase`).
     Lower,
-    /// `snake_case`.
+    /// Snake-case naming convention (`snake_case`).
     Snake,
 }
 
 impl Case {
-    /// The case `meta`, a `rename_all`, names.
+    /// Parses the casing convention named by a `rename_all` attribute.
     fn read(meta: &ParseNestedMeta<'_>) -> Result<Self> {
         let case = meta.value()?.parse::<LitStr>()?;
         match case.value().as_str() {
@@ -449,7 +449,7 @@ impl Case {
         }
     }
 
-    /// The name of the variant `name` in this case, as serde gives it.
+    /// Formats enum variant `name` according to this casing convention.
     fn variant(self, name: &str) -> String {
         match self {
             Self::Lower => name.to_ascii_lowercase(),
@@ -466,9 +466,10 @@ impl Case {
         }
     }
 
-    /// The name of the field `name` in this case, as `serde_derive` gives it: both
-    /// `RenameRule::LowerCase` and `RenameRule::SnakeCase` return `field.to_owned()` in
-    /// `apply_to_field`, even for mixed-case field identifiers.
+    /// Formats struct field `name` according to this casing convention.
+    ///
+    /// Both `RenameRule::LowerCase` and `RenameRule::SnakeCase` return `field.to_owned()` in
+    /// `serde_derive`, leaving mixed-case field identifiers unchanged.
     fn field(self, name: &str) -> String {
         match self {
             Self::Lower | Self::Snake => name.to_owned(),
@@ -675,20 +676,18 @@ struct BinnedParameters {
     binned_generics: Generics,
 }
 
-/// How a declared field participates in geometry binning.
+/// Geometry-binning behavior of a declared parameter field.
 #[derive(Clone, Copy)]
 enum BinningMode {
-    /// A single field on the parameter struct, not binned.
+    /// Single unbinned field on the parameter struct.
     Plain,
-    /// Expands to four fields on the parameter struct and one evaluated field on the binned
-    /// struct.
+    /// Field expanded into four parameter fields plus one evaluated field on the binned struct.
     Binned,
-    /// Expands to four fields on the parameter struct without adding a field to the binned
-    /// struct.
+    /// Field expanded into four parameter fields without adding a field to the binned struct.
     CardOnly,
 }
 
-/// Whether a binned field has type `R` or `Option<R>`.
+/// Requiredness shape of a binned parameter field (`R` or `Option<R>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinnedShape {
     /// Bare number type parameter, `R`.
@@ -701,7 +700,7 @@ enum BinnedShape {
 struct ParameterField {
     /// Outer attributes (doc comments, serde attributes, and similar) on the base field.
     attributes: Vec<Attribute>,
-    /// Whether and how the field expands into binned dependences.
+    /// Expansion mode determining whether and how the field generates binned dependences.
     mode: BinningMode,
     /// Visibility of the base field and any generated dependence fields.
     visibility: Visibility,
@@ -1023,7 +1022,7 @@ impl ExpandedFields {
         }
 
         let Some(shape) = classify_binned_type(field_type, number) else {
-            let message = format!("a binned field must have type `{number}` or `Option<{number}>`");
+            let message = format!("a binned field requires type `{number}` or `Option<{number}>`");
             return Err(Error::new_spanned(field_type, message));
         };
 
@@ -1200,8 +1199,8 @@ fn expand_binned_parameters(specification: &BinnedParameters) -> Result<Tokens> 
         }
 
         impl #impl_generics #parameters_name #type_generics #where_clause {
-            /// The binned parameters at the reciprocals of the effective length and width, and
-            /// of their product.
+            /// Evaluates the binned parameters from the reciprocal effective length, width,
+            /// and area.
             #binned_visibility fn binned(
                 &self,
                 [inverse_length, inverse_width, inverse_area]: [#number; 3],
@@ -1517,7 +1516,7 @@ mod tests {
         let expand_errors = [
             (
                 "pub struct P<R: Real> { binned pub x: f64 = 0.0, } struct B<R: Real>;",
-                "a binned field must have type `R` or `Option<R>`",
+                "a binned field requires type `R` or `Option<R>`",
             ),
             (
                 "pub struct P<R: Real> { pub x: Option<R> = None => 1.0, } struct B<R: Real>;",

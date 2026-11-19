@@ -8,7 +8,8 @@ use crate::ast::Type;
 use super::{Expression, GROUND, Module, Probe, Statement, apart};
 
 impl Expression {
-    /// Short-circuiting pre-order traversal over `self` and its subexpressions.
+    /// Walks `self` and its subexpressions in pre-order, stopping early when `stop` returns
+    /// `true`.
     fn any_mut(&self, stop: &mut impl FnMut(&Self) -> bool) -> bool {
         if stop(self) {
             return true;
@@ -65,7 +66,8 @@ impl Expression {
 }
 
 impl Statement {
-    /// Short-circuiting pre-order traversal over `self` and all nested statements.
+    /// Walks `self` and all nested statements in pre-order, stopping early when `stop` returns
+    /// `true`.
     fn any_mut(&self, stop: &mut impl FnMut(&Self) -> bool) -> bool {
         if stop(self) {
             return true;
@@ -137,8 +139,8 @@ impl Statement {
         });
     }
 
-    /// Calls `visit` on each expression `self` reads, and on those of the statements
-    /// within it, each to change (including `reactive_factors` and `noise.exponent`).
+    /// Calls `visit` mutably on every expression read by `self` and by nested statements,
+    /// including `reactive_factors` and `noise.exponent`.
     pub(super) fn expressions_mut(&mut self, visit: &mut impl FnMut(&mut Expression)) {
         self.visit_mut(&mut |statement| match statement {
             Self::Assign(_, value) | Self::If(_, value, ..) | Self::While(value, _) => visit(value),
@@ -170,8 +172,8 @@ impl Statement {
         });
     }
 
-    /// Calls `visit` on each expression `self` reads, and on those of the statements
-    /// within it (including `reactive_factors` and `noise.exponent`).
+    /// Calls `visit` on every expression read by `self` and by nested statements, including
+    /// `reactive_factors` and `noise.exponent`.
     pub(crate) fn walk(&self, visit: &mut impl FnMut(&Expression)) {
         self.visit(&mut |statement| match statement {
             Self::Assign(_, value) | Self::If(_, value, ..) | Self::While(value, _) => visit(value),
@@ -223,16 +225,15 @@ pub(super) fn visit_contributions_mut(
     });
 }
 
-/// Whether `statement` contributes to a branch, or holds a statement that does.
+/// Returns `true` when `statement` is or contains a branch contribution.
 pub(crate) fn contributes(statement: &Statement) -> bool {
     statement.any(&|inner| matches!(inner, Statement::Contribute { .. }))
 }
 
-/// Gives each variable that `statements`, the analog block, assigns again where every
-/// path does, at its top, a new version of it from there on, so that what is read before
-/// keeps its own dependence, as a static number later made dynamic does; adds the new
-/// versions to `variables`, and returns the last version of each variable and the
-/// variable each version is of.
+/// Splits top-level variables assigned unconditionally more than once in `statements` into
+/// distinct versions so earlier reads preserve static dependence.
+///
+/// Appends new variable versions to `variables` and returns `(last_versions, origins)`.
 pub(super) fn version(
     statements: &mut [Statement],
     variables: &mut Vec<(String, Type)>,
@@ -271,7 +272,7 @@ pub(super) fn version(
     (last, origins)
 }
 
-/// `expr` reading each variable's version in `current`.
+/// Rewrites variable references inside `expr` to the active indices in `current`.
 fn rename_reads(expr: &mut Expression, current: &[usize]) {
     expr.transform_mut(&mut |inner| {
         if let Expression::Variable(variable) = inner {
@@ -343,7 +344,7 @@ pub(super) fn analyze(module: &mut Module) {
 }
 
 impl Module {
-    /// The name of `node`, `ground` for the ground.
+    /// Returns the Rust name of `node`, or `"ground"` for [`GROUND`].
     pub(crate) fn node_name(&self, node: usize) -> &str {
         if node == GROUND {
             "ground"
@@ -352,12 +353,13 @@ impl Module {
         }
     }
 
-    /// Whether `node` is one of the internal nodes, neither a port nor the ground.
+    /// Returns `true` when `node` is an internal node (neither a port nor [`GROUND`]).
     pub(crate) fn is_internal(&self, node: usize) -> bool {
         node != GROUND && node >= self.ports
     }
 
-    /// Whether `expr` is dynamic.
+    /// Returns `true` when `expr` depends on probes, `gmin`, `ddx`, shape flags, or dynamic
+    /// variables.
     pub(crate) fn is_dynamic(&self, expr: &Expression) -> bool {
         expr.any(&|inner| match inner {
             Expression::Probe(_)
@@ -369,7 +371,7 @@ impl Module {
         })
     }
 
-    /// The probes `expr` depends on through its value.
+    /// Collects all [`Probe`]s that affect the value of `expr`.
     pub(crate) fn probes_of(&self, expr: &Expression) -> BTreeSet<Probe> {
         let mut probes = BTreeSet::new();
         self.collect_probes(expr, &mut probes);
@@ -519,8 +521,8 @@ mod tests {
         }
     }
 
-    /// The message the compiler refuses `analog`, the analog block of a two-terminal
-    /// module with variables `x` and `y`, with.
+    /// Compiles `analog` inside a two-terminal test module with variables `x` and `y` and
+    /// returns the expected refusal message.
     fn refusal(analog: &str) -> String {
         let source = format!(
             "`include \"disciplines.vams\"\nmodule m(a, b);\ninout a, b;\nelectrical a, b;\nreal x, y;\nanalog begin\n{analog}\nend\nendmodule\n"
@@ -552,8 +554,8 @@ mod tests {
         resolve(&parsed).expect("resolve")
     }
 
-    /// Code under an initial event may read neither a probe nor what other code assigns,
-    /// and no other code may make what it assigns depend on the probes.
+    /// Verifies that initial-event code cannot read probes or non-initial variables and cannot
+    /// be reassigned dynamically.
     #[test]
     fn initial_code_reads_only_what_its_first_step_fixes() {
         assert_eq!(

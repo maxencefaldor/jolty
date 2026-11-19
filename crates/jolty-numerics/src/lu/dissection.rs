@@ -1,31 +1,28 @@
-//! The nested dissection of a large diagonal block into interiors and the separators that
-//! border them, after George and Liu ("An automatic nested dissection algorithm for
-//! irregular finite element problems", SIAM Journal on Numerical Analysis 15(5), 1978).
+//! Nested dissection of large diagonal blocks into interiors and separators, following George
+//! and Liu ("An automatic nested dissection algorithm for irregular finite element problems",
+//! SIAM Journal on Numerical Analysis 15(5), 1978).
 //!
-//! A part of the block's graph, its pattern plus its transpose, splits at the middle level
-//! of a level structure rooted at a pseudo-peripheral vertex (George and Liu, "An
-//! implementation of a pseudoperipheral node finder", ACM Transactions on Mathematical
-//! Software 5(3), 1979): the vertices of that level next to the level beyond it separate
-//! the vertices before them from those after. Each component the separator leaves is a
-//! part again, until a part holds no more than the interiors may, or has too few levels to
-//! split; components small enough to be interiors share one while together they are. The
-//! separators and the interiors make a tree, each separator the parent of the
-//! parts it separates, laid out in postorder: every subtree's positions are consecutive,
-//! a node's own after its children's, so that no entry joins two subtrees of one node and
-//! each subtree factors on its own.
+//! Each subgraph splits at the middle level of a level structure rooted at a pseudo-peripheral
+//! vertex (George and Liu, "An implementation of a pseudoperipheral node finder", ACM TOMS
+//! 5(3), 1979). Vertices in that level adjacent to the next level form a separator; remaining
+//! components recurse until small enough for an interior leaf or too shallow to split, packing
+//! tiny sibling components into shared leaves.
+//!
+//! The resulting postorder tree places every subtree in contiguous positions before its parent
+//! separator, ensuring no edges connect sibling subtrees so subtrees factor independently.
 
 use super::NONE;
 use super::ordering::Entries;
 
-/// A symmetric graph on the vertices of a block, by adjacency lists.
+/// Symmetric adjacency-list graph on the vertices of a diagonal block.
 pub(super) struct Graph {
     starts: Vec<usize>,
     neighbors: Vec<usize>,
 }
 
 impl Graph {
-    /// The graph whose vertex `v` has an edge to each of `lists[v]`, made symmetric, with no
-    /// edge from a vertex to itself.
+    /// Builds a symmetrized simple graph (with self-loops removed) from directed adjacency
+    /// `lists`.
     pub(super) fn symmetric(lists: &[Vec<usize>]) -> Self {
         let size = lists.len();
         let mut all: Vec<Vec<usize>> = lists.to_vec();
@@ -46,28 +43,28 @@ impl Graph {
         Self { starts, neighbors }
     }
 
-    /// The vertices joined to `vertex`.
+    /// Returns the neighbors adjacent to `vertex`.
     fn of(&self, vertex: usize) -> &[usize] {
         &self.neighbors[self.starts[vertex]..self.starts[vertex + 1]]
     }
 
-    /// The number of vertices.
+    /// Returns the total vertex count in the graph.
     fn size(&self) -> usize {
         self.starts.len() - 1
     }
 }
 
-/// A node of the tree a dissection makes, as found: its own vertices, and its children.
+/// Discovered node in the nested-dissection tree before matrix positions are assigned.
 #[derive(Debug, Clone)]
 pub(super) struct Found {
-    /// Its vertices: an interior's, or a separator's, in the order of its level.
+    /// Vertices belonging to this interior or separator node, in level order.
     pub(super) vertices: Vec<usize>,
-    /// The indices of its children among the nodes found, in order; none for an interior.
+    /// Indices of child nodes in `found`, in order; empty for interior leaves.
     pub(super) children: Vec<usize>,
 }
 
-/// Dissects `graph`, a connected graph, until each interior holds at most `most` vertices
-/// or cannot split: the nodes of the tree, in postorder, the last its root.
+/// Dissects connected `graph` into a postorder tree (root last) where each interior holds at
+/// most `most` vertices or cannot be split further.
 pub(super) fn dissect(graph: &Graph, most: usize) -> Vec<Found> {
     let mut dissector = Dissector {
         graph,
@@ -154,9 +151,8 @@ impl Dissector<'_> {
             members.sort_unstable();
             components.push(members);
         }
-        // Consecutive components small enough to be interiors share one while together
-        // they are, so that the small parts a separator also cuts off, such as a
-        // transistor's internal unknowns, take no node of their own.
+        // Pack consecutive small components into shared interior leaves so tiny fragments
+        // cut off by a separator (such as internal transistor nodes) avoid separate tree nodes.
         let mut children = Vec::new();
         let mut shared: Vec<usize> = Vec::new();
         for component in components {
@@ -191,10 +187,8 @@ impl Dissector<'_> {
         self.found.len() - 1
     }
 
-    /// Builds the level structure of a pseudo-peripheral vertex of the part of `start`,
-    /// which holds `size` vertices, and returns where its levels start: from `start`, the
-    /// vertex of least degree in the last level of the latest structure, while its own
-    /// structure is deeper.
+    /// Finds a pseudo-peripheral vertex starting from `start` in a part of `size` vertices and
+    /// returns the level start offsets of its deepest level structure.
     fn pseudo_peripheral(&mut self, start: usize, size: usize) -> Vec<usize> {
         let mut root = start;
         let mut starts = self.levels(root);
@@ -260,47 +254,43 @@ impl Dissector<'_> {
     }
 }
 
-/// A node of a block's dissection: an interior, or a separator and the subtrees it
-/// separates, at consecutive positions of the ordered matrix.
+/// Node in a block's nested-dissection tree (either an interior leaf or a separator) occupying
+/// contiguous positions of the ordered matrix.
 #[derive(Debug)]
 pub(super) struct Node {
-    /// The index of the earliest node of its subtree, which runs from it to this one.
+    /// Postorder index of the earliest node in this subtree.
     pub(super) earliest: usize,
-    /// The first position of its subtree.
+    /// First ordered matrix position owned by this subtree.
     pub(super) first: usize,
-    /// The first of its own positions, which run to `end`, after its children's.
+    /// First ordered matrix position owned directly by this node, following its children.
     pub(super) own: usize,
-    /// The position after its own.
+    /// Exclusive end position of this node's owned range.
     pub(super) end: usize,
-    /// Its children's indices among the nodes, in order; none for an interior.
+    /// Child node indices in postorder; empty for interior leaves.
     pub(super) children: Vec<usize>,
-    /// The positions of its ancestors joined to its subtree, in increasing order: the rows
-    /// and columns beyond its own that its factorization updates.
+    /// Sorted ancestor positions coupled to this subtree that receive Schur-complement updates.
     pub(super) border: Vec<usize>,
-    /// The entries of each of its own columns that it assembles, each its row's index in
-    /// the node's frame and the slot of its value: an own row's index among its own, or a
-    /// border row's index in the border after them.
+    /// Matrix entries in this node's owned columns, storing `(frame_row, value_slot)` pairs.
     pub(super) columns: Entries,
-    /// The entries in its own rows of each column of its border, each its row's index
-    /// among its own and the slot of its value.
+    /// Matrix entries in this node's owned rows belonging to border columns, storing
+    /// `(local_row, value_slot)` pairs.
     pub(super) border_columns: Entries,
-    /// For each child, the index in this node's frame of each position of the child's
-    /// border: among its own positions, or after them, in its border.
+    /// Mapping from each child's border indices into this node's local frame.
     pub(super) child_borders: Vec<Vec<usize>>,
 }
 
 impl Node {
-    /// The number of its own positions.
+    /// Returns the number of matrix positions owned directly by this node.
     pub(super) const fn size(&self) -> usize {
         self.end - self.own
     }
 
-    /// Whether it is an interior, with no children.
+    /// Returns whether this node is an interior leaf (having no children).
     pub(super) fn is_interior(&self) -> bool {
         self.children.is_empty()
     }
 
-    /// The index in its frame of `position`, one of its own or of its border.
+    /// Maps ordered matrix `position` (owned or border) to its local frame index, if present.
     fn index(&self, position: usize) -> Option<usize> {
         if (self.own..self.end).contains(&position) {
             return Some(position - self.own);
@@ -312,18 +302,16 @@ impl Node {
     }
 }
 
-/// The nested dissection of one diagonal block of an ordered matrix.
+/// Nested dissection tree for a single diagonal block of an ordered matrix.
 #[derive(Debug)]
 pub(super) struct Dissection {
-    /// The nodes in postorder, the root last.
+    /// Tree nodes stored in postorder, with the root last.
     pub(super) nodes: Vec<Node>,
 }
 
 impl Dissection {
-    /// The dissection of the block from `start` to `end` whose nodes, in postorder, own the
-    /// numbers of positions in `sizes` with the children in `children`, its positions laid
-    /// out in that order, and the entries of whose columns, within the block, are
-    /// `within(position)`: each its row's position and its value's slot.
+    /// Builds a [`Dissection`] over ordered positions `start..end` from postorder `found`
+    /// nodes and per-column block entries `within`.
     pub(super) fn new<'a>(
         (start, end): (usize, usize),
         found: &[Found],
@@ -412,18 +400,18 @@ impl Dissection {
         Self { nodes }
     }
 
-    /// The root of the tree.
+    /// Returns the index of the root node (the final element of `nodes`).
     pub(super) fn root(&self) -> usize {
         self.nodes.len() - 1
     }
 }
 
-/// The index in `node`'s frame of each position of the border of a child of it.
+/// Maps each position in a child's `border` into the parent `node`'s local frame.
 #[expect(
     clippy::expect_used,
-    reason = "a child's border is its ancestors' positions joined to it, and no edge joins two \
-              subtrees of a node: those of the child's parent are its own, and the rest are \
-              joined to the parent's subtree through the child, so in its border"
+    reason = "a child's border holds ancestor positions coupled to the child; because no edge \
+              connects sibling subtrees, each position is either owned by the parent or in \
+              the parent's border"
 )]
 fn in_frame(node: &Node, border: &[usize]) -> Vec<usize> {
     border
@@ -438,7 +426,7 @@ mod tests {
 
     use super::*;
 
-    /// The graph of a `width` × `height` grid, each vertex joined to its neighbors.
+    /// Builds the symmetric graph of a `width` × `height` 4-connected grid.
     fn grid(width: usize, height: usize) -> Graph {
         let lists: Vec<Vec<usize>> = (0..width * height)
             .map(|vertex| {
@@ -560,7 +548,7 @@ mod tests {
     }
 
     proptest! {
-        /// Random connected graphs dissect into trees whose separators separate.
+        /// Verifies that random connected graphs dissect into valid postorder separator trees.
         #[test]
         fn dissects_random_connected_graphs(
             size in 1usize..60,

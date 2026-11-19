@@ -1,41 +1,38 @@
-//! The generalized eigenvalues of dense matrix pencils, by the QZ algorithm (Moler and
+//! Generalized eigenvalues of dense matrix pencils via the complex QZ algorithm (Moler and
 //! Stewart, "An algorithm for generalized matrix eigenvalue problems", SIAM Journal on
-//! Numerical Analysis 10(2), 1973), in complex arithmetic, as LAPACK's ZGGHRD and ZHGEQZ
-//! compute them.
+//! Numerical Analysis 10(2), 1973), mirroring LAPACK's `ZGGHRD` and `ZHGEQZ`.
 //!
-//! The pencil is first reduced by plane rotations to a Hessenberg matrix and a triangular
-//! one, then each eigenvalue is found by single-shift QZ sweeps on the part not yet
-//! deflated, the infinite ones, where the triangular matrix holds a zero on its diagonal,
-//! deflated as they appear. Complex arithmetic gives each eigenvalue of a real pencil's
-//! conjugate pair its own numerator and denominator, and every operation is the same on
-//! every machine.
+//! Plane rotations reduce the pencil to upper Hessenberg-triangular form, and single-shift QZ
+//! sweeps deflate eigenvalues one by one (including infinite eigenvalues where the triangular
+//! diagonal vanishes). Complex arithmetic gives each member of a conjugate pair a separate
+//! `(alpha, beta)` pair and executes identically across platforms.
 
 use num_complex::Complex64;
 
-/// Additive identity of complex numbers (`0.0 + 0.0i`).
+/// Complex zero (`0.0 + 0.0i`).
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
-/// A generalized eigenvalue of a pencil `(A, B)`, `alpha / beta`, kept as its pair so that
-/// an infinite one, whose `beta` is zero, keeps its place.
+/// Generalized eigenvalue `alpha / beta` of a matrix pencil `(A, B)`, kept in pair form so
+/// infinite eigenvalues (`beta == 0`) remain representable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Eigenvalue {
-    /// The numerator.
+    /// Eigenvalue numerator `alpha`.
     pub alpha: Complex64,
-    /// The denominator.
+    /// Eigenvalue denominator `beta`.
     pub beta: Complex64,
 }
 
-/// Why a pencil's eigenvalues could not be found.
+/// Error returned when a generalized eigenvalue solve fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PencilError {
-    /// The QZ iteration reached its limit, thirty sweeps per row, as LAPACK's, before every
-    /// eigenvalue converged.
+    /// QZ iteration reached its limit (30 sweeps per row, matching LAPACK) before all
+    /// eigenvalues converged, or encountered non-finite inputs.
     #[error("the QZ iteration did not converge")]
     Unconverged,
 }
 
-/// The generalized eigenvalues of the pencil `(a, b)`, the `λ` for which `a v = λ b v` with
-/// `v` nonzero, of two dense square matrices of `dimension` rows, in column-major order.
+/// Computes all generalized eigenvalues `λ` satisfying `a v = λ b v` for column-major dense
+/// square matrices `a` and `b` of order `dimension`.
 ///
 /// # Errors
 ///
@@ -131,7 +128,7 @@ impl Square {
         }
     }
 
-    /// The Frobenius norm of the matrix's upper Hessenberg part.
+    /// Computes the Frobenius norm of the upper Hessenberg part of this matrix.
     fn hessenberg_norm(&self) -> f64 {
         let mut sum = 0.0;
         for column in 0..self.n {
@@ -143,15 +140,14 @@ impl Square {
     }
 }
 
-/// `|re| + |im|`, the norm LAPACK's tests read.
+/// Computes the 1-norm `|re| + |im|` used in LAPACK deflation tests.
 fn norm1(value: Complex64) -> f64 {
     value.re.abs() + value.im.abs()
 }
 
-/// The plane rotation that zeroes `g` against `f`: `c` real and `s` complex with
-/// `[c, s; −s̄, c] [f; g] = [r; 0]`, with `r` returned too; by LAPACK's ZLARTG (Anderson,
-/// "Algorithm 978: Safe scaling in the level 1 BLAS", ACM TOMS 44(1), 2017), which scales
-/// to neither overflow nor underflow.
+/// Computes a scaling-safe complex Givens rotation `(c, s, r)` satisfying
+/// `[c, s; −s̄, c] [first; second] = [r; 0]`, following LAPACK `ZLARTG` (Anderson, "Algorithm
+/// 978: Safe scaling in the level 1 BLAS", ACM TOMS 44(1), 2017).
 fn rotation(first: Complex64, second: Complex64) -> (f64, Complex64, Complex64) {
     let (safe_min, safe_max) = (f64::MIN_POSITIVE, f64::MIN_POSITIVE.recip());
     let root_min = safe_min.sqrt();
@@ -215,8 +211,7 @@ fn rotation(first: Complex64, second: Complex64) -> (f64, Complex64, Complex64) 
     (cosine * ratio, sine, radius * scale)
 }
 
-/// `x / y` by Smith's algorithm, which neither overflows nor underflows where the quotient
-/// does not, as LAPACK's ZLADIV.
+/// Computes `x / y` using Smith's overflow-safe complex division algorithm (LAPACK `ZLADIV`).
 fn divide(x: Complex64, y: Complex64) -> Complex64 {
     if y.re.abs() >= y.im.abs() {
         let ratio = y.im / y.re;
@@ -273,32 +268,30 @@ fn reduce_to_hessenberg(h: &mut Square, t: &mut Square) {
     }
 }
 
-/// What the search for where the active block splits found.
+/// Result of scanning the active QZ block for deflation or splitting points.
 enum Split {
-    /// The last row's subdiagonal entry is negligible: its eigenvalue is found.
+    /// Bottom subdiagonal entry is negligible; the trailing eigenvalue is deflated.
     Found,
-    /// The triangular matrix's last diagonal entry is zero: an infinite eigenvalue, split
-    /// off by zeroing the Hessenberg matrix's last subdiagonal entry.
+    /// Trailing diagonal entry of `t` vanishes; an infinite eigenvalue splits off after
+    /// zeroing the trailing subdiagonal entry of `h`.
     Infinite,
-    /// The rows from this one to the last have no negligible subdiagonal entry: a block to
-    /// sweep.
+    /// Unreduced active block starting at the given row index requires a QZ sweep.
     Sweep(usize),
 }
 
-/// The tolerances and scales of the QZ iteration, from the norms of the reduced pencil.
+/// Deflation tolerances and inverse matrix norms derived from the reduced pencil.
 #[derive(Clone, Copy)]
 struct Scales {
-    /// Below these, an entry of the Hessenberg matrix, or a diagonal entry of the
-    /// triangular one, is negligible.
+    /// Below these thresholds, entries of `h` and diagonal entries of `t` are treated as zero.
     h_tolerance: f64,
     t_tolerance: f64,
-    /// The inverses of the two matrices' norms, which the shifts are computed at.
+    /// Inverse norms of `h` and `t` used to scale shift computations safely.
     h_scale: f64,
     t_scale: f64,
 }
 
-/// The eigenvalues of the Hessenberg-triangular pencil `(h, t)`, by single-shift QZ sweeps,
-/// as LAPACK's ZHGEQZ computes them without the Schur form.
+/// Computes the generalized eigenvalues of Hessenberg-triangular pencil `(h, t)` using
+/// single-shift QZ sweeps (matching LAPACK `ZHGEQZ` in eigenvalue-only mode).
 fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
     let n = h.n;
     let mut eigenvalues = vec![
@@ -367,10 +360,10 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
     Err(PencilError::Unconverged)
 }
 
-/// Where the active block of rows `first` to `last` splits, deflating an infinite
-/// eigenvalue found within it by rotations that chase its zero out of the block.
+/// Scans the active block `first..=last` for splitting points, chasing any interior zero on
+/// `t`'s diagonal out to deflate its infinite eigenvalue.
 fn split(h: &mut Square, t: &mut Square, (first, last): (usize, usize), scales: Scales) -> Split {
-    // Whether the subdiagonal entry of `row` is negligible beside its diagonal neighbors.
+    // Checks whether `h[row, row - 1]` is negligible relative to its diagonal neighbors.
     let negligible = |h: &Square, row: usize| {
         norm1(h.at(row, row - 1))
             <= f64::MIN_POSITIVE
@@ -460,10 +453,8 @@ fn infinite_within(
     Split::Infinite
 }
 
-/// The shift of the next sweep of the block ending at row `last`, after `sweeps` sweeps
-/// without an eigenvalue: the eigenvalue of the trailing two rows and columns of `h t⁻¹`
-/// nearest its last diagonal entry, as Wilkinson's, but every tenth sweep an exceptional
-/// one, added to those before it, to break a cycle.
+/// Computes the Wilkinson shift from the trailing `2 × 2` block of `h t⁻¹`, switching every
+/// tenth sweep to an accumulated exceptional shift to break stagnation cycles.
 fn shift(
     h: &Square,
     t: &Square,
@@ -509,8 +500,8 @@ fn shift(
     }
 }
 
-/// One implicitly shifted QZ sweep of the block of rows `first` to `last`, by `shift`,
-/// started where two consecutive subdiagonal entries are small enough together.
+/// Executes one implicitly shifted QZ sweep across rows `first..=last` using `shift`,
+/// starting at the lowest pair of small consecutive subdiagonal entries.
 fn sweep(
     h: &mut Square,
     t: &mut Square,
@@ -557,7 +548,7 @@ fn sweep(
 mod tests {
     use super::*;
 
-    /// The finite eigenvalues, sorted by their imaginary parts, then their real ones.
+    /// Returns finite eigenvalues sorted by imaginary part, then real part.
     fn finite(eigenvalues: &[Eigenvalue]) -> Vec<Complex64> {
         let mut found: Vec<Complex64> = eigenvalues
             .iter()
@@ -597,10 +588,9 @@ mod tests {
 
     #[test]
     fn finds_every_pole_of_a_long_rc_ladder() {
-        // A source drives 80 stages of a 1 kΩ resistor into 1 mF to the ground: its poles
-        // are −(2/RC)(1 − cos((2k − 1)π / 161)), for k from 1 to 80, against the pencil of
-        // the conductances and minus the capacitances, the source's node first and its
-        // current last.
+        // A voltage source drives 80 stages of a 1 kΩ resistor into 1 mF to ground.
+        // Poles are −(2/RC)(1 − cos((2k − 1)π / 161)) for k = 1..=80, forming the pencil
+        // (G, −C) with the source node first and source current last.
         let stages = 80;
         let size = stages + 2;
         let (conductance, capacitance) = (1e-3, 1e-3);
@@ -665,10 +655,9 @@ mod tests {
 
     #[test]
     fn subnormal_entries_breed_no_nan() {
-        // a = diag(1, 2, 3) but for four subnormal entries, whose squares underflow, which
-        // a rotation computed without scaling turns into NaN; b = I. The eigenvalues are
-        // found to the rounding of the rotations that zero those entries, a few units in
-        // the last place.
+        // Matrix `a` equals `diag(1, 2, 3)` plus four subnormal off-diagonal entries whose
+        // squares underflow (causing NaN in unscaled rotations), with `b = I`. Computed
+        // eigenvalues match `[1, 2, 3]` within a few ulps of rotation rounding.
         let tiny = 1e-310;
         let a = [1.0, tiny, tiny, 0.0, 2.0, 0.0, tiny, tiny, 3.0];
         let b = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];

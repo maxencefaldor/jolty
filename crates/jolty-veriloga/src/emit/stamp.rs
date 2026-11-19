@@ -168,8 +168,8 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// The message of a task, `message` with each of its `%g`s and their like the value
-    /// of the argument of `arguments` at its place, as code that makes the string.
+    /// Emits a formatted task message substituting evaluated `arguments` into `%g`-style
+    /// placeholders.
     fn message(
         &mut self,
         message: &str,
@@ -184,8 +184,8 @@ impl Emitter<'_, '_> {
         Ok(format_message(message, &values))
     }
 
-    /// The field of the accumulator of `branch`'s flow or potential, or of its charge or
-    /// flux.
+    /// Returns the `Locals` accumulator field name for `branch`, `site`, and reactive flag
+    /// `charge`.
     fn accumulator(&self, branch: usize, site: Site, charge: bool) -> String {
         let suffix = match (site, charge) {
             (Site::Potential, false) => "potential",
@@ -279,7 +279,8 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// The kinds of the accumulators, from the probes each contribution depends on.
+    /// Computes the dual/real [`Kind`] of every branch accumulator from the probes read by its
+    /// contributions.
     fn find_accumulators(&mut self) {
         let module = self.facts.module;
         let mut probes: BTreeMap<(usize, Site, bool), BTreeSet<Probe>> = BTreeMap::new();
@@ -326,7 +327,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The local index of `place` in the evaluation, its use recorded.
+    /// Formats the local index expression for `place` in `evaluate`, recording any referenced
+    /// shape field.
     fn index(&mut self, place: Place) -> String {
         let module = self.facts.module;
         match place {
@@ -394,8 +396,8 @@ impl Emitter<'_, '_> {
         self.shape.insert("entries".to_owned());
     }
 
-    /// The value of the accumulator `field`, of `kind`, extended linearly from its
-    /// limited voltages to the applied ones.
+    /// Formats the scalar value of accumulator `field`, linearly extrapolating any limited
+    /// voltage probes to applied voltages.
     fn total(field: &str, kind: &Kind) -> String {
         match kind {
             Kind::Dual(probes)
@@ -484,8 +486,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The stamp of the branch at `index`, which holds a potential between `places`, at
-    /// the local indices `indices`, its current an unknown of its own.
+    /// Emits residual, charge, and Jacobian stamps for potential-controlled branch `index` with
+    /// its dedicated current unknown.
     fn stamp_potential(
         &mut self,
         index: usize,
@@ -549,8 +551,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The stamp of the branch at `index`, whose flow runs between `places`, at the local
-    /// indices `indices`.
+    /// Emits residual, charge, and Jacobian stamps for flow-controlled branch `index` between
+    /// `plus` and `minus`.
     fn stamp_flow(
         &mut self,
         index: usize,
@@ -582,10 +584,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The body of `linear`, unless no instance is: whether the contributions of an
-    /// instance's shape are each zero or linear in the probes, the static numbers each
-    /// requires zero. An instance whose memory keeps what depends on the probes, a warning
-    /// found or an output variable, is not, as a linear one is evaluated once a run.
+    /// Synthesizes the boolean body of `Kernel::linear`, returning `None` when no instance is
+    /// linear or when dynamic state is stored in memory.
     pub(super) fn linear_body(&mut self) -> Option<String> {
         let module = self.facts.module;
         let remembers = !self.facts.warned.is_empty()
@@ -594,7 +594,7 @@ impl Emitter<'_, '_> {
         self.linear_requirement(&module.analog, &linearity).render()
     }
 
-    /// What the contributions of `statements` require to be linear.
+    /// Computes the [`Requirement`] under which all contributions in `statements` are linear.
     fn linear_requirement(
         &mut self,
         statements: &[Statement],
@@ -645,10 +645,8 @@ impl Emitter<'_, '_> {
         all
     }
 
-    /// What a contribution of `parts`, its resistive and reactive ones, requires to be
-    /// linear: one of the ways each part is zero or linear, each requiring its static
-    /// numbers zero. Since `linear` receives `&Prepared<f64>`, `Kind::Real` fields are
-    /// already `f64` and compare directly without `.value()`.
+    /// Computes the [`Requirement`] under which all `parts` of a contribution are zero or
+    /// linear, comparing `&Prepared<f64>` fields directly without `.value()`.
     fn site_requirement(
         &mut self,
         parts: &[&Expression],
@@ -747,8 +745,8 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The fields of the evaluation's variables: the dynamic variables kept, and in an
-    /// evaluation the accumulators and the voltages limited.
+    /// Collects the `Locals` struct fields needed by `evaluate` or `noise` (live dynamic
+    /// variables, probes, accumulators, and limit state).
     fn locals(&self) -> Vec<(String, Kind)> {
         let module = self.facts.module;
         let mut locals: Vec<(String, Kind)> = (0..module.variables.len())
@@ -801,7 +799,7 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// The body of `evaluate`.
+    /// Builds the [`MethodBody`] for `Kernel::evaluate`.
     pub(super) fn evaluate_body(&mut self) -> Result<MethodBody, Error> {
         self.find_accumulators();
         let module = self.facts.module;
@@ -828,7 +826,7 @@ impl Emitter<'_, '_> {
         Ok(self.render_method_body(&statements, memory))
     }
 
-    /// The body of `noise`.
+    /// Builds the [`MethodBody`] for `Kernel::noise`.
     pub(super) fn noise_body(&mut self) -> Result<MethodBody, Error> {
         let mut statements = Vec::new();
         let analog = self.analog.clone();
@@ -911,8 +909,8 @@ fn print_simplified(statements: &[Rust], out: &mut CodeWriter) {
     }
 }
 
-/// Whether `code` is one operand: a path, or one whose parentheses or brackets, opened
-/// within it, close only at its end.
+/// Returns `true` when `code` is a single atomic operand without unparenthesized spaces or
+/// trailing operators.
 fn single(code: &str) -> bool {
     let mut depth = 0_i32;
     for (at, c) in code.char_indices() {
@@ -935,8 +933,8 @@ fn single(code: &str) -> bool {
     depth == 0
 }
 
-/// The positive form of `condition` and its precedence, when it is a negation: `!c` of
-/// one operand reads `c`, and `a != b` of two, at its top, `a == b`; `None` for another.
+/// Strips a top-level negation (`!c` or `a != b`) from `condition`, returning the positive
+/// form and precedence if present.
 pub(super) fn positive(condition: &str) -> Option<(String, u8)> {
     if let Some(inner) = condition.strip_prefix('!')
         && single(inner)

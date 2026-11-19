@@ -30,7 +30,8 @@ impl PatternBuilder {
         Entry(self.positions.len() - 1)
     }
 
-    /// The position of every entry claimed so far, each at its entry's index.
+    /// Returns the `(row, column)` coordinates of every entry claimed so far, indexed by
+    /// entry number.
     #[must_use]
     pub fn positions(&self) -> &[(usize, usize)] {
         &self.positions
@@ -104,45 +105,44 @@ impl PatternBuilder {
     }
 }
 
-/// The sparsity pattern of a square matrix in compressed sparse column form, and where each
-/// claimed [`Entry`] lands among its values.
+/// Sparsity pattern of a square matrix in compressed sparse column form, mapping each
+/// claimed [`Entry`] to its storage slot in the values array.
 #[derive(Debug, Clone)]
 pub struct Pattern {
     structure: SymbolicSparseColMat<usize>,
     slots: Vec<usize>,
-    /// Where each row's entries begin among `by_row`.
+    /// Starting offset of each row's entries within `by_row`.
     row_starts: Vec<usize>,
-    /// The stored position and the column of each entry, row by row, each row's in the
-    /// order of their columns.
+    /// Stored value slot and column index for each nonzero, grouped by row in column order.
     by_row: Vec<(usize, usize)>,
 }
 
 impl Pattern {
-    /// The number of rows and columns.
+    /// Returns the matrix dimension (number of rows and columns).
     #[must_use]
     pub fn dimension(&self) -> usize {
         self.structure.nrows()
     }
 
-    /// The number of stored values: the distinct positions claimed.
+    /// Returns the number of distinct stored nonzero positions.
     #[must_use]
     pub fn len(&self) -> usize {
         self.structure.row_idx().len()
     }
 
-    /// Whether no position was claimed.
+    /// Returns whether no nonzero positions were claimed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// The index of `entry`'s value among the matrix values.
+    /// Returns the compressed value-buffer slot index for `entry`.
     #[must_use]
     pub fn slot(&self, entry: Entry) -> usize {
         self.slots[entry.0]
     }
 
-    /// The row and column of each stored value, in storage order.
+    /// Iterates over `(row, column)` coordinates of all stored values in CSC storage order.
     pub fn positions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let starts = self.structure.col_ptr();
         let rows = self.structure.row_idx();
@@ -153,15 +153,14 @@ impl Pattern {
         })
     }
 
-    /// Adds the product of the matrix whose stored values are `values` and the vector `x`
-    /// to `into`, each row's terms in the order of their columns.
+    /// Adds the matrix-vector product `A x` (using `values` for stored entries) into `into`,
+    /// accumulating each row in ascending column order.
     pub fn add_product(&self, values: &[f64], x: &[f64], into: &mut [f64]) {
         self.add_product_from(0, values, x, into);
     }
 
-    /// Adds to `into`, the rows of the product from `first` on, as many as it holds, what
-    /// [`Pattern::add_product`] adds to them, bit for bit: so the rows can be split among
-    /// threads.
+    /// Adds rows `first..first + into.len()` of `A x` into `into`, matching
+    /// [`Pattern::add_product`] bit for bit so row slices can execute in parallel.
     pub fn add_product_from(&self, first: usize, values: &[f64], x: &[f64], into: &mut [f64]) {
         for (offset, value) in into.iter_mut().enumerate() {
             *value = self
@@ -173,8 +172,8 @@ impl Pattern {
         }
     }
 
-    /// The stored position and the column of each entry of `row`, in the order of their
-    /// columns: the order in which [`Pattern::positions`] meets them.
+    /// Returns `(slot, column)` entries for `row` in ascending column order, matching
+    /// [`Pattern::positions`].
     #[must_use]
     pub fn row(&self, row: usize) -> &[(usize, usize)] {
         let (Some(&start), Some(&end)) = (self.row_starts.get(row), self.row_starts.get(row + 1))
@@ -236,8 +235,8 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// The product added row by row, from any row on, is the product added column by
-        /// column, in the order the values are stored, bit for bit.
+        /// Verifies that row-wise accumulation matches column-wise storage-order accumulation
+        /// bit for bit from any starting row.
         #[test]
         fn a_product_by_rows_is_the_product_by_columns(
             positions in proptest::collection::vec((0..30usize, 0..30usize), 1..200),

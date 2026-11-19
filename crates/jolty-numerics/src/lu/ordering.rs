@@ -1,5 +1,5 @@
-//! The symbolic analysis of a pattern: the order of its rows and columns that every
-//! factorization of its matrices shares.
+//! Symbolic analysis of a pattern: the row and column ordering shared by every factorization
+//! of its matrices.
 
 use std::fmt;
 use std::sync::Arc;
@@ -13,90 +13,83 @@ use super::dissection::{self, Dissection, Graph};
 use super::{LinearError, NONE};
 use crate::Pattern;
 
-/// The analysis of a [`Pattern`] that every factorization of its matrices shares, real or
-/// complex: a permutation of its rows and one of its columns, and the block triangular form
-/// they put it in.
+/// Symbolic analysis of a [`Pattern`] shared by every real or complex factorization of its
+/// matrices: row and column permutations together with the resulting block upper triangular
+/// form.
 ///
-/// Three steps make it, as in KLU:
+/// Analysis proceeds in three steps, following KLU:
 ///
-/// 1. A maximum transversal matches each column with a row holding an entry in it, keeping
-///    the pattern's own diagonal entries, so that the matched entries make a diagonal free
-///    of structural zeros. The equation of a voltage source, which has no entry on the
-///    diagonal, is matched with one of its nodes' voltages, and that node's equation with
-///    the source's current.
-/// 2. The strongly connected components of the matched matrix's graph, in topological
-///    order, put it in block upper triangular form. Only the diagonal blocks are factored;
-///    the entries above them are read as they stand. A source fixing a node's voltage
-///    against the reference becomes blocks of its own, so the many entries of a supply
-///    node join no block.
-/// 3. The approximate minimum degree ordering of each block's pattern plus its transpose
-///    (Amestoy, Davis and Duff, "An approximate minimum degree ordering algorithm", SIAM
-///    Journal on Matrix Analysis and Applications 17(4), 1996) reduces the fill of its
-///    factors, its matched entries the pivots it expects.
+/// 1. A maximum transversal matches each column with a row holding a stored entry while
+///    preserving existing diagonal entries. The matched diagonal is free of structural zeros.
+///    A voltage source equation lacks a diagonal entry, so it is matched with one of its
+///    terminal voltages and that node equation is matched with the source current.
+/// 2. Strongly connected components of the matched graph in topological order yield a block
+///    upper triangular form. Only diagonal blocks require factorization; off-diagonal entries
+///    above them remain unchanged. A grounded voltage source forms singleton blocks, keeping
+///    supply-node entries out of larger blocks.
+/// 3. Approximate minimum degree ordering on each block pattern plus its transpose (Amestoy,
+///    Davis and Duff, "An approximate minimum degree ordering algorithm", SIAM Journal on
+///    Matrix Analysis and Applications 17(4), 1996) reduces factor fill around the matched
+///    pivots.
 ///
-/// An ordering [dissected](Ordering::dissected) for interiors of some size orders each
-/// block larger than them by nested dissection instead, into interiors, each ordered by
-/// the minimum degree, and the separators that border them, which factor in parallel:
-/// every such block, or only those whose elimination that makes cheaper, as its
-/// [`Dissecting`] says.
+/// An ordering [dissected](Ordering::dissected) for a given interior limit partitions larger
+/// diagonal blocks by nested dissection instead. Each resulting interior uses minimum degree
+/// ordering, and separating fronts factor in parallel according to the configured
+/// [`Dissecting`] policy.
 ///
-/// An ordering of a [`Condensation`] orders the pattern of the unknowns it keeps: a solver
-/// of it condenses each matrix it is given before it factors it, and recovers the unknowns
-/// eliminated after each solve.
+/// An ordering of a [`Condensation`] analyzes only the kept unknowns. Solvers built from the
+/// ordering condense each input matrix before factorization and recover eliminated unknowns
+/// after each solve.
 pub struct Ordering {
-    /// The pattern analyzed: the kept unknowns' of a condensation, if any.
+    /// Analyzed pattern (the kept-unknown pattern when condensed).
     pattern: Arc<Pattern>,
-    /// The condensation of the matrices factored into the pattern analyzed, if it
-    /// eliminates any unknown.
+    /// Condensation mapping full matrices onto the analyzed pattern when unknowns are eliminated.
     condensation: Option<Arc<Condensation>>,
-    /// When no matching covers every column, so that every matrix of the pattern is
-    /// singular, a set of columns with entries in fewer rows than there are columns, in
-    /// increasing order; else empty.
+    /// Sorted subset of columns spanning fewer rows than columns when structurally singular, or
+    /// empty otherwise.
     undetermined: Vec<usize>,
-    /// The pattern's row at each position of the ordered matrix.
+    /// Original pattern row index at each ordered matrix position.
     rows: Vec<usize>,
-    /// The pattern's column at each position of the ordered matrix.
+    /// Original pattern column index at each ordered matrix position.
     columns: Vec<usize>,
-    /// The position in the ordered matrix of each of the pattern's rows, and of each of its
-    /// columns.
+    /// Ordered matrix position of each pattern row and column.
     row_positions: Vec<usize>,
     column_positions: Vec<usize>,
-    /// The first position of each diagonal block, then the dimension.
+    /// Starting position of each diagonal block, terminated by the matrix dimension.
     blocks: Vec<usize>,
-    /// The entries of each ordered column within its diagonal block.
+    /// Ordered-column entries lying within each diagonal block.
     within: Entries,
-    /// The entries of each ordered column above its diagonal block.
+    /// Ordered-column entries lying above each diagonal block.
     above: Entries,
-    /// The same entries by row, for each block those above it.
+    /// Off-diagonal entries above each diagonal block, indexed by row.
     across: Across,
-    /// Which blocks the ordering dissects, if any.
+    /// Policy controlling which diagonal blocks use nested dissection.
     dissecting: Option<Dissecting>,
-    /// The nested dissections of the blocks it dissects, in the order of the blocks.
+    /// Nested dissections of the dissected blocks, in block order.
     dissections: Vec<Dissection>,
-    /// The index among the dissections of each block's, or `NONE` for a block not
-    /// dissected.
+    /// Index into `dissections` for each block, or `NONE` when not dissected.
     dissected: Vec<usize>,
 }
 
-/// Which diagonal blocks an [`Ordering`] orders by nested dissection, each into interiors
-/// of at most a number of positions, rather than by the minimum degree.
+/// Policy selecting which diagonal blocks an [`Ordering`] partitions by nested dissection
+/// instead of minimum degree ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Dissecting {
-    /// Every block of more positions than an interior may hold.
+    /// Every diagonal block larger than the given interior size limit.
     Every(usize),
-    /// Every block of more positions than an interior may hold whose elimination nested
-    /// dissection costs fewer multiply-adds than the minimum degree, both counted on the
-    /// symbolic factor of the block's pattern plus its transpose, each column's update of
-    /// the rest a product for each entry of its column of `L` and of its row of `U`.
-    /// On a square grid, nested dissection into interiors of at most 157 positions costs
-    /// 1.06 times the minimum degree's multiply-adds at 60 positions a side and 0.96 times
-    /// at 70; on a path, which the minimum degree eliminates with no fill, 3.9 times at
-    /// 5,000 positions.
+    /// Every diagonal block larger than the interior limit for which nested dissection needs
+    /// fewer elimination multiply-adds than minimum degree ordering.
+    ///
+    /// Both counts come from the symbolic factor of the symmetrized block pattern, counting
+    /// one multiply-add for each product between column `L` entries and row `U` entries. On a
+    /// square grid with interior limit 157, nested dissection uses 1.06 times the minimum
+    /// degree count at 60 nodes per side and 0.96 times at 70. On a path of 5,000 nodes, where
+    /// minimum degree incurs zero fill, nested dissection uses 3.9 times as many multiply-adds.
     Cheaper(usize),
 }
 
 impl Dissecting {
-    /// The most positions of an interior, one at least.
+    /// Returns the maximum number of positions per interior, clamped to at least one.
     #[must_use]
     pub fn interiors(self) -> usize {
         match self {
@@ -105,18 +98,17 @@ impl Dissecting {
     }
 }
 
-/// Some entries of each of some columns, by column: each a row's index and the slot of its
-/// value in the pattern.
+/// Sparse column entries stored as `(row, value_slot)` pairs.
 #[derive(Debug)]
 pub(super) struct Entries {
-    /// Where each column's entries start, then their number.
+    /// Starting offset of each column in `entries`, terminated by the total count.
     pub(super) starts: Vec<usize>,
-    /// Each entry: its row's index and its value's slot.
+    /// Packed `(row, value_slot)` pairs across all columns.
     pub(super) entries: Vec<(usize, usize)>,
 }
 
 impl Entries {
-    /// No entry in any of `columns` columns.
+    /// Constructs an empty entry list with `columns` columns.
     pub(super) fn empty(columns: usize) -> Self {
         Self {
             starts: vec![0; columns + 1],
@@ -124,29 +116,27 @@ impl Entries {
         }
     }
 
-    /// The entries of `column`.
+    /// Returns the stored entries of `column`.
     pub(super) fn of(&self, column: usize) -> &[(usize, usize)] {
         &self.entries[self.starts[column]..self.starts[column + 1]]
     }
 }
 
-/// The entries above each diagonal block, by row: for each block, each row above it with
-/// an entry in the block's columns, in increasing order, and its entries there, in
-/// increasing position.
+/// Off-diagonal entries above each diagonal block, grouped by ascending row and column position.
 #[derive(Debug)]
 pub(super) struct Across {
-    /// Where each block's rows start in `rows`, then their number.
+    /// Starting offset of each block in `rows`, terminated by the total row count.
     blocks: Vec<usize>,
-    /// Each row, by block.
+    /// Sorted row indices with entries above each diagonal block.
     rows: Vec<usize>,
-    /// Where each row's entries start in `entries`, then their number.
+    /// Starting offset of each row in `entries`, terminated by the total entry count.
     starts: Vec<usize>,
-    /// Each entry: its column's position and its value's slot.
+    /// Packed `(column_position, value_slot)` pairs across all rows.
     entries: Vec<(usize, usize)>,
 }
 
 impl Across {
-    /// No entry above any of `blocks` blocks.
+    /// Constructs an empty off-diagonal row index for `blocks` diagonal blocks.
     fn empty(blocks: usize) -> Self {
         Self {
             blocks: vec![0; blocks + 1],
@@ -156,8 +146,8 @@ impl Across {
         }
     }
 
-    /// The entries `above` holds by column, by row, for the blocks that start at each of
-    /// `blocks` but the last, the dimension.
+    /// Transposes column-major `above` entries into row-major form for each diagonal block
+    /// defined by `blocks`.
     fn new(blocks: &[usize], above: &Entries) -> Self {
         let mut across = Self::empty(0);
         across.entries.reserve_exact(above.entries.len());
@@ -172,7 +162,7 @@ impl Across {
                         .map(|&(row, slot)| (row, position, slot)),
                 );
             }
-            // A stable sort, so that each row's entries stay in increasing position.
+            // Stable sort keeps each row's entries in ascending column position.
             found.sort_by_key(|&(row, _, _)| row);
             for entries in found.chunk_by(|one, other| one.0 == other.0) {
                 across.rows.push(entries[0].0);
@@ -186,7 +176,7 @@ impl Across {
         across
     }
 
-    /// Each row above `block` with an entry in its columns, and its entries there.
+    /// Returns the rows above `block` and their entries in the columns of `block`.
     #[inline]
     pub(super) fn of(&self, block: usize) -> RowsAbove<'_> {
         let (first, end) = (self.blocks[block], self.blocks[block + 1]);
@@ -198,32 +188,31 @@ impl Across {
     }
 }
 
-/// Rows above a diagonal block with an entry in its columns, in increasing order, and their
-/// entries there, in increasing position.
+/// Borrowed view of rows above a diagonal block and their entries in ascending position order.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RowsAbove<'a> {
-    /// Each row.
+    /// Sorted row indices above the block.
     rows: &'a [usize],
-    /// Where each row's entries start in `entries`, then where the last's end.
+    /// Starting offset of each row in `entries`, terminated by the end offset of the final row.
     starts: &'a [usize],
-    /// Each entry: its column's position and its value's slot.
+    /// Packed `(column_position, value_slot)` pairs.
     entries: &'a [(usize, usize)],
 }
 
 impl<'a> RowsAbove<'a> {
-    /// The number of rows.
+    /// Returns the number of rows in the view.
     #[inline]
     pub(super) fn len(&self) -> usize {
         self.rows.len()
     }
 
-    /// The row at `index`, in increasing order.
+    /// Returns the row index at `index` in ascending order.
     #[inline]
     pub(super) fn row(&self, index: usize) -> usize {
         self.rows[index]
     }
 
-    /// Each row and its entries.
+    /// Returns an iterator over each row index and its slice of entries.
     #[inline]
     pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &'a [(usize, usize)])> + use<'a> {
         let Self {
@@ -236,7 +225,7 @@ impl<'a> RowsAbove<'a> {
             .map(move |(&row, bounds)| (row, &entries[bounds[0]..bounds[1]]))
     }
 
-    /// The rows before `index`, and those from it on.
+    /// Splits the view into the rows before `index` and the rows from `index` onward.
     pub(super) fn split_at(&self, index: usize) -> (Self, Self) {
         let (before, after) = self.rows.split_at(index);
         (
@@ -255,45 +244,47 @@ impl<'a> RowsAbove<'a> {
 }
 
 impl Ordering {
-    /// Analyzes `pattern`.
+    /// Analyzes `pattern` without nested dissection.
     ///
-    /// A pattern no matching covers is analyzed too, as structurally singular: every
-    /// factorization of its matrices fails.
+    /// A structurally singular pattern with no full matching is still analyzed; every
+    /// subsequent factorization fails.
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering's workspace does
-    /// not fit in memory or its indices overflow.
+    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering workspace does not
+    /// fit in memory or its indices overflow.
     pub fn new(pattern: Arc<Pattern>) -> Result<Self, LinearError> {
         Self::analyze(pattern, None)
     }
 
-    /// Analyzes `pattern` as [`Ordering::new`] does, but orders the diagonal blocks
-    /// `dissecting` names by nested dissection: into interiors of at most its
-    /// [`Dissecting::interiors`] positions, unless one cannot be split further, each
-    /// ordered by the minimum degree, after them the separators between them, each after
-    /// the parts it separates. The factorization of such a block factors its interiors in
-    /// parallel, each pivoting within itself, and then each separator once the parts below
-    /// it are factored, the last the whole block's; its order of operations is a pure
-    /// function of the pattern and `dissecting`, so its factors are the same bits on any
-    /// number of threads.
+    /// Analyzes `pattern` as [`Ordering::new`] does and orders selected diagonal blocks by
+    /// nested dissection according to `dissecting`.
+    ///
+    /// Each dissected block splits into interiors of at most [`Dissecting::interiors`]
+    /// positions unless no further split exists. Interiors use minimum degree ordering,
+    /// followed by separators ordered after the subtrees they separate. Factorization eliminates
+    /// interiors in parallel with local pivoting and then eliminates each separator once its
+    /// children complete. Operation order depends only on the pattern and `dissecting`, so the
+    /// resulting factor bits are independent of thread count.
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering's workspace does
-    /// not fit in memory or its indices overflow.
+    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering workspace does not
+    /// fit in memory or its indices overflow.
     pub fn dissected(pattern: Arc<Pattern>, dissecting: Dissecting) -> Result<Self, LinearError> {
         Self::analyze(pattern, Some(dissecting))
     }
 
-    /// Analyzes the pattern of the unknowns `condensation` keeps, as [`Ordering::new`]
-    /// does, or as [`Ordering::dissected`] does for `dissecting`, if given: its solvers
-    /// factor the matrices of the condensation's full pattern, each condensed first.
+    /// Analyzes the kept-unknown pattern of `condensation`, optionally dissecting blocks
+    /// according to `dissecting`.
+    ///
+    /// Solvers built from the returned ordering accept matrices over the full pattern of
+    /// `condensation` and condense each matrix before factorization.
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering's workspace does
-    /// not fit in memory or its indices overflow.
+    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering workspace does not
+    /// fit in memory or its indices overflow.
     pub fn condensed(
         condensation: Arc<Condensation>,
         dissecting: Option<Dissecting>,
@@ -309,7 +300,7 @@ impl Ordering {
         Ok(ordering)
     }
 
-    /// A structurally singular ordering whose undetermined columns are `undetermined`.
+    /// Constructs a structurally singular ordering recording `undetermined` columns.
     fn singular(
         pattern: Arc<Pattern>,
         undetermined: Vec<usize>,
@@ -335,7 +326,7 @@ impl Ordering {
         }
     }
 
-    /// Analyzes `pattern`, dissecting the blocks `dissecting` names, if given.
+    /// Analyzes `pattern`, applying nested dissection according to `dissecting` when provided.
     fn analyze(pattern: Arc<Pattern>, dissecting: Option<Dissecting>) -> Result<Self, LinearError> {
         let dimension = pattern.dimension();
         let structure = pattern.structure();
@@ -410,8 +401,7 @@ impl Ordering {
         })
     }
 
-    /// The pattern of the matrices its solvers factor: the one analyzed, or the full
-    /// pattern of the condensation it orders the kept unknowns of.
+    /// Returns the full matrix pattern accepted by solvers built from the ordering.
     #[must_use]
     pub fn pattern(&self) -> &Arc<Pattern> {
         self.condensation
@@ -419,92 +409,87 @@ impl Ordering {
             .map_or(&self.pattern, |condensation| condensation.full())
     }
 
-    /// The pattern analyzed, whose matrices the factorizations factor: the kept unknowns'
-    /// of the condensation it orders, if any, else [`Ordering::pattern`].
+    /// Returns the pattern actually factored: the kept-unknown pattern when condensed, or
+    /// [`Ordering::pattern`] otherwise.
     #[must_use]
     pub fn factored(&self) -> &Arc<Pattern> {
         &self.pattern
     }
 
-    /// The condensation of the matrices factored, if it eliminates any unknown.
+    /// Returns the active condensation when at least one unknown is eliminated.
     pub(super) fn condensation(&self) -> Option<&Condensation> {
         self.condensation.as_deref()
     }
 
-    /// The number of diagonal blocks of the block triangular form: one per strongly
-    /// connected component of the matched matrix's graph.
+    /// Returns the number of diagonal blocks in the block upper triangular form.
     #[must_use]
     pub fn blocks(&self) -> usize {
         self.blocks.len() - 1
     }
 
-    /// Whether every matrix of the pattern is singular, as no permutation puts a stored
-    /// position on every diagonal position.
+    /// Returns `true` when every matrix of the pattern is structurally singular.
     #[must_use]
     pub fn is_singular(&self) -> bool {
         !self.undetermined.is_empty()
     }
 
-    /// For a structurally singular pattern, a set of its columns whose entries lie in fewer
-    /// rows than there are columns, so that no matrix of the pattern determines their
-    /// unknowns, in increasing order; empty for any other pattern. The columns are those of
-    /// [`Ordering::pattern`].
+    /// Returns a sorted subset of columns of [`Ordering::pattern`] whose entries lie in fewer
+    /// rows than columns when structurally singular, or an empty slice otherwise.
     #[must_use]
     pub fn undetermined(&self) -> &[usize] {
         &self.undetermined
     }
 
-    /// The pattern's row at each position of the ordered matrix.
+    /// Returns the pattern row index at each ordered matrix position.
     pub(super) fn rows(&self) -> &[usize] {
         &self.rows
     }
 
-    /// The pattern's column at each position of the ordered matrix.
+    /// Returns the pattern column index at each ordered matrix position.
     pub(super) fn columns(&self) -> &[usize] {
         &self.columns
     }
 
-    /// The position in the ordered matrix of each of the pattern's rows.
+    /// Returns the ordered matrix position of each pattern row.
     pub(super) fn row_positions(&self) -> &[usize] {
         &self.row_positions
     }
 
-    /// The position in the ordered matrix of each of the pattern's columns.
+    /// Returns the ordered matrix position of each pattern column.
     pub(super) fn column_positions(&self) -> &[usize] {
         &self.column_positions
     }
 
-    /// The positions of each diagonal block, as the first of each, then the dimension.
+    /// Returns the starting position of each diagonal block, followed by the matrix dimension.
     pub(super) fn block_starts(&self) -> &[usize] {
         &self.blocks
     }
 
-    /// The entries of the ordered matrix's `column` within its diagonal block, each its row
-    /// in the ordered matrix and the slot of its value.
+    /// Returns the `(ordered_row, value_slot)` entries of ordered `column` inside its diagonal
+    /// block.
     pub(super) fn within(&self, column: usize) -> &[(usize, usize)] {
         self.within.of(column)
     }
 
-    /// The entries of the ordered matrix's `column` above its diagonal block, each its row
-    /// in the ordered matrix and the slot of its value.
+    /// Returns the `(ordered_row, value_slot)` entries of ordered `column` above its diagonal
+    /// block.
     pub(super) fn above(&self, column: usize) -> &[(usize, usize)] {
         self.above.of(column)
     }
 
-    /// Each row above the diagonal `block` with an entry in its columns, in increasing
-    /// order, and its entries there in increasing position, each its column's position in
-    /// the ordered matrix and the slot of its value.
+    /// Returns the rows above diagonal `block` together with their `(ordered_column,
+    /// value_slot)` entries.
     #[inline]
     pub(super) fn across(&self, block: usize) -> RowsAbove<'_> {
         self.across.of(block)
     }
 
-    /// The number of entries above the diagonal blocks.
+    /// Returns the total number of stored entries above the diagonal blocks.
     pub(super) fn entries_above(&self) -> usize {
         self.above.entries.len()
     }
 
-    /// The positions of its largest diagonal block.
+    /// Returns the dimension of the largest diagonal block.
     #[must_use]
     pub fn largest_block(&self) -> usize {
         self.blocks
@@ -514,30 +499,30 @@ impl Ordering {
             .unwrap_or(0)
     }
 
-    /// Whether it orders any block by nested dissection.
+    /// Returns `true` when at least one diagonal block uses nested dissection.
     #[must_use]
     pub fn is_dissected(&self) -> bool {
         !self.dissections.is_empty()
     }
 
-    /// The most positions of an interior of a dissected block, if the ordering was
-    /// [dissected](Ordering::dissected) for any: its [`Dissecting::interiors`].
+    /// Returns the configured [`Dissecting::interiors`] limit if the ordering was
+    /// [dissected](Ordering::dissected).
     #[must_use]
     pub fn interiors(&self) -> Option<usize> {
         self.dissecting.map(Dissecting::interiors)
     }
 
-    /// The nested dissections of the blocks it dissects, in the order of the blocks.
+    /// Returns the nested dissections of all dissected blocks, in block order.
     pub(super) fn dissections(&self) -> &[Dissection] {
         &self.dissections
     }
 
-    /// The dissection of `block`, if it is dissected.
+    /// Returns the nested dissection for `block`, if `block` is dissected.
     pub(super) fn dissection(&self, block: usize) -> Option<&Dissection> {
         self.dissections.get(self.dissected[block])
     }
 
-    /// The index among the dissections of `block`'s, if it is dissected.
+    /// Returns the dissection table index for `block`, or `NONE` when `block` is not dissected.
     pub(super) fn dissected_index(&self, block: usize) -> usize {
         self.dissected[block]
     }
@@ -555,17 +540,15 @@ impl fmt::Debug for Ordering {
     }
 }
 
-/// The row matched with each column of the `dimension` × `dimension` pattern whose
-/// columns start at `starts` in its sorted `rows`, every pair holding an entry; or, when no
-/// matching covers every column, a set of columns with entries in fewer rows than there are
-/// columns, in increasing order.
+/// Finds a row-to-column matching covering every column of the `dimension` × `dimension`
+/// pattern given by `starts` and sorted `rows`, or returns a sorted subset of columns whose
+/// entries span fewer rows than columns.
 ///
-/// Each diagonal entry is matched first, then Duff's depth-first search with look-ahead
+/// Existing diagonal entries are matched first. Duff's depth-first search with look-ahead
 /// ("On algorithms for obtaining a maximum transversal", ACM Transactions on Mathematical
-/// Software 7(3), 1981) finds an augmenting path for every column left, rematching only the
-/// columns along it. A search that finds none has visited every column an alternating path
-/// reaches from its start, each of whose rows is matched with another of them: one more
-/// column than rows.
+/// Software 7(3), 1981) then finds an augmenting path for each remaining column, rematching
+/// only columns along the path. A failed search visits a Hall witness of columns reachable by
+/// alternating paths whose rows all match within that set, yielding one more column than rows.
 fn maximum_transversal(
     dimension: usize,
     starts: &[usize],
@@ -580,12 +563,11 @@ fn maximum_transversal(
             column_of_row[column] = column;
         }
     }
-    // Where each column's look-ahead for an unmatched row goes on: a row it passed was
-    // matched, and stays matched.
+    // Look-ahead cursor for an unmatched row in each column: passed rows stay matched.
     let mut ahead = starts[..dimension].to_vec();
-    // Where each column on the path goes on looking for a matched row to follow.
+    // Traversal cursor for matched rows along the current augmenting path.
     let mut next = vec![0; dimension];
-    // The column whose search last visited each column.
+    // Search root that most recently visited each column.
     let mut visited = vec![NONE; dimension];
     let mut path = Vec::new();
     for start in 0..dimension {
@@ -644,12 +626,13 @@ fn maximum_transversal(
     Ok(row_of_column)
 }
 
-/// The columns of the pattern in block upper triangular order, and the first position of
-/// each block then `dimension`: the strongly connected components of the graph with an
-/// edge from each column to the column matched with each row holding an entry in it, by
-/// Tarjan's algorithm ("Depth-first search and linear graph algorithms", SIAM Journal on
-/// Computing 1(2), 1972), which finishes a component after every component it reaches,
-/// so that an entry's row comes no later than its column.
+/// Computes the block upper triangular column order and block boundary offsets for the
+/// matched pattern.
+///
+/// Tarjan's strongly connected components algorithm ("Depth-first search and linear graph
+/// algorithms", SIAM Journal on Computing 1(2), 1972) walks edges from each column to the
+/// column matched with each row entry in that column. Each component finishes after all
+/// reachable components, ensuring that every stored entry has a row no later than its column.
 fn block_triangular(
     dimension: usize,
     starts: &[usize],
@@ -711,7 +694,7 @@ fn block_triangular(
     (order, blocks)
 }
 
-/// The inverse of the permutation `order` of `0..order.len()`.
+/// Returns the inverse permutation of `order` over `0..order.len()`.
 fn invert(order: &[usize]) -> Vec<usize> {
     let mut inverse = vec![NONE; order.len()];
     for (position, &item) in order.iter().enumerate() {
@@ -727,7 +710,8 @@ fn index_block(block: &[usize], local: &mut [usize]) {
     }
 }
 
-/// Local indices within `block` of the matched columns in `column` of `(starts, rows)`.
+/// Returns local indices within `block` of the matched columns referenced by `column` in
+/// `(starts, rows)`.
 fn block_neighbors(
     block: &[usize],
     local: &[usize],
@@ -743,10 +727,11 @@ fn block_neighbors(
     })
 }
 
-/// Orders the columns of one diagonal `block` by nested dissection into interiors of at
-/// most `most` columns, each then reordered by the minimum degree, and returns the nodes
-/// of its tree in postorder; or leaves it as it is and returns `None` when it does not
-/// split. `local` is a workspace as for [`reduce_fill`].
+/// Orders one diagonal `block` by nested dissection into interiors of at most `most` columns,
+/// reorders each interior by minimum degree, and returns the postorder tree nodes.
+///
+/// Leaves `block` unchanged and returns `None` when the block cannot split. Uses `local` as
+/// scratch space following [`reduce_fill`].
 fn dissect(
     block: &mut [usize],
     local: &mut [usize],
@@ -781,9 +766,10 @@ fn dissect(
     Ok(Some(found))
 }
 
-/// Orders the columns of one diagonal `block`, as `dissecting` says, if given, and else by
-/// the minimum degree, and returns the nodes of its tree if it dissects it. `local` is a
-/// workspace as for [`reduce_fill`].
+/// Orders one diagonal `block` according to `dissecting` when provided, or by minimum degree
+/// otherwise, returning the dissection tree nodes if dissected.
+///
+/// Uses `local` as scratch space following [`reduce_fill`].
 fn order_block(
     block: &mut [usize],
     local: &mut [usize],
@@ -805,13 +791,13 @@ fn order_block(
     Ok(found)
 }
 
-/// Orders the columns of one diagonal `block` by whichever of two orderings costs its
-/// elimination fewer multiply-adds, each counted by [`multiply_adds`]: by nested
-/// dissection into interiors of at most `most` columns, as [`dissect`] does, returning
-/// the nodes of its tree, or by the minimum degree, as [`reduce_fill`] does, returning
-/// `None`, which it does too for a block that does not split. A tie keeps the minimum
-/// degree, whose factorization a single task does. `local` is a workspace as for
-/// [`reduce_fill`].
+/// Orders one diagonal `block` by whichever of nested dissection (up to `most` columns per
+/// interior via [`dissect`]) or minimum degree ([`reduce_fill`]) requires fewer elimination
+/// multiply-adds according to [`multiply_adds`].
+///
+/// Returns the dissection tree nodes when nested dissection wins, or `None` when minimum
+/// degree wins, ties, or the block does not split. Ties favor single-task minimum degree
+/// factorization. Uses `local` as scratch space following [`reduce_fill`].
 fn cheaper(
     block: &mut [usize],
     local: &mut [usize],
@@ -831,15 +817,16 @@ fn cheaper(
     Ok(None)
 }
 
-/// The multiply-adds of eliminating the columns of one diagonal `block` in their order,
-/// each pivoting on the row matched with it: the sum over its columns of the square of
-/// the entries below the diagonal of its column of the symbolic factor of the block's
-/// pattern plus its transpose, its rows the columns matched with them, each column's
-/// update of the rest one product for each entry of its column of `L` and of its row of
-/// `U`. The symbolic factor is found by the elimination tree (Liu, "The role of
-/// elimination trees in sparse factorization", SIAM Journal on Matrix Analysis and
-/// Applications 11(1), 1990) and each row's subtree of it, in time of the order of the
-/// factor's entries. `local` is a workspace as for [`reduce_fill`].
+/// Counts the elimination multiply-adds for one diagonal `block` in its current column order,
+/// pivoting each column on its matched row.
+///
+/// The count sums the squared number of subdiagonal entries in each column of the symbolic
+/// factor of the symmetrized block pattern, since each elimination step multiplies every
+/// subdiagonal `L` entry by every superdiagonal `U` entry. The symbolic factor is computed via
+/// the elimination tree (Liu, "The role of elimination trees in sparse factorization", SIAM
+/// Journal on Matrix Analysis and Applications 11(1), 1990) and row subtrees in time
+/// proportional to the factor entries. Uses `local` as scratch space following
+/// [`reduce_fill`].
 fn multiply_adds(
     block: &[usize],
     local: &mut [usize],
@@ -891,17 +878,18 @@ fn multiply_adds(
     below.iter().map(|entries| entries * entries).sum()
 }
 
-/// Reorders the columns of one diagonal `block` by the approximate minimum degree
-/// ordering of the block's pattern plus its transpose, its rows the columns matched with
-/// them. `local` is a workspace of one index per column of the pattern, whose `starts` and
-/// sorted `rows` are given: each column's index in its block, once its block is reached.
+/// Reorders one diagonal `block` by approximate minimum degree on the symmetrized block
+/// pattern, mapping each row to its matched column.
+///
+/// Uses `local` (one index per pattern column) to store each column's local index within
+/// `block` while processing `(starts, rows)`.
 fn reduce_fill(
     block: &mut [usize],
     local: &mut [usize],
     (starts, rows): (&[usize], &[usize]),
     column_of_row: &[usize],
 ) -> Result<(), LinearError> {
-    // Every ordering of two columns or fewer fills alike.
+    // Every ordering of two columns or fewer produces identical fill.
     let size = block.len();
     if size <= 2 {
         return Ok(());
@@ -920,10 +908,9 @@ fn reduce_fill(
     let structure =
         SymbolicSparseColMatRef::new_checked(size, size, &block_starts, None, &block_rows);
     let (mut permutation, mut inverse) = (vec![0; size], vec![0; size]);
-    // The ordering works in room for the entries of the block plus its transpose off the
-    // diagonal, a fifth more, and one index per column, where faer's workspace for a count
-    // of entries holds 2.4 indices per entry: counting each column once more covers the
-    // last.
+    // Allocate AMD workspace for off-diagonal symmetrized entries, 20% headroom, and one
+    // index per column. Adding `size` to the entry count covers the per-column slots under
+    // faer's 2.4-index-per-entry scratch formula.
     let mut memory =
         MemBuffer::try_new(amd::order_scratch::<usize>(size, block_rows.len() + size))?;
     amd::order(
@@ -945,8 +932,7 @@ mod tests {
     use super::*;
     use crate::PatternBuilder;
 
-    /// The pattern of the nodes of a square grid of `side` nodes a side, each joined to
-    /// the nodes beside it, as a mesh's resistors join them.
+    /// Builds the symmetric adjacency pattern of a `side` × `side` resistor grid.
     fn grid(side: usize) -> Arc<Pattern> {
         let at = |row: usize, column: usize| row * side + column;
         let mut positions = Vec::new();
@@ -966,8 +952,7 @@ mod tests {
         pattern(side * side, &positions)
     }
 
-    /// The pattern of the nodes of a path of `length` nodes, each joined to the next, as
-    /// a chain's inverters join their nodes.
+    /// Builds the symmetric adjacency pattern of a `length`-node path graph.
     fn path(length: usize) -> Arc<Pattern> {
         let mut positions: Vec<(usize, usize)> = (0..length).map(|node| (node, node)).collect();
         for node in 1..length {
@@ -978,7 +963,7 @@ mod tests {
 
     #[test]
     fn dissects_a_block_only_where_it_costs_fewer_multiply_adds() {
-        // `Dissecting::Cheaper`'s measures of the two orderings.
+        // Verify the exact multiply-add thresholds documented on `Dissecting::Cheaper`.
         let dissections = |pattern| {
             Ordering::dissected(pattern, Dissecting::Cheaper(157))
                 .expect("an ordering")
@@ -992,10 +977,10 @@ mod tests {
 
     #[test]
     fn counts_the_multiply_adds_of_an_elimination() {
-        // A path in its order fills nothing: each column but the last holds one entry
-        // below its diagonal, one multiply-add. Its middle node first holds its two
-        // neighbors, four, and joins them, so that each later column but the last holds
-        // one entry again.
+        // A path in natural order incurs zero fill: each column except the last holds one
+        // subdiagonal entry and contributes one multiply-add. Eliminating the middle node
+        // first touches both neighbors (four multiply-adds) and connects them, leaving one
+        // subdiagonal entry for each remaining column except the last.
         let pattern = path(5);
         let structure = pattern.structure();
         let identity: Vec<usize> = (0..5).collect();
@@ -1012,8 +997,7 @@ mod tests {
         assert_eq!(count(&[2, 0, 1, 3, 4], &mut local), 4 + 1 + 1 + 1);
     }
 
-    /// The pattern of a `dimension` × `dimension` matrix with an entry at each of
-    /// `positions`.
+    /// Builds a `dimension` × `dimension` [`Pattern`] containing every entry in `positions`.
     fn pattern(dimension: usize, positions: &[(usize, usize)]) -> Arc<Pattern> {
         let mut builder = PatternBuilder::new();
         for &(row, column) in positions {
@@ -1022,7 +1006,8 @@ mod tests {
         Arc::new(builder.finish(dimension))
     }
 
-    /// The row matched with each column of `pattern`, or columns no matching covers.
+    /// Computes the maximum transversal row matching for `pattern`, or returns undetermined
+    /// columns.
     fn matching(pattern: &Pattern) -> Result<Vec<usize>, Vec<usize>> {
         let structure = pattern.structure();
         maximum_transversal(
@@ -1032,8 +1017,8 @@ mod tests {
         )
     }
 
-    /// Whether some permutation puts an entry of `positions` on every diagonal position, by
-    /// trying every permutation of the rows.
+    /// Returns `true` when a row permutation places an entry of `positions` on every diagonal
+    /// position, checked by backtracking.
     fn perfect_matching_exists(dimension: usize, positions: &[(usize, usize)]) -> bool {
         fn extend(
             column: usize,
@@ -1060,16 +1045,16 @@ mod tests {
 
     #[test]
     fn matches_a_voltage_sources_equation_with_its_node() {
-        // A node with a conductance to the reference and a source holding it: the source's
-        // current, column 1, is in the node's equation only, so the node's voltage, column
-        // 0, takes the source's equation, row 1.
+        // A node with a conductance to the reference and a voltage source: the source current
+        // (column 1) appears only in the node equation, so the node voltage (column 0) takes
+        // the source equation (row 1).
         let source = pattern(2, &[(0, 0), (0, 1), (1, 0)]);
         assert_eq!(matching(&source), Ok(vec![1, 0]));
-        // A full diagonal is kept, whatever else the pattern holds.
+        // A full diagonal is preserved regardless of off-diagonal entries.
         let full = pattern(3, &[(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (1, 2), (2, 2)]);
         assert_eq!(matching(&full), Ok(vec![0, 1, 2]));
-        // Two sources in parallel read the same node only: their currents, columns 1 and 2,
-        // are both in the node's equation and no other.
+        // Two parallel voltage sources constrain the same node: their branch currents (columns
+        // 1 and 2) appear only in that node equation.
         let parallel = pattern(3, &[(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)]);
         assert_eq!(matching(&parallel), Err(vec![1, 2]));
         let ordering = Ordering::new(parallel).expect("fits");
@@ -1079,9 +1064,9 @@ mod tests {
 
     #[test]
     fn splits_a_grounded_source_into_blocks_of_its_own() {
-        // Nodes 0 and 1 joined by a conductance, node 1 held by a source whose current is
-        // unknown 2: the source's current is found last, from node 1's equation, and node
-        // 1's voltage first, from the source's equation.
+        // Nodes 0 and 1 share a conductance, and a source drives node 1 with current unknown 2.
+        // Node 1's voltage solves first from the source equation, and the source current solves
+        // last from node 1's equation.
         let held = pattern(3, &[(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (2, 1)]);
         let ordering = Ordering::new(held).expect("fits");
         assert_eq!(ordering.blocks(), 3);
@@ -1090,9 +1075,8 @@ mod tests {
     }
 
     proptest! {
-        /// The matching covers every column exactly when some permutation does, and pairs
-        /// each column with a distinct row holding an entry in it; when there is none, the
-        /// columns it names have entries in fewer rows than there are columns.
+        /// Verifies that the matching covers every column whenever a perfect matching exists
+        /// and otherwise returns a Hall witness spanning fewer rows than columns.
         #[test]
         fn finds_a_perfect_matching_when_there_is_one(
             dimension in 1usize..7,
@@ -1125,8 +1109,8 @@ mod tests {
             }
         }
 
-        /// The ordered matrix is block upper triangular with a stored diagonal, and has one
-        /// block per strongly connected component of the matched matrix's graph.
+        /// Verifies that the ordered matrix is block upper triangular with a stored diagonal
+        /// and contains one diagonal block per strongly connected component.
         #[test]
         fn orders_the_matrix_into_its_block_triangular_form(
             dimension in 1usize..12,

@@ -50,24 +50,25 @@ pub enum Term {
     Constant(f64),
     /// A variable the expression reads.
     Variable(Variable),
-    /// An operation on its operands, named as the language names it: an operator, such as
-    /// `+`, `^` or `<=`, of two operands, `-` or `!` of one, `if` of a condition and the
-    /// two values it chooses between, or a function, such as `sqrt`, `min` or `limit`.
+    /// Operation applied to child operands, named by its expression-language spelling.
+    ///
+    /// Covers binary operators (`+`, `^`, `<=`), unary operators (`-`, `!`), conditionals
+    /// (`if`), and built-in functions (`sqrt`, `min`, `limit`).
     Operation(&'static str, Vec<Term>),
-    /// The piecewise-linear interpolation of points at `input`, as `table`, `pwl` and
-    /// `rounded_table` read it: through the points given, with one more before the first
-    /// and one after the last, which hold the ends or extend them. Each corner, the ends'
-    /// included, holds the inputs between the midpoints of the segments beside it, and is
-    /// rounded there by a parabola over `rounding` times the shorter of them; below the
-    /// first segment's midpoint and above the last's, the input follows that segment.
+    /// Piecewise-linear interpolation at `input` for `table`, `pwl`, and `rounded_table`,
+    /// padded with synthetic endpoints to clamp or extend beyond the table range.
+    ///
+    /// Each corner (including endpoints) spans the region between adjacent segment midpoints
+    /// and is rounded by a parabola over `rounding` times the shorter adjacent segment. Inputs
+    /// outside the outer segment midpoints follow the outer segments linearly.
     Table {
-        /// The interpolation's input.
+        /// Interpolation input expression.
         input: Box<Term>,
-        /// The points' abscissae, ascending.
+        /// Ascending breakpoint abscissae including synthetic endpoints.
         abscissae: Vec<f64>,
-        /// The points' ordinates.
+        /// Breakpoint ordinates matching `abscissae`.
         ordinates: Vec<f64>,
-        /// The fraction of the shorter segment beside each corner its parabola spans.
+        /// Fraction of the shorter adjacent segment spanned by each corner-rounding parabola.
         rounding: f64,
     },
 }
@@ -484,16 +485,15 @@ pub struct Expression {
 }
 
 impl Expression {
-    /// The variables the expression reads, in the order it first reads them, which is the
-    /// order [`Expression::evaluate`] takes their values in.
+    /// Returns the distinct variables referenced by this expression in order of first
+    /// appearance, matching the input order of [`Expression::evaluate`].
     #[must_use]
     pub fn variables(&self) -> &[Variable] {
         &self.variables
     }
 
-    /// The expression's value with its `variables` at the values given, in the order of
-    /// [`Expression::variables`], and its derivative with respect to each, written into
-    /// `gradient`.
+    /// Evaluates this expression at `variables` (in [`Expression::variables`] order), writes
+    /// its partial derivatives into `gradient`, and returns the scalar result.
     ///
     /// # Panics
     ///
@@ -517,10 +517,11 @@ impl Expression {
         tape::evaluate(&self.tape, variables, workspace, gradient)
     }
 
-    /// The directional derivatives of the expression's value and gradient along `tangent`,
-    /// one rate per variable in the order of [`Expression::variables`], at the point
-    /// [`Expression::evaluate`] last evaluated in `workspace`: the gradient's directional
-    /// derivative written into `gradient_tangent`, and the value's returned.
+    /// Computes directional derivatives along `tangent` (in [`Expression::variables`] order)
+    /// at the point last evaluated by [`Expression::evaluate`] in `workspace`.
+    ///
+    /// Writes the directional derivative of the gradient into `gradient_tangent` and returns
+    /// the directional derivative of the scalar value.
     ///
     /// # Panics
     ///
@@ -544,8 +545,8 @@ impl Expression {
         tape::along(&self.tape, tangent, workspace, gradient_tangent)
     }
 
-    /// The expression as a tree of terms, its constant parts folded: what another
-    /// simulator's language needs to write it in its own.
+    /// Returns the constant-folded expression as a [`Term`] tree for export to external
+    /// simulator formats.
     #[must_use]
     pub fn tree(&self) -> Term {
         let mut terms: Vec<Option<Term>> = Vec::with_capacity(self.tape.len());
@@ -613,25 +614,22 @@ impl Expression {
 /// where the choice changes, its input crossing a threshold.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Choice {
-    /// The instruction that makes it, which names it within its expression.
+    /// Tape instruction index identifying this choice within its expression.
     instruction: usize,
-    /// What it reads: a comparison's left operand less its right, or the argument.
+    /// Tracked input quantity: left minus right for comparisons, or the function argument.
     input: f64,
-    /// What it chose: the comparison's truth, or the function's value.
+    /// Discrete output value selected at evaluation time.
     chosen: f64,
     kind: tape::Kind,
 }
 
 impl Choice {
-    /// Where between two evaluations of one expression its value first jumps: the
-    /// fraction of the way from the first evaluation's variables to the second's at which
-    /// the earliest of the choices both took, and that changed, changes, interpolating its
-    /// input linearly to the threshold between them. `None` if no choice both took
-    /// changed.
+    /// Returns the earliest fractional position in `[0, 1]` between `before` and `after`
+    /// where any shared choice changes value, using linear input interpolation.
     ///
-    /// A comparison, a step and a sign change where their input crosses zero; a floor or a
-    /// ceiling where its argument crosses the integer next to the first value towards the
-    /// second.
+    /// Returns `None` when no shared choice changed. Comparisons, steps, and signs switch at
+    /// zero; `floor` and `ceil` switch at the adjacent integer boundary between the two
+    /// evaluations.
     #[must_use]
     pub fn first_jump(before: &[Self], after: &[Self]) -> Option<f64> {
         before
@@ -645,8 +643,8 @@ impl Choice {
             .min_by(f64::total_cmp)
     }
 
-    /// The fraction of the way from `self` to `later`, a change of the same choice, at
-    /// which its input crosses the threshold between the two.
+    /// Interpolates the fractional step from `self` to `later` at which the tracked input
+    /// crosses the switching threshold.
     fn crossing(&self, later: &Self) -> f64 {
         let rising = later.chosen > self.chosen;
         let threshold = match self.kind {
@@ -696,15 +694,15 @@ pub struct Workspace {
     slopes: Vec<f64>,
     /// Each table's second derivative at the input it was evaluated at.
     curvatures: Vec<f64>,
-    /// Each instruction's directional derivative, in [`Expression::along`].
+    /// Directional derivative of each instruction's value during [`Expression::along`].
     tangents: Vec<f64>,
-    /// Each instruction's adjoint's directional derivative, in [`Expression::along`].
+    /// Directional derivative of each instruction's adjoint during [`Expression::along`].
     adjoint_tangents: Vec<f64>,
     limited: bool,
 }
 
 impl Workspace {
-    /// A workspace for `expression`.
+    /// Allocates a reusable [`Workspace`] sized for `expression`.
     #[must_use]
     pub fn new(expression: &Expression) -> Self {
         let length = expression.tape.len();
@@ -726,22 +724,21 @@ impl Workspace {
         self.inputs.fill(None);
     }
 
-    /// Whether the last evaluation limited a rounded table's input, so its value is not
-    /// yet the expression's at the variables given: the step of an iteration that has
-    /// not converged.
+    /// Returns whether the last evaluation clamped a rounded-table input, indicating an
+    /// unconverged Newton step.
     #[must_use]
     pub fn limited(&self) -> bool {
         self.limited
     }
 }
 
-/// Why a text is not an expression, and the column, counted from 1, where it goes wrong.
+/// Error describing why expression text failed to parse and the one-based failure column.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message} at column {column}")]
 pub struct SyntaxError {
-    /// What is wrong.
+    /// Human-readable description of the syntax error.
     pub message: String,
-    /// The column of the token where it goes wrong.
+    /// One-based column of the offending token.
     pub column: usize,
 }
 
@@ -799,7 +796,7 @@ mod tests {
         assert_eq!(expression.tree(), Term::Operation("+", vec![table, choice]));
     }
 
-    /// The value and gradient of `text` at `values`.
+    /// Parses and evaluates `text` at `values`, returning `(value, gradient)`.
     fn evaluate(text: &str, values: &[f64]) -> (f64, Vec<f64>) {
         let expression: Expression = text.parse().expect("a valid expression");
         let mut workspace = Workspace::new(&expression);
@@ -905,7 +902,7 @@ mod tests {
         }
     }
 
-    /// The choices `expression` turns on at `values`.
+    /// Evaluates `expression` at `values` and returns all active discontinuity choices.
     fn chosen(expression: &Expression, values: &[f64]) -> Vec<Choice> {
         let mut workspace = Workspace::new(expression);
         let mut gradient = vec![0.0; values.len()];
@@ -951,8 +948,7 @@ mod tests {
     }
 
     proptest! {
-        /// The gradient matches central differences of the value, wherever the expression
-        /// is smooth.
+        /// Verifies that analytic gradients match central finite differences at smooth points.
         #[test]
         fn gradients_match_finite_differences(
             x in -2.0..2.0f64,
@@ -974,11 +970,10 @@ mod tests {
                 let mut below = values;
                 below[index] -= step;
                 let (high, low) = (evaluate(text, &above).0, evaluate(text, &below).0);
-                // A corner within the step, as `max`, `limit` and `table` have, makes the
-                // one-sided differences part by the slope's jump there, a unit at
-                // least for these terms; where the value is smooth they part by its
-                // curvature times the step, under 1e-2 below a curvature of 1e4. Only a
-                // smooth point has a derivative the central difference approximates.
+                // Corners from `max`, `limit`, and `table` create slope jumps of at least 1
+                // between one-sided differences. At smooth points the one-sided difference
+                // equals curvature times step (below 1e-2 when curvature < 1e4), so central
+                // differences accurately approximate the derivative.
                 let (forward, backward) = ((high - value) / step, (value - low) / step);
                 if (forward - backward).abs() > 1e-2 * derivative.abs().max(1.0) {
                     continue;
@@ -989,8 +984,8 @@ mod tests {
             }
         }
 
-        /// The directional derivatives of the value and gradient match central differences
-        /// of the value and gradient, wherever the expression's gradient is smooth.
+        /// Verifies that directional value and gradient derivatives match central finite
+        /// differences wherever the gradient is smooth.
         #[test]
         fn second_derivatives_match_finite_differences(
             x in -0.8..0.8f64,

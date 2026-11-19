@@ -1,11 +1,10 @@
-//! The compiler's representation of a module: its names resolved, each contribution split
-//! into its resistive, reactive and noise parts, and what each variable depends on.
+//! Resolved intermediate representation of a Verilog-A module: bound names, split resistive,
+//! reactive, and noise contributions, and static/dynamic variable dependence.
 //!
-//! A number is *static* when it depends on the parameters and the temperature alone, and
-//! *dynamic* when it depends on a probe, a limited probe or the simulator's state, such as
-//! gmin, through its value or through a condition it was assigned under. Static numbers
-//! are prepared once; dynamic ones are evaluated at every iteration, with their exact
-//! derivatives with respect to each probe they depend on.
+//! A value is *static* when it depends only on parameters and temperature, and *dynamic* when
+//! it depends on probes, limited probes, or simulator state such as `gmin` through its value
+//! or enclosing control flow. Static values compute once during preparation; dynamic values
+//! evaluate on every iteration with exact derivatives with respect to each dependent probe.
 
 mod analysis;
 mod checks;
@@ -25,30 +24,30 @@ pub(crate) use analysis::visit_contributions;
 pub(crate) use currents::probed_currents;
 pub(crate) use fold::{constant, fold};
 
-/// What an evaluation differentiates by: a voltage between two nodes, the current of a
-/// branch that holds a voltage, or a voltage limited from its last evaluation's.
+/// Differentiation variable for kernel evaluation: a node voltage difference, a
+/// potential-branch current, or a limited voltage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Probe {
-    /// The voltage of the first node over the second, by index among the nodes.
+    /// Voltage difference from the first node index to the second.
     Voltage(usize, usize),
-    /// The current of the branch at that index, one with a potential contribution.
+    /// Current through the branch at this index (carrying a potential contribution).
     Current(usize),
-    /// The limited voltage of the `$limit` at that index.
+    /// Limited voltage associated with the `$limit` entry at this index.
     Limited(usize),
 }
 
-/// A built-in function of real numbers.
+/// Built-in real-valued mathematical function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
     Exp,
-    /// `eˣ − 1`, to its last digit where `x` is near zero: jolty's, as C's `expm1`; not
-    /// in the Verilog-AMS standard.
+    /// Exponential minus one (`eˣ − 1`), accurate near zero (jolty extension matching C
+    /// `expm1`).
     Expm1,
     Ln,
-    /// `ln(1 + x)`, to its last digit where `x` is near zero: jolty's, as C's `log1p`;
-    /// not in the Verilog-AMS standard.
+    /// Natural logarithm of one plus argument (`ln(1 + x)`), accurate near zero (jolty
+    /// extension matching C `log1p`).
     Ln1p,
-    /// The logarithm to base 10, Verilog-A's `log`.
+    /// Base-10 logarithm, Verilog-A's `log`.
     Log,
     Sqrt,
     Pow,
@@ -69,7 +68,7 @@ pub(crate) enum Builtin {
 }
 
 impl Builtin {
-    /// The built-in function Verilog-A names `name`.
+    /// Returns the [`Builtin`] corresponding to Verilog-A function `name`, if any.
     pub(super) fn named(name: &str) -> Option<Self> {
         Some(match name {
             "exp" => Self::Exp,
@@ -97,7 +96,7 @@ impl Builtin {
         })
     }
 
-    /// How many arguments it takes.
+    /// Returns the required argument count of the built-in function.
     pub(super) const fn arity(self) -> usize {
         match self {
             Self::Pow | Self::Min | Self::Max => 2,
@@ -106,58 +105,56 @@ impl Builtin {
     }
 }
 
-/// An expression, its names resolved.
+/// Name-resolved IR expression.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Expression {
     Real(f64),
     Integer(i32),
     Parameter(usize),
-    /// A non-constant `localparam` at that index among the module's.
+    /// Non-constant `localparam` referenced by its module index.
     LocalParameter(usize),
-    /// Whether the parameter at that index was given.
+    /// Predicate testing whether the parameter at this index was supplied.
     Given(usize),
     Variable(usize),
-    /// `$temperature`, the device's temperature in kelvins.
+    /// Device temperature `$temperature` in kelvins.
     Temperature,
-    /// `$simparam("gmin")`, the conductance across every nonlinear junction.
+    /// Simulator shunt conductance `$simparam("gmin")` across nonlinear junctions.
     Gmin,
-    /// `$simparam("small_resistance")`, jolty's resistance below which a resistance
-    /// carries its current as an unknown, [`jolty_models::SMALL_RESISTANCE`].
+    /// Resistance threshold `$simparam("small_resistance")` ([`jolty_models::SMALL_RESISTANCE`])
+    /// below which a resistor introduces a branch current unknown.
     SmallResistance,
     Probe(Probe),
     Unary(&'static str, Box<Self>),
     Binary(&'static str, Box<Self>, Box<Self>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Builtin, Vec<Self>),
-    /// `ddx(f, V(node))`: the derivative of `f` by the potential of the node, which has
-    /// no derivative of its own in turn.
+    /// Partial derivative `ddx(f, V(node))` with respect to a node potential, carrying no second
+    /// derivative.
     Ddx(Box<Self>, usize),
-    /// Whether the condition of the conditional at that number, one that shapes the
-    /// kernel, holds: as its shape decided it.
+    /// Predicate indicating whether shape-determining conditional `id` holds.
     Shape(usize),
 }
 
-/// A noise source a contribution adds.
+/// Noise source attached to a branch contribution.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Noise {
     pub(crate) name: String,
-    /// Its power spectral density at 1 Hz.
+    /// Power spectral density at 1 Hz.
     pub(crate) power: Expression,
-    /// For flicker noise, the power of the frequency its density falls with; `None` for
-    /// white noise.
+    /// Frequency roll-off exponent for flicker noise, or `None` for white noise.
     pub(crate) exponent: Option<Expression>,
 }
 
-/// A statement, its names resolved.
+/// Name-resolved IR statement.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Statement {
     Assign(usize, Expression),
-    /// A contribution to a branch: of its flow, or of its potential.
+    /// Flow or potential contribution to a branch.
     Contribute {
         branch: usize,
         potential: bool,
         resistive: Option<Expression>,
-        /// The charge or flux whose time derivative it adds.
+        /// Charge or flux expression whose time derivative is added.
         reactive: Option<Expression>,
         /// Expressions factored from outside `ddt(...)` (`k * ddt(x)` folded into
         /// `ddt(k * x)`), each with its source line; verified static after analysis so
@@ -165,32 +162,29 @@ pub(crate) enum Statement {
         reactive_factors: Vec<(Expression, usize)>,
         noise: Vec<Noise>,
     },
-    /// A conditional, numbered in the order the analog block holds them, its condition
-    /// and its two branches.
+    /// Numbered conditional statement with condition, then-branch, and else-branch.
     If(usize, Expression, Vec<Self>, Vec<Self>),
     While(Expression, Vec<Self>),
-    /// `$error` or `$fatal`: preparation fails with the message, its `%g`s the
-    /// arguments' values.
+    /// Fatal preparation diagnostic from `$error` or `$fatal`, formatting arguments into `%g`
+    /// slots.
     Fail(String, Vec<Expression>),
-    /// `$warning`, `$strobe` and the like: a fact about the instance, as the message
-    /// says, its `%g`s the arguments' values; and whether it depends on the probes, so
-    /// that the evaluation, not the preparation, finds it.
+    /// Diagnostic from `$warning`, `$strobe`, or similar tasks, formatting arguments into `%g`
+    /// slots and flagging whether evaluation depends on probes.
     Warn(String, Vec<Expression>, bool),
 }
 
-/// The function that limits a probe's step: an analog function of the module's, by its
-/// index, or one of the simulator's, jolty's own limiting.
+/// Function limiting a probe step: either a module analog function or a built-in jolty limiter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Limiter {
     Function(usize),
-    /// `"pnjlim"`, a junction's: [`jolty_models::limit_junction`].
+    /// Built-in junction limiter `"pnjlim"` ([`jolty_models::limit_junction`]).
     Junction,
-    /// `"fetlim"`, a field-effect transistor's gate's: [`jolty_models::limit_gate`].
+    /// Built-in FET gate limiter `"fetlim"` ([`jolty_models::limit_gate`]).
     Gate,
 }
 
-/// A limited probe: the voltage it limits and the function that limits it, with the
-/// arguments after the two voltages it takes, the new one and the last.
+/// Limited voltage probe pairing its branch nodes, limiter function, and extra arguments after
+/// `(v_new, v_old)`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Limit {
     pub(crate) plus: usize,
@@ -199,50 +193,48 @@ pub(crate) struct Limit {
     pub(crate) arguments: Vec<Expression>,
 }
 
-/// A range of a parameter: whether it excludes its values rather than admitting them,
-/// and its lower and upper bounds, each with whether it is included, `None` for an
-/// infinite one: a constant, or an expression of the parameters.
+/// Resolved parameter range `(exclude, lower, upper)` where each bound pairs an expression with
+/// an inclusivity flag (`None` denotes infinity).
 pub(crate) type Bounds = (bool, Option<(Expression, bool)>, Option<(Expression, bool)>);
 
-/// A non-constant `localparam`, resolved: evaluated once during preparation in
-/// declaration order so its value and parameter derivatives propagate everywhere it is
-/// read.
+/// Resolved non-constant `localparam` evaluated once during preparation in declaration order so
+/// parameter derivatives propagate wherever it is read.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LocalParameter {
-    /// Its name in the kernel's code.
+    /// Sanitized Rust identifier in generated kernel code.
     pub(crate) name: String,
-    /// Its name in the source.
+    /// Original identifier from Verilog-A source.
     pub(crate) external: String,
     pub(crate) kind: Type,
     pub(crate) value: Expression,
 }
 
-/// A parameter, resolved.
+/// Resolved model parameter.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Parameter {
-    /// Its name in the kernel's code.
+    /// Sanitized Rust identifier in generated kernel code.
     pub(crate) name: String,
-    /// Its name in the source and in a circuit's parameters.
+    /// Original identifier from Verilog-A source and circuit parameter maps.
     pub(crate) external: String,
     pub(crate) kind: Type,
-    /// Its default: a constant, or an expression of the parameters before it, which makes
-    /// it optional.
+    /// Default value expression (a constant or expression over earlier parameters).
     pub(crate) default: Expression,
-    /// Whether it is optional: read as given or not, or defaulting to other parameters.
+    /// Flag set when the parameter is queried by `$param_given` or defaults from other
+    /// parameters.
     pub(crate) optional: bool,
     pub(crate) ranges: Vec<Bounds>,
     pub(crate) description: Option<String>,
     pub(crate) units: Option<String>,
-    /// The other names `aliasparam` gives it.
+    /// Additional parameter names introduced by `aliasparam`.
     pub(crate) aliases: Vec<String>,
 }
 
-/// The node of the global reference, the ground: the ambient for a thermal node. Its
-/// value reads zero, and what it receives goes nowhere, as a kernel's reference does.
+/// Global reference node (electrical ground or thermal ambient).
+///
+/// Reference potential is always zero and contributions to it are discarded.
 pub(crate) const GROUND: usize = usize::MAX;
 
-/// A branch: a named one, or the unnamed one of a pair of nodes, or of one node and the
-/// ground.
+/// Named or unnamed branch between two nodes (or one node and [`GROUND`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Branch {
     pub(crate) name: String,
@@ -250,8 +242,8 @@ pub(crate) struct Branch {
     pub(crate) minus: usize,
 }
 
-/// An analog function that limits a probe, its body over its own variables: its inputs
-/// first, then its locals, then its result.
+/// Analog function used as a probe limiter, with local variable slots ordered as inputs,
+/// locals, then result.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Function {
     pub(crate) name: String,
@@ -260,17 +252,16 @@ pub(crate) struct Function {
     pub(crate) body: Vec<Statement>,
 }
 
-/// A module, resolved and analyzed.
+/// Resolved and analyzed Verilog-A module ready for Rust kernel emission.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Module {
     pub(crate) name: String,
-    /// The nodes, each by its Rust name: the ports first, in their order, then the
-    /// internal nodes.
+    /// Rust node names ordered with ports first, followed by internal nodes.
     pub(crate) nodes: Vec<String>,
-    /// The name each node has in the source, which labels its unknown.
+    /// Source node names used to label unknowns.
     pub(crate) labels: Vec<String>,
-    /// What each node's unknown measures: a voltage, a temperature, or the current of a
-    /// branch that the compiler gives an unknown.
+    /// Physical nature measured by each node unknown: voltage, temperature, or an auxiliary
+    /// branch current.
     pub(crate) natures: Vec<Nature>,
     pub(crate) ports: usize,
     pub(crate) branches: Vec<Branch>,
@@ -278,19 +269,19 @@ pub(crate) struct Module {
     /// Non-constant `localparam`s prepared before range checks and the analog block.
     pub(crate) local_parameters: Vec<LocalParameter>,
     pub(crate) variables: Vec<(String, Type)>,
-    /// The variables that are output variables, by index.
+    /// Indices of variables designated as output variables.
     pub(crate) outputs: Vec<usize>,
     pub(crate) functions: Vec<Function>,
     pub(crate) limits: Vec<Limit>,
     pub(crate) analog: Vec<Statement>,
-    /// Whether each variable is dynamic.
+    /// Per-variable flag indicating whether the variable depends on probes or simulator state.
     pub(crate) dynamic: Vec<bool>,
-    /// The probes each variable depends on, through its values.
+    /// Probes each variable depends on through its value.
     pub(crate) probes: Vec<BTreeSet<Probe>>,
 }
 
-/// The Rust identifier of the Verilog-A name `name`: the name in snake case, with an
-/// underscore after it where that is one of Rust's keywords, as the `type` of `R3_CMC` is.
+/// Converts Verilog-A `name` into a valid Rust snake-case identifier, appending `_` when the
+/// result collides with a Rust keyword.
 pub(crate) fn identifier(name: &str) -> String {
     const KEYWORDS: [&str; 51] = [
         "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
@@ -299,8 +290,7 @@ pub(crate) fn identifier(name: &str) -> String {
         "trait", "true", "try", "type", "unsafe", "use", "where", "while", "abstract", "become",
         "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual",
     ];
-    // Rust's names are snake case: an upper-case letter after a lower-case one or a
-    // digit starts a word.
+    // Insert underscores before uppercase transitions following lowercase letters or digits.
     let mut snake = String::new();
     let mut previous: Option<char> = None;
     for c in name.chars() {
@@ -317,7 +307,7 @@ pub(crate) fn identifier(name: &str) -> String {
     }
 }
 
-/// `name`, or the first of `name2`, `name3` and on that `taken` says is not taken.
+/// Returns `name`, or the first `name2`, `name3`, ... for which `taken` returns `false`.
 pub(crate) fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
     let mut unique = name.to_owned();
     let mut count = 1;
@@ -328,12 +318,12 @@ pub(crate) fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
     unique
 }
 
-/// The module `module`, resolved and analyzed.
+/// Resolves names, splits contributions, and performs static/dynamic dependence analysis on
+/// `module`.
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] for a name that is not declared, and for a construct the
-/// compiler does not compile yet.
+/// Returns an [`Error`] on undeclared identifiers or unsupported constructs.
 pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
     let (nodes, thermal) = checks::nodes_of(module)?;
     checks::check_module_duplicates(module)?;

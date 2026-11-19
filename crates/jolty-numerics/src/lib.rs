@@ -1,16 +1,18 @@
-//! The numerical kernels of jolty.
+//! Circuit-agnostic numerical kernels for `jolty`.
 //!
-//! Nothing here knows about circuits. A [`Pattern`] is the sparsity of a square system matrix,
-//! collected once from the positions devices claim; its [`Ordering`] is analyzed once, and
-//! [`SparseLu`] factors and solves matrices of that pattern, real or complex, sharing the
-//! ordering and refactoring each new matrix with the pivots of the last, the blocks an
-//! ordering dissects on any number of threads, the same bits on each; a [`GatherMap`]
-//! assembles a system's values from the contributions a slab holds, each in a fixed order
-//! however many threads gather them; [`reduce`] sums many terms in one fixed order on any
-//! number of threads; [`integration`] holds the formulas that turn charges
-//! into currents over a time step; and [`generalized_eigenvalues`] finds a dense matrix pencil's eigenvalues by the QZ algorithm,
-//! and [`solve_in_range`] solves a small dense system, regular or not, and
-//! [`solve_each_in_range`] many right-hand sides of one.
+//! - [`Pattern`] captures the sparsity structure of a square system matrix from claimed
+//!   entry positions, and [`Ordering`] analyzes that sparsity once for reuse.
+//! - [`SparseLu`] factors and solves real or complex matrices sharing an [`Ordering`],
+//!   reusing pivots across refactorizations and dissecting independent blocks deterministically
+//!   across any thread count.
+//! - [`GatherMap`] assembles system vectors and matrix entries from slab contributions in a
+//!   fixed, thread-count-independent order.
+//! - [`reduce`] performs deterministic chunked reductions across any thread count.
+//! - [`integration`] provides multistep time-integration formulas turning charges into
+//!   currents over variable time steps.
+//! - [`generalized_eigenvalues`] computes eigenvalues of dense matrix pencils via the QZ
+//!   algorithm, while [`solve_in_range`] and [`solve_each_in_range`] solve small regular or
+//!   rank-deficient dense linear systems.
 
 mod dense;
 mod gather;

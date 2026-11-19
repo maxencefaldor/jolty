@@ -10,23 +10,19 @@ use crate::ir::{Branch, Expression, GROUND, Module, Statement, constant, probed_
 
 use super::types::{Activity, Place, Site};
 
-/// A module's facts the emitter reads throughout.
+/// Precomputed module facts shared across all code-emission passes.
 pub(super) struct Facts<'m> {
     pub(super) module: &'m Module,
-    /// The conditionals whose conditions are static and that hold a contribution to a
-    /// branch's flow or potential, by number, with their index among `conditions`.
+    /// Map from static shape-determining conditional ID to its deduplicated index in `conditions`.
     pub(super) shaped: BTreeMap<usize, usize>,
-    /// The distinct static conditions that shape the kernel, in order of first appearance.
+    /// Distinct static shape conditions in order of first appearance.
     pub(super) conditions: Vec<Expression>,
-    /// Whether each branch adds to the equations only under some of the shape's
-    /// conditions, with its index among the shape's flags, for its flow or potential and
-    /// for its collapse.
+    /// Map from conditionally active `(branch, site)` pairs to their index in `shape.active`
+    /// (or `usize::MAX` when always active).
     pub(super) flags: BTreeMap<(usize, Site), usize>,
-    /// The message of each warning that depends on the probes, which the memory flags
-    /// once an evaluation finds it, and the number of values it formats, which the
-    /// memory holds as the last evaluation that found it read them.
+    /// Probe-dependent warning messages paired with their formatted argument count.
     pub(super) warned: Vec<(String, usize)>,
-    /// The branches whose currents are read.
+    /// Branch indices whose currents are probed.
     pub(super) probed: BTreeSet<usize>,
 }
 
@@ -43,12 +39,12 @@ fn collect_warned(statements: &[Statement], warned: &mut Vec<(String, usize)>) {
     });
 }
 
-/// Whether `statement` is a static `$warning` or its like, or holds one.
+/// Returns `true` when `statement` is or contains a static `$warning` or related diagnostic.
 pub(super) fn warns(statement: &Statement) -> bool {
     statement.any(&|inner| matches!(inner, Statement::Warn(_, _, false)))
 }
 
-/// Whether `statement` adds to a branch's flow or potential, or holds one that does.
+/// Returns `true` when `statement` contributes a resistive or reactive term to a branch.
 pub(super) fn stamps(statement: &Statement) -> bool {
     statement.any(&|inner| {
         matches!(
@@ -64,7 +60,7 @@ pub(super) fn stamps(statement: &Statement) -> bool {
     })
 }
 
-/// Whether `statement` adds a noise source, or holds one that does.
+/// Returns `true` when `statement` is or contains a noise contribution.
 pub(super) fn makes_noise(statement: &Statement) -> bool {
     statement
         .any(&|inner| matches!(inner, Statement::Contribute { noise, .. } if !noise.is_empty()))
@@ -110,8 +106,8 @@ impl<'m> Facts<'m> {
         });
     }
 
-    /// Whether a contribution collapses its branch: a potential of zero across a branch
-    /// with an internal node.
+    /// Returns `true` when a zero-potential contribution collapses an unprobed internal branch
+    /// node.
     pub(super) fn collapses(
         &self,
         branch: usize,
@@ -120,9 +116,8 @@ impl<'m> Facts<'m> {
         reactive: Option<&Expression>,
     ) -> bool {
         let Branch { plus, minus, .. } = self.module.branches[branch];
-        // The node that collapses: the later of two, or the one node of a branch to the
-        // ground, which the ground ranks before. A branch whose current is read keeps it
-        // as an unknown instead.
+        // Collapse the higher-indexed node (or the sole non-ground node). Branches whose
+        // currents are probed keep their branch-current unknown instead.
         let collapsing = if minus == GROUND {
             plus
         } else {
@@ -135,7 +130,8 @@ impl<'m> Facts<'m> {
             && !self.probed.contains(&branch)
     }
 
-    /// What a contribution to `branch` makes it: a collapse, a potential or a flow.
+    /// Classifies a contribution to `branch` as [`Site::Collapse`], [`Site::Potential`], or
+    /// [`Site::Flow`].
     pub(super) fn site(
         &self,
         branch: usize,
@@ -152,8 +148,8 @@ impl<'m> Facts<'m> {
         }
     }
 
-    /// Finds each branch's role and which branches the shape switches, `shaped` saying
-    /// whether `statements` lie under a shape's condition.
+    /// Classifies every branch role and marks conditionally active branches under shape
+    /// predicates.
     fn find_roles(&mut self, statements: &[Statement], shaped: bool) -> Result<(), Error> {
         for statement in statements {
             match statement {
@@ -195,7 +191,7 @@ impl<'m> Facts<'m> {
                 | Statement::Warn(..) => {}
             }
         }
-        // An unconditional site makes its branch always active: no flag.
+        // Unconditional sites remain always active and need no flag slot.
         if !shaped {
             let mut index = 0;
             for value in self.flags.values_mut() {
@@ -208,8 +204,7 @@ impl<'m> Facts<'m> {
         Ok(())
     }
 
-    /// Whether `branch`'s flow, its potential or its collapse is active: never, always,
-    /// or as the shape's flag says.
+    /// Returns the [`Activity`] state (`Never`, `Always`, or `Flag`) of `(branch, site)`.
     pub(super) fn flag(&self, branch: usize, site: Site) -> Activity {
         match self.flags.get(&(branch, site)) {
             None => Activity::Never,
@@ -218,12 +213,12 @@ impl<'m> Facts<'m> {
         }
     }
 
-    /// Whether `branch` holds a potential in some shape, its current then an unknown.
+    /// Returns `true` when `branch` carries a potential contribution in at least one shape.
     pub(super) fn holds_potential(&self, branch: usize) -> bool {
         self.flags.contains_key(&(branch, Site::Potential))
     }
 
-    /// Whether `branch` carries a flow in some shape.
+    /// Returns `true` when `branch` carries a flow contribution in at least one shape.
     pub(super) fn carries_flow(&self, branch: usize) -> bool {
         self.flags.contains_key(&(branch, Site::Flow))
     }
@@ -235,8 +230,7 @@ impl<'m> Facts<'m> {
             .count()
     }
 
-    /// The local index of node `node`, as code that reads it from `holder`, the shape or
-    /// the layout's own bindings.
+    /// Formats the local index expression for `node` prefixed by `holder` (for internal nodes).
     pub(super) fn node(&self, node: usize, holder: &str) -> String {
         if node == GROUND {
             "NOWHERE".to_owned()
@@ -247,7 +241,7 @@ impl<'m> Facts<'m> {
         }
     }
 
-    /// The local index of `place`, as code that reads it from `holder`.
+    /// Formats the local index expression for `place` prefixed by `holder`.
     pub(super) fn place(&self, place: Place, holder: &str) -> String {
         match place {
             Place::Node(node) => self.node(node, holder),
@@ -255,7 +249,7 @@ impl<'m> Facts<'m> {
         }
     }
 
-    /// The name of the shape's field of the entry at `row` and `column`.
+    /// Returns the `Shape` field name for the Jacobian entry at `(row, column)`.
     pub(super) fn entry_name(&self, (row, column): (Place, Place)) -> String {
         let name = |place: Place| match place {
             Place::Node(node) => self.module.node_name(node).to_owned(),
@@ -264,13 +258,13 @@ impl<'m> Facts<'m> {
         format!("{}_by_{}", name(row), name(column))
     }
 
-    /// Whether the kernel remembers anything: limited voltages, output variables, or
+    /// Returns `true` when the kernel requires persistent `Memory` for limits, outputs, or
     /// dynamic warnings.
     pub(super) fn remembers(&self) -> bool {
         !self.module.limits.is_empty() || !self.module.outputs.is_empty() || !self.warned.is_empty()
     }
 
-    /// Whether `branch` has a resistive part, so that it conducts at DC.
+    /// Returns `true` when `branch` has at least one resistive contribution (conducting at DC).
     pub(super) fn conducts(&self, branch: usize) -> bool {
         Statement::any_in(&self.module.analog, &|statement| {
             matches!(
@@ -284,8 +278,8 @@ impl<'m> Facts<'m> {
         })
     }
 
-    /// Whether terminals `from` and `to` are joined through internal nodes alone, by
-    /// edges that conduct at DC when `conducting` says so.
+    /// Returns `true` when terminals `from` and `to` connect through internal nodes via `edges`,
+    /// restricted to DC-conducting edges when `conducting` is `true`.
     pub(super) fn joined(
         edges: &[(usize, usize, bool)],
         (from, to): (usize, usize),
@@ -317,8 +311,8 @@ impl<'m> Facts<'m> {
         false
     }
 
-    /// The branches that may collapse in some shape, each with its flag where the shape
-    /// decides it.
+    /// Lists all branches that may collapse, paired with their optional `shape.active` flag
+    /// index.
     pub(super) fn shorts(&self) -> Vec<(usize, Option<usize>)> {
         (0..self.module.branches.len())
             .filter_map(|branch| match self.flag(branch, Site::Collapse) {
@@ -329,8 +323,7 @@ impl<'m> Facts<'m> {
             .collect()
     }
 
-    /// Whether the internal node `node` collapses into the ground in some shape, through
-    /// the shorts that may join it to the ground.
+    /// Returns `true` when internal `node` can collapse to [`GROUND`] in some kernel shape.
     pub(super) fn grounded(&self, node: usize) -> bool {
         let shorts: Vec<(usize, usize)> = self
             .shorts()
@@ -355,9 +348,8 @@ impl<'m> Facts<'m> {
     }
 }
 
-/// Checks that no contribution reads a `ddx`, whose own derivative would be a second
-/// one, which the dual numbers do not carry: the variables a `ddx` reaches are found by
-/// its assignments, until none is added.
+/// Checks that no contribution reads a `ddx` expression, since dual numbers do not track
+/// second derivatives. Propagates `ddx` dependence through assignments to a fixed point.
 fn first_order(module: &Module) -> Result<(), Error> {
     let mut reached = vec![false; module.variables.len()];
     let reads_ddx = |expr: &Expression, reached: &[bool]| {

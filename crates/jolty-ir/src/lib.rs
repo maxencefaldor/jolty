@@ -1,14 +1,15 @@
-//! The canonical circuit format of jolty.
+//! Canonical circuit intermediate representation for `jolty`.
 //!
-//! A [`Circuit`] is a set of named [`Component`]s and the name of the top one. A component
-//! declares its [`Port`]s and places [`Instance`]s, each of a device model or of another
-//! component. Every terminal of an instance joins a net by name, and a port is the net of the
-//! same name seen from outside. Parameter values are numbers in SI base units. A device
-//! instance may give some of its parameters a [`Tolerance`]: how far a part's value may lie
-//! from its nominal one, which Monte Carlo analyses sample. A tolerance names its parameter
-//! by [path](parameter()), so it may reach into an object, as `waveform.dc` does.
+//! A [`Circuit`] holds named [`Component`] definitions together with the top-level component
+//! name. A component declares [`Port`]s and places [`Instance`]s referencing device models or
+//! other components. Each instance terminal joins a net by name, and each port exposes the net
+//! of the same name to parent components.
 //!
-//! The format is JSON, tagged with [`FORMAT`] and [`VERSION`]:
+//! Parameter values are numbers in SI base units. A device instance may attach a [`Tolerance`]
+//! to any numeric parameter by [path](parameter()) (including nested fields such as
+//! `waveform.dc`) for Monte Carlo sampling.
+//!
+//! The serialized format is JSON tagged with [`FORMAT`] and [`VERSION`]:
 //!
 //! ```
 //! use jolty_ir::Circuit;
@@ -60,117 +61,114 @@ pub const VERSION: u32 = 5;
 /// The parameters of a device instance, by name, as JSON values in SI base units.
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
 
-/// A circuit: named components, and the one at the top of the hierarchy.
+/// Circuit definition consisting of named components and the top-level component name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Circuit {
-    /// The component the circuit is, which instances every other component it uses.
+    /// Top-level component name that roots the circuit hierarchy.
     pub top: Name,
-    /// Every component, by name.
+    /// Map of component definitions keyed by component name.
     pub components: BTreeMap<Name, Component>,
 }
 
-/// A component: its ports and the instances it places.
+/// Component definition declaring exposed ports and placed instances.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
-    /// The nets the component exposes, in order.
+    /// External ports exposed by the component, in declaration order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<Port>,
-    /// The device and component instances the component places.
+    /// Device and subcircuit instances placed inside the component.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<Instance>,
 }
 
-/// A net a component exposes to the components that instance it.
+/// External port exposing an internal component net to parent components.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Port {
-    /// The name of the port, which is also the name of its net inside the component.
+    /// Port name, which also names the corresponding internal net.
     pub name: Name,
-    /// What the port carries.
+    /// Electrical role carried by the port.
     pub role: Role,
 }
 
-/// What a port carries.
+/// Electrical role of a component port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// A signal, the default, in either direction.
+    /// Bidirectional or general-purpose signal net (default).
     Signal,
-    /// A signal into the component, which its circuit reads.
+    /// Signal net driven externally and read by the component.
     Input,
-    /// A signal out of the component, which its circuit drives.
+    /// Signal net driven by the component.
     Output,
-    /// A supply rail.
+    /// Power-supply rail.
     Supply,
-    /// The ground. At the top of a circuit, the ground port's net is the circuit's ground.
+    /// Reference ground rail; at the top level, this port's net is circuit ground.
     Ground,
 }
 
-/// One placed device or component.
+/// Placed device or subcircuit instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Instance {
-    /// The instance's name, unique within its component.
+    /// Instance name, unique within its enclosing component.
     pub name: Name,
-    /// What the instance is.
+    /// Target device model or subcircuit component instantiated by this entry.
     pub of: Of,
-    /// The device parameters; component instances take none.
+    /// Device parameters in SI base units; empty for subcircuit component instances.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub parameters: Parameters,
-    /// The net each terminal joins, by terminal name.
+    /// Map from instance terminal names to enclosing net names.
     pub terminals: BTreeMap<Name, Name>,
-    /// The tolerances of some of a device's parameters, by the parameter's
-    /// [path](parameter()).
+    /// Parameter tolerances keyed by dot-separated parameter [path](parameter()).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tolerances: BTreeMap<String, Tolerance>,
-    /// The limits the part's maker states on its stresses.
+    /// Manufacturer stress limits checked during simulation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ratings: Vec<Rating>,
-    /// The maker's number of the part the instance stands for, if it stands for one: a
-    /// component instance so numbered is that one part, whatever it places.
+    /// Manufacturer part number represented by the instance, if specified; a numbered
+    /// component instance counts as a single part regardless of its internal instances.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
-    /// The line of source code that placed the instance.
+    /// Source-code location that placed the instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_location: Option<SourceLocation>,
 }
 
-/// A limit a part's maker states on one of its stresses, which a simulation checks: the
-/// voltage of one of its terminals over another, the current into one, the power it
-/// dissipates, or its temperature.
+/// Manufacturer limit on a device stress checked during simulation (terminal-pair voltage,
+/// terminal current, dissipated power, or operating temperature).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rating {
-    /// What the rating limits.
+    /// Physical stress quantity bounded by the rating.
     pub stress: Stress,
-    /// The terminals the stress is at: two for a voltage, the first's over the second's,
-    /// one for a current, into it, and none for the power or the temperature.
+    /// Terminals where the stress is measured: two for voltage (first minus second), one for
+    /// current (into the terminal), and none for power or temperature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<Name>,
-    /// The largest value the stress may take, in SI base units, if the rating states one;
-    /// a power's rating does, and a temperature's is in kelvins.
+    /// Upper stress limit in SI base units (kelvins for temperature), if specified; required
+    /// for power ratings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximum: Option<f64>,
-    /// The smallest value the stress may take, if the rating states one; a power's states
-    /// none.
+    /// Lower stress limit in SI base units, if specified; omitted for power ratings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum: Option<f64>,
 }
 
-/// What a [`Rating`] limits.
+/// Physical stress quantity bounded by a [`Rating`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stress {
-    /// The voltage of one terminal over another.
+    /// Voltage difference between two terminals.
     Voltage,
-    /// The current into a terminal.
+    /// Current flowing into a terminal.
     Current,
-    /// The power the part dissipates: the sum over its electrical terminals of each one's
-    /// voltage times the current into it.
+    /// Power dissipated by the part, summed as terminal voltage times current into each
+    /// electrical terminal.
     Power,
-    /// The part's temperature: the simulation's, raised by its thermal net's where it
-    /// heats, the net its terminal `thermal` joins.
+    /// Operating temperature of the part: ambient temperature plus any rise on its `thermal`
+    /// net.
     Temperature,
 }
 
@@ -187,7 +185,7 @@ impl Stress {
         }
     }
 
-    /// How many terminals a rating of the stress names.
+    /// Returns the number of terminals required by a rating of this stress.
     #[must_use]
     pub const fn terminals(self) -> usize {
         match self {
@@ -198,65 +196,63 @@ impl Stress {
     }
 }
 
-/// How far a parameter's value may lie from its nominal one, relative to it.
+/// Relative tolerance specification for a device parameter.
 ///
-/// A part's own deviation is drawn apart from every other part's; one in a [`Lot`] adds
-/// the lot's deviation, which every part in the lot shares.
+/// Each part draws an independent deviation; parts belonging to a [`Lot`] also add a shared
+/// lot deviation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tolerance {
-    /// The part's own tolerance, such as `0.01` for 1 %, as its distribution
-    /// [takes](Distribution::takes) it.
+    /// Per-instance relative tolerance (such as `0.01` for 1 %), interpreted according to
+    /// [`Distribution::takes`].
     pub relative: f64,
-    /// How values spread within it.
+    /// Probability distribution used to sample deviations within the tolerance.
     #[serde(default)]
     pub distribution: Distribution,
-    /// The lot the part comes from, if it names one.
+    /// Shared [`Lot`] contributing a correlated deviation to this parameter, if specified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lot: Option<Lot>,
 }
 
-/// A spread that the parts of one lot share, as parts from one reel, or on one die, drift
-/// together: each parameter of theirs takes one factor from it per sample, which scales
-/// each part's own.
+/// Shared tolerance lot for parts from the same reel or die.
 ///
-/// A lot is known by its name wherever in the hierarchy a part names it, and spreads each
-/// parameter one way.
+/// Each Monte Carlo sample draws one lot factor per parameter and combines it with each part's
+/// individual deviation. A lot is identified by name across the entire hierarchy and applies
+/// one consistent spread to each parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lot {
-    /// The lot's name.
+    /// Lot identifier shared across instances.
     pub name: Name,
-    /// The lot's tolerance, as its distribution [takes](Distribution::takes) it.
+    /// Shared relative tolerance of the lot, interpreted according to [`Distribution::takes`].
     pub relative: f64,
-    /// How the lot's deviations spread within it.
+    /// Probability distribution used to sample lot deviations.
     #[serde(default)]
     pub distribution: Distribution,
 }
 
-/// How a parameter's values spread within its tolerance.
+/// Probability distribution for sampling parameter deviations within a tolerance.
 ///
-/// A value lies off its nominal one by a factor: `1 + d`, with `d` within the tolerance,
-/// or for a logarithmic spread `(1 + relative)^u`, with `u` within 1 of 0, as an
-/// exponential's argument spreads, such as a saturation current's when the junction
-/// voltage it sets does.
+/// Linear distributions scale nominal values by `1 + d` where `d` lies within `relative`.
+/// Logarithmic distributions scale by `(1 + relative)^u` where `u` lies within `[-1, 1]`,
+/// matching exponential parameters such as junction saturation current.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Distribution {
-    /// Evenly within the tolerance, the default.
+    /// Uniform distribution across the tolerance range (default).
     #[default]
     Uniform,
-    /// Normally, with the tolerance three standard deviations.
+    /// Normal distribution with `relative` equal to three standard deviations.
     Normal,
-    /// Evenly in the logarithm, within a factor of `1 + relative` either way.
+    /// Log-uniform distribution spanning a factor of `1 + relative` above and below nominal.
     LogUniform,
-    /// Normally in the logarithm, a factor of `1 + relative` three standard deviations.
+    /// Log-normal distribution with a factor of `1 + relative` at three standard deviations.
     LogNormal,
 }
 
 impl Distribution {
-    /// Whether this distribution takes a tolerance of `relative`: at least 0, and below
-    /// 1 unless it spreads the logarithm.
+    /// Returns whether this distribution accepts `relative`: non-negative, and strictly below
+    /// 1 for linear distributions.
     #[must_use]
     pub fn takes(self, relative: f64) -> bool {
         match self {
@@ -266,31 +262,31 @@ impl Distribution {
     }
 }
 
-/// What an instance is: a device of a model, or another component.
+/// Target kind of a placed instance: a primitive device model or a subcircuit component.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Of {
-    /// A device of the named model, such as `resistor`.
+    /// Primitive device of the named model, such as `resistor`.
     #[serde(rename = "model")]
     Device(Name),
-    /// An instance of the named component.
+    /// Subcircuit instance of the named component.
     Component(Name),
 }
 
-/// The line of source code that placed an instance.
+/// Source-code location that placed an instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceLocation {
-    /// The path of the file, as the build script's runner reported it.
+    /// Source file path reported by the circuit builder script.
     pub file: String,
-    /// The line number, counted from 1.
+    /// One-based source line number.
     pub line: u32,
-    /// The function that placed the instance.
+    /// Enclosing function name that placed the instance, if recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
 }
 
-/// Why a circuit file could not be read.
+/// Error returned when reading a circuit JSON file fails.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
     /// The text is not JSON, or does not have the shape of a circuit.
@@ -434,10 +430,11 @@ mod tests {
         ));
     }
 
-    /// Python writes each number as the shortest text that reads back as it, and the
-    /// engine must read that number, not a neighbor: without `serde_json`'s
-    /// `float_roundtrip`, 981.4902141434463 reads as 981.4902141434465, as about one number
-    /// in five reads an ulp off.
+    /// Verifies exact IEEE 754 round-tripping of shortest-representation floats written by
+    /// Python.
+    ///
+    /// Without `serde_json`'s `float_roundtrip`, values such as `981.4902141434463` decode one
+    /// ulp off (`981.4902141434465`).
     #[test]
     fn reads_every_number_as_python_writes_it() {
         for written in [

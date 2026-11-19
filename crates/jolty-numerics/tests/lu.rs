@@ -1,7 +1,8 @@
-//! The sparse LU solver against a dense reference: on random sparse matrices whose large
-//! entries lie off the diagonal, on the matrices of random circuits, real and complex, after
-//! their values change, with Meyer's displacements and small series resistances' currents
-//! condensed, and on singular and nearly singular matrices.
+//! Integration tests comparing the sparse LU solver against a dense Gauss-Jordan reference.
+//!
+//! Coverage spans random off-diagonal matrices, real and complex circuit matrices,
+//! refactorization after value updates, Meyer displacement and series-resistance condensation,
+//! nested dissection, and singular or ill-conditioned systems.
 #![cfg(test)]
 
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use jolty_numerics::{
 use proptest::prelude::*;
 use proptest::sample::Index;
 
-/// A square matrix's claimed positions, each with its value, positions repeated adding up.
+/// Coordinate-list representation of a square matrix where repeated positions sum.
 #[derive(Debug, Clone)]
 struct Matrix<T> {
     dimension: usize,
@@ -22,7 +23,7 @@ struct Matrix<T> {
 }
 
 impl<T: Scalar> Matrix<T> {
-    /// The pattern of the positions, and the entry of each.
+    /// Builds a [`Pattern`] from the recorded positions and returns the corresponding entries.
     fn pattern(&self) -> (Arc<Pattern>, Vec<Entry>) {
         let mut builder = PatternBuilder::new();
         let entries = self
@@ -33,7 +34,7 @@ impl<T: Scalar> Matrix<T> {
         (Arc::new(builder.finish(self.dimension)), entries)
     }
 
-    /// The values by slot of `pattern`, whose `entries` the positions are.
+    /// Scatters matrix values into a slot-indexed slice matching `pattern` and `entries`.
     fn stored(&self, pattern: &Pattern, entries: &[Entry]) -> Vec<T> {
         let mut stored = vec![T::ZERO; pattern.len()];
         for (&entry, &value) in entries.iter().zip(&self.values) {
@@ -42,7 +43,7 @@ impl<T: Scalar> Matrix<T> {
         stored
     }
 
-    /// The matrix, dense by rows.
+    /// Materializes the matrix as a dense row-major `Vec<Vec<T>>`.
     fn dense(&self) -> Vec<Vec<T>> {
         let mut dense = vec![vec![T::ZERO; self.dimension]; self.dimension];
         for (&(row, column), &value) in self.positions.iter().zip(&self.values) {
@@ -52,14 +53,14 @@ impl<T: Scalar> Matrix<T> {
     }
 }
 
-/// The transpose of the dense `matrix`.
+/// Returns the transpose of dense `matrix`.
 fn transposed<T: Scalar>(matrix: &[Vec<T>]) -> Vec<Vec<T>> {
     (0..matrix.len())
         .map(|row| matrix.iter().map(|other| other[row]).collect())
         .collect()
 }
 
-/// The product of the dense `matrix` and `x`.
+/// Computes the dense matrix-vector product `matrix * x`.
 fn product<T: Scalar>(matrix: &[Vec<T>], x: &[T]) -> Vec<T> {
     matrix
         .iter()
@@ -71,7 +72,7 @@ fn product<T: Scalar>(matrix: &[Vec<T>], x: &[T]) -> Vec<T> {
         .collect()
 }
 
-/// The largest magnitude in `values`.
+/// Returns the maximum element magnitude in `values`.
 fn largest<T: Scalar>(values: &[T]) -> f64 {
     values
         .iter()
@@ -79,7 +80,7 @@ fn largest<T: Scalar>(values: &[T]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// The infinity norm of the dense `matrix`: its largest row sum of magnitudes.
+/// Returns the infinity norm (maximum row sum of magnitudes) of dense `matrix`.
 fn norm<T: Scalar>(matrix: &[Vec<T>]) -> f64 {
     matrix
         .iter()
@@ -87,8 +88,8 @@ fn norm<T: Scalar>(matrix: &[Vec<T>]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// The inverse of the dense `matrix` by Gauss-Jordan elimination with partial pivoting, or
-/// `None` when a column has no nonzero pivot.
+/// Computes the inverse of dense `matrix` via Gauss-Jordan elimination with partial pivoting,
+/// returning `None` if singular.
 fn inverse<T: Scalar + One>(matrix: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
     let n = matrix.len();
     let one = T::ONE;
@@ -129,7 +130,7 @@ fn inverse<T: Scalar + One>(matrix: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
     Some(inverse)
 }
 
-/// The ones of the scalars the tests use.
+/// Multiplicative identity trait for test scalar types.
 trait One {
     const ONE: Self;
 }
@@ -142,7 +143,7 @@ impl One for Complex64 {
     const ONE: Self = Complex64::new(1.0, 0.0);
 }
 
-/// A right-hand side of `dimension` rows with no zero and no two values alike.
+/// Builds a deterministic nonzero right-hand side vector of length `dimension`.
 fn right_hand_side<T: Scalar + One>(dimension: usize) -> Vec<T> {
     (0..dimension)
         .map(|row| {
@@ -155,7 +156,7 @@ fn right_hand_side<T: Scalar + One>(dimension: usize) -> Vec<T> {
         .collect()
 }
 
-/// The relative backward error of `x` as a solution of `matrix x = b`.
+/// Computes the relative backward error of `x` solving `matrix * x = b`.
 fn backward_error<T: Scalar>(matrix: &[Vec<T>], x: &[T], b: &[T]) -> f64 {
     let residual: Vec<T> = product(matrix, x)
         .into_iter()
@@ -165,15 +166,14 @@ fn backward_error<T: Scalar>(matrix: &[Vec<T>], x: &[T], b: &[T]) -> f64 {
     largest(&residual) / (norm(matrix) * largest(x) + largest(b))
 }
 
-/// Checks that `lu`, factoring `matrix`, solves it and its transpose as the dense reference
-/// does: each solution's backward error within a few thousand roundings, and its distance
-/// from the reference's within its condition number times as much.
+/// Verifies that `lu` solves `matrix` and its transpose against the dense reference within a
+/// backward error of `1e-12`.
 fn check<T: Scalar + One>(lu: &mut SparseLu<T>, matrix: &Matrix<T>) -> Result<(), TestCaseError> {
     check_within(lu, matrix, 1e-12)
 }
 
-/// Checks as [`check`] does, with each solution's backward error within `backward`, and its
-/// distance from the reference's within its condition number times as much.
+/// Verifies that `lu` solves `matrix` and its transpose within `backward` and within
+/// `backward * condition` relative forward error.
 fn check_within<T: Scalar + One>(
     lu: &mut SparseLu<T>,
     matrix: &Matrix<T>,
@@ -213,15 +213,15 @@ fn check_within<T: Scalar + One>(
     Ok(())
 }
 
-/// A solver for `matrix`'s pattern, and the pattern's entries.
+/// Builds a [`SparseLu`] solver and entry handles for the pattern of `matrix`.
 fn solver<T: Scalar>(matrix: &Matrix<T>) -> (SparseLu<T>, Vec<Entry>) {
     let (pattern, entries) = matrix.pattern();
     let ordering = Ordering::new(pattern).expect("fits");
     (SparseLu::new(Arc::new(ordering)), entries)
 }
 
-/// A sparse matrix whose rows are strictly diagonally dominant, then shuffled, so that its
-/// large entries lie off the diagonal and a matching must find them.
+/// Generates sparse row-diagonally-dominant matrices with shuffled rows so large pivots sit off
+/// the diagonal.
 fn shuffled_dominant() -> impl Strategy<Value = Matrix<f64>> {
     (1usize..40).prop_flat_map(|dimension| {
         let off =
@@ -250,9 +250,8 @@ fn shuffled_dominant() -> impl Strategy<Value = Matrix<f64>> {
     })
 }
 
-/// A sparse matrix with no structure to lean on: entries of random values, from −1 to 1, at
-/// random positions, and at the positions of a random permutation, so that some matching
-/// covers every column, though not necessarily with large entries.
+/// Generates unstructured sparse matrices with random entries in `[-1, 1]` plus a random
+/// permutation ensuring a structural matching.
 fn random_sparse() -> impl Strategy<Value = Matrix<f64>> {
     (1usize..40).prop_flat_map(|dimension| {
         let entries =
@@ -275,10 +274,9 @@ fn random_sparse() -> impl Strategy<Value = Matrix<f64>> {
     })
 }
 
-/// Two matrices of one pattern, each strictly diagonally dominant by rows once its rows are
-/// put back in order, the first shuffled by one permutation and the second by another, so
-/// that the pivots the first takes are mostly too small for the second, from a column
-/// anywhere in the order of elimination.
+/// Generates two matrices sharing one sparsity pattern but using distinct row shuffles of a
+/// diagonally dominant matrix so pivots from the first frequently fail threshold checks in the
+/// second.
 fn reshuffled_pair() -> impl Strategy<Value = (Matrix<f64>, Matrix<f64>)> {
     (2usize..30).prop_flat_map(|dimension| {
         let off =
@@ -328,8 +326,8 @@ fn reshuffled_pair() -> impl Strategy<Value = (Matrix<f64>, Matrix<f64>)> {
     })
 }
 
-/// The modified nodal equations of a random circuit, `G + s C`, on `nodes` nodes and the
-/// reference, numbered `nodes`, with a current unknown per voltage source after the nodes.
+/// Random modified-nodal circuit generating `G + s C` over `nodes` non-reference nodes,
+/// reference node `nodes`, and trailing branch unknowns.
 #[derive(Debug, Clone)]
 struct Circuit {
     nodes: usize,
@@ -337,25 +335,19 @@ struct Circuit {
     conductances: Vec<(usize, usize, f64)>,
     /// Capacitances, in farads, between two nodes.
     capacitances: Vec<(usize, usize, f64)>,
-    /// Voltage sources between a positive and a negative node, their loops none.
+    /// Acyclic voltage sources between a positive and a negative node.
     sources: Vec<(usize, usize)>,
-    /// Transconductances, in siemens: from a drain to a source, a current of the
-    /// transconductance times the voltage from a gate to the source.
+    /// Transconductances, in siemens: from a drain to a source, injecting `gm * (v_gate - v_source)`.
     transconductances: Vec<(usize, usize, usize, f64)>,
-    /// Meyer's displacements, each an unknown after the sources' currents: from a gate to
-    /// a node, the current `w = Cox · d(v_gate − v_node)/dt` through an oxide of `Cox`
-    /// farads, and Meyer's current `f · w` from the gate to the node, `f` the fraction of
-    /// the oxide's capacitance Meyer's is, at most 1.
+    /// Meyer displacement currents appended after voltage-source currents:
+    /// `(gate, node, oxide_capacitance, fraction)` enforcing `w = Cox * d(v_gate - v_node)/dt`
+    /// and injecting `f * w`.
     displacements: Vec<(usize, usize, f64, f64)>,
-    /// Small series resistances, each from a terminal node to an inner node of its own, an
-    /// unknown after the displacements, with its current an unknown after it: the inner
-    /// node joined to another node by a conductance of up to 100 siemens, as a switch's
-    /// channel, and a Meyer's displacement after the current from that node to the inner
-    /// one; each the terminal, the other node, the conductance, the resistance, below 1 ohm,
-    /// and the displacement's oxide and fraction.
+    /// Small series resistances from a terminal to a private internal node coupled via
+    /// conductance and Meyer displacement: `(terminal, other, conductance, resistance, oxide,
+    /// fraction)` with resistance below 1 ohm.
     series: Vec<(usize, usize, f64, f64, f64, f64)>,
-    /// A factor for each element's value in a second matrix of the same pattern, taken in
-    /// turn.
+    /// Per-element scaling factors applied cyclically when generating a perturbed matrix.
     changes: Vec<f64>,
 }
 
@@ -364,22 +356,20 @@ impl Circuit {
         self.nodes + self.sources.len() + self.displacements.len() + 3 * self.series.len()
     }
 
-    /// The unknowns of the displacements, whose pivots are at least their columns' entries.
+    /// Returns the unknown indices of standalone Meyer displacements.
     fn displaced(&self) -> Vec<usize> {
         let first = self.nodes + self.sources.len();
         (first..first + self.displacements.len()).collect()
     }
 
-    /// The first unknown of the series resistances': the inner node, the current and the
-    /// displacement of each, in turn.
+    /// Returns the first unknown index of the series-resistance triples (internal node, current,
+    /// displacement).
     fn first_series(&self) -> usize {
         self.nodes + self.sources.len() + self.displacements.len()
     }
 
-    /// The pivots each at least every other entry of its column, each a row and the
-    /// column of an unknown: each displacement's own diagonal, and each series current's
-    /// entry in its inner node's row, −1, against its column's 1 at the terminal and its
-    /// resistance, below 1 ohm.
+    /// Returns guaranteed-dominant `(row, column)` condensation pivots for each standalone
+    /// displacement and series-resistance pair.
     fn pivots(&self) -> Vec<(usize, usize)> {
         let mut pivots: Vec<(usize, usize)> = self
             .displaced()
@@ -393,7 +383,7 @@ impl Circuit {
         pivots
     }
 
-    /// The matrix `G + s C`, its element values scaled by `changes` if `changed`.
+    /// Stamps `G + s C`, scaling element values by `changes` when `changed` is `true`.
     fn matrix<T: Scalar + One + From<f64>>(&self, s: T, changed: bool) -> Matrix<T> {
         let reference = self.nodes;
         let mut matrix = Matrix {
@@ -490,10 +480,8 @@ impl Circuit {
     }
 }
 
-/// A random circuit: a tree of resistors joins every node to the reference, more resistors
-/// and capacitors join random nodes, voltage sources form a forest, each from a node to an
-/// earlier one or the reference, transconductances couple random nodes, and, half the time,
-/// a supply node held by a source feeds many nodes through resistors.
+/// Generates a connected random circuit with a spanning resistor tree, extra passive elements,
+/// a voltage-source forest, transconductances, and an optional supply rail.
 fn circuit() -> impl Strategy<Value = Circuit> {
     (1usize..30, any::<bool>()).prop_flat_map(|(nodes, supplied)| {
         let total = nodes + usize::from(supplied);
@@ -571,9 +559,8 @@ fn circuit() -> impl Strategy<Value = Circuit> {
     })
 }
 
-/// A random circuit with Meyer's displacements between random gates and nodes, the
-/// reference among them, each through an oxide of 1 mF to 1 F and a Meyer's capacitance of
-/// any fraction of it.
+/// Generates a random circuit extended with Meyer oxide displacement currents between random
+/// gates and nodes.
 fn meyer() -> impl Strategy<Value = Circuit> {
     circuit().prop_flat_map(|circuit| {
         let total = circuit.nodes;
@@ -593,10 +580,8 @@ fn meyer() -> impl Strategy<Value = Circuit> {
     })
 }
 
-/// A random circuit with Meyer's displacements, as [`meyer`] makes, and small series
-/// resistances' currents, each from a random node to an inner node joined to another
-/// random node by a conductance of 0.1 to 100 siemens, the resistance 1 milliohm to
-/// 1 ohm, and a displacement from that node to the inner one.
+/// Generates a random circuit with Meyer displacements and small series resistances (1 milliohm
+/// to 1 ohm) coupled to internal switched channels.
 fn switched() -> impl Strategy<Value = Circuit> {
     meyer().prop_flat_map(|circuit| {
         let total = circuit.nodes;
@@ -630,8 +615,8 @@ fn switched() -> impl Strategy<Value = Circuit> {
     })
 }
 
-/// A solver of `matrix`'s pattern that condenses `circuit`'s displacements and series
-/// currents, dissected into interiors of at most `interiors` positions if given.
+/// Builds a [`SparseLu`] solver condensing the displacements and series currents of `circuit`,
+/// optionally dissecting blocks to `interiors`.
 fn condensing<T: Scalar>(
     circuit: &Circuit,
     matrix: &Matrix<T>,
@@ -647,28 +632,27 @@ fn condensing<T: Scalar>(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Shuffled rows put the large entries off the diagonal: threshold pivoting must find
-    /// them, the matching's diagonal holding small entries or none. The small entries it
-    /// takes while they hold a tenth of their column let the factors' entries grow, so that
-    /// the backward errors of these solutions, below 10⁻¹⁴ for all but one in a thousand,
-    /// have reached 1.4·10⁻¹² in 40,000: they are held to 10⁻¹⁰.
+    /// Verifies threshold pivoting on row-shuffled dominant matrices where large entries sit
+    /// off the diagonal.
+    ///
+    /// Accepting pivots down to a tenth of the column maximum allows mild factor growth, so
+    /// the backward error bound is relaxed to `1e-10`.
     #[test]
     fn solves_matrices_whose_large_entries_are_off_the_diagonal(matrix in shuffled_dominant()) {
         let (mut lu, _) = solver(&matrix);
         check_within(&mut lu, &matrix, 1e-10)?;
     }
 
-    /// Matrices without dominance or symmetry, whose pivots the threshold search must find
-    /// wherever they are.
+    /// Verifies threshold pivoting on unstructured random sparse matrices without dominance or
+    /// symmetry.
     #[test]
     fn solves_random_sparse_matrices(matrix in random_sparse()) {
         let (mut lu, _) = solver(&matrix);
         check(&mut lu, &matrix)?;
     }
 
-    /// A refactorization whose kept pivots become too small searches for the pivots afresh
-    /// from the first of them, keeping the columns before it, and solves as well as a first
-    /// factorization.
+    /// Verifies that refactorization falls back to searching afresh from the first rejected
+    /// pivot while matching a fresh factorization.
     #[test]
     fn searches_afresh_from_a_kept_pivot_too_small((first, second) in reshuffled_pair()) {
         let (mut lu, _) = solver(&first);
@@ -679,8 +663,8 @@ proptest! {
         prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
     }
 
-    /// The equations of circuits: voltage sources' equations with nothing on their
-    /// diagonals, supplies coupled to many nodes, and transconductances out of symmetry.
+    /// Verifies real circuit equations containing zero-diagonal voltage sources, supply nodes,
+    /// and asymmetric transconductances.
     #[test]
     fn solves_the_equations_of_circuits(circuit in circuit(), alpha in -1.0..3.0f64) {
         let matrix = circuit.matrix(10f64.powf(alpha), false);
@@ -689,7 +673,7 @@ proptest! {
         prop_assert_eq!(lu.statistics().factorizations, 1);
     }
 
-    /// Complex equations of circuits at a frequency, `G + jωC`, solved in complex numbers.
+    /// Verifies complex circuit equations `G + jωC` at arbitrary frequencies.
     #[test]
     fn solves_complex_equations(circuit in circuit(), omega in -1.0..3.0f64) {
         let matrix = circuit.matrix(Complex64::new(0.0, 10f64.powf(omega)), false);
@@ -697,8 +681,8 @@ proptest! {
         check(&mut lu, &matrix)?;
     }
 
-    /// New values of the same pattern refactor with the pivots of the first, and solve as
-    /// well as a factorization afresh; the same values again keep the factors.
+    /// Verifies that updated values refactor using cached pivots and repeated identical values
+    /// reuse existing factors.
     #[test]
     fn refactors_new_values_of_a_pattern(circuit in circuit(), alpha in -1.0..3.0f64) {
         let first = circuit.matrix(10f64.powf(alpha), false);
@@ -713,8 +697,7 @@ proptest! {
         prop_assert_eq!(statistics.reuses, 1);
     }
 
-    /// Complex equations at another frequency, with other element values, refactor with the
-    /// pivots of the first, as a small-signal analysis does from one frequency to the next.
+    /// Verifies that complex circuit matrices refactor across frequency and parameter changes.
     #[test]
     fn refactors_complex_equations_at_another_frequency(
         circuit in circuit(),
@@ -730,8 +713,8 @@ proptest! {
         prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
     }
 
-    /// A solver reset factors as one made anew for the same ordering, bit for bit, however
-    /// it factored before: the pivots it kept from other values are forgotten.
+    /// Verifies that a reset solver forgets cached pivots and produces bit-identical results to
+    /// a freshly constructed solver.
     #[test]
     fn a_reset_solver_factors_as_a_new_one((first, second) in reshuffled_pair()) {
         let solved = |lu: &mut SparseLu<f64>, matrix: &Matrix<f64>| {
@@ -752,10 +735,8 @@ proptest! {
         prop_assert_eq!(used.entries(), fresh.entries());
     }
 
-    /// A clone factors every matrix after as the solver it was cloned from, bit for bit;
-    /// two solvers whose pivots compare alike factor alike, whatever each factored last;
-    /// and the factors solve from shared views, each with a workspace of its own, as they
-    /// solve themselves.
+    /// Verifies that cloned solvers, equivalent pivot states, and shared-view solves with
+    /// separate workspaces all produce bit-identical results.
     #[test]
     fn a_clone_and_a_solver_alike_factor_alike((first, second) in reshuffled_pair()) {
         let (_, entries) = first.pattern();
@@ -788,10 +769,8 @@ proptest! {
         prop_assert_eq!(solved(&mut fresh, &first), solved(&mut original, &first));
     }
 
-    /// A solver that condenses Meyer's displacements, each by its own pivot, factors the
-    /// other unknowns alone and solves the whole system and its transpose as the dense
-    /// reference does: real and complex, dissected or not, and with other values of the
-    /// same pattern, refactored with the pivots of the first.
+    /// Verifies condensation of Meyer displacements across real, complex, dissected, and
+    /// refactored solves against the dense reference.
     #[test]
     fn condenses_the_displacements_of_circuits(
         circuit in meyer(),
@@ -810,10 +789,8 @@ proptest! {
         check(&mut condensing(&circuit, &complex, Some(4)), &complex)?;
     }
 
-    /// A solver that condenses small series resistances' currents too, each by its inner
-    /// node's row, eliminates every displacement Meyer's makes and every current, and
-    /// solves the whole system and its transpose as the dense reference does: real and
-    /// complex, dissected or not, and refactored with the pivots of the first.
+    /// Verifies joint condensation of Meyer displacements and series-resistance currents across
+    /// real, complex, dissected, and refactored solves.
     #[test]
     fn condenses_the_series_currents_of_circuits(
         circuit in switched(),
@@ -834,7 +811,7 @@ proptest! {
         check(&mut condensing(&circuit, &complex, Some(4)), &complex)?;
     }
 
-    /// The real and the complex solvers of one pattern share its ordering.
+    /// Verifies that real and complex solvers share a single [`Ordering`] instance.
     #[test]
     fn real_and_complex_solvers_share_an_ordering(circuit in circuit()) {
         let real = circuit.matrix(1.0, false);
@@ -849,12 +826,12 @@ proptest! {
     }
 }
 
-/// The bits of `values`.
+/// Converts each `f64` in `values` into its raw `u64` bit pattern.
 fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
-/// A dense 2 × 2 matrix's pattern and solver, with its values by slot.
+/// Builds a dense 2 × 2 test [`Matrix`], its [`SparseLu`] solver, and slot-indexed values.
 fn two_by_two(rows: [[f64; 2]; 2]) -> (SparseLu<f64>, Vec<f64>, Matrix<f64>) {
     let matrix = Matrix {
         dimension: 2,
@@ -866,7 +843,7 @@ fn two_by_two(rows: [[f64; 2]; 2]) -> (SparseLu<f64>, Vec<f64>, Matrix<f64>) {
     (lu, stored, matrix)
 }
 
-/// The solution of `matrix x = [1, 2]` by `lu`.
+/// Factors and solves `matrix * x = [1, 2]` with `lu`.
 fn solution(lu: &mut SparseLu<f64>, matrix: &Matrix<f64>) -> Result<Vec<f64>, LinearError> {
     let (_, entries) = matrix.pattern();
     let stored = matrix.stored(lu.pattern(), &entries);
@@ -877,9 +854,9 @@ fn solution(lu: &mut SparseLu<f64>, matrix: &Matrix<f64>) -> Result<Vec<f64>, Li
 
 #[test]
 fn falls_back_to_a_search_when_a_kept_pivot_becomes_too_small() {
-    // The first matrix pivots on its diagonal; in the second, either diagonal entry is
-    // 10⁻¹⁴ of the entry beside it in its column, which the refactorization refuses for the
-    // first column it eliminates, searching afresh from there.
+    // The first matrix pivots on its diagonal. In the second matrix, each diagonal entry is
+    // 10⁻¹⁴ of its off-diagonal entry, causing refactorization to fall back to a full search on
+    // the first column.
     let (mut lu, _, first) = two_by_two([[4.0, 1.0], [1.0, 3.0]]);
     let x = solution(&mut lu, &first).unwrap();
     assert!((x[0] - 1.0 / 11.0).abs() < 1e-15 && (x[1] - 7.0 / 11.0).abs() < 1e-15);
@@ -936,7 +913,7 @@ fn pivots_off_the_diagonal_where_it_holds_too_little() {
     );
 }
 
-/// Whether `result` is a singular error.
+/// Returns `true` when `result` is `Err(LinearError::Singular { .. })`.
 fn is_singular<T>(result: &Result<T, LinearError>) -> bool {
     matches!(result, Err(LinearError::Singular { .. }))
 }
@@ -1049,9 +1026,8 @@ fn solves_the_empty_system() {
     lu.factor(&[]).unwrap().solve(&mut []).unwrap();
 }
 
-/// A ladder of `stages` resistors from a supply node to the reference, each of its nodes
-/// fed from the supply through a resistor of its own as well, with a capacitor to the
-/// reference, the supply held by a voltage source: the supply's node joins every other.
+/// Builds a `stages`-stage resistive ladder where every node connects to a voltage-driven
+/// supply rail and ground.
 fn supplied_ladder(stages: usize) -> Matrix<f64> {
     let supply = stages;
     let mut conductances = Vec::new();
@@ -1075,8 +1051,8 @@ fn supplied_ladder(stages: usize) -> Matrix<f64> {
 
 #[test]
 fn a_supply_joining_every_node_fills_nothing() {
-    // The supply's node and its source's current become blocks of their own, so the
-    // supply's entries stay above the ladder's block, which, tridiagonal, fills nothing.
+    // The supply node and its branch current form singleton blocks, keeping supply entries above
+    // the tridiagonal ladder block so elimination creates zero fill.
     let matrix = supplied_ladder(200);
     let (mut lu, entries) = solver(&matrix);
     assert_eq!(lu.ordering().blocks(), 3);
@@ -1088,8 +1064,8 @@ fn a_supply_joining_every_node_fills_nothing() {
     assert_eq!(lu.entries(), lu.pattern().len());
 }
 
-/// A solver for `matrix`'s pattern whose blocks are dissected into interiors of at most
-/// `interiors` positions, and the pattern's entries.
+/// Builds a dissected [`SparseLu`] solver with at most `interiors` positions per interior and
+/// returns its entry handles.
 fn dissected<T: Scalar>(matrix: &Matrix<T>, interiors: usize) -> (SparseLu<T>, Vec<Entry>) {
     let (pattern, entries) = matrix.pattern();
     let ordering = Ordering::dissected(pattern, Dissecting::Every(interiors)).expect("fits");
@@ -1099,10 +1075,8 @@ fn dissected<T: Scalar>(matrix: &Matrix<T>, interiors: usize) -> (SparseLu<T>, V
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Dissected into interiors, matrices whose large entries lie off the diagonal pivot
-    /// within each interior where a tenth of the largest entry below allows, and delay the
-    /// rest to the separators above: they meet the bound the serial solver meets on them,
-    /// whose source is its own test's.
+    /// Verifies that dissected solvers pivot locally or delay pivots on row-shuffled dominant
+    /// matrices within the `1e-10` backward error bound.
     #[test]
     fn dissected_solves_matrices_whose_large_entries_are_off_the_diagonal(
         matrix in shuffled_dominant(),
@@ -1112,16 +1086,16 @@ proptest! {
         check_within(&mut lu, &matrix, 1e-10)?;
     }
 
-    /// Dissected, matrices without dominance or symmetry meet the serial solver's bound.
+    /// Verifies that dissected solvers match the serial backward error bound on unstructured
+    /// random sparse matrices.
     #[test]
     fn dissected_solves_random_sparse_matrices(matrix in random_sparse(), interiors in 1usize..8) {
         let (mut lu, _) = dissected(&matrix, interiors);
         check(&mut lu, &matrix)?;
     }
 
-    /// Dissected, the equations of circuits, real and complex, meet the serial solver's
-    /// bound, and refactor with the pivots of the first matrix, searching afresh in the
-    /// nodes whose kept pivots become too small and those above them.
+    /// Verifies that dissected solvers factor and refactor real and complex circuit matrices,
+    /// re-searching nodes whose pivots fail threshold checks.
     #[test]
     fn dissected_solves_and_refactors_the_equations_of_circuits(
         circuit in circuit(),
@@ -1141,8 +1115,8 @@ proptest! {
         check(&mut lu, &complex)?;
     }
 
-    /// Dissected, a refactorization whose kept pivots become too small searches afresh and
-    /// solves as well as a first factorization.
+    /// Verifies that dissected refactorization searches afresh when cached pivots drop below
+    /// threshold.
     #[test]
     fn dissected_searches_afresh_from_a_kept_pivot_too_small(
         (first, second) in reshuffled_pair(),
@@ -1154,11 +1128,10 @@ proptest! {
         prop_assert_eq!(lu.statistics().factorizations, 1);
     }
 
-    /// The dissected and the serial solvers' solutions of one system agree within twice
-    /// the bound each meets on its backward error, 10⁻¹², times the matrix's condition
-    /// number: a solution of backward error ε is within κ ε of the exact one, to first order
-    /// (Higham, "Accuracy and Stability of Numerical Algorithms", 2nd edition, 2002,
-    /// Theorem 7.2), their orders of operations differing.
+    /// Verifies that dissected and serial solutions agree within `2e-12 * condition`.
+    ///
+    /// By Higham ("Accuracy and Stability of Numerical Algorithms", 2nd edition, 2002, Theorem
+    /// 7.2), a backward error of ε yields a forward error within κ ε to first order.
     #[test]
     fn dissected_agrees_with_the_serial_solver(circuit in circuit(), interiors in 1usize..8) {
         let matrix = circuit.matrix(1.0, false);
@@ -1181,9 +1154,8 @@ proptest! {
         prop_assert!(distance <= 2e-12 * condition.max(1.0), "{distance:e} apart, of condition {condition:e}");
     }
 
-    /// The dissected solver's factors, solutions and transposed solutions, after a
-    /// factorization, a refactorization and a search afresh, are the same bits on 1, 2, 4
-    /// and 8 threads.
+    /// Verifies that dissected factors, forward solves, and transposed solves produce
+    /// bit-identical output on 1, 2, 4, and 8 threads.
     #[test]
     fn dissected_is_the_same_bits_on_any_number_of_threads(
         (first, second) in reshuffled_pair(),
@@ -1219,9 +1191,7 @@ proptest! {
     }
 }
 
-/// The equations of a `side` × `side` mesh of conductances to its neighbors, each node
-/// with a conductance to the reference, some of them shuffled out of order, so that the
-/// matching must find their pivots off the diagonal and the dissection delays some.
+/// Builds a `side` × `side` resistive mesh matrix with ground conductances at every node.
 fn mesh(side: usize, scale: f64) -> Matrix<f64> {
     let mut matrix = Matrix {
         dimension: side * side,
@@ -1299,10 +1269,8 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     }
 }
 
-/// The equations of a `side` × `side` mesh, as [`mesh`]'s, and of a supply joined to one
-/// in `every` of its nodes, whose voltage a source fixes, its current one more unknown: as
-/// a circuit's supply rail, the supply's equation holds entries above the mesh's block, and
-/// the rows of the nodes it joins entries above the supply's.
+/// Builds a `side` × `side` mesh matrix coupled to a voltage-driven supply rail at every
+/// `every`-th node.
 fn supplied(side: usize, every: usize) -> Matrix<f64> {
     let mut matrix = mesh(side, 1.0);
     let nodes = side * side;
@@ -1328,12 +1296,9 @@ fn supplied(side: usize, every: usize) -> Matrix<f64> {
 
 #[test]
 fn a_supplied_mesh_is_the_same_bits_on_any_number_of_threads() {
-    // A mesh of 2,304 nodes and a supply joined to 768 of them, and then to all 2,304:
-    // the supply's equation holds as many entries above the mesh's block, and the rows of
-    // the nodes it joins entries above the supply's, which the solve takes in in runs of a
-    // chunk of rows, three of them when it joins every node; the solves' permutations span
-    // three chunks. Solved whole and dissected into interiors of at most 40, on 1, 2, 3
-    // and 8 threads.
+    // Test a 2,304-node mesh with a supply rail connected to 768 nodes and then all 2,304
+    // nodes. The supply rail creates multi-chunk off-diagonal row spans tested both whole and
+    // dissected across 1, 2, 3, and 8 threads.
     for every in [3, 1] {
         same_bits_on_any_number_of_threads(&supplied(48, every));
     }
@@ -1376,10 +1341,9 @@ fn same_bits_on_any_number_of_threads(matrix: &Matrix<f64>) {
 
 #[test]
 fn delays_a_pivot_its_interior_cannot_take() {
-    // A path of three nodes, dissected into interiors of one: node 1 separates nodes 0
-    // and 2. Column 0's entry in its own row is 10⁻⁶ of its entry in row 1, the
-    // separator's, so its interior cannot pivot it and delays it to the separator, which
-    // pivots it on that entry; the solution is the dense reference's.
+    // Dissect a three-node path into single-node interiors with node 1 as separator. Column 0's
+    // diagonal entry is 10⁻⁶ of its separator entry in row 1, forcing the interior to delay the
+    // column to the separator where it pivots accurately.
     let matrix = Matrix {
         dimension: 3,
         positions: vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 1), (1, 2), (2, 2)],

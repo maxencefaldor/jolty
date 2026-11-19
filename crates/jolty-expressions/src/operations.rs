@@ -1,4 +1,4 @@
-//! What each operation computes, and its partial derivatives.
+//! Scalar evaluation and first and second partial derivatives for expression operations.
 
 use std::cmp::Ordering;
 
@@ -18,9 +18,8 @@ macro_rules! define_unary {
         }
 
         impl Unary {
-            /// The operation's name in the language: its function's, or its operator's, `-` for
-            /// the sign and `!` for the negation; `ln` for the natural logarithm, which `log`
-            /// names too.
+            /// Returns the source name of this unary operation (`-` for negation, `!` for
+            /// logical not, and `ln` for natural logarithm).
             pub(crate) const fn name(self) -> &'static str {
                 match self {
                     Self::Negate => "-",
@@ -32,7 +31,8 @@ macro_rules! define_unary {
                 }
             }
 
-            /// The function called `name`, if one of one argument is.
+            /// Looks up a single-argument unary function by `name`, including the `log` alias
+            /// for `ln`.
             pub(crate) fn named(name: &str) -> Option<Self> {
                 Some(match name {
                     $(stringify!($method) $(| $alias)* => Self::$variant,)*
@@ -43,7 +43,7 @@ macro_rules! define_unary {
                 })
             }
 
-            /// The operation's value at `x`.
+            /// Evaluates this unary operation at `x`.
             pub(crate) fn value(self, x: f64) -> f64 {
                 match self {
                     Self::Negate => -x,
@@ -89,7 +89,8 @@ define_unary! {
 }
 
 impl Unary {
-    /// The operation's derivative at `x`, where its value is `value`.
+    /// Computes the first derivative of this unary operation at `x` given its evaluated
+    /// `value`.
     pub(crate) fn slope(self, x: f64, value: f64) -> f64 {
         match self {
             Self::Negate => -1.0,
@@ -115,8 +116,8 @@ impl Unary {
         }
     }
 
-    /// The operation's second derivative at `x`, where its value is `value` and its first
-    /// derivative is `slope`.
+    /// Computes the second derivative of this unary operation at `x` given its `value` and
+    /// first derivative `slope`.
     pub(crate) fn curvature(self, x: f64, value: f64, slope: f64) -> f64 {
         match self {
             Self::Negate
@@ -164,8 +165,8 @@ pub(crate) enum Binary {
 }
 
 impl Binary {
-    /// The operation's name in the language: its operator's, such as `+` or `<=`, or its
-    /// function's, `min` or `max`; `^` for the power, which `pow` names too.
+    /// Returns the source name of this binary operation (`^` for exponentiation, operator
+    /// symbols, or `min`/`max`).
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Add => "+",
@@ -186,7 +187,7 @@ impl Binary {
         }
     }
 
-    /// The function called `name`, if one of two arguments is.
+    /// Looks up a two-argument binary function (`min`, `max`, or `pow`) by `name`.
     pub(crate) fn named(name: &str) -> Option<Self> {
         Some(match name {
             "min" => Self::Min,
@@ -196,7 +197,7 @@ impl Binary {
         })
     }
 
-    /// Whether the operation compares its operands: its value is their order's truth.
+    /// Returns whether this binary operation is an ordering or equality comparison.
     pub(crate) const fn compares(self) -> bool {
         matches!(
             self,
@@ -209,7 +210,7 @@ impl Binary {
         )
     }
 
-    /// The operation's value at `a` and `b`.
+    /// Evaluates this binary operation at operands `a` and `b`.
     pub(crate) fn value(self, a: f64, b: f64) -> f64 {
         match self {
             Self::Add => a + b,
@@ -230,7 +231,7 @@ impl Binary {
         }
     }
 
-    /// The operation's derivatives with respect to `a` and `b`, where its value is `value`.
+    /// Computes the first partial derivatives `(∂f/∂a, ∂f/∂b)` at `a` and `b` given `value`.
     pub(crate) fn slopes(self, a: f64, b: f64, value: f64) -> (f64, f64) {
         match self {
             Self::Add => (1.0, 1.0),
@@ -260,8 +261,8 @@ impl Binary {
         }
     }
 
-    /// The operation's second partial derivatives `(∂²f/∂a², ∂²f/∂a∂b, ∂²f/∂b²)` at `a` and
-    /// `b`, where its first partial derivatives are `(slope_a, slope_b)`.
+    /// Computes the second partial derivatives `(∂²f/∂a², ∂²f/∂a∂b, ∂²f/∂b²)` at `a` and `b`
+    /// given `(slope_a, slope_b)`.
     pub(crate) fn curvatures(self, a: f64, b: f64, (slope_a, slope_b): (f64, f64)) -> [f64; 3] {
         match self {
             Self::Add
@@ -305,12 +306,12 @@ fn pick<T>(take_second: bool, first: T, second: T) -> T {
     if take_second { second } else { first }
 }
 
-/// `1` for true, `0` for false.
+/// Converts boolean `condition` to `1.0` for true and `0.0` for false.
 pub(crate) fn truth(condition: bool) -> f64 {
     if condition { 1.0 } else { 0.0 }
 }
 
-/// The sign of `x`: `1`, `−1`, or `0` at zero.
+/// Returns the sign of `x`: `1.0`, `-1.0`, or `0.0` at zero.
 fn sign(x: f64) -> f64 {
     if x > 0.0 {
         1.0

@@ -1,41 +1,37 @@
-//! A compiler of Verilog-A into jolty's device kernels, and the kernels it compiled.
+//! Verilog-A compiler producing device kernels for jolty, alongside the compiled kernels.
 //!
-//! Every model then comes from one source, its published Verilog-A, and its output is
-//! plain Rust: a kernel implementing [`jolty_models::Kernel`], the same form a person
-//! writes, generic over jolty's number types, so its parameter derivatives are exact
-//! through [`jolty_models::Gradient`] and its Jacobian through [`jolty_models::Dual`].
+//! Each model compiles directly from published Verilog-A source into plain Rust implementing
+//! [`jolty_models::Kernel`]. Generated kernels are generic over jolty's number types so
+//! parameter sensitivities propagate through [`jolty_models::Gradient`] and Jacobians propagate
+//! through [`jolty_models::Dual`].
 //!
-//! The compiler runs in four passes, each its own module:
+//! Compilation proceeds in four passes, each in a dedicated module:
 //!
-//! 1. **The lexer** reads the source into tokens, carrying out its compiler directives:
-//!    the standard headers, whose constants it takes from jolty's own definitions,
-//!    macros with and without arguments, and the conditionals.
-//! 1. **The parser** reads one module of the CMC's subset by recursive descent: its
-//!    ports, disciplines, named branches, parameters with their ranges and attributes,
-//!    `localparam` constants, variables, analog functions and analog block.
-//! 1. **The resolver** binds each name, splits each contribution into its resistive,
-//!    `ddt` and noise parts, and decides by dependence what the kernel prepares and what
-//!    it evaluates: a variable is dynamic when its value or a condition it is assigned
-//!    under depends on a probe or the simulator's state, and static otherwise; it also
-//!    finds the probes each variable depends on.
-//! 1. **The emitter** writes the kernel. The parameters become a `Parameters<R>`
-//!    struct; everything static is computed once in `prepare`; the conditions on
-//!    parameters that switch, collapse or leave out branches become the kernel's shape,
-//!    whose internal unknowns and entries `layout` claims; and `evaluate` runs the
-//!    analog block on dual numbers, each variable carrying the derivatives of the probes
-//!    it depends on alone, then stamps each branch's sums once. A `$limit` becomes the
-//!    voltage limited from the last evaluation's, which the kernel's memory keeps, and
-//!    every value is extended linearly from it to the applied voltage, as the
-//!    hand-written kernels do; the noise functions become `noise`.
+//! 1. **Lexer** scans source into tokens while processing compiler directives: standard headers
+//!    (using jolty's physical constant definitions), object-like and function-like macros, and
+//!    conditional directives.
+//! 2. **Parser** reads one module of the CMC Verilog-A subset by recursive descent: ports,
+//!    disciplines, named branches, parameters with ranges and attributes, `localparam`
+//!    constants, variables, analog functions, and the analog block.
+//! 3. **Resolver** binds names, splits contributions into resistive, `ddt`, and noise terms,
+//!    and classifies variables by dependence. Variables depending on probes or simulator state
+//!    are dynamic; all others are static. The resolver also records the exact probe
+//!    dependencies of every variable.
+//! 4. **Emitter** generates the Rust kernel. Parameters map to `Parameters<R>`, static
+//!    expressions compute once in `prepare`, and parameter conditions controlling branch
+//!    topology form the kernel shape claimed in `layout`. During `evaluate`, the analog block
+//!    runs on dual numbers carrying only the needed probe derivatives, then stamps branch sums
+//!    once. Each `$limit` clamps against stored state and linearizes around the applied
+//!    voltage, and noise functions lower to `noise`.
 //!
-//! The generated code follows the kernel rules, which are also what a GPU requires: it
-//! is pure, allocates nothing, never panics and dispatches nothing at run time.
+//! Generated code obeys jolty's kernel constraints (compatible with GPU execution): pure,
+//! allocation-free, panic-free, and free of dynamic dispatch.
 //!
-//! The kernels compiled, in `kernels`, are checked in, written by
-//! `cargo run -p jolty-veriloga --bin compile` and never by hand; a test fails when one
-//! differs from what the compiler writes. They build with the default feature
-//! `kernels`, so that the compiler runs without them, as with `--no-default-features`
-//! once a change to it leaves a kernel that does not build.
+//! Compiled kernels under `kernels` are checked in and regenerated via
+//! `cargo run -p jolty-veriloga --bin compile`; tests fail on any drift from compiler output.
+//! The default `kernels` feature gates compilation of those generated modules so
+//! `--no-default-features` keeps the compiler runnable even if a compiler change breaks a
+//! generated kernel.
 
 mod ast;
 mod emit;
@@ -48,9 +44,8 @@ mod parser;
 
 use std::fmt;
 
-/// The models compiled, each a Verilog-A source and the kernel module the compiler writes
-/// from it, by their paths in the crate: the library's, in `models/` and `src/kernels/`,
-/// and the tests' fixtures, which exercise a construct each, in `tests/fixtures/`.
+/// Compiled Verilog-A models and test fixtures paired with their generated Rust kernel paths
+/// inside the crate.
 pub const MODELS: [(&str, &str); 8] = [
     ("models/resistor.va", "src/kernels/resistor.rs"),
     ("models/diode.va", "src/kernels/diode.rs"),
@@ -77,17 +72,17 @@ pub const MODELS: [(&str, &str); 8] = [
     ("tests/fixtures/networks.va", "tests/fixtures/networks.rs"),
 ];
 
-/// Why a source does not compile: the line it was read at and what was wrong.
+/// Compilation error locating the failing source line and failure reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
-    /// The line of the source, from 1, or 0 for the module as a whole.
+    /// Source line number (1-based), or 0 for module-wide errors.
     pub line: usize,
-    /// What was wrong.
+    /// Human-readable error description.
     pub message: String,
 }
 
 impl Error {
-    /// The error `message` at `line`.
+    /// Constructs an [`Error`] with `message` at `line`.
     pub(crate) const fn at(line: usize, message: String) -> Self {
         Self { line, message }
     }
@@ -101,13 +96,14 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The kernel `source`, one Verilog-A module read from the file `path`, compiles into,
-/// as the text of a Rust module, the files it includes but the standard headers read by
-/// `files`, by the names it gives them.
+/// Compiles a single Verilog-A module from `source` (originating at `path`) into Rust kernel
+/// source text.
+///
+/// Non-standard included files are resolved through `files`.
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] at the first construct it cannot read or does not compile yet.
+/// Returns an [`Error`] at the first unsupported or malformed construct.
 pub fn compile(
     source: &str,
     path: &str,

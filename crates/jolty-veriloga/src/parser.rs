@@ -1,5 +1,5 @@
-//! A recursive-descent parser of the CMC's subset of Verilog-A: one module with its ports,
-//! nodes, branches, parameters, variables and analog functions, and its analog block.
+//! Recursive-descent parser for the CMC subset of Verilog-A covering declarations, analog
+//! functions, and the analog block.
 
 use std::collections::BTreeMap;
 
@@ -9,10 +9,10 @@ use crate::ast::{
 };
 use crate::lexer::{Spanned, Token};
 
-/// The disciplines the compiler knows, as the standard `disciplines.vams` declares them.
+/// Disciplines recognized by the compiler, matching `disciplines.vams`.
 const DISCIPLINES: [&str; 2] = ["electrical", "thermal"];
 
-/// The binary operators, by precedence from the loosest, as Verilog defines it.
+/// Binary operator groups ordered from loosest to tightest Verilog precedence.
 const BINARY: [&[&str]; 10] = [
     &["||"],
     &["&&"],
@@ -26,11 +26,11 @@ const BINARY: [&[&str]; 10] = [
     &["**"],
 ];
 
-/// The module of `tokens`.
+/// Parses a single Verilog-A [`Module`] from preprocessed `tokens`.
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] at the first token that does not fit the grammar.
+/// Returns an [`Error`] at the first token violating the grammar.
 pub(crate) fn parse(tokens: &[Spanned]) -> Result<Module, Error> {
     let mut parser = Parser { tokens, at: 0 };
     let module = parser.module()?;
@@ -40,7 +40,7 @@ pub(crate) fn parse(tokens: &[Spanned]) -> Result<Module, Error> {
     }
 }
 
-/// The tokens and the position of the next one.
+/// Cursor over a preprocessed token slice.
 struct Parser<'a> {
     tokens: &'a [Spanned],
     at: usize,
@@ -82,7 +82,7 @@ impl Parser<'_> {
         token
     }
 
-    /// Whether the next token is the symbol `symbol`, which it then consumes.
+    /// Consumes and returns `true` when the next token matches symbol `symbol`.
     fn eat(&mut self, symbol: &str) -> bool {
         if matches!(self.peek(), Some(Token::Symbol(found)) if *found == symbol) {
             self.at += 1;
@@ -92,7 +92,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether the next token is the keyword `keyword`, which it then consumes.
+    /// Consumes and returns `true` when the next token matches keyword `keyword`.
     fn keyword(&mut self, keyword: &str) -> bool {
         if matches!(self.peek(), Some(Token::Identifier(found)) if found == keyword) {
             self.at += 1;
@@ -129,7 +129,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Items parsed by `parse_item`, separated by commas, up to `terminator`.
+    /// Parses comma-separated items using `parse_item` until `terminator`.
     fn comma_separated<T>(
         &mut self,
         terminator: &str,
@@ -143,7 +143,7 @@ impl Parser<'_> {
         Ok(items)
     }
 
-    /// Names separated by commas, up to the `;` that ends them.
+    /// Parses comma-separated identifiers terminated by `;`.
     fn names(&mut self) -> Result<Vec<String>, Error> {
         self.comma_separated(";", Self::name)
     }
@@ -264,7 +264,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// The attributes `(* name = "value", ... *)` before a declaration, if any.
+    /// Parses zero or more `(* name = "value", ... *)` attribute blocks preceding a declaration.
     fn attributes(&mut self) -> Result<BTreeMap<String, String>, Error> {
         let mut attributes = BTreeMap::new();
         while self.eat("(*") {
@@ -333,7 +333,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// The parameters of one `parameter` declaration, each with its ranges.
+    /// Parses a `parameter` declaration list and appends entries to `parameters`.
     fn parameters(
         &mut self,
         attributes: &BTreeMap<String, String>,
@@ -351,8 +351,8 @@ impl Parser<'_> {
         })
     }
 
-    /// The constants of one `localparam` declaration:
-    /// `[real|integer] name = expr [, name2 = expr2 ...];`.
+    /// Parses a `localparam` declaration list (`[real|integer] name = expr [, ...];`) into
+    /// `local_parameters`.
     fn local_parameters(
         &mut self,
         local_parameters: &mut Vec<LocalParameter>,
@@ -388,7 +388,7 @@ impl Parser<'_> {
         })
     }
 
-    /// A range `[a:b]`, `(a:b)` or the like, or for `exclude` a single value.
+    /// Parses a `from` or `exclude` interval (or scalar exclusion value when `exclude` is `true`).
     fn range(&mut self, exclude: bool) -> Result<Range, Error> {
         let opened = if self.eat("[") {
             true
@@ -420,7 +420,7 @@ impl Parser<'_> {
         })
     }
 
-    /// A range's bound, `None` for `inf` or `-inf`.
+    /// Parses a range bound expression, returning `None` for `inf` or `-inf`.
     fn bound(&mut self) -> Result<Option<Expression>, Error> {
         let infinite =
             |token: Option<&Token>| matches!(token, Some(Token::Identifier(name)) if name == "inf");
@@ -452,7 +452,7 @@ impl Parser<'_> {
         Ok(true)
     }
 
-    /// An analog function, after `analog function`.
+    /// Parses an `analog function` declaration after the leading keywords.
     fn function(&mut self) -> Result<Function, Error> {
         if !self.keyword("real") && self.keyword("integer") {
             return Err(self.error("an analog function returns a real number"));
@@ -558,8 +558,8 @@ impl Parser<'_> {
         if self.eat("@") {
             self.expect("(")?;
             let event = self.name()?;
-            // The analyses the event names, if any, are all the same to jolty, whose
-            // every analysis starts from its own first step.
+            // Any analysis filter arguments map identically in jolty because every analysis
+            // starts from a first step.
             if self.eat("(") && !self.eat(")") {
                 self.arguments()?;
             }
@@ -628,7 +628,7 @@ impl Parser<'_> {
         })
     }
 
-    /// Expressions separated by commas, up to the `)` that ends them.
+    /// Parses comma-separated argument expressions terminated by `)`.
     fn arguments(&mut self) -> Result<Vec<Expression>, Error> {
         self.comma_separated(")", Self::expression)
     }
@@ -648,7 +648,7 @@ impl Parser<'_> {
         Ok(condition)
     }
 
-    /// The binary operations of precedence `level` and tighter, left-associative.
+    /// Parses left-associative binary expressions at precedence `level` and tighter.
     fn binary(&mut self, level: usize) -> Result<Expression, Error> {
         let Some(operators) = BINARY.get(level) else {
             return self.unary();

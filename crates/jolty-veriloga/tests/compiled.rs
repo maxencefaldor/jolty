@@ -13,9 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Each kernel is what the compiler writes from its source, so none falls behind its
-/// source or the compiler, and none is edited by hand: `cargo run -p jolty-veriloga --bin
-/// compile` writes them again.
+/// Verifies that every checked-in kernel matches compiler output from its Verilog-A source.
 #[test]
 fn each_kernel_is_what_the_compiler_writes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -31,9 +29,8 @@ fn each_kernel_is_what_the_compiler_writes() {
     }
 }
 
-/// How many allocations the evaluations of an instance of `K` with `parameters` make at
-/// `x` and around it, limiting its steps and not, at an operating point and in a
-/// transient, after a first evaluation.
+/// Counts heap allocations made by evaluating an instance of `K` with `parameters` across
+/// operating-point and transient steps after warm-up.
 fn allocations<K: Kernel>(parameters: &str, x: &[f64]) -> u64
 where
     K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -52,7 +49,8 @@ where
     info.count_total
 }
 
-/// A compiled kernel allocates nothing as it evaluates, in each of its shapes.
+/// Verifies that compiled resistor and diode kernels allocate zero heap memory across all
+/// shapes.
 #[test]
 fn a_compiled_kernel_allocates_nothing() {
     for (parameters, x) in [
