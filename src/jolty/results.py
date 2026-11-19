@@ -28,13 +28,14 @@ analysis.
 
 import functools
 import math
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, ClassVar, Final, Literal, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from jolty import _core, ir
 from jolty.errors import close_names
@@ -419,10 +420,8 @@ def _current(instance: str) -> str:
     return f"{instance}:current"
 
 
-class Excursion(BaseModel):
+class Excursion(ir.FrozenModel):
     """A logic device used outside its domain, where its timing was never measured."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     instance: str = Field(description="The device's path.")
     bound: Literal["input transition", "load", "supply"] = Field(
@@ -944,6 +943,20 @@ class PeriodicSteadyStateResult(TransientResult):
     returned."""
 
 
+type DifferentiatedResult = (
+    OperatingPointResult | DcSweepResult | AcResult | TransientResult
+)
+"""A result that a sensitivity or mismatch analysis can differentiate."""
+
+DIFFERENTIATED_TYPES: Final = (
+    OperatingPointResult,
+    DcSweepResult,
+    AcResult,
+    TransientResult,
+)
+"""Runtime tuple of types matching `DifferentiatedResult`."""
+
+
 @dataclass(frozen=True, slots=True)
 class Parameter:
     """One number of the parameters of a device instance."""
@@ -992,7 +1005,7 @@ class SensitivityResult(_Watched):
     parameters: tuple[Parameter, ...]
     """Every parameter, in the order of `derivatives`' columns."""
     derivatives: Real | Complex
-    result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
+    result: DifferentiatedResult
     """The result of the analysis differentiated."""
     period_derivatives: Real | None = None
     """For an oscillator's periodic steady state, its period's derivative with respect
@@ -1095,7 +1108,7 @@ class MismatchResult(_Watched):
     tolerances', each part's own then each lot's, in the order of the toleranced
     numbers, then those the analysis was given."""
     derivatives: Real | Complex
-    result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
+    result: DifferentiatedResult
     """The result of the analysis differentiated."""
     period_derivatives: Real | None = None
     """For an oscillator's periodic steady state, its period's derivative with respect
@@ -1492,6 +1505,47 @@ type AnalysisResult = (
 )
 """The result of any analysis."""
 
+_RESULT_KIND_MAP: dict[type[object], str] = {
+    OperatingPointResult: "an operating point",
+    DcSweepResult: "a DC sweep",
+    AcResult: "a small-signal response",
+    TransientResult: "a transient",
+    PeriodicSteadyStateResult: "a periodic steady state",
+    SensitivityResult: "sensitivities",
+    MismatchResult: "a mismatch",
+    StabilityResult: "a loop gain",
+    NoiseResult: "a noise spectrum",
+    PoleZeroResult: "poles and zeros",
+    OperatingPointsResult: "DC solutions",
+    TransferFunctionResult: "a transfer function",
+}
+
+RESULT_KINDS: Final[Mapping[type[object], str]] = MappingProxyType(_RESULT_KIND_MAP)
+"""Each kind of analysis result as human-readable messages name it."""
+
+
+def result_kind(result: AnalysisResult) -> str:
+    """What kind of analysis result `result` is, in words."""
+    return RESULT_KINDS.get(type(result), type(result).__name__)
+
+
+def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
+    """The swept levels, frequencies, or times along which `result` varies."""
+    match result:
+        case DcSweepResult():
+            return result.swept
+        case AcResult():
+            return result.frequencies
+        case TransientResult():
+            return result.times
+
+
+def nets_of(result: AnalysisResult) -> tuple[str, ...]:
+    """The logic nets recorded by `result`, or an empty tuple when it holds none."""
+    if isinstance(result, OperatingPointResult | DcSweepResult | TransientResult):
+        return result.nets
+    return ()
+
 
 @dataclass(frozen=True, slots=True)
 class Traces:
@@ -1674,15 +1728,9 @@ class BatchResult:
             )
             offset += part.runs
         traces = tuple(
-            Traces(
-                each.analysis,
-                each.along,
-                each.axis,
-                each.unknowns,
-                np.concatenate([part.traces[index].values for part in parts]),
-                each.source,
-                each.nature,
-                each.parameter,
+            replace(
+                each,
+                values=np.concatenate([part.traces[index].values for part in parts]),
             )
             for index, each in enumerate(first.traces)
         )
@@ -1724,16 +1772,7 @@ class BatchResult:
             kept(self.problems),
             kept(self.errors),
             tuple(
-                Traces(
-                    traces.analysis,
-                    traces.along,
-                    traces.axis,
-                    traces.unknowns,
-                    traces.values[start:stop],
-                    traces.source,
-                    traces.nature,
-                    traces.parameter,
-                )
+                replace(traces, values=traces.values[start:stop])
                 for traces in self.traces
             ),
         )

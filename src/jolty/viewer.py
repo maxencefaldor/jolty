@@ -46,7 +46,7 @@ from typing import Final
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import ir, layout, results
+from jolty import ir, layout, results, unknowns
 
 THREE_VERSION: Final = "0.170.0"
 """The three.js version the viewer loads."""
@@ -168,14 +168,6 @@ def _views(circuit: ir.Circuit) -> dict[str, JsonValue]:
     return views
 
 
-def _ground(circuit: ir.Circuit) -> str:
-    """The net of the top component's ground port."""
-    top = circuit.components[circuit.top]
-    return next(
-        (port.name for port in top.ports if port.role is ir.Role.GROUND), "ground"
-    )
-
-
 type _RecordedResult = (
     results.OperatingPointResult | results.DcSweepResult | results.TransientResult
 )
@@ -188,15 +180,6 @@ _OBSERVED: Final = (
 """The results that hold what every device did at each point."""
 
 
-_UNITS: Final[dict[results.Nature, str]] = {
-    "voltage": "V",
-    "current": "A",
-    "temperature": "K",
-    "state": "",
-}
-"""SI unit symbol for each unknown nature swept by a DC sweep."""
-
-
 def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | None:
     """What an analysis plays along: its kind, its points, their label and unit."""
     match result:
@@ -205,7 +188,7 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
         case results.DcSweepResult() if result.parameter is not None:
             return "dc_sweep", result.swept, f"{result.source} {result.parameter}", ""
         case results.DcSweepResult():
-            unit = "" if result.nature is None else _UNITS[result.nature]
+            unit = "" if result.nature is None else unknowns.SYMBOLS[result.nature]
             return "dc_sweep", result.swept, f"{result.source} level", unit
         case results.TransientResult():
             periodic = isinstance(result, results.PeriodicSteadyStateResult)
@@ -369,7 +352,7 @@ def scene(
     return {
         "title": title or circuit.top,
         "top": circuit.top,
-        "ground": _ground(circuit),
+        "ground": circuit.ground_port() or "ground",
         "layouts": layouts,
         "views": _views(circuit),
         "analyses": played,

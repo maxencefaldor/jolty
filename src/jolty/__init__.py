@@ -8,6 +8,16 @@ analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine, and
 [`jolty.specs`][jolty.specs] states what their results must show.
 """
 
+__lazy_modules__ = [
+    "jolty",
+    "jolty.builder",
+    "jolty.errors",
+    "jolty.ir",
+    "jolty.plan",
+    "jolty.simulate",
+    "jolty.specs",
+]
+
 from importlib.metadata import version
 
 from jolty import devices, files, parts, plan, specs, spice, units, waveforms

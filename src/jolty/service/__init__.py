@@ -10,16 +10,10 @@ configured time limit, and what they print is captured and returned.
 """
 
 # jolty's modules load as each command first uses them, so that a command that draws
-# nothing never imports matplotlib.
-__lazy_modules__ = ["jolty"]
+# nothing never imports matplotlib and startup skips the simulation engine.
+__lazy_modules__ = ["jolty", "jolty.simulate"]
 
-import ast
 import asyncio
-import functools
-import importlib.resources
-import json
-import math
-import re
 import secrets
 import shutil
 import sys
@@ -28,10 +22,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import MappingProxyType
-from typing import Final, Literal, Self, override
+from typing import Literal, Self, override
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import CliPositionalArg
 
 from jolty import (
@@ -56,6 +49,7 @@ from jolty.errors import (
     close_names,
 )
 from jolty.fidelity import FidelityReport
+from jolty.ir import FrozenModel
 from jolty.report import (
     AnalysisReport,
     CornerReport,
@@ -65,21 +59,91 @@ from jolty.report import (
     VariantsReport,
     WorstCaseReport,
 )
+from jolty.service import _docs, _measure
+from jolty.service._docs import (
+    DOCS_URI_PREFIX,
+    EXAMPLE_MIME_TYPE,
+    GUIDE_MIME_TYPE,
+    DocsRequest,
+    Document,
+    DocumentSection,
+    DocumentSummary,
+    document_summaries,
+    read_document,
+    resolve_document,
+)
+from jolty.service._docs import (
+    _cached_checkout as _cached_checkout,
+)
+from jolty.service._docs import (
+    _docs_catalog as _docs_catalog,
+)
+from jolty.service._docs import (
+    _load_docs_from_checkout as _load_docs_from_checkout,
+)
+from jolty.service._docs import (
+    _repository_root as _repository_root,
+)
+from jolty.service._instructions import build_instructions
+from jolty.service._measure import MeasureKind, MeasureRequest
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
-from jolty.specs import Edge, ExtendedReal, Verdict
-from jolty.units import (
-    CURRENT,
-    DIMENSIONLESS,
-    FREQUENCY,
-    TEMPERATURE,
-    TIME,
-    VOLTAGE,
-    Dimension,
-    Quantity,
-    format_si,
-)
-from jolty.unknowns import Unknown
+from jolty.specs import ExtendedReal, Verdict
+
+__all__ = [
+    "DOCS_URI_PREFIX",
+    "EXAMPLE_MIME_TYPE",
+    "GUIDE_MIME_TYPE",
+    "BuildRequest",
+    "BuildResult",
+    "CheckRequest",
+    "CheckResult",
+    "CircuitSummary",
+    "CommandResult",
+    "CostRequest",
+    "CostResult",
+    "DocsRequest",
+    "DocsResult",
+    "Document",
+    "DocumentSection",
+    "DocumentSummary",
+    "DrawRequest",
+    "DrawResult",
+    "ExplainRequest",
+    "ExplainResult",
+    "ExportKicadRequest",
+    "ExportKicadResult",
+    "MeasureKind",
+    "MeasureRequest",
+    "MeasureResult",
+    "MergeRequest",
+    "MergeResult",
+    "Plot",
+    "PlotRequest",
+    "PlotResult",
+    "RuleInfo",
+    "ScriptOutput",
+    "SimulateRequest",
+    "SimulateResult",
+    "ViewRequest",
+    "ViewResult",
+    "build",
+    "build_instructions",
+    "check",
+    "cost",
+    "docs",
+    "document_summaries",
+    "draw",
+    "explain",
+    "export_kicad",
+    "measure",
+    "merge",
+    "plot",
+    "read_document",
+    "resolve_document",
+    "simulate",
+    "view",
+]
 
 _SCRIPT_DESCRIPTION = (
     "Python file defining build(), which returns the top Component of the circuit."
@@ -121,14 +185,13 @@ _TRACES_DESCRIPTION = (
 _SOLVES_DESCRIPTION = (
     "The fewest frequencies or right-hand sides a task takes when a run spreads its "
     "small-signal analyses and sensitivities across threads, once they fill one for "
-    "every thread; "
-    "replaces the plan's. No result depends on it."
+    "every thread; replaces the plan's. No result depends on it."
 )
 _INSTANCES_DESCRIPTION = (
     "The fewest device instances of a group a task evaluates when a run spreads its "
     "devices' evaluation across threads, once they fill one for every thread, a linear "
-    "device, "
-    "evaluated once a run, counting none; replaces the plan's. No result depends on it."
+    "device, evaluated once a run, counting none; replaces the plan's. No result "
+    "depends on it."
 )
 _UNKNOWNS_DESCRIPTION = (
     "The fewest unknowns, or stored entries of the matrix, a task takes when a run "
@@ -156,17 +219,13 @@ _SHARDS_DESCRIPTION = (
 )
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class CommandResult(_Model, ABC):
+class CommandResult(FrozenModel, ABC):
     """What a command produced, as data and as text."""
 
     @property
-    @abstractmethod
     def ok(self) -> bool:
         """Whether the circuit is sound; if not, the command line exits with 1."""
+        return True
 
     @abstractmethod
     def describe(self) -> str:
@@ -177,7 +236,7 @@ class CommandResult(_Model, ABC):
         return ()
 
 
-class ScriptOutput(_Model):
+class ScriptOutput(FrozenModel):
     """What a script printed."""
 
     stdout: str = Field(default="", description="Standard output, up to the limit.")
@@ -198,14 +257,14 @@ class ScriptOutput(_Model):
         return "\n\n".join(blocks)
 
 
-class Plot(_Model):
+class Plot(FrozenModel):
     """A plot of an analysis's results."""
 
     analysis: str = Field(description="The analysis's name.")
     path: Path = Field(description="The PNG image.")
 
 
-class CircuitSummary(_Model):
+class CircuitSummary(FrozenModel):
     """A saved circuit, and whether the engine elaborates it."""
 
     path: Path = Field(description="The saved circuit file.")
@@ -236,7 +295,7 @@ class CircuitSummary(_Model):
         return text
 
 
-class BuildRequest(_Model):
+class BuildRequest(FrozenModel):
     """Run a script's build(), save the circuit it returns, and elaborate it.
 
     The script runs as ordinary Python with the user's permissions, in its own process
@@ -296,7 +355,7 @@ class BuildResult(CommandResult):
         return (self.schematic,) if self.schematic else ()
 
 
-class SimulateRequest(_Model):
+class SimulateRequest(FrozenModel):
     """Build a script's circuit, run every analysis of a plan on it, check its specs.
 
     A plan is a Python file defining plan(), which returns a jolty Plan: named analyses,
@@ -305,9 +364,8 @@ class SimulateRequest(_Model):
     corners, other temperatures or arguments to build() at which the analyses run
     again, a Monte Carlo analysis that runs them on samples of the circuit's
     tolerances, and variants, the values of many runs of it. It may define specs(),
-    which
-    returns jolty Specs: requirements on measures of the analyses' results, each of
-    which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
+    which returns jolty Specs: requirements on measures of the analyses' results, each
+    of which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
     Given samples, it runs only those of the Monte Carlo analysis, as a shard, which
     jolty merge reports with the others as one run of every sample.
@@ -674,7 +732,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     )
 
 
-class MergeRequest(_Model):
+class MergeRequest(FrozenModel):
     """Merge the shards of a plan's Monte Carlo analysis, and report them as one run.
 
     The shards are the shard-START-STOP.npz files that jolty simulate --samples writes
@@ -782,14 +840,13 @@ def _merged(directory: Path, target: Path) -> tuple[tuple[Path, ...], MonteCarlo
     """
     shard, ordered = shards.merge(sorted(directory.glob(files.SHARD_PATTERN)))
     analysed, batch = shards.monte_carlo(shard)
-    with TemporaryDirectory(prefix="jolty-") as scratch:
-        written = Path(scratch) / target.name
-        files.save_batches(written, {runner.MONTE_CARLO: batch})
-        _place(written, target)
+    _write_atomic(
+        target, lambda staged: files.save_batches(staged, {runner.MONTE_CARLO: batch})
+    )
     return ordered, analysed
 
 
-class PlotRequest(_Model):
+class PlotRequest(FrozenModel):
     """Plot the analyses of a saved results file."""
 
     results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
@@ -805,12 +862,6 @@ class PlotResult(CommandResult):
     """The plots drawn."""
 
     plots: tuple[Plot, ...] = Field(description="A plot per analysis.")
-
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: plotting finds nothing wrong."""
-        return True
 
     @override
     def describe(self) -> str:
@@ -838,210 +889,6 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
     return PlotResult(plots=drawn)
 
 
-type MeasureKind = Literal[
-    "value",
-    "gain",
-    "phase",
-    "bandwidth",
-    "crossover",
-    "phase_margin",
-    "gain_margin",
-    "maximum",
-    "minimum",
-    "peak_to_peak",
-    "mean",
-    "rms",
-    "rise_time",
-    "overshoot",
-    "settling_time",
-    "crossing",
-    "frequency",
-    "distortion",
-    "period",
-    "noise_density",
-    "integrated_noise",
-    "solutions",
-    "damping",
-    "dominant_pole",
-]
-"""Every measurement that ``jolty measure`` reads from a saved results file."""
-
-_MEASURE_OPTION_FIELDS: Final[tuple[str, ...]] = (
-    "signal",
-    "reference",
-    "over",
-    "at",
-    "start",
-    "stop",
-    "drop",
-    "low",
-    "high",
-    "band",
-    "level",
-    "edge",
-    "fundamental",
-    "harmonics",
-    "referred",
-)
-
-_WINDOW_FIELDS: Final = frozenset({"signal", "reference", "start", "stop"})
-_TRANSFER_FIELDS: Final = frozenset({"signal", "reference", "over"})
-
-_ALLOWED_MEASURE_OPTIONS: Final[dict[MeasureKind, frozenset[str]]] = {
-    "value": frozenset({"signal", "reference", "at"}),
-    "gain": _TRANSFER_FIELDS | {"at"},
-    "phase": _TRANSFER_FIELDS | {"at"},
-    "bandwidth": _TRANSFER_FIELDS | {"drop"},
-    "crossover": _TRANSFER_FIELDS,
-    "phase_margin": _TRANSFER_FIELDS,
-    "gain_margin": _TRANSFER_FIELDS,
-    "maximum": _WINDOW_FIELDS,
-    "minimum": _WINDOW_FIELDS,
-    "peak_to_peak": _WINDOW_FIELDS,
-    "mean": _WINDOW_FIELDS,
-    "rms": _WINDOW_FIELDS,
-    "rise_time": _WINDOW_FIELDS | {"low", "high"},
-    "overshoot": _WINDOW_FIELDS,
-    "settling_time": _WINDOW_FIELDS | {"band"},
-    "crossing": _WINDOW_FIELDS | {"level", "edge"},
-    "frequency": _WINDOW_FIELDS | {"level"},
-    "distortion": _WINDOW_FIELDS | {"fundamental", "harmonics"},
-    "period": frozenset(),
-    "noise_density": frozenset({"at", "referred"}),
-    "integrated_noise": frozenset({"start", "stop", "referred"}),
-    "solutions": frozenset(),
-    "damping": frozenset(),
-    "dominant_pole": frozenset(),
-}
-
-
-def _result_kind(result: results.AnalysisResult) -> str:
-    """What kind of analysis result `result` is, in words."""
-    kinds: dict[type, str] = {
-        results.OperatingPointResult: "an operating point",
-        results.DcSweepResult: "a DC sweep",
-        results.AcResult: "a small-signal response",
-        results.TransientResult: "a transient",
-        results.PeriodicSteadyStateResult: "a periodic steady state",
-        results.SensitivityResult: "sensitivities",
-        results.MismatchResult: "a mismatch",
-        results.StabilityResult: "a loop gain",
-        results.NoiseResult: "a noise spectrum",
-        results.PoleZeroResult: "poles and zeros",
-        results.OperatingPointsResult: "DC solutions",
-        results.TransferFunctionResult: "a transfer function",
-    }
-    return kinds.get(type(result), type(result).__name__)
-
-
-_NATURE_DIMENSIONS: Final[dict[results.Nature, Dimension]] = {
-    "voltage": VOLTAGE,
-    "current": CURRENT,
-    "temperature": TEMPERATURE,
-    "state": DIMENSIONLESS,
-}
-
-
-class MeasureRequest(_Model):
-    """Read a measurement from a saved results file without running a simulation.
-
-    Evaluates any measure of ``jolty.specs`` (``value``, ``gain``, ``phase``,
-    ``bandwidth``, ``crossover``, ``phase_margin``, ``gain_margin``, ``maximum``,
-    ``minimum``, ``peak_to_peak``, ``mean``, ``rms``, ``rise_time``, ``overshoot``,
-    ``settling_time``, ``crossing``, ``frequency``, ``distortion``, ``noise_density``,
-    ``integrated_noise``, ``solutions``, ``damping``, ``dominant_pole``), plus
-    ``period`` on a periodic steady state, directly from a saved ``.results.npz``
-    file. Numeric options (``at``, ``start``, ``stop``, ``level``, ``fundamental``)
-    are in SI base units: seconds for transients and periodic steady states, hertz
-    for small-signal and noise analyses, and volts, amperes, kelvins or plain
-    numbers for signal levels and DC sweeps.
-    """
-
-    results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
-    measure: MeasureKind = Field(
-        description="Measurement to read from the analysis result."
-    )
-    analysis: str | None = Field(
-        default=None,
-        description="Name of the analysis in the results file; optional when the file "
-        "holds a single analysis.",
-    )
-    signal: str | None = Field(
-        default=None,
-        description="Unknown to read, such as 'out', 'X1/mid' or 'V1:current'; omitted "
-        "for a stability loop gain, period, noise, solutions or pole-zero measure.",
-    )
-    reference: str | None = Field(
-        default=None,
-        description="Reference net for a differential voltage measurement.",
-    )
-    over: str | None = Field(
-        default=None,
-        description="Divisor unknown for a small-signal transfer measurement (gain, "
-        "phase, bandwidth, crossover, phase_margin, gain_margin).",
-    )
-    at: float | None = Field(
-        default=None,
-        description="Point along the analysis axis in SI base units: time in seconds "
-        "for a transient or periodic steady state, swept level for a DC sweep, or "
-        "frequency in hertz for gain, phase and noise_density.",
-    )
-    start: float | None = Field(
-        default=None,
-        description="Window start in SI base units: time in seconds, swept level, or "
-        "frequency in hertz for integrated_noise; defaults to the start of the axis.",
-    )
-    stop: float | None = Field(
-        default=None,
-        description="Window stop in SI base units: time in seconds, swept level, or "
-        "frequency in hertz for integrated_noise; defaults to the end of the axis.",
-    )
-    drop: float | None = Field(
-        default=None,
-        description="Gain drop in decibels for bandwidth; defaults to 3.0.",
-    )
-    low: float | None = Field(
-        default=None,
-        description="Lower step fraction (between 0 and 1) for rise_time; defaults "
-        "to 0.1.",
-    )
-    high: float | None = Field(
-        default=None,
-        description="Upper step fraction (between 0 and 1) for rise_time; defaults "
-        "to 0.9.",
-    )
-    band: float | None = Field(
-        default=None,
-        description="Settling band fraction (positive) for settling_time; defaults "
-        "to 0.02.",
-    )
-    level: float | None = Field(
-        default=None,
-        description="Threshold level in SI base units of the signal (volts, amperes, "
-        "kelvins or plain number) for crossing (required) or frequency (optional "
-        "midpoint default).",
-    )
-    edge: Edge | None = Field(
-        default=None,
-        description="Crossing direction for crossing: 'rising', 'falling' or 'either'; "
-        "defaults to 'either'.",
-    )
-    fundamental: float | None = Field(
-        default=None,
-        description="Fundamental frequency in hertz for distortion (required).",
-    )
-    harmonics: int | None = Field(
-        default=None,
-        ge=2,
-        description="Highest harmonic counted for distortion; defaults to 9.",
-    )
-    referred: bool = Field(
-        default=False,
-        description="Whether noise_density or integrated_noise is referred to the "
-        "input source.",
-    )
-
-
 class MeasureResult(CommandResult):
     """A measurement read from a saved results file."""
 
@@ -1063,12 +910,6 @@ class MeasureResult(CommandResult):
         "'-3.01 dB'."
     )
 
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: a reading succeeded (invalid or unmeasured queries raise)."""
-        return True
-
     @override
     def describe(self) -> str:
         """The reading as text, in one line."""
@@ -1083,371 +924,27 @@ async def measure(request: MeasureRequest, settings: Settings) -> MeasureResult:
             unknown is missing, an option does not apply to the measure, or the
             measure cannot be read from the analysis result.
     """
-    _check_measure_options(request)
+    _measure.check_options(request)
     loaded = await asyncio.to_thread(_load, request.results)
-    analysis_name, analysis_result = _select_analysis(
+    analysis_name, analysis_result = _measure.select_analysis(
         request.results, loaded, request.analysis
     )
-    description, reading = await asyncio.to_thread(
-        _evaluate_measure,
+    description, value, unit, formatted = await asyncio.to_thread(
+        _measure.evaluate_measure,
         request,
         analysis_name,
         analysis_result,
         settings.max_unknowns,
     )
-    if math.isnan(reading.value):
-        message = f"{description} read not a number"
-        raise JoltyError(message)
-    unit = "" if reading.unit == DIMENSIONLESS else str(reading.unit)
-    formatted = _format_reading(reading.value, unit)
     return MeasureResult(
         results=request.results,
         analysis=analysis_name,
         measure=request.measure,
         description=description,
-        value=reading.value,
+        value=value,
         unit=unit,
         formatted=formatted,
     )
-
-
-def _check_measure_options(request: MeasureRequest) -> None:
-    """Rejects options that do not apply to `request.measure`."""
-    allowed = _ALLOWED_MEASURE_OPTIONS[request.measure]
-    extra = [
-        name
-        for name in _MEASURE_OPTION_FIELDS
-        if name not in allowed
-        and (
-            bool(getattr(request, name))
-            if name == "referred"
-            else getattr(request, name) is not None
-        )
-    ]
-    if extra:
-        listed = ", ".join(extra)
-        message = f"measure {request.measure} takes no {listed}"
-        raise JoltyError(message)
-
-
-def _select_analysis(
-    path: Path,
-    loaded: Mapping[str, results.AnalysisResult],
-    analysis: str | None,
-) -> tuple[str, results.AnalysisResult]:
-    """The named analysis from `loaded`, or the sole analysis when `analysis` is None.
-
-    Raises:
-        JoltyError: Naming available analyses when selection is missing or ambiguous.
-    """
-    if analysis is None:
-        if not loaded:
-            message = f"{path} holds no analyses"
-            raise JoltyError(message)
-        if len(loaded) > 1:
-            available = ", ".join(loaded)
-            message = (
-                f"{path} holds {len(loaded)} analyses ({available}); analysis is unset"
-            )
-            raise JoltyError(message)
-        sole = next(iter(loaded))
-        return sole, loaded[sole]
-    if analysis not in loaded:
-        if loaded:
-            available = ", ".join(loaded)
-            message = (
-                f"{path} holds no analysis named {analysis!r}; "
-                f"the analyses are {available}"
-            )
-        else:
-            message = (
-                f"{path} holds no analysis named {analysis!r}; "
-                "the file holds no analyses"
-            )
-        raise JoltyError(message)
-    return analysis, loaded[analysis]
-
-
-def _evaluate_measure(
-    request: MeasureRequest,
-    analysis_name: str,
-    result: results.AnalysisResult,
-    max_unknowns: int,
-) -> tuple[str, specs.Reading]:
-    """Constructs and evaluates the measure requested against `result`."""
-    if request.measure == "period":
-        if not isinstance(result, results.PeriodicSteadyStateResult):
-            message = (
-                f"period reads a periodic steady state, not {_result_kind(result)}"
-            )
-            raise JoltyError(message)
-        return f"period in {analysis_name}", specs.Reading(result.period, TIME)
-    try:
-        built = _build_measure(request, analysis_name, result, max_unknowns)
-        reading = built.read(result)
-    except KeyError as error:
-        available = _available_unknowns(result.unknowns, max_unknowns)
-        message = f"{error.args[0]}; unknowns in {analysis_name}: {available}"
-        raise JoltyError(message) from None
-    except ValueError as error:
-        raise JoltyError(str(error)) from None
-    return str(built), reading
-
-
-def _build_measure(
-    request: MeasureRequest,
-    analysis_name: str,
-    result: results.AnalysisResult,
-    max_unknowns: int,
-) -> specs.Measure:
-    """Builds the `jolty.specs.Measure` described by `request`."""
-    kind = request.measure
-    if kind in {"solutions", "damping", "dominant_pole"}:
-        factories: dict[str, Callable[[str], specs.Measure]] = {
-            "solutions": specs.solutions,
-            "damping": specs.damping,
-            "dominant_pole": specs.dominant_pole,
-        }
-        return factories[kind](analysis_name)
-    if kind in {"noise_density", "integrated_noise"}:
-        return _build_noise_measure(request, analysis_name)
-    if kind in {
-        "gain",
-        "phase",
-        "bandwidth",
-        "crossover",
-        "phase_margin",
-        "gain_margin",
-    }:
-        return _build_transfer_measure(request, analysis_name, result, max_unknowns)
-    signal = _require_signal(request, analysis_name, result, max_unknowns)
-    if kind == "value":
-        axis = _axis_dimension(result)
-        point = None if request.at is None else Quantity(request.at, axis)
-        return specs.value(analysis_name, signal, at=point, reference=request.reference)
-    if kind in {"maximum", "minimum", "peak_to_peak", "mean", "rms"}:
-        return _build_statistic_measure(request, analysis_name, signal, result)
-    return _build_transient_measure(request, analysis_name, signal, result)
-
-
-def _require_signal(
-    request: MeasureRequest,
-    analysis_name: str,
-    result: results.AnalysisResult,
-    max_unknowns: int,
-) -> str:
-    """Returns `request.signal` or raises a factual error listing available unknowns."""
-    if request.signal is None:
-        available = _available_unknowns(result.unknowns, max_unknowns)
-        message = (
-            f"measure {request.measure} takes a signal; "
-            f"unknowns in {analysis_name}: {available}"
-        )
-        raise JoltyError(message)
-    return request.signal
-
-
-def _build_noise_measure(request: MeasureRequest, analysis_name: str) -> specs.Measure:
-    """Builds a `noise_density` or `integrated_noise` measure."""
-    if request.measure == "noise_density":
-        if request.at is None:
-            message = "measure noise_density takes a frequency as at, in Hz"
-            raise JoltyError(message)
-        return specs.noise_density(
-            analysis_name,
-            at=Quantity(request.at, FREQUENCY),
-            referred=request.referred,
-        )
-    start = None if request.start is None else Quantity(request.start, FREQUENCY)
-    stop = None if request.stop is None else Quantity(request.stop, FREQUENCY)
-    return specs.integrated_noise(
-        analysis_name, start=start, stop=stop, referred=request.referred
-    )
-
-
-def _build_transfer_measure(
-    request: MeasureRequest,
-    analysis_name: str,
-    result: results.AnalysisResult,
-    max_unknowns: int,
-) -> specs.Measure:
-    """Builds a small-signal response or stability loop-gain measure."""
-    if isinstance(result, results.AcResult) and request.signal is None:
-        available = _available_unknowns(result.unknowns, max_unknowns)
-        message = (
-            f"measure {request.measure} on a small-signal response takes a signal; "
-            f"unknowns in {analysis_name}: {available}"
-        )
-        raise JoltyError(message)
-    kind = request.measure
-    if kind in {"gain", "phase"}:
-        if request.at is None:
-            message = f"measure {kind} takes a frequency as at, in Hz"
-            raise JoltyError(message)
-        builder = specs.gain if kind == "gain" else specs.phase
-        return builder(
-            analysis_name,
-            request.signal,
-            at=Quantity(request.at, FREQUENCY),
-            over=request.over,
-            reference=request.reference,
-        )
-    if kind == "bandwidth":
-        drop = 3.0 if request.drop is None else request.drop
-        return specs.bandwidth(
-            analysis_name,
-            request.signal,
-            drop=drop,
-            over=request.over,
-            reference=request.reference,
-        )
-    builders = {
-        "crossover": specs.crossover,
-        "phase_margin": specs.phase_margin,
-        "gain_margin": specs.gain_margin,
-    }
-    return builders[kind](
-        analysis_name,
-        request.signal,
-        over=request.over,
-        reference=request.reference,
-    )
-
-
-def _build_statistic_measure(
-    request: MeasureRequest,
-    analysis_name: str,
-    signal: str,
-    result: results.AnalysisResult,
-) -> specs.Measure:
-    """Builds `maximum`, `minimum`, `peak_to_peak`, `mean` or `rms`."""
-    axis = _axis_dimension(result)
-    start = None if request.start is None else Quantity(request.start, axis)
-    stop = None if request.stop is None else Quantity(request.stop, axis)
-    builders = {
-        "maximum": specs.maximum,
-        "minimum": specs.minimum,
-        "peak_to_peak": specs.peak_to_peak,
-        "mean": specs.mean,
-        "rms": specs.rms,
-    }
-    return builders[request.measure](
-        analysis_name, signal, start=start, stop=stop, reference=request.reference
-    )
-
-
-def _build_transient_measure(
-    request: MeasureRequest,
-    analysis_name: str,
-    signal: str,
-    result: results.AnalysisResult,
-) -> specs.Measure:
-    """Builds a transient timing, crossing, frequency or distortion measure."""
-    start = None if request.start is None else Quantity(request.start, TIME)
-    stop = None if request.stop is None else Quantity(request.stop, TIME)
-    kind = request.measure
-    if kind == "rise_time":
-        return specs.rise_time(
-            analysis_name,
-            signal,
-            low=0.1 if request.low is None else request.low,
-            high=0.9 if request.high is None else request.high,
-            start=start,
-            stop=stop,
-            reference=request.reference,
-        )
-    if kind == "overshoot":
-        return specs.overshoot(
-            analysis_name, signal, start=start, stop=stop, reference=request.reference
-        )
-    if kind == "settling_time":
-        return specs.settling_time(
-            analysis_name,
-            signal,
-            band=0.02 if request.band is None else request.band,
-            start=start,
-            stop=stop,
-            reference=request.reference,
-        )
-    if kind == "crossing":
-        if request.level is None:
-            message = "measure crossing takes a level"
-            raise JoltyError(message)
-        dimension = _signal_dimension(result, signal)
-        return specs.crossing(
-            analysis_name,
-            signal,
-            Quantity(request.level, dimension),
-            edge="either" if request.edge is None else request.edge,
-            start=start,
-            stop=stop,
-            reference=request.reference,
-        )
-    if kind == "frequency":
-        level = (
-            None
-            if request.level is None
-            else Quantity(request.level, _signal_dimension(result, signal))
-        )
-        return specs.frequency(
-            analysis_name,
-            signal,
-            level=level,
-            start=start,
-            stop=stop,
-            reference=request.reference,
-        )
-    if request.fundamental is None:
-        message = "measure distortion takes a fundamental frequency, in Hz"
-        raise JoltyError(message)
-    return specs.distortion(
-        analysis_name,
-        signal,
-        fundamental=Quantity(request.fundamental, FREQUENCY),
-        harmonics=9 if request.harmonics is None else request.harmonics,
-        start=start,
-        stop=stop,
-        reference=request.reference,
-    )
-
-
-def _axis_dimension(result: results.AnalysisResult) -> Dimension:
-    """The dimension of a transient's or DC sweep's axis; seconds otherwise."""
-    if isinstance(result, results.DcSweepResult):
-        if result.nature == "voltage":
-            return VOLTAGE
-        if result.nature == "current":
-            return CURRENT
-        return DIMENSIONLESS
-    return TIME
-
-
-def _signal_dimension(result: results.AnalysisResult, signal: str) -> Dimension:
-    """The dimension of `signal` in `result.unknowns` (voltage for non-transients)."""
-    if not isinstance(result, results.TransientResult):
-        return VOLTAGE
-    index = results.column(result.unknowns, signal)
-    return _NATURE_DIMENSIONS[result.unknowns[index].nature]
-
-
-def _available_unknowns(unknowns: tuple[Unknown, ...], limit: int) -> str:
-    """The unknown names in `unknowns`, capped at `limit`."""
-    if not unknowns:
-        return "none"
-    names = [unknown.name for unknown in unknowns]
-    if len(names) <= limit:
-        return ", ".join(names)
-    shown = ", ".join(names[:limit])
-    return f"{shown}, ... ({len(names) - limit} more)"
-
-
-def _format_reading(value: float, unit: str) -> str:
-    """`value` in `unit`, to four significant digits, with an SI prefix if any."""
-    if unit in {"dB", "°", "%"}:
-        return f"{value:.4g} {unit}"
-    if not unit:
-        return f"{value:.4g}"
-    return format_si(value, unit)
 
 
 def _load(path: Path) -> dict[str, results.AnalysisResult]:
@@ -1499,11 +996,7 @@ def _plot(
                 message = f"{name} is taken at DC solutions: nothing to plot"
                 raise JoltyError(message)
             continue
-        nets = (
-            result.nets
-            if isinstance(result, results.DcSweepResult | results.TransientResult)
-            else ()
-        )
+        nets = results.nets_of(result)
         chosen = (
             ()
             if isinstance(
@@ -1544,7 +1037,7 @@ def _describe_plots(drawn: tuple[Plot, ...]) -> str:
     return "\n".join(f"plotted {plot.analysis}: {plot.path}" for plot in drawn)
 
 
-class DrawRequest(_Model):
+class DrawRequest(FrozenModel):
     """Draw the schematic of a saved circuit's top component, or of an instance's."""
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
@@ -1569,12 +1062,6 @@ class DrawResult(CommandResult):
     """The schematic drawn."""
 
     schematic: Path = Field(description="The PNG image.")
-
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: drawing finds nothing wrong."""
-        return True
 
     @override
     def describe(self) -> str:
@@ -1610,7 +1097,7 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
     return DrawResult(schematic=drawn)
 
 
-class ViewRequest(_Model):
+class ViewRequest(FrozenModel):
     """Write a 3D viewer of a saved circuit and its results, one HTML page to open.
 
     The viewer lays each component out on a board, its parts on their pins and its
@@ -1641,12 +1128,6 @@ class ViewResult(CommandResult):
 
     viewer: Path = Field(description="The HTML page.")
 
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: writing the viewer finds nothing wrong."""
-        return True
-
     @override
     def describe(self) -> str:
         """The page, in one line."""
@@ -1673,7 +1154,7 @@ async def view(request: ViewRequest, settings: Settings) -> ViewResult:
     return ViewResult(viewer=target)
 
 
-class CostRequest(_Model):
+class CostRequest(FrozenModel):
     """Price a saved circuit's top component, or an instance's, with a catalog."""
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
@@ -1718,7 +1199,7 @@ async def cost(request: CostRequest, settings: Settings) -> CostResult:
         raise JoltyError(error.args[0]) from None
 
 
-class ExportKicadRequest(_Model):
+class ExportKicadRequest(FrozenModel):
     """Write a saved circuit's top component, or an instance's, as a KiCad netlist.
 
     Each part of its bill of materials becomes a footprint, which its catalog part
@@ -1792,22 +1273,6 @@ async def export_kicad(
     return ExportKicadResult(netlist=written, path=target)
 
 
-def _load_catalog(path: Path) -> catalog.Catalog:
-    """The catalog saved at `path`.
-
-    Raises:
-        JoltyError: When there is no such file, or it holds no catalog.
-    """
-    try:
-        return catalog.Catalog.load(path)
-    except FileNotFoundError:
-        message = f"no such catalog file: {path}"
-        raise JoltyError(message) from None
-    except ValidationError as error:
-        message = f"{path} is not a catalog file: {error.error_count()} errors"
-        raise JoltyError(message) from None
-
-
 def _draw(
     circuit: ir.Circuit,
     path: Path,
@@ -1852,7 +1317,7 @@ def _marked(report: checks.CheckReport | None) -> tuple[str, ...]:
     )
 
 
-class CheckRequest(_Model):
+class CheckRequest(FrozenModel):
     """Check the structure of a saved circuit file."""
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
@@ -1915,7 +1380,7 @@ async def check(request: CheckRequest, settings: Settings) -> CheckResult:
     )
 
 
-class ExplainRequest(_Model):
+class ExplainRequest(FrozenModel):
     """Explain rules: the exact condition each checks, and its level."""
 
     rules: CliPositionalArg[list[str]] = Field(
@@ -1923,7 +1388,7 @@ class ExplainRequest(_Model):
     )
 
 
-class RuleInfo(_Model):
+class RuleInfo(FrozenModel):
     """One rule: its name, its levels and its condition."""
 
     name: str
@@ -1936,12 +1401,6 @@ class ExplainResult(CommandResult):
     """The rules explained."""
 
     rules: tuple[RuleInfo, ...]
-
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: explaining finds nothing wrong."""
-        return True
 
     @override
     def describe(self) -> str:
@@ -1987,83 +1446,6 @@ async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
     )
 
 
-type DocumentSection = Literal["guide", "examples"]
-"""Whether an offline document belongs to the guide or the example scripts."""
-
-DOCS_URI_PREFIX: Final = "jolty://docs"
-"""Base URI for offline documentation resources exposed over MCP."""
-
-GUIDE_MIME_TYPE: Final = "text/markdown"
-"""MIME type of offline guide pages."""
-
-EXAMPLE_MIME_TYPE: Final = "text/x-python"
-"""MIME type of offline example scripts."""
-
-_DOCS_SECTIONS: Final[tuple[DocumentSection, ...]] = ("guide", "examples")
-_DOCS_BUNDLE: Final = "docs.json"
-_MARKDOWN_LINK: Final = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_MIN_PRINTABLE_ASCII: Final = 32
-_QUALIFIED_SEGMENT_COUNT: Final = 2
-_REPOSITORY_PARENT_INDEX: Final = 2
-
-
-_DOCUMENT_SECTION_DESCRIPTION: Final = (
-    "Whether the document is a 'guide' page or an 'examples' script."
-)
-_DOCUMENT_SLUG_DESCRIPTION: Final = (
-    "The topic slug, such as 'units', 'rc_filter' or 'cluster/amplifier'."
-)
-_DOCUMENT_URI_DESCRIPTION: Final = (
-    "The MCP resource URI, such as 'jolty://docs/guide/units'."
-)
-_DOCUMENT_TITLE_DESCRIPTION: Final = (
-    "The heading of a guide page, or the slug of an example script."
-)
-_DOCUMENT_SUMMARY_DESCRIPTION: Final = "The first sentence describing the document."
-_DOCUMENT_MIME_DESCRIPTION: Final = (
-    "MIME type: 'text/markdown' for guide pages, 'text/x-python' for examples."
-)
-
-
-class DocumentSummary(_Model):
-    """Metadata for one offline guide page or example script."""
-
-    section: DocumentSection = Field(description=_DOCUMENT_SECTION_DESCRIPTION)
-    slug: str = Field(description=_DOCUMENT_SLUG_DESCRIPTION)
-    uri: str = Field(description=_DOCUMENT_URI_DESCRIPTION)
-    title: str = Field(description=_DOCUMENT_TITLE_DESCRIPTION)
-    summary: str = Field(description=_DOCUMENT_SUMMARY_DESCRIPTION)
-    mime_type: str = Field(description=_DOCUMENT_MIME_DESCRIPTION)
-
-
-class Document(_Model):
-    """One offline document: its metadata and full UTF-8 text."""
-
-    section: DocumentSection = Field(description=_DOCUMENT_SECTION_DESCRIPTION)
-    slug: str = Field(description=_DOCUMENT_SLUG_DESCRIPTION)
-    uri: str = Field(description=_DOCUMENT_URI_DESCRIPTION)
-    title: str = Field(description=_DOCUMENT_TITLE_DESCRIPTION)
-    summary: str = Field(description=_DOCUMENT_SUMMARY_DESCRIPTION)
-    mime_type: str = Field(description=_DOCUMENT_MIME_DESCRIPTION)
-    content: str = Field(description="The full UTF-8 text of the document.")
-
-
-class DocsRequest(_Model):
-    """List or read jolty's offline guide pages and example scripts."""
-
-    topic: CliPositionalArg[str | None] = Field(
-        default=None,
-        description="Topic to read: a bare slug such as 'units' or 'rc_filter', "
-        "a qualified name such as 'guide/units' or 'examples/cluster/amplifier', "
-        "or a resource URI such as 'jolty://docs/guide/units'. Lists all topics "
-        "when omitted.",
-    )
-    section: DocumentSection | None = Field(
-        default=None,
-        description="Limit listing or lookup to 'guide' or 'examples'.",
-    )
-
-
 class DocsResult(CommandResult):
     """Either the listing of offline documents, or the single document requested."""
 
@@ -2076,377 +1458,12 @@ class DocsResult(CommandResult):
         description="The requested document with its full text; null when listing.",
     )
 
-    @property
-    @override
-    def ok(self) -> bool:
-        """Always: listing or reading documentation finds nothing wrong."""
-        return True
-
     @override
     def describe(self) -> str:
         """The document text when reading one, or the grouped listing of topics."""
         if self.document is not None:
             return self.document.content.rstrip("\n")
-        sections: list[str] = []
-        for name in _DOCS_SECTIONS:
-            grouped = [entry for entry in self.entries if entry.section == name]
-            if not grouped:
-                continue
-            noun = "page" if name == "guide" else "script"
-            width = max(len(entry.slug) for entry in grouped)
-            header = (
-                f"{name} ({_plural(len(grouped), noun)}, "
-                f"{DOCS_URI_PREFIX}/{name}/<slug>):"
-            )
-            lines = [header]
-            for entry in grouped:
-                detail = (
-                    f"{entry.title}: {entry.summary}"
-                    if name == "guide" and entry.summary
-                    else (entry.summary or entry.title)
-                )
-                lines.append(f"  {entry.slug:<{width}}  {detail}")
-            sections.append("\n".join(lines))
-        return "\n\n".join(sections)
-
-
-def _repository_root() -> Path | None:
-    """The repository root inferred from this module's location, if accessible."""
-    try:
-        parents = Path(__file__).resolve().parents
-    except OSError:
-        return None
-    return (
-        parents[_REPOSITORY_PARENT_INDEX]
-        if len(parents) > _REPOSITORY_PARENT_INDEX
-        else None
-    )
-
-
-def _load_directory_documents(directory: Path, suffix: str) -> dict[str, str]:
-    """Reads every file under `directory` ending in `suffix`, keyed by POSIX slug."""
-    documents: dict[str, str] = {}
-    pending = [directory]
-    while pending:
-        current = pending.pop()
-        for entry in sorted(current.iterdir(), key=lambda path: path.name):
-            if entry.is_dir():
-                if not entry.name.startswith(".") and entry.name != "__pycache__":
-                    pending.append(entry)
-                continue
-            if entry.suffix == suffix and entry.is_file():
-                slug = entry.relative_to(directory).with_suffix("").as_posix()
-                documents[slug] = entry.read_text(encoding="utf-8")
-    return dict(sorted(documents.items()))
-
-
-def _load_docs_from_checkout(
-    root: Path,
-) -> dict[DocumentSection, dict[str, str]] | None:
-    """Loads guide pages and examples from a checkout at `root`, if readable."""
-    guide_directory = root / "docs" / "guide"
-    examples_directory = root / "examples"
-    try:
-        if not (guide_directory.is_dir() and examples_directory.is_dir()):
-            return None
-        guide = _load_directory_documents(guide_directory, ".md")
-        examples = _load_directory_documents(examples_directory, ".py")
-    except OSError:
-        return None
-    if not guide or not examples:
-        return None
-    return {"guide": guide, "examples": examples}
-
-
-def _parse_docs_bundle(raw: str) -> dict[DocumentSection, dict[str, str]] | None:
-    """Parses a bundled ``docs.json`` payload into sorted section mappings."""
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    catalog_map: dict[DocumentSection, dict[str, str]] = {}
-    for section in _DOCS_SECTIONS:
-        entries = payload.get(section)
-        if not isinstance(entries, dict):
-            return None
-        normalized: dict[str, str] = {}
-        for slug, text in sorted(entries.items()):
-            if not isinstance(slug, str) or not isinstance(text, str):
-                return None
-            normalized[slug] = text.replace("\r\n", "\n")
-        if not normalized:
-            return None
-        catalog_map[section] = normalized
-    return catalog_map
-
-
-type _Catalog = MappingProxyType[DocumentSection, MappingProxyType[str, str]]
-"""Immutable offline documentation catalog mapped by section and slug."""
-
-
-def _freeze_catalog(
-    catalog_map: Mapping[DocumentSection, Mapping[str, str]],
-) -> _Catalog:
-    """Wraps a parsed docs catalog in immutable `MappingProxyType` views."""
-    return MappingProxyType(
-        {
-            section: MappingProxyType(dict(entries))
-            for section, entries in catalog_map.items()
-        }
-    )
-
-
-@functools.lru_cache(maxsize=8)
-def _cached_checkout(root: Path) -> _Catalog | None:
-    """Loads and caches guide pages and examples from a checkout at `root`."""
-    loaded = _load_docs_from_checkout(root)
-    return None if loaded is None else _freeze_catalog(loaded)
-
-
-@functools.lru_cache(maxsize=8)
-def _cached_bundle_file(
-    path: Path, _mtime_ns: int, _size: int, _inode: int
-) -> _Catalog | None:
-    """Reads, parses, and caches a filesystem ``docs.json`` bundle by stat stamp."""
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    parsed = _parse_docs_bundle(raw)
-    return None if parsed is None else _freeze_catalog(parsed)
-
-
-@functools.lru_cache(maxsize=4)
-def _cached_bundle_text(raw: str) -> _Catalog | None:
-    """Parses and caches a raw ``docs.json`` payload."""
-    parsed = _parse_docs_bundle(raw)
-    return None if parsed is None else _freeze_catalog(parsed)
-
-
-def _load_docs_from_bundle() -> _Catalog | None:
-    """Loads guide pages and examples from the packaged ``assets/docs.json`` bundle."""
-    try:
-        resource = importlib.resources.files("jolty").joinpath("assets", _DOCS_BUNDLE)
-    except ModuleNotFoundError, OSError:
-        return None
-    if isinstance(resource, Path):
-        try:
-            info = resource.stat()
-        except OSError:
-            return None
-        return _cached_bundle_file(
-            resource, info.st_mtime_ns, info.st_size, info.st_ino
-        )
-    try:
-        raw = resource.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return _cached_bundle_text(raw)
-
-
-def _docs_catalog() -> _Catalog:
-    """Loads offline guide pages and examples from the checkout or packaged bundle.
-
-    Raises:
-        JoltyError: When neither a readable checkout nor a packaged bundle exists.
-    """
-    root = _repository_root()
-    if root is not None:
-        checkout = _cached_checkout(root)
-        if checkout is not None:
-            return checkout
-    bundled = _load_docs_from_bundle()
-    if bundled is not None:
-        return bundled
-    message = "offline documentation bundle is not available in this installation"
-    raise JoltyError(message)
-
-
-def _guide_title_and_summary(slug: str, content: str) -> tuple[str, str]:
-    """Extracts the Markdown heading and first summary sentence of a guide page."""
-    title = slug
-    summary = ""
-    seen_heading = False
-    for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if not seen_heading and stripped.startswith("# "):
-            title = stripped.removeprefix("# ").strip()
-            seen_heading = True
-            continue
-        if stripped.startswith("#"):
-            continue
-        summary = _MARKDOWN_LINK.sub(r"\1", stripped)
-        break
-    return title, summary
-
-
-def _example_summary(content: str) -> str:
-    """Extracts the first line of an example script's module docstring."""
-    try:
-        module = ast.parse(content)
-    except SyntaxError:
-        return ""
-    docstring = ast.get_docstring(module)
-    if docstring is None:
-        return ""
-    for line in docstring.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return ""
-
-
-def _build_summary(
-    section: DocumentSection, slug: str, content: str
-) -> DocumentSummary:
-    """Builds metadata for one offline document."""
-    uri = f"{DOCS_URI_PREFIX}/{section}/{slug}"
-    if section == "guide":
-        title, summary = _guide_title_and_summary(slug, content)
-        mime_type = GUIDE_MIME_TYPE
-    else:
-        title = slug
-        summary = _example_summary(content)
-        mime_type = EXAMPLE_MIME_TYPE
-    return DocumentSummary(
-        section=section,
-        slug=slug,
-        uri=uri,
-        title=title,
-        summary=summary,
-        mime_type=mime_type,
-    )
-
-
-def _available_topics_message(
-    loaded: Mapping[DocumentSection, Mapping[str, str]],
-    section: DocumentSection | None = None,
-) -> str:
-    """Formats the factual listing of available topics for error messages."""
-    if section is not None:
-        return f"the {section} topics are {', '.join(loaded[section])}"
-    guide_names = ", ".join(loaded["guide"])
-    example_names = ", ".join(loaded["examples"])
-    return (
-        f"the guide topics are {guide_names}; the examples topics are {example_names}"
-    )
-
-
-def _validate_segments(original: str, value: str, available: str) -> tuple[str, ...]:
-    """Validates a topic path, rejecting traversal, absolute paths and control bytes.
-
-    Raises:
-        JoltyError: When `value` is empty, absolute, contains ``..``, backslashes,
-            colons or control characters.
-    """
-    invalid_control = any(ord(character) < _MIN_PRINTABLE_ASCII for character in value)
-    segments = tuple(value.split("/"))
-    if (
-        not value
-        or value != value.strip()
-        or invalid_control
-        or "\\" in value
-        or ":" in value
-        or value.startswith("/")
-        or value.endswith("/")
-        or any(segment in {"", ".", ".."} for segment in segments)
-    ):
-        message = (
-            f"invalid documentation topic {original!r}: a topic names a bare slug "
-            f"with no '..', absolute path, backslash or control characters; {available}"
-        )
-        raise JoltyError(message)
-    return segments
-
-
-def _read_document_from(
-    loaded: Mapping[DocumentSection, Mapping[str, str]],
-    section: DocumentSection,
-    slug: str,
-) -> Document:
-    """Reads one document from an already-loaded `loaded` catalog."""
-    available = _available_topics_message(loaded, section)
-    segments = _validate_segments(slug, slug, available)
-    normalized = "/".join(segments)
-    content = loaded[section].get(normalized)
-    if content is None:
-        message = f"no {section} topic is named {slug!r}; {available}"
-        raise JoltyError(message)
-    summary = _build_summary(section, normalized, content)
-    return Document(
-        section=summary.section,
-        slug=summary.slug,
-        uri=summary.uri,
-        title=summary.title,
-        summary=summary.summary,
-        mime_type=summary.mime_type,
-        content=content,
-    )
-
-
-def document_summaries(
-    section: DocumentSection | None = None,
-) -> tuple[DocumentSummary, ...]:
-    """Lists available offline guide pages and examples in deterministic order.
-
-    Raises:
-        JoltyError: When neither a readable checkout nor a packaged bundle exists.
-    """
-    loaded = _docs_catalog()
-    sections = _DOCS_SECTIONS if section is None else (section,)
-    return tuple(
-        _build_summary(current, slug, content)
-        for current in sections
-        for slug, content in loaded[current].items()
-    )
-
-
-def read_document(section: DocumentSection, slug: str) -> Document:
-    """Reads one offline document from `section` by exact validated `slug`.
-
-    Raises:
-        JoltyError: When `slug` is invalid, attempts path traversal, or matches no
-            document in `section`.
-    """
-    return _read_document_from(_docs_catalog(), section, slug)
-
-
-def resolve_document(topic: str, section: DocumentSection | None = None) -> Document:
-    """Resolves a bare slug, qualified name or ``jolty://docs/...`` URI to a document.
-
-    Raises:
-        JoltyError: When `topic` is invalid, mismatches `section`, is ambiguous, or
-            matches no available document.
-    """
-    loaded = _docs_catalog()
-    available = _available_topics_message(loaded, section)
-    prefix = f"{DOCS_URI_PREFIX}/"
-    trimmed = topic.removeprefix(prefix) if topic.startswith(prefix) else topic
-    segments = _validate_segments(topic, trimmed, available)
-    if len(segments) >= _QUALIFIED_SEGMENT_COUNT and segments[0] in _DOCS_SECTIONS:
-        explicit: DocumentSection = "guide" if segments[0] == "guide" else "examples"
-        if section is not None and section != explicit:
-            message = (
-                f"topic {topic!r} belongs to section {explicit!r}, not {section!r}"
-            )
-            raise JoltyError(message)
-        return _read_document_from(loaded, explicit, "/".join(segments[1:]))
-    slug = "/".join(segments)
-    if section is not None:
-        return _read_document_from(loaded, section, slug)
-    matches = [candidate for candidate in _DOCS_SECTIONS if slug in loaded[candidate]]
-    if len(matches) == 1:
-        return _read_document_from(loaded, matches[0], slug)
-    if len(matches) > 1:
-        qualified = ", ".join(f"{candidate}/{slug}" for candidate in matches)
-        message = f"topic {topic!r} is ambiguous and matches {qualified}"
-        raise JoltyError(message)
-    message = f"no documentation topic is named {topic!r}; {available}"
-    raise JoltyError(message)
+        return _docs.describe_entries(self.entries)
 
 
 async def docs(request: DocsRequest, settings: Settings) -> DocsResult:
@@ -2464,20 +1481,28 @@ async def docs(request: DocsRequest, settings: Settings) -> DocsResult:
     return DocsResult(document=document)
 
 
-def _load_circuit(path: Path) -> ir.Circuit:
-    """The circuit saved at `path`.
-
-    Raises:
-        JoltyError: When there is no such file, or it holds no circuit.
-    """
+def _load_validated[Loaded](
+    path: Path, kind: str, loader: Callable[[Path], Loaded]
+) -> Loaded:
+    """Loads a validated file of `kind` at `path`, raising `JoltyError` on failure."""
     try:
-        return files.load_circuit(path)
+        return loader(path)
     except FileNotFoundError:
-        message = f"no such circuit file: {path}"
+        message = f"no such {kind} file: {path}"
         raise JoltyError(message) from None
     except ValidationError as error:
-        message = f"{path} is not a circuit file: {error.error_count()} errors"
+        message = f"{path} is not a {kind} file: {error.error_count()} errors"
         raise JoltyError(message) from None
+
+
+def _load_circuit(path: Path) -> ir.Circuit:
+    """The circuit saved at `path`."""
+    return _load_validated(path, "circuit", files.load_circuit)
+
+
+def _load_catalog(path: Path) -> catalog.Catalog:
+    """The catalog saved at `path`."""
+    return _load_validated(path, "catalog", catalog.Catalog.load)
 
 
 def _levels(
@@ -2637,27 +1662,6 @@ def _move(source: Path, destination: Path) -> None:
         destination.unlink(missing_ok=True)
 
 
-def _place(source: Path, destination: Path) -> None:
-    """Moves `source` to `destination` at once, or removes `destination` without one.
-
-    A reader of `destination` finds the whole file there, or the one there before,
-    never part of it, even when the move is stopped: the file is copied to a hidden
-    name beside `destination`, then renamed, which a file system does at once. A move
-    killed outright leaves the hidden copy behind, which no merge reads.
-    """
-    if not source.is_file():
-        destination.unlink(missing_ok=True)
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    copy = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}")
-    try:
-        shutil.copyfile(source, copy)
-        copy.replace(destination)
-    except BaseException:
-        copy.unlink(missing_ok=True)
-        raise
-
-
 def _write_atomic(target: Path, writer: Callable[[Path], None]) -> None:
     """Writes `target` atomically via a hidden sibling file in the same directory."""
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -2668,6 +1672,19 @@ def _write_atomic(target: Path, writer: Callable[[Path], None]) -> None:
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
+
+
+def _place(source: Path, destination: Path) -> None:
+    """Moves `source` to `destination` at once, or removes `destination` without one.
+
+    A reader of `destination` finds the whole file there, or the one there before,
+    never part of it, even when the move is stopped: the file is copied to a hidden
+    name beside `destination`, then renamed atomically.
+    """
+    if not source.is_file():
+        destination.unlink(missing_ok=True)
+        return
+    _write_atomic(destination, lambda staged: shutil.copyfile(source, staged))
 
 
 def _save_raw(

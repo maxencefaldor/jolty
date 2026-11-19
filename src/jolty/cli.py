@@ -6,6 +6,14 @@ output format, so the command line takes exactly the arguments the MCP tools tak
 prints the text they return.
 """
 
+__lazy_modules__ = [
+    "importlib.metadata",
+    "jolty.errors",
+    "jolty.settings",
+    "json",
+    "os",
+]
+
 import json
 import os
 import sys

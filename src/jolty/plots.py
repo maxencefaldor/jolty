@@ -30,7 +30,7 @@ Examples:
     ['voltage']
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final, Literal
 
@@ -39,7 +39,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import EngFormatter
 
-from jolty import files, results
+from jolty import files, results, unknowns
 from jolty.errors import JoltyError
 from jolty.units import format_si
 from jolty.unknowns import default_traces
@@ -86,7 +86,6 @@ MUTED: Final = "#52514e"
 """The muted ink of their axes' labels and reference lines."""
 GRID: Final = "#e4e3df"
 """Their grid's color."""
-_UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K", "state": ""}
 
 type Plotted = (
     results.DcSweepResult
@@ -99,6 +98,9 @@ type Plotted = (
 """A result a plot draws; an operating point has no axis to draw along."""
 
 type _Quantity = Literal["voltage", "current", "temperature", "state", "logic"]
+type _Drawer = Callable[
+    [Axes, results.Real, list[tuple[str, str, results.Real]], str, str], None
+]
 
 _LANE: Final = 1.5
 """The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
@@ -126,7 +128,7 @@ def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
     groups, columns = _grouped(result, traces)
     natures = list(groups)
     panels = 2 * len(natures) if isinstance(result, results.AcResult) else len(natures)
-    figure, axes = _figure(name, result, panels)
+    figure, axes = _new_figure(f"{name}: {_describe(result)}", max(panels, 1))
     colors = {trace: COLORS[index] for index, trace in enumerate(traces)}
     x, x_unit = _abscissa(result)
     if isinstance(result, results.AcResult):
@@ -135,15 +137,9 @@ def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
                 (trace, colors[trace], result.values[:, columns[trace]])
                 for trace in groups[nature]
             ]
-            magnitudes = [
-                (trace, color, _decibels(values)) for trace, color, values in phasors
-            ]
-            phases = [
-                (trace, color, np.degrees(np.unwrap(np.angle(values))))
-                for trace, color, values in phasors
-            ]
-            _draw(axes[2 * index], x, magnitudes, f"{nature} magnitude", "dB")
-            _draw(axes[2 * index + 1], x, phases, f"{nature} phase", "°")
+            _bode_panels(
+                axes[2 * index : 2 * index + 2], x, phasors, f"{nature} ", _draw
+            )
         for each in axes:
             each.set_xscale("log")
     else:
@@ -160,7 +156,7 @@ def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
                 for trace in groups[nature]
             ]
             label = "temperature rise" if nature == "temperature" else nature
-            _draw(axes[index], x, series, label, _UNITS[nature])
+            _draw(axes[index], x, series, label, unknowns.SYMBOLS[nature])
     _label_abscissa(axes[-1], result, x_unit)
     return figure
 
@@ -203,16 +199,14 @@ def _loop(name: str, result: results.StabilityResult) -> Figure:
     order = np.argsort(result.frequencies)
     order = order[result.frequencies[order] > 0]
     frequencies, gains = result.frequencies[order], result.gains[order]
-    figure, (magnitude, phase) = _figure(name, result, 2)
-    label = f"T through {result.probe}"
-    color = COLORS[0]
-    _draw(magnitude, frequencies, [(label, color, _decibels(gains))], "magnitude", "dB")
-    phases = np.degrees(np.unwrap(np.angle(gains)))
-    _draw(phase, frequencies, [(label, color, phases)], "phase", "°")
-    for axes, level in ((magnitude, 0.0), (phase, -180.0)):
-        axes.axhline(level, color=MUTED, linewidth=0.8, linestyle="--")
-        axes.set_xscale("log")
-    _label_abscissa(phase, result, "Hz")
+    figure, axes = _new_figure(f"{name}: {_describe(result)}", 2)
+    _bode_panels(
+        axes, frequencies, [(f"T through {result.probe}", COLORS[0], gains)], "", _draw
+    )
+    for panel, level in zip(axes, (0.0, -180.0), strict=True):
+        panel.axhline(level, color=MUTED, linewidth=0.8, linestyle="--")
+        panel.set_xscale("log")
+    _label_abscissa(axes[1], result, "Hz")
     return figure
 
 
@@ -240,18 +234,20 @@ def _noise(name: str, result: results.NoiseResult) -> Figure:
         )
         for index, color in zip(noisiest, COLORS[1:], strict=False)
     )
-    figure, axes = _figure(name, result, 1 if result.input is None else 2)
-    unit = f"{_UNITS[result.nature]}/\N{SQUARE ROOT}Hz"
+    panels = 1 if result.input is None else 2
+    figure, axes = _new_figure(f"{name}: {_describe(result)}", panels)
+    unit = f"{unknowns.SYMBOLS[result.nature]}/\N{SQUARE ROOT}Hz"
     _draw(axes[0], frequencies, series, "noise density", unit)
     if result.input is not None:
         referred = np.sqrt(result.referred()[order])
         label = f"referred to {result.input.source}"
+        input_unit = f"{unknowns.SYMBOLS[result.input.nature]}/\N{SQUARE ROOT}Hz"
         _draw(
             axes[1],
             frequencies,
             [(label, COLORS[0], referred)],
             "input noise density",
-            f"{_UNITS[result.input.nature]}/\N{SQUARE ROOT}Hz",
+            input_unit,
         )
     for each in axes:
         each.set_xscale("log")
@@ -266,7 +262,7 @@ def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
     A damping ratio below zero is a root in the right half-plane, across the line at
     zero; a conjugate pair shares its point, and a zero at the origin has none.
     """
-    figure, (axes,) = _figure(name, result, 1)
+    figure, (axes,) = _new_figure(f"{name}: {_describe(result)}", 1)
     _style(axes, "damping ratio")
     roots = [("poles", "x", COLORS[0], result.poles)]
     if result.zeros is not None:
@@ -285,27 +281,32 @@ def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
         )
     axes.axhline(0.0, color=MUTED, linewidth=0.8, linestyle="--")
     axes.set_xscale("log")
-    legend = axes.legend(loc="best", frameon=False, fontsize=8)
-    for text in legend.get_texts():
-        text.set_color(INK)
+    _add_legend(axes)
     _label_abscissa(axes, result, "Hz")
     return figure
 
 
-def _figure(name: str, result: Plotted, panels: int) -> tuple[Figure, list[Axes]]:
-    """A figure titled for the result of the analysis `name`.
-
-    It stacks `panels` axes, at least one, over a shared abscissa.
-    """
+def _new_figure(
+    title: str, panels: int, *, sharex: bool = True
+) -> tuple[Figure, list[Axes]]:
+    """A figure titled `title` with `panels` stacked axes."""
     figure = Figure(
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
         dpi=150,
         layout="constrained",
         facecolor=SURFACE,
     )
-    figure.suptitle(f"{name}: {_describe(result)}", color=INK, x=0.02, ha="left")
-    figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)
+    figure.suptitle(title, color=INK, x=0.02, ha="left")
+    if panels > 0:
+        figure.subplots(panels, 1, sharex=sharex, squeeze=False)
     return figure, figure.axes
+
+
+def _add_legend(axes: Axes) -> None:
+    """Adds a frameless legend colored in ink to `axes`."""
+    legend = axes.legend(loc="best", frameon=False, fontsize=8)
+    for text in legend.get_texts():
+        text.set_color(INK)
 
 
 def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
@@ -371,9 +372,33 @@ def _draw_logic(
     axes.grid(visible=False, axis="y")
 
 
-def _decibels(phasors: results.Complex) -> results.Real:
-    """The magnitude of `phasors` in decibels, a zero magnitude at -6000 dB."""
-    return 20 * np.log10(np.maximum(np.abs(phasors), 1e-300))
+def _bode(phasors: results.Complex) -> tuple[results.Real, results.Real]:
+    """Magnitude in decibels (zero at -6000 dB) and unwrapped phase in degrees."""
+    magnitude = np.asarray(
+        20 * np.log10(np.maximum(np.abs(phasors), 1e-300)), dtype=np.float64
+    )
+    phase = np.asarray(
+        np.degrees(np.unwrap(np.angle(phasors), axis=-1)), dtype=np.float64
+    )
+    return magnitude, phase
+
+
+def _bode_panels(
+    axes: Sequence[Axes],
+    x: results.Real,
+    phasors: list[tuple[str, str, results.Complex]],
+    prefix: str,
+    draw: _Drawer,
+) -> None:
+    """Draws magnitude (dB) and unwrapped phase (°) panels for `phasors`."""
+    magnitudes: list[tuple[str, str, results.Real]] = []
+    phases: list[tuple[str, str, results.Real]] = []
+    for label, color, values in phasors:
+        magnitude, phase = _bode(values)
+        magnitudes.append((label, color, magnitude))
+        phases.append((label, color, phase))
+    draw(axes[0], x, magnitudes, f"{prefix}magnitude", "dB")
+    draw(axes[1], x, phases, f"{prefix}phase", "°")
 
 
 def histograms(name: str, batch: files.Batch) -> Figure:
@@ -384,20 +409,11 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     many runs read no value.
     """
     found = batch.result
-    figure = Figure(
-        figsize=(8, 0.8 + 2.4 * max(len(found.measures), 1)),
-        dpi=150,
-        layout="constrained",
-        facecolor=SURFACE,
-    )
-    figure.suptitle(
-        f"{name}: {found.runs} runs, each measure's values",
-        color=INK,
-        x=0.02,
-        ha="left",
-    )
-    for place, requirement in enumerate(batch.requirements):
-        axes = figure.add_subplot(len(batch.requirements), 1, place + 1)
+    title = f"{name}: {found.runs} runs, each measure's values"
+    figure, axes_list = _new_figure(title, len(batch.requirements), sharex=False)
+    for place, (axes, requirement) in enumerate(
+        zip(axes_list, batch.requirements, strict=True)
+    ):
         measured = found.measured[:, place]
         measured = measured[~np.isnan(measured) & (found.causes[:, place] < 0)]
         read = measured[np.isfinite(measured)]
@@ -450,21 +466,9 @@ def envelope(name: str, traces: results.Traces) -> Figure:
     natures = list(dict.fromkeys(unknown.nature for unknown in traces.unknowns))
     response = traces.along == "frequency"
     panels = 2 * len(natures) if response else len(natures)
-    figure = Figure(
-        figsize=(8, 0.8 + 2.4 * max(panels, 1)),
-        dpi=150,
-        layout="constrained",
-        facecolor=SURFACE,
-    )
     runs = int(traces.values.shape[0])
-    figure.suptitle(
-        f"{name}: {traces.analysis}, the least, median and greatest of {runs} runs",
-        color=INK,
-        x=0.02,
-        ha="left",
-    )
-    figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)
-    axes = figure.axes
+    title = f"{name}: {traces.analysis}, the least, median and greatest of {runs} runs"
+    figure, axes = _new_figure(title, max(panels, 1))
     colors = {
         unknown.name: COLORS[index % len(COLORS)]
         for index, unknown in enumerate(traces.unknowns)
@@ -484,28 +488,26 @@ def envelope(name: str, traces: results.Traces) -> Figure:
                 )
                 for place, unknown in columns
             ]
-            magnitudes = [
-                (name, color, _decibels(values)) for name, color, values in phasors
-            ]
-            phases = [
-                (name, color, np.degrees(np.unwrap(np.angle(values), axis=1)))
-                for name, color, values in phasors
-            ]
-            _band(axes[2 * index], traces.axis, magnitudes, f"{nature} magnitude", "dB")
-            _band(axes[2 * index + 1], traces.axis, phases, f"{nature} phase", "°")
+            _bode_panels(
+                axes[2 * index : 2 * index + 2],
+                traces.axis,
+                phasors,
+                f"{nature} ",
+                _band,
+            )
             continue
         series = [
             (unknown.name, colors[unknown.name], np.real(traces.values[:, :, place]))
             for place, unknown in columns
         ]
         label = "temperature rise" if nature == "temperature" else nature
-        _band(axes[index], traces.axis, series, label, _UNITS[nature])
+        _band(axes[index], traces.axis, series, label, unknowns.SYMBOLS[nature])
     if response:
         for each in axes:
             each.set_xscale("log")
     unit = {"time": "s", "frequency": "Hz"}.get(traces.along, "")
     if traces.along == "swept" and traces.nature is not None:
-        unit = _UNITS[traces.nature]
+        unit = unknowns.SYMBOLS[traces.nature]
     axes[-1].xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     along = {
         "time": "time",
@@ -544,9 +546,7 @@ def _band(
     if unit:
         axes.yaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     if len(series) > 1:
-        legend = axes.legend(loc="best", frameon=False, fontsize=8)
-        for text in legend.get_texts():
-            text.set_color(INK)
+        _add_legend(axes)
 
 
 def save(figure: Figure, path: Path) -> None:
@@ -583,7 +583,7 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
         case results.TransientResult():
             return result.times, "s"
         case results.DcSweepResult():
-            unit = "" if result.nature is None else _UNITS[result.nature]
+            unit = "" if result.nature is None else unknowns.SYMBOLS[result.nature]
             return result.swept, unit
         case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return result.frequencies, "Hz"
@@ -626,9 +626,7 @@ def _draw(
     if unit:
         axes.yaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     if len(series) > 1:
-        legend = axes.legend(loc="best", frameon=False, fontsize=8)
-        for text in legend.get_texts():
-            text.set_color(INK)
+        _add_legend(axes)
     if len(series) <= _LABELED:
         _label_ends(
             axes, [(name, color, float(values[-1])) for name, color, values in series]

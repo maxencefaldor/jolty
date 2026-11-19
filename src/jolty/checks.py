@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Final, override
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from jolty import _core, ir
 from jolty.errors import JoltyError
@@ -97,11 +97,7 @@ def rules() -> dict[str, Rule]:
     return engine | {rule.name: rule for rule in ON_RESULTS}
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class Location(_Model):
+class Location(ir.FrozenModel):
     """An instance a diagnostic names, and the script line that placed it."""
 
     path: str = Field(description="The instance's path, such as 'X1/C1'.")
@@ -119,7 +115,7 @@ class Location(_Model):
         )
 
 
-class Diagnostic(_Model):
+class Diagnostic(ir.FrozenModel):
     """One fact a rule states about a circuit."""
 
     rule: str = Field(description="The rule's name, such as 'no-dc-path'.")
@@ -135,7 +131,7 @@ class Diagnostic(_Model):
         return "\n".join(lines)
 
 
-class CheckReport(_Model):
+class CheckReport(ir.FrozenModel):
     """What a check found: its diagnostics, errors first, and how many of each level."""
 
     diagnostics: tuple[Diagnostic, ...] = Field(

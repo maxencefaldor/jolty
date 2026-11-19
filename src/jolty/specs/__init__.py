@@ -34,7 +34,11 @@ Examples:
 """
 
 from jolty.specs._measures import (
+    MEASURES,
     Edge,
+    MeasureCategory,
+    MeasureDimension,
+    MeasureSpec,
     bandwidth,
     crossing,
     crossover,
@@ -78,6 +82,7 @@ from jolty.specs._requirements import (
     Yield,
     describe,
     evaluate,
+    format_reading,
     judge,
     judged,
     reading,
@@ -89,12 +94,16 @@ from jolty.specs._requirements import (
 )
 
 __all__ = [
+    "MEASURES",
     "Bound",
     "Edge",
     "ExtendedReal",
     "Judged",
     "Measure",
+    "MeasureCategory",
+    "MeasureDimension",
     "MeasureError",
+    "MeasureSpec",
     "Plain",
     "Reading",
     "Requirement",
@@ -114,6 +123,7 @@ __all__ = [
     "distortion",
     "dominant_pole",
     "evaluate",
+    "format_reading",
     "frequency",
     "gain",
     "gain_margin",

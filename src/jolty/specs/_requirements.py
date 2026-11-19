@@ -11,27 +11,32 @@ import math
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Annotated, Final, Literal, LiteralString, Never, override
+from typing import Annotated, Final, Literal, override
 
 import numpy as np
 import numpy.typing as npt
 from pydantic import (
     AfterValidator,
-    BaseModel,
     ConfigDict,
     Field,
     PlainSerializer,
-    ValidationError,
     ValidationInfo,
     WithJsonSchema,
     field_validator,
 )
 from pydantic.dataclasses import dataclass as pydantic_dataclass
-from pydantic_core import InitErrorDetails, PydanticCustomError
+from pydantic_core import InitErrorDetails
 
 from jolty import _core, ir, results
 from jolty.builder import caller
-from jolty.errors import DimensionError, JoltyError, close_names
+from jolty.errors import (
+    DimensionError,
+    JoltyError,
+    close_names,
+    detail,
+    fail,
+    raise_if_errors,
+)
 from jolty.units import (
     DIMENSIONLESS,
     Dimension,
@@ -69,30 +74,11 @@ _REQUIREMENT_CONFIG: Final = ConfigDict(
 """Pydantic configuration for `Requirement`, validating omitted default bounds."""
 
 
-def _fail(kind: LiteralString, message: str) -> Never:
-    """Raises a Pydantic custom error holding literal `message` safe from braces."""
-    raise PydanticCustomError(kind, "{message}", {"message": message})
-
-
-def _detail(
-    kind: LiteralString,
-    message: str,
-    value: object,
-    location: tuple[int | str, ...] = (),
-) -> InitErrorDetails:
-    """One structured validation error entry at `location` with literal `message`."""
-    return InitErrorDetails(
-        type=PydanticCustomError(kind, "{message}", {"message": message}),
-        loc=location,
-        input=value,
-    )
-
-
 def _format_bound(measure: Measure | None, bound: Quantity) -> str:
     """Formats `bound` in `measure`'s plain unit when applicable."""
     plain = None if measure is None else measure.plain
     if plain is not None and bound.dimension == DIMENSIONLESS:
-        return _format(bound.value, plain)
+        return format_reading(bound.value, plain)
     return str(bound)
 
 
@@ -101,9 +87,9 @@ def _check_bound_quantity(value: object, name: str) -> Quantity | None:
     if value is None:
         return None
     if not isinstance(value, Quantity):
-        _fail("quantity_type", f"{name} is a Quantity, not {value!r}")
+        fail("quantity_type", f"{name} is a Quantity, not {value!r}")
     if not math.isfinite(value.value):
-        _fail("finite", f"{name} is finite, not {value}")
+        fail("finite", f"{name} is finite, not {value}")
     return value
 
 
@@ -304,7 +290,7 @@ class Requirement:
     @classmethod
     def _validate_measure(cls, value: object) -> Measure:
         if not isinstance(value, Measure):
-            _fail("measure_type", f"measure is a Measure, not {value!r}")
+            fail("measure_type", f"measure is a Measure, not {value!r}")
         return value
 
     @field_validator("minimum", mode="before")
@@ -322,7 +308,7 @@ class Requirement:
         if "minimum" in info.data:
             minimum = info.data["minimum"]
             if minimum is None and checked is None:
-                _fail("bound_missing", f"a requirement on {subject} states a bound")
+                fail("bound_missing", f"a requirement on {subject} states a bound")
             if (
                 isinstance(minimum, Quantity)
                 and checked is not None
@@ -333,7 +319,7 @@ class Requirement:
                     f"the minimum of {subject}, {_format_bound(measure, minimum)}, "
                     f"exceeds its maximum, {_format_bound(measure, checked)}"
                 )
-                _fail("bound_order", message)
+                fail("bound_order", message)
         return checked
 
     @field_validator("margin", mode="before")
@@ -345,7 +331,7 @@ class Requirement:
             subject = (
                 str(measure_raw) if isinstance(measure_raw, Measure) else "the measure"
             )
-            _fail("non_negative", f"the margin of {subject} is negative: {checked}")
+            fail("non_negative", f"the margin of {subject} is negative: {checked}")
         return checked
 
     @field_validator("source_location", mode="before")
@@ -354,7 +340,7 @@ class Requirement:
         if value is None:
             return None
         if not isinstance(value, ir.SourceLocation):
-            _fail(
+            fail(
                 "source_location_type",
                 f"source_location is a SourceLocation, not {value!r}",
             )
@@ -418,19 +404,19 @@ class Specs:
     @classmethod
     def _validate_requirements(cls, value: object) -> tuple[Requirement, ...]:
         if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
+            fail(
                 "sequence_type",
                 f"specs is a sequence of requirements, not {value!r}",
             )
         listed = tuple(value)
         if not listed:
-            _fail("empty", "specs state at least one requirement")
+            fail("empty", "specs state at least one requirement")
         errors: list[InitErrorDetails] = []
         checked: list[Requirement] = []
         for index, requirement in enumerate(listed):
             if not isinstance(requirement, Requirement):
                 errors.append(
-                    _detail(
+                    detail(
                         "requirement_type",
                         f"specs hold requirements, not {requirement!r}",
                         requirement,
@@ -439,9 +425,7 @@ class Specs:
                 )
             else:
                 checked.append(requirement)
-        if errors:
-            title = "requirements"
-            raise ValidationError.from_exception_data(title, errors)
+        raise_if_errors("requirements", errors)
         return tuple(checked)
 
     @field_validator("yield_target", mode="before")
@@ -450,20 +434,18 @@ class Specs:
         if value is None:
             return None
         if isinstance(value, bool) or not isinstance(value, int | float):
-            _fail("float_type", f"yield_target is a real number, not {value!r}")
+            fail("float_type", f"yield_target is a real number, not {value!r}")
         converted = float(value)
         if not math.isfinite(converted):
-            _fail("finite", f"yield_target is finite, not {converted!r}")
+            fail("finite", f"yield_target is finite, not {converted!r}")
         if not 0 < converted <= 1:
             message = f"a yield target lies above 0 and at most 1, not {converted}"
-            _fail("yield_range", message)
+            fail("yield_range", message)
         return converted
 
 
-class Verdict(BaseModel):
+class Verdict(ir.FrozenModel):
     """What became of one requirement."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     requirement: str = Field(description="The requirement, in words.")
     status: Status
@@ -495,8 +477,8 @@ class Verdict(BaseModel):
         if self.value is None or self.unit is None or self.slack is None:
             head = f"unmeasured: {self.requirement}: {self.reason}{at}"
         else:
-            read = _format(self.value, self.unit)
-            slack = _format(self.slack, self.unit)
+            read = format_reading(self.value, self.unit)
+            slack = format_reading(self.slack, self.unit)
             head = f"{self.status}: {self.requirement}: read {read}{at}, slack {slack}"
         return (
             head
@@ -505,10 +487,8 @@ class Verdict(BaseModel):
         )
 
 
-class SummaryStatistics(BaseModel):
+class SummaryStatistics(ir.FrozenModel):
     """The values a requirement read over samples, in SI base units."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     unit: str = Field(description="The values' unit, such as 'V' or 'dB'.")
     minimum: ExtendedReal
@@ -546,10 +526,8 @@ class SummaryStatistics(BaseModel):
         )
 
 
-class Spread(BaseModel):
+class Spread(ir.FrozenModel):
     """What one requirement read over a Monte Carlo analysis's samples."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     requirement: str = Field(description="The requirement, in words.")
     measured: int = Field(description="Samples on which it was measured.")
@@ -567,11 +545,11 @@ class Spread(BaseModel):
         missing = f", {unmeasured} unmeasured" if unmeasured else ""
         unit = self.values.unit
         low, high = (
-            _format(self.values.minimum, unit),
-            _format(self.values.maximum, unit),
+            format_reading(self.values.minimum, unit),
+            format_reading(self.values.maximum, unit),
         )
         mean, standard_deviation = (
-            "undefined" if value is None else _format(value, unit)
+            "undefined" if value is None else format_reading(value, unit)
             for value in (self.values.mean, self.values.standard_deviation)
         )
         return (
@@ -580,10 +558,8 @@ class Spread(BaseModel):
         )
 
 
-class Yield(BaseModel):
+class Yield(ir.FrozenModel):
     """How many of a Monte Carlo analysis's samples meet every requirement."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     samples: int
     passing: int = Field(description="Samples on which every requirement passed.")
@@ -611,6 +587,19 @@ class Yield(BaseModel):
         return f"{head}, which {reached} the target {100 * self.target:.4g} %"
 
 
+def _yield_of(passing: int, samples: int, target: float | None) -> Yield:
+    """Computes `Yield` with its 95 % Wilson interval for `passing` of `samples`."""
+    low, high = wilson(passing, samples)
+    return Yield(
+        samples=samples,
+        passing=passing,
+        estimate=passing / samples,
+        lower=low,
+        upper=high,
+        target=target,
+    )
+
+
 def spread(
     specs: Specs, sampled: Sequence[Sequence[Verdict]]
 ) -> tuple[tuple[Spread, ...], Yield]:
@@ -624,15 +613,7 @@ def spread(
         for index, requirement in enumerate(specs.requirements)
     )
     passing = sum(all(_passes(verdict) for verdict in verdicts) for verdicts in sampled)
-    low, high = wilson(passing, len(sampled))
-    return spreads, Yield(
-        samples=len(sampled),
-        passing=passing,
-        estimate=passing / len(sampled),
-        lower=low,
-        upper=high,
-        target=specs.yield_target,
-    )
+    return spreads, _yield_of(passing, len(sampled), specs.yield_target)
 
 
 def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
@@ -775,15 +756,7 @@ def spread_of(
         if judged
         else samples
     )
-    low, high = wilson(passing, samples)
-    return spreads, Yield(
-        samples=samples,
-        passing=passing,
-        estimate=passing / samples,
-        lower=low,
-        upper=high,
-        target=specs.yield_target,
-    )
+    return spreads, _yield_of(passing, samples, specs.yield_target)
 
 
 def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
@@ -1078,7 +1051,7 @@ def _against(bound: Quantity, reading: Reading, name: str) -> float:
     return bound.value
 
 
-def _format(value: float, unit: str) -> str:
+def format_reading(value: float, unit: str) -> str:
     """`value` in `unit`, to four significant digits, with an SI prefix if any."""
     if unit in {"dB", "°", "%"}:
         return f"{value:.4g} {unit}"

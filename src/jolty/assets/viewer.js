@@ -67,19 +67,28 @@ function si(value, unit = "") {
 function minMax(values) {
   let low = Infinity;
   let high = -Infinity;
-  let found = false;
+  let empty = true;
   for (const value of values) {
     if (value === null || value === undefined || !Number.isFinite(value)) continue;
-    if (!found) {
-      low = value;
-      high = value;
-      found = true;
-    } else {
-      if (value < low) low = value;
-      if (value > high) high = value;
-    }
+    low = empty ? value : Math.min(low, value);
+    high = empty ? value : Math.max(high, value);
+    empty = false;
   }
-  return found ? { low, high, empty: false } : { low: 0, high: 0, empty: true };
+  return empty ? { low: 0, high: 0, empty: true } : { low, high, empty: false };
+}
+
+function rangeOf(seriesList) {
+  let low = Infinity;
+  let high = -Infinity;
+  let empty = true;
+  for (const series of seriesList) {
+    const range = minMax(series);
+    if (range.empty) continue;
+    low = empty ? range.low : Math.min(low, range.low);
+    high = empty ? range.high : Math.max(high, range.high);
+    empty = false;
+  }
+  return empty ? { low: 0, high: 0, empty: true } : { low, high, empty: false };
 }
 
 const h = (tag, attributes = {}, ...children) => {
@@ -184,26 +193,15 @@ const pointer = new THREE.Vector2();
 const analysis = () => data.analyses[analysisIndex];
 const view = () => data.views[viewPath];
 const pathOf = (id) => (viewPath ? `${viewPath}/${id}` : id);
-
-function globalNet(local) {
-  return view().nets[local] ?? local;
-}
-
-function voltage(global, at = frame) {
-  if (global === data.ground) return 0;
-  const series = analysis()?.nets[global];
-  return series ? series[Math.min(at, series.length - 1)] : null;
-}
-
-function level(global, at = frame) {
-  const series = analysis()?.logic?.[global];
-  return series ? series[Math.min(at, series.length - 1)] : undefined;
-}
-
-function current(terminal, at = frame) {
-  const series = analysis()?.currents[terminal];
-  return series ? series[Math.min(at, series.length - 1)] : null;
-}
+const atFrame = (values, at = frame) => (values ? values[Math.min(at, values.length - 1)] : null);
+const voltageUnit = (at = analysis()) => (at?.kind === "ac" ? "V/V" : "V");
+const globalNet = (local) => view().nets[local] ?? local;
+const voltage = (global, at = frame) => (global === data.ground ? 0 : atFrame(analysis()?.nets[global], at));
+const level = (global, at = frame) => {
+  const values = analysis()?.logic?.[global];
+  return values ? atFrame(values, at) : undefined;
+};
+const current = (terminal, at = frame) => atFrame(analysis()?.currents[terminal], at);
 
 // Geometry: one material per look, parts built of primitives.
 
@@ -274,13 +272,13 @@ function resistorBands(ohms) {
   return [BAND_COLORS[first], BAND_COLORS[second], BAND_COLORS[multiplier], "#c9a14a"];
 }
 
-const TWO = {
-  resistor: ["a", "b"],
-  capacitor: ["a", "b"],
-  inductor: ["a", "b"],
-  diode: ["anode", "cathode"],
-  voltage_source: ["positive", "negative"],
-  current_source: ["positive", "negative"],
+const TWO_SPECS = {
+  resistor: { pins: ["a", "b"], radius: 0.36, color: "#d9c7a1" },
+  capacitor: { pins: ["a", "b"], radius: 0.44, color: "#3d78c9" },
+  inductor: { pins: ["a", "b"], radius: 0.38, color: "#6b4a2b" },
+  diode: { pins: ["anode", "cathode"], radius: 0.26, color: "#202022" },
+  voltage_source: { pins: ["positive", "negative"], radius: 0.55, color: "#c93d3d" },
+  current_source: { pins: ["positive", "negative"], radius: 0.55, color: "#7a4fc9" },
 };
 
 // A part: its body between or above its pins, its leads, and what clicking it picks.
@@ -304,8 +302,9 @@ function makePart(instance) {
   };
   Object.values(pins).forEach(pad);
 
-  if (TWO[model] && pins[TWO[model][0]] && pins[TWO[model][1]]) {
-    const [first, second] = TWO[model].map((terminal) => pins[terminal]);
+  const spec = TWO_SPECS[model];
+  if (spec && pins[spec.pins[0]] && pins[spec.pins[1]]) {
+    const [first, second] = spec.pins.map((terminal) => pins[terminal]);
     const axis = new THREE.Vector3().subVectors(second, first);
     const span = axis.length();
     const unit = axis.clone().normalize();
@@ -313,13 +312,7 @@ function makePart(instance) {
     const length = Math.min(span * 0.7, 3);
     const start = middle.clone().addScaledVector(unit, -length / 2);
     const end = middle.clone().addScaledVector(unit, length / 2);
-    let radius = 0.36;
-    let color = "#d9c7a1";
-    if (model === "capacitor") { radius = 0.44; color = "#3d78c9"; }
-    if (model === "inductor") { radius = 0.38; color = "#6b4a2b"; }
-    if (model === "diode") { radius = 0.26; color = "#202022"; }
-    if (model === "voltage_source") { radius = 0.55; color = "#c93d3d"; }
-    if (model === "current_source") { radius = 0.55; color = "#7a4fc9"; }
+    const { radius, color } = spec;
     const material = bodyMaterial(color);
     const body = cylinderBetween(start, end, radius, material, 24);
     group.add(body);
@@ -353,10 +346,10 @@ function makePart(instance) {
       const cap = cylinderBetween(start.clone().addScaledVector(unit, -0.08), start, radius * 0.6, materials.lead, 24);
       group.add(cap);
     }
-    addLead(TWO[model][0], first.clone().setY(0.02), first.clone().setY(lift));
-    addLead(TWO[model][0], first.clone().setY(lift), start);
-    addLead(TWO[model][1], second.clone().setY(0.02), second.clone().setY(lift));
-    addLead(TWO[model][1], second.clone().setY(lift), end);
+    addLead(spec.pins[0], first.clone().setY(0.02), first.clone().setY(lift));
+    addLead(spec.pins[0], first.clone().setY(lift), start);
+    addLead(spec.pins[1], second.clone().setY(0.02), second.clone().setY(lift));
+    addLead(spec.pins[1], second.clone().setY(lift), end);
   } else {
     const [[left, bottom], [right, top]] = instance.body;
     const center = toWorld([(left + right) / 2, (bottom + top) / 2]);
@@ -563,23 +556,9 @@ function build() {
 let colorRange = { low: 0, high: 1, diverging: false };
 
 function computeRange() {
-  let dataLow = Infinity;
-  let dataHigh = -Infinity;
-  let hasFinite = false;
-  for (const series of Object.values(analysis()?.nets ?? {})) {
-    const range = minMax(series);
-    if (range.empty) continue;
-    if (!hasFinite) {
-      dataLow = range.low;
-      dataHigh = range.high;
-      hasFinite = true;
-    } else {
-      if (range.low < dataLow) dataLow = range.low;
-      if (range.high > dataHigh) dataHigh = range.high;
-    }
-  }
+  const { low: dataLow, high: dataHigh, empty } = rangeOf(Object.values(analysis()?.nets ?? {}));
   let diverging = false;
-  if (!hasFinite) {
+  if (empty) {
     colorRange = { low: 0, high: 1, diverging: false };
   } else {
     const low = Math.min(0, dataLow);
@@ -592,7 +571,7 @@ function computeRange() {
   }
   const stops = diverging ? DIVERGING : VIRIDIS;
   legendRamp.style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
-  const unit = analysis()?.kind === "ac" ? "V/V" : "V";
+  const unit = voltageUnit();
   legendEnds.children[0].textContent = si(colorRange.low, unit);
   legendEnds.children[1].textContent = si(colorRange.high, unit);
   let peak = 0;
@@ -643,8 +622,7 @@ function paint() {
   }
   const at = analysis();
   if (at) {
-    const value = at.axis[Math.min(frame, at.axis.length - 1)];
-    readout.textContent = at.kind === "operating_point" ? "operating point" : `${at.label} ${si(value, at.unit)}`;
+    readout.textContent = at.kind === "operating_point" ? "operating point" : `${at.label} ${si(atFrame(at.axis), at.unit)}`;
   }
   drawPlot();
   if (selection) renderInspector();
@@ -668,11 +646,19 @@ function flow(seconds) {
 
 // The camera.
 
+function boardMetrics() {
+  if (!bounds) return null;
+  return {
+    centerX: (bounds.minX + bounds.maxX) / 2,
+    centerZ: -(bounds.minY + bounds.maxY) / 2,
+    span: Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY),
+  };
+}
+
 function fit() {
-  if (!bounds) return;
-  const centerX = (bounds.minX + bounds.maxX) / 2;
-  const centerZ = -(bounds.minY + bounds.maxY) / 2;
-  const span = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+  const metrics = boardMetrics();
+  if (!metrics) return;
+  const { centerX, centerZ, span } = metrics;
   const distance = span * 0.95 + 4;
   controls.target.set(centerX, 0, centerZ);
   camera.position.set(centerX + distance * 0.25, distance * 0.75, centerZ + distance * 0.75);
@@ -687,10 +673,9 @@ function fit() {
 }
 
 function topView() {
-  if (!bounds) return;
-  const centerX = (bounds.minX + bounds.maxX) / 2;
-  const centerZ = -(bounds.minY + bounds.maxY) / 2;
-  const span = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+  const metrics = boardMetrics();
+  if (!metrics) return;
+  const { centerX, centerZ, span } = metrics;
   controls.target.set(centerX, 0, centerZ);
   camera.position.set(centerX, span * 1.4 + 6, centerZ + 0.01);
   controls.update();
@@ -776,22 +761,9 @@ function chart(canvasChart, lines, unit) {
   });
   const xRange = minMax(xs);
   if (xRange.empty) return;
-  let low = Infinity;
-  let high = -Infinity;
-  let hasValues = false;
-  for (const line of lines) {
-    const range = minMax(line.values);
-    if (range.empty) continue;
-    if (!hasValues) {
-      low = range.low;
-      high = range.high;
-      hasValues = true;
-    } else {
-      if (range.low < low) low = range.low;
-      if (range.high > high) high = range.high;
-    }
-  }
-  if (!hasValues) return;
+  const yRange = rangeOf(lines.map((line) => line.values));
+  if (yRange.empty) return;
+  let { low, high } = yRange;
   if (high - low < 1e-15) { high += 1; low -= 1; }
   // The axis is as wide as its longest label, a sign included.
   context.font = "11px ui-monospace, monospace";
@@ -829,7 +801,7 @@ function chart(canvasChart, lines, unit) {
     context.fillStyle = palette[index % palette.length];
     context.fillText(line.name, pad.left + 4 + (index % 3) * 110, pad.top + 10 + Math.floor(index / 3) * 12);
   });
-  const cursorValue = xs[Math.min(frame, xs.length - 1)];
+  const cursorValue = atFrame(xs);
   if (cursorValue !== null && Number.isFinite(cursorValue)) {
     const cursor = x(cursorValue);
     context.strokeStyle = style.getPropertyValue("--ink");
@@ -848,7 +820,7 @@ function drawPlot() {
   const named = Object.keys(at.nets).filter((name) => !/[/.:]/.test(name)).slice(0, 6);
   const lines = named.map((name) => ({ name, values: at.nets[name] }));
   plotHeader.children[1].textContent = at.kind === "ac" ? "magnitude per unit excitation" : "";
-  chart(plotCanvas, lines, at.kind === "ac" ? "V/V" : "V");
+  chart(plotCanvas, lines, voltageUnit(at));
 }
 
 function parameterRows(parameters, prefix = "") {
@@ -862,11 +834,11 @@ function parameterRows(parameters, prefix = "") {
 
 function renderInspector() {
   const at = analysis();
+  const unitV = voltageUnit(at);
   inspector.replaceChildren(h("button", { class: "close", title: "Close", onclick: () => select(null) }, "×"));
   if (selection.kind === "net") {
     const global = globalNet(selection.local);
     const values = series(global, "nets");
-    const unitV = at?.kind === "ac" ? "V/V" : "V";
     inspector.append(
       h("h2", {}, selection.local),
       h("div", { class: "kind" }, `net ${global}`),
@@ -889,7 +861,6 @@ function renderInspector() {
     h("div", { class: "kind" }, `${instance.model ? instance.model : `component ${instance.component}`} · ${path}`),
   );
   if (instance.component) inspector.append(h("p", {}, h("button", { onclick: () => open(path) }, "Open this component")));
-  const unitV = at?.kind === "ac" ? "V/V" : "V";
   const unitI = at?.kind === "ac" ? "A/V" : "A";
   const rows = Object.entries(instance.terminals).map(([terminal, local]) => {
     const name = `${path}.${terminal}`;
@@ -899,13 +870,13 @@ function renderInspector() {
       h("td", {}, local),
       h("td", { class: "num" }, si(voltage(globalNet(local)), unitV)),
       h("td", { class: "num" }, si(current(name), unitI)),
-      h("td", { class: "num" }, charges ? si(charges[Math.min(frame, charges.length - 1)], "C") : "-"));
+      h("td", { class: "num" }, charges ? si(atFrame(charges), "C") : "-"));
   });
   inspector.append(h("h3", {}, "Terminals"), h("table", {}, h("tr", {}, h("th", {}, "Terminal"), h("th", {}, "Net"), h("th", {}, "Voltage"), h("th", {}, "Current in"), h("th", {}, "Charge")), rows));
   if (at?.kind !== "ac") inspector.append(h("table", {}, h("tr", {}, h("th", {}, "Power taken"), h("td", { class: "num" }, si(power(part), "W")))));
   const variables = at?.variables?.[path];
   if (variables) {
-    inspector.append(h("h3", {}, "Variables"), h("table", {}, Object.entries(variables).map(([name, values]) => h("tr", {}, h("th", {}, name.replaceAll("_", " ")), h("td", { class: "num" }, si(values[Math.min(frame, values.length - 1)]))))));
+    inspector.append(h("h3", {}, "Variables"), h("table", {}, Object.entries(variables).map(([name, values]) => h("tr", {}, h("th", {}, name.replaceAll("_", " ")), h("td", { class: "num" }, si(atFrame(values)))))));
   }
   const terminals = Object.keys(instance.terminals);
   const matrix = terminals.map((row) => terminals.map((column) => at?.conductances?.[`${path}.${row}|${path}.${column}`]));
@@ -914,7 +885,7 @@ function renderInspector() {
       h("h3", {}, "Small-signal conductances, ∂I(row)/∂V(column)"),
       h("table", { class: "matrix" },
         h("tr", {}, h("th", {}, ""), terminals.map((column) => h("th", {}, column))),
-        terminals.map((row, index) => h("tr", {}, h("th", {}, row), matrix[index].map((values) => h("td", {}, values ? si(values[Math.min(frame, values.length - 1)], "S") : "0"))))),
+        terminals.map((row, index) => h("tr", {}, h("th", {}, row), matrix[index].map((values) => h("td", {}, values ? si(atFrame(values), "S") : "0"))))),
     );
   }
   const lines = terminals.map((terminal) => ({ name: terminal, values: series(`${path}.${terminal}`, "currents") })).filter((line) => line.values);
@@ -957,7 +928,7 @@ canvas.addEventListener("pointermove", (event) => {
   canvas.style.cursor = "pointer";
   const at = analysis();
   let text;
-  if (target.kind === "net") text = `${target.local}  ${si(voltage(globalNet(target.local)), at?.kind === "ac" ? "V/V" : "V")}`;
+  if (target.kind === "net") text = `${target.local}  ${si(voltage(globalNet(target.local)), voltageUnit(at))}`;
   else {
     const part = parts.find((candidate) => candidate.name === target.name);
     text = `${target.name}  ${part?.instance.model ?? part?.instance.component ?? ""}`;

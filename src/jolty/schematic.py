@@ -34,7 +34,6 @@ Examples:
 import math
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Final
 
 from matplotlib.axes import Axes
@@ -44,12 +43,15 @@ from matplotlib.patches import Circle, Polygon, Rectangle
 from jolty import ir
 from jolty.errors import JoltyError
 from jolty.layout import Net, Placed, Point, layout, split_name
+from jolty.plots import INK as _INK
+from jolty.plots import MUTED as _MUTED
+from jolty.plots import SURFACE as _SURFACE
+from jolty.plots import save
 from jolty.results import OperatingPointResult
 from jolty.units import format_si
 
-_INK: Final = "#0b0b0b"
-_MUTED: Final = "#52514e"
-_SURFACE: Final = "#fcfcfb"
+__all__ = ["draw", "save"]
+
 _WIRE: Final = "#1f3a8a"
 _MARKED: Final = "#c62828"
 _VOLTAGE: Final = "#b45309"
@@ -167,11 +169,6 @@ def _scope(circuit: ir.Circuit, path: str) -> _Scope:
         message = f"the circuit defines no component {scope.component}"
         raise JoltyError(message)
     return scope
-
-
-def save(figure: Figure, path: Path) -> None:
-    """Writes `figure` to `path` as a PNG image."""
-    figure.savefig(path, format="png", facecolor=figure.get_facecolor())
 
 
 def _draw_net(

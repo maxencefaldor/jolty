@@ -18,21 +18,14 @@ from dataclasses import replace
 from typing import Annotated, Final, Literal
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
-from jolty import results, specs
+from jolty import ir, results, specs, unknowns
 from jolty.devices import LogicLevel, format_logic_level
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
 type Nature = results.Nature
-
-_SYMBOLS: dict[Nature, str] = {
-    "voltage": "V",
-    "current": "A",
-    "temperature": "K",
-    "state": "",
-}
 
 
 def _shown(value: float, nature: Nature) -> str:
@@ -42,10 +35,10 @@ def _shown(value: float, nature: Nature) -> str:
     """
     if nature == "state":
         return f"{value:.4g}"
-    return format_si(value, _SYMBOLS[nature])
+    return format_si(value, unknowns.SYMBOLS[nature])
 
 
-_STRATEGIES = {
+_STRATEGIES: Final = {
     "direct": "Newton iteration",
     "gmin_stepping": "gmin stepping",
     "junction_gmin_stepping": "junction gmin stepping",
@@ -76,13 +69,7 @@ _ITERATIONS: Final = (
 """What a report's iterations of an operating point are."""
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(
-        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
-    )
-
-
-class Value(_Model):
+class Value(ir.FrozenModel):
     """The value of one unknown, in volts or amperes."""
 
     unknown: str
@@ -90,7 +77,7 @@ class Value(_Model):
     value: float
 
 
-class Extent(_Model):
+class Extent(ir.FrozenModel):
     """The values one unknown takes over an analysis, in volts or amperes."""
 
     unknown: str
@@ -101,14 +88,14 @@ class Extent(_Model):
     last: float
 
 
-class NetLevel(_Model):
+class NetLevel(ir.FrozenModel):
     """The level of one logic net."""
 
     net: str
     level: LogicLevel
 
 
-class Activity(_Model):
+class Activity(ir.FrozenModel):
     """The levels one logic net takes over an analysis."""
 
     net: str
@@ -117,14 +104,14 @@ class Activity(_Model):
     last: LogicLevel
 
 
-class Margin(_Model):
+class Margin(ir.FrozenModel):
     """A transistor's margin to a boundary of its regions of operation, in volts."""
 
     variable: str = Field(description="Its variable, such as saturation_margin.")
     value: float
 
 
-class Transistor(_Model):
+class Transistor(ir.FrozenModel):
     """A transistor's region of operation and its margins to the regions' bounds."""
 
     path: str
@@ -132,7 +119,7 @@ class Transistor(_Model):
     margins: tuple[Margin, ...]
 
 
-class OperatingPointReport(_Model):
+class OperatingPointReport(ir.FrozenModel):
     """An operating point."""
 
     kind: Literal["operating_point"] = "operating_point"
@@ -179,12 +166,15 @@ class OperatingPointReport(_Model):
             ]
             for transistor in self.transistors
         ]
-        head = "regions, nearest a boundary first:"
-        listed = _join(head, _table(regions), self.unlisted_transistors)
+        listed = _join(
+            "regions, nearest a boundary first:",
+            _table(regions),
+            self.unlisted_transistors,
+        )
         return f"{text}\n{_indented(listed)}"
 
 
-class Solutions(_Model):
+class Solutions(ir.FrozenModel):
     """The value of one unknown at each DC solution, in volts or amperes."""
 
     unknown: str
@@ -192,7 +182,7 @@ class Solutions(_Model):
     values: tuple[float, ...] = Field(description="Its value at each solution.")
 
 
-class OperatingPointsReport(_Model):
+class OperatingPointsReport(ir.FrozenModel):
     """Every DC solution a search found, the operating point first."""
 
     kind: Literal["operating_points"] = "operating_points"
@@ -229,7 +219,7 @@ class OperatingPointsReport(_Model):
         return _join(head, _table(rows), self.unlisted)
 
 
-class DcSweepReport(_Model):
+class DcSweepReport(ir.FrozenModel):
     """A DC sweep."""
 
     kind: Literal["dc_sweep"] = "dc_sweep"
@@ -269,7 +259,7 @@ class DcSweepReport(_Model):
             swept = f"{self.source}'s {self.parameter}"
             first, last = f"{self.first:.4g}", f"{self.last:.4g}"
         else:
-            unit = _SYMBOLS[self.nature]
+            unit = unknowns.SYMBOLS[self.nature]
             swept = self.source
             first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
@@ -285,19 +275,25 @@ class DcSweepReport(_Model):
         ]
         if aided:
             head += f", {', '.join(aided)}"
-        lines = _extents(self.extents) + _activities(self.activities)
-        return _join(head, lines, self.unlisted)
+        return _join(
+            head, _extents(self.extents) + _activities(self.activities), self.unlisted
+        )
 
 
-class AcReport(_Model):
-    """A small-signal frequency response, as magnitudes per unit excitation."""
+class _FrequencyReport(ir.FrozenModel):
+    """Shared frequency-span fields for frequency-domain analysis reports."""
 
-    kind: Literal["ac"] = "ac"
     name: str
-    source: str = Field(description="The excited source's path.")
     start: float = Field(description="Lowest frequency, in hertz.")
     stop: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
+
+
+class AcReport(_FrequencyReport):
+    """A small-signal frequency response, as magnitudes per unit excitation."""
+
+    kind: Literal["ac"] = "ac"
+    source: str = Field(description="The excited source's path.")
     magnitudes: tuple[Extent, ...] = Field(
         description="Magnitude of each unknown's phasor, from the lowest frequency "
         "to the highest."
@@ -315,7 +311,7 @@ class AcReport(_Model):
         return _join(head, _extents(self.magnitudes), self.unlisted)
 
 
-class ChargeLeak(_Model):
+class ChargeLeak(ir.FrozenModel):
     """The electrical net with the largest integrated KCL residual over a run."""
 
     net: str = Field(description="The electrical net with the largest absolute leak.")
@@ -328,19 +324,10 @@ class ChargeLeak(_Model):
     )
 
 
-def _charge_leak_line(leak: ChargeLeak) -> str:
-    """The report line stating the electrical net with the largest charge leak."""
-    signed = format_si(leak.signed, "C")
-    absolute = format_si(leak.absolute, "C")
-    return f"  largest charge leak: {leak.net}  {signed} signed, {absolute} absolute"
+class _WaveformReport(ir.FrozenModel):
+    """Shared fields and rendering for time-domain waveform reports."""
 
-
-class TransientReport(_Model):
-    """A transient analysis."""
-
-    kind: Literal["transient"] = "transient"
     name: str
-    stop: float = Field(description="Time the analysis ended, in seconds.")
     accepted: int = Field(description="Time steps accepted.")
     rejected: int = Field(
         description="Time steps rejected for their error or for Newton iteration that "
@@ -351,7 +338,6 @@ class TransientReport(_Model):
         "a detector's crossing, a logic driver's change or a device's jump."
     )
     extents: tuple[Extent, ...]
-    activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
     charge_leak: ChargeLeak | None = Field(
         default=None,
@@ -360,22 +346,46 @@ class TransientReport(_Model):
         "electrical nets, or when the solver reports no charge leak.",
     )
 
-    def describe(self) -> str:
-        """The report as text."""
-        steps = _steps(self.accepted, self.rejected, self.landed)
-        head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
-        lines = _extents(self.extents) + _activities(self.activities)
+    def _steps_text(self) -> str:
+        steps = f"in {self.accepted} steps, {self.rejected} rejected"
+        if self.landed:
+            steps += f", {self.landed} shortened to land on events"
+        return steps
+
+    def _format_waveforms(self, head: str, lines: list[str]) -> str:
         text = _join(head, lines, self.unlisted)
         if self.charge_leak is None:
             return text
-        return f"{text}\n{_charge_leak_line(self.charge_leak)}"
+        signed = format_si(self.charge_leak.signed, "C")
+        absolute = format_si(self.charge_leak.absolute, "C")
+        return (
+            f"{text}\n  largest charge leak: {self.charge_leak.net}  "
+            f"{signed} signed, {absolute} absolute"
+        )
 
 
-class PeriodicSteadyStateReport(_Model):
+class TransientReport(_WaveformReport):
+    """A transient analysis."""
+
+    kind: Literal["transient"] = "transient"
+    stop: float = Field(description="Time the analysis ended, in seconds.")
+    activities: tuple[Activity, ...] = ()
+
+    def describe(self) -> str:
+        """The report as text."""
+        head = (
+            f"{self.name}: transient to {format_si(self.stop, 's')} "
+            f"{self._steps_text()}"
+        )
+        return self._format_waveforms(
+            head, _extents(self.extents) + _activities(self.activities)
+        )
+
+
+class PeriodicSteadyStateReport(_WaveformReport):
     """One period of a periodic steady state."""
 
     kind: Literal["periodic_steady_state"] = "periodic_steady_state"
-    name: str
     period: float = Field(
         description="The period in seconds: the analysis's, or an oscillator's, which "
         "it found."
@@ -384,55 +394,22 @@ class PeriodicSteadyStateReport(_Model):
         description="The periods shooting simulated to find the steady state; the "
         "steps counted are the last's."
     )
-    accepted: int = Field(description="Time steps the last period accepted.")
-    rejected: int = Field(
-        description="Time steps the last period rejected for their error or for "
-        "Newton iteration that did not converge."
-    )
-    landed: int = Field(
-        description="Time steps the last period tried again shorter to land on an "
-        "event within them, a device's jump."
-    )
-    extents: tuple[Extent, ...]
-    unlisted: int = Field(description="Unknowns left out of the list.")
-    charge_leak: ChargeLeak | None = Field(
-        default=None,
-        description="The electrical net with the largest cumulative absolute charge "
-        "leak over the last period, when nonzero; null when zero, when there are no "
-        "electrical nets, or when the solver reports no charge leak.",
-    )
 
     def describe(self) -> str:
         """The report as text."""
-        steps = _steps(self.accepted, self.rejected, self.landed)
         head = (
             f"{self.name}: periodic steady state of period "
             f"{format_si(self.period, 's')}, {format_si(1 / self.period, 'Hz')}, "
-            f"found in {self.periods} periods, the last {steps}"
+            f"found in {self.periods} periods, the last {self._steps_text()}"
         )
-        text = _join(head, _extents(self.extents), self.unlisted)
-        if self.charge_leak is None:
-            return text
-        return f"{text}\n{_charge_leak_line(self.charge_leak)}"
+        return self._format_waveforms(head, _extents(self.extents))
 
 
-def _steps(accepted: int, rejected: int, landed: int) -> str:
-    """How many time steps a transient or a period took: its steps' clause."""
-    steps = f"in {accepted} steps, {rejected} rejected"
-    if landed:
-        steps += f", {landed} shortened to land on events"
-    return steps
-
-
-class StabilityReport(_Model):
+class StabilityReport(_FrequencyReport):
     """The loop gain through a probe, and the margins it leaves."""
 
     kind: Literal["stability"] = "stability"
-    name: str
     probe: str = Field(description="The probe's path.")
-    start: float = Field(description="Lowest frequency, in hertz.")
-    stop: float = Field(description="Highest frequency, in hertz.")
-    frequencies: int = Field(description="Frequencies the analysis solved.")
     gain: float = Field(description="The loop gain at the lowest frequency, in dB.")
     phase: float = Field(
         description="The loop gain's phase at the lowest frequency, in degrees."
@@ -471,7 +448,7 @@ class StabilityReport(_Model):
         return "\n".join(lines)
 
 
-class TransferFunctionReport(_Model):
+class TransferFunctionReport(ir.FrozenModel):
     """The small-signal transfer function at DC: a gain and two resistances."""
 
     kind: Literal["transfer_function"] = "transfer_function"
@@ -497,12 +474,12 @@ class TransferFunctionReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         over = "" if self.reference is None else f" over {self.reference}"
+        header = (
+            f"{self.name}: transfer function from {self.source} to {self.output}{over}"
+        )
         return "\n".join(
             [
-                (
-                    f"{self.name}: transfer function from {self.source} to "
-                    f"{self.output}{over}"
-                ),
+                header,
                 f"  gain {self.gain:.6g} {self.unit}",
                 f"  input resistance {format_si(self.input_resistance, 'Ω')}",
                 f"  output resistance {format_si(self.output_resistance, 'Ω')}",
@@ -510,7 +487,7 @@ class TransferFunctionReport(_Model):
         )
 
 
-class NoiseContribution(_Model):
+class NoiseContribution(ir.FrozenModel):
     """What one noise source of a device adds to a noise analysis's output."""
 
     instance: str = Field(description="The device's path.")
@@ -526,19 +503,15 @@ class NoiseContribution(_Model):
     )
 
 
-class NoiseReport(_Model):
+class NoiseReport(_FrequencyReport):
     """The noise at an output, and the devices that make the most of it."""
 
     kind: Literal["noise"] = "noise"
-    name: str
     output: str = Field(description="The output, an unknown by name.")
     reference: str | None = Field(
         description="The node the output voltage is over; null for the ground."
     )
     nature: Nature = Field(description="What the output is.")
-    start: float = Field(description="Lowest frequency, in hertz.")
-    stop: float = Field(description="Highest frequency, in hertz.")
-    frequencies: int = Field(description="Frequencies the analysis solved.")
     first: float = Field(
         description="The output's noise density at the lowest frequency, in V/√Hz or "
         "A/√Hz."
@@ -570,18 +543,20 @@ class NoiseReport(_Model):
         """The report as text."""
         lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
-        unit = _SYMBOLS[self.nature]
+        unit = unknowns.SYMBOLS[self.nature]
         head = (
             f"{self.name}: noise at {self.output}{over} at {self.frequencies} "
             f"frequencies from {lowest} to {highest}"
         )
         density = f"{unit}/\N{SQUARE ROOT}Hz"
         first, last = format_si(self.first, density), format_si(self.last, density)
-        lines = [head, f"  {first} at {lowest}, {last} at {highest}"]
+        lines = [f"  {first} at {lowest}, {last} at {highest}"]
         if self.rms is not None:
             total = f"  {format_si(self.rms, unit)} RMS over the frequencies"
             if self.referred is not None and self.referred_nature is not None:
-                referred = format_si(self.referred, _SYMBOLS[self.referred_nature])
+                referred = format_si(
+                    self.referred, unknowns.SYMBOLS[self.referred_nature]
+                )
                 total += f", {referred} RMS referred to {self.source}"
             lines.append(total)
             lines.extend(
@@ -597,10 +572,10 @@ class NoiseReport(_Model):
                     ]
                 )
             )
-        return _join(head, lines[1:], self.unlisted)
+        return _join(head, lines, self.unlisted)
 
 
-class Root(_Model):
+class Root(ir.FrozenModel):
     """A pole or a zero, or a conjugate pair of them."""
 
     real: float = Field(description="The real part, in radians per second.")
@@ -626,7 +601,7 @@ class Root(_Model):
         return [kind, value, format_si(self.frequency, "Hz"), damping]
 
 
-class PoleZeroReport(_Model):
+class PoleZeroReport(ir.FrozenModel):
     """The poles of the linearized circuit, and the zeros of a transfer function."""
 
     kind: Literal["pole_zero"] = "pole_zero"
@@ -659,7 +634,7 @@ class PoleZeroReport(_Model):
         return _join(head, _table(rows), self.unlisted)
 
 
-class Derivative(_Model):
+class Derivative(ir.FrozenModel):
     """An output's derivative with respect to one parameter."""
 
     instance: str = Field(description="The device's path.")
@@ -677,7 +652,7 @@ class Derivative(_Model):
     )
 
 
-class OutputSensitivity(_Model):
+class OutputSensitivity(ir.FrozenModel):
     """An output's derivatives with respect to the parameters."""
 
     output: str
@@ -706,13 +681,9 @@ _ALONG: Final[dict[Differentiated, str]] = {
 }
 
 
-class SensitivityReport(_Model):
-    """Sensitivities at the operating point, or along a sweep, a response or time.
+class _DifferentiatedReport(ir.FrozenModel):
+    """Shared fields and helpers for sensitivity and mismatch reports."""
 
-    Along a periodic steady state's period, too, and an oscillator's period's.
-    """
-
-    kind: Literal["sensitivity"] = "sensitivity"
     name: str
     of: Differentiated = Field(description="The analysis differentiated.")
     points: int = Field(description="The points the derivatives are taken at.")
@@ -727,76 +698,90 @@ class SensitivityReport(_Model):
         default="",
         description="The unit of the points: V or A along a sweep, Hz, or s.",
     )
+    period: float | None = Field(
+        default=None,
+        description="An oscillator's period, in seconds; null for any other analysis.",
+    )
+    unlisted: int = Field(description="Entries left out of each output's list.")
+
+    def _where(self) -> str:
+        if self.of == "operating_point":
+            found = _found(self.strategy or "", self.iterations)
+            return f"at the operating point, {found}"
+        return _ALONG[self.of].format(points=self.points)
+
+    def _append_rows(self, lines: list[str], rows: list[list[str]]) -> None:
+        lines.extend(f"  {row}" for row in _table(rows))
+        if self.unlisted:
+            lines.append(f"      ... and {self.unlisted} more in the results file")
+
+
+class SensitivityReport(_DifferentiatedReport):
+    """Sensitivities at the operating point, or along a sweep, a response or time.
+
+    Along a periodic steady state's period, too, and an oscillator's period's.
+    """
+
+    kind: Literal["sensitivity"] = "sensitivity"
     parameters: int = Field(
         description="Parameters the derivatives are with respect to."
     )
     outputs: tuple[OutputSensitivity, ...]
-    period: float | None = Field(
-        default=None,
-        description="An oscillator's period, in seconds, whose derivatives "
-        "period_derivatives lists; null for any other analysis.",
-    )
     period_derivatives: tuple[Derivative, ...] = Field(
         default=(),
         description="An oscillator's period's derivative with respect to the first "
         "parameters, in the circuit's order.",
     )
-    unlisted: int = Field(description="Parameters left out of each output's list.")
 
     def describe(self) -> str:
         """The report as text."""
-        if self.of == "operating_point":
-            found = _found(self.strategy or "", self.iterations)
-            where = f"at the operating point, {found}"
-        else:
-            where = _ALONG[self.of].format(points=self.points)
-        head = (
+        header = (
             f"{self.name}: derivatives with respect to {self.parameters} parameters "
-            f"{where}"
+            f"{self._where()}"
         )
-        lines = [head]
+        lines = [header]
         for output in self.outputs:
-            if output.value is None:
-                lines.append(f"  {output.output}")
-            else:
-                value = _shown(output.value, output.nature)
-                lines.append(f"  {output.output} = {value}")
-            rows = [
+            lines.append(
+                f"  {output.output}"
+                if output.value is None
+                else f"  {output.output} = {_shown(output.value, output.nature)}"
+            )
+            self._append_rows(
+                lines,
                 [
-                    each.instance,
-                    each.parameter,
-                    f"at {each.value!r}",
-                    self._derivative(each),
-                ]
-                for each in output.derivatives
-            ]
-            lines.extend(f"  {row}" for row in _table(rows))
-            if self.unlisted:
-                lines.append(f"      ... and {self.unlisted} more in the results file")
+                    [
+                        each.instance,
+                        each.parameter,
+                        f"at {each.value!r}",
+                        self._derivative(each),
+                    ]
+                    for each in output.derivatives
+                ],
+            )
         if self.period is not None:
             lines.append(f"  period = {format_si(self.period, 's')}")
-            rows = [
+            self._append_rows(
+                lines,
                 [
-                    each.instance,
-                    each.parameter,
-                    f"at {each.value!r}",
-                    repr(each.derivative),
-                ]
-                for each in self.period_derivatives
-            ]
-            lines.extend(f"  {row}" for row in _table(rows))
-            if self.unlisted:
-                lines.append(f"      ... and {self.unlisted} more in the results file")
+                    [
+                        each.instance,
+                        each.parameter,
+                        f"at {each.value!r}",
+                        repr(each.derivative),
+                    ]
+                    for each in self.period_derivatives
+                ],
+            )
         return "\n".join(lines)
 
     def _derivative(self, derivative: Derivative) -> str:
         if derivative.at is None:
             return repr(derivative.derivative)
-        at = format_si(derivative.at, self.unit)
-        return f"largest {derivative.derivative!r} at {at}"
+        where = format_si(derivative.at, self.unit)
+        return f"largest {derivative.derivative!r} at {where}"
 
 
-class MismatchContribution(_Model):
+class MismatchContribution(ir.FrozenModel):
     """What one random variable adds to an output's spread."""
 
     instance: str | None = Field(
@@ -819,7 +804,7 @@ class MismatchContribution(_Model):
     share: float = Field(description="Its fraction of the output's variance.")
 
 
-class OutputMismatch(_Model):
+class OutputMismatch(ir.FrozenModel):
     """How far an output, or a response's magnitude or phase, spreads, and why."""
 
     output: str
@@ -849,67 +834,41 @@ class OutputMismatch(_Model):
     )
 
 
-class MismatchReport(_Model):
+class MismatchReport(_DifferentiatedReport):
     """How far outputs spread with the random variables, to first order, and why."""
 
     kind: Literal["mismatch"] = "mismatch"
-    name: str
-    of: Differentiated = Field(description="The analysis differentiated.")
-    points: int = Field(description="The points the spreads are taken at.")
-    strategy: str | None = Field(
-        default=None,
-        description="How the engine found the operating point: direct, gmin_stepping, "
-        "junction_gmin_stepping, source_stepping or pseudo_transient; null along a "
-        "sweep or a transient.",
-    )
-    iterations: int | None = Field(default=None, description=_ITERATIONS)
-    unit: str = Field(
-        default="",
-        description="The unit of the points: V or A along a sweep, Hz, or s.",
-    )
     random_variables: int = Field(
         description="Random variables the outputs spread with."
     )
     outputs: tuple[OutputMismatch, ...]
-    period: float | None = Field(
-        default=None,
-        description="An oscillator's period, in seconds; null for any other analysis.",
-    )
     period_standard_deviation: float | None = Field(
         default=None,
         description="The standard deviation of an oscillator's period, to first "
         "order, in seconds; null for any other analysis.",
     )
-    unlisted: int = Field(
-        description="Random variables left out of each output's list."
-    )
 
     def describe(self) -> str:
         """The report as text."""
-        if self.of == "operating_point":
-            found = _found(self.strategy or "", self.iterations)
-            where = f"at the operating point, {found}"
-        else:
-            where = _ALONG[self.of].format(points=self.points)
-        head = (
+        header = (
             f"{self.name}: standard deviations, to first order, with "
-            f"{self.random_variables} random variables {where}"
+            f"{self.random_variables} random variables {self._where()}"
         )
-        lines = [head]
+        lines = [header]
         for output in self.outputs:
             lines.append(f"  {self._spread(output)}")
-            rows = [
+            self._append_rows(
+                lines,
                 [
-                    f"lot {each.lot}" if each.instance is None else each.instance,
-                    each.name,
-                    self._written(each.contribution, output),
-                    f"{each.share:.1%}",
-                ]
-                for each in output.contributions
-            ]
-            lines.extend(f"  {row}" for row in _table(rows))
-            if self.unlisted:
-                lines.append(f"      ... and {self.unlisted} more in the results file")
+                    [
+                        f"lot {each.lot}" if each.instance is None else each.instance,
+                        each.name,
+                        self._written(each.contribution, output),
+                        f"{each.share:.1%}",
+                    ]
+                    for each in output.contributions
+                ],
+            )
         if self.period is not None and self.period_standard_deviation is not None:
             period = format_si(self.period, "s")
             deviation = format_si(self.period_standard_deviation, "s")
@@ -917,7 +876,6 @@ class MismatchReport(_Model):
         return "\n".join(lines)
 
     def _spread(self, output: OutputMismatch) -> str:
-        """The line of `output`: what spreads, its value, and its standard deviation."""
         named = (
             output.output if output.part is None else f"{output.output}'s {output.part}"
         )
@@ -930,13 +888,12 @@ class MismatchReport(_Model):
 
     @staticmethod
     def _written(value: float, output: OutputMismatch) -> str:
-        """`value`, a spread of `output`, with its unit."""
         if output.part == "phase":
             return f"{value:.4g}°"
         return _shown(value, output.nature)
 
 
-class FailureReport(_Model):
+class FailureReport(ir.FrozenModel):
     """An analysis that failed."""
 
     kind: Literal["failure"] = "failure"
@@ -948,7 +905,7 @@ class FailureReport(_Model):
         return f"{self.name}: failed: {self.error}"
 
 
-class CornerReport(_Model):
+class CornerReport(ir.FrozenModel):
     """What a corner of the plan found.
 
     It lists why the circuit does not elaborate there, or which analyses failed there.
@@ -987,23 +944,20 @@ class CornerReport(_Model):
         return f"{head}: every analysis ended"
 
 
-class MonteCarloReport(_Model):
-    """What a Monte Carlo analysis found over its samples."""
+class _BatchReport(ir.FrozenModel):
+    """Shared fields and rendering for Monte Carlo and variant batch reports."""
 
-    samples: int
-    seed: int
-    toleranced: int = Field(description="The toleranced parameters each sample draws.")
-    mismatched: int = Field(
-        default=0,
-        description="The foundry's devices each sample draws its kit's mismatch for.",
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
     )
+
     corners: tuple[str, ...] = Field(
         default=(),
-        description="The corners each sample also ran at, after the plan's own "
+        description="The corners each run also ran at, after the plan's own "
         "conditions.",
     )
     failed: int = Field(
-        description="Samples on which the circuit did not elaborate or an analysis "
+        description="Runs on which the circuit did not elaborate or an analysis "
         "failed, at the plan's own conditions or a corner."
     )
     spreads: tuple[Spread, ...] = Field(
@@ -1012,7 +966,26 @@ class MonteCarloReport(_Model):
     yield_: Yield | None = Field(
         default=None,
         alias="yield",
-        description="How many samples meet every requirement; null without specs.",
+        description="How many runs meet every requirement; null without specs.",
+    )
+
+    def _describe_batch(self, head: str, count: int) -> str:
+        lines = [head]
+        lines.extend(f"  {spread.describe(count)}" for spread in self.spreads)
+        if self.yield_ is not None:
+            lines.append(f"  {self.yield_.describe()}")
+        return "\n".join(lines)
+
+
+class MonteCarloReport(_BatchReport):
+    """What a Monte Carlo analysis found over its samples."""
+
+    samples: int
+    seed: int
+    toleranced: int = Field(description="The toleranced parameters each sample draws.")
+    mismatched: int = Field(
+        default=0,
+        description="The foundry's devices each sample draws its kit's mismatch for.",
     )
 
     def describe(self) -> str:
@@ -1027,11 +1000,7 @@ class MonteCarloReport(_Model):
             f"monte carlo: {self.samples} samples of {self.toleranced} toleranced "
             f"parameters{mismatch}{at}, seed {self.seed}; {self.failed} failed"
         )
-        lines = [head]
-        lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)
-        if self.yield_ is not None:
-            lines.append(f"  {self.yield_.describe()}")
-        return "\n".join(lines)
+        return self._describe_batch(head, self.samples)
 
 
 LARGE: Final = 10e9
@@ -1039,7 +1008,7 @@ LARGE: Final = 10e9
 past which a shard's report warns."""
 
 
-class ShardReport(_Model):
+class ShardReport(ir.FrozenModel):
     """What a shard of a plan's Monte Carlo analysis ran, and the file it wrote."""
 
     start: int = Field(description="The first sample the shard ran.")
@@ -1081,7 +1050,7 @@ class ShardReport(_Model):
         )
 
 
-class VariantsReport(_Model):
+class VariantsReport(_BatchReport):
     """What the runs of a plan's variants found."""
 
     runs: int
@@ -1090,37 +1059,16 @@ class VariantsReport(_Model):
         description="The numbers the variants vary, such as 'R1 resistance' or "
         "'temperature'.",
     )
-    corners: tuple[str, ...] = Field(
-        default=(),
-        description="The corners each run also ran at, after the plan's own "
-        "conditions.",
-    )
-    failed: int = Field(
-        description="Runs on which the circuit did not elaborate or an analysis "
-        "failed, at the plan's own conditions or a corner."
-    )
-    spreads: tuple[Spread, ...] = Field(
-        default=(), description="What each requirement of the specs read."
-    )
-    yield_: Yield | None = Field(
-        default=None,
-        alias="yield",
-        description="How many runs meet every requirement; null without specs.",
-    )
 
     def describe(self) -> str:
         """The report as text."""
         at = "".join(f", at {name}" for name in self.corners)
         varied = " and ".join(self.parameters) or "nothing"
         head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
-        lines = [head]
-        lines.extend(f"  {spread.describe(self.runs)}" for spread in self.spreads)
-        if self.yield_ is not None:
-            lines.append(f"  {self.yield_.describe()}")
-        return "\n".join(lines)
+        return self._describe_batch(head, self.runs)
 
 
-class WorstCaseReport(_Model):
+class WorstCaseReport(ir.FrozenModel):
     """What each requirement read at the extremes of the tolerances that worsen it."""
 
     step: float = Field(
@@ -1210,10 +1158,7 @@ def _waveforms_report(
     result: results.TransientResult,
     listed: tuple[tuple[Extent, ...], tuple[str, ...], int],
 ) -> TransientReport | PeriodicSteadyStateReport:
-    """The report of `result`, a transient's or a period's waveforms.
-
-    It lists `listed`: its unknowns' extents, its logic nets and how many it leaves out.
-    """
+    """The report of `result`, a transient's or a period's waveforms."""
     extents, nets, unlisted = listed
     statistics = result.statistics
     charge_leak = _largest_charge_leak(result)
@@ -1252,15 +1197,16 @@ def report(
     It lists its first `max_unknowns` unknowns, then its first logic nets, up to
     `max_unknowns` in all.
     """
-    unknowns = result.unknowns[:max_unknowns]
-    nets = _nets(result)[: max_unknowns - len(unknowns)]
-    unlisted = len(result.unknowns) + len(_nets(result)) - len(unknowns) - len(nets)
+    listed_unknowns = result.unknowns[:max_unknowns]
+    all_nets = results.nets_of(result)
+    nets = all_nets[: max_unknowns - len(listed_unknowns)]
+    unlisted = len(result.unknowns) + len(all_nets) - len(listed_unknowns) - len(nets)
     match result:
         case results.OperatingPointResult():
             values = tuple(
                 Value(unknown=unknown.name, nature=unknown.nature, value=float(value))
                 for unknown, value in zip(
-                    unknowns, result.values[:max_unknowns], strict=True
+                    listed_unknowns, result.values[:max_unknowns], strict=True
                 )
             )
             levels = tuple(
@@ -1292,7 +1238,7 @@ def report(
                     strategy: result.strategies.count(strategy)
                     for strategy in dict.fromkeys(result.strategies)
                 },
-                extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
+                extents=_extents_of(listed_unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(
                     _activity(net, result.logic_level(net)) for net in nets
                 ),
@@ -1306,12 +1252,12 @@ def report(
                 stop=float(result.frequencies[-1]),
                 frequencies=len(result.frequencies),
                 magnitudes=_extents_of(
-                    unknowns, np.abs(result.values[:, :max_unknowns])
+                    listed_unknowns, np.abs(result.values[:, :max_unknowns])
                 ),
                 unlisted=unlisted,
             )
         case results.TransientResult():
-            extents = _extents_of(unknowns, result.values[:, :max_unknowns])
+            extents = _extents_of(listed_unknowns, result.values[:, :max_unknowns])
             return _waveforms_report(name, result, (extents, nets, unlisted))
         case results.OperatingPointsResult():
             return OperatingPointsReport(
@@ -1326,19 +1272,16 @@ def report(
                             float(point.values[index]) for point in result.points
                         ),
                     )
-                    for index, unknown in enumerate(unknowns)
+                    for index, unknown in enumerate(listed_unknowns)
                 ),
-                unlisted=len(result.unknowns) - len(unknowns),
+                unlisted=len(result.unknowns) - len(listed_unknowns),
             )
         case _:
             return _linear(name, result, max_unknowns)
 
 
 def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
-    """The region and margins of each transistor `point` recorded.
-
-    Those nearest a boundary come first, by the least magnitude of their margins.
-    """
+    """The region and margins of each transistor `point` recorded, nearest first."""
     found = [
         Transistor(
             path=device.path,
@@ -1481,17 +1424,14 @@ def _transfer(
         output=result.output,
         reference=result.reference,
         gain=result.gain,
-        unit=f"{_SYMBOLS[output]}/{_SYMBOLS[result.input]}",
+        unit=f"{unknowns.SYMBOLS[output]}/{unknowns.SYMBOLS[result.input]}",
         input_resistance=result.input_resistance,
         output_resistance=result.output_resistance,
     )
 
 
 def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
-    """The report of the stability analysis `name`.
-
-    Its margins are read over the positive frequencies, as log frequency needs.
-    """
+    """The report of the stability analysis `name`."""
     order = np.argsort(result.frequencies)
     lowest = result.gains[order[0]]
     positive = result.frequencies > 0
@@ -1520,6 +1460,24 @@ def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | 
         return measure.read(result).value
     except specs.MeasureError:
         return None
+
+
+def _differentiated(
+    result: results.DifferentiatedResult,
+) -> tuple[Differentiated, int, str, results.OperatingPointResult | None]:
+    """What a sensitivity or a mismatch analysis differentiated, as `result` says."""
+    match result:
+        case results.OperatingPointResult():
+            return "operating_point", 1, "", result
+        case results.DcSweepResult():
+            unit = "" if result.nature is None else unknowns.SYMBOLS[result.nature]
+            return "dc_sweep", len(result.swept), unit, None
+        case results.AcResult():
+            return "ac", len(result.frequencies), "Hz", result.operating_point
+        case results.PeriodicSteadyStateResult():
+            return "periodic_steady_state", len(result.times), "s", None
+        case results.TransientResult():
+            return "transient", len(result.times), "s", None
 
 
 def _sensitivities(
@@ -1567,10 +1525,7 @@ def _sensitivities(
 def _output(
     result: results.SensitivityResult, output: str, max_unknowns: int
 ) -> OutputSensitivity:
-    """The value of `output` and its derivatives by the first `max_unknowns` parameters.
-
-    Along an analysis other than the operating point, each is where it is largest.
-    """
+    """The value of `output` and its derivatives by the first `max_unknowns` params."""
     gradient = result.gradient(output)
     column = results.column(result.unknowns, output)
     nature = result.unknowns[column].nature
@@ -1586,7 +1541,7 @@ def _output(
             | results.TransientResult() as along
         ):
             value = None
-            axis = _axis(along)
+            axis = results.axis_of(along)
             found = []
             for derivatives in gradient[:, :max_unknowns].T:
                 largest = int(np.argmax(np.abs(derivatives)))
@@ -1610,38 +1565,10 @@ def _output(
     )
 
 
-def _differentiated(
-    result: results.OperatingPointResult
-    | results.DcSweepResult
-    | results.AcResult
-    | results.TransientResult,
-) -> tuple[Differentiated, int, str, results.OperatingPointResult | None]:
-    """What a sensitivity or a mismatch analysis differentiated, as `result` says.
-
-    That is the analysis, its points, their unit, and its operating point, if it solved
-    one.
-    """
-    match result:
-        case results.OperatingPointResult():
-            return "operating_point", 1, "", result
-        case results.DcSweepResult():
-            unit = "" if result.nature is None else _SYMBOLS[result.nature]
-            return "dc_sweep", len(result.swept), unit, None
-        case results.AcResult():
-            return "ac", len(result.frequencies), "Hz", result.operating_point
-        case results.PeriodicSteadyStateResult():
-            return "periodic_steady_state", len(result.times), "s", None
-        case results.TransientResult():
-            return "transient", len(result.times), "s", None
-
-
 def _mismatch(
     name: str, result: results.MismatchResult, max_unknowns: int
 ) -> MismatchReport:
-    """The report of the mismatch analysis `name`.
-
-    It lists each output's `max_unknowns` largest contributions.
-    """
+    """The report of the mismatch analysis `name`."""
     of, points, unit, point = _differentiated(result.result)
     parts: tuple[results.Part | None, ...] = (
         ("magnitude", "phase") if of == "ac" else (None,)
@@ -1678,11 +1605,7 @@ def _output_mismatch(
     part: results.Part | None,
     listed: int,
 ) -> OutputMismatch:
-    """How far `output`, or `part` of its phasor, spreads, and why.
-
-    It lists its `listed` largest contributions, where it spreads most along an analysis
-    other than the operating point.
-    """
+    """How far `output`, or `part` of its phasor, spreads, and why."""
     column = results.column(result.unknowns, output)
     nature = result.unknowns[column].nature
     contributions = np.atleast_2d(result.contributions(output, part))
@@ -1697,8 +1620,12 @@ def _output_mismatch(
     match result.result:
         case results.OperatingPointResult() as found:
             value = float(found.values[column])
-        case results.DcSweepResult() | results.AcResult() | results.TransientResult():
-            at = float(_axis(result.result)[largest])
+        case (
+            results.DcSweepResult()
+            | results.AcResult()
+            | results.TransientResult() as along
+        ):
+            at = float(results.axis_of(along)[largest])
     return OutputMismatch(
         output=output,
         nature=nature,
@@ -1717,36 +1644,6 @@ def _output_mismatch(
             for index in order
         ),
     )
-
-
-def _axis(
-    result: results.DcSweepResult | results.AcResult | results.TransientResult,
-) -> results.Real:
-    """The levels, frequencies or times of `result`."""
-    match result:
-        case results.DcSweepResult():
-            return result.swept
-        case results.AcResult():
-            return result.frequencies
-        case results.TransientResult():
-            return result.times
-
-
-def _nets(result: results.AnalysisResult) -> tuple[str, ...]:
-    """The logic nets of `result`; small-signal results and sensitivities have none."""
-    if isinstance(
-        result,
-        results.AcResult
-        | results.SensitivityResult
-        | results.MismatchResult
-        | results.StabilityResult
-        | results.NoiseResult
-        | results.PoleZeroResult
-        | results.TransferFunctionResult
-        | results.OperatingPointsResult,
-    ):
-        return ()
-    return result.nets
 
 
 def _level(level: float) -> LogicLevel:
@@ -1784,7 +1681,7 @@ def _activities(activities: tuple[Activity, ...]) -> list[str]:
 
 
 def _extents_of(
-    unknowns: tuple[results.Unknown, ...], values: results.Real
+    listed_unknowns: tuple[results.Unknown, ...], values: results.Real
 ) -> tuple[Extent, ...]:
     """The extent of each unknown, whose values are the matching column of `values`."""
     return tuple(
@@ -1796,25 +1693,21 @@ def _extents_of(
             maximum=float(values[:, column].max()),
             last=float(values[-1, column]),
         )
-        for column, unknown in enumerate(unknowns)
+        for column, unknown in enumerate(listed_unknowns)
     )
 
 
 def _extents(extents: tuple[Extent, ...]) -> list[str]:
     if not extents:
         return []
-
-    def si(value: float, extent: Extent) -> str:
-        return _shown(value, extent.nature)
-
     header = ["", "first", "min", "max", "last"]
     rows = [
         [
             extent.unknown,
-            si(extent.first, extent),
-            si(extent.minimum, extent),
-            si(extent.maximum, extent),
-            si(extent.last, extent),
+            _shown(extent.first, extent.nature),
+            _shown(extent.minimum, extent.nature),
+            _shown(extent.maximum, extent.nature),
+            _shown(extent.last, extent.nature),
         ]
         for extent in extents
     ]
