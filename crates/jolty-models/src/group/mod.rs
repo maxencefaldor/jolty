@@ -1,34 +1,26 @@
-//! Groups: the instances of one kernel and one shape, evaluated together, and the only code
-//! that touches threads.
+//! Batched device-instance groups sharing one kernel and shape, and the sole parallel
+//! execution layer in `jolty-models`.
 //!
-//! [`Groups`] holds what a circuit's groups are, built once with its structure and shared:
-//! each group's kernel and shape, its instances, the circuit's unknown of each of their
-//! local unknowns and its stored entry of each of their local entries, and where each
-//! instance's block lies in a slab. [`Runs`] holds what one run writes: each instance's
-//! prepared numbers and memory, and the slab.
+//! [`Groups`] stores immutable circuit topology built once and shared across runs: each
+//! group's kernel, shape, member instances, local-to-global unknown and entry mappings, and
+//! slab block offsets. [`Runs`] stores mutable per-run state: prepared parameters, instance
+//! memory, and the evaluation slab.
 //!
-//! Each instance writes its contributions into its own block, and every value of the
-//! circuit's equations adds the blocks' contributions to it in one fixed order: group after
-//! group, instance after instance, local index after local index. A run
-//! evaluated serially adds each instance's block as soon as it is written; one evaluated in
-//! parallel writes every block first, then gathers them through a
-//! [`GatherMap`](jolty_numerics::GatherMap) in the same order. Either way, the sums are the
-//! same bits.
+//! Each instance writes contributions into a dedicated slab block. Every global equation
+//! sums contributing blocks in a fixed deterministic order: group by group, instance by
+//! instance, and local index by local index. Serial evaluation adds each block immediately
+//! upon writing, whereas parallel evaluation writes all blocks first and gathers via
+//! [`GatherMap`](jolty_numerics::GatherMap) in identical order for bit-identical sums.
 //!
-//! A value of more than [`CHUNK`](jolty_numerics::reduce::CHUNK) contributions, such as a
-//! supply's, joined to every device, would make its gather read one place of nearly every
-//! block, one after another on one thread. Each instance's contributions to such a value
-//! are also copied, as soon as its block is written, to places of the slab beyond the
-//! blocks, where every such value's contributions lie together in their order, and its
-//! gather reads them there: the same values, in the same order.
+//! High-fanout targets with more than [`CHUNK`](jolty_numerics::reduce::CHUNK) contributions
+//! (such as supply rails) would otherwise force a single-threaded gather to stride across
+//! nearly every block. Contributions to those targets are copied immediately after writing
+//! into contiguous copy regions beyond the blocks, preserving exact summation order.
 //!
-//! A linear instance, as [`Kernel::linear`](crate::Kernel::linear) says, is evaluated once
-//! a run, for its entries, which its block keeps: they sum, once a run, in the order of the
-//! groups and their instances, into the base, which lies beyond the copies, one value for
-//! each stored entry they add to. Each evaluation then adds to each stored entry the base's
-//! value first, then the entries of the instances that are not linear, in their order, and
-//! writes each linear instance's residuals, their scales and its charges from its entries,
-//! as its kernel's equations are its entries times its local unknowns.
+//! Linear instances (where [`Kernel::linear`](crate::Kernel::linear) returns `true`) evaluate
+//! Jacobian entries once per run into their blocks and sum them once into a shared base
+//! region beyond the copies. Subsequent evaluations add the base value followed by nonlinear
+//! entries, and compute linear residuals, scales, and charges directly from cached entries.
 
 mod kernel_run;
 mod kind;

@@ -1,28 +1,27 @@
-//! How a twin's parameters are made of a kernel's plain ones: each real number carried
-//! onto the twin's kind of number by the path it is written at, the numbers its seeds name
-//! seeded with their rates and every other one constant, as JAX's `tree_map_with_path`
-//! maps a tree's leaves by their paths.
+//! Parameter lifting from plain `f64` values to differentiable number types.
 //!
-//! [`Lift`] is derived, `#[derive(Lift)]`, for every type of parameters generic over its
-//! kind of number, so that a type's fields are walked by code written for that type alone,
-//! once for every kind of number, never through the parameters' written form.
+//! Each real leaf is mapped by its dot-separated path so seeded parameters carry directional
+//! derivatives while unseeded parameters remain constant, analogous to JAX
+//! `tree_map_with_path`.
+//!
+//! Deriving `#[derive(Lift)]` on any parameter struct generic over a scalar type walks its
+//! fields directly without round-tripping through JSON.
 
 use std::fmt;
 
 use crate::{Gradient, Hyper, ParameterError, Real};
 
-/// The derive of [`Lift`](trait@Lift), for a struct or an enum generic over one kind of
-/// number.
+/// Derive macro for [`Lift`](trait@Lift) on structs and enums generic over one scalar type.
 pub use jolty_derive::Lift;
 
-/// A value whose real numbers are `R`s, made of its plain form, whose numbers are `f64`s,
-/// each made an `R` by the path it is written at.
+/// Conversion from a plain `f64`-based parameter structure to one parameterized by scalar
+/// type `R`, transforming each real leaf using its parameter path.
 pub trait Lift<R>: Sized {
-    /// The value's plain form.
+    /// Plain `f64` representation of the parameter structure.
     type Plain;
 
-    /// The value made of `plain`, written at `path`, each real number within it made an
-    /// `R` by `number` of its path and its value.
+    /// Constructs a lifted value from `plain` rooted at `path` by transforming each real leaf
+    /// through `number`.
     fn lift<Lifting: FnMut(&ParameterPath<'_>, f64) -> R>(
         plain: &Self::Plain,
         path: &ParameterPath<'_>,
@@ -30,39 +29,39 @@ pub trait Lift<R>: Sized {
     ) -> Self;
 }
 
-/// Where a value is written among a device's parameters: under a key, or at an index of a
-/// list, within where its container is written, each step on the stack of the walk that
-/// reaches it, as `serde_path_to_error` tracks a path. It writes as `jolty_ir::parameter`
-/// reads it, its keys and indices joined by dots, such as `waveform.dc`.
+/// Stack-allocated path identifying a field or sequence element inside a parameter tree.
+///
+/// Formats in the dot-separated syntax parsed by `jolty_ir::parameter`, such as
+/// `waveform.dc`.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum ParameterPath<'a> {
-    /// The parameters themselves.
+    /// Root parameter object.
     #[default]
     Root,
-    /// Under `key`, within `within`.
+    /// Object field `key` nested inside `within`.
     Key {
-        /// Where the container is written.
+        /// Enclosing container path.
         within: &'a ParameterPath<'a>,
-        /// The key.
+        /// Field key name.
         key: &'static str,
     },
-    /// At `index` of a list, within `within`.
+    /// Sequence element at `index` nested inside `within`.
     Index {
-        /// Where the list is written.
+        /// Enclosing sequence path.
         within: &'a ParameterPath<'a>,
-        /// The index.
+        /// Zero-based element index.
         index: usize,
     },
 }
 
 impl ParameterPath<'_> {
-    /// Under `key`, within this path.
+    /// Returns a child path addressing object field `key` under `self`.
     #[must_use]
     pub const fn key(&self, key: &'static str) -> ParameterPath<'_> {
         ParameterPath::Key { within: self, key }
     }
 
-    /// At `index` of the list at this path.
+    /// Returns a child path addressing sequence element `index` under `self`.
     #[must_use]
     pub const fn index(&self, index: usize) -> ParameterPath<'_> {
         ParameterPath::Index {
@@ -71,13 +70,13 @@ impl ParameterPath<'_> {
         }
     }
 
-    /// Whether this is the path `written`, its keys and indices joined by dots.
+    /// Returns whether `self` matches the dot-separated path `written`.
     #[must_use]
     pub fn is(&self, written: &str) -> bool {
         self.matches(&segments(written))
     }
 
-    /// Whether this is the path whose steps are `segments`, as [`segments`] reads them.
+    /// Returns whether `self` matches the parsed path `segments`.
     fn matches(&self, segments: &[Segment<'_>]) -> bool {
         match self {
             Self::Root => segments.is_empty(),
@@ -91,16 +90,15 @@ impl ParameterPath<'_> {
     }
 }
 
-/// One step of a path as written: its text, and the index it is when it is the canonical
-/// decimal form of one, with no sign or leading zeros.
+/// Parsed segment of a dot-separated path, storing both raw text and canonical decimal index.
 #[derive(Debug, Clone, Copy)]
 struct Segment<'a> {
     text: &'a str,
     index: Option<usize>,
 }
 
-/// The steps of the path `written`, its keys and indices joined by dots, each read once;
-/// none for the parameters themselves, written as the empty text.
+/// Splits a dot-separated path `written` into parsed segments, returning an empty vector for
+/// an empty string.
 fn segments(written: &str) -> Vec<Segment<'_>> {
     if written.is_empty() {
         return Vec::new();
@@ -130,7 +128,7 @@ impl fmt::Display for ParameterPath<'_> {
     }
 }
 
-/// A kind of number made of a plain number by `number`, at its own path.
+/// Implements [`Lift`] for scalar numeric types by invoking `number` at the leaf path.
 macro_rules! numbers {
     ($($number:ty $(, const $width:ident)?);* $(;)?) => {$(
         impl$(<const $width: usize>)? Lift<$number> for $number {
@@ -192,22 +190,22 @@ impl<R, A: Lift<R>, B: Lift<R>> Lift<R> for (A, B) {
     }
 }
 
-/// The parameters `P` made of the plain `parameters`, every number constant.
+/// Lifts plain `parameters` into `P` with every numeric leaf held constant.
 pub(crate) fn constant<P: Lift<R>, R: Real>(parameters: &P::Plain) -> P {
     P::lift(parameters, &ParameterPath::Root, &mut |_, value| {
         R::constant(value)
     })
 }
 
-/// The parameters `P` of a twin made of the plain `parameters`, each number at the path of
-/// one of `seeds` made by `seeded` of its value and its rate along each seed, and every
-/// other number constant. Each path is given once, as [`crate::Seeds`] holds them, so
-/// that a number is at the path of one seed at most.
+/// Lifts plain `parameters` into `P`, seeding each path in `seeds` via `seeded` and leaving
+/// all other real leaves constant.
+///
+/// Each seed path appears at most once, as enforced by [`crate::Seeds`].
 ///
 /// # Errors
 ///
-/// Returns [`ParameterError`] when no real number is at a seed's path, as when the number
-/// there is read as a choice, such as a level.
+/// Returns [`ParameterError`] when a seed path does not address a real number (for example,
+/// when the path points to a discrete choice such as a model level).
 pub(crate) fn lift<P: Lift<R>, R: Real, const K: usize>(
     parameters: &P::Plain,
     seeds: &[(&str, [f64; K])],
@@ -275,7 +273,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Lift)]
     struct Wrapped<R: Real>(R);
 
-    /// Cards whose shapes take each variant of `Shape` and `Either`.
+    /// Builds test cards covering every variant of `Shape` and `Either`.
     fn cards() -> Vec<Card> {
         let shapes = [
             Shape::DirectCurrent(1.0),

@@ -1,10 +1,8 @@
-//! A kernel's instances that heat, as their groups evaluate them.
+//! Self-heating kernel adapter implementing [`Kind`] for thermally coupled device instances.
 //!
-//! Each is the kernel's instance at the temperature of a thermal net, the last of its
-//! terminals: it computes with every number's derivative with respect to its temperature
-//! beside it, its own local unknowns' contributions extended along the temperature's last
-//! step and folded onto the heated instance's, and its power, the sum over its voltages of
-//! each times the current into the instance there, flows into the net as heat.
+//! Each heated instance appends a trailing `thermal` terminal, evaluates the inner kernel
+//! with temperature-derivative scalars, extends limited steps linearly, and injects
+//! dissipated electrical power (`Σ v · i`) as heat flow into the thermal net.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -19,42 +17,42 @@ use crate::{
     ParameterError, Real, Regions, Stamp,
 };
 
-/// The instances of the kernel `K` that heat.
+/// Group [`Kind`] wrapper for self-heating instances of kernel `K`.
 pub(crate) struct HeatedKernel<K>(PhantomData<fn() -> K>);
 
-/// Where a heated instance's contributions go among its local unknowns: those of its
-/// kernel's instance, which are its own but for its thermal terminal, after the kernel's
-/// terminals.
+/// Layout mapping between an inner kernel shape `S` and its enclosing heated instance (which
+/// inserts the `thermal` terminal immediately after the inner kernel's terminals).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HeatedShape<S> {
-    /// The kernel's instance's shape.
+    /// Underlying inner kernel shape.
     inner: S,
-    /// The kernel's instance's terminals, before the thermal terminal, the local index of
-    /// the latter.
+    /// Number of inner terminals, which also equals the local index of the `thermal` terminal.
     terminals: usize,
-    /// Whether each of the kernel's instance's local unknowns is a voltage, whose current
-    /// the power reads.
+    /// Flag per inner local unknown indicating whether it is a node voltage contributing to
+    /// electrical power dissipation.
     voltages: Vec<bool>,
-    /// Each local entry of the kernel's instance, in the order of the columns then the
-    /// rows of its local unknowns: its row and column there, its index among the kernel's
-    /// instance's local entries, and its local entry in the heated instance.
+    /// Inner matrix entries sorted by `(column, row)` as
+    /// `(inner_row, inner_col, inner_entry, outer_entry)` tuples.
     entries: Vec<(usize, usize, usize, usize)>,
-    /// The local entry of each of the kernel's instance's local unknowns' equations at the
-    /// thermal terminal.
+    /// Outer matrix entry indices `(outer_unknown, thermal)` for temperature derivatives of
+    /// inner equations.
     column: Vec<usize>,
-    /// The local entry of the thermal terminal's equation at each of them.
+    /// Outer matrix entry indices `(thermal, outer_unknown)` for power derivatives with
+    /// respect to inner unknowns.
     row: Vec<usize>,
-    /// The local entry of the thermal terminal's equation at itself.
+    /// Outer diagonal matrix entry `(thermal, thermal)` for power derivative with respect to
+    /// temperature.
     diagonal: usize,
 }
 
 impl<S> HeatedShape<S> {
-    /// The number of the kernel's instance's local unknowns.
+    /// Returns the number of local unknowns in the inner kernel.
     fn unknowns(&self) -> usize {
         self.voltages.len()
     }
 
-    /// The heated instance's local index of the kernel's instance's `local`.
+    /// Maps an inner local unknown index `local` to the outer heated local index, shifting
+    /// internal unknowns past the `thermal` terminal.
     const fn outer(&self, local: usize) -> usize {
         if local < self.terminals {
             local
@@ -63,7 +61,7 @@ impl<S> HeatedShape<S> {
         }
     }
 
-    /// The circuit's unknown of each of the kernel's instance's local unknowns at `at`.
+    /// Extracts the global unknown map for the inner kernel from outer local state `at`.
     fn map(&self, at: &Local<'_>) -> Vec<u32> {
         (0..self.unknowns())
             .map(|local| at.map().get(self.outer(local)).copied().unwrap_or(UNMAPPED))
@@ -71,9 +69,8 @@ impl<S> HeatedShape<S> {
     }
 }
 
-/// A heated instance's numbers, computing with `R`: its parameters, which it prepares again
-/// as its temperature moves, the ambient temperature it is at when the thermal net is at
-/// zero, and its numbers there.
+/// Prepared state for a heated instance storing lifted parameters for dynamic re-preparation,
+/// ambient temperature, and precomputed ambient-temperature parameters.
 pub(crate) struct HeatedPrepared<K: Kernel, R: Heating> {
     parameters: Box<K::Parameters<R::Warm>>,
     ambient: f64,
@@ -100,7 +97,7 @@ impl<K: Kernel, R: Heating> fmt::Debug for HeatedPrepared<K, R> {
 }
 
 impl<K: Kernel, R: Heating> HeatedPrepared<K, R> {
-    /// The numbers of an instance with boxed `parameters` at the ambient temperature `ambient`.
+    /// Prepares boxed `parameters` at ambient temperature `ambient` in kelvins.
     fn new(parameters: Box<K::Parameters<R::Warm>>, ambient: f64) -> Result<Self, ParameterError> {
         let at_ambient = Box::new(K::prepare(&parameters, R::seed(ambient))?);
         Ok(Self {
@@ -111,21 +108,20 @@ impl<K: Kernel, R: Heating> HeatedPrepared<K, R> {
     }
 }
 
-/// What a heated instance remembers, computing with `R`: its kernel's instance's numbers at
-/// the temperature of its last evaluation, from which the next step is limited, and its
-/// memory, and the room it evaluates in.
+/// Persistent evaluation state for a heated instance holding temperature-prepared inner
+/// parameters, last evaluated temperature for step limiting, inner memory, and scratch buffers.
 pub(crate) struct HeatedMemory<K: Kernel, R: Heating> {
     prepared: Option<Box<K::Prepared<R::Warm>>>,
     inner: K::Memory,
     last: f64,
-    /// Whether `prepared` was last prepared with the thermal net seeded by a twin.
+    /// Flag indicating whether `prepared` was last evaluated with twin unknown seeding.
     seeded: bool,
-    /// The circuit's unknown of each of the kernel's instance's local unknowns.
+    /// Cached global unknown indices for inner local unknowns.
     map: Vec<u32>,
-    /// The kernel's instance's block: its residuals, scales and charges, then its
-    /// conductances and capacitances.
+    /// Scratch buffer storing inner residuals, scales, charges, conductances, and
+    /// capacitances.
     block: Vec<R::Warm>,
-    /// The derivative of the power with respect to each of its local unknowns.
+    /// Scratch buffer accumulating power derivatives with respect to each inner local unknown.
     slopes: Vec<R>,
 }
 
@@ -167,8 +163,8 @@ impl<K: Kernel, R: Heating> fmt::Debug for HeatedMemory<K, R> {
 }
 
 impl<K: Kernel, R: Heating> HeatedMemory<K, R> {
-    /// What an instance of `shape` with the numbers `prepared` remembers before its first
-    /// evaluation, at the ambient temperature.
+    /// Initializes memory and scratch buffers for `shape` and `prepared` at ambient
+    /// temperature.
     fn new(shape: &HeatedShape<K::Shape>, prepared: &HeatedPrepared<K, R>) -> Self {
         let unknowns = shape.unknowns();
         let stored = shape.entries.len().max(1);
@@ -183,8 +179,8 @@ impl<K: Kernel, R: Heating> HeatedMemory<K, R> {
         }
     }
 
-    /// Reads where the kernel's instance of `shape` lies at `at`: the circuit's unknown of
-    /// each of its local unknowns.
+    /// Fills `self.map` with global unknown indices for every inner local unknown from outer
+    /// state `at`.
     fn read(&mut self, shape: &HeatedShape<K::Shape>, at: &Local<'_>) {
         let map = at.map();
         let unknowns = shape.unknowns();
@@ -195,9 +191,8 @@ impl<K: Kernel, R: Heating> HeatedMemory<K, R> {
     }
 }
 
-/// The parts of a kernel's instance's block: its residuals, scales and charges, and its
-/// conductances and capacitances, of `unknowns` local unknowns and `stored` places for its
-/// local entries; `None` when the block is too short.
+/// Splits scratch slice `block` into `[residual, scale, charge, conductance, capacitance]`
+/// sub-slices sized for `unknowns` and `stored`, or returns `None` if too short.
 fn parts<T>(block: &mut [T], unknowns: usize, stored: usize) -> Option<[&mut [T]; 5]> {
     let (residual, rest) = block.split_at_mut_checked(unknowns)?;
     let (scale, rest) = rest.split_at_mut_checked(unknowns)?;
@@ -207,9 +202,9 @@ fn parts<T>(block: &mut [T], unknowns: usize, stored: usize) -> Option<[&mut [T]
     Some([residual, scale, charge, conductance, capacitance])
 }
 
-/// Claims in `layout`, whose terminals are the kernel's instance's then the thermal
-/// terminal, the heated instance's internal unknowns and entries, those of the kernel's
-/// instance, which `inner` holds, as its own, and returns its shape.
+/// Claims inner internal unknowns, inner entries, and thermal-coupling entries in outer
+/// `layout` (which ends with the `thermal` terminal) and returns the constructed
+/// [`HeatedShape`].
 fn heated_shape<S>(inner: S, own: &Layout, layout: &mut Layout) -> HeatedShape<S> {
     let terminals = own.terminals();
     let thermal = terminals;
@@ -248,12 +243,12 @@ fn heated_shape<S>(inner: S, own: &Layout, layout: &mut Layout) -> HeatedShape<S
     }
 }
 
-/// Moves a heated instance of `shape`, with the numbers `prepared`, to its temperature at
-/// `at`, no further than [`MAX_TEMPERATURE_STEP`] from its last evaluation's when `at`
-/// limits its steps and no lower than [`MIN_TEMPERATURE`], preparing its kernel's
-/// instance again there into `memory`, and returns how far its applied temperature lies
-/// beyond the one it is evaluated at. Marks `stamp` limited when that is not the applied
-/// one.
+/// Updates the inner prepared parameters inside `memory` to the clamped device temperature at
+/// `at`, returning the unapplied temperature step `applied - evaluated`.
+///
+/// Clamps steps to [`MAX_TEMPERATURE_STEP`] when limiting is active and enforces
+/// [`MIN_TEMPERATURE`], marking `stamp` limited whenever clamping or out-of-range
+/// re-preparation occurs.
 fn heat<K: Kernel, R: Heating>(
     shape: &HeatedShape<K::Shape>,
     prepared: &HeatedPrepared<K, R>,
@@ -415,7 +410,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         HeatedMemory::new(shape, prepared)
     }
 
-    /// Never linear: what it dissipates heats it, and its heat changes its equations.
+    /// Returns `false` because dissipated power couples nonlinearly into temperature.
     fn linear(_: &Self::Shape, _: &Self::Prepared) -> bool {
         false
     }
@@ -430,7 +425,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         evaluate::<K, f64>(shape, prepared, memory, at, stamp);
     }
 
-    /// The kernel's instance's noise at its temperature at its last evaluation.
+    /// Appends operating-point noise sources evaluated at the temperature of the last run.
     fn noise(
         shape: &Self::Shape,
         prepared: &Self::Prepared,

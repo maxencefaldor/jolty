@@ -2,22 +2,22 @@
 //! ngspice 47 implements it in `src/spicelib/devices/bsim4v5/`, SPICE's level 14 and 54
 //! MOSFET of version 4.5.
 //!
-//! The equations and their defaults are those of the BSIM4.5.0 manual (X. Xi, M. Dunga
-//! and others, UC Berkeley, 2005) as ngspice's `b4v5ld.c`, `b4v5temp.c`, `b4v5set.c`,
-//! `b4v5geo.c` and `b4v5check.c` write them, constants and all. They are written once, on
-//! numbers carrying their derivatives with respect to the voltages, so the conductances
-//! and capacitances are the exact derivatives of the currents and charges computed.
+//! Equations and defaults follow the BSIM4.5.0 manual (X. Xi, M. Dunga, and others, UC
+//! Berkeley, 2005) as written in ngspice `b4v5ld.c`, `b4v5temp.c`, `b4v5set.c`,
+//! `b4v5geo.c`, and `b4v5check.c`, including constants. Equations evaluate once on dual
+//! numbers carrying voltage derivatives, yielding exact conductances and capacitances
+//! for all currents and charges.
 //!
-//! The modes are those the version 4.5 cards of the `SKY130` and `GF180MCU` process kits
-//! select: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0, `geomod` 0, `igcmod` 0,
-//! `igbmod` 0, `trnqsmod` 0, `acnqsmod` 0, `wpemod` 0, `rgeomod` 0, `rgatemod` 0 to 3,
-//! and `rbodymod`, `rdsmod`, `permod`, `fnoimod` and `tnoimod` 0 or 1; a card's reader
-//! refuses any other by name.
+//! Supported modes match the version 4.5 cards of the `SKY130` and `GF180MCU` process
+//! kits: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0, `geomod` 0, `igcmod` 0,
+//! `igbmod` 0, `trnqsmod` 0, `acnqsmod` 0, `wpemod` 0, and `rgeomod` 0. Selectable
+//! options cover `rgatemod` 0 to 3 plus `rbodymod`, `rdsmod`, `permod`, `fnoimod`, and
+//! `tnoimod` (0 or 1); any unsupported mode is rejected by name.
 //!
-//! This model, here and in its submodules, is derived from BSIM4.5.0, developed by the UC
-//! Berkeley BSIM Research Group: Copyright 2005 Regents of the University of California.
-//! All rights reserved. It is used under the BSIM4 terms of use, which the repository's
-//! `NOTICE` reproduces.
+//! BSIM4 and its submodules are derived from BSIM4.5.0, developed by the UC Berkeley
+//! BSIM Research Group: Copyright 2005 Regents of the University of California. All
+//! rights reserved. Usage is governed by the BSIM4 terms of use reproduced in the
+//! repository's `NOTICE` file.
 
 mod channel;
 mod charges;
@@ -55,20 +55,21 @@ const PI: f64 = 3.141_592_654;
 /// A junction's voltage, with its derivative with respect to itself.
 type J<R> = Dual<R, 1>;
 
-/// `b4v5set.c`'s fringing capacitance per width of an oxide `toxe` thick, of relative
-/// permittivity `epsrox`, `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)`.
+/// Computes `b4v5set.c` fringing capacitance per unit width
+/// `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)` for oxide `toxe` and relative
+/// permittivity `epsrox`.
 fn fringe<R: Real>(epsrox: R, toxe: R) -> R {
     fringe_factor(toxe) * epsrox * (2.0 * EPS0 / PI)
 }
 
-/// The body's resistance network, `rbodymod`.
+/// Body resistance network selector (`rbodymod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum BodyResistance {
-    /// `rbodymod` 0: the channel and the junctions share the bulk terminal.
+    /// Body model 0 (`rbodymod = 0`): channel and junctions share the bulk terminal.
     Zero,
-    /// `rbodymod` 1: five resistances join the bulk to a node under the channel and one
-    /// under each junction.
+    /// Body model 1 (`rbodymod = 1`): five resistances connect bulk to internal channel
+    /// and junction body nodes.
     One,
 }
 
@@ -81,22 +82,21 @@ super::numbered_enum!(
     }
 );
 
-/// The gate's resistance network, `rgatemod`.
+/// Gate resistance network selector (`rgatemod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum GateResistance {
-    /// `rgatemod` 0: the gate terminal is the channel's gate.
+    /// Gate model 0 (`rgatemod = 0`): gate terminal connects directly to the channel gate.
     Zero,
-    /// `rgatemod` 1: the gate electrode's resistance joins the gate terminal to a node
-    /// at the channel's gate.
+    /// Gate model 1 (`rgatemod = 1`): fixed electrode resistance connects gate terminal to
+    /// the channel gate node.
     One,
-    /// `rgatemod` 2: the electrode's resistance in series with the channel's
-    /// bias-dependent intrinsic-input resistance, as one conductance from the gate
-    /// terminal to the channel's gate.
+    /// Gate model 2 (`rgatemod = 2`): electrode resistance in series with bias-dependent
+    /// intrinsic-input resistance forms one conductance to the channel gate.
     Two,
-    /// `rgatemod` 3: the electrode's resistance joins the gate terminal to a node in the
-    /// middle of the gate, which the overlaps' charges lie on, and the intrinsic-input
-    /// resistance that node to the channel's gate.
+    /// Gate model 3 (`rgatemod = 3`): electrode resistance connects gate terminal to an
+    /// intermediate node carrying overlap charges, and intrinsic-input resistance connects
+    /// that node to the channel gate.
     Three,
 }
 
@@ -111,13 +111,13 @@ super::numbered_enum!(
     }
 );
 
-/// What a diffusion's perimeter `ps` or `pd` includes, `permod`.
+/// Diffusion perimeter convention (`permod`) for `ps` and `pd`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum Perimeter {
-    /// `permod` 0: the perimeter includes the gate's edge.
+    /// Perimeter model 0 (`permod = 0`): diffusion perimeter includes the gate edge.
     Zero,
-    /// `permod` 1: the perimeter leaves the gate's edge out.
+    /// Perimeter model 1 (`permod = 1`): diffusion perimeter excludes the gate edge.
     One,
 }
 
@@ -126,15 +126,15 @@ super::numbered_enum!(Perimeter, "BSIM4's perimeter_model is 0 or 1", {
     1 => One,
 });
 
-/// The source and drain resistances, `rdsmod`.
+/// Source and drain resistance model selector (`rdsmod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum DrainSourceResistance {
-    /// `rdsmod` 0: `rdsw` within the drain current, and `rsh` behind the drain and the
-    /// source where `nrd` or `nrs` sets one.
+    /// Resistance model 0 (`rdsmod = 0`): folds `rdsw` into drain current and stamps fixed
+    /// `rsh` behind drain and source when `nrd` or `nrs` is positive.
     Zero,
-    /// `rdsmod` 1: `rdw` and `rsw` outside the channel, bias-dependent resistances
-    /// behind the drain and the source in series with `rsh`'s.
+    /// Resistance model 1 (`rdsmod = 1`): places bias-dependent `rdw` and `rsw` in series
+    /// with `rsh` outside the channel behind drain and source.
     One,
 }
 
@@ -147,13 +147,14 @@ super::numbered_enum!(
     }
 );
 
-/// The flicker noise model, `fnoimod`.
+/// Flicker noise model selector (`fnoimod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum FlickerNoise {
-    /// `fnoimod` 0: SPICE2's, `kf · |Id|^af / (f^ef · Leff² · Coxe)`.
+    /// Flicker model 0 (`fnoimod = 0`): SPICE2 formula `kf · |Id|^af / (f^ef · Leff² · Coxe)`.
     Zero,
-    /// `fnoimod` 1: BSIM4's of the oxide traps `noia`, `noib` and `noic`.
+    /// Flicker model 1 (`fnoimod = 1`): BSIM4 oxide-trap model using `noia`, `noib`, and
+    /// `noic`.
     One,
 }
 
@@ -162,14 +163,14 @@ super::numbered_enum!(FlickerNoise, "BSIM4's flicker_noise_model is 0 or 1", {
     1 => One,
 });
 
-/// The channel's thermal noise model, `tnoimod`.
+/// Channel thermal noise model selector (`tnoimod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum ThermalNoise {
-    /// `tnoimod` 0: the charge-based model, of the inversion charge.
+    /// Thermal model 0 (`tnoimod = 0`): charge-based model driven by inversion charge.
     Zero,
-    /// `tnoimod` 1: the holistic model, of the conductances, which moves part of the
-    /// channel's noise to the source side through `rnoia`, `rnoib`, `tnoia` and `tnoib`.
+    /// Thermal model 1 (`tnoimod = 1`): holistic conductance model shifting part of
+    /// channel noise to the source side via `rnoia`, `rnoib`, `tnoia`, and `tnoib`.
     One,
 }
 
@@ -178,49 +179,38 @@ super::numbered_enum!(ThermalNoise, "BSIM4's thermal_noise_model is 0 or 1", {
     1 => One,
 });
 
-/// A MOSFET in BSIM4.5, SPICE's level 14 and 54 model of short channels, as ngspice 47
-/// implements it.
+/// MOSFET using BSIM4.5 (SPICE levels 14 and 54) for short channels, matching ngspice 47.
 ///
-/// The drain current folds in the threshold's short-channel, narrow-width, pocket implant
-/// and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
-/// degradation by the gate field, Coulomb scattering and the channel's length, the
-/// carriers' velocity saturation and overshoot, the source end's velocity limit, the
-/// channel-length modulation, drain-induced barrier lowering and threshold shift, and the
-/// substrate current's effect on the output resistance, and the source and drain
-/// resistance `rdsw`. The impact ionization's substrate current flows from the drain to
-/// the body, the gate-induced drain and source leakages from each to the body, and two
-/// junctions join the body to the drain and the source, each carrying a diode's current
-/// with its trap-assisted tunneling. Every parameter of a binned card has its length,
-/// width and area dependences, and each one scales with the temperature as `b4v5temp.c`
-/// scales it; the stress of the length of diffusion moves the threshold, the mobility and
-/// the saturation velocity. The transistor is symmetric: with the drain below the source,
-/// the two swap.
+/// Drain current includes short-channel, narrow-width, pocket-implant, and DIBL threshold
+/// shifts, polysilicon gate depletion, gate-field, Coulomb, and length mobility
+/// degradation, velocity saturation and overshoot, and source-end velocity limiting.
+/// Output conductance includes channel-length modulation, DIBL, drain-induced threshold
+/// shift, substrate-current body effect, and `rdsw`. Impact ionization drives substrate
+/// current from drain to body, GIDL and GISL leak from drain and source to body, and
+/// bulk-drain and bulk-source junctions carry diode currents with trap-assisted tunneling.
+/// Binned parameters scale with length, width, area, temperature (`b4v5temp.c`), and
+/// length-of-diffusion stress, and drain and source swap symmetrically when the drain lies
+/// below the source.
 ///
-/// A sheet resistance `rsh` adds an internal node behind the drain and the source where
-/// `nrd` or `nrs` is positive, labelled `drain` and `source`, and `rdsmod` 1 one behind
-/// each always, through bias-dependent resistances in series with `rsh`'s; one below
-/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
-/// labelled `drain_current` or `source_current`. With `rbodymod` 1, three internal nodes,
-/// `body`, `drain_body` and `source_body`, lie under the channel and the junctions. With
-/// `rgatemod` 1 to 3, the channel's gate is an internal node, `gate`, behind the gate
-/// electrode's resistance `rshg`, at 2 in series with the channel's bias-dependent
-/// intrinsic-input resistance of `xrcrg1` and `xrcrg2`; at 3, the electrode's resistance
-/// ends at a node in the middle of the gate, `middle_gate`, which the overlaps' charges
-/// lie on, and the intrinsic-input resistance joins it to the channel's gate.
+/// Positive sheet resistance `rsh` with `nrd` or `nrs` adds internal nodes `drain` and
+/// `source`, and `rdsmod = 1` always adds both behind bias-dependent resistances in series
+/// with `rsh`. Fixed resistances below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) add
+/// branch-current unknowns `drain_current` or `source_current`. Setting `rbodymod = 1`
+/// adds internal body nodes `body`, `drain_body`, and `source_body`. Setting `rgatemod` 1
+/// to 3 adds internal node `gate` behind electrode resistance `rshg` (combined in series
+/// with intrinsic-input resistance at mode 2). Mode 3 splits electrode and intrinsic-input
+/// resistances at `middle_gate`, which carries gate overlap charges.
 ///
-/// The charges under the gate follow `capmod` 2, the charge-thickness model, with the
-/// drain's share of the channel's charge `xpart`, beside the overlaps' charges with their
-/// bias dependence, and each junction holds a depletion charge. The channel makes the
-/// thermal noise of `tnoimod` and the flicker noise of `fnoimod`, and the drain, source,
-/// body and gate electrode's resistances thermal noise. The gate tunneling currents, the
-/// non-quasi-static models and the well proximity effect are left out.
+/// Intrinsic gate charges follow `capmod = 2` (charge-thickness model) with `xpart`
+/// partitioning, alongside bias-dependent overlap charges and junction depletion charges.
+/// Noise covers `tnoimod` channel thermal noise, `fnoimod` flicker noise, and thermal
+/// noise for drain, source, body, and gate-electrode resistances. Gate tunneling currents,
+/// non-quasi-static models, and well proximity effects are omitted.
 #[derive(Debug, Clone, Copy)]
 pub struct Bsim4;
 
-/// Where a BSIM4 transistor's contributions go among its local unknowns: through its
-/// drain and source resistances, and among its bulk, the gate, drain and source behind
-/// their resistances, the body's nodes under the channel and the junctions, the gate's
-/// middle and its terminal.
+/// Local matrix layout for [`Bsim4`] covering drain/source series resistances, nine
+/// intrinsic and resistance-network nodes, and optional `rdsmod = 1` external nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bsim4Shape {
     stamp: Nodes<9>,
@@ -231,7 +221,7 @@ pub struct Bsim4Shape {
     external: Option<Nodes<6>>,
 }
 
-/// What a BSIM4 transistor remembers.
+/// Step-limiting history and cached operating variables for [`Bsim4`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bsim4Memory {
     /// The gate-source, drain-source and bulk-source voltages, and the drain body's and
@@ -246,12 +236,10 @@ pub struct Bsim4Memory {
     variables: [f64; 5],
 }
 
-/// Local node indices among the stamped ones: the channel's gate, behind the gate's
-/// resistances, and the bulk, the drain and source behind their resistances, the body's
-/// nodes under the channel, the drain junction and the source junction, each the bulk
-/// itself at `rbodymod` 0, the gate's middle, which the overlaps' charges lie on, the
-/// channel's gate itself but at `rgatemod` 3, and the gate terminal, the channel's gate
-/// itself at `rgatemod` 0.
+/// Local indices among the nine stamped nodes: channel gate, bulk, internal drain,
+/// internal source, body nodes, middle gate, and gate terminal. Channel, drain-junction,
+/// and source-junction body nodes alias `BULK` at `rbodymod = 0`. Both `MIDDLE_GATE`
+/// (except at `rgatemod = 3`) and `GATE` (at `rgatemod = 0`) alias `INNER_GATE`.
 const INNER_GATE: usize = 0;
 const BULK: usize = 1;
 const INNER_DRAIN: usize = 2;
@@ -333,9 +321,9 @@ const LIMITED: [(usize, usize); 5] = [
     (SOURCE_BODY, INNER_SOURCE),
 ];
 
-/// What a transistor carries at one bias, oriented as an n-channel's: the channel's
-/// currents with their derivatives with respect to the gate-source, drain-source and
-/// body-source voltages, and the junctions' with respect to their own voltages.
+/// Evaluated n-channel-oriented currents, charges, gate conductance, and operating
+/// variables at one bias, carrying derivatives with respect to channel and junction
+/// voltages.
 struct Terminals<R: Real> {
     /// The channel's current from the drain to the source.
     channel: D<R>,
@@ -362,12 +350,12 @@ struct Terminals<R: Real> {
     threshold: f64,
     saturation: f64,
     region: Region,
-    /// `Vgst` and `Vds − Vdsat`.
+    /// Boundary margins `Vgst` and `Vds − Vdsat`.
     margins: [f64; 2],
 }
 
 impl<R: Real> Terminals<R> {
-    /// The values of [`VARIABLE_NAMES`] of a channel of `sign`, in its own polarity.
+    /// Packs [`VARIABLE_NAMES`] values for a channel with polarity `sign`.
     fn variables(&self, sign: f64) -> [f64; 5] {
         variables(
             sign,
@@ -394,8 +382,8 @@ fn add_body_network<R: Real>(
     }
 }
 
-/// `b4v5ld.c`'s and `b4v5temp.c`'s `DEXP`: `e^x`, continued linearly above
-/// [`EXP_THRESHOLD`] and held at [`MIN_EXP`] below its negative.
+/// Evaluates `b4v5ld.c` and `b4v5temp.c` `DEXP`: `e^x` continued linearly above
+/// [`EXP_THRESHOLD`] and floored at [`MIN_EXP`] below `-EXP_THRESHOLD`.
 fn dexp<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
     let value = x.value.value();
     if value > EXP_THRESHOLD {
@@ -408,8 +396,8 @@ fn dexp<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
 }
 
 impl<R: Real> Junction<R> {
-    /// The current from the body into the junction at its voltage `v`, `diomod` 1's diode
-    /// with its trap-assisted tunneling, `gmin` across it.
+    /// Computes body-to-diffusion diode current at voltage `v` under `diomod = 1` with
+    /// trap-assisted tunneling and shunt `gmin`.
     fn current(&self, v: J<R>, gmin: f64) -> J<R> {
         let leak = v * gmin;
         let saturation = self.saturation_current;
@@ -442,9 +430,8 @@ impl<R: Real> Junction<R> {
 }
 
 impl<R: Real> External<R> {
-    /// The conductance of one copy's drain resistance, `side` 0, or source resistance, 1,
-    /// `rsh`'s in series with it, at the gate's and the body's voltages `vg` and `vb` over
-    /// the node behind it, oriented as an n-channel's.
+    /// Computes single-copy drain (`side = 0`) or source (`side = 1`) external conductance
+    /// in series with `rsh` at n-channel-oriented `[vg, vb]`.
     fn conductance(&self, side: usize, [vg, vb]: [D<R>; 2]) -> D<R> {
         let pick = |values: [R; 2]| if side == 0 { values[0] } else { values[1] };
         let t0 = vg.plus(-self.vfbsd);
@@ -459,8 +446,7 @@ impl<R: Real> External<R> {
         (resistance.scale(sheet) + 1.0).recip().scale(sheet)
     }
 
-    /// The conductances of the drain's and the source's resistances of every copy, at
-    /// `at`.
+    /// Computes total external drain and source conductances across all copies at `at`.
     fn conductances(&self, nodes: &Nodes<6>, sign: f64, multiplier: R, at: &Local<'_>) -> [f64; 2] {
         let [drain, source] = EXTERNAL_VARIABLES;
         [(0, drain), (1, source)].map(|(side, variables)| {
@@ -501,10 +487,9 @@ impl<R: Real> External<R> {
 }
 
 impl<R: Real> Gate<R> {
-    /// The conductance of one copy, from the gate terminal at `rgatemod` 2 or from the
-    /// gate's middle at 3 to the channel's gate, where the channel is `operating`, in its
-    /// frame: `b4v5ld.c`'s intrinsic-input conductance `gcrg`, at 2 in series with the
-    /// electrode's; none at `rgatemod` 1, whose electrode's conductance alone is fixed.
+    /// Computes single-copy bias-dependent gate conductance into the channel gate for
+    /// `operating`. Mode 2 places `b4v5ld.c` intrinsic-input conductance `gcrg` in series
+    /// with the electrode, mode 3 returns `gcrg`, and modes 0 and 1 return `None`.
     fn conductance(&self, operating: &Operating<R>) -> Option<D<R>> {
         let intrinsic =
             (operating.beta.scale(self.xrcrg2_vtm) + operating.ids_over_vds).scale(self.xrcrg1_nf);
@@ -519,11 +504,9 @@ impl<R: Real> Gate<R> {
 }
 
 impl<R: Real> Gate<R> {
-    /// Adds the currents through the gate's resistances of `multiplier` copies of a
-    /// channel of `sign`, and their derivatives: the electrode's, from the gate terminal
-    /// to the gate's middle, at `rgatemod` 1 and 3, and the one of `conductance`, of every
-    /// copy, which depends on the channel's `bias`, from the gate terminal or the gate's
-    /// middle to the channel's gate.
+    /// Adds gate-resistance currents and derivatives for `multiplier` copies with polarity
+    /// `sign`. Stamps the fixed electrode resistance at `rgatemod` 1 and 3, plus any
+    /// bias-dependent `conductance` from `GATE` or `MIDDLE_GATE` to `INNER_GATE`.
     fn add(
         &self,
         nodes: &Nodes<9>,
@@ -547,8 +530,7 @@ impl<R: Real> Gate<R> {
         } else {
             MIDDLE_GATE
         };
-        // Its current is the conductance, of the channel's voltages, times the voltage
-        // across it, which moves as applied.
+        // Gate branch current equals the bias-dependent conductance times the applied drop.
         let across = sign * (nodes.voltage(at, from) - nodes.voltage(at, INNER_GATE));
         let [gate, drain, bulk] = bias.voltages;
         let [gate_beyond, drain_beyond, bulk_beyond] = bias.beyond;
@@ -570,10 +552,9 @@ impl<R: Real> Gate<R> {
 }
 
 impl<R: Real> PreparedBsim4<R> {
-    /// What the transistor carries at the gate-source, drain-source and body-source
-    /// voltages `voltages`, the gate's middle `middle` above its channel's gate, and the
-    /// junctions at theirs, `junctions`, the drain's then the source's, with `gmin`
-    /// across each junction.
+    /// Evaluates channel currents, overlap and intrinsic charges, gate conductance, and
+    /// junction responses at channel `[vgs, vds, vbs]`, `middle` offset, and `junctions`
+    /// with shunt `gmin`.
     #[expect(
         clippy::similar_names,
         reason = "the voltages' and overlaps' names in BSIM4"
@@ -641,8 +622,8 @@ impl<R: Real> PreparedBsim4<R> {
         }
     }
 
-    /// The five limited voltages at `at`, limited from the last evaluation's, which
-    /// `memory` keeps and takes the new ones.
+    /// Reads the five limited voltages at `at`, applies step limiting against `memory`,
+    /// and stores the resulting bias.
     fn bias(
         &self,
         shape: &Bsim4Shape,
@@ -663,11 +644,10 @@ impl<R: Real> PreparedBsim4<R> {
         parts::Bias::new(applied, voltages)
     }
 
-    /// The `applied` voltages limited from the last evaluation's, which `memory` keeps, as
-    /// `b4v5ld.c` limits them: the gate's step around the threshold and the drain's, from
-    /// whichever end acts as the source, then the steps of the body and of each junction's
-    /// body node, from the thermal voltage at 27 °C and the critical voltage of a
-    /// saturation current of 10 fA. Returns `None` when no step needs limiting.
+    /// Limits `applied` voltages against `memory`, matching `b4v5ld.c`. Gate and drain
+    /// steps limit around threshold from the active source end, and body and junction
+    /// nodes limit using 27 °C thermal voltage and a 10 fA critical voltage. Returns
+    /// `None` when no step requires limiting.
     #[expect(clippy::similar_names, reason = "the voltages' names in BSIM4")]
     fn limit(&self, applied: [f64; 5], memory: &Bsim4Memory) -> Option<[f64; 5]> {
         let [vgs, vds, vbs, vdbs, vsbs] = applied;
@@ -929,8 +909,8 @@ impl Kernel for Bsim4 {
         }
     }
 
-    /// The zero-bias threshold, which a transistor's first step is limited from, moves
-    /// with its temperature.
+    /// Clears the cached threshold voltage so the next step limits against the reheated
+    /// zero-bias threshold.
     fn reheat(memory: &mut Bsim4Memory) {
         memory.threshold = None;
     }
@@ -947,9 +927,8 @@ impl Kernel for Bsim4 {
         REGIONS
     }
 
-    /// The thermal noise of the drain, source, gate electrode's and body resistances, and
-    /// the channel's thermal noise of `tnoimod` and flicker noise of `fnoimod`, as
-    /// `b4v5noi.c` computes them.
+    /// Emits thermal noise for drain, source, gate-electrode, and body resistances plus
+    /// channel thermal (`tnoimod`) and flicker (`fnoimod`) noise per `b4v5noi.c`.
     fn noise<R: Real>(
         shape: &Bsim4Shape,
         prepared: &PreparedBsim4<R>,
@@ -1052,9 +1031,9 @@ impl Kernel for Bsim4 {
     }
 }
 
-/// What a channel's noise is at one bias, of all its copies: the conductance whose
-/// thermal noise its own is, its flicker density at 1 Hz, whether its drain lies at or
-/// above its source, and the resistance `tnoimod` 1 adds on its source side.
+/// Evaluated channel noise across all parallel copies at one bias: equivalent thermal
+/// conductance, 1 Hz flicker density, forward-orientation flag, and optional source-side
+/// resistance from `tnoimod = 1`.
 struct ChannelNoise {
     thermal: f64,
     flicker: f64,
@@ -1063,8 +1042,8 @@ struct ChannelNoise {
 }
 
 impl<R: Real> PreparedBsim4<R> {
-    /// The channel's noise at the gate-source, drain-source and body-source voltages
-    /// `voltages`, as `b4v5noi.c` computes it.
+    /// Computes channel thermal and flicker noise at `[vgs, vds, vbs]`, matching
+    /// `b4v5noi.c`.
     fn channel_noise(&self, voltages: [f64; 3]) -> ChannelNoise {
         let (forward, frame) = forward_frame(voltages);
         let vds = frame[1];
@@ -1079,9 +1058,8 @@ impl<R: Real> PreparedBsim4<R> {
         }
     }
 
-    /// The conductance whose thermal noise the channel's of all its copies is, at the
-    /// frame's drain-source voltage `vds` where the channel is `operating`, and the
-    /// resistance `tnoimod` 1 adds on its source side.
+    /// Computes total equivalent thermal-noise conductance and optional `tnoimod = 1`
+    /// source-side resistance for `operating` at forward-frame `vds`.
     fn thermal_noise(&self, operating: &Operating<R>, vds: f64) -> (f64, Option<f64>) {
         let core = &self.core;
         let noise = &self.noise;
@@ -1130,8 +1108,8 @@ impl<R: Real> PreparedBsim4<R> {
         }
     }
 
-    /// The flicker density at 1 Hz of the channel's copies, at the frame's drain-source
-    /// voltage `vds` where the channel is `operating`.
+    /// Computes total 1 Hz channel flicker-noise density across all parallel copies at
+    /// forward-frame `vds` and `operating`.
     #[expect(
         clippy::similar_names,
         reason = "b4v5noi.c's names of the noise's terms"
@@ -1203,11 +1181,11 @@ mod tests {
         assert_switches_where_margin_vanishes, assert_unknown_derivatives_match, source,
     };
 
-    /// A short n-channel with every effect of the drain current and the charges switched
-    /// on: the poly gate's depletion, the pocket implant, the parasitic resistance, the
-    /// non-saturation effect, the velocity overshoot and the source end's limit, the
-    /// substrate current, the gate-induced leakages, the junctions' linear continuation and
-    /// trap-assisted tunneling, and the overlaps' bias dependence.
+    /// Short n-channel fixture exercising all active drain-current and charge effects:
+    /// polysilicon gate depletion, pocket implant, parasitic resistance, non-saturation,
+    /// velocity overshoot, and source-end velocity limiting. The fixture includes
+    /// substrate current, GIDL/GISL, diode linear continuation, trap-assisted tunneling,
+    /// and bias-dependent overlap charges.
     const SHORT: &str = r#"{"width": 2e-6, "length": 0.15e-6, "toxe": 4.1e-9, "toxp": 3.8e-9,
         "vth0": 0.45, "u0": 0.03, "eu": 1.67, "k1": 0.5, "k2": -0.02, "ngate": 1e26,
         "dvtp0": 1e-8, "dvtp1": 0.5, "rdsw": 200, "prwg": 0.1, "prwb": -0.1, "a1": 0.1,
@@ -1218,23 +1196,22 @@ mod tests {
         "source_perimeter": 5e-6, "cgsl": 1e-10, "cgdl": 1.2e-10, "dwg": -5e-9,
         "dwb": 3e-9}"#;
 
-    /// The same transistor with a p-channel.
+    /// Returns `parameters` rewritten for a p-channel device.
     fn p_channel(parameters: &str) -> String {
         parameters
             .replace(r#""vth0": 0.45"#, r#""vth0": -0.45"#)
             .replace('{', r#"{"channel": "p", "#)
     }
 
-    /// `parameters` with `more`, a list of JSON members, before them.
+    /// Returns `parameters` with JSON fields `more` prepended.
     fn with(parameters: &str, more: &str) -> String {
         parameters.replacen('{', &format!("{{{more}, "), 1)
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges in every region, in both modes, for both channels, of every charge
-        /// partition, both body networks and every gate network, with the bulk up to
-        /// 0.6 V forward of the drain or the source.
+        /// Verifies analytical conductances and capacitances against finite differences
+        /// across all operating regions, modes, channels, charge partitions, body
+        /// networks, and gate networks, including forward bulk bias up to 0.6 V.
         #[test]
         fn jacobians_match_finite_differences(
             drain in -2.0..2.0f64,
@@ -1320,19 +1297,19 @@ mod tests {
     #[test]
     fn rejects_what_ngspice_stops_on() {
         let error = |parameters: &str| Bench::try_new::<Bsim4>(parameters).unwrap_err().0;
-        assert_eq!(error(r#"{"toxe": 0}"#), "toxe must be positive, not 0.0");
+        assert_eq!(error(r#"{"toxe": 0}"#), "toxe is positive, not 0.0");
         assert_eq!(
             error(r#"{"length": 1e-7, "lint": 6e-8}"#),
-            "the effective length must be positive, not -1.9999999999999994e-8"
+            "the effective length is positive, not -1.9999999999999994e-8"
         );
         assert_eq!(
             error(r#"{"dvt1": -0.1}"#),
-            "dvt1 must be at least 0, not -0.1"
+            "dvt1 is at least 0, not -0.1"
         );
-        assert_eq!(error(r#"{"pclm": 0}"#), "pclm must be positive, not 0.0");
+        assert_eq!(error(r#"{"pclm": 0}"#), "pclm is positive, not 0.0");
         assert_eq!(
             error(r#"{"fingers": 0.5}"#),
-            "nf must be at least 1, not 0.5"
+            "nf is at least 1, not 0.5"
         );
         assert_eq!(
             error(r#"{"body_resistance_model": 2}"#),
@@ -1340,20 +1317,21 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"length": 1e-7, "xgl": 1e-7}"#),
-            "xgl, 1e-7, must be less than the drawn length plus xl, 1e-7"
+            "xgl, 1e-7, is less than the drawn length plus xl, 1e-7"
         );
         assert_eq!(
             error(r#"{"ngcon": 0.5}"#),
-            "ngcon must be at least 1, not 0.5"
+            "ngcon is at least 1, not 0.5"
         );
-        assert_eq!(error(r#"{"njs": 0}"#), "njs must be positive, not 0.0");
-        assert_eq!(error(r#"{"njd": -1}"#), "njd must be positive, not -1.0");
+        assert_eq!(error(r#"{"njs": 0}"#), "njs is positive, not 0.0");
+        assert_eq!(error(r#"{"njd": -1}"#), "njd is positive, not -1.0");
     }
 
     #[test]
     fn the_gate_electrodes_resistance_is_its_sheets_between_its_contacts() {
-        // `rshg · (xgw + Weffcj / (3 · ngcon)) / (ngcon · nf · (l + xl − xgl))`, of a
-        // finger 1 µm wide: 20 Ω · (0.1 µm + 1 µm / 6) / (2 · 2 · 0.14 µm).
+        // Gate resistance formula:
+        // `rshg · (xgw + Weffcj / (3 · ngcon)) / (ngcon · nf · (l + xl − xgl))`.
+        // For a 1 µm finger: `20 Ω · (0.1 µm + 1 µm / 6) / (2 · 2 · 0.14 µm)`.
         let resistance = 20.0 * (1e-7 + 1e-6 / 6.0) / (2.0 * 2.0 * 0.14e-6);
         for (model, unknowns) in [(1, 5), (3, 6)] {
             let mut bench = Bench::new::<Bsim4>(&format!(
@@ -1452,9 +1430,8 @@ mod tests {
         }
     }
 
-    /// A transistor is in weak inversion below its threshold, linear above it with its
-    /// drain below its saturation voltage, and saturated past it, each region switching
-    /// where its margin vanishes.
+    /// Verifies weak-inversion, linear, and saturated region classification and boundary
+    /// margin zero-crossings.
     #[test]
     fn reports_its_region_and_margins() {
         let mut n = Bench::new::<Bsim4>(r#"{"vth0": 0.5}"#);
@@ -1480,9 +1457,9 @@ mod tests {
         }
     }
 
-    /// At `vds == 0`, `vdseff_cv` vanishes, yet its derivative with respect to `vds` does
-    /// not (`vdsat_cv / (vdsat_cv + DELTA)`): clamping only its value keeps every
-    /// terminal's drain capacitance equal to its right-sided charge slope `(q(h) - q(0)) / h`.
+    /// Verifies that clamping `vdseff_cv` only in value at `vds == 0` preserves its
+    /// nonzero `vds` derivative `vdsat_cv / (vdsat_cv + DELTA)` and keeps terminal drain
+    /// capacitances equal to `(q(h) - q(0)) / h`.
     #[test]
     fn capacitances_at_zero_drain_voltage_keep_drain_derivative() {
         let mut bench = Bench::new::<Bsim4>(SHORT);
@@ -1509,9 +1486,9 @@ mod tests {
 
     #[test]
     fn saturation_voltage_and_gate_resistance_stay_smooth_as_lambda_nears_one() {
-        // At rdsmod 1 (channel rds = 0) and high reverse overdrive (`vgs' ~ 3.37 V`),
-        // `1 - lambda ~ 5e-5`, so the un-rationalized `(t1 - t3) / t0` loses ~15 bits and
-        // quantizes `vdsat` into `~6e-12 V` steps, throwing off `rgatemod` 2 and 3 central
+        // At `rdsmod = 1` (channel `rds = 0`) and high reverse overdrive (`vgs' ~ 3.37 V`),
+        // `1 - lambda` drops near `5e-5`. Un-rationalized `(t1 - t3) / t0` loses ~15 bits,
+        // quantizing `vdsat` into `~6e-12 V` steps and breaking `rgatemod` 2 and 3 central
         // differences by `> 1e-5`.
         let drain = -1.973_028_885_834_237_5;
         let gate = 1.720_767_144_942_445_3;
@@ -1566,8 +1543,8 @@ mod tests {
         }
     }
 
-    /// Forward-biased junctions at `rise = 0.0` (`T == Tnom`) verify that saturation
-    /// current temperature scaling preserves `d/dT` at the nominal temperature.
+    /// Verifies that forward-biased junction saturation current scaling preserves `d/dT`
+    /// at `rise = 0.0` (`T == Tnom`).
     #[test]
     fn forward_junction_thermal_derivative_is_exact_at_nominal_temperature() {
         let model = Thermal::<Bsim4>::new();
@@ -1579,8 +1556,8 @@ mod tests {
         }
     }
 
-    /// Second derivatives in the unknowns match finite differences across BSIM4's external
-    /// drain/source, gate, and body resistance networks.
+    /// Verifies that second derivatives in the unknowns match finite differences across
+    /// BSIM4 external drain/source, gate, and body resistance networks.
     #[test]
     fn unknown_derivatives_match_across_resistance_models() {
         let model = Thermal::<Bsim4>::new();

@@ -8,31 +8,30 @@ use jolty_numerics::UNMAPPED;
 use super::kind::Kind;
 use crate::{Gradient, Input, Local, Stamp};
 
-/// The directions a [`Twin`] differentiates along, its seeds: numbers of an instance's
-/// parameters, each at its path among them, as [`jolty_ir::numbers`] names it, with its
-/// rate along each seed, or the circuit's unknowns. A seed that moves one number at rate 1
-/// differentiates against that number alone; one that moves several, along that tangent of
-/// them.
+/// Forward-mode differentiation directions (seeds) for a [`Twin`], targeting either
+/// parameter paths (as named by [`jolty_ir::numbers`]) or circuit unknowns.
+///
+/// A seed moving a single quantity at rate `1.0` computes a partial derivative; a seed
+/// moving multiple quantities computes a directional tangent derivative.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seeds {
-    /// Each number's path, and its rate along each seed.
+    /// Parameter path paired with directional rates across all seeds.
     numbers: Vec<(String, Vec<f64>)>,
     count: usize,
-    /// The circuit's unknowns the seeds move at rate one, in their order, when seeding unit
-    /// unknowns.
+    /// Circuit unknowns seeded at unit rate in seed order when differentiating unknowns.
     seeded: Vec<u32>,
 }
 
 impl Seeds {
-    /// The maximum number of seeds one twin carries: twins are compiled for 1, 2, 4 and this many,
-    /// a twin of another count taking the next of them up.
+    /// Maximum number of seeds per twin; twins are compiled for widths 1, 2, 4, and 8 and
+    /// round intermediate counts up to the next compiled width.
     pub const MAX: usize = 8;
 
-    /// A seed for each of the numbers at `paths`, which moves that number alone; a path
-    /// given more than once moves along each of its seeds.
+    /// Builds unit parameter seeds moving each path in `paths` independently along a
+    /// dedicated direction (repeated paths accumulate rates across seeds).
     ///
-    /// A twin accepts between `1` and [`Seeds::MAX`] seeds; empty or larger sets yield
-    /// `None` when passed to [`Runs::twin`](crate::Runs::twin).
+    /// A twin accepts between `1` and [`Seeds::MAX`] seeds; empty or oversized sets return
+    /// `None` from [`Runs::twin`](crate::Runs::twin).
     #[must_use]
     pub fn units(paths: &[&str]) -> Self {
         let count = paths.len();
@@ -54,9 +53,8 @@ impl Seeds {
         })
     }
 
-    /// A seed for each of the circuit's `unknowns`, at most [`Seeds::MAX`], its parameters
-    /// constant: the derivatives of what an instance adds with respect to those unknowns,
-    /// the second derivatives of its equations among them.
+    /// Builds unit unknown seeds for up to [`Seeds::MAX`] circuit `unknowns` with parameters
+    /// held constant, yielding second-order equation derivatives with respect to unknowns.
     #[must_use]
     pub fn unknowns(unknowns: Vec<u32>) -> Option<Self> {
         let count = unknowns.len();
@@ -67,9 +65,8 @@ impl Seeds {
         })
     }
 
-    /// `count` seeds, at most [`Seeds::MAX`], its parameters constant, for
-    /// [`Twin::evaluate_along`] to move the circuit's unknowns along `count` tangent
-    /// vectors.
+    /// Builds `count` tangent seeds (up to [`Seeds::MAX`]) with parameters held constant for
+    /// use with [`Twin::evaluate_along`].
     #[must_use]
     pub const fn tangents(count: usize) -> Option<Self> {
         if count >= 1 && count <= Self::MAX {
@@ -83,10 +80,9 @@ impl Seeds {
         }
     }
 
-    /// `count` seeds, between `1` and [`Seeds::MAX`], along which each number of
-    /// `numbers`, at its path, moves at its rates, one per seed, a path given more than once
-    /// moving at the sum of its rates, added in the order given; `None` when `count` is out
-    /// of range or a number has another count of rates.
+    /// Builds `count` parameter seeds (1 to [`Seeds::MAX`]) from `(path, rates)` entries,
+    /// summing rates for duplicate paths in order; returns `None` on invalid `count` or rate
+    /// length.
     #[must_use]
     pub fn new(numbers: Vec<(String, Vec<f64>)>, count: usize) -> Option<Self> {
         if !(1..=Self::MAX).contains(&count)
@@ -112,13 +108,13 @@ impl Seeds {
         })
     }
 
-    /// How many seeds there are.
+    /// Returns the number of differentiation directions.
     #[must_use]
     pub const fn count(&self) -> usize {
         self.count
     }
 
-    /// Each number's path and its rates, padded with zeros to `SEEDS` seeds.
+    /// Returns parameter paths paired with rate arrays zero-padded to width `SEEDS`.
     fn padded<const SEEDS: usize>(&self) -> Vec<(&str, [f64; SEEDS])> {
         self.numbers
             .iter()
@@ -130,7 +126,7 @@ impl Seeds {
     }
 }
 
-/// What an instance's twin adds to the circuit's equations, by kind.
+/// Equation contribution plane queried from an evaluated twin.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Contribution {
     Residual,
@@ -139,31 +135,30 @@ pub(super) enum Contribution {
     Capacitance,
 }
 
-/// An instance's twin, typed, apart from its group.
+/// Type-erased differentiable instance evaluator backed by a dedicated gradient slab.
 pub(super) trait Twinned: fmt::Debug + Send + Sync {
-    /// Evaluates the twin at `at` into its own block.
+    /// Evaluates the twin at `at` into its dedicated gradient block.
     fn evaluate(&mut self, at: &Local<'_>);
 
-    /// The `contribution` it adds at the local unknown or local entry `index`, as last
-    /// evaluated: its value, and its derivative along each seed.
+    /// Returns `(value, derivatives)` for `contribution` at local `index` from the most
+    /// recent evaluation.
     fn number(&self, contribution: Contribution, index: usize) -> Option<(f64, &[f64])>;
 }
 
-/// The twin of an instance of the kind `K`, its derivatives along `SEEDS` directions, its
-/// shape, and its block: the residuals, scales and charges of its local unknowns and the
-/// conductances and capacitances of its local entries, as last evaluated.
+/// Typed sensitivity twin for kernel `K` with compile-time derivative width `SEEDS` and
+/// dedicated gradient storage for local unknowns and entries.
 pub(super) struct KernelTwin<K: Kind, const SEEDS: usize> {
     shape: K::Shape,
     twin: K::Twin<SEEDS>,
     rows: [Vec<Gradient<SEEDS>>; 3],
     entries: [Vec<Gradient<SEEDS>>; 2],
-    /// How many of the `SEEDS` directions the twin was seeded along, the rest left zero.
+    /// Active seed count within `SEEDS`; trailing lanes stay zero.
     seeds: usize,
 }
 
 impl<K: Kind, const SEEDS: usize> KernelTwin<K, SEEDS> {
-    /// The twin of an instance of `shape` with `parameters` at `temperature` along `seeds`,
-    /// with room for `sizes`, its local unknowns and its local entries.
+    /// Constructs a boxed [`Twinned`] evaluator for `shape`, `parameters`, and `temperature`
+    /// along `seeds`, sized for `unknowns` local unknowns and `stride` local entries.
     pub(super) fn made(
         (shape, parameters, temperature): (&K::Shape, &K::Parameters, f64),
         seeds: &Seeds,
@@ -212,30 +207,27 @@ impl<K: Kind, const SEEDS: usize> Twinned for KernelTwin<K, SEEDS> {
     }
 }
 
-/// A device's instance computing with the derivatives of every number along some
-/// directions of its parameters, its seeds: how the contributions it adds to the circuit's
-/// equations move along each, which its own block holds, local to the instance, and the
-/// map of its group places among the circuit's.
+/// Differentiable single-instance evaluator propagating forward-mode derivatives along
+/// parameter or unknown seeds into a dedicated local block mapped to global circuit slots.
 #[derive(Debug)]
 pub struct Twin {
     evaluated: Box<dyn Twinned>,
-    /// The circuit's unknown of each local unknown, or [`UNMAPPED`] for one on ground.
+    /// Global unknown index for each local unknown, or [`UNMAPPED`] for ground.
     nodes: Vec<u32>,
-    /// The stored position of each local entry, or [`UNMAPPED`] for none.
+    /// Stored sparsity slot index for each local entry, or [`UNMAPPED`] for ground.
     slots: Vec<u32>,
-    /// The circuit's unknown each seed moves, in their order, or [`UNMAPPED`] for a local
-    /// unknown on ground; none when the seeds are directions of the parameters.
+    /// Global unknown index moved by each seed when seeding unknowns, or empty when seeding
+    /// parameters.
     seeded: Vec<u32>,
     seeds: usize,
 }
 
-/// A contribution of a twin as last evaluated: its value, and its derivative along each of
-/// the twin's seeds.
+/// Evaluated twin contribution pairing the primal value with directional derivatives across
+/// all active seeds.
 pub type TwinNumber<'a> = (f64, &'a [f64]);
 
 impl Twin {
-    /// Builds a twin from its typed evaluator, its local unknown and entry mappings, and
-    /// its seeds.
+    /// Builds a twin from a typed evaluator, global node and entry slot maps, and `seeds`.
     pub(super) fn new(
         evaluated: Box<dyn Twinned>,
         nodes: Vec<u32>,
@@ -251,7 +243,7 @@ impl Twin {
         }
     }
 
-    /// How many seeds the twin differentiates along.
+    /// Returns the number of active differentiation seeds.
     #[must_use]
     pub const fn seeds(&self) -> usize {
         self.seeds
@@ -263,35 +255,34 @@ impl Twin {
         self.evaluated.evaluate(&local);
     }
 
-    /// Evaluates the twin at `input`, moving the circuit's unknowns along each of
-    /// `tangents`, one seed per tangent.
+    /// Evaluates the twin at `input` while seeding global unknowns along each tangent vector
+    /// in `tangents`.
     pub fn evaluate_along(&mut self, input: &Input<'_>, tangents: &[Vec<f64>]) {
         let local = input.local(&self.nodes).along(tangents);
         self.evaluated.evaluate(&local);
     }
 
-    /// The circuit's unknown each seed moves, by seed, when the seeds are local unknowns:
-    /// [`UNMAPPED`] for one on ground, which moves nothing.
+    /// Returns the global unknown moved by each seed when seeding unknowns ([`UNMAPPED`] for
+    /// ground).
     #[must_use]
     pub fn seeded(&self) -> &[u32] {
         &self.seeded
     }
 
-    /// Each residual the instance adds, by the circuit's unknown whose equation it enters,
-    /// in the order of its local unknowns, those on ground left out: `f`, and
-    /// `∂f/∂p · s` along each seed `s`, as last evaluated.
+    /// Iterates over non-ground `(unknown, (f, df))` residual contributions in local unknown
+    /// order from the most recent evaluation.
     pub fn residual(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.by_unknown(Contribution::Residual)
     }
 
-    /// Each charge the instance adds, as [`Twin::residual`] gives the residuals: `q`, and
-    /// `∂q/∂p · s` along each seed, as last evaluated.
+    /// Iterates over non-ground `(unknown, (q, dq))` charge contributions in local unknown
+    /// order, mirroring [`Twin::residual`].
     pub fn charge(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.by_unknown(Contribution::Charge)
     }
 
-    /// Each mapped matrix slot the twin stamps into, in the order of its local entries,
-    /// those on ground left out.
+    /// Iterates over non-ground stored sparsity slots stamped by the twin in local entry
+    /// order.
     pub fn slots(&self) -> impl Iterator<Item = usize> + '_ {
         self.slots
             .iter()
@@ -300,9 +291,8 @@ impl Twin {
             .map(|slot| slot as usize)
     }
 
-    /// Each conductance and capacitance the instance adds, by the stored position it adds
-    /// to, in the order of its local entries, those on ground left out: `G` and `C`,
-    /// and their derivatives along each seed, as last evaluated.
+    /// Iterates over non-ground `(slot, conductance, capacitance)` entry contributions and
+    /// derivatives in local entry order from the most recent evaluation.
     pub fn entries(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>, TwinNumber<'_>)> + '_ {
         self.slots
             .iter()
@@ -315,8 +305,8 @@ impl Twin {
             })
     }
 
-    /// Each `contribution` at a local unknown, by the circuit's unknown of the local
-    /// unknown, those on ground left out.
+    /// Iterates over non-ground `(unknown, value)` entries for `contribution` in local
+    /// unknown order.
     fn by_unknown(
         &self,
         contribution: Contribution,

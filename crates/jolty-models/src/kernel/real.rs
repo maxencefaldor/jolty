@@ -33,54 +33,51 @@ pub trait Real:
     + SubAssign
     + Lift<Self, Plain = f64>
 {
-    /// How many first-order derivative slots the number carries: none for `f64`.
+    /// Number of first-order derivative lanes carried by the scalar (`0` for `f64`).
     const SEEDS: usize;
 
-    /// A number with no derivative.
+    /// Constructs a constant scalar with zero derivatives.
     fn constant(value: f64) -> Self;
 
-    /// The number `value` moving at rate one along the seed `slot`, and along no other: a
-    /// constant when the number carries fewer seeds, as `f64` carries none.
+    /// Constructs a scalar at `value` with unit derivative along seed `slot` (or a constant
+    /// when `slot >= Self::SEEDS`).
     fn unit(value: f64, slot: usize) -> Self;
 
-    /// The number `value` moving at `rates` along each seed, padded with zeros or truncated
-    /// to [`Real::SEEDS`].
+    /// Constructs a scalar at `value` carrying directional derivatives `rates`, zero-padded
+    /// or truncated to [`Real::SEEDS`].
     fn seeded(value: f64, rates: &[f64]) -> Self;
 
-    /// The number's value.
+    /// Returns the primal scalar value.
     fn value(self) -> f64;
 
-    /// The number's first-order derivative along the seed `slot`, or zero when it carries
-    /// fewer seeds.
+    /// Returns the first-order derivative along seed `slot`, or `0.0` if out of range.
     fn derivative(self, slot: usize) -> f64;
 
-    /// The number `value`, moving as this one does: its derivatives with another value,
-    /// such as a voltage's limited value, which moves as the voltage applied.
+    /// Replaces the primal value with `value` while preserving all derivatives (for example,
+    /// clamping a voltage while retaining sensitivity to the applied voltage).
     #[must_use]
     fn with_value(self, value: f64) -> Self;
 
-    /// A function of the number, given `function`, its value, slope and curvature at
-    /// the number: a number carrying derivatives of the second order, such as [`Hyper`],
-    /// reads the curvature.
+    /// Applies the chain rule using `(value, slope, curvature)` of a univariate function at
+    /// `self`; second-order types such as [`Hyper`] propagate `curvature`.
     #[must_use]
     fn chain(self, function: (f64, f64, f64)) -> Self;
 
-    /// `e` raised to the number.
+    /// Computes `e^self`.
     #[must_use]
     fn exp(self) -> Self {
         let exponential = self.value().exp();
         self.chain((exponential, exponential, exponential))
     }
 
-    /// The natural logarithm.
+    /// Computes the natural logarithm `ln(self)`.
     #[must_use]
     fn ln(self) -> Self {
         let value = self.value();
         self.chain((value.ln(), value.recip(), -(value * value).recip()))
     }
 
-    /// `ln(1 + x)` of the number `x`, to its last digit where `x` is near zero, where
-    /// `ln` of the rounded `1 + x` would lose them.
+    /// Computes `ln(1 + self)` accurately near zero without catastrophic cancellation.
     #[must_use]
     fn ln_1p(self) -> Self {
         let value = self.value();
@@ -88,8 +85,7 @@ pub trait Real:
         self.chain((value.ln_1p(), base.recip(), -(base * base).recip()))
     }
 
-    /// `eˣ − 1` of the number `x`, to its last digit where `x` is near zero, where the
-    /// difference of `eˣ` and 1 would lose them.
+    /// Computes `e^self − 1` accurately near zero without catastrophic cancellation.
     #[must_use]
     fn exp_m1(self) -> Self {
         let value = self.value();
@@ -97,7 +93,7 @@ pub trait Real:
         self.chain((value.exp_m1(), exponential, exponential))
     }
 
-    /// The square root.
+    /// Computes the square root `√self`.
     #[must_use]
     fn sqrt(self) -> Self {
         let value = self.value();
@@ -105,7 +101,7 @@ pub trait Real:
         self.chain((root, 0.5 / root, -0.25 / (root * value)))
     }
 
-    /// The reciprocal.
+    /// Computes the reciprocal `1 / self`.
     #[must_use]
     fn recip(self) -> Self {
         let value = self.value();
@@ -117,7 +113,7 @@ pub trait Real:
         ))
     }
 
-    /// The number raised to the constant `exponent`.
+    /// Raises `self` to constant power `exponent`.
     #[must_use]
     fn powf(self, exponent: f64) -> Self {
         let value = self.value();
@@ -137,26 +133,26 @@ pub trait Real:
         self.chain((value.powf(exponent), slope, curvature))
     }
 
-    /// The number raised to `exponent`, itself a number with a derivative.
+    /// Raises `self` to differentiable power `exponent`.
     #[must_use]
     fn pow(self, exponent: Self) -> Self {
         (self.ln() * exponent).exp()
     }
 
-    /// The magnitude.
+    /// Computes the absolute value `|self|`.
     #[must_use]
     fn abs(self) -> Self {
         if self.value() < 0.0 { -self } else { self }
     }
 
-    /// The sine, of an angle in radians.
+    /// Computes the sine of an angle in radians.
     #[must_use]
     fn sin(self) -> Self {
         let sine = self.value().sin();
         self.chain((sine, self.value().cos(), -sine))
     }
 
-    /// The tangent, of an angle in radians.
+    /// Computes the tangent of an angle in radians.
     #[must_use]
     fn tan(self) -> Self {
         let tangent = self.value().tan();
@@ -164,7 +160,7 @@ pub trait Real:
         self.chain((tangent, slope, 2.0 * tangent * slope))
     }
 
-    /// The arctangent, in radians.
+    /// Computes the arctangent, returning an angle in radians.
     #[must_use]
     fn atan(self) -> Self {
         let value = self.value();
@@ -172,15 +168,15 @@ pub trait Real:
         self.chain((value.atan(), slope, -2.0 * value * slope * slope))
     }
 
-    /// The least non-negative remainder of division by `divisor`: the number less
-    /// `divisor` times the floor of their quotient.
+    /// Computes the least non-negative Euclidean remainder
+    /// `self − divisor · floor(self / divisor)`.
     #[must_use]
     fn rem_euclid(self, divisor: Self) -> Self {
         let quotient = self.value().div_euclid(divisor.value());
         self - divisor * quotient
     }
 
-    /// The larger of the two, by value.
+    /// Returns the larger of `self` and `other` by primal value.
     #[must_use]
     fn max(self, other: Self) -> Self {
         if other.value() > self.value() {
@@ -190,7 +186,7 @@ pub trait Real:
         }
     }
 
-    /// The smaller of the two, by value.
+    /// Returns the smaller of `self` and `other` by primal value.
     #[must_use]
     fn min(self, other: Self) -> Self {
         if other.value() < self.value() {
@@ -260,24 +256,24 @@ impl Real for f64 {
     );
 }
 
-/// A number and its exact derivatives with respect to `K` parameters or seeded unknowns,
-/// one by default.
+/// Primal value paired with first-order derivatives along `K` parameter or unknown seeds
+/// (defaulting to 1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gradient<const K: usize = 1> {
-    /// The number.
+    /// Primal scalar value.
     pub value: f64,
-    /// Its derivative with respect to each seed.
+    /// First-order derivatives with respect to each seed.
     pub derivatives: [f64; K],
 }
 
 impl<const K: usize> Gradient<K> {
-    /// The number `value` moving at the rates `derivatives`.
+    /// Constructs a gradient number from primal `value` and directional `derivatives`.
     #[must_use]
     pub const fn new(value: f64, derivatives: [f64; K]) -> Self {
         Self { value, derivatives }
     }
 
-    /// `self · other`, by the product rule.
+    /// Multiplies `self` by `other` using the product rule.
     fn product(self, other: Self) -> Self {
         Self {
             value: self.value * other.value,
@@ -287,7 +283,7 @@ impl<const K: usize> Gradient<K> {
         }
     }
 
-    /// `self / other`, by the quotient rule.
+    /// Divides `self` by `other` using the quotient rule.
     fn quotient(self, other: Self) -> Self {
         let value = self.value / other.value;
         Self {
@@ -299,8 +295,8 @@ impl<const K: usize> Gradient<K> {
     }
 }
 
-/// `factor * rate`, yielding `0.0` when `rate` is zero and `factor` is not `NaN` so an
-/// infinite slope or curvature along an unmoved direction does not produce `NaN`.
+/// Multiplies `factor * rate`, returning `0.0` when `rate == 0.0` and `factor` is not `NaN`
+/// so infinite slopes along unseeded directions do not produce `NaN`.
 #[inline]
 fn scaled(factor: f64, rate: f64) -> f64 {
     if rate == 0.0 && !factor.is_nan() {
@@ -310,8 +306,7 @@ fn scaled(factor: f64, rate: f64) -> f64 {
     }
 }
 
-/// Each element of `own`, as `combine` makes it of that element and the same one of
-/// `others`.
+/// Combines corresponding lanes of `own` and `others` elementwise using `combine`.
 fn zip<const K: usize>(
     own: [f64; K],
     others: [f64; K],
@@ -472,25 +467,23 @@ impl<const K: usize> Real for Gradient<K> {
 
 impl_number_ops!(Gradient, scalars: [], arrays: [derivatives]);
 
-/// A number, its derivatives with respect to `K` parameters or seeded unknowns and to a
-/// second variable, and its mixed derivatives with respect to both: second-order
-/// forward-mode differentiation, as a device that heats computes when differentiated by a
-/// twin, the second variable its temperature.
+/// Second-order hyper-dual scalar tracking primal value, first derivatives along `K` seeds
+/// and one secondary variable (temperature), plus all mixed second derivatives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hyper<const K: usize = 1> {
-    /// The number.
+    /// Primal scalar value.
     pub value: f64,
-    /// Its derivative with respect to each parameter.
+    /// First-order derivatives with respect to each parameter or unknown seed.
     pub first: [f64; K],
-    /// Its derivative with respect to the second variable.
+    /// First-order derivative with respect to the secondary variable.
     pub second: f64,
-    /// Its derivative with respect to each parameter and the second variable.
+    /// Mixed second-order derivatives with respect to each seed and the secondary variable.
     pub both: [f64; K],
 }
 
 impl<const K: usize> Hyper<K> {
-    /// The number `value` moving at the rates `first` along the parameters, and not with
-    /// the second variable.
+    /// Constructs a hyper-dual number at `value` with first-order seed rates `first` and
+    /// zero secondary or mixed derivatives.
     #[must_use]
     pub const fn new(value: f64, first: [f64; K]) -> Self {
         Self {
@@ -501,7 +494,8 @@ impl<const K: usize> Hyper<K> {
         }
     }
 
-    /// `self · other`, each derivative by the product rule.
+    /// Multiplies `self` by `other`, propagating first and mixed second derivatives via the
+    /// product rule.
     fn product(self, other: Self) -> Self {
         let first = zip(self.first, other.first, |own, others| {
             own * other.value + self.value * others
@@ -522,7 +516,8 @@ impl<const K: usize> Hyper<K> {
         }
     }
 
-    /// `self / other`, its derivatives those of `self = q · other` solved for `q`'s.
+    /// Divides `self` by `other`, solving `self = q · other` for all first and mixed second
+    /// derivatives of the quotient `q`.
     fn quotient(self, other: Self) -> Self {
         let value = self.value / other.value;
         let first = zip(self.first, other.first, |own, others| {
@@ -607,7 +602,7 @@ impl_number_ops!(Hyper, scalars: [second], arrays: [first, both]);
 mod tests {
     use super::*;
 
-    /// The derivative of `f` at `x` by central differences, to check exact ones against.
+    /// Approximates the derivative of `f` at `x` by central differences as a reference check.
     fn central(f: &impl Fn(f64) -> f64, x: f64) -> f64 {
         let step = 1e-6 * x.abs().max(1.0);
         (f(x + step) - f(x - step)) / (2.0 * step)
@@ -662,8 +657,8 @@ mod tests {
         assert!((hyper.both[0] - (5.0 * slope + 6.0 * curvature)).abs() < 1e-14);
     }
 
-    /// A function of two numbers, each seeded on a parameter of its own, that exercises
-    /// every operation a number has.
+    /// Evaluates a composite test expression exercising every [`Real`] operation on `x` and
+    /// `y`.
     fn exercise<R: Real>(x: R, y: R) -> R {
         let z = (x * y + x * 3.0) / (y - 2.0) - (x / y).exp().ln_1p().sqrt();
         (z.powf(1.5).recip() + z.pow(y) * 0.5 - x.abs().max(y).min(z)) / 4.0

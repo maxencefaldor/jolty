@@ -1,33 +1,33 @@
-//! What kernels stamp their contributions through, by local index: the entries among some
-//! of an instance's local unknowns, a two-terminal element's, a branch whose current is a
-//! local unknown of its own, a series resistance, fixed or varying with a voltage, the
-//! voltages an instance is evaluated at, limited from its last evaluation's, and what a
-//! transistor adds at them.
+//! Shared stamping helpers for device kernels indexed by local unknown.
+//!
+//! Provides local node matrices, two-terminal pairs, explicit current branches, fixed and
+//! voltage-dependent series resistances, step-limited bias vectors, and transistor
+//! derivative accumulators.
 
 use super::{Layout, Local, Stamp};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::limit_junction;
 use crate::{Nature, NoiseSource, ParameterError, Real, UnknownIndex};
 
-/// The resistance below which a resistance carries its current as an unknown, in ohms.
+/// Resistance threshold below which a series resistor introduces a branch current unknown,
+/// in ohms.
 ///
-/// A conductance stamped beside a far smaller one at a node swamps it in floating point: a
-/// node held only by gmin's picosiemens loses them beside a megasiemens, and its equation
-/// turns singular. A current unknown keeps the two apart, as modified nodal analysis does
-/// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
-/// keeps four digits beside the resistance's conductance.
+/// Stamping a megasiemens conductance in parallel with `gmin` picosiemens swamps the small
+/// conductance in floating point and renders the node equation singular. Introducing an
+/// explicit current unknown separates the two scales, matching modified nodal analysis
+/// group-two elements (Ho, Ruehli, and Brennan, 1975); below 1 Ω, `gmin` retains four
+/// significant digits relative to the resistance conductance.
 pub const SMALL_RESISTANCE: f64 = 1.0;
 
-/// A local index no instance has: what an index out of a fixed array's range reads as, so
-/// that reading it gives zero and writing it goes nowhere.
+/// Sentinel local index representing an out-of-range array slot; reads return zero and
+/// writes are ignored.
 const NOWHERE: usize = usize::MAX;
 
-/// Some of an instance's local unknowns, by index among them, with every local entry among
-/// them claimed, so a kernel adds each current or charge between two of them and its
-/// derivatives with respect to the voltages between others.
+/// Subset of an instance's local unknowns with a full matrix of claimed local entries,
+/// allowing kernels to stamp currents, charges, and cross-derivatives between node pairs.
 ///
-/// Two of them may be the same local unknown, as a transistor's internal drain is its drain
-/// terminal when the transistor has no drain resistance; their contributions then add.
+/// Two slots may alias the same local unknown (for example, an internal drain equals the
+/// external drain terminal when drain resistance is zero), in which case contributions sum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Nodes<const N: usize> {
     nodes: [usize; N],
@@ -41,13 +41,12 @@ impl<const N: usize> Nodes<N> {
         Self { nodes, entries }
     }
 
-    /// The local unknown at `index` among them.
+    /// Returns the local unknown index stored at slot `index`.
     pub(crate) fn node(&self, index: usize) -> usize {
         self.nodes.get(index).copied().unwrap_or(NOWHERE)
     }
 
-    /// The local entry at the row of the node at `row` and the column of the one at
-    /// `column`.
+    /// Returns the local matrix entry index for `(row, column)`.
     fn entry(&self, row: usize, column: usize) -> usize {
         self.entries
             .get(row)
@@ -56,17 +55,18 @@ impl<const N: usize> Nodes<N> {
             .unwrap_or(NOWHERE)
     }
 
-    /// The equation of the node at `index`, as a noise source names a local unknown's.
+    /// Returns the [`UnknownIndex`] for slot `index`, formatted for noise source equations.
     pub(crate) fn equation(&self, index: usize) -> Option<UnknownIndex> {
         self.nodes.get(index).map(|&local| UnknownIndex::new(local))
     }
 
-    /// The voltage of the node at `index`.
+    /// Returns the voltage at slot `index` from local state `at`.
     pub(crate) fn voltage(&self, at: &Local<'_>, index: usize) -> f64 {
         at.value(self.node(index))
     }
 
-    /// The voltages across each pair `(plus, minus)` of `pairs`, turned by `sign`.
+    /// Computes oriented voltages across each `(plus, minus)` entry in `pairs`, scaled by
+    /// `sign`.
     pub(crate) fn voltages<const K: usize>(
         &self,
         at: &Local<'_>,
@@ -76,15 +76,14 @@ impl<const N: usize> Nodes<N> {
         pairs.map(|(plus, minus)| sign * (self.voltage(at, plus) - self.voltage(at, minus)))
     }
 
-    /// The voltage of the node at `index`, its unknown, as a number of `R`, which moves as
-    /// the unknown does when a twin seeds it.
+    /// Returns the voltage at slot `index` as scalar `R`, carrying any unknown derivative
+    /// seeds from `at`.
     pub(crate) fn unknown<R: Real>(&self, at: &Local<'_>, index: usize) -> R {
         at.unknown(self.node(index))
     }
 
-    /// The voltage `value` across the pair of nodes at `(plus, minus)`, turned by `sign`,
-    /// as a number of `R`: `value` itself, as limited, moving as the voltage across them
-    /// does when a twin seeds their unknowns.
+    /// Returns the limited voltage `value` across `(plus, minus)` oriented by `sign` as
+    /// scalar `R`, preserving unknown derivative seeds when active in `at`.
     #[inline]
     pub(crate) fn across<R: Real>(
         &self,
@@ -154,16 +153,17 @@ impl<const N: usize> Nodes<N> {
     }
 }
 
-/// The local index of a two-terminal element's positive node among its two.
+/// Slot index of the positive terminal in a two-terminal [`Pair`].
 const POSITIVE: usize = 0;
-/// The local index of its negative node.
+/// Slot index of the negative terminal in a two-terminal [`Pair`].
 const NEGATIVE: usize = 1;
-/// The pair of them, the element's one branch.
+/// Branch slot tuple `(POSITIVE, NEGATIVE)` for a two-terminal [`Pair`].
 const PAIR: (usize, usize) = (POSITIVE, NEGATIVE);
 
-/// The two local unknowns of a two-terminal element and the four local entries that join
-/// them. Current flows from the positive one through the element to the negative one, and
-/// the element's voltage is the positive one's less the negative one's.
+/// Two local unknowns of a two-terminal element and the four matrix entries joining them.
+///
+/// Current flows from the positive node to the negative node, and branch voltage equals
+/// `v(positive) − v(negative)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pair(Nodes<2>);
 
@@ -173,19 +173,18 @@ impl Pair {
         Self(Nodes::new(layout, [positive, negative]))
     }
 
-    /// The element's voltage.
+    /// Returns the voltage `v(positive) − v(negative)` across the element.
     pub(crate) fn voltage(&self, at: &Local<'_>) -> f64 {
         self.0.voltage(at, POSITIVE) - self.0.voltage(at, NEGATIVE)
     }
 
-    /// The voltage `value` across the element, as limited, as a number of `R` that moves
-    /// as the voltage across it does when a twin seeds its unknowns.
+    /// Returns the limited voltage `value` across the element as scalar `R`, carrying
+    /// unknown derivative seeds when active in `at`.
     pub(crate) fn across<R: Real>(&self, at: &Local<'_>, value: f64) -> R {
         self.0.across(at, (POSITIVE, NEGATIVE), (1.0, value))
     }
 
-    /// The positive and the negative local unknown, as a noise source's equations name
-    /// them.
+    /// Returns the positive and negative [`UnknownIndex`] entries for noise sources.
     pub(crate) fn equations(&self) -> [Option<UnknownIndex>; 2] {
         [self.0.equation(POSITIVE), self.0.equation(NEGATIVE)]
     }
@@ -211,20 +210,20 @@ impl Pair {
     }
 }
 
-/// A branch from a positive local unknown to a negative one whose current, flowing through
-/// it, is a local unknown of its own: the current enters both nodes' equations, and the
-/// branch's own equation constrains its voltage.
+/// Branch connecting positive and negative local unknowns with an explicit branch-current
+/// unknown whose equation constrains the branch voltage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CurrentBranch {
     current: usize,
     nodes: [usize; 2],
-    /// The entries at (each node, current) and (current, each node).
+    /// Matrix entries at `(positive, current)`, `(negative, current)`, `(current, positive)`,
+    /// and `(current, negative)`.
     entries: [usize; 4],
 }
 
 impl CurrentBranch {
-    /// A branch from `positive` to `negative`, its current a new local unknown labelled
-    /// `label`.
+    /// Allocates a branch-current unknown labelled `label` between `positive` and `negative`
+    /// and claims the four coupling entries in `layout`.
     pub(crate) fn new(
         layout: &mut Layout,
         label: impl Into<std::borrow::Cow<'static, str>>,
@@ -243,35 +242,34 @@ impl CurrentBranch {
         }
     }
 
-    /// The branch's local unknown, its current, and its own equation's, where an instance
-    /// claims the entries of whatever else that equation reads.
+    /// Returns the local index of the branch current unknown and constitutive equation row.
     pub(crate) const fn unknown(&self) -> usize {
         self.current
     }
 
-    /// The current through the branch, as a number of `R` that moves as its unknown does
-    /// when a twin seeds it.
+    /// Returns the branch current as scalar `R`, carrying any unknown derivative seeds in
+    /// `at`.
     pub(crate) fn current<R: Real>(&self, at: &Local<'_>) -> R {
         at.unknown(self.current)
     }
 
-    /// The branch's voltage, its positive node's over its negative node's, as a number of
-    /// `R` that moves as theirs do when a twin seeds them.
+    /// Returns the branch voltage `v(positive) − v(negative)` as scalar `R`, carrying any
+    /// unknown derivative seeds in `at`.
     pub(crate) fn voltage<R: Real>(&self, at: &Local<'_>) -> R {
         let [positive, negative] = self.nodes;
         at.unknown::<R>(positive) - at.unknown::<R>(negative)
     }
 
-    /// Adds the branch's current to its nodes' equations, and `residual` to its own
-    /// equation, with the derivatives of both with respect to the current and the voltage,
-    /// the residual's being 1; an instance adds the derivatives of the rest of its equation
-    /// itself.
+    /// Stamps the branch current into both node equations and `residual` into the branch
+    /// equation with unit voltage slope.
+    ///
+    /// Callers stamp any remaining branch-equation derivatives directly.
     pub(crate) fn add<R: Real>(&self, at: &Local<'_>, stamp: &mut Stamp<'_, R>, residual: R) {
         self.add_sloped(at, stamp, residual, R::constant(1.0));
     }
 
-    /// As [`CurrentBranch::add`], the residual's derivative with respect to the branch's voltage
-    /// being `slope`.
+    /// Stamps the branch current and `residual` as [`CurrentBranch::add`] does, using
+    /// `slope` as the derivative of `residual` with respect to branch voltage.
     pub(crate) fn add_sloped<R: Real>(
         &self,
         at: &Local<'_>,
@@ -297,36 +295,31 @@ impl CurrentBranch {
     }
 }
 
-/// A resistance in series with an instance's terminal, from the terminal's local unknown to
-/// an internal node behind it.
+/// Series resistance between an instance terminal and an internal node behind the resistor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Series {
-    /// No resistance: the terminal is its own node behind it.
+    /// Zero resistance: the terminal aliases the internal node directly.
     None,
-    /// A conductance between the two nodes.
+    /// Conductance stamped directly between the terminal and internal node.
     Conductance(Pair),
-    /// Below [`SMALL_RESISTANCE`], a current of its own, held by Ohm's law, and the entry
-    /// at (current, current).
+    /// Explicit branch current below [`SMALL_RESISTANCE`], governed by Ohm's law with a
+    /// diagonal `(current, current)` entry.
     Current(CurrentBranch, usize),
 }
 
 impl Series {
-    /// A series `resistance` from `terminal`, and the node behind it: an internal node
-    /// labelled `label` when the resistance is positive, else the terminal's own. The
-    /// current through a small one is a local unknown labelled `current`.
+    /// Allocates a series `resistance` behind `terminal` and returns the [`Series`] element
+    /// plus the internal node index (`terminal` itself when resistance is non-positive).
     ///
-    /// That current's [pivot](Layout::pivot) is its entry in the internal node's row, −1:
-    /// its column holds besides only 1 in the terminal's row and `−R` in its own, `R`
-    /// below [`SMALL_RESISTANCE`], 1 Ω, where the resistance is laid out, in the
-    /// conductances and in every `G + αC` and `G + jωC` alike, as no charge reads the
-    /// current. So the solver eliminates the current by the internal node's row, which
-    /// leaves the terminal's row the sum of both nodes' currents, as a resistance stamped
-    /// as a conductance would, and the current's own equation in the internal node's
-    /// place, so that `1/R` stands on no diagonal still. A device at another temperature
-    /// keeps the form its resistance took, which may grow past 1 Ω there: its pivot stays
-    /// within the solver's threshold, a tenth of its column's largest, up to 10 Ω. A
-    /// resistance whose value follows a voltage, which nothing bounds, claims none, as
-    /// [`Series::varying`] withdraws it.
+    /// Positive resistance allocates an internal voltage node labelled `label`; resistance
+    /// below [`SMALL_RESISTANCE`] (1 Ω) also allocates a branch current unknown labelled
+    /// `current` with a [pivot](Layout::pivot) at `(inner, current)` equal to `-1`. The
+    /// current column contains only `1` at `terminal` and `-R` on the current diagonal
+    /// across all `G`, `G + αC`, and `G + jωC` matrices because no charge depends on the
+    /// current. Eliminating the current through the internal node row restores the terminal
+    /// sum without placing `1/R` on any diagonal. Temperature shifts keep the pivot within
+    /// the solver's `0.1` column-maximum threshold up to 10 Ω; voltage-dependent resistances
+    /// withdraw the pivot via [`Series::varying`].
     pub(crate) fn behind<R: Real>(
         layout: &mut Layout,
         terminal: usize,
@@ -367,10 +360,9 @@ impl Series {
         }
     }
 
-    /// The number a `resistance` stamps with in the form this one takes, which its value
-    /// where it was laid out chose: its conductance where it is a conductance, and the
-    /// resistance itself where its current is an unknown or there is none, whatever the
-    /// resistance has become since, as at another temperature.
+    /// Converts `resistance` into the stamp value matching the layout representation chosen
+    /// at construction: reciprocal conductance for [`Series::Conductance`], or raw
+    /// resistance for [`Series::Current`] and [`Series::None`].
     pub(crate) fn value_of<R: Real>(&self, resistance: R) -> R {
         match self {
             Self::Conductance(_) => resistance.recip(),
@@ -378,10 +370,11 @@ impl Series {
         }
     }
 
-    /// Claims the entries through which the resistance's current depends on the voltage of
-    /// `plus` over `minus`, two local unknowns, which its value follows, and withdraws the
-    /// pivot of a current of its own, as the value, which may grow past 1 Ω, no longer
-    /// keeps the pivot its column's largest.
+    /// Claims matrix entries coupling this series resistance to the controlling voltage
+    /// `v(plus) − v(minus)` and withdraws any explicit-current pivot.
+    ///
+    /// Withdrawing the pivot is required because a voltage-dependent resistance can grow
+    /// past 1 Ω and lose column dominance.
     pub(crate) fn varying(&self, layout: &mut Layout, (plus, minus): (usize, usize)) -> Varying {
         let rows = match self {
             Self::None => [NOWHERE; 2],
@@ -462,9 +455,8 @@ impl Series {
     }
 }
 
-/// The entries through which a series resistance's current depends on a voltage its value
-/// follows: those of each row the resistance stamps, its terminal's and its internal
-/// node's, or its current's, at the voltage's two nodes.
+/// Matrix entries coupling a voltage-dependent series resistance's stamped rows (terminal
+/// and internal node, or branch current) to the two controlling voltage nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Varying {
     entries: [[usize; 2]; 2],
@@ -478,7 +470,8 @@ pub(crate) fn write_variables(kept: &[f64], values: &mut [f64]) {
     }
 }
 
-/// The reciprocal of an optional positive parameter, zero when it is left out, infinite.
+/// Returns the reciprocal of an optional positive parameter `value`, or zero when `value`
+/// is `None` (representing infinite resistance).
 pub(crate) fn inverse<R: Real>(name: &str, value: Option<R>) -> Result<R, ParameterError> {
     value.map_or(Ok(R::constant(0.0)), |value| {
         ParameterError::positive(name, value).map(Real::recip)
@@ -491,14 +484,14 @@ pub(crate) fn fraction<R: Real>(name: &str, value: R) -> Result<R, ParameterErro
         Ok(value)
     } else {
         Err(ParameterError(format!(
-            "{name} must be at least 0 and at most 1, not {:?}",
+            "{name} is at least 0 and at most 1, not {:?}",
             value.value()
         )))
     }
 }
 
-/// The number a series `resistance` stamps with: its conductance where it is a conductance,
-/// its resistance where its current is an unknown, and nothing without one.
+/// Converts a series `resistance` into its stamp value: conductance at or above
+/// [`SMALL_RESISTANCE`], resistance below [`SMALL_RESISTANCE`], or zero when non-positive.
 pub(crate) fn series_value<R: Real>(resistance: R) -> R {
     let value = resistance.value();
     if value <= 0.0 || value < SMALL_RESISTANCE {
@@ -508,20 +501,21 @@ pub(crate) fn series_value<R: Real>(resistance: R) -> R {
     }
 }
 
-/// An instance's controlling voltages for one evaluation: those its model is evaluated at,
-/// limited from the last evaluation's, and how far the applied ones lie beyond them. Every
-/// value is extended linearly along that distance, so the Newton step that follows solves
-/// the circuit linearized at the limited voltages.
+/// Controlling voltages for one device evaluation: the step-limited evaluation voltages and
+/// the difference `applied − voltages`.
+///
+/// Linearly extending every model output along `beyond` ensures the next Newton step solves
+/// the circuit linearized at the limited operating point.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bias<const N: usize> {
-    /// The voltages the model is evaluated at.
+    /// Step-limited voltages at which the model is evaluated.
     pub(crate) voltages: [f64; N],
-    /// How far each applied voltage lies beyond the one evaluated at.
+    /// Offset `applied − voltages` by which each applied voltage exceeds the evaluated value.
     pub(crate) beyond: [f64; N],
 }
 
 impl<const N: usize> Bias<N> {
-    /// The bias of `applied` voltages, evaluated at `voltages`, their limited values.
+    /// Constructs a [`Bias`] from `applied` node voltages and step-limited `voltages`.
     pub(crate) fn new(applied: [f64; N], voltages: [f64; N]) -> Self {
         let mut beyond = applied;
         for (beyond, voltage) in beyond.iter_mut().zip(voltages) {
@@ -583,8 +577,8 @@ impl<const N: usize> Bias<N> {
         Self::new(applied, voltages)
     }
 
-    /// As [`Bias::limit_prefix`], limiting the first `L` voltages as pn junctions of
-    /// exponential `slope` and `critical_voltage`.
+    /// Limits the first `L` voltages using [`Bias::limit_prefix`] with SPICE pn-junction
+    /// limiting for exponential `slope` and `critical_voltage`.
     pub(crate) fn limit_junctions<R: Real, const M: usize, const L: usize>(
         nodes: &Nodes<M>,
         oriented: (f64, [(usize, usize); N]),
@@ -598,9 +592,8 @@ impl<const N: usize> Bias<N> {
         })
     }
 
-    /// The voltages evaluated at, each across its pair of `nodes` of `pairs`, turned by
-    /// `sign`, as numbers of `R` that move as the voltages across them do when a twin
-    /// seeds their unknowns.
+    /// Returns the step-limited voltages across each `(plus, minus)` entry of `pairs` in
+    /// `nodes`, oriented by `sign` as scalars `R` carrying active unknown seeds from `at`.
     #[inline]
     pub(crate) fn across<R: Real, const M: usize>(
         &self,
@@ -616,10 +609,11 @@ impl<const N: usize> Bias<N> {
     }
 }
 
-/// What a transistor adds at one bias: currents and charges between its stamped nodes,
-/// computed oriented as an n-channel's and turned by its channel's `sign`, each extended
-/// from the voltages it is evaluated at to the applied ones, with its derivatives with
-/// respect to the voltage across each of the `variables`' pairs of stamped nodes.
+/// Oriented stamping context for a transistor evaluated at one [`Bias`].
+///
+/// Computes currents and charges in n-channel sign convention, scales by channel `sign`,
+/// linearly extends outputs from limited voltages to applied voltages, and records
+/// derivatives with respect to each node pair in `variables`.
 pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
     pub(crate) nodes: &'a Nodes<M>,
     pub(crate) sign: f64,
@@ -628,8 +622,8 @@ pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
 }
 
 impl<'a, const M: usize, const N: usize> Oriented<'a, M, N> {
-    /// What a transistor adds across `nodes`, oriented by `sign`, at `bias` over
-    /// `variables`.
+    /// Constructs an [`Oriented`] stamping context across `nodes`, oriented by `sign`, at
+    /// `bias` over `variables`.
     pub(crate) const fn new(
         nodes: &'a Nodes<M>,
         sign: f64,
@@ -646,10 +640,8 @@ impl<'a, const M: usize, const N: usize> Oriented<'a, M, N> {
 }
 
 impl<const M: usize, const N: usize> Oriented<'_, M, N> {
-    /// What the transistor adds through a law of its equations that reads the variables
-    /// at `positions` alone, each a position among its variables: a current or a charge
-    /// of the law carries the derivatives with respect to those `K` variables only, in the
-    /// order of `positions`.
+    /// Returns a [`Reading`] view restricting derivatives to the `K` variables selected by
+    /// `positions`, in the order listed.
     pub(crate) fn reading<const K: usize>(&self, positions: [usize; K]) -> Reading<'_, M, N, K> {
         Reading {
             oriented: self,
@@ -657,8 +649,8 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
         }
     }
 
-    /// The voltages its variables are evaluated at, as numbers of `R` that move as the
-    /// voltages across their pairs of stamped nodes do when a twin seeds their unknowns.
+    /// Returns the step-limited controlling voltages as scalars `R`, carrying active unknown
+    /// derivative seeds from `at`.
     pub(crate) fn across<R: Real>(&self, at: &Local<'_>) -> [R; N] {
         self.bias
             .across(self.nodes, at, (self.sign, self.variables))
@@ -702,24 +694,24 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
     }
 }
 
-/// The position of each of `N` variables among themselves: those of a law that reads them
-/// all.
+/// Returns the identity position array `[0, 1, ..., N - 1]` selecting all `N` variables.
 fn every<const N: usize>() -> [usize; N] {
     std::array::from_fn(|position| position)
 }
 
-/// What a transistor adds through one law of its equations, which reads `K` of its `N`
-/// variables, at their `positions` among them: each current and charge of the law carries
-/// its derivatives with respect to those alone, which the law computes at its own width,
-/// and joins the transistor's at their positions as it is added.
+/// Stamping view of an [`Oriented`] transistor restricted to a subset of `K` controlling
+/// variables at indices `positions`.
+///
+/// Each constitutive sub-law computes derivatives at width `K` rather than `N` and scatters
+/// them into the transistor's derivative accumulator at their mapped positions.
 pub(crate) struct Reading<'a, const M: usize, const N: usize, const K: usize> {
     oriented: &'a Oriented<'a, M, N>,
     positions: [usize; K],
 }
 
 impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
-    /// The pairs of stamped nodes across which the law's variables lie, in its order; a
-    /// position beyond the transistor's variables reads as no pair at all.
+    /// Returns the stamped node pairs for the `K` variables in `positions`, mapping
+    /// out-of-range positions to `(NOWHERE, NOWHERE)`.
     pub(crate) fn variables(&self) -> [(usize, usize); K] {
         self.positions.map(|position| {
             self.oriented
@@ -730,9 +722,8 @@ impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
         })
     }
 
-    /// `value`, a number of the law with its derivatives with respect to the law's
-    /// variables, extended from the voltages it is evaluated at to the applied ones, in
-    /// the law's own orientation.
+    /// Extends `value` linearly from the limited evaluation voltages to the applied voltages
+    /// along the `K` active variables, keeping the law's sign orientation.
     pub(crate) fn extend<R: Real>(&self, value: Dual<R, K>) -> R {
         let beyond = self.positions.map(|position| {
             self.oriented
@@ -745,9 +736,8 @@ impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
         value.extend(beyond)
     }
 
-    /// Adds `gradient`, the derivatives of an equation of the instance's own, a law of
-    /// these variables, with respect to them, at `row`, that equation's local entries at
-    /// each stamped node.
+    /// Adds `gradient` derivatives for an internal instance equation into `stamp` using the
+    /// local matrix entries in `row`.
     pub(crate) fn add_conductances<R: Real>(
         &self,
         stamp: &mut Stamp<'_, R>,
@@ -811,15 +801,13 @@ impl<const M: usize, const N: usize, const K: usize> Reading<'_, M, N, K> {
     }
 }
 
-/// The conductances and capacitances an instance adds among its `M` stamped nodes, each
-/// the sum, in the order they come, of the derivatives that [`Oriented::add_current`] and
-/// [`Oriented::add_charge`] add at its pair of them, so that [`Derivatives::stamp`] writes
-/// each local entry among them once.
+/// Accumulator for conductance and capacitance derivatives across `M` stamped nodes.
 ///
-/// Each is the sum that [`Nodes::conductance`] and [`Nodes::capacitance`] would make in the
-/// stamp one write at a time, of the same terms in the same order, and so the same bits at
-/// an entry that held nothing before; at one that held a value, as a series resistance
-/// leaves at the node behind it, the sum adds to the value at once.
+/// Sums derivatives in arrival order from [`Oriented::add_current`] and
+/// [`Oriented::add_charge`] so [`Derivatives::stamp`] writes each local matrix entry once.
+/// Each accumulated entry matches the bit-exact sum that sequential [`Nodes::conductance`]
+/// and [`Nodes::capacitance`] calls produce on zeroed entries, and adds to pre-existing
+/// entries (such as series resistances) in a single write.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Derivatives<R: Real, const M: usize> {
     conductance: Entries<R, M>,
@@ -827,7 +815,7 @@ pub(crate) struct Derivatives<R: Real, const M: usize> {
 }
 
 impl<R: Real, const M: usize> Derivatives<R, M> {
-    /// No derivative yet.
+    /// Creates a zero-initialized derivative accumulator.
     pub(crate) fn new() -> Self {
         let zero = Entries([[R::constant(0.0); M]; M]);
         Self {
@@ -882,8 +870,8 @@ mod tests {
 
     use super::*;
 
-    /// The residuals, scales and charges of 4 local unknowns, and the conductances and
-    /// capacitances of the entries among them, that `add` writes into a stamp.
+    /// Runs `add` against a zeroed 4-node stamp and returns the bit patterns of residuals,
+    /// scales, charges, conductances, and capacitances.
     fn stamped(add: impl FnOnce(&mut Stamp<'_, f64>)) -> [Vec<u64>; 5] {
         let mut rows = [vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]];
         let mut entries = [vec![0.0; 16], vec![0.0; 16]];
@@ -900,8 +888,8 @@ mod tests {
     }
 
     proptest! {
-        /// Summing a transistor's derivatives in place and writing each entry once stamps
-        /// the same bits as writing each derivative as it comes.
+        /// Verifies that accumulating derivatives in place and stamping each entry once
+        /// produces identical bit patterns to stamping each derivative directly.
         #[test]
         fn summed_derivatives_stamp_what_each_write_does(
             numbers in proptest::collection::vec(-1e3..1e3f64, 4 * 8),
@@ -960,10 +948,11 @@ mod tests {
             prop_assert_eq!(written, summed);
         }
 
-        /// A law that reads some of a transistor's variables, in their order, adds what the
-        /// same numbers embedded among all its variables add, their other derivatives zero:
-        /// the same values, though a zero may differ in its sign. A law that reads them in
-        /// another order sums its derivatives in its own, and may round differently.
+        /// Verifies that a [`Reading`] over an ordered variable subset matches embedding
+        /// those values with zero padded derivatives across all variables.
+        ///
+        /// Signed zeros may differ; reordering variables alters summation order and can
+        /// change rounding.
         #[test]
         fn a_law_of_some_variables_adds_what_it_does_embedded_among_all(
             numbers in proptest::collection::vec(-1e3..1e3f64, 3 * 6),

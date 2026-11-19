@@ -1,7 +1,6 @@
-//! The diode, derived from ngspice 47's implementation of it in
-//! `src/spicelib/devices/dio/`:
+//! Junction diode kernel, derived from ngspice 47 `src/spicelib/devices/dio/`:
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! the ngspice Modified BSD license, reproduced in the repository `NOTICE` file.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,36 +22,30 @@ use crate::{
     Stamp,
 };
 
-/// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model as
-/// ngspice 47 implements it.
+/// Junction diode between `anode` and `cathode` implementing the SPICE model from ngspice
+/// 47.
 ///
-/// Its bottom junction carries the ideal junction current with exponential slope `n·Vt`,
-/// the recombination current, the tunneling current and `gmin · v`, its current softened
-/// by its knee currents, and holds a depletion charge and a diffusion charge. Its sidewall
-/// junction carries its own ideal and tunneling currents, softened by its own knee
-/// current, and holds its own depletion charge; it sits beside the bottom junction, behind
-/// the same series resistance, unless it has a series resistance of its own, behind which
-/// it joins the anode alone.
+/// The bottom junction carries ideal current (slope `n·Vt`), recombination current,
+/// tunneling current, and `gmin · v`, softened by knee currents, together with depletion
+/// and diffusion charges. The sidewall junction carries parallel ideal and tunneling
+/// currents, forward knee softening, and depletion charge behind the shared series
+/// resistance, or behind a dedicated series resistance connected directly to `anode`.
 ///
-/// With a series resistance, the bottom junction sits between an internal node, labelled
-/// `junction`, and the cathode; below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), the
-/// resistance also carries its current as an unknown, labelled `junction_current`. A
-/// sidewall with a resistance of its own sits behind an internal node `sidewall`, and its
-/// current `sidewall_current` alike. Given a breakdown voltage, the reverse current grows
-/// exponentially beyond it, matched to the breakdown current there as ngspice matches it.
-/// Steps of the junction voltages are limited the way SPICE limits them, so Newton
-/// iterations cannot overflow the exponential.
+/// Positive series resistance inserts an internal node labelled `junction` (and
+/// `junction_current` below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE)); a separate
+/// sidewall resistance inserts `sidewall` (and `sidewall_current`). When a breakdown
+/// voltage is supplied, reverse current grows exponentially past the ngspice-matched
+/// breakdown knee, with SPICE voltage step limiting preventing exponential overflow.
 ///
-/// Away from its nominal temperature, its saturation currents scale with the energy gap,
-/// its junction potentials and capacitances with the band gap or their own coefficients,
-/// and its breakdown voltage, resistances, transit time and grading coefficient by their
-/// temperature coefficients, as ngspice scales them.
+/// Away from nominal temperature, saturation currents scale with the energy gap, and
+/// junction potentials and capacitances scale by band gap or linear temperature
+/// coefficients. Breakdown voltage, resistances, transit time, and grading coefficient
+/// follow dedicated ngspice temperature coefficients.
 #[derive(Debug, Clone, Copy)]
 pub struct Diode;
 
-/// Where a diode's contributions go among its local unknowns: through its series
-/// resistance, across its junction, from the node behind the resistance to the cathode,
-/// and across its sidewall junction where that has a resistance of its own.
+/// Layout shape for [`Diode`] storing the main series resistance, main junction `Pair`,
+/// and optional separate sidewall branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiodeShape {
     series: Series,
@@ -60,69 +53,69 @@ pub struct DiodeShape {
     sidewall: Option<SeparateSidewall>,
 }
 
-/// A sidewall junction behind a series resistance of its own, from the anode.
+/// Separate sidewall junction branch with a dedicated series resistance from `anode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeparateSidewall {
     series: Series,
     junction: Pair,
 }
 
-/// A diode's numbers at its temperature.
+/// Prepared diode parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedDiode<R: Real> {
-    /// The series resistance at the temperature.
+    /// Series resistance at operating temperature.
     resistance: R,
-    /// The sidewall's own series resistance at the temperature, where it has one.
+    /// Dedicated sidewall series resistance at operating temperature, when present.
     sidewall_resistance: R,
     bottom: Bottom<R>,
     sidewall: Sidewall<R>,
-    /// The transit time at the temperature.
+    /// Transit time at operating temperature.
     transit_time: R,
     temperature: f64,
     flicker: Flicker,
 }
 
-/// What a diode remembers.
+/// Persistent evaluation memory for [`Diode`] storing previous junction voltages for step
+/// limiting.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiodeMemory {
-    /// The junction voltage of the last evaluation, from which the next step is limited.
+    /// Bottom junction voltage from the last evaluation for step limiting.
     last_voltage: f64,
-    /// The separate sidewall junction's voltage of the last evaluation.
+    /// Separate sidewall junction voltage from the last evaluation for step limiting.
     last_sidewall_voltage: f64,
 }
 
-/// A junction's numbers at its temperature: its current, its breakdown and its depletion
-/// charge, and how its steps are limited, as ngspice's diode and the body diode of its
-/// VDMOS share them.
+/// Temperature-prepared pn junction combining Shockley current, reverse breakdown,
+/// depletion charge, and step limiting, shared by [`Diode`] and VDMOS body diodes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Junction<R: Real> {
     saturation_current: R,
-    /// The emission coefficient times the thermal voltage.
+    /// Exponential voltage slope `n · Vt`.
     slope: R,
-    /// The voltage above which steps are limited: where the current's curvature takes over.
+    /// Critical voltage above which Newton steps undergo logarithmic limiting.
     critical_voltage: f64,
     depletion: Option<Depletion<R>>,
     breakdown: Option<Breakdown<R>>,
 }
 
-/// A junction's reverse breakdown.
+/// Reverse breakdown model for a pn junction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Breakdown<R: Real> {
-    /// The voltage below which the junction breaks down, matched to the breakdown current.
+    /// Matched reverse breakdown knee voltage.
     voltage: R,
-    /// The breakdown emission coefficient times the thermal voltage.
+    /// Breakdown exponential slope `nbv · Vt`.
     slope: R,
 }
 
 impl<R: Real> Breakdown<R> {
-    /// The breakdown of a junction with `saturation` current, broken down at `voltage`
-    /// with `current`, and exponential `slope`, at thermal voltage `vt`.
+    /// Constructs a [`Breakdown`] model matched to `voltage` and `current` for a junction
+    /// with `saturation` current, exponential `slope`, and thermal voltage `vt`.
     ///
-    /// ngspice moves the breakdown voltage so the current there is the breakdown current,
-    /// by a fixed-point iteration, and leaves it where a breakdown current too small for
-    /// the saturation current cannot be met.
+    /// Runs ngspice fixed-point iteration so breakdown current matches `current` at
+    /// `voltage`, leaving `voltage` unchanged when `current` is smaller than the linear
+    /// saturation floor.
     pub(crate) fn new(voltage: R, current: R, saturation: R, slope: R, vt: R) -> Self {
-        /// How closely the current at the matched voltage meets the breakdown current.
+        /// Relative convergence tolerance for matching breakdown voltage to `current`.
         const MATCH: f64 = 1e-12;
         if current.value() < (saturation * voltage / vt).value() {
             return Self { voltage, slope };
@@ -142,8 +135,8 @@ impl<R: Real> Breakdown<R> {
     }
 }
 
-/// The bottom junction: its ideal current, breakdown and depletion, its recombination and
-/// tunneling currents, and its knee currents.
+/// Bottom-area junction combining ideal current, breakdown, depletion charge,
+/// recombination, tunneling, and knee currents.
 #[derive(Debug, Clone, Copy)]
 struct Bottom<R: Real> {
     junction: Junction<R>,
@@ -153,8 +146,8 @@ struct Bottom<R: Real> {
     reverse_knee: Option<R>,
 }
 
-/// The sidewall junction: its ideal current, breakdown where it shares the bottom's
-/// voltage, and depletion, its tunneling current and its knee current.
+/// Sidewall-perimeter junction combining ideal current, shared breakdown, depletion charge,
+/// tunneling, and forward knee current.
 #[derive(Debug, Clone, Copy)]
 struct Sidewall<R: Real> {
     junction: Junction<R>,
@@ -162,52 +155,54 @@ struct Sidewall<R: Real> {
     forward_knee: Option<R>,
 }
 
-/// The recombination current in the depletion region, `Isr · (e^{v / (nr·Vt)} − 1)`
-/// times the generation factor `((1 − v/φ)² + 0.005)^{m/2}`, as ngspice computes it
-/// (`dioload.c`, lines 390 to 405), held at its value at three slopes of the bottom
-/// junction below zero (lines 415 to 420).
+/// Depletion-region recombination current
+/// `Isr · (e^{v / (nr·Vt)} − 1) · ((1 − v/φ)² + 0.005)^{m/2}` matching ngspice `dioload.c`
+/// (lines 390 to 405).
+///
+/// Below `-3 · slope` of the bottom junction, voltage is clamped at the boundary (lines
+/// 415 to 420).
 #[derive(Debug, Clone, Copy)]
 struct Recombination<R: Real> {
     saturation_current: R,
-    /// The recombination emission coefficient times the thermal voltage.
+    /// Recombination exponential slope `nr · Vt`.
     slope: R,
-    /// The bottom junction's potential, `φ`, at the temperature.
+    /// Bottom junction built-in potential `φ` at operating temperature.
     potential: R,
-    /// Half the bottom junction's grading coefficient, `m/2`, at the temperature.
+    /// Half the bottom junction grading coefficient `m/2` at operating temperature.
     half_grading: R,
 }
 
-/// The tunneling current, `−Itun · (e^{−v / (ntun·Vt)} − 1)` (`dioload.c`, lines 461 to
-/// 483).
+/// Reverse tunneling current `−Itun · (e^{−v / (ntun·Vt)} − 1)` matching ngspice
+/// `dioload.c` (lines 461 to 483).
 #[derive(Debug, Clone, Copy)]
 struct Tunneling<R: Real> {
     saturation_current: R,
-    /// The tunneling emission coefficient times the thermal voltage.
+    /// Tunneling exponential slope `ntun · Vt`.
     slope: R,
 }
 
-/// The smallest current a knee current softens, in amperes: ngspice softens none closer to
-/// zero (`dioload.c`, lines 487, 496 and 504).
+/// Minimum current magnitude softened by knee currents, in amperes (ngspice `dioload.c`,
+/// lines 487, 496, and 504).
 const KNEE_FLOOR: f64 = 1e-18;
 
-/// The square that keeps the recombination's generation factor from vanishing at the
-/// junction potential, ngspice's (`dioload.c`, line 396).
+/// Smoothing constant keeping the recombination generation factor nonzero at `v = φ`
+/// (ngspice `dioload.c`, line 396).
 const GENERATION_SMOOTHING: f64 = 0.005;
 
-/// How a diode's saturation currents and band gap follow the temperature: SPICE's `TLEV`.
+/// Temperature scaling selector for diode saturation currents, band gap, and breakdown
+/// voltage (SPICE `TLEV`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum DiodeTemperatureModel {
-    /// `TLEV` 0: the saturation currents scale by a constant energy gap, the junction
-    /// potentials by silicon's band gap, and the breakdown voltage falls by its
-    /// temperature coefficient in volts per kelvin.
+    /// Model 0 (`TLEV = 0`): constant energy gap for saturation currents, silicon band gap
+    /// for potentials, and absolute breakdown drift in volts per kelvin.
     #[default]
     Zero,
-    /// `TLEV` 1: as 0, but the breakdown voltage falls by its temperature coefficient
-    /// per kelvin, relative to itself.
+    /// Model 1 (`TLEV = 1`): identical to model 0 except breakdown voltage drifts
+    /// proportionally by its relative coefficient per kelvin.
     One,
-    /// `TLEV` 2: as 1, but the saturation currents and the junction potentials scale by
-    /// the energy gap of Varshni's law, `Eg − α·T² / (T + β)`.
+    /// Model 2 (`TLEV = 2`): identical to model 1 except saturation currents and potentials
+    /// follow the Varshni energy gap `Eg − α·T² / (T + β)`.
     Two,
 }
 
@@ -221,15 +216,16 @@ super::numbered_enum!(
     }
 );
 
-/// How a diode's junction capacitances and potentials follow the temperature: SPICE's
-/// `TLEVC`.
+/// Temperature scaling selector for diode junction capacitances and built-in potentials
+/// (SPICE `TLEVC`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum DiodeCapacitanceTemperatureModel {
-    /// `TLEVC` 0: through the band gap and the intrinsic concentration.
+    /// Model 0 (`TLEVC = 0`): physical band-gap and intrinsic-concentration scaling.
     #[default]
     Zero,
-    /// `TLEVC` 1: linearly, by their own temperature coefficients.
+    /// Model 1 (`TLEVC = 1`): linear scaling via dedicated capacitance and potential
+    /// temperature coefficients.
     One,
 }
 
@@ -242,164 +238,152 @@ super::numbered_enum!(
     }
 );
 
-/// The parameters of a [`Diode`], with ngspice's defaults (`diosetup.c`, lines 36 to
-/// 307).
+/// Parameters for [`Diode`], matching ngspice defaults (`diosetup.c`, lines 36 to 307).
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct DiodeParameters<R: Real = f64> {
-    /// The saturation current, in amperes; default 1e-14.
+    /// Bottom junction saturation current, in amperes; default 1e-14.
     #[dimension(CURRENT)]
     pub saturation_current: R,
-    /// The emission coefficient; default 1.
+    /// Bottom junction emission coefficient; default 1.
     pub emission_coefficient: R,
-    /// The series resistance, in ohms; default 0.
+    /// Main series resistance, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub series_resistance: R,
-    /// The zero-bias junction capacitance, in farads; default 0.
+    /// Zero-bias bottom junction capacitance, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub junction_capacitance: R,
-    /// The junction potential, in volts; default 1.
+    /// Bottom junction built-in potential, in volts; default 1.
     #[dimension(VOLTAGE)]
     pub junction_potential: R,
-    /// The grading coefficient of the junction, below 1; default 0.5.
+    /// Bottom junction grading coefficient, below 1; default 0.5.
     pub grading_coefficient: R,
-    /// The fraction of the junction potential above which the depletion capacitance is
-    /// extended linearly, below 1; default 0.5.
+    /// Fraction of junction potential above which depletion capacitance extends linearly;
+    /// below 1; default 0.5.
     pub depletion_coefficient: R,
-    /// The transit time, in seconds; default 0.
+    /// Carrier transit time, in seconds; default 0.
     #[dimension(TIME)]
     pub transit_time: R,
-    /// The forward knee current, in amperes, above which high injection halves the
-    /// junction current's slope; without it, none.
+    /// Forward high-injection knee current, in amperes; omitted disables forward knee
+    /// softening.
     #[dimension(CURRENT)]
     pub forward_knee_current: Option<R>,
-    /// The reverse knee current, in amperes, beyond which the reverse current's growth
-    /// slows alike; without it, none.
+    /// Reverse high-injection knee current, in amperes; omitted disables reverse knee
+    /// softening.
     #[dimension(CURRENT)]
     pub reverse_knee_current: Option<R>,
-    /// The saturation current of the recombination in the depletion region, in amperes;
-    /// without it, no recombination current.
+    /// Depletion-region recombination saturation current, in amperes; omitted disables
+    /// recombination current.
     #[dimension(CURRENT)]
     pub recombination_saturation_current: Option<R>,
-    /// The recombination current's emission coefficient; default 2.
+    /// Recombination current emission coefficient; default 2.
     pub recombination_emission_coefficient: R,
-    /// The sidewall junction's saturation current, in amperes; default 0, no sidewall
-    /// current.
+    /// Sidewall junction saturation current, in amperes; default 0 (no sidewall current).
     #[dimension(CURRENT)]
     pub sidewall_saturation_current: R,
-    /// The sidewall junction's emission coefficient; the emission coefficient by default.
+    /// Sidewall junction emission coefficient; defaults to `emission_coefficient`.
     pub sidewall_emission_coefficient: Option<R>,
-    /// The sidewall junction's own series resistance, in ohms, from the anode; without it,
-    /// the sidewall sits beside the junction, behind the series resistance.
+    /// Dedicated sidewall series resistance from `anode`, in ohms; omitted places the
+    /// sidewall in parallel with the bottom junction behind `series_resistance`.
     #[dimension(RESISTANCE)]
     pub sidewall_series_resistance: Option<R>,
-    /// The sidewall junction's zero-bias capacitance, in farads; default 0.
+    /// Zero-bias sidewall junction capacitance, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub sidewall_junction_capacitance: R,
-    /// The sidewall junction's potential, in volts; default 1.
+    /// Sidewall junction built-in potential, in volts; default 1.
     #[dimension(VOLTAGE)]
     pub sidewall_junction_potential: R,
-    /// The sidewall junction's grading coefficient, below 1; default 0.33.
+    /// Sidewall junction grading coefficient, below 1; default 0.33.
     pub sidewall_grading_coefficient: R,
-    /// The fraction of the sidewall junction's potential above which its depletion
-    /// capacitance is extended linearly, below 1; default 0.5.
+    /// Fraction of sidewall junction potential above which sidewall depletion capacitance
+    /// extends linearly; below 1; default 0.5.
     pub sidewall_depletion_coefficient: R,
-    /// The sidewall junction's forward knee current, in amperes; without it, none.
+    /// Sidewall forward high-injection knee current, in amperes; omitted disables sidewall
+    /// knee softening.
     #[dimension(CURRENT)]
     pub sidewall_forward_knee_current: Option<R>,
-    /// The tunneling current's saturation current, in amperes; default 0, no tunneling.
+    /// Bottom tunneling saturation current, in amperes; default 0 (no tunneling).
     #[dimension(CURRENT)]
     pub tunneling_saturation_current: R,
-    /// The sidewall's tunneling saturation current, in amperes; default 0.
+    /// Sidewall tunneling saturation current, in amperes; default 0.
     #[dimension(CURRENT)]
     pub sidewall_tunneling_saturation_current: R,
-    /// The tunneling current's emission coefficient; default 30.
+    /// Tunneling current emission coefficient; default 30.
     pub tunneling_emission_coefficient: R,
-    /// The exponent of the temperature ratio in the tunneling saturation currents'
-    /// scaling; default 3.
+    /// Temperature-ratio exponent scaling tunneling saturation currents; default 3.
     pub tunneling_saturation_current_temperature_exponent: R,
-    /// The factor of the energy gap in the tunneling saturation currents' scaling;
-    /// default 1.
+    /// Energy-gap multiplier scaling tunneling saturation currents; default 1.
     pub tunneling_energy_gap_factor: R,
-    /// The reverse breakdown voltage, in volts, at least 0; without it, the junction never
-    /// breaks down.
+    /// Reverse breakdown voltage, in volts (non-negative); omitted disables breakdown.
     #[dimension(VOLTAGE)]
     pub breakdown_voltage: Option<R>,
-    /// The current at the breakdown voltage, in amperes, at least 0; default 1e-3.
+    /// Current magnitude at `breakdown_voltage`, in amperes (non-negative); default 1e-3.
     #[dimension(CURRENT)]
     pub breakdown_current: R,
-    /// The breakdown emission coefficient; the emission coefficient by default.
+    /// Reverse breakdown emission coefficient; defaults to `emission_coefficient`.
     pub breakdown_emission_coefficient: Option<R>,
-    /// How fast the breakdown voltage falls with temperature: in volts per kelvin at
-    /// temperature model 0, and per kelvin, relative to the breakdown voltage, at 1 and 2;
-    /// default 0.
+    /// Linear breakdown voltage temperature coefficient: in volts per kelvin for model 0,
+    /// or relative per kelvin for models 1 and 2; default 0.
     #[dimension(conditional = "diode_tbv")]
     pub breakdown_temperature_coefficient: R,
-    /// How the saturation currents and the band gap follow the temperature, SPICE's
-    /// `TLEV`; default 0.
+    /// Saturation-current and band-gap temperature model (`TLEV`); default 0.
     pub temperature_model: DiodeTemperatureModel,
-    /// How the junction capacitances and potentials follow the temperature, SPICE's
-    /// `TLEVC`; default 0.
+    /// Junction-capacitance and potential temperature model (`TLEVC`); default 0.
     pub capacitance_temperature_model: DiodeCapacitanceTemperatureModel,
-    /// The energy gap that scales the saturation currents with temperature, in volts; by
-    /// default 1.11, silicon's, and at temperature model 2, where it is the gap at 0 K,
-    /// 1.16.
+    /// Energy gap scaling saturation currents, in volts; defaults to 1.11 (or 1.16 at 0 K
+    /// under temperature model 2).
     #[dimension(VOLTAGE)]
     pub energy_gap: Option<R>,
-    /// Varshni's `α` of the energy gap at temperature model 2, in volts per kelvin;
-    /// default 7.02e-4, silicon's.
+    /// Varshni `α` parameter for temperature model 2, in volts per kelvin; default 7.02e-4
+    /// (silicon).
     #[dimension(VOLTS_PER_KELVIN)]
     pub energy_gap_alpha: R,
-    /// Varshni's `β` of the energy gap at temperature model 2, in kelvins; default 1108,
-    /// silicon's.
+    /// Varshni `β` parameter for temperature model 2, in kelvins; default 1108 (silicon).
     #[dimension(TEMPERATURE)]
     pub energy_gap_beta: R,
-    /// The exponent of the temperature ratio in the saturation currents' scaling;
-    /// default 3.
+    /// Temperature-ratio exponent scaling saturation currents; default 3.
     pub saturation_current_temperature_exponent: R,
-    /// The junction capacitance's linear temperature coefficient at capacitance
-    /// temperature model 1, per kelvin; default 0.
+    /// Linear bottom capacitance temperature coefficient under `TLEVC = 1`, per kelvin;
+    /// default 0.
     #[dimension(PER_KELVIN)]
     pub junction_capacitance_temperature_coefficient: R,
-    /// The sidewall junction capacitance's linear temperature coefficient at capacitance
-    /// temperature model 1, per kelvin; default 0.
+    /// Linear sidewall capacitance temperature coefficient under `TLEVC = 1`, per kelvin;
+    /// default 0.
     #[dimension(PER_KELVIN)]
     pub sidewall_junction_capacitance_temperature_coefficient: R,
-    /// How fast the junction potential falls with temperature at capacitance temperature
-    /// model 1, in volts per kelvin; default 0.
+    /// Linear bottom junction potential temperature coefficient under `TLEVC = 1`, in volts
+    /// per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub junction_potential_temperature_coefficient: R,
-    /// How fast the sidewall junction potential falls with temperature at capacitance
-    /// temperature model 1, in volts per kelvin; default 0.
+    /// Linear sidewall junction potential temperature coefficient under `TLEVC = 1`, in
+    /// volts per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub sidewall_junction_potential_temperature_coefficient: R,
-    /// The series resistances' linear temperature coefficient, per kelvin; default 0.
+    /// Linear series resistance temperature coefficient, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub series_resistance_temperature_coefficient: R,
-    /// The series resistances' quadratic temperature coefficient, per kelvin squared;
-    /// default 0.
+    /// Quadratic series resistance temperature coefficient, per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub series_resistance_quadratic_temperature_coefficient: R,
-    /// The transit time's linear temperature coefficient, per kelvin; default 0.
+    /// Linear transit time temperature coefficient, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub transit_time_temperature_coefficient: R,
-    /// The transit time's quadratic temperature coefficient, per kelvin squared; default 0.
+    /// Quadratic transit time temperature coefficient, per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub transit_time_quadratic_temperature_coefficient: R,
-    /// The grading coefficient's linear temperature coefficient, per kelvin; default 0.
+    /// Linear grading coefficient temperature coefficient, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub grading_coefficient_temperature_coefficient: R,
-    /// The grading coefficient's quadratic temperature coefficient, per kelvin squared;
-    /// default 0.
+    /// Quadratic grading coefficient temperature coefficient, per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub grading_coefficient_quadratic_temperature_coefficient: R,
-    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
+    /// Flicker noise coefficient `KF`; default 0 (no flicker noise).
     pub flicker_coefficient: R,
-    /// The power of the current in the flicker noise, `AF`; default 1.
+    /// Flicker noise current exponent `AF`; default 1.
     pub flicker_exponent: R,
 }
 
@@ -534,8 +518,8 @@ impl Kernel for Diode {
         shape
             .series
             .add(shape.series.value_of(prepared.resistance), at, stamp);
-        // Without a resistance of its own, the sidewall shares the junction's voltage, and
-        // its steps are limited with the junction's.
+        // Without a dedicated resistance, the sidewall shares the main junction voltage and
+        // step limiting.
         let (applied, voltage) =
             prepared
                 .bottom
@@ -587,8 +571,8 @@ impl Kernel for Diode {
         );
     }
 
-    /// The series resistances' thermal noise, and the junctions' currents' shot and
-    /// flicker noise.
+    /// Appends thermal noise for series resistances plus shot and flicker noise for junction
+    /// currents.
     fn noise<R: Real>(
         shape: &DiodeShape,
         prepared: &PreparedDiode<R>,
@@ -628,9 +612,9 @@ impl Kernel for Diode {
     }
 }
 
-/// Adds a junction's `current` and `charge` at `voltage` across `pair`, with gmin across
-/// it, each extended linearly from that limited voltage to the applied one, `beyond` it, so the Newton step that follows solves the circuit linearized at the
-/// limited voltage.
+/// Stamps junction `current` (plus `gmin`) and `charge` across `pair`, linearly extending
+/// each from limited `voltage` by `beyond` so the next Newton step linearizes at the limited
+/// bias.
 fn add_junction<R: Real>(
     pair: &Pair,
     voltage: Dual<R, 1>,
@@ -649,8 +633,8 @@ fn add_junction<R: Real>(
 }
 
 impl<R: Real> DiodeParameters<R> {
-    /// The diode's numbers at its `temperature`, in kelvins, once each parameter they read
-    /// is checked.
+    /// Validates parameters and computes temperature-scaled diode values at `temperature`,
+    /// in kelvins.
     fn prepared(&self, temperature: R) -> Result<PreparedDiode<R>, ParameterError> {
         let flicker = Flicker::new(self.flicker_coefficient, self.flicker_exponent)?;
         let series_resistance =
@@ -684,8 +668,8 @@ impl<R: Real> DiodeParameters<R> {
         })
     }
 
-    /// The bottom and sidewall junctions at `temperatures`, once each parameter they read
-    /// is checked, as ngspice's `diotemp.c` prepares them.
+    /// Validates junction parameters and prepares the bottom and sidewall junctions at
+    /// `temperatures`, matching ngspice `diotemp.c`.
     fn junctions(
         &self,
         temperatures: Temperatures<R>,
@@ -752,8 +736,8 @@ impl<R: Real> DiodeParameters<R> {
             reverse_knee: knee("reverse_knee_current", self.reverse_knee_current)?,
         };
         let sidewall = Sidewall {
-            // A sidewall behind a resistance of its own does not break down
-            // (`dioload.c`, lines 360 and 451).
+            // Sidewalls with dedicated series resistance do not break down (`dioload.c`,
+            // lines 360 and 451).
             junction: Junction::new(
                 sidewall_saturation,
                 sidewall_slope,
@@ -774,7 +758,7 @@ impl<R: Real> DiodeParameters<R> {
         Ok((bottom, sidewall))
     }
 
-    /// The energy gap's terms of the saturation currents' scaling at `temperatures`.
+    /// Computes energy-gap terms used to scale saturation currents at `temperatures`.
     fn gaps(&self, temperatures: Temperatures<R>) -> Result<Gaps<R>, ParameterError> {
         let varying = self.temperature_model == DiodeTemperatureModel::Two;
         // ngspice's default energy gap: silicon's at 0 K where it follows Varshni's law,
@@ -802,8 +786,8 @@ impl<R: Real> DiodeParameters<R> {
         })
     }
 
-    /// The bottom junction's depletion at `temperatures`, with the band `gaps` and its
-    /// `grading` coefficient there, and its potential there.
+    /// Prepares bottom-junction depletion and returns `(depletion, scaled_potential)` at
+    /// `temperatures`, band `gaps`, and scaled `grading`.
     fn bottom_depletion(
         &self,
         temperatures: Temperatures<R>,
@@ -830,7 +814,7 @@ impl<R: Real> DiodeParameters<R> {
         ))
     }
 
-    /// The sidewall junction's depletion at `temperatures`, with the band `gaps`.
+    /// Prepares sidewall-junction depletion at `temperatures` and band `gaps`.
     fn sidewall_depletion(
         &self,
         temperatures: Temperatures<R>,
@@ -865,8 +849,8 @@ impl<R: Real> DiodeParameters<R> {
         Ok(Depletion::new(capacitance, potential, grading, coefficient))
     }
 
-    /// The breakdown at `temperatures` of the junctions of `saturation` current together,
-    /// if the diode breaks down.
+    /// Prepares reverse breakdown parameters at `temperatures` for combined junction
+    /// `saturation` current, returning `None` when breakdown is disabled.
     fn breakdown(
         &self,
         temperatures: Temperatures<R>,
@@ -901,8 +885,8 @@ impl<R: Real> DiodeParameters<R> {
         )))
     }
 
-    /// The tunneling saturation currents' scaling at the band `gaps`, and the tunneling
-    /// current's slope at thermal voltage `vt`, if the diode tunnels.
+    /// Computes tunneling saturation-current scaling at band `gaps` and exponential slope at
+    /// thermal voltage `vt`, returning `None` when tunneling is inactive.
     fn tunneling(&self, gaps: Gaps<R>, vt: R) -> Result<Option<(R, R)>, ParameterError> {
         ParameterError::non_negative(
             "tunneling_saturation_current",
@@ -930,33 +914,32 @@ impl<R: Real> DiodeParameters<R> {
     }
 }
 
-/// A knee current `parameter`, positive where given.
+/// Validates an optional knee current `parameter` as strictly positive when provided.
 fn knee<R: Real>(parameter: &str, value: Option<R>) -> Result<Option<R>, ParameterError> {
     value
         .map(|value| ParameterError::positive(parameter, value))
         .transpose()
 }
 
-/// The band gaps a diode's temperature scaling reads.
+/// Band-gap parameters used by diode temperature scaling.
 #[derive(Debug, Clone, Copy)]
 struct Gaps<R: Real> {
     temperatures: Temperatures<R>,
-    /// The energy gap, `EG`.
+    /// Constant activation energy gap `EG`.
     gap: R,
-    /// The band gap the junction potentials follow, and at temperature model 2 the
-    /// saturation currents too.
+    /// Varshni band gap used for junction potentials and (under model 2) saturation currents.
     band: Varshni<R>,
-    /// Whether the saturation currents follow `band`, at temperature model 2, rather than
-    /// the constant `gap`.
+    /// Flag selecting temperature-dependent `band` (model 2) over constant `gap` for
+    /// saturation currents.
     varying: bool,
 }
 
 impl<R: Real> Gaps<R> {
-    /// The factor that scales a saturation current of `emission` coefficient and
-    /// temperature `exponent`, its gap multiplied by `factor`: at temperature models 0 and
-    /// 1, `exp((factor · (T/Tn − 1) · Eg / Vt + exponent · ln(T/Tn)) / n)`, and at 2,
-    /// `exp((factor · (Eg(Tn) / Vt(Tn) − Eg(T) / Vt) + exponent · ln(T/Tn)) / n)`
-    /// (`diotemp.c`, lines 114 to 184).
+    /// Computes the saturation-current temperature scaling factor for `factor`, `exponent`,
+    /// and `emission` (`diotemp.c`, lines 114 to 184).
+    ///
+    /// Models 0 and 1 compute `exp((factor · (T/Tn − 1) · Eg / Vt + exponent · ln(T/Tn)) / n)`.
+    /// Model 2 uses `Eg(Tn) / Vt(Tn) − Eg(T) / Vt` in place of `(T/Tn − 1) · Eg / Vt`.
     fn scaling(self, factor: R, exponent: R, emission: R) -> R {
         let Temperatures { actual, nominal } = self.temperatures;
         let vt = self.temperatures.thermal_voltage();
@@ -972,9 +955,8 @@ impl<R: Real> Gaps<R> {
 }
 
 impl DiodeCapacitanceTemperatureModel {
-    /// A junction's `potential` and zero-bias `capacitance`, of `grading` coefficient, at
-    /// `temperatures`: through the `band` gap at model 0, and at model 1 by their linear
-    /// `coefficients`, the potential's and the capacitance's, from the nominal temperature.
+    /// Scales junction `potential` and zero-bias `capacitance` of `grading` coefficient to
+    /// `temperatures` using `band` (model 0) or linear `coefficients` (model 1).
     fn scaled<R: Real>(
         self,
         temperatures: Temperatures<R>,
@@ -996,9 +978,9 @@ impl DiodeCapacitanceTemperatureModel {
 }
 
 impl<R: Real> Bottom<R> {
-    /// The bottom junction's current, with its derivatives, at `voltage`, without gmin:
-    /// its ideal, recombination and tunneling currents, softened by its knee currents
-    /// (`dioload.c`, lines 379 to 502).
+    /// Evaluates bottom-junction current (excluding `gmin`) and derivatives at `voltage`,
+    /// combining ideal, recombination, tunneling, and knee currents (`dioload.c`, lines
+    /// 379 to 502).
     fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let forward = voltage.value.value() >= -3.0 * self.junction.slope.value();
         let mut current = self.junction.current(voltage);
@@ -1021,9 +1003,9 @@ impl<R: Real> Bottom<R> {
 }
 
 impl<R: Real> Sidewall<R> {
-    /// The sidewall junction's current, with its derivatives, at `voltage`, without gmin:
-    /// its ideal and tunneling currents, softened by its knee current (`dioload.c`, lines
-    /// 334 to 373, 461 to 471 and 504 to 509).
+    /// Evaluates sidewall-junction current (excluding `gmin`) and derivatives at `voltage`,
+    /// combining ideal, tunneling, and forward-knee terms (`dioload.c`, lines 334 to 373,
+    /// 461 to 471, and 504 to 509).
     fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let mut current = if self.junction.saturation_current.value() > 0.0 {
             self.junction.current(voltage)
@@ -1043,8 +1025,8 @@ impl<R: Real> Sidewall<R> {
 }
 
 impl<R: Real> Recombination<R> {
-    /// The recombination current at `voltage`, with its derivatives, held at its value at
-    /// three of the bottom junction's `slope` of reverse bias below them.
+    /// Evaluates depletion-region recombination current and derivatives at `voltage`,
+    /// clamping reverse bias below `-3 · slope`.
     fn current<const N: usize>(&self, voltage: Dual<R, N>, slope: R) -> Dual<R, N> {
         let boundary = slope * -3.0;
         let voltage = if voltage.value.value() >= boundary.value() {
@@ -1061,18 +1043,16 @@ impl<R: Real> Recombination<R> {
 }
 
 impl<R: Real> Tunneling<R> {
-    /// The tunneling current at `voltage`, with its derivatives, as the junction's reverse
-    /// current is counted: `Itun · (e^{−v / slope} − 1)`, which the junction's current
-    /// loses.
+    /// Evaluates reverse tunneling current `Itun · (e^{−v / slope} − 1)` and derivatives at
+    /// `voltage` (subtracted from forward junction current).
     fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         ((-voltage).divide(self.slope).exp() - 1.0).scale(self.saturation_current)
     }
 }
 
 impl<R: Real> Junction<R> {
-    /// A junction of `saturation_current` and exponential `slope`, the emission
-    /// coefficient times the thermal voltage, which holds the `depletion` charge, if any,
-    /// and breaks down as `breakdown` says, if at all.
+    /// Constructs a [`Junction`] with `saturation_current`, exponential `slope`, optional
+    /// `depletion` charge, and optional `breakdown`.
     pub(crate) fn new(
         saturation_current: R,
         slope: R,
@@ -1088,9 +1068,9 @@ impl<R: Real> Junction<R> {
         }
     }
 
-    /// The same junction, its steps limited as those of a junction of `saturation`
-    /// current, as ngspice limits a diode's junction and the sidewall beside it by their
-    /// saturation currents' sum (`diotemp.c`, lines 200 to 207).
+    /// Replaces the critical voltage using combined `saturation` current, matching ngspice's
+    /// shared limiting for parallel bottom and sidewall junctions (`diotemp.c`, lines 200 to
+    /// 207).
     fn limited_as(self, saturation: R) -> Self {
         Self {
             critical_voltage: critical_voltage(saturation.value(), self.slope.value()),
@@ -1098,8 +1078,8 @@ impl<R: Real> Junction<R> {
         }
     }
 
-    /// The voltage applied across `pair`, and the voltage the junction is evaluated at:
-    /// the applied one limited from `last`'s, which takes it.
+    /// Reads the applied voltage across `pair`, limits the step from `last` when limiting is
+    /// enabled, updates `last`, and returns `(applied, limited)`.
     fn limited(
         &self,
         pair: &Pair,
@@ -1141,8 +1121,8 @@ impl<R: Real> Junction<R> {
         charge.gradient[0]
     }
 
-    /// The junction's step to `applied` limited from the last evaluation's, `last`, as
-    /// ngspice limits it: about the breakdown voltage when the junction nears it.
+    /// Applies ngspice junction step limiting from `last` to `applied`, shifting around the
+    /// reverse breakdown knee when `applied` approaches breakdown.
     fn limit(&self, applied: f64, last: f64) -> Option<f64> {
         match self.breakdown {
             Some(breakdown)
@@ -1162,7 +1142,8 @@ impl<R: Real> Junction<R> {
         }
     }
 
-    /// The junction's current, with its derivatives, at `voltage`.
+    /// Evaluates junction current and derivatives at `voltage`, including exponential
+    /// reverse breakdown below `-breakdown.voltage`.
     pub(crate) fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let at = voltage.value.value();
         match self.breakdown {
@@ -1273,13 +1254,13 @@ mod tests {
         let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "grading_coefficient must be at least 0 and below 1, not 1.0"
+            "grading_coefficient is at least 0 and below 1, not 1.0"
         );
     }
 
     proptest! {
-        /// The junction's conductance and capacitance are the derivatives of its current and
-        /// charge, on both sides of the depletion threshold.
+        /// Verifies that analytical conductance and capacitance match finite differences on
+        /// both sides of the depletion threshold.
         #[test]
         fn jacobians_match_finite_differences(voltage in -5.0..0.7f64) {
             assert_jacobians_match::<Diode>(CHARGED, &[voltage, 0.0]);
@@ -1314,9 +1295,8 @@ mod tests {
         assert_eq!(quiet.len(), 1, "{quiet:?}");
     }
 
-    /// Every part of the diode at once: the sidewall beside the junction, recombination,
-    /// tunneling, knees, breakdown and every temperature coefficient, away from the
-    /// nominal temperature.
+    /// Comprehensive diode fixture exercising parallel sidewall, recombination, tunneling,
+    /// knees, breakdown, and all temperature coefficients away from nominal temperature.
     const EVERY_PART: &str = r#"{"saturation_current": 2e-14, "emission_coefficient": 1.3,
         "junction_capacitance": 2e-12, "junction_potential": 0.8, "grading_coefficient": 0.4,
         "depletion_coefficient": 0.6, "transit_time": 1e-9, "forward_knee_current": 1e-3,
@@ -1326,7 +1306,8 @@ mod tests {
         "sidewall_junction_potential": 0.6, "sidewall_grading_coefficient": 0.3,
         "sidewall_depletion_coefficient": 0.4, "sidewall_forward_knee_current": 2e-4,
         "tunneling_saturation_current": 1e-13, "sidewall_tunneling_saturation_current": 2e-14,
-        "tunneling_emission_coefficient": 20, "tunneling_saturation_current_temperature_exponent": 2,
+        "tunneling_emission_coefficient": 20,
+        "tunneling_saturation_current_temperature_exponent": 2,
         "tunneling_energy_gap_factor": 0.8, "breakdown_voltage": 5, "breakdown_current": 1e-3,
         "breakdown_emission_coefficient": 1.1, "breakdown_temperature_coefficient": 1e-3,
         "temperature_model": 2, "energy_gap": 1.17, "energy_gap_alpha": 5e-4,
@@ -1339,8 +1320,8 @@ mod tests {
         "grading_coefficient_quadratic_temperature_coefficient": 1e-6,
         "nominal_temperature": 290}"#;
 
-    /// [`EVERY_PART`] with its capacitances scaled by their own coefficients, and the
-    /// sidewall behind a resistance of its own.
+    /// Returns [`EVERY_PART`] augmented with linear capacitance temperature scaling and a
+    /// dedicated sidewall series resistance.
     fn separate() -> String {
         EVERY_PART.replace(
             '{',
@@ -1361,7 +1342,7 @@ mod tests {
             (current / expected - 1.0).abs() < 1e-12,
             "{current} vs {expected}"
         );
-        // Its own emission coefficient gives it its own slope.
+        // A dedicated sidewall emission coefficient sets an independent exponential slope.
         let own = r#"{"sidewall_saturation_current": 3e-15, "sidewall_emission_coefficient": 2}"#;
         let current = Bench::new::<Diode>(own).settle(&[0.6, 0.0]).residual[0];
         let expected = 1e-14 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0)
@@ -1414,7 +1395,8 @@ mod tests {
     fn recombination_tunneling_and_knees_follow_their_closed_forms() {
         let (isr, nr, m, vj) = (1e-12, 2.0, 0.4, 0.8);
         let parameters = format!(
-            r#"{{"recombination_saturation_current": {isr}, "recombination_emission_coefficient": {nr},
+            r#"{{"recombination_saturation_current": {isr},
+            "recombination_emission_coefficient": {nr},
             "grading_coefficient": {m}, "junction_potential": {vj}, "forward_knee_current": 1e-4,
             "reverse_knee_current": 1e-13, "tunneling_saturation_current": 1e-12,
             "tunneling_emission_coefficient": 20}}"#
@@ -1502,10 +1484,9 @@ mod tests {
                 .settle(&[-6.0, 0.0])
                 .residual[0]
         };
-        // At 0 the voltage falls by 1 mV/K to 5.95 V; at 1 by 0.1%/K to 5.7 V, so 6 V
-        // lies 0.25 V deeper in breakdown, its current larger by `e^{0.25/Vt}`, but for
-        // the matching's shift of each, `Vt · ln(Ibv/Is + 1 − BV/Vt)`, whose logarithm
-        // differs by 8.3 in 1.4e8 here, 6e-8 of the ratio.
+        // Model 0 lowers BV by 1 mV/K to 5.95 V; model 1 lowers BV by 0.1%/K to 5.7 V, placing
+        // 6 V deeper by 0.25 V and raising current by `e^{0.25/Vt}`. Matching shifts
+        // `Vt · ln(Ibv/Is + 1 − BV/Vt)` differ by 8.3 in 1.4e8 (6e-8 relative).
         let ratio = breakdown(1) / breakdown(0);
         let expected = (0.25 / thermal_voltage(REFERENCE_TEMPERATURE + 50.0)).exp();
         assert!(
@@ -1550,8 +1531,8 @@ mod tests {
     }
 
     proptest! {
-        /// Every part's conductances and capacitances are the derivatives of its currents
-        /// and charges, across the depletion thresholds, the knees and the breakdown.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across depletion thresholds, knees, and breakdown for all diode features.
         #[test]
         fn every_parts_jacobians_match_finite_differences(voltage in -5.4..0.75f64) {
             assert_jacobians_match::<Diode>(EVERY_PART, &[voltage, 0.0]);

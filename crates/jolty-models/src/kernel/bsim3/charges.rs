@@ -16,9 +16,9 @@ use crate::kernel::bsim::{
     source_partition_charge, surface_potential_overdrive, three_part_depletion,
 };
 
-/// The intrinsic charges on the gate, the bulk and the drain, in the frame where the drain
-/// lies at or above the source, the source's their sum's opposite, and the inversion
-/// charge the thermal noise of `noimod` 2 and 4 reads.
+/// Intrinsic gate, bulk, and drain charges in the forward frame (`vds >= 0`), where the
+/// source charge negates their sum, plus the inversion charge for `noimod` 2 and 4 thermal
+/// noise.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Intrinsic<R: Real> {
     pub(super) gate: D<R>,
@@ -28,9 +28,8 @@ pub(super) struct Intrinsic<R: Real> {
 }
 
 impl<R: Real> Core<R> {
-    /// The intrinsic charges at the drain-source and bulk-source voltages `vds` and `vbs`
-    /// of the frame where the drain lies at or above the source, where the channel is
-    /// `channel`.
+    /// Evaluates intrinsic terminal charges at forward-frame `vds` and `vbs` for operating
+    /// state `channel`.
     pub(super) fn intrinsic(&self, vds: D<R>, vbs: D<R>, channel: &Operating<R>) -> Intrinsic<R> {
         let zero = Intrinsic {
             gate: D::number(0.0),
@@ -50,9 +49,8 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// What the charges of `capmod` 1 to 3 read at the drain-source voltage `vds` where
-    /// the channel is `channel`: the bulk-source voltage of the charges and their gate
-    /// overdrive, which `noff` and `voffcv` shift.
+    /// Computes the effective bulk-source voltage and `noff`/`voffcv`-shifted gate overdrive
+    /// used by `capmod` 1 to 3 at `vds` and `channel`.
     fn cv<'a>(&self, vds: D<R>, channel: &'a Operating<R>, partition: Partition) -> Cv<'a, R> {
         // For `vbseff > 0`, `phi - phis = phi - phi^2 / (phi + vbseff) =
         // phi * vbseff / (phi + vbseff)`, eliminating `phi - phi` cancellation near zero.
@@ -78,13 +76,12 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// The oxide capacitance of the channel's area, `Cox · WeffCV · LeffCV`.
+    /// Returns the total channel oxide capacitance `Cox · WeffCV · LeffCV`.
     fn cox_wl(&self) -> R {
         self.cox * self.weff_cv * self.leff_cv
     }
 
-    /// `capmod` 0: the long-channel charges of the original BSIM3, piecewise in the
-    /// regions of operation.
+    /// Evaluates `capmod` 0 long-channel charges, defined piecewise across operating regions.
     fn capmod_zero(
         &self,
         vds: D<R>,
@@ -171,7 +168,8 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// `capmod` 1: charges continuous in every region but piecewise across saturation.
+    /// Evaluates `capmod` 1 charges, continuous across threshold and piecewise across
+    /// saturation.
     fn capmod_one(&self, cv: &Cv<'_, R>) -> Intrinsic<R> {
         let Cv {
             vds,
@@ -226,7 +224,7 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// `capmod` 2: smooth charges in every region.
+    /// Evaluates `capmod` 2 smooth charges across all operating regions.
     fn capmod_two(&self, cv: &Cv<'_, R>) -> Intrinsic<R> {
         let Cv {
             vds,
@@ -270,8 +268,8 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// `capmod` 3: the charge-thickness model, with the inversion layer's finite
-    /// thickness and the gate bias's effect on the surface potential.
+    /// Evaluates `capmod` 3 charge-thickness charges, modeling finite inversion-layer
+    /// thickness and gate-bias effects on surface potential.
     fn capmod_three(&self, cv: &Cv<'_, R>) -> Intrinsic<R> {
         let Cv {
             vds,
@@ -340,8 +338,8 @@ struct Cv<'a, R: Real> {
 }
 
 impl<R: Real> Overlaps<R> {
-    /// The gate-source and gate-drain overlap charges at `vgs` and `vgd`, of `capmod`, and
-    /// the gate-bulk one at `vgb`.
+    /// Evaluates gate-source, gate-drain, and gate-bulk overlap charges for `capmod` at
+    /// `vgs`, `vgd`, and `vgb`.
     pub(super) fn charges(&self, capmod: Charges, [vgs, vgd, vgb]: [D<R>; 3]) -> [D<R>; 3] {
         let ckappa = self.ckappa;
         let side = |v: D<R>, cgo: R, cgl: R| match capmod {
@@ -365,9 +363,9 @@ impl<R: Real> Overlaps<R> {
 }
 
 impl<R: Real> Junctions<R> {
-    /// The depletion charge of `junction` at its voltage `v`, the bulk's over the drain's
-    /// or the source's: the power law of each part in reverse bias, and in forward bias a
-    /// capacitance growing linearly from its zero-bias value with the slope it has there.
+    /// Evaluates the depletion charge of `junction` at bulk-over-terminal voltage `v`.
+    /// Reverse bias follows the power law of each junction component, and forward bias
+    /// continues linearly from zero-bias capacitance and slope.
     pub(super) fn charge(&self, junction: &Junction<R>, v: D<R>) -> D<R> {
         three_part_depletion(junction.capacitances, self.potentials, self.gradings, v)
     }

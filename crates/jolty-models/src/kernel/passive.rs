@@ -15,40 +15,40 @@ use crate::{
     ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
-/// The default nominal temperature, at which a passive device's value was measured.
+/// Returns the default nominal temperature at which passive parameters are specified.
 fn reference_temperature<R: Real>() -> R {
     R::constant(REFERENCE_TEMPERATURE)
 }
 
-/// The local indices of a two-terminal element's terminals, `a` and `b`.
+/// Local indices of a two-terminal element's terminals, `a` and `b`.
 const TERMINALS: (usize, usize) = (0, 1);
 
-/// A resistor between terminals `a` and `b`, whose resistance drifts with temperature and
-/// changes with its voltage.
+/// Two-terminal resistor between `a` and `b` with temperature drift, voltage nonlinearity,
+/// and thermal plus flicker noise.
 ///
-/// With `v` from `a` to `b`, its resistance is `r · (1 + vc1 · v + vc2 · v²)`, `r` its
-/// resistance at that temperature; where the coefficients bend it below zero, it is
-/// negative there. Below [`SMALL_RESISTANCE`], its current is an unknown labelled
-/// `current`. Beside its thermal noise, its current `I` makes flicker noise of
-/// `KF · |I|^AF / f` A²/Hz across it, as ngspice's resistor does.
+/// With `v = v(a) − v(b)`, resistance equals `r · (1 + vc1 · v + vc2 · v²)`, where `r` is
+/// the temperature-scaled resistance (allowing negative values where coefficients bend it
+/// below zero). Resistances below [`SMALL_RESISTANCE`] introduce an explicit current unknown
+/// labelled `current`. In addition to thermal noise, branch current `I` produces flicker
+/// noise `KF · |I|^AF / f` A²/Hz across the terminals, matching ngspice.
 #[derive(Debug, Clone, Copy)]
 pub struct Resistor;
 
-/// How a resistor adds its current to its terminals' equations.
+/// Layout shape selecting how a [`Resistor`] stamps its current into terminal equations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResistorShape(Form);
 
-/// How a resistor adds its current to its terminals' equations.
+/// Internal stamping form for a [`Resistor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Form {
-    /// As a conductance between them.
+    /// Direct conductance stamped across the terminal [`Pair`].
     Conductance(Pair),
-    /// As an unknown of its own, held by Ohm's law `v − r · f(v) · i = 0`, with the entry
-    /// at (current, current).
+    /// Explicit branch current unknown governed by `v − r · f(v) · i = 0`, with diagonal
+    /// `(current, current)` entry.
     Current(CurrentBranch, usize),
 }
 
-/// A resistor's numbers at its temperature.
+/// Prepared resistor parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedResistor<R: Real> {
     resistance: R,
@@ -57,7 +57,7 @@ pub struct PreparedResistor<R: Real> {
     temperature: f64,
 }
 
-/// How a passive device's value changes with its voltage `v`: by `1 + vc1 · v + vc2 · v²`.
+/// Quadratic voltage dependence `1 + vc1 · v + vc2 · v²` applied to a passive element.
 #[derive(Debug, Clone, Copy)]
 struct VoltageCoefficients<R: Real> {
     linear: R,
@@ -65,17 +65,18 @@ struct VoltageCoefficients<R: Real> {
 }
 
 impl<R: Real> VoltageCoefficients<R> {
-    /// The factor at `voltage`.
+    /// Evaluates the polynomial scaling factor `1 + vc1 · v + vc2 · v²` at `voltage`.
     fn factor<const N: usize>(self, voltage: Dual<R, N>) -> Dual<R, N> {
         voltage.scale(self.linear) + (voltage * voltage).scale(self.quadratic) + 1.0
     }
 
-    /// Whether the factor is 1 at every voltage: whether both coefficients are zero.
+    /// Returns `true` when both voltage coefficients are zero, making the factor identically
+    /// 1.
     fn constant(self) -> bool {
         self.linear.value() == 0.0 && self.quadratic.value() == 0.0
     }
 
-    /// The integral of the factor from 0 to `voltage`.
+    /// Computes the definite integral of the voltage factor from 0 to `voltage`.
     fn integral<const N: usize>(self, voltage: Dual<R, N>) -> Dual<R, N> {
         let squared = voltage * voltage;
         (squared / 2.0).scale(self.linear)
@@ -84,54 +85,54 @@ impl<R: Real> VoltageCoefficients<R> {
     }
 }
 
-/// The parameters of a [`Resistor`].
+/// Parameters for [`Resistor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ResistorParameters<R: Real = f64> {
-    /// The resistance, in ohms, at the nominal temperature; positive.
+    /// Resistance at nominal temperature, in ohms; positive.
     #[dimension(RESISTANCE)]
     pub resistance: R,
-    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    /// Linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
-    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    /// Quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
-    /// The exponential temperature coefficient `tce`, in percent per kelvin: given, the
-    /// resistance is multiplied by `1.01^(tce · ΔT)` instead of the polynomial.
+    /// Exponential temperature coefficient `tce`, in percent per kelvin; when present,
+    /// scales resistance by `1.01^(tce · ΔT)` instead of the polynomial.
     #[serde(default)]
     pub exponential_temperature_coefficient: Option<R>,
-    /// The temperature the resistance was measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The linear voltage coefficient `vc1`, per volt; default 0.
+    /// Linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
     #[dimension(PER_VOLT)]
     pub voltage_coefficient: R,
-    /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
+    /// Quadratic voltage coefficient `vc2`, per volt squared; default 0.
     #[serde(default)]
     #[dimension(PER_VOLT_SQUARED)]
     pub quadratic_voltage_coefficient: R,
-    /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
+    /// Flicker noise coefficient `KF`; default 0 (no flicker noise).
     #[serde(default)]
     pub flicker_coefficient: R,
-    /// The power of the current in the flicker noise, `AF`; default 1.
+    /// Flicker noise current exponent `AF`; default 1.
     #[serde(default = "one::<R>")]
     pub flicker_exponent: R,
 }
 
-/// The default of an exponent that leaves its base as it is.
+/// Returns the default unit exponent (`1.0`).
 fn one<R: Real>() -> R {
     R::constant(1.0)
 }
 
 impl<R: Real> ResistorParameters<R> {
-    /// The resistance at `temperature`, in kelvins, once each parameter it reads is
-    /// checked.
+    /// Validates parameters and computes the temperature-scaled resistance at `temperature`,
+    /// in kelvins.
     fn resistance_at(&self, temperature: R) -> Result<R, ParameterError> {
         let resistance = ParameterError::positive("resistance", self.resistance)?;
         let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
@@ -162,8 +163,8 @@ impl<R: Real> ResistorParameters<R> {
     }
 }
 
-/// A heated resistor keeps the form its resistance at the ambient chose: a current of its
-/// own stays one however hot it runs.
+/// Self-heated resistors retain the stamping form chosen at ambient temperature regardless
+/// of operating temperature.
 impl Kernel for Resistor {
     const NAME: &'static str = "resistor";
     type Parameters<R: Real> = ResistorParameters<R>;
@@ -213,8 +214,8 @@ impl Kernel for Resistor {
         ))
     }
 
-    /// Linear without voltage coefficients: its conductance, or its resistance where its
-    /// current is an unknown, is then the same at every voltage.
+    /// Returns `true` when voltage coefficients are zero so conductance or series resistance
+    /// is constant across all voltages.
     fn linear(_: &ResistorShape, prepared: &PreparedResistor<f64>) -> bool {
         prepared.coefficients.constant()
     }
@@ -254,9 +255,11 @@ impl Kernel for Resistor {
         }
     }
 
-    /// The thermal noise of the resistance at its voltage, `r · f(v)`: a current of
-    /// `4kT / (r · f(v))` across it, or a voltage of `4kT · r · f(v)` in series with it
-    /// where its current is an unknown; and the flicker noise of its current, across it.
+    /// Appends thermal noise for effective resistance `r · f(v)` and flicker noise for the
+    /// branch current across the resistor terminals.
+    ///
+    /// Conductance-form resistors inject a current noise density `4kT / (r · f(v))`;
+    /// current-branch resistors inject a series voltage noise density `4kT · r · f(v)`.
     fn noise<R: Real>(
         shape: &ResistorShape,
         prepared: &PreparedResistor<R>,
@@ -299,50 +302,51 @@ impl Kernel for Resistor {
     }
 }
 
-/// A capacitor between terminals `a` and `b`, whose capacitance drifts with temperature
-/// and changes with its voltage.
+/// Two-terminal capacitor between `a` and `b` with temperature drift and voltage
+/// nonlinearity.
 ///
-/// With `v` from `a` to `b`, its capacitance is `c · (1 + vc1 · v + vc2 · v²)`, `c` its
-/// capacitance at that temperature, and its charge that capacitance's integral from 0 V.
+/// With `v = v(a) − v(b)`, incremental capacitance equals `c · (1 + vc1 · v + vc2 · v²)`,
+/// where `c` is the temperature-scaled capacitance, and stored charge equals the integral of
+/// capacitance from `0 V` to `v`.
 #[derive(Debug, Clone, Copy)]
 pub struct Capacitor;
 
-/// Where a capacitor's contributions go: across its terminals.
+/// Layout shape for [`Capacitor`] storing the terminal `Pair`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapacitorShape(Pair);
 
-/// A capacitor's numbers at its temperature.
+/// Prepared capacitor parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedCapacitor<R: Real> {
     capacitance: R,
     coefficients: VoltageCoefficients<R>,
 }
 
-/// The parameters of a [`Capacitor`].
+/// Parameters for [`Capacitor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CapacitorParameters<R: Real = f64> {
-    /// The capacitance, in farads, at the nominal temperature; zero or positive.
+    /// Capacitance at nominal temperature, in farads; non-negative.
     #[dimension(CAPACITANCE)]
     pub capacitance: R,
-    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    /// Linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
-    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    /// Quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
-    /// The temperature the capacitance was measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The linear voltage coefficient `vc1`, per volt; default 0.
+    /// Linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
     #[dimension(PER_VOLT)]
     pub voltage_coefficient: R,
-    /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
+    /// Quadratic voltage coefficient `vc2`, per volt squared; default 0.
     #[serde(default)]
     #[dimension(PER_VOLT_SQUARED)]
     pub quadratic_voltage_coefficient: R,
@@ -390,8 +394,8 @@ impl Kernel for Capacitor {
         Ok(CapacitorShape(Pair::new(layout, a, b)))
     }
 
-    /// Linear without voltage coefficients: its capacitance is then the same at every
-    /// voltage.
+    /// Returns `true` when voltage coefficients are zero so capacitance is constant across
+    /// all voltages.
     fn linear(_: &CapacitorShape, prepared: &PreparedCapacitor<f64>) -> bool {
         prepared.coefficients.constant()
     }
@@ -414,46 +418,45 @@ impl Kernel for Capacitor {
     }
 }
 
-/// A linear inductor between terminals `a` and `b`, whose inductance drifts with
-/// temperature.
+/// Linear inductor between terminals `a` and `b` with temperature drift.
 ///
-/// Its current, flowing from `a` through the inductor to `b`, is an unknown labelled
-/// `current`. Its equation is `v_a − v_b − d/dt (L·i) = 0`, so at DC it is a short circuit.
+/// Branch current from `a` to `b` is an explicit unknown labelled `current`. The branch
+/// equation `v_a − v_b − d/dt (L·i) = 0` acts as a short circuit at DC.
 #[derive(Debug, Clone, Copy)]
 pub struct Inductor;
 
-/// Where an inductor's contributions go: its branch, and the entry at (current, current).
+/// Layout shape for [`Inductor`] storing the branch and diagonal `(current, current)` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InductorShape {
     branch: CurrentBranch,
     entry: usize,
 }
 
-/// The parameters of an [`Inductor`].
+/// Parameters for [`Inductor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct InductorParameters<R: Real = f64> {
-    /// The inductance, in henries, at the nominal temperature; positive.
+    /// Inductance at nominal temperature, in henries; positive.
     #[dimension(INDUCTANCE)]
     pub inductance: R,
-    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    /// Linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
-    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    /// Quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
-    /// The temperature the inductance was measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
 }
 
 impl<R: Real> InductorParameters<R> {
-    /// The inductance at `temperature`, in kelvins, once each parameter it reads is
-    /// checked.
+    /// Validates parameters and computes temperature-scaled inductance at `temperature`, in
+    /// kelvins.
     fn inductance_at(&self, temperature: R) -> Result<R, ParameterError> {
         Ok(ParameterError::positive("inductance", self.inductance)?
             * Temperatures::new(temperature, self.nominal_temperature)?.polynomial(
@@ -518,46 +521,44 @@ impl Kernel for Inductor {
     }
 }
 
-/// Inductors whose fluxes link, as a transformer's windings or a choke's.
+/// Magnetically coupled inductors such as transformer or choke windings.
 ///
-/// Winding `k`, from 1, joins terminals `a{k}` and `b{k}`, its current, flowing from
-/// `a{k}` through it to `b{k}`, an unknown labelled `current{k}`. The flux through it is
-/// `Σ M_kj · i_j`, where `M_kk` is its own inductance and `M_kj = c · √(L_k · L_j)` for a
-/// coupling `c` between windings `k` and `j`, none unless given; its equation is
-/// `v_a{k} − v_b{k} − d/dt Σ M_kj · i_j = 0`. A current into `a{k}` and one into `a{j}`
-/// add their fluxes when `c` is positive, as SPICE's mutual inductance couples the
-/// inductors' first nodes.
+/// Winding `k` (1-indexed) spans `a{k}` to `b{k}` with branch-current unknown `current{k}`
+/// and equation `v_a{k} − v_b{k} − d/dt Σ M_kj · i_j = 0`. Diagonal entry `M_kk` is the
+/// self-inductance `L_k`, and off-diagonal entry `M_kj = c · √(L_k · L_j)` for a coupling
+/// `c` (zero if unspecified). Positive `c` matches SPICE dot convention between `a{k}` and
+/// `a{j}`.
 #[derive(Debug, Clone, Copy)]
 pub struct CoupledInductors;
 
-/// Where coupled inductors' contributions go: each winding's branch, and the entry at
-/// (current k, current j), row by row.
+/// Layout shape for [`CoupledInductors`] storing each winding branch and the row-major
+/// `(current k, current j)` mutual-inductance entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoupledInductorsShape {
     branches: Vec<CurrentBranch>,
     entries: Vec<usize>,
 }
 
-/// The parameters of [`CoupledInductors`].
+/// Parameters for [`CoupledInductors`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CoupledInductorsParameters<R: Real = f64> {
-    /// Each winding, as an inductor's parameters; at least two.
+    /// Winding specifications as [`InductorParameters`]; at least two windings.
     pub windings: Vec<InductorParameters<R>>,
-    /// The couplings between pairs of windings.
+    /// Magnetic couplings between pairs of windings.
     #[serde(default)]
     pub couplings: Vec<Coupling<R>>,
 }
 
-/// How closely two windings' fluxes link.
+/// Magnetic coupling specification between two windings.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct Coupling<R: Real = f64> {
-    /// The two windings, by their numbers from 1.
+    /// Pair of 1-based winding indices.
     pub windings: [usize; 2],
-    /// The coupling coefficient, from -1 to 1.
+    /// Coupling coefficient in `[-1, 1]`.
     pub coefficient: R,
 }
 
@@ -845,7 +846,7 @@ mod tests {
     #[test]
     fn rejects_non_positive_values() {
         let error = Bench::try_new::<Resistor>(r#"{"resistance": 0}"#).unwrap_err();
-        assert_eq!(error.to_string(), "resistance must be positive, not 0.0");
+        assert_eq!(error.to_string(), "resistance is positive, not 0.0");
         let error = Bench::try_new::<Capacitor>(r#"{"capacity": 1}"#).unwrap_err();
         assert!(
             error.to_string().starts_with("unknown field `capacity`"),
@@ -888,7 +889,7 @@ mod tests {
             [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))]
         );
         assert_close(&[flicker.density(10.0)], &[1e-12 * 4e-6 / 10.0]);
-        // A small one's current is its own unknown, and its flicker noise still across it.
+        // Explicit current-branch resistors still inject flicker noise across their terminals.
         let small = r#"{"resistance": 0.5, "flicker_coefficient": 1e-12}"#;
         let sources = Bench::new::<Resistor>(small).noise(&[1.0, 0.0, 2.0]);
         let flicker = source(&sources, "flicker");

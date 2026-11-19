@@ -28,11 +28,11 @@ pub(super) struct Core<R: Real> {
     pub(super) tox: R,
     /// The oxide capacitance per area.
     pub(super) cox: R,
-    /// `√(εsi / εox · tox)`.
+    /// Oxide-to-silicon depletion factor `√(εsi / εox · tox)`.
     pub(super) factor1: R,
-    /// The thermal voltage `k·T / q` with BSIM3's `k / q`.
+    /// Thermal voltage `k·T / q` using BSIM3's `k / q`.
     pub(super) vtm: R,
-    /// `T / Tnom − 1`.
+    /// Relative temperature rise `T / Tnom − 1`.
     pub(super) temperature_rise: R,
     pub(super) leff: R,
     pub(super) weff: R,
@@ -41,7 +41,7 @@ pub(super) struct Core<R: Real> {
     pub(super) vbsc: R,
     pub(super) phi: R,
     pub(super) sqrt_phi: R,
-    /// `phi^1.5`.
+    /// Surface potential power `phi^1.5`.
     pub(super) phis3: R,
     pub(super) xdep0: R,
     pub(super) vbi: R,
@@ -86,7 +86,7 @@ pub(super) struct Junction<R: Real> {
 /// The diodes between the bulk and the drain and the source, and their charges.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Junctions<R: Real> {
-    /// `Nvtm`, the emission coefficient times the thermal voltage.
+    /// Diode thermal slope `Nvtm`, the emission coefficient times thermal voltage.
     pub(super) slope: R,
     pub(super) drain: Junction<R>,
     pub(super) source: Junction<R>,
@@ -99,12 +99,14 @@ pub(super) struct Junctions<R: Real> {
 /// The overlaps between the gate and the source, the drain and the bulk.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Overlaps<R: Real> {
-    /// `(cgso + cf) · WeffCV` and `(cgdo + cf) · WeffCV`.
+    /// Total gate-source and gate-drain overlap capacitances `(cgso + cf) · WeffCV` and
+    /// `(cgdo + cf) · WeffCV`.
     pub(super) cgso: R,
     pub(super) cgdo: R,
-    /// `cgbo · LeffCV`.
+    /// Total gate-bulk overlap capacitance `cgbo · LeffCV`.
     pub(super) cgbo: R,
-    /// `cgsl · WeffCV` and `cgdl · WeffCV`.
+    /// Lightly-doped gate-source and gate-drain overlap capacitances `cgsl · WeffCV` and
+    /// `cgdl · WeffCV`.
     pub(super) cgsl: R,
     pub(super) cgdl: R,
     pub(super) ckappa: R,
@@ -140,7 +142,8 @@ pub struct PreparedBsim3<R: Real> {
 }
 
 impl<R: Real> Bsim3Parameters<R> {
-    /// The transistor's numbers at `temperature`, in kelvins.
+    /// Prepares temperature- and geometry-dependent BSIM3 quantities at `temperature` in
+    /// kelvins.
     #[expect(
         clippy::too_many_lines,
         clippy::similar_names,
@@ -225,7 +228,7 @@ impl<R: Real> Bsim3Parameters<R> {
         let phi = (npeak / ni).ln() * vtm0 * 2.0;
         check(phi.value() <= 0.0, || {
             format!(
-                "the surface potential, 2 · Vtm · ln(nch / ni), must be positive, not {:?}",
+                "the surface potential, 2 · Vtm · ln(nch / ni), is positive, not {:?}",
                 phi.value()
             )
         })?;
@@ -318,7 +321,7 @@ impl<R: Real> Bsim3Parameters<R> {
         let lintnoi = self.lintnoi;
         check(lintnoi.value() > leff.value() / 2.0, || {
             format!(
-                "lintnoi, {:?}, must be at most half the effective length, {:?}",
+                "lintnoi, {:?}, is at most half the effective length, {:?}",
                 lintnoi.value(),
                 leff.value()
             )
@@ -352,8 +355,8 @@ impl<R: Real> Bsim3Parameters<R> {
         })
     }
 
-    /// The drain and source resistances, `rsh` times each diffusion's squares, of all the
-    /// parallel copies together.
+    /// Computes drain and source series resistances as `rsh` times diffusion squares divided
+    /// by parallel multiplicity.
     pub(super) fn resistances(&self) -> Result<[R; 2], ParameterError> {
         let sheet = ParameterError::non_negative("rsh", self.rsh)?;
         let multiplier = ParameterError::positive("multiplier", self.multiplier)?;
@@ -362,8 +365,8 @@ impl<R: Real> Bsim3Parameters<R> {
         Ok([drain, source].map(|squares| sheet * squares / multiplier))
     }
 
-    /// The effective length and width of the drain current and of the charges, `Leff`,
-    /// `Weff`, `LeffCV` and `WeffCV`.
+    /// Computes effective drain-current and charge channel dimensions
+    /// `[Leff, Weff, LeffCV, WeffCV]`.
     fn geometry(&self) -> Result<[R; 4], ParameterError> {
         let length = ParameterError::positive("length", self.length)?;
         let width = ParameterError::positive("width", self.width)?;
@@ -412,16 +415,15 @@ impl<R: Real> Bsim3Parameters<R> {
         let mut found = [R::constant(0.0); 4];
         for (value, (name, extent)) in found.iter_mut().zip(effective) {
             check(extent.value() <= 0.0, || {
-                format!("the {name} must be positive, not {:?}", extent.value())
+                format!("the {name} is positive, not {:?}", extent.value())
             })?;
             *value = extent;
         }
         Ok(found)
     }
 
-    /// The fatal errors `b3check.c` stops on, of the `binned` parameters of a channel of
-    /// effective length and width `leff` and `weff`, with the mobility and saturation
-    /// velocity at the temperature.
+    /// Validates `binned` parameters against ngspice `b3check.c` fatal bounds for channel
+    /// dimensions `[leff, weff]` and heated `[u0temp, vsattemp]`.
     fn checked(
         &self,
         binned: &Binned<R>,
@@ -432,7 +434,7 @@ impl<R: Real> Bsim3Parameters<R> {
         let (leff, weff) = (value(leff), value(weff));
         check(value(binned.nlx) < -leff, || {
             format!(
-                "nlx, {:?}, must be at least the negative of the effective length, {leff:?}",
+                "nlx, {:?}, is at least the negative of the effective length, {leff:?}",
                 value(binned.nlx)
             )
         })?;
@@ -460,7 +462,7 @@ impl<R: Real> Bsim3Parameters<R> {
         }
         check(value(binned.ngate) > 1e31, || {
             format!(
-                "ngate must be at most 1e31 per cubic meter, not {:?}",
+                "ngate is at most 1e31 per cubic meter, not {:?}",
                 value(binned.ngate)
             )
         })?;
@@ -468,7 +470,7 @@ impl<R: Real> Bsim3Parameters<R> {
             #[expect(clippy::float_cmp, reason = "b3check.c's own test of a zero divisor")]
             let zero = value(offset) == -weff;
             check(zero, || {
-                format!("{name} + Weff must not be zero, as {name} is {weff:?} below 0")
+                format!("{name} + Weff is nonzero; {name} is {weff:?} below 0")
             })?;
         }
         ParameterError::positive("u0 at the temperature", u0temp)?;
@@ -476,9 +478,8 @@ impl<R: Real> Bsim3Parameters<R> {
         Ok(())
     }
 
-    /// `k1`, `k2` and `vbm`: as given, the one missing at ngspice's default, or derived
-    /// from the body effects at the surface and in the bulk, with `phi` and its root, the
-    /// channel's doping `npeak` per cubic centimeter and the oxide capacitance `cox`.
+    /// Resolves `(k1, k2, vbm)` from explicit values, ngspice defaults, or surface and bulk
+    /// body-effect derivations using `(phi, sqrt_phi)`, doping `npeak` in cm⁻³, and `cox`.
     fn body(&self, binned: &Binned<R>, (phi, sqrt_phi): (R, R), (npeak, cox): (R, R)) -> (R, R, R) {
         if self.k1.is_some() || self.k2.is_some() {
             return (
@@ -495,9 +496,8 @@ impl<R: Real> Bsim3Parameters<R> {
         )
     }
 
-    /// The junctions at `temperature`, with the parameters' nominal temperature `tnom`,
-    /// the thermal voltages at both, `vtm` and `vtm0`, silicon's band gap at the nominal
-    /// temperature, `eg0`, and the effective width `weff`.
+    /// Prepares bulk-drain and bulk-source junctions at `temperature` from nominal
+    /// temperature `tnom`, thermal voltages `(vtm, vtm0)`, band gap `eg0`, and `weff`.
     fn junctions(
         &self,
         (temperature, tnom): (R, R),
@@ -526,7 +526,7 @@ impl<R: Real> Bsim3Parameters<R> {
         for (name, grading) in ["mj", "mjsw", "mjswg"].into_iter().zip(gradings) {
             check(grading.value() >= 1.0 || grading.value() < 0.0, || {
                 format!(
-                    "{name} must be at least 0 and below 1, not {:?}",
+                    "{name} is at least 0 and below 1, not {:?}",
                     grading.value()
                 )
             })?;

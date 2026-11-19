@@ -1,25 +1,21 @@
-//! Device models for jolty: what each kind of device contributes to a circuit's equations.
+//! Device models for jolty defining each device's contributions to circuit equations.
 //!
-//! A circuit is solved in charge-oriented form, `f(x) + d/dt q(x) = 0`, where `x` holds the
-//! node voltages and branch currents. Each device adds its share of the resistive part `f`,
-//! currents and constraint residuals, and of the reactive part `q`, charges and fluxes, with
-//! their derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same
-//! form, so native and foundry models plug in alike.
+//! Circuits are formulated in charge-oriented form, `f(x) + d/dt q(x) = 0`, where `x` holds
+//! node voltages and branch currents. Each device contributes resistive terms `f` (currents
+//! and constraint residuals), reactive terms `q` (charges and fluxes), and their exact
+//! derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same interface
+//! so native and foundry models interoperate seamlessly.
 //!
-//! A [`Kernel`] computes a model one instance at a time, as a pure function of the
-//! instance's prepared parameters, its memory and its local unknowns, which allocates
-//! nothing and never panics. [`Groups`] evaluate the instances of one kernel and one shape
-//! together, on one thread or across a rayon pool's, each into its own block of a slab that
-//! a gather adds to the circuit's equations in a fixed order; a [`Twin`] evaluates one
-//! instance with the derivatives of every number along some directions of its parameters,
-//! its [`Seeds`], all at once.
+//! A [`Kernel`] evaluates one device instance as a pure, allocation-free, panic-free function
+//! of prepared parameters, state memory, and local unknowns. [`Groups`] batch instances of a
+//! shared kernel and shape across one thread or a rayon pool, writing into dedicated slab
+//! blocks before a deterministic gather sums them into the global system. A [`Twin`]
+//! evaluates an instance with forward-mode derivatives along parameter [`Seeds`].
 //!
-//! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
-//! [`Specification`], which names the device's terminals and gives the instance of its
-//! kernel. A [`LogicModel`] is a kind of [`Logic`] device, whose
-//! pins join logic nets that an event scheduler simulates. Every model's parameters write
-//! as they read, with each one left out at its default, and a JSON schema describes them.
-//! A [`Library`] holds the models a circuit can use.
+//! A [`Model`] parses instance parameters into a [`Specification`] describing terminals and
+//! exposing a kernel instance. A [`LogicModel`] instantiates event-driven [`Logic`] devices
+//! connected to logic nets. Every model serializes parameters with omitted fields filled from
+//! defaults and exposes a JSON schema; a [`Library`] stores all available models by name.
 
 // The derive of `Lift` names this crate by its name, here as in every crate that uses it.
 extern crate self as jolty_models;
@@ -134,7 +130,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// A library with every native model.
+    /// Builds a library containing every native analog and logic model.
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
@@ -174,33 +170,33 @@ impl Library {
         library
     }
 
-    /// Adds `model`, replacing any model of the same name; each of its devices may run at
-    /// a temperature of its own, as [`Surrounded`] describes.
+    /// Registers analog `model`, replacing any existing model with the same name and wrapping
+    /// it in [`Surrounded`] for per-instance temperature overrides.
     pub fn add(&mut self, model: impl Model + 'static) {
         self.logic.remove(model.name());
         self.models
             .insert(model.name(), Arc::new(Surrounded::new(model)));
     }
 
-    /// Adds the logic model `model`, replacing any model of the same name.
+    /// Registers logic `model`, replacing any existing model with the same name.
     pub fn add_logic(&mut self, model: impl LogicModel + 'static) {
         self.models.remove(model.name());
         self.logic.insert(model.name(), Arc::new(model));
     }
 
-    /// The analog model named `name`.
+    /// Returns the analog model registered under `name`, if present.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Model>> {
         self.models.get(name)
     }
 
-    /// The logic model named `name`.
+    /// Returns the logic model registered under `name`, if present.
     #[must_use]
     pub fn logic(&self, name: &str) -> Option<&Arc<dyn LogicModel>> {
         self.logic.get(name)
     }
 
-    /// The names of every model, analog and logic, in alphabetical order.
+    /// Returns the names of all registered analog and logic models in alphabetical order.
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         let mut names: Vec<&'static str> = self
             .models
@@ -228,9 +224,8 @@ mod tests {
 
     use super::*;
 
-    /// Devices of every model, between them giving each kind of parameter there is: every
-    /// shape of waveform, a device's own temperature and its heating, and a logic cell's
-    /// electrical pins.
+    /// Builds representative parameter examples for every model, covering waveforms,
+    /// per-instance temperatures, self-heating, and logic electrical pins.
     #[expect(clippy::too_many_lines, reason = "one example of each model, or two")]
     fn examples() -> Vec<(&'static str, Value)> {
         let mosfet = json!({"level": 3, "channel": "p", "oxide_thickness": 1e-8,
@@ -271,8 +266,8 @@ mod tests {
             (
                 "bsim3",
                 json!({"channel": "p", "vth0": -0.6, "lvth0": 1e-8, "capacitance_model": 2,
-                    "mobility_model": 3, "noise_model": 2, "check_parameters": true, "charge_partition": 0.5,
-                    "temperature": 350}),
+                    "mobility_model": 3, "noise_model": 2, "check_parameters": true,
+                    "charge_partition": 0.5, "temperature": 350}),
             ),
             (
                 "bsim4",
@@ -360,8 +355,7 @@ mod tests {
         ]
     }
 
-    /// `parameters` of a device of the model `name` of the standard library, each one
-    /// left out written with its default.
+    /// Returns `parameters` for standard-library model `name` with omitted defaults filled in.
     fn defaulted(library: &Library, name: &str, parameters: &Parameters) -> Parameters {
         match library.logic(name) {
             Some(model) => model.defaulted(parameters),
@@ -370,7 +364,7 @@ mod tests {
         .unwrap_or_else(|error| panic!("{name}: {error}"))
     }
 
-    /// The schema of the parameters of the model `name` of the standard library.
+    /// Returns the JSON schema for standard-library model `name`.
     fn schema(library: &Library, name: &str) -> Schema {
         match library.logic(name) {
             Some(model) => model.schema(),
@@ -382,11 +376,11 @@ mod tests {
         value.as_object().cloned().expect("an object")
     }
 
-    /// Every pivot a model's layout claims is at least as large as every other entry of
-    /// its column, in `G`, `G + αC` and `G + jωC`, at every point evaluated, at an
-    /// operating point and in a transient: the property that lets the sparse solver
-    /// eliminate its unknown without a search. The points spread each unknown over ±10,
-    /// and `α` and `ω` over 0 to 10¹⁵ per second, beyond any step's.
+    /// Verifies that every pivot claimed by a model layout dominates all other entries in its
+    /// column across `G`, `G + αC`, and `G + jωC` at operating-point and transient states.
+    ///
+    /// Samples unknowns across `±10` and sweeps `α` and `ω` from `0` to `10¹⁵` s⁻¹ so sparse
+    /// elimination needs no pivot search.
     #[test]
     fn every_claimed_pivot_is_its_columns_largest() {
         let library = Library::standard();
@@ -410,7 +404,7 @@ mod tests {
                 let pivoted = bench.pivoted().to_vec();
                 let unknowns = u32::try_from(bench.unknowns().len()).expect("few unknowns");
                 for point in 0..64_u32 {
-                    // Each unknown at its own fraction of ±10, a different one at each point.
+                    // Assigns each unknown a distinct fraction of ±10 per sample point.
                     let x: Vec<f64> = (0..unknowns)
                         .map(|index| 20.0 * f64::from((point * 7 + index * 13) % 41) / 40.0 - 10.0)
                         .collect();
@@ -427,7 +421,8 @@ mod tests {
                             for row in (0..x.len()).filter(|&row| row != pivot) {
                                 assert!(
                                     entry(row) <= claimed,
-                                    "{name}'s unknown {column} at {x:?}, s = {real} + {imaginary}j: \
+                                    "{name}'s unknown {column} at {x:?}, \
+                                     s = {real} + {imaginary}j: \
                                      {} against its pivot's {claimed} in row {pivot}",
                                     entry(row)
                                 );

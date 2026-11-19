@@ -12,28 +12,27 @@ use crate::{
     ParameterError, Real, Regions, Stamp,
 };
 
-/// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
+/// Type-erased parsed parameters held by an [`Instance`].
 type Erased = dyn Any + Send + Sync;
 
-/// What prepares an instance at a temperature, in kelvins, from its parameters, and claims
-/// its layout: its shape and its numbers, typed.
+/// Function pointer that prepares an instance at a temperature in kelvins and claims its
+/// layout, returning the typed shape and prepared parameters.
 type MadeBy = fn(&Erased, f64, &mut Layout) -> Result<Box<dyn Made>, ParameterError>;
 
-/// One instance of a kernel, as its specification reads it: its parameters and its own
-/// temperature, which group it with the other instances of its kernel and its shape, and
-/// prepare it for each run.
+/// Borrowed reference to a device instance's typed parameters and temperature override, used
+/// to group matching instances and prepare them for simulation runs.
 #[derive(Clone, Copy)]
 pub struct Instance<'a> {
     pub(super) kernel: TypeId,
     name: &'static str,
     parameters: &'a Erased,
-    /// Prepares the instance and claims its layout.
+    /// Callback that prepares the instance and claims its layout.
     made: MadeBy,
-    /// The names of the variables the kernel computes.
+    /// Callback returning internal variable names computed by the kernel.
     variables: fn() -> &'static [&'static str],
-    /// The regions the kernel's equations distinguish.
+    /// Callback returning operating regions distinguished by the kernel.
     regions: fn() -> Regions,
-    /// Every `(path, value)` pair that [`crate::Lift`] visits on the instance's parameters.
+    /// Callback listing every `(path, value)` visited by [`crate::Lift`].
     #[cfg(any(test, feature = "testing"))]
     lift_entries: fn(&Erased) -> Vec<(String, f64)>,
     pub(super) own: Own,
@@ -49,15 +48,14 @@ impl fmt::Debug for Instance<'_> {
 }
 
 impl<'a> Instance<'a> {
-    /// An instance of the kernel `K` with `parameters`, at the temperature of its
-    /// surroundings.
+    /// Constructs an instance handle for kernel `K` with `parameters` at ambient temperature.
     #[must_use]
     pub fn from_parameters<K: Kernel>(parameters: &'a K::Parameters<f64>) -> Self {
         Self::from_kind::<K>(parameters)
     }
 
-    /// An instance of the kind `K` with `parameters`, at the temperature of its
-    /// surroundings.
+    /// Constructs an instance handle for kernel kind `K` with `parameters` at ambient
+    /// temperature.
     pub(crate) fn from_kind<K: Kind>(parameters: &'a K::Parameters) -> Self {
         Self {
             kernel: TypeId::of::<K>(),
@@ -72,32 +70,29 @@ impl<'a> Instance<'a> {
         }
     }
 
-    /// The same instance at its own temperature, `own`.
+    /// Returns a copy of `self` carrying per-instance temperature override `own`.
     pub(crate) const fn at_own(self, own: Own) -> Self {
         Self { own, ..self }
     }
 
-    /// The names of the variables the instance computes on its way to its currents, as
-    /// [`Kernel::variable_names`] gives them.
+    /// Returns the internal variable names reported by [`Kernel::variable_names`].
     #[must_use]
     pub fn variable_names(&self) -> &'static [&'static str] {
         (self.variables)()
     }
 
-    /// The regions of operation the instance's equations distinguish, as
-    /// [`Kernel::regions`] gives them.
+    /// Returns the operating regions reported by [`Kernel::regions`].
     #[must_use]
     pub fn regions(&self) -> Regions {
         (self.regions)()
     }
 
-    /// Claims, through `binding`, which binds the instance's terminals, the internal
-    /// unknowns and the entries the instance's layout at the temperature `temperature` of
-    /// its surroundings claims, as a group claims them for an instance it adds.
+    /// Claims the internal unknowns and matrix entries required by the instance at ambient
+    /// `temperature` through `binding`.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when the instance's parameters are out of range.
+    /// Returns [`ParameterError`] when the instance parameters are out of range.
     pub fn claim(&self, temperature: f64, binding: &mut Binding<'_>) -> Result<(), ParameterError> {
         let mut layout = Layout::new(binding.terminals().len());
         self.make(temperature, &mut layout)?;
@@ -112,8 +107,7 @@ impl<'a> Instance<'a> {
         Ok(())
     }
 
-    /// Prepares the instance at the surroundings' `temperature` and claims its layout in
-    /// `layout`.
+    /// Prepares the instance at ambient `temperature` and populates its `layout`.
     pub(super) fn make(
         &self,
         temperature: f64,
@@ -123,62 +117,61 @@ impl<'a> Instance<'a> {
         (self.made)(self.parameters, temperature, layout)
     }
 
-    /// The parameters, if the instance is one of `K`.
+    /// Downcasts the erased parameters to `K::Parameters` when the kernel matches `K`.
     pub(super) fn parameters<K: Kind>(&self) -> Option<&'a K::Parameters> {
         self.parameters.downcast_ref()
     }
 
-    /// Every `(path, value)` pair that [`crate::Lift`] visits on the instance's parameters,
-    /// in visit order.
+    /// Collects every `(path, value)` pair visited by [`crate::Lift`] on the instance
+    /// parameters in traversal order.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn lift_entries(&self) -> Vec<(String, f64)> {
         (self.lift_entries)(self.parameters)
     }
 
-    /// The own-temperature keys set on this instance, which [`crate::Surrounded`] handles
-    /// outside [`crate::Lift`].
+    /// Returns per-instance temperature keys handled by [`crate::Surrounded`] outside
+    /// [`crate::Lift`].
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn own_temperature_keys(&self) -> Vec<&'static str> {
         self.own.present()
     }
 }
 
-/// What a group's instances are, as the groups evaluate them: a [`Kernel`]'s, or those of a
-/// kernel that heat, [`crate::kernel::heat::HeatedKernel`]. Its numbers are plain ones,
-/// whatever numbers the kernel computes with within.
+/// Group-facing kernel abstraction unifying plain [`Kernel`] types and self-heating
+/// [`crate::kernel::heat::HeatedKernel`] wrappers using plain `f64` evaluation buffers.
 pub(crate) trait Kind: Send + Sync + 'static {
-    /// The model's name.
+    /// Model name registered in the library.
     const NAME: &'static str;
-    /// The parameters an instance holds.
+    /// Deserialized parameter struct type.
     type Parameters: Send + Sync + 'static;
-    /// The structure the parameters give an instance, as [`Kernel::Shape`].
+    /// Layout-derived shape type, matching [`Kernel::Shape`].
     type Shape: Clone + fmt::Debug + PartialEq + Send + Sync + 'static;
-    /// The numbers an instance's parameters set, as [`Kernel::Prepared`].
+    /// Precomputed temperature-dependent parameters, matching [`Kernel::Prepared`].
     type Prepared: Clone + fmt::Debug + Send + Sync;
-    /// What an instance remembers, as [`Kernel::Memory`].
+    /// Per-instance evaluation state memory, matching [`Kernel::Memory`].
     type Memory: Clone + fmt::Debug + Default + Send + Sync;
 
-    /// As [`Kernel::prepare`], at `temperature`, in kelvins.
+    /// Prepares parameters at `temperature` in kelvins, delegating to [`Kernel::prepare`].
     fn prepare(
         parameters: &Self::Parameters,
         temperature: f64,
     ) -> Result<Self::Prepared, ParameterError>;
 
-    /// As [`Kernel::layout`].
+    /// Claims internal unknowns and matrix entries, delegating to [`Kernel::layout`].
     fn layout(
         parameters: &Self::Parameters,
         prepared: &Self::Prepared,
         layout: &mut Layout,
     ) -> Result<Self::Shape, ParameterError>;
 
-    /// As [`Kernel::memory`].
+    /// Initializes instance memory, delegating to [`Kernel::memory`].
     fn memory(shape: &Self::Shape, prepared: &Self::Prepared) -> Self::Memory;
 
-    /// As [`Kernel::linear`].
+    /// Reports whether the instance is linear, delegating to [`Kernel::linear`].
     fn linear(shape: &Self::Shape, prepared: &Self::Prepared) -> bool;
 
-    /// As [`Kernel::evaluate`].
+    /// Evaluates device equations into `stamp`, delegating to [`Kernel::evaluate`].
     fn evaluate(
         shape: &Self::Shape,
         prepared: &Self::Prepared,
@@ -187,7 +180,7 @@ pub(crate) trait Kind: Send + Sync + 'static {
         stamp: &mut Stamp<'_>,
     );
 
-    /// As [`Kernel::noise`], from what the instance remembers, `memory`, too.
+    /// Appends operating-point noise sources using `memory`, delegating to [`Kernel::noise`].
     fn noise(
         shape: &Self::Shape,
         prepared: &Self::Prepared,
@@ -196,25 +189,25 @@ pub(crate) trait Kind: Send + Sync + 'static {
         sources: &mut Vec<NoiseSource>,
     );
 
-    /// As [`Kernel::variable_names`].
+    /// Returns internal variable names, delegating to [`Kernel::variable_names`].
     fn variable_names() -> &'static [&'static str];
 
-    /// As [`Kernel::regions`].
+    /// Returns operating region metadata, delegating to [`Kernel::regions`].
     fn regions() -> Regions;
 
-    /// As [`Kernel::variables`].
+    /// Copies internal variable values from `memory`, delegating to [`Kernel::variables`].
     fn variables(memory: &Self::Memory, values: &mut [f64]);
 
-    /// As [`Kernel::breakpoints`].
+    /// Appends waveform breakpoints within `span`, delegating to [`Kernel::breakpoints`].
     fn breakpoints(prepared: &Self::Prepared, span: (f64, f64), times: &mut Vec<f64>);
 
-    /// As [`Kernel::varies_in_time`].
+    /// Reports explicit time dependence, delegating to [`Kernel::varies_in_time`].
     fn varies_in_time(shape: &Self::Shape, prepared: &Self::Prepared) -> bool;
 
-    /// As [`Kernel::delayed`].
+    /// Appends delayed conductance entries, delegating to [`Kernel::delayed`].
     fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>);
 
-    /// As [`Kernel::choices`].
+    /// Records active branch choices at `at`, delegating to [`Kernel::choices`].
     fn choices(
         shape: &Self::Shape,
         prepared: &Self::Prepared,
@@ -223,30 +216,31 @@ pub(crate) trait Kind: Send + Sync + 'static {
         found: &mut Vec<Choice>,
     );
 
-    /// As [`Kernel::dc_value`].
+    /// Returns the independent-source DC value, delegating to [`Kernel::dc_value`].
     fn dc_value(prepared: &Self::Prepared) -> Option<f64>;
 
-    /// As [`Kernel::excite`].
+    /// Stamps unit source excitation, delegating to [`Kernel::excite`].
     fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>);
 
-    /// As [`Kernel::drive`].
+    /// Starts a logic-driver ramp, delegating to [`Kernel::drive`].
     fn drive(memory: &mut Self::Memory, ramp: (f64, LogicLevel, f64)) -> Option<f64>;
 
-    /// As [`Kernel::driven`].
+    /// Returns the logic-driver current unknown index, delegating to [`Kernel::driven`].
     fn driven(shape: &Self::Shape) -> Option<usize>;
 
-    /// As [`Kernel::sense`].
+    /// Evaluates logic-detector threshold margin and supply swing, delegating to
+    /// [`Kernel::sense`].
     fn sense(shape: &Self::Shape, prepared: &Self::Prepared, at: &Local<'_>) -> Option<(f64, f64)>;
 
-    /// An instance's numbers computing with the derivatives of every number along `SEEDS`
-    /// directions of its parameters, and what it remembers then.
+    /// Differentiable prepared state and memory carrying derivatives along `SEEDS` parameter
+    /// directions.
     type Twin<const SEEDS: usize>: fmt::Debug + Send + Sync;
 
-    /// The twin of an instance of `shape` with `parameters` at `temperature`, in kelvins,
-    /// differentiated along `seeds`, each a number's path among them, as
-    /// [`jolty_ir::numbers`] names it, and its rate along each direction, from its initial
-    /// memory: `None` when the kernel reads no real number at a path, as when it reads it
-    /// as a choice, such as a level, or a parameter is out of range.
+    /// Builds a forward-mode sensitivity twin for `shape` and `parameters` at `temperature`
+    /// (in kelvins) seeded along `seeds` (paths as formatted by [`jolty_ir::numbers`]).
+    ///
+    /// Returns `None` when a seed path addresses a non-real choice parameter or validation
+    /// fails.
     fn twin<const SEEDS: usize>(
         shape: &Self::Shape,
         parameters: &Self::Parameters,
@@ -254,8 +248,8 @@ pub(crate) trait Kind: Send + Sync + 'static {
         temperature: f64,
     ) -> Option<Self::Twin<SEEDS>>;
 
-    /// Evaluates the twin of an instance of `shape` at `at`, from what it remembers, which
-    /// it updates, into `stamp`.
+    /// Evaluates sensitivity `twin` of `shape` at `at`, updating twin memory and writing
+    /// gradient contributions into `stamp`.
     fn evaluate_twin<const SEEDS: usize>(
         shape: &Self::Shape,
         twin: &mut Self::Twin<SEEDS>,
@@ -263,8 +257,8 @@ pub(crate) trait Kind: Send + Sync + 'static {
         stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     );
 
-    /// Every `(path, value)` pair that [`crate::Lift`] visits on `parameters`, in visit
-    /// order.
+    /// Collects every `(path, value)` pair visited by [`crate::Lift`] on `parameters` in
+    /// traversal order.
     #[cfg(any(test, feature = "testing"))]
     fn lift_entries(parameters: &Self::Parameters) -> Vec<(String, f64)>;
 }
@@ -363,7 +357,7 @@ impl<K: Kernel> Kind for K {
     }
 }
 
-/// Every `(path, value)` pair that [`crate::Lift`] visits on `parameters`, an instance of `K`.
+/// Collects every `(path, value)` pair visited by [`crate::Lift`] on erased `K` `parameters`.
 #[cfg(any(test, feature = "testing"))]
 fn lift_entries_of<K: Kind>(parameters: &Erased) -> Vec<(String, f64)> {
     parameters
@@ -371,20 +365,19 @@ fn lift_entries_of<K: Kind>(parameters: &Erased) -> Vec<(String, f64)> {
         .map_or_else(Vec::new, K::lift_entries)
 }
 
-/// An instance prepared and laid out, before it joins its group: its shape and its
-/// numbers, typed.
+/// Prepared and laid-out instance ready to join a group, holding typed shape and parameters.
 pub(super) trait Made: Send {
-    /// The shape, as the typed half of a group of it.
+    /// Returns the type-erased shape descriptor for group matching.
     fn shaped(&self) -> &dyn Shaped;
 
-    /// Whether the instance is linear, as [`Kernel::linear`] says.
+    /// Returns whether the instance is linear, as determined by [`Kernel::linear`].
     fn linear(&self) -> bool;
 
-    /// The instance as [`Any`], for its group's run to take its numbers.
+    /// Converts the prepared instance into [`Any`] for transfer into its group run.
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-/// An instance of `K` prepared and laid out.
+/// Concrete prepared and laid-out instance of kernel `K`.
 pub(super) struct Fresh<K: Kind> {
     shape: Shape<K>,
     pub(super) prepared: K::Prepared,
@@ -404,7 +397,7 @@ impl<K: Kind> Made for Fresh<K> {
     }
 }
 
-/// `parameters`, an instance of `K`, prepared at `temperature` and laid out in `layout`.
+/// Prepares erased `K` `parameters` at `temperature` and claims layout slots in `layout`.
 fn made<K: Kind>(
     parameters: &Erased,
     temperature: f64,
@@ -418,21 +411,21 @@ fn made<K: Kind>(
     Ok(Box::new(Fresh::<K> { shape, prepared }))
 }
 
-/// What a group is of: a kernel and a shape, and how a run of the group starts.
+/// Type-erased kernel and shape key capable of comparing shapes and creating group runs.
 pub(super) trait Shaped: fmt::Debug + Send + Sync {
-    /// The group's kernel.
+    /// Returns the [`TypeId`] identifying the group's kernel.
     fn kernel(&self) -> TypeId;
 
-    /// Whether `other` is of the same kernel and shape.
+    /// Returns whether `other` represents the same kernel and shape.
     fn same(&self, other: &dyn Shaped) -> bool;
 
-    /// The shape as [`Any`], for [`Shaped::same`] to compare.
+    /// Returns `self` as [`Any`] for downcasting inside [`Shaped::same`].
     fn as_any(&self) -> &dyn Any;
 
-    /// The shape, boxed, as the group of it holds it.
+    /// Clones the shape into a heap-allocated trait object.
     fn boxed(&self) -> Box<dyn Shaped>;
 
-    /// A run of a group of `members` instances, none prepared yet.
+    /// Creates an unprepared [`GroupRun`] sized for `members` instances.
     fn run(&self, members: usize) -> Box<dyn GroupRun>;
 }
 

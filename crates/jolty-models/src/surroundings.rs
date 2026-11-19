@@ -1,4 +1,5 @@
-//! A device's own temperature, apart from the simulation's.
+//! Per-instance operating temperature overrides independent of the global simulation
+//! temperature.
 
 use std::borrow::Cow;
 
@@ -9,49 +10,47 @@ use serde_json::Value;
 use crate::device::{extended, schema};
 use crate::{Instance, Interface, Model, ParameterError, ParameterKind, Specification};
 
-/// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
-/// `DTEMP` set an instance's: the parameter `temperature`, in kelvins, holds the device
-/// there whatever the simulation's, and `temperature_offset`, in kelvins, holds it that
-/// far above the simulation's, below where negative. The device reads every other
-/// parameter, and is made at that temperature: a resistor at 0 K makes no noise, as
-/// PSpice's `T_ABS=-273.15` keeps a macromodel's resistors quiet, while a junction needs
-/// a temperature above 0 K.
+/// Model wrapper allowing each device instance to specify an independent temperature,
+/// mirroring SPICE `TEMP` and `DTEMP`.
 ///
-/// A device's own temperature is no parameter that sensitivities differentiate.
+/// The `temperature` parameter (in kelvins) fixes the device temperature regardless of the
+/// global simulation temperature, while `temperature_offset` (in kelvins) shifts it relative
+/// to the global temperature. A resistor at 0 K emits no thermal noise (as with PSpice
+/// `T_ABS=-273.15`), while junctions require a temperature above 0 K. Per-instance
+/// temperatures are excluded from sensitivity differentiation.
 pub struct Surrounded<M: Model> {
     inner: M,
 }
 
 impl<M: Model> Surrounded<M> {
-    /// The model `inner`, its devices free to run at their own temperatures.
+    /// Wraps `inner` so instances accept per-device temperature overrides.
     pub const fn new(inner: M) -> Self {
         Self { inner }
     }
 }
 
-/// Where a device's temperature comes from: the simulation's, unless its parameters give
-/// one of these.
+/// Per-instance temperature override extracted from device parameters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, JsonSchema)]
 pub(crate) struct Own {
-    /// The temperature the device is held at whatever the simulation's, in kelvins; at
-    /// least 0. Without it, the device is at the simulation's temperature.
+    /// Fixed device operating temperature, in kelvins (at least 0); defaults to the global
+    /// simulation temperature when omitted.
     temperature: Option<f64>,
-    /// How far the device's temperature lies above the simulation's, below where
-    /// negative, in kelvins; the device's temperature at least 0. Without it, the device
-    /// is at the simulation's temperature.
+    /// Offset added to the global simulation temperature, in kelvins (resulting temperature
+    /// at least 0); defaults to zero when omitted.
     temperature_offset: Option<f64>,
 }
 
 impl Own {
-    /// The parameters that give a device's own temperature.
+    /// Parameter keys controlling per-instance device temperature.
     const NAMES: [&str; 2] = ["temperature", "temperature_offset"];
 
-    /// The device's own temperature in `parameters`, and its other parameters.
+    /// Extracts per-instance temperature keys from `parameters` and returns the remaining
+    /// model parameters.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when a temperature is no finite number, or both are
-    /// given.
+    /// Returns [`ParameterError`] when a temperature value is non-finite or both keys are
+    /// specified.
     fn read(parameters: &Parameters) -> Result<(Self, Cow<'_, Parameters>), ParameterError> {
         if !Self::NAMES
             .iter()
@@ -78,7 +77,7 @@ impl Own {
                 .map(|value| match value.as_f64() {
                     Some(number) if number.is_finite() => Ok(number),
                     _ => Err(ParameterError(format!(
-                        "{name} must be a finite number of kelvins, not {value}"
+                        "{name} is a finite number of kelvins, not {value}"
                     ))),
                 })
                 .transpose()
@@ -90,7 +89,7 @@ impl Own {
         Ok((own, Cow::Owned(others)))
     }
 
-    /// The own-temperature keys actually set on this instance, if any.
+    /// Returns the per-instance temperature keys present on `self`.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn present(self) -> Vec<&'static str> {
         Self::NAMES
@@ -100,11 +99,12 @@ impl Own {
             .collect()
     }
 
-    /// The device's temperature, in kelvins, where the simulation's is `simulation`.
+    /// Resolves the effective device temperature in kelvins given the global `simulation`
+    /// temperature.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when it lies below 0 K.
+    /// Returns [`ParameterError`] when the resolved temperature lies below 0 K.
     pub(crate) fn temperature(self, simulation: f64) -> Result<f64, ParameterError> {
         let temperature = match (self.temperature, self.temperature_offset) {
             (Some(held), _) => held,
@@ -149,7 +149,7 @@ impl<M: Model> Model for Surrounded<M> {
     }
 }
 
-/// A device's specification, and its own temperature.
+/// Device specification paired with a per-instance temperature override.
 #[derive(Debug)]
 struct AtOwn {
     own: Own,
@@ -187,7 +187,7 @@ mod tests {
         Surrounded::new(crate::Differentiable::<Resistor>::new())
     }
 
-    /// The current through 1 kΩ, drifting by 1e-3 per kelvin, with 1 V across it.
+    /// Evaluates the current through a 1 kΩ resistor with 1e-3 / K drift under a 1 V bias.
     fn current(own: &str) -> f64 {
         let parameters = format!(r#"{{"resistance": 1000, "temperature_coefficient": 1e-3{own}}}"#);
         let mut bench =
@@ -221,7 +221,7 @@ mod tests {
         );
         assert_eq!(
             error(r#", "temperature": "hot""#),
-            "temperature must be a finite number of kelvins, not \"hot\""
+            "temperature is a finite number of kelvins, not \"hot\""
         );
     }
 }

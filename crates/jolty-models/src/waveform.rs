@@ -11,14 +11,15 @@
 //! - `exponential`: `initial`, `pulsed`, `rise_delay` (default 0), `rise_time_constant`,
 //!   `fall_delay` and `fall_time_constant`.
 //!
-//! Times are in seconds, frequencies in hertz and damping in inverse seconds. A sine is
-//! `offset + amplitude · e^{-damping·s} · sin(2π·frequency·s + phase)`, where `s` is the time since
-//! its delay, and holds its value at `s = 0` before the delay. A piecewise waveform draws
-//! straight lines between its points and holds its first and last values outside them. An
-//! exponential waveform is SPICE's `EXP` (ngspice 47 manual, §4.1.3): it holds `initial` until
-//! its rise delay, rises toward `pulsed` from then, `initial + (pulsed − initial)(1 −
-//! e^{−(t − rise_delay)/rise_time_constant})`, and from its fall delay on adds the fall back
-//! toward `initial`, `(initial − pulsed)(1 − e^{−(t − fall_delay)/fall_time_constant})`.
+//! Times are in seconds, frequencies in hertz, and damping in inverse seconds. A sine equals
+//! `offset + amplitude · e^{-damping·s} · sin(2π·frequency·s + phase)`, where `s` is elapsed
+//! time since `delay`, holding the `s = 0` value before `delay`. A piecewise waveform
+//! interpolates linearly between points and holds endpoint values outside the defined range.
+//!
+//! An exponential waveform follows SPICE `EXP` (ngspice 47 manual, §4.1.3). Before
+//! `rise_delay`, the waveform holds `initial`. After `rise_delay`, it adds
+//! `(pulsed − initial)(1 − e^{−(t − rise_delay)/rise_time_constant})`, and after
+//! `fall_delay`, it adds `(initial − pulsed)(1 − e^{−(t − fall_delay)/fall_time_constant})`.
 
 use std::f64::consts::TAU;
 
@@ -27,24 +28,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Lift, ParameterError, Real};
 
-/// The value of an independent source over time, in volts or amperes.
+/// Time-varying value of an independent voltage or current source, in volts or amperes.
 ///
-/// Every analysis but a transient one reads the value at time zero. A waveform is checked as
-/// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
-/// carry their derivatives with respect to a parameter.
+/// Non-transient analyses evaluate the waveform at time zero. Deserialization validates all
+/// shape constraints so every `Waveform` is valid. Scalar entries are either plain `f64`
+/// values or differentiable numbers carrying parameter derivatives.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema, Lift)]
 #[serde(try_from = "Shape<R>")]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct Waveform<R: Real = f64>(Shape<R>);
 
 impl<R: Real + Serialize> Serialize for Waveform<R> {
-    /// The waveform as it is written: its shape.
+    /// Serializes the waveform as a single-key shape object.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
     }
 }
 
-/// A waveform's shape, an object with one key, as it is written.
+/// Serialized single-key representation of a waveform shape.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
@@ -182,7 +183,7 @@ impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
                     .any(|pair| pair[1].0.value() <= pair[0].0.value())
                 {
                     return Err(ParameterError(
-                        "the times of a piecewise waveform must increase".to_owned(),
+                        "the times of a piecewise waveform strictly increase".to_owned(),
                     ));
                 }
             }
@@ -192,7 +193,7 @@ impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
 }
 
 impl Waveform {
-    /// A constant `value`.
+    /// Creates a constant DC waveform equal to `value`.
     #[must_use]
     pub fn dc(value: f64) -> Self {
         Self(Shape::Dc(value))
@@ -200,7 +201,7 @@ impl Waveform {
 }
 
 impl<R: Real> Waveform<R> {
-    /// The value at `time`.
+    /// Evaluates the waveform value at `time`.
     #[must_use]
     pub fn value(&self, time: f64) -> R {
         match &self.0 {
@@ -212,13 +213,12 @@ impl<R: Real> Waveform<R> {
         }
     }
 
-    /// Whether the value varies with time.
+    /// Returns whether the waveform value varies with time.
     ///
-    /// Returns `false` for a constant `dc` waveform, a `pulse` or `exponential` whose
-    /// initial and pulsed values are equal (or an `exponential` whose rise and fall have
-    /// equal delays and time constants), a `piecewise` waveform whose points all share one
-    /// value, or a `sine` with zero amplitude or zero frequency and either zero damping or
-    /// zero phase sine.
+    /// Returns `false` for a `dc` waveform, a `pulse` or `exponential` with equal `initial`
+    /// and `pulsed` values, or an `exponential` with identical rise and fall delays and time
+    /// constants. A constant-valued `piecewise` waveform or a `sine` with zero amplitude (or
+    /// zero frequency with zero damping or zero `sin(phase)`) likewise returns `false`.
     #[must_use]
     pub fn varies_in_time(&self) -> bool {
         match &self.0 {
@@ -319,8 +319,9 @@ impl<R: Real> Sine<R> {
 }
 
 impl<R: Real> Exponential<R> {
-    /// The value at `time`, as ngspice 47's `vsrcload.c` computes it: the initial value up
-    /// to the rise delay, the rise after it, and the rise and the fall after the fall delay.
+    /// Evaluates the exponential waveform at `time` following ngspice 47 `vsrcload.c`:
+    /// holds `initial` up to `rise_delay`, adds the rise term thereafter, and subtracts the
+    /// fall term after `fall_delay`.
     fn value(&self, time: f64) -> R {
         if time <= self.rise_delay.value() {
             return self.initial;

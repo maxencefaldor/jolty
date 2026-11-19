@@ -1,6 +1,6 @@
-//! A bench that binds one device to unknowns of its own and evaluates it, for tests: this
-//! crate's, and, through the `testing` feature, those of crates whose kernels implement
-//! its own, such as the kernels compiled from Verilog-A.
+//! Single-device test bench binding each terminal to a dedicated unknown. Serves unit
+//! tests in this crate and, under the `testing` feature, downstream crates whose kernels
+//! implement [`Kernel`] (such as Verilog-A compiled kernels).
 
 #![expect(
     clippy::expect_used,
@@ -35,8 +35,7 @@ use crate::{
     Twin, TwinNumber, Unknown, UnknownIndex,
 };
 
-/// One device whose terminals each connect to an unknown of their own, its instance in a
-/// group of its own.
+/// Single device bound to dedicated terminal unknowns inside an isolated group.
 #[derive(Debug)]
 pub struct Bench {
     groups: Groups,
@@ -47,11 +46,11 @@ pub struct Bench {
     variables: &'static [&'static str],
     /// The regions of operation the device's equations distinguish.
     regions: Regions,
-    /// Whether the device is evaluated as a transient analysis steps through time.
+    /// Flag indicating transient-mode evaluation across time steps.
     transient: bool,
 }
 
-/// What one evaluation of a bench's device produced, with dense matrices.
+/// Dense evaluation output for one device step on [`Bench`].
 pub struct Evaluation {
     /// The residual of each unknown's equation.
     pub residual: Vec<f64>,
@@ -63,12 +62,12 @@ pub struct Evaluation {
     pub conductance: Vec<Vec<f64>>,
     /// The capacitances, by row and column.
     pub capacitance: Vec<Vec<f64>>,
-    /// Whether the device limited a step.
+    /// Flag indicating whether voltage limiting triggered during evaluation.
     pub limited: bool,
 }
 
-/// The groups of one device of `model` with `parameters` at `temperature`, each terminal
-/// on an unknown of its own, with the pattern and the unknowns they claim.
+/// Builds an isolated group, run table, sparsity pattern, and unknown list for `model`
+/// with `parameters` at `temperature`.
 fn grouped(
     model: &dyn Model,
     parameters: &jolty_ir::Parameters,
@@ -109,8 +108,8 @@ fn grouped(
 }
 
 impl Bench {
-    /// A bench for an instance of the kernel `K` with `parameters`, a JSON object, each of
-    /// whose terminals connects to an unknown of its own.
+    /// Constructs a test bench for `K` with JSON `parameters` at reference temperature,
+    /// binding each terminal to a dedicated unknown.
     pub(crate) fn new<K: Kernel>(parameters: &str) -> Self
     where
         K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -125,7 +124,7 @@ impl Bench {
         Self::try_at::<K>(parameters, REFERENCE_TEMPERATURE)
     }
 
-    /// A bench for an instance of `K` with `parameters` at `temperature`, in kelvins.
+    /// Constructs a test bench for `K` with JSON `parameters` at `temperature` in kelvins.
     #[must_use]
     pub fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self
     where
@@ -134,7 +133,8 @@ impl Bench {
         Self::try_at::<K>(parameters, temperature).expect("valid parameters")
     }
 
-    /// A bench as [`Bench::at`] makes, or why the parameters are out of range.
+    /// Constructs a test bench like [`Bench::at`], returning an error for invalid
+    /// parameters.
     ///
     /// # Errors
     ///
@@ -146,7 +146,8 @@ impl Bench {
         Self::from_model(&Differentiable::<K>::new(), parameters, temperature)
     }
 
-    /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
+    /// Constructs a test bench for `model` with JSON `parameters` at `temperature` in
+    /// kelvins.
     ///
     /// # Errors
     ///
@@ -172,13 +173,13 @@ impl Bench {
         })
     }
 
-    /// The bench, evaluating its device as a transient analysis does, while time passes.
+    /// Configures the bench to evaluate in transient stepping mode.
     pub(crate) const fn stepping(mut self) -> Self {
         self.transient = true;
         self
     }
 
-    /// The names of the unknowns: the terminals', then the device's own.
+    /// Returns the unknown names in order: terminal unknowns followed by device internals.
     #[must_use]
     pub fn unknowns(&self) -> Vec<&str> {
         self.unknowns
@@ -187,14 +188,15 @@ impl Bench {
             .collect()
     }
 
-    /// The nature of each local unknown, a thermal terminal's a temperature.
+    /// Returns the physical [`Nature`] of each local unknown, marking thermal terminals as
+    /// temperature.
     #[must_use]
     pub fn natures(&self) -> Vec<Nature> {
         self.unknowns.iter().map(|unknown| unknown.nature).collect()
     }
 
-    /// The row and the column of each pivot the device's layout
-    /// [claims](crate::Layout::pivot).
+    /// Returns the `(row, column)` coordinates of every pivot claimed via
+    /// [`Layout::pivot`](crate::Layout::pivot).
     pub(crate) fn pivoted(&self) -> &[(usize, usize)] {
         self.groups.pivoted()
     }
@@ -250,25 +252,24 @@ impl Bench {
         }
     }
 
-    /// Room for the device's contributions, as [`Bench::evaluate_into`] writes them.
+    /// Allocates a [`Contributions`] buffer sized for [`Bench::evaluate_into`].
     #[must_use]
     pub fn contributions(&self) -> Contributions {
         Contributions::new(&self.pattern)
     }
 
-    /// Evaluates the device at `input`, from what it remembers, into `contributions`,
-    /// whatever they held, and returns whether it limited a step: the evaluation alone,
-    /// which allocates nothing of the bench's.
+    /// Evaluates the device at `input` into `contributions` without bench allocations,
+    /// overwriting prior buffer contents and returning whether voltage limiting triggered.
     pub fn evaluate_into(&mut self, input: &Input<'_>, contributions: &mut Contributions) -> bool {
         self.runs.evaluate(&self.groups, input, contributions, None)
     }
 
-    /// The names of the variables the device computes.
+    /// Returns the operating-point variable names reported by the device.
     pub(crate) const fn variable_names(&self) -> &'static [&'static str] {
         self.variables
     }
 
-    /// The variables the device computed at its last evaluation.
+    /// Returns the operating-point variable values from the last evaluation.
     #[must_use]
     pub fn variables(&self) -> Vec<f64> {
         let mut values = vec![0.0; self.variables.len()];
@@ -276,7 +277,7 @@ impl Bench {
         values
     }
 
-    /// The value of the device's variable `name` at its last evaluation.
+    /// Returns the last evaluated value of operating variable `name`.
     ///
     /// # Panics
     ///
@@ -286,8 +287,8 @@ impl Bench {
         self.variables()[index.unwrap_or_else(|| panic!("no variable {name}"))]
     }
 
-    /// The device's region of operation at its last evaluation, by name, and the value of
-    /// each of its margins, in its model's order.
+    /// Returns the operating region name and boundary margin values from the last
+    /// evaluation in model order.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -303,8 +304,8 @@ impl Bench {
         (self.regions.names[number], margins.collect())
     }
 
-    /// The device's excitation, as an independent source's: the derivative of each
-    /// residual with respect to its value.
+    /// Returns the independent-source excitation vector (residual derivatives with respect
+    /// to source amplitude).
     pub(crate) fn excitation(&self) -> Vec<f64> {
         let mut derivative = vec![0.0; self.unknowns.len()];
         self.runs.excite(&self.groups, 0, &mut derivative);
@@ -317,7 +318,7 @@ impl Bench {
         self.runs.drive(&self.groups, 0, ramp)
     }
 
-    /// The device's noise sources at `x`.
+    /// Returns the device's noise sources evaluated at `x`.
     #[must_use]
     pub fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
         let mut sources = Vec::new();
@@ -327,7 +328,7 @@ impl Bench {
     }
 }
 
-/// The source named `name` among `sources`.
+/// Finds the unique [`NoiseSource`] named `name` in `sources`.
 ///
 /// # Panics
 ///
@@ -339,8 +340,8 @@ pub(crate) fn source<'a>(sources: &'a [NoiseSource], name: &str) -> &'a NoiseSou
     found
 }
 
-/// `4kT` at the reference temperature times `value`: the thermal noise density of a
-/// conductance's current, or of a resistance's voltage.
+/// Computes `4kT · value` at reference temperature, giving the thermal noise density of a
+/// conductance or resistance.
 pub(crate) fn thermal(value: f64) -> f64 {
     4.0 * BOLTZMANN * REFERENCE_TEMPERATURE * value
 }
@@ -354,8 +355,8 @@ where
     assert_bench_jacobians_match(&mut Bench::new::<K>(parameters), K::NAME, x);
 }
 
-/// As [`assert_jacobians_match`], with the instance evaluated as a transient analysis
-/// steps through time.
+/// Checks analytical Jacobians against central differences in transient stepping mode,
+/// extending [`assert_jacobians_match`].
 pub(crate) fn assert_stepping_jacobians_match<K: Kernel>(parameters: &str, x: &[f64])
 where
     K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -364,7 +365,8 @@ where
     assert_bench_jacobians_match(&mut bench, K::NAME, x);
 }
 
-/// As [`assert_jacobians_match`], for a device of any `model`.
+/// Checks analytical Jacobians against central differences for any [`Model`], extending
+/// [`assert_jacobians_match`].
 pub(crate) fn assert_model_jacobians_match(model: &dyn Model, parameters: &str, x: &[f64]) {
     let mut bench = Bench::from_model(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
     assert_bench_jacobians_match(&mut bench, model.name(), x);
@@ -429,8 +431,8 @@ fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
 /// A contribution of a twin, owned: its value, and its derivative along each seed.
 pub type Moved = (f64, Vec<f64>);
 
-/// A device of a model made from parameters, each of its terminals on an unknown of its
-/// own, at 30 kelvins above the reference temperature.
+/// Parameter-gradient test rig evaluating `model` with dedicated terminal unknowns at
+/// 30 K above reference temperature.
 pub struct Rig<'m> {
     /// The model of the devices.
     pub model: &'m dyn Model,
@@ -440,8 +442,8 @@ impl Rig<'_> {
     /// The temperature the rig's devices are at.
     pub const TEMPERATURE: f64 = REFERENCE_TEMPERATURE + 30.0;
 
-    /// The residuals, charges and conductances at `x` of the device made with
-    /// `parameters`, its steps not limited.
+    /// Evaluates unlimited residuals, charges, and conductances at `(x, time)` for
+    /// `parameters`.
     #[must_use]
     pub fn plain(
         &self,
@@ -461,9 +463,8 @@ impl Rig<'_> {
         ]
     }
 
-    /// The residuals, charges and conductances at `x`, with their gradients with respect
-    /// to the number at `parameter`, of the twin of the instance made with `parameters`,
-    /// in a group of its own.
+    /// Evaluates residuals, charges, and conductances at `(x, time)` with exact gradients
+    /// along `parameter` using an isolated twin.
     #[must_use]
     pub fn exact(
         &self,
@@ -482,9 +483,9 @@ impl Rig<'_> {
         }))
     }
 
-    /// As [`Rig::exact`], along each of `paths` at once: the residuals, charges and
-    /// conductances at `x`, each with its derivative along each path's unit seed, of one
-    /// twin differentiating along all of them.
+    /// Evaluates residuals, charges, and conductances at `(x, time)` with exact
+    /// derivatives along every unit seed in `paths` simultaneously, extending
+    /// [`Rig::exact`].
     #[must_use]
     pub fn along(
         &self,
@@ -520,8 +521,8 @@ impl Rig<'_> {
         Some(found)
     }
 
-    /// The row and column of each conductance [`Rig::exact`] finds for the instance made
-    /// with `parameters`, in its order.
+    /// Returns the `(row, column)` coordinates of every conductance entry produced by
+    /// [`Rig::exact`] for `parameters`.
     #[must_use]
     pub fn positions(&self, parameters: &jolty_ir::Parameters) -> Vec<(usize, usize)> {
         let (_, _, pattern, _) = grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
@@ -529,9 +530,9 @@ impl Rig<'_> {
     }
 }
 
-/// The twin of an instance of `K` with `parameters`, a JSON object, at `temperature`,
-/// differentiated along `seeds`, in a group of its own, each of its terminals on an
-/// unknown of its own; none when its kernel reads no real number at a seed's path.
+/// Builds an isolated [`Twin`] for kernel `K` with JSON `parameters` at `temperature`,
+/// differentiated along `seeds`. Returns `None` when a seed path does not address a real
+/// parameter.
 #[must_use]
 pub fn twin<K: Kernel>(parameters: &str, temperature: f64, seeds: &Seeds) -> Option<Twin>
 where
@@ -544,10 +545,8 @@ where
     runs.twin(&groups, 0, (&specification.kernel(), temperature), seeds)
 }
 
-/// The excitation of an independent source of `model` with `parameters`, each terminal on
-/// an unknown of its own, by unknown, and the derivative of its residuals at `x` with
-/// respect to the value of the source of that model held at its DC value, as a DC sweep holds
-/// it: its waveform's `dc`.
+/// Computes an independent source's excitation vector and the DC residual derivative at
+/// `x` with respect to `waveform.dc` for `model` and `parameters`.
 pub(crate) fn excitation_and_derivative(
     model: &dyn Model,
     parameters: &str,
@@ -573,7 +572,7 @@ pub(crate) fn excitation_and_derivative(
     (excitation, derivative)
 }
 
-/// Every number within `value`, by the keys and indices that reach it.
+/// Collects key/index paths to every JSON number inside `value` into `found`.
 pub fn numbers(value: &serde_json::Value, path: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
     match value {
         serde_json::Value::Number(_) => found.push(path.clone()),
@@ -595,7 +594,7 @@ pub fn numbers(value: &serde_json::Value, path: &mut Vec<String>, found: &mut Ve
     }
 }
 
-/// The value at `path` within `value`.
+/// Returns a mutable reference to the JSON node at `path` inside `value`.
 fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_json::Value {
     path.iter().fold(value, |value, key| match value {
         serde_json::Value::Array(items) => &mut items[key.parse::<usize>().expect("an index")],
@@ -603,10 +602,9 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
     })
 }
 
-/// Checks that the exact derivatives of a device's residuals and charges at `x` with
-/// respect to each number of `parameters`, a JSON object, match central differences of
-/// its instance prepared with the number a little above and below, and that their values
-/// are the instance's own.
+/// Checks that analytical parameter gradients of residuals, charges, and conductances at
+/// `x` match central differences for every numeric field in `parameters`, and that primal
+/// values match plain evaluation.
 pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64])
 where
     K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -614,7 +612,8 @@ where
     assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, None);
 }
 
-/// As [`assert_parameter_gradients_match`], in a transient analysis at `time`.
+/// Checks analytical parameter gradients in transient mode at `time`, extending
+/// [`assert_parameter_gradients_match`].
 pub(crate) fn assert_parameter_gradients_match_at<K: Kernel>(parameters: &str, x: &[f64], time: f64)
 where
     K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
@@ -622,9 +621,8 @@ where
     assert_model_parameter_gradients_match(&Differentiable::<K>::new(), parameters, x, Some(time));
 }
 
-/// As [`assert_parameter_gradients_match`], for a device of any `model`, at `time` in a
-/// transient analysis or, with `None`, at an operating point, its conductances'
-/// derivatives checked too.
+/// Checks analytical parameter gradients for any [`Model`] at DC (`time = None`) or
+/// transient `time`, including conductance derivatives.
 pub(crate) fn assert_model_parameter_gradients_match(
     model: &dyn Model,
     parameters: &str,
@@ -699,9 +697,9 @@ pub(crate) fn assert_model_parameter_gradients_match(
     assert_chunks_match_seeds_alone(&rig, &object(&parameters), &real, (x, time));
 }
 
-/// Checks that a twin differentiating along several of a device's real parameters at once
-/// finds, along each, bit for bit what a twin along that parameter alone does: in chunks
-/// as wide as a twin goes, and of three, which a twin pads to its width of four.
+/// Checks that a batched twin seeded along multiple real parameters matches single-seed
+/// twins bit for bit. Tests both full-width chunks (`Seeds::MAX`) and padded chunks of
+/// width 3.
 fn assert_chunks_match_seeds_alone(
     rig: &Rig<'_>,
     parameters: &jolty_ir::Parameters,
@@ -734,14 +732,13 @@ fn assert_chunks_match_seeds_alone(
     }
 }
 
-/// Checks that the derivatives of a device's residuals, conductances and capacitances at
-/// `x` with respect to each of its unknowns, as twins seeding its unknowns eight at a time
-/// find them, are its conductances, and match central differences of its conductances and
-/// capacitances, its steps unlimited: its equations' second derivatives, exact.
+/// Checks that unknown-seeded twins (eight unknowns per pass, unlimited) produce exact
+/// first and second derivatives at `x`. Residual and charge derivatives must equal
+/// conductances and capacitances, and matrix derivatives must match central differences.
 ///
 /// # Panics
 ///
-/// Panics if any of those fails.
+/// Panics if any derivative check fails.
 pub fn assert_unknown_derivatives_match(model: &dyn Model, parameters: &str, x: &[f64]) {
     let mut bench = Bench::from_model(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
     assert_eq!(bench.unknowns.len(), x.len(), "one value per unknown");
@@ -890,14 +887,13 @@ fn assert_entries_match_along(
 /// local unknowns, and that on the segment between them it switches where its margin
 /// `margin` changes sign.
 ///
-/// The segment is bisected until its ends are adjacent numbers apart: there the margin's
-/// sign at each end is its sign at that end of the segment, and the margin is within
-/// 1e-12 V of zero, a bound far above the rounding of a difference of voltages of a few
-/// volts, a few times 1e-16 V.
+/// Bisection narrows the segment to adjacent floating-point endpoints. At convergence,
+/// each endpoint preserves its outer sign and `margin` lies within `1e-12` V of zero,
+/// well above typical voltage-difference rounding (`~1e-16` V).
 ///
 /// # Panics
 ///
-/// Panics if any of those fails.
+/// Panics if the endpoints share a region or `margin` fails to vanish at the transition.
 pub(crate) fn assert_switches_where_margin_vanishes(
     bench: &mut Bench,
     (from, to): (&[f64], &[f64]),
@@ -946,10 +942,9 @@ pub(crate) type RegionPoint<'a> = (&'a [f64], &'a str, Option<&'a [f64]>);
 /// A region-boundary crossing check: start point, end point, and vanishing margin name.
 pub(crate) type RegionSwitch<'a> = (&'a [f64], &'a [f64], &'a str);
 
-/// Checks that `K` with `parameters` reports each expected region (and, when given, exact
-/// margins) at each point in `points`, that its optional `mirror` reports the same at each
-/// negated point, and that each `(from, to, margin)` in `switches` crosses the boundary
-/// where `margin` vanishes.
+/// Checks that `K` with `parameters` reports each expected region and optional exact
+/// margins across `points`, and that `mirror` (when given) agrees at negated points.
+/// Verifies that every `(from, to, margin)` in `switches` crosses where `margin` vanishes.
 pub(crate) fn assert_regions<K: Kernel>(
     parameters: &str,
     mirror: Option<&str>,
@@ -980,10 +975,9 @@ pub(crate) fn assert_regions<K: Kernel>(
     }
 }
 
-/// Checks that the linearized 2x2 submatrix at `[first, second]` of `evaluation`, driven by
-/// `[drive_first, drive_second]` into those rows, responds at `output` (0 or 1) as the
-/// second-order Bessel filter `3 / (s² · delay² + 3 · s · delay + 3)` at each angular
-/// frequency in `omegas`.
+/// Checks that the linearized 2x2 submatrix at `[first, second]` of `evaluation`, driven
+/// by `[drive_first, drive_second]`, matches `3 / (s² · delay² + 3 · s · delay + 3)` at
+/// `output` (0 or 1) across `omegas`.
 pub(crate) fn assert_bessel_filter(
     evaluation: &Evaluation,
     [first, second]: [usize; 2],
@@ -1044,7 +1038,8 @@ pub(crate) fn assert_bessel_filter(
     }
 }
 
-/// Whether a JSON schema describes a real number (`"number"`) or an integer (`"integer"`).
+/// Classification of a JSON Schema numeric node as real (`"number"`) or integer
+/// (`"integer"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NumberKind {
     Real,
@@ -1238,7 +1233,8 @@ fn assert_lift_maps_equal(
         })
         .collect();
     panic!(
-        "{model}: Lift vs serde mismatch on {parameters}\n  missing from Lift: {missing:?}\n  extra in Lift: {extra:?}\n  value mismatches: {mismatched:?}",
+        "{model}: Lift vs serde mismatch on {parameters}\n  missing from Lift: {missing:?}\n  \
+         extra in Lift: {extra:?}\n  value mismatches: {mismatched:?}",
     );
 }
 
@@ -1246,21 +1242,17 @@ fn assert_lift_maps_equal(
 /// `serde` on `model` with `parameters`, with no duplicate paths and bit-for-bit identical
 /// values.
 ///
-/// Every JSON number in `specification.parameters()` must be classified by `model.schema()`
-/// as either a real number (`"type": "number"`) or an integer (`"type": "integer"`). Any
-/// floating-point discrete mode selector stored as plain `f64` instead of `R` (such as
-/// BSIM's `charge_partition`) must be named explicitly in `selectors`, where it is asserted
-/// to exist in `parameters`, have `"type": "number"` in the schema, and NOT be visited by
-/// [`crate::Lift`]. Own-temperature keys (`temperature`, `temperature_offset`) handled
-/// outside [`crate::Lift`] by [`crate::Surrounded`] are excluded only when actually set on
-/// the instance.
+/// Every JSON number in `specification.parameters()` is classified by `model.schema()` as
+/// `"number"` or `"integer"`. Discrete `f64` mode selectors (such as BSIM
+/// `charge_partition`) are named in `selectors`, where they are verified to have schema
+/// type `"number"` and remain unvisited by [`crate::Lift`]. Own-temperature keys
+/// (`temperature`, `temperature_offset`) handled by [`crate::Surrounded`] are excluded
+/// only when set on the instance.
 ///
 /// # Panics
 ///
-/// Panics if `parameters` cannot be read, if a JSON number cannot be classified by the
-/// schema, if a listed `selectors` entry is missing or invalid, if [`crate::Lift`] emits
-/// duplicate paths, or if the lifted `(path, bits)` map differs from the real numbers
-/// serialized by `serde`.
+/// Panics if `parameters` fails to parse, a numeric field lacks schema classification, a
+/// `selectors` entry is invalid, or [`crate::Lift`] disagrees with `serde` paths or bits.
 pub fn assert_lift_matches_serde(model: &dyn Model, parameters: &str, selectors: &[&str]) {
     let raw: jolty_ir::Parameters = serde_json::from_str(parameters).expect("a JSON object");
     let specification = model
@@ -1310,7 +1302,8 @@ pub fn assert_lift_matches_serde(model: &dyn Model, parameters: &str, selectors:
             assert_eq!(
                 kind,
                 NumberKind::Real,
-                "{}: selector `{joined}` is already an integer in schema and does not belong in selectors",
+                "{}: selector `{joined}` is already an integer in schema and does not \
+                 belong in selectors",
                 model.name(),
             );
             assert!(
@@ -1390,17 +1383,12 @@ mod tests {
     use super::{Bench, REFERENCE_TEMPERATURE, assert_bench_jacobians_match, cases};
     use crate::{Input, Library, REGION};
 
-    /// Every instance whose kernel calls it linear is so, at each case of it, at 64 points
-    /// that spread each local unknown over ±10, at times, in a transient and not, with
-    /// sources scaled, gmin across junctions and steps limited: its kernel writes the
-    /// entries it writes at [`Input::ZERO`], bit for bit, limits nothing, and adds each
-    /// residual as one term, its scale its magnitude; and each residual and charge is its
-    /// entries times its local unknowns, as its group computes them, to within their
-    /// rounding. A sum of `n` products, its row's entries times their columns' unknowns,
-    /// lies within `γ(n+1) · Σ|g·x|` of the exact sum, `γ(m) = m·u/(1 − m·u)` with `u` half
-    /// of `f64::EPSILON`, by `n` products and `n − 1` additions, and the kernel's way to it
-    /// takes no more roundings (Higham, "Accuracy and Stability of Numerical Algorithms",
-    /// 2002, §3.1): the two lie within `(n + 1)·ε·Σ|g·x|` of each other, to first order.
+    /// Verifies that every instance marked linear produces bit-identical matrix entries
+    /// across 64 points over ±10 with varying time, `gmin`, `source_scale`, and limiting
+    /// flags. Linear kernels never trigger limiting, report single-term residual scales,
+    /// and yield residuals and charges matching matrix-vector products within
+    /// `(n + 1) · ε · Σ|g·x|` (Higham, *Accuracy and Stability of Numerical Algorithms*,
+    /// 2002, §3.1).
     #[test]
     fn every_linear_instances_equations_are_its_entries_times_its_unknowns() {
         let library = Library::standard();
@@ -1472,8 +1460,8 @@ mod tests {
         assert!(checked > 0, "no instance is linear");
     }
 
-    /// Every model that distinguishes regions of operation numbers them with its variable
-    /// `region` and reports each of its margins among its variables, at each case of it.
+    /// Verifies that every model distinguishing operating regions exposes a `region`
+    /// variable and finite boundary margin variables across all cases.
     #[test]
     fn every_models_regions_are_among_its_variables() {
         let library = Library::standard();
@@ -1499,8 +1487,8 @@ mod tests {
         }
     }
 
-    /// Every analog model's conductances and capacitances are the derivatives of its
-    /// residuals and charges, at each case of it, as a central difference finds them.
+    /// Verifies that analytical conductances and capacitances match central-difference
+    /// derivatives of residuals and charges for every analog model case.
     #[test]
     fn every_models_jacobian_is_the_derivative_of_its_residuals_and_charges() {
         let library = Library::standard();

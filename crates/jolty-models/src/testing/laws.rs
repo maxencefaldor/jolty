@@ -4,8 +4,8 @@
 //!
 //! - **What flows in flows out:** over an instance's electrical nodes, its currents sum to
 //!   zero, and so do its charges and the derivatives of both.
-//! - **Mirrors:** a p-channel or a PNP is its n-channel's or NPN's mirror, every voltage
-//!   and current reversed, bit for bit.
+//! - **Mirrors:** a p-channel or PNP device mirrors the corresponding n-channel or NPN
+//!   device bit for bit with every voltage and current reversed.
 //! - **Symmetry:** a transistor that claims its drain and its source alike swaps them,
 //!   within rounding, which is Gummel's symmetry test to the first order.
 //! - **Continuity:** a transistor's currents and charges and their derivatives are
@@ -39,10 +39,10 @@ const NEAR: [f64; 7] = [0.0, 1e-9, -1e-9, 0.5, -0.5, 5.0, -5.0];
 /// iteration evaluates it, each step limited from the last.
 const FAR: [f64; 6] = [50.0, -50.0, 1e3, -1e3, 1e6, -1e6];
 
-/// The parameters of each transistor whose sign follows its polarity, as SPICE's
-/// thresholds' does: an n-channel's `vto` of 0.8 V is a p-channel's of −0.8 V. A device's
-/// mirror is the device of the other polarity with each of these negated and every other
-/// parameter as it is.
+/// Transistor parameters whose sign follows device polarity, matching SPICE threshold
+/// conventions (for example, n-channel `vto` of 0.8 V corresponds to p-channel −0.8 V).
+/// The mirrored device flips polarity, negates every listed parameter, and leaves all
+/// remaining parameters unchanged.
 const SIGNED: &[(&str, &[&str])] = &[
     ("bipolar_transistor", &[]),
     (
@@ -69,21 +69,21 @@ const SIGNED: &[(&str, &[&str])] = &[
 /// the values of its first local unknowns.
 type Alike = (&'static str, [&'static str; 2], &'static [f64]);
 
-/// A device of each transistor that claims its drain and source alike, the two named, as
-/// Gummel's symmetry test takes one (McAndrew, "Validation of MOSFET model source-drain
-/// symmetry", IEEE Transactions on Electron Devices 53, 2006), by its model's name, its
-/// parameters, alike at the drain and the source, and the values of its terminals; `None`
-/// for a transistor that claims no symmetry.
+/// Symmetric transistor test cases paired with the two interchangeable terminal names,
+/// following Gummel's symmetry test (McAndrew, "Validation of MOSFET model source-drain
+/// symmetry", IEEE Transactions on Electron Devices 53, 2006). Each entry maps a model
+/// name to symmetric parameters and terminal values, or `None` when the model claims no
+/// symmetry.
 const SYMMETRIES: &[(&str, Option<Alike>)] = &[
     ("bipolar_transistor", None),
     // BSIM3 swaps its currents, charges (`Q_d == Q_s`), and conductances across all bias
     // points, but its source-referenced capacitances are not smooth through `vds = 0` in
     // general (`b3ld.c`):
-    // - `capmod` 0 is symmetric at `vds = 0` in accumulation and depletion for `vbs <= 0`
-    //   (including `vbs = 0`, where `VbseffCV` is C1 smooth with slope 1), but differs by
-    //   `19.2%` of max `|C|` under forward body bias (`vb = 0.1 V`) and by `14.1%` in strong
-    //   inversion (`vg = 3 V, vb = 0 V`, where the gate row stays symmetric while the bulk
-    //   and drain/source rows jump).
+    // - `capmod` 0 is symmetric at `vds = 0` in accumulation and depletion for `vbs <= 0`,
+    //   including `vbs = 0` where `VbseffCV` is C1 smooth with slope 1. Under forward body
+    //   bias (`vb = 0.1 V`) capacitances differ by `19.2%` of max `|C|`. In strong
+    //   inversion (`vg = 3 V, vb = 0 V`), the gate row stays symmetric while the bulk and
+    //   drain/source rows jump by `14.1%`.
     // - `capmod` 1 jumps by `1.54x` of max `|C|` at `[0, 0, 0, 0]` (`1.47x` on `10u x 1u`
     //   at `vg = 1.2 V`) because its linear branch stays active at `vds = 0`.
     // - `capmod` 2 and 3 jump by `1.39e-4` and `1.38e-4` at `[0, 0, 0, 0]` because
@@ -105,10 +105,11 @@ const SYMMETRIES: &[(&str, Option<Alike>)] = &[
     // Both level 1 and level 3 MOSFETs swap drain and source cleanly at `vds != 0` and at
     // `vds = 0` when displacement currents are zero (`w = 0`). When `w != 0` inside
     // `-phi < vgst <= 0` at `vds = 0`, Meyer's capacitances (`DEVqmeyer`, `devsup.c` lines
-    // 698 to 720) introduce a conductance jump `|w| / phi * (1 - d(von)/d(vbs) + 2 * sigma)`
-    // (`1.67e-9` at `[1e-9; 7]` for default `vto = 0` at both levels 1 and 3). With
-    // `threshold_voltage: 0.8` (above `phi`), all `vds = 0` probes stay in deep accumulation
-    // or strong inversion; level 3 is checked with the same test below.
+    // 698 to 720) introduce a conductance jump of
+    // `|w| / phi * (1 - d(von)/d(vbs) + 2 * sigma)`. For default `vto = 0` at both levels
+    // 1 and 3, the jump measures `1.67e-9` at `[1e-9; 7]`. With `threshold_voltage: 0.8`
+    // (above `phi`), all `vds = 0` probes stay in deep accumulation or strong inversion;
+    // level 3 is checked with the same test below.
     (
         "mosfet",
         Some((
@@ -146,7 +147,7 @@ fn without(base: &str, key: &str) -> String {
     value.to_string()
 }
 
-/// A device of the standard library's model `name` with `parameters`.
+/// Builds a test bench for the standard library model `name` with `parameters`.
 fn bench(name: &str, parameters: &str) -> Bench {
     let library = Library::standard();
     let model = library.get(name).expect("a model of the library");
@@ -154,17 +155,17 @@ fn bench(name: &str, parameters: &str) -> Bench {
         .unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
-/// The bench's device evaluated at `x` itself, no step limited.
+/// Evaluates the bench's device at `x` with step limiting disabled.
 fn exactly(bench: &mut Bench, x: &[f64]) -> Evaluation {
     let mut input = Input::new(x, None, GMIN);
     input.limiting = false;
     bench.evaluate_with(&input)
 }
 
-/// The points around `given`, the values of a device's local unknowns of `natures`, at
-/// which the laws are checked: `given` itself, reversed and halved, each unknown at each of
-/// `values` with the rest as given, and every unknown at each of them. A temperature keeps
-/// its value throughout: it is no bias.
+/// Builds probe points around `given` for local unknowns with `natures`. Includes
+/// `given`, its negation, its half, each individual unknown set to each entry of
+/// `values`, and all non-temperature unknowns set uniformly to each entry. Temperature
+/// unknowns keep their original values because temperature is not an electrical bias.
 fn probes(given: &[f64], natures: &[Nature], values: &[f64]) -> Vec<Vec<f64>> {
     let biased: Vec<usize> = (0..given.len())
         .filter(|&index| natures[index] != Nature::Temperature)
@@ -192,11 +193,11 @@ fn probes(given: &[f64], natures: &[Nature], values: &[f64]) -> Vec<Vec<f64>> {
     points
 }
 
-/// Whether no two voltages of `x` lie further apart than the 709.78 thermal voltages at the
-/// reference temperature, `ln(f64::MAX)`, beyond which a junction's exponential overflows
-/// in its source's equations as in jolty's, its emission coefficient at least one: unlimited,
-/// SPICE's junctions leave such a step to their limiting (`DEVpnjlim`, ngspice 47's
-/// `devsup.c`, lines 49 to 84), so that Newton's iteration never evaluates one there.
+/// Reports whether all voltage differences in `x` stay within `ln(f64::MAX)` (709.78)
+/// thermal voltages at the reference temperature. Beyond that span, junction
+/// exponentials with emission coefficient at least one overflow when unlimited. SPICE
+/// relies on junction limiting (`DEVpnjlim`, ngspice 47 `devsup.c`, lines 49 to 84) so
+/// Newton iteration never evaluates unbounded steps.
 fn within_junctions_reach(x: &[f64], natures: &[Nature]) -> bool {
     let reach = f64::MAX.ln() * thermal_voltage(REFERENCE_TEMPERATURE);
     let voltages = x
@@ -210,16 +211,15 @@ fn within_junctions_reach(x: &[f64], natures: &[Nature]) -> bool {
     high - low <= reach
 }
 
-/// Checks that over the electrical nodes of `bench`'s device, its currents at `x` sum to
-/// zero, and so do its charges, and each column of its conductances and capacitances.
+/// Checks that currents, charges, and each Jacobian column of `bench`'s device sum to
+/// zero over electrical nodes at `x`.
 ///
-/// Each kernel adds each current and each charge to the row of one node and its negation
-/// to another's, so their exact sum over the rows is zero, and the rows' floating sums lie
-/// within the rounding of their additions: `(k − 1)·u` of the magnitudes of a row's `k`
-/// terms, to first order, `u` half of `f64::EPSILON` (Higham, "Accuracy and Stability of
-/// Numerical Algorithms", 2002, §4.2); the test's own sum of the rows adds as much again.
-/// With at most a term in a row for each of the instance's `n` local unknowns, as each
-/// current or charge joins two of them, the sum lies within `n² · ε` of the rows' largest
+/// Every kernel stamps each current and charge into one node row and its negation into
+/// another, making the exact node sum zero. Floating-point row sums stay within
+/// `(k − 1) · u` of the row's `k` term magnitudes to first order, where `u` is half of
+/// `f64::EPSILON` (Higham, "Accuracy and Stability of Numerical Algorithms", 2002,
+/// §4.2). Summing across rows adds a matching rounding contribution. With at most one
+/// term per local unknown `n`, the total sum lies within `n² · ε` of the largest row
 /// terms ([`terms`]).
 fn assert_conserves(name: &str, bench: &mut Bench, x: &[f64]) {
     let natures = bench.natures();
@@ -250,7 +250,7 @@ fn assert_conserves(name: &str, bench: &mut Bench, x: &[f64]) {
 /// The kinds of value an evaluation holds, in the order of [`kinds`].
 const KINDS: [&str; 4] = ["residuals", "charges", "conductances", "capacitances"];
 
-/// The values of each of [`KINDS`] of `evaluation`, the matrices row by row.
+/// Returns the evaluation values for each entry in [`KINDS`], flattening matrices row by row.
 fn kinds(evaluation: &Evaluation) -> [Vec<f64>; 4] {
     [
         evaluation.residual.clone(),
@@ -260,12 +260,11 @@ fn kinds(evaluation: &Evaluation) -> [Vec<f64>; 4] {
     ]
 }
 
-/// The largest magnitude of a term of each row of each of [`KINDS`] of `evaluation`, the
-/// device's at `x`: a residual's its scale, as its kernel reports it, and for the rest,
-/// whose terms no kernel reports, what bounds them to first order. A charge's terms are its
-/// capacitances times its voltages, or itself; an entry of a row of derivatives is the
-/// derivatives of the row's currents and charges with respect to the voltages of the
-/// kernel's own frame, mapped to the local unknowns' by sums of them, the row's largest.
+/// Estimates the largest term magnitude per row for each entry of [`KINDS`] in
+/// `evaluation` at `x`. Uses the kernel's reported scale for residuals, and computes
+/// first-order bounds for charges and derivatives because kernels omit per-term scales
+/// for them. Charge bounds combine the charge magnitude with capacitance times voltage,
+/// while Jacobian row bounds use the widest entry magnitude across the row.
 fn terms(evaluation: &Evaluation, x: &[f64]) -> [Vec<f64>; 4] {
     let linear = |row: &[f64]| -> f64 { row.iter().zip(x).map(|(c, v)| (c * v).abs()).sum() };
     let widest = |row: &[f64]| {
@@ -291,9 +290,9 @@ fn terms(evaluation: &Evaluation, x: &[f64]) -> [Vec<f64>; 4] {
     ]
 }
 
-/// The parameter that sets the polarity of a device of `model`, the property of its
-/// parameters of the type [`Channel`] or [`Polarity`], whose two variants are each other's
-/// mirror, with those variants as written; `None` for a model without one.
+/// Returns the polarity parameter name and its two mirrored JSON variant names for
+/// `model`, matching either [`Channel`] or [`Polarity`], or `None` when the model has
+/// no polarity parameter.
 fn polarity(model: &dyn Model) -> Option<(String, [String; 2])> {
     let schema = model.schema();
     let properties = schema.get("properties")?.as_object()?;
@@ -318,8 +317,9 @@ fn polarity(model: &dyn Model) -> Option<(String, [String; 2])> {
     })
 }
 
-/// The parameters of the mirror of a device of the transistor `name` with `parameters`: the
-/// other polarity, and each parameter whose sign follows it negated ([`SIGNED`]).
+/// Returns the mirrored parameter JSON for transistor `name` with `parameters`,
+/// flipping the polarity property and negating every polarity-signed parameter listed in
+/// [`SIGNED`].
 fn mirrored(name: &str, (property, variants): &(String, [String; 2]), parameters: &str) -> String {
     let mut mirror: Value = serde_json::from_str(parameters).expect("a JSON object");
     let own = mirror
@@ -345,12 +345,11 @@ fn mirrored(name: &str, (property, variants): &(String, [String; 2]), parameters
     mirror.to_string()
 }
 
-/// Checks that `image`, the evaluation of a device's mirror at `x` reflected, is
-/// `evaluation`, the device's at `x`, reflected alike, exactly: each residual and charge of
-/// a row of sign −1 in `signs` negated, each conductance and capacitance negated where its
-/// row's and its column's signs differ; the same region and margins, which are in an
-/// n-channel's or an NPN's sign; and each variable equal, with `threshold_voltage` and
-/// `saturation_voltage` negated.
+/// Checks that `image` (the mirrored device evaluated at reflected `x`) exactly equals
+/// `evaluation` reflected by `signs`. Verifies that residuals and charges negate on
+/// rows with sign `-1`, while conductances and capacitances negate where row and column
+/// signs differ. Regions and margins match verbatim in n-channel/NPN orientation, and
+/// operating variables match with `threshold_voltage` and `saturation_voltage` negated.
 #[expect(
     clippy::float_cmp,
     reason = "a mirror is exact: a negation rounds nothing"
@@ -409,12 +408,11 @@ fn assert_reflects(
     }
 }
 
-/// Checks that a device of `model` with `parameters`, a transistor with the values `given`
-/// of its first local unknowns, mirrors bit for bit: that the device of the other polarity,
-/// each parameter whose sign follows it negated, evaluated with every voltage and current
-/// reversed and its temperatures kept, gives every residual and charge reversed, every
-/// derivative of the same orientation, and the same region and margins, both exactly at
-/// each probe around `given` and as Newton's iteration settles at it.
+/// Checks that `model` with `parameters` mirrors bit for bit across opposite polarity
+/// around `given`. Flipping polarity, negating signed parameters, and reversing all
+/// non-temperature unknowns reverses residuals and charges while preserving derivative
+/// orientations, regions, and margins. Verifies both unlimited evaluations across probes
+/// around `given` and the settled Newton operating point.
 fn assert_mirrors(model: &dyn Model, parameters: &str, given: &[f64]) {
     let name = model.name();
     let polar = polarity(model).unwrap_or_else(|| panic!("{name} has no polarity"));
@@ -480,16 +478,15 @@ pub(crate) fn assert_symmetric_at(bench: &mut Bench, x: &[f64], swap: &[usize], 
     assert_agree(what, [&own, &swapped], x, true);
 }
 
-/// Checks that a device of `model` with `parameters`, alike at its two terminals `pair`,
-/// swaps them: that at each probe around `given`, the values of its first local unknowns,
-/// the device with the values of the two terminals exchanged, and of each pair of internal
-/// unknowns whose labels differ by those terminals' names alone, gives each one's residual,
-/// charge and derivatives as the other's, within [`ROUNDING`].
+/// Checks that `model` with `parameters` is symmetric when exchanging the two terminals
+/// named in `pair`. At every probe around `given`, exchanging the two terminals and any
+/// internal unknowns whose names swap those labels produces matching residuals, charges,
+/// and derivatives within [`ROUNDING`].
 ///
-/// Not bit for bit: the swapped device computes its voltages against its other terminal,
-/// which rounds them otherwise, and SPICE's transistors, which compute in the frame whose
-/// source is the lower of the two, reach the derivatives of the swapped frame by sums of
-/// the frame's own, as `b3ld.c` does.
+/// Equality holds within rounding rather than bit for bit because the swapped device
+/// references voltages against the opposite terminal. SPICE transistor equations also
+/// compute in the lower-source frame and reconstruct swapped derivatives via sums, as in
+/// `b3ld.c`.
 fn assert_swaps(model: &dyn Model, parameters: &str, pair: [&str; 2], given: &[f64]) {
     let name = model.name();
     let mut bench = Bench::from_model(model, parameters, REFERENCE_TEMPERATURE)
@@ -537,19 +534,19 @@ fn assert_swaps(model: &dyn Model, parameters: &str, pair: [&str; 2], given: &[f
     }
 }
 
-/// The roundings, as multiples of `f64::EPSILON` of the largest magnitude of a term of a
-/// kind of value, within which two evaluations of one value at voltages rounded otherwise
-/// agree, as at two adjacent floating-point numbers, where a continuous value moves by its
-/// derivative times a step of an ulp, far below its rounding.
+/// Rounding tolerance in multiples of `f64::EPSILON` times the largest term magnitude
+/// per evaluation kind. Two evaluations at differently rounded voltages or adjacent
+/// floating-point numbers agree within this bound, where continuous values move by at
+/// most one ulp times their derivative.
 ///
-/// A value computed in `m` operations lies within `γ(m) ≈ m · u` of its terms' magnitude
-/// (Higham 2002, §3.1), and no kernel's way to a value takes a thousand.
+/// A value computed in `m` operations stays within `γ(m) ≈ m · u` of its term
+/// magnitude (Higham 2002, §3.1), and no kernel path exceeds a thousand operations.
 const ROUNDING: f64 = 1024.0;
 
-/// Checks that where a margin of `bench`'s device changes sign as any one of its local
-/// unknowns but a temperature moves from −10 to 10 from `x`, the device's residuals,
-/// charges and capacitances, and its conductances unless `slopes` is false, agree at the
-/// adjacent floating-point numbers either side, within [`ROUNDING`].
+/// Checks continuity across every region boundary crossed when sweeping each
+/// non-temperature unknown of `bench` from `-10` to `10` around `x`. At adjacent
+/// floating-point numbers straddling each margin zero crossing, residuals, charges,
+/// capacitances, and (when `slopes` is true) conductances agree within [`ROUNDING`].
 fn assert_continuous(name: &str, bench: &mut Bench, x: &[f64], slopes: bool) {
     /// The steps of each sweep, 50 mV apart, a margin's sign found at each.
     const STEPS: u32 = 400;
@@ -641,11 +638,11 @@ fn assert_finite(what: &str, bench: &Bench, evaluation: &Evaluation, x: &[f64]) 
     );
 }
 
-/// Checks that a heated device of `model` with `cool` plus `"thermal": true` matches the
-/// isothermal `cool` device at `REFERENCE_TEMPERATURE + rise` in residuals, charges,
-/// conductances, capacitances and dissipated power, and that its Jacobians and parameter
-/// gradients match finite differences at each bias and temperature rise (and at its
-/// opposite polarity where `model` has one).
+/// Checks that `model` with `cool` plus `"thermal": true` matches the isothermal `cool`
+/// device at `REFERENCE_TEMPERATURE + rise` in residuals, charges, conductances,
+/// capacitances, and dissipated power. Verifies that analytic Jacobians and parameter
+/// gradients match finite differences at every bias and temperature rise, including the
+/// mirrored polarity when `model` defines one.
 fn assert_heats(model: &dyn Model, cool: &str, biases: &[&[f64]], rises: &[f64]) {
     let check = |cool: &str, biases: &[Vec<f64>]| {
         let heated = merge(cool, r#"{"thermal": true}"#);
@@ -695,7 +692,7 @@ fn assert_heats(model: &dyn Model, cool: &str, biases: &[&[f64]], rises: &[f64])
                     assert_close(&drop_thermal(hot_row), reference_row);
                 }
             }
-            // Its power, `Σ v · i` over its voltages, heats the thermal net.
+            // Dissipated power, `Σ v · i` over electrical voltages, heats the thermal net.
             let power: f64 = hot_x
                 .iter()
                 .zip(&hot.residual)
@@ -737,7 +734,7 @@ mod tests {
         assert_unknown_derivatives_match,
     };
 
-    /// Every analog model of the library, by name.
+    /// Returns the name of every analog model in `library`.
     fn analog(library: &Library) -> Vec<&'static str> {
         library
             .names()
@@ -745,21 +742,21 @@ mod tests {
             .collect()
     }
 
-    /// Discrete floating-point threshold selectors (`f64`, not `R`) whose JSON schema type
-    /// is `"number"` because SPICE decks write fractional values (`0.0`, `0.4`, `0.5`, `1.0`),
-    /// even though the model uses them as a piecewise-constant mode switch and intentionally
-    /// does not differentiate through them. Every entry is asserted to be present, non-integer
-    /// in the schema, and NOT visited by `Lift`.
+    /// Discrete floating-point mode selectors (`f64`, not `R`) whose JSON schema type is
+    /// `"number"` because SPICE decks write fractional values (`0.0`, `0.4`, `0.5`, `1.0`).
+    /// Models treat them as piecewise-constant switches without differentiating through
+    /// them. Every entry is asserted to be present, non-integer in the schema, and omitted
+    /// by `Lift`.
     const FLOAT_SELECTORS: &[(&str, &[&str])] = &[
         ("bsim3", &["charge_partition"]),
         ("bsim4", &["charge_partition"]),
     ];
 
-    /// Every analog model's `Lift` visits the exact set of real parameter paths written by
-    /// `serde`, with bit-for-bit identical values and no duplicates: across every case in
-    /// `CASES`, across every model with all `Option<R>` fields populated as both `None` and
-    /// `Some(...)`, across every `Waveform` variant, multi-winding `coupled_inductors`,
-    /// self-heating (`thermal: true`), and device own-temperature overrides.
+    /// Verifies that every analog model's `Lift` visits the exact set of real parameter
+    /// paths written by `serde`, with bit-for-bit identical values and no duplicates.
+    /// Covers `CASES`, all `Option<R>` fields as `None` and `Some(...)`, every `Waveform`
+    /// variant, multi-winding `coupled_inductors`, `thermal: true`, and own-temperature
+    /// overrides.
     #[test]
     fn every_models_lift_visits_the_exact_paths_serde_writes() {
         let library = Library::standard();
@@ -797,7 +794,8 @@ mod tests {
         }
         assert!(
             total_optional_populated > 100,
-            "expected optional real parameters across BSIM/BJT/diode models, got {total_optional_populated}"
+            "expected optional real parameters across BSIM/BJT/diode models, \
+             got {total_optional_populated}"
         );
 
         let extra: &[(&str, &str)] = &[
@@ -805,15 +803,18 @@ mod tests {
             ("voltage_source", r#"{"waveform": {"dc": 3.3}}"#),
             (
                 "voltage_source",
-                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8, "rise": 1e-9, "fall": 2e-9, "width": 1e-6}}}"#,
+                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
+                    "rise": 1e-9, "fall": 2e-9, "width": 1e-6}}}"#,
             ),
             (
                 "voltage_source",
-                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8, "rise": 1e-9, "fall": 2e-9, "width": 1e-6, "period": 1e-5}}}"#,
+                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
+                    "rise": 1e-9, "fall": 2e-9, "width": 1e-6, "period": 1e-5}}}"#,
             ),
             (
                 "voltage_source",
-                r#"{"waveform": {"sine": {"offset": 1.2, "amplitude": 0.5, "frequency": 1e6, "delay": 1e-7, "damping": 1e4, "phase": 0.25}}}"#,
+                r#"{"waveform": {"sine": {"offset": 1.2, "amplitude": 0.5, "frequency": 1e6,
+                    "delay": 1e-7, "damping": 1e4, "phase": 0.25}}}"#,
             ),
             (
                 "voltage_source",
@@ -821,13 +822,18 @@ mod tests {
             ),
             (
                 "voltage_source",
-                r#"{"waveform": {"exponential": {"initial": 0, "pulsed": 5, "rise_delay": 1e-9, "rise_time_constant": 1e-8, "fall_delay": 2e-7, "fall_time_constant": 3e-8}}}"#,
+                r#"{"waveform": {"exponential": {"initial": 0, "pulsed": 5,
+                    "rise_delay": 1e-9, "rise_time_constant": 1e-8,
+                    "fall_delay": 2e-7, "fall_time_constant": 3e-8}}}"#,
             ),
             // Multi-winding coupled inductors exercising Vec indices and integer winding pairs.
             (
                 "coupled_inductors",
                 r#"{"windings": [{"inductance": 1e-3}, {"inductance": 2e-3}, {"inductance": 3e-3}],
-                    "couplings": [{"windings": [1, 2], "coefficient": 0.8}, {"windings": [2, 3], "coefficient": 0.6}]}"#,
+                    "couplings": [
+                        {"windings": [1, 2], "coefficient": 0.8},
+                        {"windings": [2, 3], "coefficient": 0.6}
+                    ]}"#,
             ),
             // Self-heating and Surrounded own-temperature overrides.
             ("diode", r#"{"saturation_current": 2e-14, "thermal": true}"#),
@@ -869,12 +875,10 @@ mod tests {
         }
     }
 
-    /// Every kernel reads its unknowns as numbers of its kind, so that a twin seeding them
-    /// finds the second derivatives of its equations exactly, as an AC analysis's
-    /// derivatives through its operating point need them: at its case, its internal
-    /// unknowns spread apart rather than tied at one voltage, and with each of its
-    /// unknowns shifted either side of it, away from the points where its terminals meet,
-    /// where laws switch and their curvatures jump.
+    /// Verifies that every kernel reads unknowns generically so twin dual numbers compute
+    /// exact second derivatives, as AC operating-point sensitivity requires. Evaluates each
+    /// case with internal unknowns spread apart and shifted on either side, avoiding points
+    /// where terminals coincide and equation curvatures jump.
     #[test]
     fn every_kernel_differentiates_its_conductances_with_respect_to_its_unknowns() {
         let library = Library::standard();
@@ -902,9 +906,8 @@ mod tests {
         }
     }
 
-    /// The transistors, the models whose equations distinguish regions, whose margins are
-    /// in an n-channel's or an NPN's sign, each have a polarity, and each case of a model
-    /// with one mirrors.
+    /// Verifies that every region-reporting transistor defines a polarity parameter and
+    /// that every polar model case mirrors bit for bit across opposite polarity.
     #[test]
     fn every_transistor_mirrors_its_opposite_polarity() {
         let library = Library::standard();
@@ -953,11 +956,10 @@ mod tests {
         }
     }
 
-    /// Every transistor that claims its drain and its source alike swaps them, and at the
-    /// probes where the two lie at one voltage, its derivatives, of the frame its equations
-    /// take there, are the swapped ones: Gummel's symmetry test to the first order, whose
-    /// drain current, the drain at `vx` and the source at `−vx`, is then odd in `vx` and its
-    /// slope even and continuous through `vx = 0`.
+    /// Verifies that every transistor claiming drain-source symmetry swaps those terminals
+    /// across all probes. At equal drain and source voltages, swapped derivatives agree
+    /// (first-order Gummel symmetry), ensuring drain current is odd in `vx` with even,
+    /// continuous slope through `vx = 0`.
     #[test]
     fn every_symmetric_transistor_swaps_its_drain_and_source() {
         let library = Library::standard();
@@ -972,10 +974,10 @@ mod tests {
         }
     }
 
-    /// Full symmetric level 3 MOSFETs (both with and without velocity saturation) pass the
-    /// complete drain-source swap law (`ROUNDING = 1024` eps) whenever `threshold_voltage`
-    /// exceeds the derived `phi` (~0.695 V at `substrate_doping = 1e22`), keeping every
-    /// `vds = 0` probe outside Meyer's `-phi < vgst <= 0` derivative kink.
+    /// Verifies that symmetric level 3 MOSFETs (with and without velocity saturation) pass
+    /// the complete drain-source swap law (`ROUNDING = 1024` eps). Setting
+    /// `threshold_voltage` above derived `phi` (~0.695 V at `substrate_doping = 1e22`)
+    /// keeps every `vds = 0` probe outside Meyer's `-phi < vgst <= 0` derivative kink.
     #[test]
     fn level_three_mosfet_swaps_its_drain_and_source() {
         let library = Library::standard();
@@ -997,12 +999,11 @@ mod tests {
         }
     }
 
-    /// BSIM3 `capmod` 0 passes the complete drain-source swap law (`ROUNDING = 1024` eps)
-    /// over all 38 probes around `[3.0, 2.0, 0.0, -0.5]`, exercising both the `vbs = 0`
-    /// `VbseffCV` fix (on the seven `[v; 4]` probes where `capmod_zero` previously lost
-    /// `1.4e-4`) and the `effective_drain` rationalization (on `[1e-9, 2.0, 0.0, -0.5]`,
-    /// which previously failed by `37,886` eps). Every `vds = 0` probe here lies in
-    /// depletion (`vgst < 0`, `vbs <= 0`), avoiding the inherent `b3ld.c` strong-inversion
+    /// Verifies that BSIM3 `capmod` 0 passes the complete drain-source swap law
+    /// (`ROUNDING = 1024` eps) over all 38 probes around `[3.0, 2.0, 0.0, -0.5]`. Exercises
+    /// both the `vbs = 0` `VbseffCV` fix (formerly `1.4e-4` error) and the
+    /// `effective_drain` rationalization (formerly `37,886` eps). Every `vds = 0` probe
+    /// lies in depletion (`vgst < 0`, `vbs <= 0`), avoiding the `b3ld.c` strong-inversion
     /// and forward-body capacitance jumps tested in `bsim3::tests`.
     #[test]
     fn bsim3_capmod_zero_swaps_over_subthreshold_and_nonzero_vds_probes() {
@@ -1016,11 +1017,11 @@ mod tests {
         );
     }
 
-    /// Meyer's capacitances, continuous across each boundary, change their slopes there
-    /// (Meyer, "MOS models and circuit simulation", RCA Review 32, 1971; ngspice 47's
-    /// `DEVqmeyer`, `devsup.c`, lines 673 to 738), so where displacement currents flow, as in
-    /// a transient, the derivatives of the currents through them jump: the conductances
-    /// are checked where no displacement current flows, as at an operating point.
+    /// Verifies that transistor currents, charges, and capacitances are continuous across
+    /// every region boundary. Meyer's capacitances change slope across boundaries (Meyer,
+    /// "MOS models and circuit simulation", RCA Review 32, 1971; ngspice 47 `DEVqmeyer`,
+    /// `devsup.c`, lines 673 to 738), making transient displacement-current derivatives
+    /// jump. Conductance continuity is therefore checked with displacement currents zeroed.
     #[test]
     fn every_transistor_is_continuous_across_its_regions_boundaries() {
         for &(name, parameters, given) in cases::CASES {
@@ -1046,10 +1047,9 @@ mod tests {
         }
     }
 
-    /// Every kernel computes finite numbers at every probe: exactly, where no junction's
-    /// exponential overflows in its source's equations, and everywhere as Newton's
-    /// iteration evaluates it, each step limited from the last, from its first and from a
-    /// settled operating point.
+    /// Verifies that every kernel produces finite outputs at every finite bias probe. Tests
+    /// unlimited evaluations where junction exponentials cannot overflow, and step-limited
+    /// Newton evaluations everywhere from both fresh and settled states.
     #[test]
     fn every_kernel_is_finite_at_any_finite_bias() {
         let values: Vec<f64> = NEAR.iter().chain(&FAR).copied().collect();
@@ -1202,9 +1202,9 @@ mod tests {
         ),
     ];
 
-    /// Every model in the library that accepts `thermal: true` matches its isothermal model
-    /// at `ambient + rise` in residuals, charges, Jacobians and dissipated power, and
-    /// differentiates exactly in both its unknowns and its parameters.
+    /// Verifies that every model accepting `thermal: true` matches its isothermal
+    /// counterpart at `ambient + rise` in residuals, charges, Jacobians, and dissipated
+    /// power, and differentiates accurately with respect to both unknowns and parameters.
     #[test]
     fn every_heated_model_matches_its_isothermal_model() {
         let library = Library::standard();
@@ -1581,9 +1581,9 @@ mod tests {
         }
     }
 
-    /// Every analog model with real parameters computes exact analytic parameter gradients
-    /// matching extrapolated central finite differences: across `cases::CASES` (where smooth)
-    /// and across rich multi-regime operating points for every model.
+    /// Verifies that every analog model with real parameters computes exact analytic
+    /// parameter gradients matching extrapolated central finite differences across smooth
+    /// `cases::CASES` entries and rich multi-regime operating points.
     #[test]
     fn every_models_parameter_gradients_are_exact() {
         let library = Library::standard();

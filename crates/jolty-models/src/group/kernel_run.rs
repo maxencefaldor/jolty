@@ -19,17 +19,15 @@ use crate::{
     Stamp, UnknownIndex,
 };
 
-/// What one run of a group writes: its instances' prepared numbers and memory.
+/// Mutable per-run state for one device group: prepared parameters and instance memory.
 pub(super) trait GroupRun: fmt::Debug + Send {
-    /// Adds an instance of the group's kernel and shape, `made` as [`Made`](super::kind::Made)
-    /// makes it.
+    /// Appends a prepared instance produced by [`Made`](super::kind::Made) to the group.
     fn push(&mut self, made: Box<dyn Any>);
 
-    /// The run, cloned.
+    /// Returns a boxed clone of the group run state.
     fn cloned(&self) -> Box<dyn GroupRun>;
 
-    /// Appends the noise of the instance `member` of `group` at `input` to `sources`, each
-    /// source's equations the circuit's.
+    /// Appends circuit-mapped noise sources for `member` of `group` at `input` to `sources`.
     fn noise(
         &self,
         member: usize,
@@ -38,42 +36,38 @@ pub(super) trait GroupRun: fmt::Debug + Send {
         sources: &mut Vec<NoiseSource>,
     );
 
-    /// Writes the variables of the instance `member` at its last evaluation to `values`.
+    /// Writes the internal variables recorded at the last evaluation of `member` into `values`.
     fn variables(&self, member: usize, values: &mut [f64]);
 
-    /// The DC value of the instance `member`, if it is an independent source.
+    /// Returns the DC value of `member` if it is an independent source.
     fn dc_value(&self, member: usize) -> Option<f64>;
 
-    /// The derivative of each residual of an instance of `group`, as an independent source,
-    /// with respect to its value, one value per local unknown.
+    /// Returns the residual derivative vector with respect to source value for an independent
+    /// source in `group`, one entry per local unknown.
     fn excitation(&self, group: &Group) -> Vec<f64>;
 
-    /// Starts the instance `member`, if it is a logic driver, on the ramp `ramp`, and
-    /// returns when it settles.
+    /// Starts logic driver `member` on `ramp` and returns the settling timestamp.
     fn drive(&mut self, member: usize, ramp: (f64, LogicLevel, f64)) -> Option<f64>;
 
-    /// The circuit's unknown of the current through the instance `member` of `group`, if
-    /// it is a logic driver.
+    /// Returns the global current unknown of `member` in `group` if it is a logic driver.
     fn driven(&self, member: usize, group: &Group) -> Option<UnknownIndex>;
 
-    /// How far the input of the instance `member` of `group`, if it is a logic input's
-    /// detector, lies above its threshold at `input`, and its supply's swing there.
+    /// Evaluates threshold margin and supply swing at `input` for logic detector `member` in
+    /// `group`.
     fn sense(&self, member: usize, group: &Group, input: &Input<'_>) -> Option<(f64, f64)>;
 
-    /// Appends the times in `span` where an instance is not smooth to `times`.
+    /// Appends non-smooth waveform breakpoints within `span` to `times`.
     fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>);
 
-    /// Appends the device index of each instance of `group` whose equations explicitly
-    /// depend on time to `found`.
+    /// Appends device indices in `group` whose equations depend explicitly on time to `found`.
     fn time_varying(&self, group: &Group, found: &mut Vec<usize>);
 
-    /// Appends each part of the conductance of an instance of `group` that reads the
-    /// past to `found`, placed among the circuit's equations.
+    /// Appends circuit-mapped delayed conductance entries from `group` to `found`.
     fn delayed(&self, group: &Group, found: &mut Vec<DelayedEntry>);
 
-    /// The earliest fraction of the way from `before` to `after` at which a choice of an
-    /// instance of `group` changes, as [`Choice::first_jump`] finds it, its choices found
-    /// in `found`.
+    /// Finds the earliest interpolation fraction between `span.0` and `span.1` where any
+    /// branch choice in `group` flips, using [`Choice::first_jump`] and scratch buffers
+    /// `found`.
     fn first_jump(
         &mut self,
         group: &Group,
@@ -81,10 +75,11 @@ pub(super) trait GroupRun: fmt::Debug + Send {
         found: &mut [Vec<Choice>; 2],
     ) -> Option<f64>;
 
-    /// Evaluates the instance `member` of the group of `of` alone at `input`, into `block`,
-    /// which it zeroes first: a linear instance's entries by its kernel at [`Input::ZERO`]
-    /// and its rows from them when the second of `of` says so, and else by its kernel.
-    /// Returns whether it limited its voltages.
+    /// Evaluates `member` of `of.0` in isolation at `input` into a zeroed `block`, returning
+    /// whether voltage limiting triggered.
+    ///
+    /// When `of.1` is true and the group is linear, stamps entries at [`Input::ZERO`] and
+    /// computes rows from cached linear terms; otherwise invokes the kernel directly.
     fn evaluate_alone(
         &mut self,
         member: usize,
@@ -93,10 +88,11 @@ pub(super) trait GroupRun: fmt::Debug + Send {
         block: Blocks<'_>,
     ) -> bool;
 
-    /// The twin of an instance of the group, the `instance` of its device, at the
-    /// temperature `temperature` of its surroundings, differentiated along `seeds`, with
-    /// room for the group's `sizes`, its local unknowns and its local entries; `None` when
-    /// its kernel reads no real number at a seed's path.
+    /// Builds a forward-mode sensitivity twin for `instance.0` at ambient temperature
+    /// `instance.1` along `seeds`, allocating slab buffers for `sizes` (local unknowns and
+    /// entries).
+    ///
+    /// Returns `None` when any seed path does not map to a real parameter.
     fn twin(
         &self,
         instance: (&Instance<'_>, f64),
@@ -104,14 +100,14 @@ pub(super) trait GroupRun: fmt::Debug + Send {
         sizes: (usize, usize),
     ) -> Option<Box<dyn Twinned>>;
 
-    /// Prepares the instance `member` of the group, the `instance` of its device, at the
-    /// temperature `temperature` of its surroundings, keeping the numbers apart; with a
-    /// `layout`, its layout is claimed again there to check its shape. Returns whether it
-    /// has the group's kernel and shape.
+    /// Stages newly prepared parameters for `member` of `of.0` from `of.1` at ambient
+    /// `temperature`, optionally verifying shape compatibility in `layout`.
+    ///
+    /// Returns whether the instance still matches the group's kernel, linearity, and shape.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when its parameters are out of range.
+    /// Returns [`ParameterError`] when the instance parameters are out of range.
     fn prepare(
         &mut self,
         member: usize,
@@ -120,26 +116,26 @@ pub(super) trait GroupRun: fmt::Debug + Send {
         layout: Option<&mut Layout>,
     ) -> Result<bool, ParameterError>;
 
-    /// Takes the numbers kept apart, each instance prepared again starting from its
-    /// initial memory. Returns whether it took any.
+    /// Commits staged prepared parameters and resets memory for each updated instance,
+    /// returning whether any staged update was applied.
     fn commit(&mut self) -> bool;
 
-    /// Forgets every instance's memory, and a linear group's terms.
+    /// Resets every instance's memory and clears cached linear terms.
     fn forget(&mut self);
 
-    /// Forgets the numbers kept apart.
+    /// Discards all staged parameter updates without applying them.
     fn discard(&mut self);
 
-    /// Writes into the block of each instance of `group`, which is linear, of `blocks`,
-    /// its entries, as its kernel evaluates them at [`Input::ZERO`], zero for one not prepared.
+    /// Stamps constant Jacobian entries for every prepared instance in linear `group` into
+    /// `blocks` at [`Input::ZERO`], leaving unprepared instances zeroed.
     fn stamp(&mut self, group: &Group, blocks: Blocks<'_>);
 
-    /// Evaluates each instance of `group` at `input` into its block of `blocks`, the
-    /// first of the pair, copying its contributions to a long value to their places among
-    /// the second, the group's copies: one after another, each block added to `into` as
-    /// soon as it is written, or without `into`, in parallel, `per_task` instances a task.
-    /// An instance of a linear group writes only the rows of its block, from its entries.
-    /// Returns whether one limited its voltages.
+    /// Evaluates every instance of `group` at `input` into `blocks.0` and mirrors high-fanout
+    /// contributions into `blocks.1`, returning whether any instance limited voltages.
+    ///
+    /// Serial mode (`into` is `Some`) accumulates each block immediately into `into`; parallel
+    /// mode (`into` is `None`) dispatches rayon tasks of at least `per_task` instances. Linear
+    /// groups update only row vectors from cached entries.
     fn evaluate(
         &mut self,
         group: &Group,
@@ -150,19 +146,19 @@ pub(super) trait GroupRun: fmt::Debug + Send {
     ) -> bool;
 }
 
-/// One run of a group of the kernel `K`.
+/// Typed per-run state for a group of kernel `K`.
 pub(super) struct KernelRun<K: Kind> {
     shape: K::Shape,
     prepared: Vec<Option<K::Prepared>>,
     memory: Vec<K::Memory>,
-    /// The numbers prepared and not yet taken, by instance.
+    /// Prepared parameters staged for the next commit, paired with member index.
     staged: Vec<(usize, K::Prepared)>,
-    /// The terms of a linear group's residuals and charges, as its last stamp found them.
+    /// Linear residual and charge multiplication terms extracted at the last stamp.
     terms: Terms,
 }
 
 impl<K: Kind> KernelRun<K> {
-    /// A run of a group of `members` instances of `shape`, none prepared yet.
+    /// Creates an unprepared group run for `members` instances sharing `shape`.
     pub(super) fn new(shape: K::Shape, members: usize) -> Self {
         Self {
             shape,

@@ -12,19 +12,19 @@
 pub struct Dimension([i8; 5]);
 
 impl Dimension {
-    /// A dimension from doubled SI base exponents `[2*kg, 2*m, 2*s, 2*A, 2*K]`.
+    /// Creates a dimension from doubled SI base exponents `[2*kg, 2*m, 2*s, 2*A, 2*K]`.
     #[must_use]
     pub const fn new(exponents: [i8; 5]) -> Self {
         Self(exponents)
     }
 
-    /// The doubled SI base exponents `[2*kg, 2*m, 2*s, 2*A, 2*K]`.
+    /// Returns the doubled SI base exponents `[2*kg, 2*m, 2*s, 2*A, 2*K]`.
     #[must_use]
     pub const fn exponents(self) -> [i8; 5] {
         self.0
     }
 
-    /// The dimension of the product `self * other`.
+    /// Computes the product dimension `self * other`.
     #[must_use]
     pub const fn mul(self, other: Self) -> Self {
         let [
@@ -50,7 +50,7 @@ impl Dimension {
         ])
     }
 
-    /// The dimension of the quotient `self / other`.
+    /// Computes the quotient dimension `self / other`.
     #[must_use]
     pub const fn div(self, other: Self) -> Self {
         let [
@@ -76,7 +76,7 @@ impl Dimension {
         ])
     }
 
-    /// The dimension of `self` raised to the integer power `exponent`.
+    /// Computes the dimension of `self` raised to the integer power `exponent`.
     #[must_use]
     pub const fn pow(self, exponent: i8) -> Self {
         let [kilogram, meter, second, ampere, kelvin] = self.0;
@@ -89,13 +89,13 @@ impl Dimension {
         ])
     }
 
-    /// The reciprocal dimension `1 / self`.
+    /// Computes the reciprocal dimension `1 / self`.
     #[must_use]
     pub const fn recip(self) -> Self {
         self.pow(-1)
     }
 
-    /// The square root of a dimension whose base exponents are whole numbers.
+    /// Computes the square root of a dimension whose base exponents are integers.
     #[must_use]
     pub const fn sqrt(self) -> Self {
         let [kilogram, meter, second, ampere, kelvin] = self.0;
@@ -152,7 +152,7 @@ pub const MOBILITY: Dimension = LENGTH.pow(2).div(VOLTAGE.mul(TIME));
 /// Voltage temperature coefficient (`V / K`).
 pub const VOLTS_PER_KELVIN: Dimension = VOLTAGE.div(TEMPERATURE);
 
-/// What kind of value a model parameter expects in Python constructors.
+/// Kind of value expected by a model parameter in Python constructors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterKind {
     /// A physical quantity with an SI dimension.

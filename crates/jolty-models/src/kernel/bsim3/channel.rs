@@ -16,9 +16,9 @@ use crate::kernel::bsim::{
     smooth_floor, substrate_early_voltage,
 };
 
-/// What the channel yields at one bias, in the frame where the drain lies at or above the
-/// source, each with its derivatives with respect to that frame's gate-source,
-/// drain-source and bulk-source voltages.
+/// Channel evaluation result at one bias in the forward frame (`vds >= 0`), carrying
+/// values and derivatives with respect to frame gate-source, drain-source, and
+/// bulk-source voltages.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Operating<R: Real> {
     /// The drain current, `Ids`.
@@ -46,7 +46,7 @@ pub(super) struct Operating<R: Real> {
     pub(super) rds: D<R>,
 }
 
-/// `t · (1 + 2t)` at `t = e^x`, with `e^x` at its floor below `−EXP_THRESHOLD`.
+/// Evaluates `t · (1 + 2t)` at `t = e^x`, flooring `e^x` below `−EXP_THRESHOLD`.
 fn falloff<R: Real>(x: D<R>) -> D<R> {
     let t = if x.value.value() > -EXP_THRESHOLD {
         x.exp()
@@ -57,8 +57,8 @@ fn falloff<R: Real>(x: D<R>) -> D<R> {
 }
 
 impl<R: Real> Core<R> {
-    /// The channel at the gate-source, drain-source and bulk-source voltages, the drain at
-    /// or above the source.
+    /// Evaluates channel currents and operating state at frame gate-source, drain-source,
+    /// and bulk-source voltages (`vds >= 0`).
     #[expect(
         clippy::too_many_lines,
         clippy::similar_names,

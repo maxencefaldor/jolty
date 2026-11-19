@@ -9,28 +9,29 @@ use crate::{
     ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
-/// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
-/// Reference Guide states it for its switches `S` and `W` in "Voltage-controlled switch
-/// equations": with the control's fraction of the way from its off value to its on value
-/// `s`, and `m = s − ½`, the resistance's logarithm is `ln √(r_on · r_off) + L · (3/2 · m −
-/// 2 · m³)`, where `L = ln(r_on / r_off)`: a cubic that reaches each resistance with zero
-/// slope at each end, beyond which the resistance holds.
+/// PSpice smooth resistance transition law for switches `S` and `W` (PSpice A/D Reference
+/// Guide, "Voltage-controlled switch equations").
+///
+/// Let `s` be the normalized control fraction from off to on, `m = s − ½`, and
+/// `L = ln(r_on / r_off)`. Between thresholds, log-resistance follows the cubic
+/// `ln √(r_on · r_off) + L · (3/2 · m − 2 · m³)`, reaching both endpoints with zero slope
+/// and clamping outside `[0, 1]`.
 #[derive(Debug, Clone, Copy)]
 struct Law<R: Real> {
     off: R,
-    /// The on value less the off value.
+    /// Control span `on − off`.
     span: R,
     on_conductance: R,
     off_conductance: R,
-    /// `ln √(r_on · r_off)`.
+    /// Geometric mean log-resistance `ln √(r_on · r_off)`.
     log_mean: R,
-    /// `ln(r_on / r_off)`.
+    /// Log resistance ratio `ln(r_on / r_off)`.
     log_ratio: R,
 }
 
 impl<R: Real> Law<R> {
-    /// The law between `on_resistance` at `on` and `off_resistance` at `off`, the
-    /// control named `control`, such as `voltage`, in errors.
+    /// Constructs a switch law transitioning from `off_resistance` at `off` to
+    /// `on_resistance` at `on`, using `control` (such as `"voltage"`) in error messages.
     fn new(
         [on_resistance, off_resistance]: [R; 2],
         [on, off]: [R; 2],
@@ -42,7 +43,7 @@ impl<R: Real> Law<R> {
         if span.value() == 0.0 {
             let on = on.value();
             return Err(ParameterError(format!(
-                "on_{control} and off_{control} must differ, not both be {on:?}"
+                "on_{control} and off_{control} differ, not both {on:?}"
             )));
         }
         Ok(Self {
@@ -55,7 +56,7 @@ impl<R: Real> Law<R> {
         })
     }
 
-    /// The conductance at `control`.
+    /// Evaluates switch conductance at `control`.
     fn conductance<const N: usize>(&self, control: Dual<R, N>) -> Dual<R, N> {
         let fraction = control.plus(-self.off).divide(self.span);
         if fraction.value.value() >= 1.0 {
@@ -71,24 +72,24 @@ impl<R: Real> Law<R> {
         (-log_resistance).exp()
     }
 
-    /// The current through the output at `voltage` across it, of `voltage` and
-    /// `control`, which sets its conductance, a law of the control alone.
+    /// Evaluates output branch current and partial derivatives with respect to output
+    /// `voltage` and `control`.
     fn current(&self, [voltage, control]: [R; 2]) -> Dual<R, 2> {
         let [voltage, control] = Dual::variables([voltage, control]);
         control.apply(|control| self.conductance(control)) * voltage
     }
 }
 
-/// A voltage-controlled switch, in PSpice's model: a resistance between `positive` and
-/// `negative` that the voltage of `control_positive` over `control_negative` moves smoothly
-/// from the off resistance to the on one, by PSpice's law, its logarithm a cubic of the
-/// control that reaches each resistance with zero slope. The control terminals
-/// draw no current.
+/// Voltage-controlled switch implementing the PSpice `VSWITCH` model.
+///
+/// Control voltage `v(control_positive) − v(control_negative)` smoothly interpolates
+/// log-resistance between `positive` and `negative` along a zero-slope cubic from off to
+/// on. The control terminals draw zero current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledSwitch;
 
-/// A switch's numbers at its temperature: its law, and the temperature its resistance's
-/// thermal noise is at.
+/// Prepared switch parameters pairing the resistance transition law with ambient noise
+/// temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedSwitch<R: Real> {
     law: Law<R>,
@@ -136,27 +137,27 @@ impl<R: Real> PreparedSwitch<R> {
     }
 }
 
-/// Where a voltage-controlled switch's contributions go: at the entries joining each output
-/// terminal to every terminal.
+/// Layout shape for [`VoltageControlledSwitch`] storing the matrix entries joining each
+/// output terminal to all four switch terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageControlledSwitchShape([[usize; 4]; 2]);
 
-/// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
-/// Reference Guide gives its model `VSWITCH`.
+/// Parameters for [`VoltageControlledSwitch`], matching the PSpice A/D Reference Guide
+/// defaults for `VSWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
-    /// The resistance with the control at or past the on voltage, in ohms; default 1.
+    /// On-state resistance at or past `on_voltage`, in ohms; default 1.
     #[dimension(RESISTANCE)]
     pub on_resistance: R,
-    /// The resistance with the control at or past the off voltage, in ohms; default 1e6.
+    /// Off-state resistance at or past `off_voltage`, in ohms; default 1e6.
     #[dimension(RESISTANCE)]
     pub off_resistance: R,
-    /// The control voltage at which the switch is on, in volts; default 1.
+    /// Control voltage at which the switch reaches `on_resistance`, in volts; default 1.
     #[dimension(VOLTAGE)]
     pub on_voltage: R,
-    /// The control voltage at which the switch is off, in volts; default 0.
+    /// Control voltage at which the switch reaches `off_resistance`, in volts; default 0.
     #[dimension(VOLTAGE)]
     pub off_voltage: R,
 }
@@ -251,7 +252,7 @@ impl Kernel for VoltageControlledSwitch {
         );
     }
 
-    /// The thermal noise of the resistance the control sets.
+    /// Appends thermal noise for the switch resistance determined by the control voltage.
     fn noise<R: Real>(
         _: &VoltageControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
@@ -266,42 +267,39 @@ impl Kernel for VoltageControlledSwitch {
     }
 }
 
-/// A current-controlled switch, in PSpice's model: a resistance between `positive` and
-/// `negative` that the current through its control port moves smoothly from the off
-/// resistance to the on one, by PSpice's law, its logarithm a cubic of the control that
-/// reaches each resistance with zero slope.
+/// Current-controlled switch implementing the PSpice `ISWITCH` model.
 ///
-/// The control port is a short circuit that senses the current through it, as a
-/// current-controlled source's is: the current flows from `control_positive` through the
-/// port to `control_negative`, which it holds at the same voltage, and is an unknown
-/// labelled `control`.
+/// Control port current smoothly interpolates log-resistance between `positive` and
+/// `negative` along a zero-slope cubic from off to on. The control port acts as a zero-volt
+/// short circuit from `control_positive` to `control_negative` with current unknown
+/// `control`.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledSwitch;
 
-/// Where a current-controlled switch's contributions go: through its sensing port, and at
-/// the entries joining each output terminal to each output terminal and to the control.
+/// Layout shape for [`CurrentControlledSwitch`] storing the current-sensing branch and
+/// output terminal coupling entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentControlledSwitchShape {
     sense: CurrentBranch,
     entries: [[usize; 3]; 2],
 }
 
-/// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
-/// Reference Guide gives its model `ISWITCH`.
+/// Parameters for [`CurrentControlledSwitch`], matching the PSpice A/D Reference Guide
+/// defaults for `ISWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
-    /// The resistance with the control at or past the on current, in ohms; default 1.
+    /// On-state resistance at or past `on_current`, in ohms; default 1.
     #[dimension(RESISTANCE)]
     pub on_resistance: R,
-    /// The resistance with the control at or past the off current, in ohms; default 1e6.
+    /// Off-state resistance at or past `off_current`, in ohms; default 1e6.
     #[dimension(RESISTANCE)]
     pub off_resistance: R,
-    /// The control current at which the switch is on, in amperes; default 1 mA.
+    /// Control current at which the switch reaches `on_resistance`, in amperes; default 1 mA.
     #[dimension(CURRENT)]
     pub on_current: R,
-    /// The control current at which the switch is off, in amperes; default 0.
+    /// Control current at which the switch reaches `off_resistance`, in amperes; default 0.
     #[dimension(CURRENT)]
     pub off_current: R,
 }
@@ -391,7 +389,7 @@ impl Kernel for CurrentControlledSwitch {
         );
     }
 
-    /// The thermal noise of the resistance the control sets.
+    /// Appends thermal noise for the switch resistance determined by the control current.
     fn noise<R: Real>(
         shape: &CurrentControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
@@ -412,7 +410,7 @@ mod tests {
     const SWITCH: &str = r#"{"on_resistance": 10, "off_resistance": 1e6,
         "on_voltage": 2, "off_voltage": 1}"#;
 
-    /// The switch's resistance with 1 V across it and the control at `control`.
+    /// Computes switch resistance at 1 V across the output and control voltage `control`.
     fn resistance(parameters: &str, control: f64) -> f64 {
         1.0 / Bench::new::<VoltageControlledSwitch>(parameters)
             .evaluate(&[1.0, 0.0, control, 0.0])
@@ -439,10 +437,7 @@ mod tests {
         let error =
             Bench::try_new::<VoltageControlledSwitch>(r#"{"on_voltage": 1, "off_voltage": 1}"#)
                 .expect_err("equal voltages");
-        assert_eq!(
-            error.0,
-            "on_voltage and off_voltage must differ, not both be 1.0"
-        );
+        assert_eq!(error.0, "on_voltage and off_voltage differ, not both 1.0");
     }
 
     const CURRENT_SWITCH: &str = r#"{"on_resistance": 10, "off_resistance": 1e6,
@@ -471,10 +466,7 @@ mod tests {
         }
         let error = Bench::try_new::<CurrentControlledSwitch>(r#"{"on_current": 0}"#)
             .expect_err("equal currents");
-        assert_eq!(
-            error.0,
-            "on_current and off_current must differ, not both be 0.0"
-        );
+        assert_eq!(error.0, "on_current and off_current differ, not both 0.0");
         let sources = bench.noise(&[1.0, 0.0, 0.0, 0.0, 3e-3]);
         assert_close(&[source(&sources, "thermal").density(1.0)], &[thermal(0.1)]);
     }
@@ -485,7 +477,10 @@ mod tests {
             voltage in -5.0..5.0f64,
             control in 0.0..3.0f64,
         ) {
-            assert_jacobians_match::<VoltageControlledSwitch>(SWITCH, &[voltage, 0.0, control, 0.0]);
+            assert_jacobians_match::<VoltageControlledSwitch>(
+                SWITCH,
+                &[voltage, 0.0, control, 0.0],
+            );
         }
     }
 

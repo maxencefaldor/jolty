@@ -1,75 +1,74 @@
-//! The past a delay line reads: the values its unknowns took at the points a transient
-//! accepted, back to the longest delay any instance reads them at.
+//! Historical unknown trajectories read by delay lines during transient analysis, retained
+//! back to the longest delay referenced by any device instance.
 
 use std::collections::VecDeque;
 
 use jolty_numerics::UNMAPPED;
 
-/// The maximum number of points an interpolation reads: one more than the highest order of an
-/// integration method, Gear2's and the trapezoidal formula's 2
-/// ([`jolty_numerics::integration::Method::order`]).
+/// Maximum number of interpolation nodes: one more than the highest supported integration
+/// order (Gear2 and trapezoidal, order 2; [`jolty_numerics::integration::Method::order`]).
 const MAX_NODES: usize = 3;
 
-/// A part of an instance's conductance that reads the local unknown of its column `delay`
-/// seconds in the past, which [`crate::Kernel::delayed`] states: in a small-signal analysis
-/// at the complex frequency `s` it is `conductance · e^{−s·delay}`, and at DC, where the
-/// past is the present, `conductance` itself, which the instance's evaluation includes.
+/// Delayed conductance contribution reported by [`crate::Kernel::delayed`] that samples its
+/// column unknown `delay` seconds in the past.
+///
+/// In small-signal analysis at complex frequency `s`, the contribution equals
+/// `conductance · e^{−s·delay}`. At DC, past equals present, so the normal evaluation
+/// includes `conductance` directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Delayed {
-    /// The local entry, by its index among the instance's.
+    /// Local entry index within the device instance.
     pub entry: usize,
-    /// The delay, in seconds; positive.
+    /// Positive propagation delay, in seconds.
     pub delay: f64,
-    /// The part of the entry's conductance that reads the past, in its own units.
+    /// Conductance weight applied to the delayed unknown, in the entry's units.
     pub conductance: f64,
 }
 
-/// A [`Delayed`] part of the circuit's conductance, placed among its equations.
+/// Circuit-level placement of a [`Delayed`] conductance contribution.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DelayedEntry {
-    /// The device whose instance reads the past, by its index among the circuit's.
+    /// Device instance index within the circuit.
     pub device: usize,
-    /// The stored position of the entry in the circuit's pattern.
+    /// Stored matrix position in the circuit sparsity pattern.
     pub position: u32,
-    /// The circuit's unknown the entry's column is, which the instance reads in the past.
+    /// Circuit unknown index sampled in the past.
     pub column: u32,
-    /// The delay, in seconds.
+    /// Propagation delay, in seconds.
     pub delay: f64,
-    /// The part of the entry's conductance that reads the past.
+    /// Conductance weight applied to the delayed unknown.
     pub conductance: f64,
 }
 
-/// The values some of a circuit's unknowns took at the points a transient accepted, and
-/// where its integration restarted, as a delay line reads them: by interpolation of the
-/// order of the transient's integration method, within the run of points between two
-/// corners that holds the time read, so that no interpolation spans the corner a
-/// waveform turns at.
+/// Recorded history of selected circuit unknowns and integration restart corners for delay
+/// line interpolation.
 ///
-/// A transient keeps the points of the last delay before its last accepted point, and the
-/// `order` points before them that an interpolation there reads: of the longest delay its
-/// instances read, as [`Past::forget_before`] says.
+/// Interpolation uses polynomials matching the transient integration order and stays within
+/// the smooth segment between corners so no polynomial crosses a waveform discontinuity.
+/// Transient runs retain samples covering the longest device delay plus `order` preceding
+/// points via [`Past::forget_before`].
 #[derive(Debug, Clone, Default)]
 pub struct Past {
-    /// The degree of the interpolating polynomials, at most [`MAX_NODES`] − 1.
+    /// Degree of the interpolating polynomials, at most [`MAX_NODES`] − 1.
     order: usize,
-    /// The column of each of the circuit's unknowns among those kept, by the unknown's
-    /// index, or [`UNMAPPED`] for one not kept.
+    /// Packed column index for each circuit unknown, or [`UNMAPPED`] when not recorded.
     columns: Vec<u32>,
-    /// The number of unknowns kept.
+    /// Number of recorded unknowns per sample point.
     width: usize,
-    /// Each point's time, oldest first.
+    /// Sample timestamps in strictly increasing order.
     times: VecDeque<f64>,
-    /// Whether the integration restarted at each point, a corner in the waveforms.
+    /// Flag per sample indicating whether integration restarted at a waveform corner.
     corners: VecDeque<bool>,
-    /// The values of the unknowns kept at each point, `width` a point, oldest first.
+    /// Packed unknown values (`width` values per sample), oldest first.
     values: VecDeque<f64>,
 }
 
 impl Past {
-    /// An empty past of a circuit of `unknowns` unknowns that keeps those of `kept`, by
-    /// index, read by polynomials of degree `order`, the order of the integration method,
-    /// so that an interpolation's error, `O(h^{order+1})` in the steps `h`, is of the
-    /// order of a step's local truncation error; at most 2.
+    /// Creates an empty history buffer for a circuit with `unknowns` unknowns, recording the
+    /// indices in `kept` for polynomial interpolation of degree `order` (clamped to at most 2).
+    ///
+    /// Matching `order` to the integration method keeps interpolation error `O(h^{order+1})`
+    /// consistent with step local truncation error.
     #[must_use]
     pub fn new(unknowns: usize, kept: &[usize], order: usize) -> Self {
         let mut columns = vec![UNMAPPED; unknowns];
@@ -92,8 +91,8 @@ impl Past {
         }
     }
 
-    /// Appends the point at `time`, later than every point kept, where the unknowns are
-    /// `x`; `corner` says whether the integration restarts there.
+    /// Appends an accepted sample at `time` (later than all stored samples) with solution
+    /// `x`; `corner` indicates an integration restart point.
     pub fn push(&mut self, time: f64, x: &[f64], corner: bool) {
         let start = self.values.len();
         self.values.resize(start + self.width, 0.0);
@@ -109,7 +108,7 @@ impl Past {
         self.corners.push_back(corner);
     }
 
-    /// Forgets every point after `time`, as a transient going back to it does.
+    /// Discards every stored sample after `time` when a transient step rolls back.
     pub fn back_to(&mut self, time: f64) {
         let kept = self.times.partition_point(|&each| each <= time);
         self.times.truncate(kept);
@@ -117,13 +116,12 @@ impl Past {
         self.values.truncate(kept * self.width);
     }
 
-    /// Forgets the points no interpolation at `horizon` or later reads: every point but
-    /// the last `order` at or before it.
+    /// Discards samples older than any interpolation at or after `horizon`, retaining the
+    /// last `order` samples at or before `horizon`.
     ///
-    /// An interpolation at a time `τ` reads `order + 1` points: the two around `τ`,
-    /// the last point at or before it and the first after, and `order − 1` more within
-    /// the same run between corners. The earliest it can read is `order − 1` before the
-    /// last point at or before `horizon`, the `order`th last at or before it.
+    /// Interpolating at `τ` uses `order + 1` points: the bracketing pair around `τ` plus
+    /// `order − 1` neighboring points inside the same corner-free segment. The earliest
+    /// reachable node is `order − 1` samples before the latest point at or before `horizon`.
     pub fn forget_before(&mut self, horizon: f64) {
         let before = self.times.partition_point(|&each| each <= horizon);
         let forgotten = before.saturating_sub(self.order);
@@ -132,24 +130,25 @@ impl Past {
         self.values.drain(..forgotten * self.width);
     }
 
-    /// The number of points kept.
+    /// Returns the number of stored sample points.
     #[must_use]
     pub fn len(&self) -> usize {
         self.times.len()
     }
 
-    /// Whether it keeps no point.
+    /// Returns whether no sample points are stored.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }
 
-    /// The value the unknown `unknown` took at `time`, and its derivative with respect to
-    /// the unknown's value `present` at `now`, the time a transient solves at: an
-    /// interpolation of the points kept and of the present, when `now` is later than
-    /// them all, as a node of its own. Before the first point, the unknown holds the
-    /// value it took there, as the circuit rests before a transient starts. `None` for
-    /// an unknown not kept, or before any point is.
+    /// Interpolates the value of `unknown` at `time` and its derivative with respect to
+    /// `present` at the current step time `now`.
+    ///
+    /// Includes `(now, present)` as an extra interpolation node when `now` exceeds all stored
+    /// timestamps. Times at or before the first stored point return the initial rest value
+    /// with zero derivative; returns `None` if `unknown` is unrecorded or the history is
+    /// empty.
     #[must_use]
     pub fn at(&self, unknown: usize, time: f64, (now, present): (f64, f64)) -> Option<(f64, f64)> {
         let column = *self.columns.get(unknown)?;
@@ -230,8 +229,8 @@ impl Past {
 mod tests {
     use super::*;
 
-    /// A past of one unknown at `points`, each a time, a value and whether it is a corner,
-    /// read by polynomials of degree `order`.
+    /// Builds a single-unknown history buffer from `(time, value, corner)` tuples for
+    /// polynomial interpolation of degree `order`.
     fn past(order: usize, points: &[(f64, f64, bool)]) -> Past {
         let mut past = Past::new(1, &[0], order);
         for &(time, value, corner) in points {
@@ -250,7 +249,7 @@ mod tests {
         let quadratic = past(2, &points);
         for time in [0.1, 0.5, 0.95, 1.6] {
             let (value, weight) = quadratic.at(0, time, (3.0, 9.0)).unwrap();
-            // Exact but for the rounding of a few products of numbers near 1.
+            // Exact except for floating-point rounding of products near 1.
             assert!((value - square(time)).abs() < 1e-14, "{time}: {value}");
             assert_eq!(weight, 0.0);
         }

@@ -35,16 +35,16 @@ pub(super) struct Depletion<R: Real> {
 }
 
 impl<R: Real> Depletion<R> {
-    /// The charge on the body node against the diffusion at the junction's voltage `v`:
-    /// each part's depletion charge in reverse, and its linear continuation forward.
+    /// Evaluates depletion charge on the body against the diffusion at junction voltage `v`,
+    /// using power laws in reverse bias and linear continuation in forward bias.
     pub(super) fn charge(&self, v: J<R>) -> J<R> {
         three_part_depletion(self.capacitances, self.potentials, self.gradings, v)
     }
 }
 
 impl<R: Real> Core<R> {
-    /// The channel's charges of `capmod` 2 at the frame's drain-source voltage `vds`,
-    /// where the channel is `operating`, its drain's share `xpart`.
+    /// Evaluates `capmod` 2 intrinsic channel charges at forward-frame `vds` and
+    /// `operating`, partitioned by `xpart`.
     pub(super) fn intrinsic(&self, vds: D<R>, operating: &Operating<R>) -> Intrinsic<R> {
         let p = &self.binned;
         let bulk_bias = operating.vbseff;
@@ -102,9 +102,8 @@ impl<R: Real> Core<R> {
 }
 
 impl<R: Real> Overlaps<R> {
-    /// The overlaps' charges on the gate against the source, the drain and the body at
-    /// the gate-source, gate-drain and gate-body voltages `voltages`, each with the bias
-    /// dependence of `capmod` 2.
+    /// Evaluates `capmod` 2 bias-dependent gate-source, gate-drain, and gate-body overlap
+    /// charges at `[gate_source, gate_drain, gate_bulk]`.
     pub(super) fn charges(&self, [gate_source, gate_drain, gate_bulk]: [D<R>; 3]) -> [D<R>; 3] {
         let side = |voltage: D<R>, fixed: R, lightly: R, kappa: R| {
             smooth_overlap(voltage, fixed, lightly, kappa).scale(self.fingers)

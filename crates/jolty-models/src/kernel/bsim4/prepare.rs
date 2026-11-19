@@ -36,11 +36,11 @@ pub(super) struct Core<R: Real> {
     pub(super) toxp: R,
     pub(super) coxe: R,
     pub(super) coxp: R,
-    /// `√(εsi / (epsrox · ε0) · toxe)`.
+    /// Oxide-to-silicon depletion factor `√(εsi / (epsrox · ε0) · toxe)`.
     pub(super) factor1: R,
-    /// The thermal voltage `k·T / q` at the temperature, with BSIM4's `k / q`.
+    /// Thermal voltage `k·T / q` at device temperature using BSIM4's `k / q`.
     pub(super) vtm: R,
-    /// `T / Tnom − 1`.
+    /// Relative temperature rise `T / Tnom − 1`.
     pub(super) temperature_rise: R,
     pub(super) leff: R,
     pub(super) weff: R,
@@ -70,7 +70,7 @@ pub(super) struct Core<R: Real> {
     pub(super) voffcbn: R,
     pub(super) theta0vb0: R,
     pub(super) theta_rout: R,
-    /// `rdsw`'s resistance within the drain current, none at `rdsmod` 1.
+    /// Internal channel resistance from `rdsw` (zero when `rdsmod` is 1).
     pub(super) rds0: R,
     pub(super) rdswmin: R,
     pub(super) ua: R,
@@ -79,8 +79,7 @@ pub(super) struct Core<R: Real> {
     pub(super) ud: R,
     pub(super) u0temp: R,
     pub(super) vsattemp: R,
-    /// `(1 − T0) / (1 + T0)` of the source end's velocity limit, where a positive `vtl`
-    /// is given.
+    /// Source-end velocity-limit factor `(1 − T0) / (1 + T0)` when `vtl > 0`.
     pub(super) tfactor: Option<R>,
     /// The threshold at zero bias of a long, wide channel, negative for a p-channel as the
     /// card's `vth0` is, the stress effect and `delvto` added.
@@ -101,7 +100,7 @@ pub(super) struct Core<R: Real> {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Junction<R: Real> {
     pub(super) saturation_current: R,
-    /// `Nvtm`, the emission coefficient times the thermal voltage.
+    /// Diode thermal slope `Nvtm`, the emission coefficient times thermal voltage.
     pub(super) slope: R,
     /// The voltage above which the current continues linearly, and the current
     /// `Is · e^(vjm / Nvtm)` there.
@@ -115,24 +114,25 @@ pub(super) struct Junction<R: Real> {
 /// The overlaps between the gate and the source, the drain and the body.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Overlaps<R: Real> {
-    /// `(cgso + cf) · WeffCV` and `(cgdo + cf) · WeffCV`.
+    /// Total gate-source and gate-drain overlap capacitances `(cgso + cf) · WeffCV` and
+    /// `(cgdo + cf) · WeffCV`.
     pub(super) cgso: R,
     pub(super) cgdo: R,
-    /// `cgsl · WeffCV` and `cgdl · WeffCV`.
+    /// Lightly-doped gate-source and gate-drain overlap capacitances `cgsl · WeffCV` and
+    /// `cgdl · WeffCV`.
     pub(super) cgsl: R,
     pub(super) cgdl: R,
     pub(super) ckappas: R,
     pub(super) ckappad: R,
-    /// `cgbo · LeffCV · nf`.
+    /// Total gate-body overlap capacitance `cgbo · LeffCV · nf`.
     pub(super) cgbo: R,
     pub(super) fingers: R,
 }
 
-/// The bias-dependent drain and source resistances of `rdsmod` 1: of each one copy at
-/// zero and at high gate bias, `rd0` and `rdwmin` and `rs0` and `rswmin`, the flat-band
-/// voltage of the diffusions `vfbsd`, the bias coefficients `prwg` and `prwb`, and the
-/// conductances of `rsh` behind the drain and the source, 1 kS where `nrd` or `nrs` sets
-/// none, as `b4v5temp.c` resets them.
+/// Bias-dependent external drain and source resistances for `rdsmod` 1. Stores zero- and
+/// high-gate-bias terms (`rd0`, `rdwmin`, `rs0`, `rswmin`), diffusion flat-band voltage
+/// `vfbsd`, bias coefficients `prwg` and `prwb`, and sheet conductances (`1 kS` when `nrd`
+/// or `nrs` is omitted per `b4v5temp.c`).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct External<R: Real> {
     pub(super) minimums: [R; 2],
@@ -143,18 +143,18 @@ pub(super) struct External<R: Real> {
     pub(super) sheet: [R; 2],
 }
 
-/// The gate's resistances of `rgatemod` 1 to 3, and the factors of one copy's
-/// intrinsic-input conductance, which `b4v5ld.c` takes as
-/// `xrcrg1 · (xrcrg2 · vtm · β + Ids / Vdseff) · nf` of one finger's `β` and current over
-/// `Vdseff` (lines 1999 to 2019).
+/// Gate electrode and intrinsic-input resistance parameters for `rgatemod` 1 to 3.
+/// Intrinsic-input conductance follows
+/// `xrcrg1 · (xrcrg2 · vtm · β + Ids / Vdseff) · nf` from single-finger `β` and
+/// `Ids / Vdseff` (`b4v5ld.c`, lines 1999 to 2019).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Gate<R: Real> {
     pub(super) model: GateResistance,
-    /// The electrode's conductance of one copy, `grgeltd`.
+    /// Single-copy gate electrode conductance `grgeltd`.
     pub(super) electrode: R,
-    /// `xrcrg1 · nf`, of the binned `xrcrg1`.
+    /// Finger-scaled intrinsic-input factor `xrcrg1 · nf`.
     pub(super) xrcrg1_nf: R,
-    /// `xrcrg2 · vtm`, of the binned `xrcrg2` and the thermal voltage at the temperature.
+    /// Temperature-scaled intrinsic-input factor `xrcrg2 · vtm`.
     pub(super) xrcrg2_vtm: R,
 }
 
@@ -275,9 +275,8 @@ fn build_junction<R: Real>(
     }
 }
 
-/// The source's and the drain's diffusions of `fingers` fingers, `b4v5geo.c`'s
-/// `BSIM4v5PAeffGeo` at `geomod` 0 with `min` 0: their perimeters and areas, from the
-/// junctions' width `weff_cj` and the distances `dmcg`, less `dmcgt`, and `dmci`.
+/// Computes source and drain diffusion perimeters and areas for `fingers` fingers from
+/// `weff_cj` and spacings `[dmcg, dmci]`, matching `BSIM4v5PAeffGeo` (`geomod = 0`, `min = 0`).
 #[expect(clippy::similar_names, reason = "b4v5geo.c's names of the diffusions")]
 fn diffusions<R: Real>(fingers: f64, weff_cj: R, [dmcg, dmci]: [R; 2]) -> [R; 4] {
     // `BSIM4v5NumFingerDiff`: an odd number of fingers ends in a source and a drain, an
@@ -303,8 +302,8 @@ fn diffusions<R: Real>(fingers: f64, weff_cj: R, [dmcg, dmci]: [R; 2]) -> [R; 4]
 }
 
 impl<R: Real> Bsim4Parameters<R> {
-    /// The thicknesses of the oxide, `toxe` and `toxp`, as `b4v5temp.c` resolves them
-    /// from each other and `dtox`.
+    /// Resolves electrical and physical oxide thicknesses `[toxe, toxp]` from each other
+    /// and `dtox`, matching `b4v5temp.c`.
     #[expect(
         clippy::similar_names,
         reason = "the oxide thicknesses' names in BSIM4"
@@ -318,15 +317,14 @@ impl<R: Real> Bsim4Parameters<R> {
         }
     }
 
-    /// The `toxe` that `b4v5set.c` defaults others from, before `b4v5temp.c` resolves it
-    /// against `toxp`: the card's, or 3 nm.
+    /// Returns the card `toxe` or the 3 nm `b4v5set.c` default before `b4v5temp.c`
+    /// resolves it against `toxp`.
     pub(super) fn set_toxe(&self) -> R {
         self.toxe.unwrap_or(R::constant(TOXE))
     }
 
-    /// The drain and source resistances of `rsh` behind `nrd` and `nrs`, where each is
-    /// positive, as `b4v5set.c` makes nodes for them at `rdsmod` 0 and `rgeomod` 0, of the
-    /// parallel copies together.
+    /// Computes combined parallel drain and source sheet resistances from `rsh`, `nrd`,
+    /// and `nrs` for `rdsmod = 0` and `rgeomod = 0` (`b4v5set.c`).
     pub(super) fn resistances(&self) -> Result<[R; 2], ParameterError> {
         let sheet = self.rsh;
         let multiplier = ParameterError::positive("multiplier", self.multiplier)?;
@@ -340,7 +338,8 @@ impl<R: Real> Bsim4Parameters<R> {
         )
     }
 
-    /// The transistor's numbers at `temperature`, in kelvins.
+    /// Prepares temperature- and geometry-dependent BSIM4 quantities at `temperature` in
+    /// kelvins.
     pub(super) fn prepared(&self, temperature: R) -> Result<PreparedBsim4<R>, ParameterError> {
         if temperature.value() <= 0.0 {
             return Err(ParameterError(format!(
@@ -352,7 +351,7 @@ impl<R: Real> Bsim4Parameters<R> {
         let multiplier = ParameterError::positive("multiplier", self.multiplier)?;
         let fingers = self.fingers;
         check(fingers.value() < 1.0, || {
-            format!("nf must be at least 1, not {:?}", fingers.value())
+            format!("nf is at least 1, not {:?}", fingers.value())
         })?;
         let oxide = self.oxide()?;
         let thermal = thermal_state(temperature, tnom);
@@ -370,13 +369,13 @@ impl<R: Real> Bsim4Parameters<R> {
         // `b4v5check.c` stops on these whatever the gate's model.
         check(geometry.l_new.value() <= self.xgl.value(), || {
             format!(
-                "xgl, {:?}, must be less than the drawn length plus xl, {:?}",
+                "xgl, {:?}, is less than the drawn length plus xl, {:?}",
                 self.xgl.value(),
                 geometry.l_new.value()
             )
         })?;
         check(self.ngcon.value() < 1.0, || {
-            format!("ngcon must be at least 1, not {:?}", self.ngcon.value())
+            format!("ngcon is at least 1, not {:?}", self.ngcon.value())
         })?;
         self.checked(
             &core.binned,
@@ -530,7 +529,7 @@ impl<R: Real> Bsim4Parameters<R> {
         ] {
             check(value.value() <= 0.0, || {
                 format!(
-                    "the effective {name} must be positive, not {:?}",
+                    "the effective {name} is positive, not {:?}",
                     value.value()
                 )
             })?;
@@ -1231,14 +1230,14 @@ impl<R: Real> Bsim4Parameters<R> {
         for (name, value) in [("lpe0", binned.lpe0), ("lpeb", binned.lpeb)] {
             check(value.value() < -leff, || {
                 format!(
-                    "{name}, {:?}, must be at least the negative of the effective length, {leff:?}",
+                    "{name}, {:?}, is at least the negative of the effective length, {leff:?}",
                     value.value()
                 )
             })?;
         }
         check(self.lintnoi.value() > leff / 2.0, || {
             format!(
-                "lintnoi, {:?}, must be at most half the effective length, {leff:?}",
+                "lintnoi, {:?}, is at most half the effective length, {leff:?}",
                 self.lintnoi.value()
             )
         })?;
@@ -1255,7 +1254,7 @@ impl<R: Real> Bsim4Parameters<R> {
         }
         check(ngate.value() < 0.0 || ngate.value() > 1.0e25, || {
             format!(
-                "ngate must lie between 0 and 1e31 per cubic meter, not {:?}",
+                "ngate lies between 0 and 1e31 per cubic meter, not {:?}",
                 binned.ngate.value()
             )
         })?;
@@ -1279,7 +1278,7 @@ impl<R: Real> Bsim4Parameters<R> {
             )]
             let vanishing = value.value() == -weff;
             check(vanishing, || {
-                format!("{name} must not be the negative of the effective width, {weff:?}")
+                format!("{name} differs from the negative of the effective width, {weff:?}")
             })?;
         }
         Ok(())

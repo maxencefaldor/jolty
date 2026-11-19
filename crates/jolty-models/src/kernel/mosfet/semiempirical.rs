@@ -1,57 +1,58 @@
-//! The channel of SPICE's level 3 MOSFET: a semi-empirical law of short channels.
+//! Semi-empirical short-channel law for the SPICE Level 3 MOSFET.
 //!
-//! Part of the MOSFET of level 3, derived from ngspice 47's implementation of it in
-//! `src/spicelib/devices/mos3/`:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! Derived from ngspice 47 `src/spicelib/devices/mos3/`: Copyright 1985 - 2018, Regents of
+//! the University of California and others. Used under the ngspice Modified BSD license,
+//! reproduced in the repository `NOTICE` file.
 
 use super::{Conduction, Region};
 use crate::Real;
 use crate::kernel::dual::Dual;
 
-/// The coefficients of the depletion's lateral reach into a short channel, in SPICE's
-/// polynomial of the depletion width over the junction depth.
+/// SPICE polynomial coefficients modeling lateral depletion reach into a short channel as a
+/// function of depletion width over junction depth.
 const SHORT_CHANNEL: [f64; 3] = [0.063_135_3, 0.801_329_2, -0.011_107_77];
 
-/// The level 3 channel, oriented as an n-channel's, as ngspice implements it: the threshold
-/// falls with the drain voltage and rises with a narrow width, the gate field degrades the
-/// mobility, carriers' velocity saturates, and the channel shortens beyond saturation.
+/// Level 3 MOSFET channel parameters in n-channel sign convention, matching ngspice.
+///
+/// Captures drain-induced barrier lowering, narrow-width threshold rise, gate-field mobility
+/// degradation, carrier velocity saturation, and channel-length modulation past saturation.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Semiempirical<R: Real> {
-    /// `kp · W / L`, with every parallel copy counted.
+    /// Scaled transconductance gain `kp · W / L`, including parallel multiplier.
     pub(super) beta: R,
-    /// The effective channel length.
+    /// Effective channel length.
     pub(super) length: R,
     pub(super) surface_potential: R,
     pub(super) body_effect: R,
-    /// The threshold less the body effect at zero bias, `vbi`.
+    /// Zero-bias built-in threshold component `vbi` (threshold minus body effect).
     pub(super) built_in: R,
-    /// How much the drain lowers the threshold, per volt.
+    /// Drain-induced threshold lowering coefficient, per volt.
     pub(super) static_feedback: R,
-    /// The narrow-width factor over the effective width.
+    /// Narrow-width threshold factor divided by effective channel width.
     pub(super) narrow: R,
-    /// The gate field's degradation of the mobility, `θ`, per volt.
+    /// Gate-field mobility degradation coefficient `θ`, per volt.
     pub(super) mobility_modulation: R,
-    /// `κ`, which scales the field that shortens the channel in saturation.
+    /// Saturation field factor `κ` scaling channel-length shortening in saturation.
     pub(super) saturation_field_factor: R,
-    /// `2 · εsi / (q · nsub)`, zero without a substrate doping.
+    /// Depletion factor `2 · εsi / (q · nsub)`, or zero when substrate doping is absent.
     pub(super) alpha: R,
-    /// The junction depth, zero to leave short channels' body effect out.
+    /// Junction depth, or zero to omit short-channel body-effect sharing.
     pub(super) junction_depth: R,
     pub(super) lateral_diffusion: R,
-    /// The carriers' maximum drift velocity, zero for none.
+    /// Maximum carrier drift velocity, or zero when velocity saturation is disabled.
     pub(super) max_drift_velocity: R,
-    /// The surface mobility, in square meters per volt-second.
+    /// Surface carrier mobility, in square meters per volt-second.
     pub(super) mobility: R,
-    /// The thermal voltage at the transistor's temperature.
+    /// Thermal voltage at operating temperature.
     pub(super) thermal_voltage: R,
-    /// The fast surface states' capacitance relative to the oxide's, zero for none,
-    /// which turns on weak inversion.
+    /// Fast surface-state capacitance normalized to oxide capacitance; nonzero enables weak
+    /// inversion.
     pub(super) surface_states: R,
 }
 
 impl<R: Real> Semiempirical<R> {
-    /// The drain current at the gate-source, drain-source and bulk-source voltages.
+    /// Evaluates Level 3 drain current, threshold, saturation voltage, and operating region
+    /// at `[vgs, vds, vbs]`.
     pub(super) fn evaluate(&self, [vgs, vds, vbs]: [Dual<R, 3>; 3]) -> Conduction<R> {
         let forward = vds.value.value() >= 0.0;
         let (vgs, vds, vbs) = if forward {
@@ -126,9 +127,7 @@ impl<R: Real> Semiempirical<R> {
         }
     }
 
-    /// The factor by which the source's and the drain's depletion share the channel's
-    /// charge, with the square root `root` of the surface potential less the bulk-source
-    /// voltage.
+    /// Computes the short-channel charge-sharing factor from `root = √(φ − vbs)`.
     fn short_channel(&self, root: Dual<R, 3>) -> Dual<R, 3> {
         if self.junction_depth.value() == 0.0 || self.alpha.value() == 0.0 {
             return Dual::number(1.0);
@@ -145,9 +144,9 @@ impl<R: Real> Semiempirical<R> {
             + 1.0
     }
 
-    /// How far the channel shortens at `vds`, with saturation voltage `vdsat`, the
-    /// `current` so far, and the critical voltage and velocity-saturation factor of
-    /// carriers' drift, if they saturate; `None` where it does not.
+    /// Computes channel-length shortening at `vds`, saturation voltage `vdsat`, preliminary
+    /// `current`, and optional velocity-saturation `drift` parameters, returning `None` when
+    /// shortening is inactive.
     fn shortening(
         &self,
         vds: Dual<R, 3>,

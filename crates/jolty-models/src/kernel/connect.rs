@@ -1,7 +1,7 @@
-//! The connect elements that join logic devices to the analog circuit, where a logic pin
-//! joins an electrical net: a [`ThresholdDetector`] turns the net's voltage into the level
-//! an input reads, and a [`LogicDriver`] turns an output's level into a voltage between the
-//! device's supply and ground.
+//! Mixed-signal connect elements bridging logic pins and analog nets.
+//!
+//! A [`ThresholdDetector`] translates an analog net voltage into a logic input level, and a
+//! [`LogicDriver`] drives an analog voltage between supply and ground for a logic output.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,37 +12,35 @@ use crate::{
     Stamp,
 };
 
-/// The parameters of a logic driver: none.
+/// Parameter struct for [`LogicDriver`] (empty).
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 pub struct LogicDriverParameters {}
 
-/// A logic driver: the connect element from a logic output to an electrical net.
+/// Connect element driving an electrical net from a logic output.
 ///
-/// Between terminals `output` and `ground` it holds the fraction `s` of the voltage from
-/// `ground` to `supply`, the fraction of the output's level, so `v_output − v_ground =
-/// s (v_supply − v_ground)`. A change of level moves `s` in a ramp. Its current, flowing
-/// from `output` through the driver to `ground`, is an unknown labelled `current`.
+/// Constrains `v_output − v_ground = s · (v_supply − v_ground)` where `s` ramps smoothly
+/// between logic level fractions. The output current flowing from `output` to `ground` is an
+/// unknown labelled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct LogicDriver;
 
-/// The local index of a connect element's input or output.
+/// Local index of a connect element's input or output terminal.
 const PIN: usize = 0;
-/// The local index of its supply.
+/// Local index of the supply terminal.
 const SUPPLY: usize = 1;
-/// The local index of its ground.
+/// Local index of the ground terminal.
 const GROUND: usize = 2;
 
-/// Where a logic driver's contributions go: through the branch from the output to the
-/// ground, and at the entries of its current's equation at the ground and the supply.
+/// Layout shape for [`LogicDriver`] holding the output branch and supply/ground matrix
+/// entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogicDriverShape {
     branch: kernel_parts::CurrentBranch,
     entries: [usize; 2],
 }
 
-/// The ramp a logic driver moves along, from the fraction `from` of its supply at `start`
-/// to `to` at `end`.
+/// Linear voltage-fraction ramp from `from` at `start` to `to` at `end`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ramp {
     start: f64,
@@ -52,7 +50,7 @@ pub struct Ramp {
 }
 
 impl Default for Ramp {
-    /// At the unknown level's fraction, before the logic drives it.
+    /// Initializes the ramp at the midpoint fraction of [`LogicLevel::Unknown`].
     fn default() -> Self {
         let unknown = LogicLevel::Unknown.fraction();
         Self {
@@ -65,7 +63,8 @@ impl Default for Ramp {
 }
 
 impl Ramp {
-    /// The fraction of the supply the driver holds at `time`.
+    /// Evaluates the driven supply fraction at `time`, clamped to `[from, to]` outside the
+    /// ramp interval.
     #[must_use]
     pub fn fraction(&self, time: f64) -> f64 {
         let Self {
@@ -157,14 +156,14 @@ pub struct ThresholdDetectorParameters {
     pub capacitance: f64,
 }
 
-/// A threshold detector: the connect element from an electrical net to a logic input.
+/// Connect element sensing an electrical net for a logic input.
 ///
-/// It reads terminal `input` against the fraction `threshold` of the voltage from `ground`
-/// to `supply`, and loads it with `capacitance` to `ground`.
+/// Compares terminal `input` against `threshold` times the `ground`-to-`supply` voltage and
+/// loads `input` with `capacitance` to `ground`.
 #[derive(Debug, Clone, Copy)]
 pub struct ThresholdDetector;
 
-/// Where a threshold detector's contributions go: across its input and its ground.
+/// Layout shape for [`ThresholdDetector`] spanning the `input` and `ground` terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThresholdDetectorShape(kernel_parts::Pair);
 

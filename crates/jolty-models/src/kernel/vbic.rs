@@ -26,60 +26,54 @@ use crate::{
 /// fixes, with which ngspice's VBIC computes its thermal voltage.
 const VBIC_BOLTZMANN: f64 = 1.380_662e-23;
 
-/// VBIC's elementary charge, in coulombs, beside [`VBIC_BOLTZMANN`].
+/// VBIC elementary charge in coulombs, paired with [`VBIC_BOLTZMANN`].
 const VBIC_CHARGE: f64 = 1.602_189e-19;
 
-/// The vertical bipolar inter-company model, VBIC 1.2, between `collector`, `base`, `emitter`
-/// and `substrate`, as ngspice 47 implements it: McAndrew et al., *VBIC95, the vertical
-/// bipolar inter-company model*, IEEE Journal of Solid-State Circuits 31(10), 1996, as the
-/// VBIC 1.2 definition extends it.
+/// Vertical bipolar inter-company model (VBIC 1.2) between `collector`, `base`, `emitter`,
+/// and `substrate`, matching ngspice 47. Follows McAndrew et al., *VBIC95, the vertical
+/// bipolar inter-company model*, IEEE Journal of Solid-State Circuits 31(10), 1996, as
+/// extended by VBIC 1.2.
 ///
-/// The intrinsic transistor's transport current, `(Itzf − Itzr)`, is `Ifi / qb − Iri / qb`
-/// from its internal emitter to its internal collector, with `Ifi = IS · (e^{vbei / (NF ·
-/// Vt)} − 1)` and `Iri = IS · ISRR · (e^{vbci / (NR · Vt)} − 1)`; the normalized base charge
-/// `qb` holds the Early effect through the junctions' normalized depletion charges, smoothed
-/// above zero, and high injection through the knee currents, in VBIC's form or SPICE's
-/// Gummel-Poon one. The base currents of the base-emitter junction, ideal and non-ideal,
-/// split between the internal and the external base, with its breakdown; those of the
-/// base-collector junction carry the weak avalanche current, which the transport current
-/// drives across the junction. The parasitic substrate transistor runs from the external
-/// base through the parasitic base, behind the collector, to the substrate, with its own
-/// junctions, transport current and knee. The intrinsic collector's resistance follows
-/// Kull's quasi-saturation model with the epitaxial layer's velocity saturation, and the intrinsic
-/// and parasitic base resistances fall with their transistors' base charges. Every junction
-/// holds a depletion charge, smoothed at its potential as VBIC smooths it, the base-collector
-/// ones reaching through at their reach-through voltage; the base-emitter one holds the
-/// forward transit charge, the base-collector ones the reverse transit and epitaxial charges, and
-/// overlap capacitances join the terminals.
+/// Intrinsic transport current `(Itzf − Itzr)` equals `(Ifi − Iri) / qb` from internal
+/// emitter to internal collector. Forward and reverse currents are
+/// `Ifi = IS · (e^{vbei / (NF · Vt)} − 1)` and
+/// `Iri = IS · ISRR · (e^{vbci / (NR · Vt)} − 1)`. Normalized base charge `qb` combines
+/// the Early effect via smoothed depletion charges with high injection via knee currents
+/// in VBIC or Gummel-Poon form. Ideal and non-ideal base-emitter currents split between
+/// internal and external base with breakdown, while base-collector junctions carry weak
+/// avalanche current driven by transport current. A parasitic substrate transistor runs
+/// from external base through parasitic base to substrate with dedicated junctions,
+/// transport current, and knee current. Intrinsic collector resistance follows Kull's
+/// quasi-saturation model with epitaxial velocity saturation, and intrinsic and parasitic
+/// base resistances vary inversely with base charge. Junctions store VBIC-smoothed
+/// depletion charges (with reach-through on base-collector junctions), forward and reverse
+/// transit charges, epitaxial charges, and terminal overlap capacitances.
 ///
-/// The extrinsic collector, extrinsic base, emitter and substrate resistances add internal
-/// nodes, labelled `collector`, `base`, `emitter` and `substrate`, each the terminal itself
-/// at zero and, below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), carrying its current as
-/// an unknown too, labelled `collector_current`, `base_current`, `emitter_current` and
-/// `substrate_current`. The intrinsic collector, the intrinsic base and the parasitic base
-/// are internal nodes always, labelled `intrinsic_collector`, `intrinsic_base` and
-/// `parasitic_base`. An excess-phase delay delays the forward transport current through
-/// ngspice's network of two unknowns, labelled `transport_filter` and `delayed_transport`,
-/// the filter `3 / (s² · TD² + 3 · s · TD + 3)`.
+/// Positive extrinsic collector, extrinsic base, emitter, and substrate resistances add
+/// internal nodes `collector`, `base`, `emitter`, and `substrate`. Any resistance below
+/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) adds branch-current unknowns
+/// `collector_current`, `base_current`, `emitter_current`, or `substrate_current`.
+/// Intrinsic collector, intrinsic base, and parasitic base are always internal nodes
+/// (`intrinsic_collector`, `intrinsic_base`, `parasitic_base`). Excess-phase delay filters
+/// forward transport current through `3 / (s² · TD² + 3 · s · TD + 3)` using unknowns
+/// `transport_filter` and `delayed_transport`.
 ///
-/// Away from its nominal temperature its saturation currents scale by their activation
-/// energies and temperature exponents, its resistances, knee current and saturation
-/// voltage by their exponents, its potentials and capacitances with the intrinsic carrier
-/// concentration, and its emission coefficients, avalanche and breakdown by their
-/// coefficients, as ngspice's VBIC scales them, its thermal voltage computed with VBIC's
-/// own constants.
+/// Away from nominal temperature, saturation currents scale by activation energies and
+/// exponents, while resistances, knee current, and saturation voltage scale by temperature
+/// exponents. Built-in potentials, capacitances, emission coefficients, avalanche, and
+/// breakdown scale per ngspice VBIC using VBIC thermal-voltage constants.
 #[derive(Debug, Clone, Copy)]
 pub struct Vbic;
 
-/// How a VBIC's normalized base charge combines the Early effect, `q1`, and high injection,
-/// `q2`, as ngspice's `QBM` selects it.
+/// Normalized base-charge formulation combining Early effect `q1` and high injection `q2`
+/// (`QBM`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseCharge {
-    /// VBIC's own, `qb = (q1 + (q1^(1/NKF) + 4 · q2)^NKF) / 2`: `QBM` below 0.5.
+    /// VBIC formulation `qb = (q1 + (q1^(1/NKF) + 4 · q2)^NKF) / 2` (`QBM < 0.5`).
     Vbic,
-    /// SPICE's Gummel-Poon form, `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`: `QBM` at 0.5 or
-    /// above.
+    /// SPICE Gummel-Poon formulation `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`
+    /// (`QBM >= 0.5`).
     GummelPoon,
 }
 
@@ -141,24 +135,25 @@ const VRBP: usize = 8;
 /// The intrinsic transistor's transport currents, avalanche and base-emitter charge read
 /// its base-emitter and base-collector junctions.
 const INTRINSIC: [usize; 2] = [VBEI, VBCI];
-/// The intrinsic base resistance's current reads its own drop, then the intrinsic
-/// junctions its base charge reads.
+/// Variable indices read by intrinsic base resistance current: branch drop then intrinsic
+/// junctions.
 const INTRINSIC_BASE: [usize; 3] = [VRBI, VBEI, VBCI];
-/// The intrinsic collector resistance's current reads its own drop, then the junctions at
-/// either end of the epitaxial layer.
+/// Variable indices read by intrinsic collector resistance current: branch drop then
+/// epitaxial-end junctions.
 const INTRINSIC_COLLECTOR: [usize; 3] = [VRCI, VBCI, VBCX];
-/// The parasitic transistor's base-emitter charge reads its base-emitter junction and the
-/// intrinsic base-collector junction, which share its forward current.
+/// Variable indices read by parasitic base-emitter charge: parasitic base-emitter and
+/// intrinsic base-collector junctions.
 const PARASITIC_FORWARD: [usize; 2] = [VBEP, VBCI];
-/// Its transport current reads those, then its base-collector junction.
+/// Variable indices read by parasitic transport current: parasitic base-emitter, intrinsic
+/// base-collector, and parasitic base-collector junctions.
 const PARASITIC: [usize; 3] = [VBEP, VBCI, VBCP];
-/// The parasitic base resistance's current reads its own drop, then the junctions its
-/// transistor's base charge reads.
+/// Variable indices read by parasitic base resistance current: branch drop then parasitic
+/// base-charge junctions.
 const PARASITIC_BASE: [usize; 3] = [VRBP, VBEP, VBCI];
 
-/// The parameters of a [`Vbic`], with ngspice's defaults. A parameter ngspice treats as
-/// infinite at zero, such as an Early voltage, is infinite when left out; one whose
-/// defaults are not SI base units, such as `TNOM`, is converted.
+/// Parameters of a [`Vbic`] bipolar transistor with ngspice defaults. Parameters treated
+/// as infinite at zero (such as Early voltages) default to `None` when omitted, and non-SI
+/// defaults (such as `TNOM`) are converted to SI units.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
@@ -336,15 +331,14 @@ pub struct VbicParameters<R: Real = f64> {
     pub parasitic_knee_current: Option<R>,
     /// The power of the high-injection roll-off, `NKF`, positive; default 0.5.
     pub knee_rolloff: R,
-    /// How the base charge is formed, as `QBM` selects it; default `vbic`.
+    /// Normalized base-charge formulation selected by `QBM`; default `vbic`.
     pub base_charge: BaseCharge,
-    /// The ideal forward transit time, `TF`, in seconds; default 0.
+    /// Ideal forward transit time, `TF`, in seconds; default 0.
     #[dimension(TIME)]
     pub forward_transit_time: R,
-    /// How the forward transit time grows with the base charge's Early part, `QTF`;
-    /// default 0.
+    /// Dependence of forward transit time on Early base charge, `QTF`; default 0.
     pub transit_time_base_width_coefficient: R,
-    /// How much the forward transit time grows with bias, `XTF`; default 0.
+    /// Bias-dependent growth coefficient of forward transit time, `XTF`; default 0.
     pub transit_time_bias_coefficient: R,
     /// The base-collector voltage, `VTF`, that sets how the forward transit time grows
     /// with it, in volts; infinite by default.
@@ -603,10 +597,8 @@ impl<R: Real> Default for VbicParameters<R> {
     }
 }
 
-/// Where a transistor's contributions go among its local unknowns: through its extrinsic
-/// collector, extrinsic base, emitter and substrate resistances, among the nodes behind
-/// them and its intrinsic collector, intrinsic base and parasitic base, through its overlap
-/// capacitances between its terminals, and through its excess phase's network.
+/// Local matrix layout for [`Vbic`] covering extrinsic series resistances, seven intrinsic
+/// nodes, terminal overlap capacitances, and optional excess-phase filter unknowns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VbicShape {
     stamp: Nodes<STAMPED>,
@@ -617,7 +609,7 @@ pub struct VbicShape {
     excess: Option<ExcessPhase>,
 }
 
-/// A transistor's numbers at its temperature.
+/// Temperature-prepared parameters for [`Vbic`].
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedVbic<R: Real> {
     sign: f64,
@@ -637,7 +629,7 @@ pub struct PreparedVbic<R: Real> {
     flicker: Flicker,
 }
 
-/// What a transistor remembers.
+/// Step-limiting history and cached operating variables for [`Vbic`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VbicMemory {
     /// The junction voltages of the last evaluation, oriented as an NPN's, from which the
@@ -656,8 +648,8 @@ struct Flicker {
 }
 
 impl Flicker {
-    /// The flicker noise of `current` between `nodes`, named `name`, unless the
-    /// coefficient is zero.
+    /// Appends a flicker noise source named `name` for `current` between `nodes` when
+    /// `coefficient > 0`.
     fn add(
         self,
         name: &'static str,
@@ -677,10 +669,9 @@ impl Flicker {
     }
 }
 
-/// A junction's normalized depletion charge, `q / Cj`, as VBIC smooths it: SPICE's linear
-/// extension of the capacitance above `FC · P` where the smoothing is not positive, VBIC's
-/// smooth limit of the capacitance there otherwise, and for a base-collector junction its
-/// reach-through.
+/// Normalized junction depletion charge `q / Cj` with VBIC smoothing. Non-positive
+/// smoothing uses SPICE's linear extension above `FC · P`, while positive smoothing
+/// applies VBIC's smooth cap and optional base-collector reach-through.
 #[derive(Debug, Clone, Copy)]
 struct Depletion<R: Real> {
     potential: R,
@@ -692,7 +683,7 @@ struct Depletion<R: Real> {
 }
 
 impl<R: Real> Depletion<R> {
-    /// The normalized charge at `voltage`.
+    /// Computes normalized depletion charge at junction `voltage`.
     fn charge<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let Self {
             potential,
@@ -770,7 +761,7 @@ impl<R: Real> Depletion<R> {
     }
 }
 
-/// What a transistor's temperature sets of its currents and charges.
+/// Temperature-scaled VBIC current, resistance, and charge parameters.
 #[derive(Debug, Clone, Copy)]
 struct Core<R: Real> {
     /// The thermal voltage, by VBIC's constants.
@@ -792,9 +783,9 @@ struct Transport<R: Real> {
     reverse_ratio: R,
     /// The forward and reverse emission coefficients.
     emission: [R; 2],
-    /// `1 / VEF` and `1 / VER`, zero for infinite Early voltages.
+    /// Reciprocal Early voltages `1 / VEF` and `1 / VER` (zero for infinite Early voltages).
     inverse_early: [R; 2],
-    /// `1 / IKF` and `1 / IKR`, zero for infinite knee currents.
+    /// Reciprocal knee currents `1 / IKF` and `1 / IKR` (zero for infinite knee currents).
     inverse_knee: [R; 2],
     form: BaseCharge,
     rolloff: R,
@@ -813,29 +804,29 @@ struct BaseCurrents<R: Real> {
     breakdown: Option<Breakdown<R>>,
     /// The ideal and non-ideal base-collector diodes.
     collector: [Diode<R>; 2],
-    /// The parasitic transistor's ideal and non-ideal base-emitter diodes, across the
-    /// extrinsic base-collector junction.
+    /// Parasitic ideal and non-ideal base-emitter diodes across the extrinsic base-collector
+    /// junction.
     parasitic_emitter: [Diode<R>; 2],
-    /// Its ideal and non-ideal base-collector diodes, across the collector-substrate
+    /// Parasitic ideal and non-ideal base-collector diodes across the collector-substrate
     /// junction.
     parasitic_collector: [Diode<R>; 2],
     avalanche: Option<Avalanche<R>>,
 }
 
-/// The base-emitter junction's breakdown current, `−IBBE · (e^{(−VBBE − v) / (NBBE · Vt)} −
-/// EBBE)`, zero at zero bias.
+/// Base-emitter junction breakdown current, zero at zero bias:
+/// `−IBBE · (e^{(−VBBE − v) / (NBBE · Vt)} − EBBE)`.
 #[derive(Debug, Clone, Copy)]
 struct Breakdown<R: Real> {
     voltage: R,
     /// The emission coefficient times the thermal voltage.
     slope: R,
     current: R,
-    /// `e^{−VBBE / (NBBE · Vt)}`.
+    /// Zero-bias breakdown exponential `e^{−VBBE / (NBBE · Vt)}`.
     at_zero: R,
 }
 
-/// The base-collector junction's weak avalanche, `(Itzf − Itzr − Ibcj) · AVC1 · vl ·
-/// e^{−AVC2 · vl^(MC − 1)}`, `vl` the junction's depletion voltage, smoothed.
+/// Base-collector junction weak avalanche current with smoothed depletion voltage `vl`:
+/// `(Itzf − Itzr − Ibcj) · AVC1 · vl · e^{−AVC2 · vl^(MC − 1)}`.
 #[derive(Debug, Clone, Copy)]
 struct Avalanche<R: Real> {
     coefficient: R,
@@ -851,7 +842,7 @@ struct ParasiticTransport<R: Real> {
     emission: R,
     /// The fraction of the forward current the extrinsic junction drives.
     fraction: R,
-    /// `1 / IKP`, zero for an infinite knee current.
+    /// Reciprocal parasitic knee current `1 / IKP` (zero for infinite knee current).
     inverse_knee: R,
 }
 
@@ -860,13 +851,13 @@ struct ParasiticTransport<R: Real> {
 struct Collector<R: Real> {
     resistance: R,
     doping: R,
-    /// `1 / VO`, zero for no velocity saturation.
+    /// Reciprocal drift saturation voltage `1 / VO` (zero for no velocity saturation).
     inverse_saturation: R,
-    /// `1 / HRCF`.
+    /// Reciprocal high-current collector factor `1 / HRCF`.
     inverse_factor: R,
 }
 
-/// What the transistor stores: its depletion charges, transit charges and epitaxial charges.
+/// Temperature-scaled depletion, transit, epitaxial, and substrate charge parameters.
 #[derive(Debug, Clone, Copy)]
 struct Charges<R: Real> {
     base_emitter: Depletion<R>,
@@ -880,9 +871,9 @@ struct Charges<R: Real> {
     forward_transit_time: R,
     base_width_coefficient: R,
     bias_coefficient: R,
-    /// `1 / (1.44 · VTF)`, zero for an infinite `VTF`.
+    /// Transit-time voltage factor `1 / (1.44 · VTF)` (zero for infinite `VTF`).
     voltage_factor: R,
-    /// `1 / ITF`, zero without it, where the transit time grows at any current.
+    /// Reciprocal transit-time knee current `1 / ITF` (zero for growth at all currents).
     inverse_current: R,
     reverse_transit_time: R,
     fixed_substrate: R,
@@ -987,12 +978,12 @@ struct ParasiticState<R: Real> {
 }
 
 impl<R: Real> Core<R> {
-    /// `e^{v / (n · Vt)}`.
+    /// Evaluates `e^{v / (n · Vt)}` for junction `voltage` and `emission` coefficient.
     fn exponential<const N: usize>(&self, voltage: Dual<R, N>, emission: R) -> Dual<R, N> {
         voltage.divide(emission * self.thermal_voltage).exp()
     }
 
-    /// The sum of `diodes`' currents at `voltage`, `I · (e^{v / (n · Vt)} − 1)` each.
+    /// Sums diode currents `I · (e^{v / (n · Vt)} − 1)` at `voltage`.
     fn diodes<const N: usize>(&self, voltage: Dual<R, N>, diodes: [Diode<R>; 2]) -> Dual<R, N> {
         diodes
             .into_iter()
@@ -1001,11 +992,10 @@ impl<R: Real> Core<R> {
             })
     }
 
-    /// Every current and charge at `voltages`, the variables, with the minimum conductance
-    /// `gmin` across each junction as ngspice places it.
+    /// Evaluates all branch currents and charges at `voltages` with junction shunt `gmin`.
     #[expect(
         clippy::similar_names,
-        reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
+        reason = "VBIC branch names such as Vbei and Vbex differ by one letter"
     )]
     fn evaluate(&self, voltages: [R; VARIABLE_COUNT], gmin: f64) -> Branches<R> {
         let [vbei, vbex, vbci, vbcx, vbep, vbcp, vrci, vrbi, vrbp] =
@@ -1045,7 +1035,8 @@ impl<R: Real> Core<R> {
         let ibep = self.diodes(vbep, base.parasitic_emitter);
         let (irci, kbci, kbcx) = self.collector([vrci, vbci, vbcx]);
         let [intrinsic, parasitic_resistance] = self.base_resistances;
-        // Within a base resistance's law, its own drop comes first, then its transistor's.
+        // Within each base-resistance law, branch voltage comes first, followed by
+        // base-charge junctions.
         let irbi = (vrbi.embed([0]) * state.qb.embed([1, 2])).divide(intrinsic);
         let irbp = (vrbp.embed([0]) * parasitic.qbp.embed([1, 2])).divide(parasitic_resistance);
         let ibcp = self.diodes(vbcp, base.parasitic_collector);
@@ -1071,12 +1062,11 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// The forward and reverse currents of the intrinsic transistor at its base-emitter
-    /// and base-collector voltages, and its normalized base charge, from the junctions'
-    /// normalized depletion charges.
+    /// Computes intrinsic forward and reverse currents and normalized base charges from
+    /// `[vbei, vbci]` and depletion charges `[qdbe, qdbc]`.
     #[expect(
         clippy::similar_names,
-        reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
+        reason = "VBIC branch names such as Vbei and Vbex differ by one letter"
     )]
     fn transport(
         &self,
@@ -1104,12 +1094,11 @@ impl<R: Real> Core<R> {
         TransportState { ifi, iri, q1, qb }
     }
 
-    /// The parasitic transistor's forward current, its normalized base charge and its
-    /// transport current, at its base-emitter voltage, the intrinsic base-collector voltage
-    /// and its base-collector voltage.
+    /// Evaluates parasitic forward current, normalized base charge, and transport current
+    /// at `[vbep, vbci, vbcp]`.
     #[expect(
         clippy::similar_names,
-        reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
+        reason = "VBIC branch names such as Vbei and Vbex differ by one letter"
     )]
     fn parasitic(&self, [vbep, vbci, vbcp]: [Dual<R, 1>; 3]) -> ParasiticState<R> {
         let Some(parasitic) = &self.parasitic else {
@@ -1139,14 +1128,12 @@ impl<R: Real> Core<R> {
         ParasiticState { ifp, qbp, iccp }
     }
 
-    /// The current through the intrinsic collector resistance, quasi-saturating by Kull's
-    /// model with the epitaxial layer's velocity saturation, at the voltages across it, across
-    /// the intrinsic base-collector junction and from the intrinsic base to the collector
-    /// behind its extrinsic resistance, with the epitaxial layer's normalized charges at both
-    /// ends, each of its own junction's voltage.
+    /// Evaluates Kull quasi-saturating intrinsic collector current with velocity
+    /// saturation at `[vrci, vbci, vbcx]`. Returns collector current along with epitaxial
+    /// normalized charges at both ends.
     #[expect(
         clippy::similar_names,
-        reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
+        reason = "VBIC branch names such as Vbei and Vbex differ by one letter"
     )]
     fn collector(
         &self,
@@ -1172,14 +1159,11 @@ impl<R: Real> Core<R> {
         (iohm / (derf * derf + 1.0).sqrt(), kbci, kbcx)
     }
 
-    /// The charges on the intrinsic and extrinsic base-emitter junctions, the intrinsic and
-    /// extrinsic base-collector junctions, and the parasitic transistor's base-emitter and
-    /// base-collector junctions, from the intrinsic junctions' normalized depletion charges
-    /// and the other junctions' voltages, with the parasitic forward current and the epitaxial
-    /// layer's normalized charges.
+    /// Evaluates all six junction charges from intrinsic state, depletion charges,
+    /// voltages, parasitic forward current, and epitaxial charges.
     #[expect(
         clippy::similar_names,
-        reason = "VBIC's own names for its voltages, currents and charges, such as Vbei and Vbex, differ by a letter"
+        reason = "VBIC branch names such as Vbei and Vbex differ by one letter"
     )]
     fn charges(
         &self,
@@ -1238,8 +1222,8 @@ impl<R: Real> Core<R> {
     }
 }
 
-/// The ratio, difference and thermal voltage a transistor's parameters scale with, from
-/// their nominal temperature to its own.
+/// Temperature ratio, temperature difference, and VBIC thermal voltage for scaling
+/// parameters from nominal temperature.
 #[derive(Debug, Clone, Copy)]
 struct Scaling<R: Real> {
     ratio: R,
@@ -1248,7 +1232,8 @@ struct Scaling<R: Real> {
 }
 
 impl<R: Real> Scaling<R> {
-    /// The scaling at `temperatures`, its thermal voltage by VBIC's constants.
+    /// Constructs temperature scaling factors from `temperatures` using VBIC
+    /// thermal-voltage constants.
     fn new(temperatures: Temperatures<R>) -> Self {
         Self {
             ratio: temperatures.ratio(),
@@ -1257,29 +1242,29 @@ impl<R: Real> Scaling<R> {
         }
     }
 
-    /// `value · (T / Tn)^exponent`.
+    /// Scales `value` by `(T / Tn)^exponent`.
     fn power(self, value: R, exponent: R) -> R {
         value * self.ratio.pow(exponent)
     }
 
-    /// `value · (1 + coefficient · ΔT)`.
+    /// Scales `value` linearly by `1 + coefficient · ΔT`.
     fn linear(self, value: R, coefficient: R) -> R {
         value * (self.difference * coefficient + 1.0)
     }
 
-    /// `(T / Tn)^exponent · e^{−energy · (1 − T / Tn) / Vt}`.
+    /// Computes the Arrhenius factor `(T / Tn)^exponent · e^{−energy · (1 − T / Tn) / Vt}`.
     fn arrhenius(self, exponent: R, energy: R) -> R {
         self.ratio.pow(exponent) * (-energy * -(self.ratio - 1.0) / self.thermal_voltage).exp()
     }
 
-    /// A saturation `current` of `emission` coefficient, scaled by its temperature
-    /// `exponent` and activation `energy`.
+    /// Scales saturation `current` by temperature `exponent`, activation `energy`, and
+    /// `emission`.
     fn activated(self, current: R, (exponent, energy): (R, R), emission: R) -> R {
         current * self.arrhenius(exponent, energy).pow(emission.recip())
     }
 
-    /// How a diode's saturation current and emission coefficient, named and checked, scale
-    /// by a temperature exponent and an activation energy.
+    /// Validates and temperature-scales a diode saturation current and emission
+    /// coefficient.
     fn diode(
         self,
         (current_name, current): (&str, R),
@@ -1291,8 +1276,8 @@ impl<R: Real> Scaling<R> {
         Ok((self.activated(current, scaled, emission), emission))
     }
 
-    /// A junction's built-in `potential` at its temperature, through the intrinsic
-    /// potential its activation `energy` sets, as VBIC maps it.
+    /// Maps a junction built-in `potential` to device temperature via VBIC's
+    /// activation-energy law.
     fn potential(self, potential: R, energy: R) -> R {
         let Self {
             ratio,
@@ -1322,7 +1307,8 @@ fn still_positive<R: Real>(name: &str, value: R, temperature: R) -> Result<R, Pa
 }
 
 impl<R: Real> VbicParameters<R> {
-    /// The intrinsic transistor's transport at `scaling`, once its parameters are checked.
+    /// Validates and scales intrinsic transport parameters using `scaling` and
+    /// `temperature`.
     fn transport(
         &self,
         scaling: Scaling<R>,
@@ -1388,8 +1374,8 @@ impl<R: Real> VbicParameters<R> {
         })
     }
 
-    /// The base currents at `scaling`, once their parameters are checked, the
-    /// base-collector junction's potential there `potential`.
+    /// Validates and scales base-current, breakdown, and avalanche parameters using
+    /// `scaling`, `temperature`, and base-collector `potential`.
     fn base_currents(
         &self,
         scaling: Scaling<R>,
@@ -1485,8 +1471,8 @@ impl<R: Real> VbicParameters<R> {
         })
     }
 
-    /// The parasitic transistor's base-collector diodes, ideal and non-ideal, across the
-    /// collector-substrate junction, at `scaling`, once their parameters are checked.
+    /// Validates and scales parasitic base-collector diodes across the collector-substrate
+    /// junction.
     fn parasitic_collector(&self, scaling: Scaling<R>) -> Result<[Diode<R>; 2], ParameterError> {
         let diode = |current, emission, scaled| scaling.diode(current, emission, scaled);
         Ok([
@@ -1521,7 +1507,7 @@ impl<R: Real> VbicParameters<R> {
         ])
     }
 
-    /// The base-emitter breakdown at `scaling`, if the junction has one.
+    /// Validates and scales optional base-emitter breakdown parameters.
     fn breakdown(
         &self,
         scaling: Scaling<R>,
@@ -1559,8 +1545,7 @@ impl<R: Real> VbicParameters<R> {
         }))
     }
 
-    /// The weak avalanche at `scaling`, the base-collector junction's potential there
-    /// `potential`, if the transistor has one.
+    /// Validates and scales optional base-collector weak-avalanche parameters.
     fn avalanche(
         &self,
         scaling: Scaling<R>,
@@ -1579,7 +1564,7 @@ impl<R: Real> VbicParameters<R> {
         }))
     }
 
-    /// The parasitic transistor's transport at `scaling`, if it has one.
+    /// Validates and scales optional parasitic substrate-transistor transport parameters.
     fn parasitic(
         &self,
         scaling: Scaling<R>,
@@ -1612,9 +1597,8 @@ impl<R: Real> VbicParameters<R> {
         }))
     }
 
-    /// The resistances at `scaling`: the extrinsic collector, extrinsic base, emitter and
-    /// substrate ones in series with the terminals, and the intrinsic collector,
-    /// intrinsic base and parasitic base ones, once each is checked.
+    /// Validates and scales extrinsic terminal series resistances and intrinsic collector
+    /// and base resistances.
     fn resistances(&self, scaling: Scaling<R>) -> Result<([R; 4], [R; 3]), ParameterError> {
         let series = |name: &str, value: R, exponent: R| {
             ParameterError::non_negative(name, value).map(|value| scaling.power(value, exponent))
@@ -1665,8 +1649,8 @@ impl<R: Real> VbicParameters<R> {
         ))
     }
 
-    /// The intrinsic collector resistance's quasi-saturation at `scaling`, of `resistance`
-    /// there.
+    /// Validates and scales intrinsic collector quasi-saturation parameters for
+    /// `resistance`.
     fn collector(
         &self,
         scaling: Scaling<R>,
@@ -1698,7 +1682,8 @@ impl<R: Real> VbicParameters<R> {
         })
     }
 
-    /// What the transistor stores at `scaling`, once each of its parameters is checked.
+    /// Validates and scales junction depletion, transit, epitaxial, and substrate charge
+    /// parameters.
     fn charges(&self, scaling: Scaling<R>) -> Result<Charges<R>, ParameterError> {
         let non_negative = ParameterError::non_negative;
         let limit = below_one("depletion_coefficient", self.depletion_coefficient)?;
@@ -1800,8 +1785,8 @@ impl<R: Real> VbicParameters<R> {
 }
 
 impl<R: Real> VbicParameters<R> {
-    /// What the transistor's temperature sets of its currents and charges, and its series
-    /// resistances there, once each parameter is checked.
+    /// Validates and scales all core currents, charges, and extrinsic series resistances
+    /// for `temperatures`.
     fn core(&self, temperatures: Temperatures<R>) -> Result<(Core<R>, [R; 4]), ParameterError> {
         let scaling = Scaling::new(temperatures);
         let temperature = temperatures.actual;
@@ -1821,26 +1806,25 @@ impl<R: Real> VbicParameters<R> {
     }
 }
 
-/// The excess phase's network, as ngspice's VBIC draws it: two unknowns, each a current,
-/// `x1` held by `TD · dx1/dt + x2 − Itzf = 0` and `x2` by `TD / 3 · dx2/dt + x2 − x1 = 0`,
-/// so `x2`, which flows from the intrinsic collector to the intrinsic emitter in the
-/// forward transport current's place, is `3 / (s² · TD² + 3 · s · TD + 3)` of it. At the
-/// operating point both are the forward transport current. Each is in the transistor's own
-/// orientation, as its currents are, so that a PNP's are its NPN mirror's reversed.
+/// Ngspice VBIC excess-phase network with current unknowns `x1` and `x2`. The filter
+/// enforces `TD · dx1/dt + x2 − Itzf = 0` and `TD / 3 · dx2/dt + x2 − x1 = 0`. Delayed
+/// current `x2` delivers `3 / (s² · TD² + 3 · s · TD + 3)` of `Itzf` from intrinsic
+/// collector to emitter. At DC both unknowns equal forward transport current, oriented
+/// with device polarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExcessPhase {
-    /// The local unknowns `x1` and `x2`.
+    /// Local unknowns `x1` and `x2`.
     unknowns: [usize; 2],
-    /// The local entries of `x1`'s equation at each stamped node.
+    /// Local entries of the `x1` equation at each stamped node.
     driven: [usize; STAMPED],
-    /// The local entries of `x1`'s equation at `x1` and `x2`, and of `x2`'s at both.
+    /// Local entries of the `x1` and `x2` equations over `[x1, x2]`.
     own: [[usize; 2]; 2],
-    /// The local entries of the intrinsic collector's and emitter's equations at `x2`.
+    /// Local entries of the intrinsic collector and emitter equations at `x2`.
     delivered: [usize; 2],
 }
 
 impl ExcessPhase {
-    /// The network, driven by the transport current among the `stamp`ed nodes.
+    /// Allocates excess-phase filter unknowns and matrix entries driven by `stamp`.
     fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
         let unknowns = [
             layout.internal("transport_filter", Nature::Current),
@@ -1855,7 +1839,7 @@ impl ExcessPhase {
         }
     }
 
-    /// The delayed forward transport current, `x2`.
+    /// Returns the delayed forward transport current `x2` from `at`.
     fn delayed(&self, at: &Local<'_>) -> f64 {
         let [_, second] = self.unknowns;
         at.value(second)
@@ -2103,10 +2087,9 @@ impl Kernel for Vbic {
         Bipolar::REGIONS
     }
 
-    /// The thermal noise of the resistances, the intrinsic ones at their slopes, the shot
-    /// noise of the transport current, the intrinsic base-emitter current, the parasitic
-    /// base-emitter current and the parasitic transport current, and the flicker noise of
-    /// both base-emitter currents, as ngspice's VBIC models them.
+    /// Emits thermal noise for extrinsic and intrinsic resistances, shot noise for
+    /// transport and base-emitter currents, and flicker noise for both base-emitter
+    /// currents per ngspice VBIC.
     fn noise<R: Real>(
         shape: &VbicShape,
         prepared: &PreparedVbic<R>,
@@ -2127,8 +2110,8 @@ impl Kernel for Vbic {
         let voltages = nodes.voltages(at, prepared.sign, VARIABLES);
         let branches = prepared.core.evaluate(voltages.map(R::constant), at.gmin);
         let node = |index: usize| nodes.equation(index);
-        // Each intrinsic resistance's law reads its own drop first, its conductance at its
-        // slope.
+        // Each intrinsic resistance law places branch drop first, giving conductance at
+        // index 0.
         let slope = |current: &Dual<R, 3>| {
             current
                 .gradient
@@ -2264,15 +2247,16 @@ mod tests {
     /// The series resistances, every one below 1 Ω, so each carries its current as an
     /// unknown.
     const SMALL: &str = r#""extrinsic_collector_resistance": 0.5,
-        "extrinsic_base_resistance": 0.4, "emitter_resistance": 0.2, "substrate_resistance": 0.3, "#;
+        "extrinsic_base_resistance": 0.4, "emitter_resistance": 0.2,
+        "substrate_resistance": 0.3, "#;
 
-    /// `parameters` with `more` first.
+    /// Returns `parameters` with JSON fragment `more` prepended.
     fn with(parameters: &str, more: &str) -> String {
         parameters.replacen('{', &format!("{{{more}"), 1)
     }
 
-    /// `parameters` with VBIC's smoothing of every depletion capacitance, rather than SPICE's
-    /// linear extension, and SPICE's Gummel-Poon base charge.
+    /// Returns `parameters` configured with VBIC capacitance smoothing and Gummel-Poon
+    /// base charge.
     fn smoothed(parameters: &str) -> String {
         let smoothed = parameters
             .replace(
@@ -2290,12 +2274,13 @@ mod tests {
         with(&smoothed, r#""base_charge": "gummel_poon", "#)
     }
 
-    /// `parameters` for a PNP.
+    /// Returns `parameters` configured for a PNP transistor.
     fn pnp(parameters: &str) -> String {
         with(parameters, r#""polarity": "pnp", "#)
     }
 
-    /// The series resistances `parameters` give, in the order of the terminals.
+    /// Extracts the four extrinsic series resistances from JSON `parameters` in terminal
+    /// order.
     fn series_of(parameters: &str) -> [f64; 4] {
         let read: VbicParameters = serde_json::from_str(parameters).expect("parameters");
         [
@@ -2306,10 +2291,9 @@ mod tests {
         ]
     }
 
-    /// The value of every unknown of the transistor of `parameters` on `bench` at the
-    /// terminals' `voltages`, oriented as an NPN's by `sign`: each internal node a little
-    /// inside the node it lies behind, each current unknown what its resistance carries
-    /// there, and the excess phase's unknowns near a transport current.
+    /// Builds an unknown vector for `parameters` on `bench` at terminal `voltages` with
+    /// polarity `sign`. Internal nodes offset slightly behind their terminals, current
+    /// unknowns match series drops, and excess-phase unknowns sit near transport current.
     fn biased(bench: &Bench, parameters: &str, voltages: [f64; 4], sign: f64) -> Vec<f64> {
         let [collector, base, emitter, substrate] = voltages.map(|voltage| sign * voltage);
         let [rcx, rbx, re, rs] = series_of(parameters);
@@ -2376,8 +2360,8 @@ mod tests {
         // intrinsic collector's equation too.
         let base_collector = 1e-16 * ((vbc / VTV).exp() - 1.0);
         assert_close(&[evaluation.residual[4]], &[transport - base_collector]);
-        // The intrinsic collector resistance carries nothing at no drop, and the base
-        // current is IBEI's and IBCI's.
+        // Intrinsic collector resistance carries zero current at zero drop; base current
+        // equals IBEI plus IBCI.
         assert!(evaluation.residual[0].abs() < 1e-30);
         let base = 1e-18 * ((vbe / VTV).exp() - 1.0) + base_collector;
         assert_close(&[evaluation.residual[6]], &[base]);
@@ -2465,8 +2449,8 @@ mod tests {
 
     #[test]
     fn its_intrinsic_collector_quasi_saturates() {
-        let parameters = r#"{"intrinsic_collector_resistance": 100, "epitaxial_saturation_voltage": 1,
-            "high_current_collector_factor": 2}"#;
+        let parameters = r#"{"intrinsic_collector_resistance": 100,
+            "epitaxial_saturation_voltage": 1, "high_current_collector_factor": 2}"#;
         let mut bench = Bench::new::<Vbic>(parameters);
         let drop = 1.5;
         let x = [3.0, 0.0, 0.0, 0.0, 3.0 - drop, 3.0, 0.0];
@@ -2525,8 +2509,8 @@ mod tests {
         assert_close(&settled.residual[..7], &rest.residual);
         assert!(settled.residual[7].abs() <= 1e-15 * forward.abs());
         assert!(settled.residual[8].abs() <= 1e-15 * forward.abs());
-        // Linearized, x2 follows the forward current through 3 / (s² TD² + 3 s TD + 3):
-        // solve x1's and x2's rows at s = jω for a unit drive into x1's.
+        // Linearized, x2 follows forward current via 3 / (s² TD² + 3 s TD + 3): solve rows
+        // x1 and x2 at s = jω for unit drive into x1.
         let delay = 2e-12;
         assert_bessel_filter(
             &settled,
@@ -2543,19 +2527,19 @@ mod tests {
         for (parameters, message) in [
             (
                 r#"{"intrinsic_base_resistance": 0}"#,
-                "intrinsic_base_resistance must be positive, not 0.0",
+                "intrinsic_base_resistance is positive, not 0.0",
             ),
             (
                 r#"{"forward_early_voltage": 0}"#,
-                "forward_early_voltage must be positive, not 0.0",
+                "forward_early_voltage is positive, not 0.0",
             ),
             (
                 r#"{"intrinsic_base_emitter_fraction": 1.5}"#,
-                "intrinsic_base_emitter_fraction must be at least 0 and at most 1, not 1.5",
+                "intrinsic_base_emitter_fraction is at least 0 and at most 1, not 1.5",
             ),
             (
                 r#"{"base_collector_grading": 1}"#,
-                "base_collector_grading must be at least 0 and below 1, not 1.0",
+                "base_collector_grading is at least 0 and below 1, not 1.0",
             ),
             (
                 r#"{"forward_emission_coefficient": 1,
@@ -2608,11 +2592,9 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges in every region: each junction forward, reversed, reaching through and
-        /// broken down, with VBIC's smoothing of the capacitances and SPICE's, in both
-        /// base charges' forms, with an excess phase, for both polarities, and with series
-        /// resistances on both sides of 1 Ω.
+        /// Verifies analytical conductances and capacitances against finite differences
+        /// across all junction bias regions, smoothing modes, base-charge forms, excess
+        /// phase, polarities, and series resistance regimes.
         #[test]
         fn jacobians_match_finite_differences(
             base in -6.0..0.9f64,
@@ -2725,11 +2707,8 @@ mod tests {
         assert_eq!(sources.len(), 13, "{sources:?}");
     }
 
-    /// A transistor is cut off with neither intrinsic junction forward, active with its
-    /// base-emitter junction alone forward, saturated with both, and reversed with its
-    /// base-collector junction alone; its margins are the intrinsic junctions' voltages,
-    /// `Vbei` and `Vbci`, a PNP's equal to an NPN's at the voltages reversed, and each
-    /// region switches where its margin vanishes.
+    /// Verifies cut-off, active, saturated, and reversed region classification and
+    /// boundary margins `Vbei` and `Vbci` for NPN and PNP transistors.
     #[test]
     fn reports_its_region_and_margins() {
         // The collector, base, emitter and substrate, then the intrinsic collector, the

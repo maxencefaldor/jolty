@@ -1,10 +1,10 @@
-//! A device of every analog model of the standard library, in some of its regions and
-//! with its options on, at values of its local unknowns: the cases of the guards every
-//! model must pass, a kernel's evaluation allocating nothing, its Jacobian being the
-//! derivatives of its residuals and charges, and the laws of `laws.rs`.
+//! Representative device instances covering every analog model in the standard library
+//! across operating regions and optional features. Shared test guards (zero-allocation
+//! evaluation, Jacobian finite-difference checks, and `laws.rs` invariants) iterate over
+//! these cases.
 //!
-//! The crate's own tests and its integration tests read it alike, by its path, so it
-//! names nothing of the crate.
+//! Both unit tests and integration tests include this file by path, so it references no
+//! crate-internal symbols.
 
 /// A device of each model, by its model's name, its parameters and the values of its
 /// first local unknowns, its terminals first, the rest at [`REST`]; every analog model has
@@ -53,8 +53,9 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     (
         "vdmos",
         r#"{"channel": "p", "transconductance_parameter": 10, "drain_resistance": 0.05,
-                "source_resistance": 2, "gate_resistance": 3, "body_resistance": 0.01, "quasi_saturation_resistance": 1,
-                "quasi_saturation_voltage": 10, "breakdown_voltage": 30, "thermal": true}"#,
+                "source_resistance": 2, "gate_resistance": 3, "body_resistance": 0.01,
+                "quasi_saturation_resistance": 1, "quasi_saturation_voltage": 10,
+                "breakdown_voltage": 30, "thermal": true}"#,
         &[-12.0, -6.0, 0.0, 5.0],
     ),
     ("bsim3", r#"{"u0": 0.067}"#, &[3.0, 2.0, 0.0, 0.0]),
@@ -228,14 +229,14 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
 /// most of a small circuit's internal nodes and states lie.
 pub(crate) const REST: f64 = 0.1;
 
-/// The values of the `unknowns` local unknowns of a case that gives `given`.
+/// Pads `given` up to `unknowns` entries with [`REST`].
 pub(crate) fn values(given: &[f64], unknowns: usize) -> Vec<f64> {
     let mut values = given.to_vec();
     values.resize(unknowns, REST);
     values
 }
 
-/// The models `CASES` holds a device of, each once, in alphabetical order.
+/// Returns the sorted, deduplicated model names covered by [`CASES`].
 pub(crate) fn covered() -> Vec<&'static str> {
     let mut names: Vec<&str> = CASES.iter().map(|&(name, _, _)| name).collect();
     names.sort_unstable();

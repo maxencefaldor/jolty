@@ -7,30 +7,28 @@ use crate::{
     Branch, BranchKind, Choice, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
 };
 
-/// An expression a behavioral source follows: an [expression](jolty_expressions) of the
-/// voltages of terminals it reads, of the currents through sensing ports of its own, and of
-/// time.
+/// Parsed behavioral [expression](jolty_expressions) depending on sensed node voltages,
+/// dedicated current-sensing port currents, and simulation time.
 ///
-/// Its terminals are `positive` and `negative`, then each terminal it reads a voltage of,
-/// then the two of each sensing port `p` it reads a current through, `p_positive` and
-/// `p_negative`. A port is a short circuit, its current, from `p_positive` through the port
-/// to `p_negative`, an unknown labelled `p`.
+/// The device exposes `positive` and `negative` terminals, followed by each referenced
+/// voltage terminal and each sensing port's `p_positive` and `p_negative` terminals. Each
+/// port acts as a short circuit with a branch-current unknown labelled `p` flowing from
+/// `p_positive` to `p_negative`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Behavior {
-    /// The expression as written.
+    /// Original expression text as supplied in parameters.
     text: String,
     expression: Expression,
     terminals: Vec<String>,
-    /// What each variable of the expression reads.
+    /// Input binding (voltage, port current, or time) for each expression variable.
     reads: Vec<Reading>,
-    /// Each sensing port's name and the indices of its two terminals.
+    /// Sensing port names paired with their `[positive, negative]` terminal indices.
     ports: Vec<(String, [usize; 2])>,
 }
 
-/// What one variable reads: the voltage of a terminal over another or over ground,
-/// by their indices among the terminals; the current through a port, by its index among
-/// the ports; or time.
+/// Source quantity sampled by one expression variable: a terminal voltage difference, a
+/// sensing port current, or simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reading {
     Voltage(usize, Option<usize>),
@@ -97,14 +95,15 @@ impl TryFrom<String> for Behavior {
 }
 
 impl Serialize for Behavior {
-    /// The behavior as its expression is written.
+    /// Serializes the behavior as the original expression string.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.text)
     }
 }
 
 impl Behavior {
-    /// The interface of a source with this behavior whose output is a branch of `kind`.
+    /// Builds the device interface using branch type `kind` on the output pair and
+    /// voltage-source short circuits on each current-sensing port.
     fn interface(&self, kind: BranchKind) -> Interface {
         let mut branches = vec![Branch::new(0, 1, kind)];
         branches.extend(self.ports.iter().map(|&(_, [positive, negative])| {
@@ -118,28 +117,27 @@ impl Behavior {
     }
 }
 
-/// The parameters of a [`BehavioralVoltageSource`], a [`BehavioralCurrentSource`] or a
+/// Parameters for [`BehavioralVoltageSource`], [`BehavioralCurrentSource`], and
 /// [`BehavioralCapacitor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
 pub struct BehavioralParameters {
-    /// What the device's output follows, a capacitor's its charge: an expression of the
-    /// voltages of the terminals it reads, of the currents through sensing ports of its
-    /// own, and of time.
+    /// Expression defining output current, voltage, or stored charge as a function of sensed
+    /// terminal voltages, port currents, and simulation time.
     #[schemars(with = "String")]
     pub expression: Behavior,
 }
 
-/// Where a behavioral source's contributions go, among its local unknowns: the rows its
-/// expression enters, each with the factor it enters with, what each variable reads, its
-/// sensing ports, the entries of each variable's derivative in each row, with their
-/// factors, and a voltage source's own branch. Sources whose expressions read the same
-/// voltages and currents share a shape, whatever their expressions compute.
+/// Layout shape for a behavioral device mapping expression outputs, variable bindings,
+/// sensing ports, derivative matrix entries, and an optional output branch.
+///
+/// Behavioral sources referencing identical terminal voltages and sensing ports share one
+/// shape regardless of the expression body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehavioralShape {
     rows: Vec<(usize, f64)>,
-    /// Whether the expression's value is a charge in its rows, and its derivatives
-    /// capacitances, as a capacitor's, rather than a current or a voltage.
+    /// Flag indicating that expression values stamp into charges and derivatives into
+    /// capacitances (as for a capacitor) rather than residuals and conductances.
     stored: bool,
     reads: Vec<Read>,
     ports: Vec<CurrentBranch>,
@@ -147,8 +145,8 @@ pub struct BehavioralShape {
     branch: Option<CurrentBranch>,
 }
 
-/// What one variable of an expression reads: the voltage of a local unknown over another
-/// or over ground, a port's current, or time.
+/// Local-index binding for one expression variable: a local voltage difference, a port
+/// current unknown, or simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Read {
     Voltage(usize, Option<usize>),
@@ -156,13 +154,12 @@ enum Read {
     Time,
 }
 
-/// What a behavioral source remembers: its expression's workspaces, one for its iterations
-/// and one, apart, in which its choices are found, and its variables' values and gradient.
-/// None before it is sized for an expression.
+/// Preallocated evaluation state for a behavioral source, holding separate iteration and
+/// choice-detection workspaces plus variable value and gradient buffers.
 #[derive(Debug, Clone, Default)]
 pub struct BehavioralMemory(Option<Room>);
 
-/// A behavioral source's room to evaluate in.
+/// Evaluation scratch buffers allocated once per behavioral source instance.
 #[derive(Debug, Clone)]
 struct Room {
     workspace: Workspace,
@@ -175,9 +172,9 @@ struct Room {
 }
 
 impl BehavioralShape {
-    /// The shape of a source of `behavior`, whose expression enters each of `rows` with
-    /// its factor, as a charge where it is `stored`, after `branch`, a voltage source's
-    /// own, claimed in `layout`.
+    /// Claims sensing ports and derivative matrix entries in `layout` for `behavior`, stamping
+    /// expression outputs into `rows` as charges when `stored` is true and attaching `branch`
+    /// for voltage sources.
     fn new(
         behavior: &Behavior,
         layout: &mut Layout,
@@ -228,13 +225,13 @@ impl BehavioralShape {
         }
     }
 
-    /// Whether the expression explicitly reads `time`.
+    /// Returns whether the expression explicitly references `time`.
     fn reads_time(&self) -> bool {
         self.reads.contains(&Read::Time)
     }
 
-    /// Adds the expression's value to its rows, with its derivatives, and the ports'
-    /// equations, with `expression` at `at`, from `memory`, which it updates.
+    /// Evaluates `expression` at `at`, updating `memory` and stamping row values, exact
+    /// derivatives, and sensing-port equations into `stamp`.
     fn add<R: Real>(
         &self,
         expression: &Expression,
@@ -242,7 +239,7 @@ impl BehavioralShape {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        // A voltage source's own branch: its voltage, less the expression's value below.
+        // Stamps the voltage-source branch voltage minus the expression value below.
         if let Some(branch) = &self.branch {
             branch.add(at, stamp, branch.voltage(at));
         }
@@ -390,8 +387,7 @@ impl BehavioralShape {
         expression.choices(&room.choosing, found);
     }
 
-    /// What a source of this shape with `expression` remembers before its first
-    /// evaluation.
+    /// Allocates initial evaluation workspaces and variable buffers for `expression`.
     fn memory(&self, expression: &Expression) -> BehavioralMemory {
         let count = self.reads.len();
         BehavioralMemory(Some(Room {
@@ -406,10 +402,10 @@ impl BehavioralShape {
     }
 }
 
-/// The local indices of a behavioral source's output terminals, `positive` and `negative`.
+/// Local indices of a behavioral source's output terminals (`positive` and `negative`).
 const OUTPUT: [usize; 2] = [0, 1];
 
-/// How a behavioral kernel drives its output terminals.
+/// Output stamping mode of a behavioral kernel across its output terminals.
 #[derive(Debug, Clone, Copy)]
 enum OutputKind {
     Current,
@@ -418,7 +414,7 @@ enum OutputKind {
 }
 
 impl OutputKind {
-    /// The kind of branch connecting the output terminals.
+    /// Returns the topological [`BranchKind`] connecting the output terminals.
     const fn branch(self) -> BranchKind {
         match self {
             Self::Current => BranchKind::CurrentSource,
@@ -510,10 +506,10 @@ macro_rules! behavioral_kernel {
     };
 }
 
-/// A current source whose current follows an expression of the voltages and currents it
-/// reads: see [`Behavior`].
+/// Behavioral current source whose current follows an expression of sensed voltages, port
+/// currents, and time; see [`Behavior`].
 ///
-/// It drives the expression's value from `positive` through the source to `negative`.
+/// Drives the evaluated expression current from `positive` through the source to `negative`.
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralCurrentSource;
 
@@ -523,11 +519,11 @@ behavioral_kernel! {
     kind: OutputKind::Current,
 }
 
-/// A voltage source whose voltage follows an expression of the voltages and currents it
-/// reads: see [`Behavior`].
+/// Behavioral voltage source whose terminal voltage follows an expression of sensed voltages,
+/// port currents, and time; see [`Behavior`].
 ///
-/// It holds `v_positive − v_negative` at the expression's value. Its current, flowing from
-/// `positive` through the source to `negative`, is an unknown labelled `current`.
+/// Constrains `v_positive − v_negative` to the evaluated expression value. The branch current
+/// flowing from `positive` through the source to `negative` is an unknown labelled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralVoltageSource;
 
@@ -537,13 +533,13 @@ behavioral_kernel! {
     kind: OutputKind::Voltage,
 }
 
-/// A capacitor whose charge follows an expression of the voltages and currents it reads:
-/// see [`Behavior`].
+/// Behavioral charge-based capacitor whose stored charge follows an expression of sensed
+/// voltages, port currents, and time; see [`Behavior`].
 ///
-/// It holds the expression's value as its charge, on `positive` against `negative`: its
-/// current, from `positive` through the capacitor to `negative`, is that charge's rate
-/// of change, and its capacitances are the expression's exact derivatives. Its charge is
-/// a function of what it reads, so it conserves charge. It is open at DC.
+/// Stores the evaluated expression as charge on `positive` relative to `negative`. The
+/// terminal current from `positive` to `negative` equals the time derivative of that charge,
+/// with exact capacitances from expression derivatives. Charge is conserved because it is a
+/// state function of the sensed variables, and the device is open at DC.
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralCapacitor;
 
@@ -641,8 +637,8 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances are the derivatives of the residuals, through every kind of
-        /// variable.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across all expression variable types.
         #[test]
         fn jacobians_match_finite_differences(
             x in proptest::array::uniform6(-2.0..2.0f64),
@@ -654,7 +650,7 @@ mod tests {
                 &parameters(expression),
                 &[p, n, a, b, s, s / 2.0, current],
             );
-            // The voltage source's own current comes before the port's.
+            // The voltage source's branch current precedes the sensing port current.
             assert_jacobians_match::<BehavioralVoltageSource>(
                 &parameters(expression),
                 &[p, n, a, b, s, s / 2.0, current / 3.0, current],

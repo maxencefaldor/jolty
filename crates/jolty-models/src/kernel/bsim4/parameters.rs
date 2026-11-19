@@ -1,9 +1,9 @@
 //! The parameters of a BSIM4 transistor, by the names of the BSIM4.5 manual, in SI units,
 //! with ngspice's defaults.
 //!
-//! The defaults are those of ngspice 47's `b4v5set.c`; a parameter whose default derives
-//! from others, as `vth0` from `vfb`, is optional, and its documentation says what it
-//! derives from.
+//! Defaults match ngspice 47 `b4v5set.c`. Parameters whose defaults derive from other
+//! fields (such as `vth0` from `vfb`) are optional, and each field description states
+//! its derivation rule.
 //!
 //! Part of jolty's BSIM4, derived from BSIM4.5.0 of the UC Berkeley BSIM Research Group:
 //! Copyright 2005 Regents of the University of California. All rights reserved. Used
@@ -26,11 +26,10 @@ use crate::kernel::jfet::Channel;
 use crate::{Lift, REFERENCE_TEMPERATURE, Real};
 
 binned_parameters! {
-    /// The parameters of a [`Bsim4`](super::Bsim4): the instance's geometry, then the model's
-    /// card. Each parameter of the card keeps the name the BSIM4.5 manual gives it, and each
-    /// one that bins has a length, a width and an area dependence, `l`, `w` and `p` before its
-    /// name, in SI units: a dependence on the reciprocal of the effective length in meters,
-    /// not micrometers.
+    /// Parameters of a [`Bsim4`](super::Bsim4) transistor: instance geometry followed by
+    /// the model card. Model-card fields preserve BSIM4.5 manual names, and every binned
+    /// field accepts `l`, `w`, and `p` prefixes for length, width, and area terms in SI
+    /// units (reciprocal meters rather than micrometers).
     #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
     #[serde(default, deny_unknown_fields)]
     #[schemars(bound = "R: Serialize + JsonSchema")]
@@ -81,8 +80,8 @@ binned_parameters! {
         pub body_resistance_model: BodyResistance = BodyResistance::Zero,
         /// The gate's resistance network, `rgatemod`, 0 to 3; default 0.
         pub gate_resistance_model: GateResistance = GateResistance::Zero,
-        /// What the diffusions' perimeters `ps` and `pd` include, `permod`, 0 or 1; default
-        /// 1.
+        /// Diffusion perimeter convention (`permod`, 0 or 1) determining whether `ps` and
+        /// `pd` include the gate edge; default 1.
         pub perimeter_model: Perimeter = Perimeter::One,
         /// The source and drain resistances, `rdsmod`, 0 or 1; default 0.
         pub drain_source_resistance_model: DrainSourceResistance = DrainSourceResistance::Zero,
@@ -90,8 +89,8 @@ binned_parameters! {
         pub flicker_noise_model: FlickerNoise = FlickerNoise::One,
         /// The channel's thermal noise model, `tnoimod`, 0 or 1; default 0.
         pub thermal_noise_model: ThermalNoise = ThermalNoise::Zero,
-        /// Whether the size-dependent parameters are checked and clamped where they lie out
-        /// of range, `paramchk = 1`; default true.
+        /// Flag enabling range checking and clamping of size-dependent parameters
+        /// (`paramchk = 1`); default true.
         pub check_parameters: bool = true,
         /// The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below
         /// 0.5, 0.5 at 0.5 and none above it; default 0.
@@ -257,7 +256,8 @@ binned_parameters! {
         binned pub lp: R = R::constant(1.0e-8) [LENGTH],
         /// The low-field mobility at Tnom, `u0`, in square meters per volt-second; default
         /// 0.067 m²/(V·s) for an n-channel and 0.025 m²/(V·s) for a p-channel.
-        binned pub u0: Option<R> = None => R::constant(by_channel(self.channel, 0.067, 0.025)) [MOBILITY],
+        binned pub u0: Option<R> = None
+            => R::constant(by_channel(self.channel, 0.067, 0.025)) [MOBILITY],
         /// The mobility exponent, `eu`; default 1.67 for an n-channel and 1 for a
         /// p-channel.
         binned(card_only) pub eu: Option<R> = None,
@@ -309,7 +309,7 @@ binned_parameters! {
         binned pub eta0: R = R::constant(0.08),
         /// The body-bias coefficient of `eta0`, `etab`, in per volt; default -0.07.
         binned pub etab: R = R::constant(-0.07) [PER_VOLT],
-        /// The channel length modulation Coefficient, `pclm`; default 1.3.
+        /// Channel-length modulation coefficient, `pclm`; default 1.3.
         binned pub pclm: R = R::constant(1.3),
         /// The first coefficient of the drain-induced barrier lowering of the output
         /// resistance, `pdiblc1`; default 0.39.
@@ -556,9 +556,10 @@ binned_parameters! {
         /// The coefficient of the bias dependence of the gate-drain overlap, `ckappad`, in
         /// volts; default `ckappas`.
         binned pub ckappad: Option<R> = None => self.ckappas [VOLTAGE],
-        /// The fringe capacitance parameter, `cf`, in farads per meter; default `2 · epsrox
-        /// · ε0 / π · ln(1 + 0.4 µm / toxe)`, of `toxe` where it is given, else of 3 nm.
-        binned pub cf: Option<R> = None => fringe(self.epsrox, self.set_toxe()) [CAPACITANCE.div(LENGTH)],
+        /// Fringe capacitance parameter, `cf`, in farads per meter; default
+        /// `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)` using `toxe` when given or 3 nm.
+        binned pub cf: Option<R> = None
+            => fringe(self.epsrox, self.set_toxe()) [CAPACITANCE.div(LENGTH)],
         /// The vdsat parameter for C-V model, `clc`, in meters; default 1e-07.
         binned pub clc: R = R::constant(1.0e-7) [LENGTH],
         /// The vdsat parameter for C-V model, `cle`; default 0.6.

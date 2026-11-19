@@ -53,7 +53,7 @@ const CASES: [Named; 16] = [
     ("photocell/lagging", cases::photocell_lagging),
 ];
 
-/// A twin's case's name, and what makes it for a count of seeds.
+/// Twin benchmark case name paired with its constructor for a seed count.
 type Twinned = (&'static str, fn(usize) -> cases::TwinCase);
 
 /// Every twin's case, by its model's name, made for each count of seeds.

@@ -1,9 +1,9 @@
 //! The parameters of a BSIM3 transistor, by the names of the BSIM3v3.3 manual, in SI
 //! units, with ngspice's defaults.
 //!
-//! The defaults are those of ngspice 47's `b3set.c`; a parameter whose default derives
-//! from others, as `vth0` from `vfb`, is optional, and its documentation says what it
-//! derives from.
+//! Defaults match ngspice 47 `b3set.c`. Parameters whose defaults derive from other
+//! fields (such as `vth0` from `vfb`) are optional, and each field description states
+//! its derivation rule.
 //!
 //! Part of jolty's BSIM3, derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group:
 //! Copyright 2004 Regents of the University of California. All rights reserved. Used
@@ -22,11 +22,10 @@ use crate::kernel::jfet::Channel;
 use crate::{Lift, REFERENCE_TEMPERATURE, Real};
 
 binned_parameters! {
-    /// The parameters of a [`Bsim3`](super::Bsim3): the instance's geometry, then the model's
-    /// card. Each parameter of the card keeps the name the BSIM3v3.3 manual gives it, and
-    /// each one that bins has a length, a width and an area dependence, `l`, `w` and `p`
-    /// before its name, in SI units: a dependence on the reciprocal of the effective length
-    /// in meters, not micrometers.
+    /// Parameters of a [`Bsim3`](super::Bsim3) transistor: instance geometry followed by
+    /// the model card. Model-card fields preserve BSIM3v3.3 manual names, and every binned
+    /// field accepts `l`, `w`, and `p` prefixes for length, width, and area terms in SI
+    /// units (reciprocal meters rather than micrometers).
     #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
     #[serde(default, deny_unknown_fields)]
     #[schemars(bound = "R: Serialize + JsonSchema")]
@@ -61,8 +60,8 @@ binned_parameters! {
         pub capacitance_model: Charges = Charges::Three,
         /// The noise model, `noimod`, 1 to 6; default 1.
         pub noise_model: NoiseModel = NoiseModel::One,
-        /// Whether the size-dependent parameters are checked and clamped where they lie out
-        /// of range, `paramchk = 1`; default false.
+        /// Flag enabling range checking and clamping of size-dependent parameters
+        /// (`paramchk = 1`); default false.
         pub check_parameters: bool = false,
         /// The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below
         /// 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0.
@@ -145,7 +144,8 @@ binned_parameters! {
         /// The low-field mobility at the nominal temperature, `u0`, in square meters per
         /// volt-second; default 0.067 m²/(V·s) for an n-channel, 0.025 m²/(V·s) for a
         /// p-channel.
-        binned pub u0: Option<R> = None => R::constant(by_channel(self.channel, 0.067, 0.025)) [MOBILITY],
+        binned pub u0: Option<R> = None
+            => R::constant(by_channel(self.channel, 0.067, 0.025)) [MOBILITY],
         /// The first-order degradation of the mobility by the gate field, `ua`, in meters
         /// per volt; default 2.25e-9.
         binned pub ua: R = R::constant(2.25e-9) [LENGTH.div(VOLTAGE)],
@@ -175,8 +175,8 @@ binned_parameters! {
         binned pub b1: R = R::constant(0.0) [LENGTH],
         /// The body effect on the bulk charge, `keta`, per volt; default -0.047.
         binned pub keta: R = R::constant(-0.047) [PER_VOLT],
-        /// The offset of the threshold below it, in the drain current's smoothing, `voff`,
-        /// in volts; default -0.08.
+        /// Subthreshold offset voltage in drain-current smoothing, `voff`, in volts;
+        /// default -0.08.
         binned pub voff: R = R::constant(-0.08) [VOLTAGE],
         /// The subthreshold swing's coefficient, `nfactor`; default 1.
         binned pub nfactor: R = R::constant(1.0),
@@ -260,7 +260,7 @@ binned_parameters! {
         /// The temperature coefficient of `vsat`, `at`, in meters per second; default
         /// 33000.
         binned pub at: R = R::constant(33000.0) [LENGTH.div(TIME)],
-        /// The temperature coefficient of `rdsw`, as `rdsw` is, `prt`, in ohms; default 0.
+        /// Temperature coefficient of `rdsw`, `prt`, in ohms; default 0.
         binned pub prt: R = R::constant(0.0) [RESISTANCE],
         /// The bias-dependent overlap capacitance between the gate and the lightly doped
         /// source, `cgsl`, in farads per meter; default 0.
@@ -282,25 +282,21 @@ binned_parameters! {
         binned pub cle: R = R::constant(0.6),
         /// The flat-band voltage of `capmod` 0, `vfbcv`, in volts; default -1.
         binned pub vfbcv: R = R::constant(-1.0) [VOLTAGE],
-        /// The exponential coefficient of the charge layer's thickness, `capmod` 3's,
-        /// `acde`, in meters per volt; default 1.
+        /// Charge-layer thickness exponential coefficient for `capmod` 3, `acde`, in meters
+        /// per volt; default 1.
         binned pub acde: R = R::constant(1.0) [LENGTH.div(VOLTAGE)],
-        /// The gate bias's effect on the surface potential, `capmod` 3's, `moin`; default
-        /// 15.
+        /// Surface-potential gate-bias coefficient for `capmod` 3, `moin`; default 15.
         binned pub moin: R = R::constant(15.0),
-        /// The subthreshold swing's coefficient in the charges, `capmod` 1 to 3's, `noff`;
-        /// default 1.
+        /// Subthreshold swing coefficient in `capmod` 1 to 3 charges, `noff`; default 1.
         binned pub noff: R = R::constant(1.0),
-        /// The offset of the threshold in the charges, `capmod` 1 to 3's, `voffcv`, in
-        /// volts; default 0.
+        /// Threshold offset voltage in `capmod` 1 to 3 charges, `voffcv`, in volts;
+        /// default 0.
         binned pub voffcv: R = R::constant(0.0) [VOLTAGE],
-        /// The gate-source overlap capacitance per width, beyond the bias-dependent one,
-        /// `cgso`, in farads per meter; default `dlc` · Cox − `cgsl` with a positive `dlc`,
-        /// else 0.6 · `xj` · Cox.
+        /// Fixed gate-source overlap capacitance per unit width, `cgso`, in farads per
+        /// meter; default `dlc` · Cox − `cgsl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
         pub cgso: Option<R> = None [CAPACITANCE.div(LENGTH)],
-        /// The gate-drain overlap capacitance per width, beyond the bias-dependent one,
-        /// `cgdo`, in farads per meter; default `dlc` · Cox − `cgdl` with a positive `dlc`,
-        /// else 0.6 · `xj` · Cox.
+        /// Fixed gate-drain overlap capacitance per unit width, `cgdo`, in farads per
+        /// meter; default `dlc` · Cox − `cgdl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
         pub cgdo: Option<R> = None [CAPACITANCE.div(LENGTH)],
         /// The gate-bulk overlap capacitance per length, `cgbo`, in farads per meter;
         /// default 2 · `dwc` · Cox.
@@ -418,34 +414,31 @@ binned_parameters! {
         pub tcjsw: R = R::constant(0.0) [PER_KELVIN],
         /// The temperature coefficient of `cjswg`, `tcjswg`, per kelvin; default 0.
         pub tcjswg: R = R::constant(0.0) [PER_KELVIN],
-        /// The first oxide trap density coefficient of the flicker noise, `noimod` 2, 3 and
-        /// 6's, `noia`, in the manual's unit; default 1e20 for an n-channel, 9.9e18 for a
-        /// p-channel.
+        /// First oxide-trap density coefficient for flicker noise (`noimod` 2, 3, and 6),
+        /// `noia`, in manual units; default 1e20 for n-channel, 9.9e18 for p-channel.
         pub noia: Option<R> = None,
-        /// The second oxide trap density coefficient of the flicker noise, `noib`, in the
-        /// manual's unit; default 5e4 for an n-channel, 2.4e3 for a p-channel.
+        /// Second oxide-trap density coefficient for flicker noise, `noib`, in manual
+        /// units; default 5e4 for n-channel, 2.4e3 for p-channel.
         pub noib: Option<R> = None,
-        /// The third oxide trap density coefficient of the flicker noise, `noic`, in the
-        /// manual's unit; default -1.4e-12 for an n-channel, 1.4e-12 for a p-channel.
+        /// Third oxide-trap density coefficient for flicker noise, `noic`, in manual units;
+        /// default -1.4e-12 for n-channel, 1.4e-12 for p-channel.
         pub noic: Option<R> = None,
-        /// The saturation field in the flicker noise, `em`, in volts per meter; default
-        /// 41000000.
+        /// Saturation field for flicker noise, `em`, in volts per meter; default 41000000.
         pub em: R = R::constant(4.1e7) [VOLTAGE.div(LENGTH)],
-        /// The flicker noise's frequency exponent, `ef`; default 1.
+        /// Flicker-noise frequency exponent, `ef`; default 1.
         pub ef: R = R::constant(1.0),
-        /// The flicker noise's current exponent, `noimod` 1, 4 and 5's, `af`; default 1.
+        /// Flicker-noise current exponent (`noimod` 1, 4, and 5), `af`; default 1.
         pub af: R = R::constant(1.0),
-        /// The flicker noise's coefficient, `noimod` 1, 4 and 5's, `kf`; default 0.
+        /// Flicker-noise coefficient (`noimod` 1, 4, and 5), `kf`; default 0.
         pub kf: R = R::constant(0.0),
-        /// The length each side of the channel loses in the flicker noise, beyond `lint`,
-        /// `lintnoi`, in meters; default 0.
+        /// Channel length offset per side for flicker noise beyond `lint`, `lintnoi`, in
+        /// meters; default 0.
         pub lintnoi: R = R::constant(0.0) [LENGTH],
     }
 
-    /// The binned parameters of one size: each one's value, its length, width and area
-    /// dependences added. A parameter whose default derives from others is `None` where the
-    /// card leaves it out, its dependences then read past, as ngspice derives it in their
-    /// place.
+    /// Binned parameters evaluated at a specific channel size with length, width, and area
+    /// terms summed. Parameters with derived defaults remain `None` when omitted from the
+    /// model card so ngspice derivation rules take precedence over binning terms.
     #[derive(Debug, Clone, Copy)]
     pub(super) struct Binned<R: Real>;
 }

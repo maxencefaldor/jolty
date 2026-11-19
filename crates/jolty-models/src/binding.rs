@@ -1,54 +1,53 @@
 use jolty_numerics::{Entry, PatternBuilder};
 
-/// A node voltage or branch current the engine solves for, by its index in the solution.
+/// Index of a node voltage or branch current unknown in the global solution vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnknownIndex(usize);
 
 impl UnknownIndex {
-    /// The unknown at `index` in the solution vector.
+    /// Creates an unknown reference for `index` in the solution vector.
     #[must_use]
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
 
-    /// The unknown's index in the solution vector.
+    /// Returns the index of the unknown in the solution vector.
     #[must_use]
     pub const fn index(self) -> usize {
         self.0
     }
 }
 
-/// Where a terminal connects: an unknown node voltage, or `None` for ground,
-/// whose voltage is zero and which has no equation.
+/// Terminal connection target: an unknown node voltage, or `None` for ground (zero voltage
+/// with no equation).
 pub type Node = Option<UnknownIndex>;
 
-/// What an unknown measures, and so what its equation balances.
+/// Physical quantity represented by an unknown and the corresponding balance equation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Nature {
-    /// A node voltage, whose equation sums the currents leaving the node.
+    /// Node voltage whose equation sums currents leaving the node.
     Voltage,
-    /// A branch current, whose equation constrains the branch's voltage.
+    /// Branch current whose equation constrains the voltage across the branch.
     Current,
-    /// A displacement current a device tracks within itself, whose equation sums currents:
-    /// the current through a capacitance no charge describes, such as a transistor's gate
-    /// oxide in Meyer's model, which the device's own currents follow.
+    /// Device-internal displacement current whose equation sums currents for a
+    /// non-charge-based capacitance (such as a MOSFET gate oxide in Meyer's model).
     Displacement,
-    /// A thermal net's temperature above the ambient, in kelvins, whose equation sums the
-    /// heat flows leaving the net, in watts, as a node's sums currents.
+    /// Thermal net temperature rise above ambient, in kelvins, whose equation sums heat
+    /// flows leaving the net in watts.
     Temperature,
-    /// A device's dimensionless state, such as a memristor's, whose equation is the
-    /// device's own: how fast the state moves, or what it lags.
+    /// Dimensionless internal device state, such as a memristor state variable, governed by
+    /// a model-specific rate or lag equation.
     State,
 }
 
 impl Nature {
-    /// Whether the unknown is a current rather than a voltage.
+    /// Returns whether the unknown represents a current rather than a voltage.
     #[must_use]
     pub const fn is_current(self) -> bool {
         matches!(self, Self::Current | Self::Displacement)
     }
 
-    /// Whether the unknown's equation sums currents, or heat flows, rather than
+    /// Returns whether the unknown equation sums currents or heat flows rather than
     /// constraining a voltage.
     #[must_use]
     pub const fn sums_currents(self) -> bool {
@@ -56,32 +55,32 @@ impl Nature {
     }
 }
 
-/// The name and quantity of an unknown.
+/// Name and physical quantity of a circuit unknown.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unknown {
-    /// The unknown's name: a net's path, or an instance's path and a label, such as `V1:current`.
+    /// Unknown name: either a net path or an instance path and label, such as `V1:current`.
     pub name: String,
-    /// What the unknown measures.
+    /// Physical quantity measured by the unknown.
     pub nature: Nature,
 }
 
-/// What an instance being bound reaches: the nodes of its terminals, new internal
-/// unknowns, and the matrix pattern it claims entries in. Each claim is recorded: an
-/// internal unknown appended to the unknowns, named after the instance's path and its
-/// label, and an entry claimed in the pattern.
+/// Binding context passed to a device instance during circuit elaboration.
+///
+/// Exposes terminal nodes, allocates internal unknowns named from the instance path and
+/// label, and claims nonzero matrix entries in the sparsity pattern.
 #[derive(Debug)]
 pub struct Binding<'a> {
     path: &'a str,
     terminals: &'a [Node],
-    /// The index of the first of `unknowns`, as if they began there.
+    /// Base index corresponding to element zero of `unknowns`.
     first: usize,
     unknowns: &'a mut Vec<Unknown>,
     pattern: &'a mut PatternBuilder,
 }
 
 impl<'a> Binding<'a> {
-    /// A binding for the instance at `path`, whose terminals connect to `terminals` in the
-    /// order its model declares them. Internal unknowns are appended to `unknowns`.
+    /// Creates a binding for the instance at `path` with terminal connections `terminals` in
+    /// the model's declared terminal order, appending internal unknowns to `unknowns`.
     pub fn new(
         path: &'a str,
         terminals: &'a [Node],
@@ -91,9 +90,8 @@ impl<'a> Binding<'a> {
         Self::numbered(path, terminals, (0, unknowns), pattern)
     }
 
-    /// A binding as [`Binding::new`] makes, but for its internal unknowns, numbered from
-    /// `first` as if `unknowns` began there: those of an instance bound apart from the
-    /// others, whose own unknowns follow those before it.
+    /// Creates a binding identical to [`Binding::new`], except internal unknowns are numbered
+    /// starting at `first` for instances bound independently after earlier unknowns.
     pub const fn numbered(
         path: &'a str,
         terminals: &'a [Node],
@@ -109,13 +107,13 @@ impl<'a> Binding<'a> {
         }
     }
 
-    /// The instance's path.
+    /// Returns the hierarchical instance path.
     #[must_use]
     pub const fn path(&self) -> &str {
         self.path
     }
 
-    /// The node of every terminal, in the model's terminal order.
+    /// Returns the terminal nodes in the model's declared terminal order.
     #[must_use]
     pub const fn terminals(&self) -> &[Node] {
         self.terminals

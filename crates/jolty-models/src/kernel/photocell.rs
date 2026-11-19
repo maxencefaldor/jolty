@@ -12,78 +12,72 @@ use crate::{
 /// darkness, so that its slope stays finite where the light goes out.
 const DARKNESS: f64 = 1e-6;
 
-/// A photocell, or light-dependent resistor, as its maker's datasheet gives one: its
-/// resistance between `a` and `b` falls as a power of the illuminance on it. Datasheets,
-/// such as Senba's of its GL55 series of cadmium sulphide cells, state the resistance at
-/// 10 lux and `γ = lg(R₁₀ / R₁₀₀)`, the slope of the resistance's logarithm against the
-/// illuminance's from 10 to 100 lux.
+/// Light-dependent resistor (photocell) whose resistance between `a` and `b` falls as a
+/// power law of illuminance, following standard cadmium sulfide datasheet parameters (such
+/// as Senba GL55 series: 10 lux resistance and log-log slope `γ = lg(R₁₀ / R₁₀₀)`).
 ///
-/// The voltage of `light_positive` over `light_negative` is the illuminance, 1 V for each
-/// lux, and those terminals draw no current. With `r` the resistance at the reference
-/// illuminance `E₀` and `γ` its slope on log scales, the cell's conductance is
-/// `1/r_dark + s/r`, where its response `s` settles to `(E/E₀)^γ`, the illuminance `E` held
-/// at zero or above, smoothly, below a millionth of a lux. With a response time `τ`, `s` lags the
-/// light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's carriers do, and is an
-/// unknown labelled `response`; without one, it follows at once.
+/// The voltage `v(light_positive) − v(light_negative)` encodes illuminance at 1 V per lux
+/// without drawing current. Conductance equals `1/r_dark + s/r`, where response `s` tracks
+/// `(E/E₀)^γ` with illuminance `E` smoothly floored near 1 microlux. A positive response
+/// time `τ` adds an internal state unknown `response` governed by
+/// `τ · ds/dt = (E/E₀)^γ − s`; zero response time tracks illuminance instantaneously.
 #[derive(Debug, Clone, Copy)]
 pub struct Photocell;
 
-/// Where a photocell's contributions go, among its local unknowns.
+/// Layout shape for [`Photocell`] storing terminal conductance entries and optional lag
+/// state indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhotocellShape {
-    /// The entries joining `a` and `b` to every terminal.
+    /// Matrix entries coupling terminals `a` and `b` to all four device terminals.
     entries: [[usize; 4]; 2],
     lag: Option<Lag>,
 }
 
-/// A photocell's lagging response, and the entries its equation claims.
+/// Internal state unknown and matrix entries for a photocell with nonzero response time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Lag {
     response: usize,
-    /// The entries joining `a` and `b` to the response.
+    /// Matrix entries coupling terminals `a` and `b` to `response`.
     terminals: [usize; 2],
-    /// The entries joining the response to `light_positive`, `light_negative` and itself.
+    /// Matrix entries coupling `response` to `light_positive`, `light_negative`, and itself.
     own: [usize; 3],
 }
 
-/// A photocell's numbers.
+/// Prepared parameters for [`Photocell`].
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedPhotocell<R: Real> {
     conductance: R,
     dark_conductance: R,
     reference: R,
     gamma: R,
-    /// Its response time, zero for none.
+    /// Response time constant in seconds, or zero for instantaneous response.
     time: R,
     temperature: f64,
 }
 
-/// The local indices of a photocell's terminals: `a`, `b`, `light_positive` and
-/// `light_negative`.
+/// Local terminal indices of [`Photocell`]: `a`, `b`, `light_positive`, and `light_negative`.
 const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
-/// The parameters of a [`Photocell`].
+/// Parameters for [`Photocell`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct PhotocellParameters<R: Real = f64> {
-    /// The resistance at the reference illuminance, in ohms; positive.
+    /// Resistance at the reference illuminance, in ohms; positive.
     #[dimension(RESISTANCE)]
     pub resistance: R,
-    /// The reference illuminance, in lux; positive; default 10, as datasheets give it,
-    /// such as Senba's of its GL55 series.
+    /// Reference illuminance, in lux; positive; default 10 (standard datasheet reference).
     #[serde(default = "ten::<R>")]
     pub illuminance: R,
-    /// How steeply the resistance falls with the illuminance, `γ`, the slope of its
-    /// logarithm against the illuminance's; positive; default 0.6, which with the default
-    /// dark resistance is Senba's GL5528, the most common cell of its GL55 series.
+    /// Log-log slope `γ` of resistance versus illuminance; positive; default 0.6 (matching
+    /// the Senba GL5528 together with default `dark_resistance`).
     #[serde(default = "six_tenths::<R>")]
     pub gamma: R,
-    /// The resistance in darkness, in ohms; positive; default 1e6, the GL5528's.
+    /// Resistance in darkness, in ohms; positive; default 1e6 (matching the Senba GL5528).
     #[serde(default = "a_million::<R>")]
     #[dimension(RESISTANCE)]
     pub dark_resistance: R,
-    /// The time constant of the response, in seconds; zero or more; default 0.
+    /// Carrier response time constant, in seconds; non-negative; default 0.
     #[serde(default)]
     #[dimension(TIME)]
     pub response_time: R,
@@ -102,17 +96,14 @@ fn a_million<R: Real>() -> R {
 }
 
 impl<R: Real> PreparedPhotocell<R> {
-    /// The response `(E/E₀)^γ` the light `light` settles the cell to.
+    /// Computes the steady-state normalized response `(E/E₀)^γ` for illuminance `light`.
     ///
-    /// The light is held above zero as `(E + √(E² + d²)) / 2`, `d` the darkness, whose
-    /// slope is itself over `√(E² + d²)`. Below zero it is written `d² / (2 · (√(E² + d²) −
-    /// E))`, the same number without the cancellation that rounds it to zero past `d /
-    /// √(2u)`, 67 lux below, `u` half of `f64::EPSILON`, where the response's slope would
-    /// divide zero by zero.
+    /// Smoothly floors illuminance via `(E + √(E² + d²)) / 2` (with `d = DARKNESS`). For
+    /// negative `E`, uses the algebraically equivalent form `d² / (2 · (√(E² + d²) − E))`
+    /// to avoid catastrophic cancellation past `-67` lux.
     ///
-    /// The held light's slope, `lit / √(E² + d²)`, makes the response's
-    /// `γ · response / √(E² + d²)`, which [`Dual::chain`] takes as it stands: through the
-    /// held light it would divide by a light that rounds to zero far enough below.
+    /// Passes the exact slope `γ · response / √(E² + d²)` directly to [`Dual::chain`] so
+    /// deeply negative illuminance never divides by an underflowed floored light value.
     fn settled<const N: usize>(&self, light: Dual<R, N>) -> Dual<R, N> {
         let illuminance = light.value;
         let across = illuminance.value();
@@ -240,7 +231,7 @@ impl Kernel for Photocell {
         }
     }
 
-    /// The thermal noise of the conductance its response sets.
+    /// Appends thermal noise for the conductance determined by the active photocell response.
     fn noise<R: Real>(
         shape: &PhotocellShape,
         prepared: &PreparedPhotocell<R>,
@@ -293,8 +284,8 @@ mod tests {
         check(-5.0, 1e-6);
     }
 
-    /// Far below zero, past 67 lux below, where the smoothed light once rounded to zero
-    /// and its response's slope divided zero by zero, the slope is finite.
+    /// Verifies that the response slope stays finite far below zero illuminance (past -67
+    /// lux), where naive smoothing previously suffered cancellation and divided zero by zero.
     #[test]
     fn its_slope_is_finite_however_dark() {
         let lagging = r#"{"resistance": 1e4, "response_time": 0.01}"#;
@@ -337,7 +328,7 @@ mod tests {
     fn rejects_unphysical_values() {
         let error = Bench::try_new::<Photocell>(r#"{"resistance": 1e4, "gamma": 0}"#)
             .expect_err("no slope");
-        assert_eq!(error.0, "gamma must be positive, not 0.0");
+        assert_eq!(error.0, "gamma is positive, not 0.0");
         let error = Bench::try_new::<Photocell>(r#"{"resistance": 1e4, "response_time": -1}"#)
             .expect_err("a negative time");
         assert!(error.0.starts_with("response_time"), "{}", error.0);

@@ -1,7 +1,7 @@
-//! The VDMOS power MOSFET, derived from ngspice 47's implementation of it in
-//! `src/spicelib/devices/vdmos/`:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! Vertical double-diffused power MOSFET (VDMOS) kernel, derived from ngspice 47
+//! `src/spicelib/devices/vdmos/`: Copyright 1985 - 2018, Regents of the University of
+//! California and others. Used under the ngspice Modified BSD license, reproduced in the
+//! repository `NOTICE` file.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -25,98 +25,93 @@ use crate::{
     ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
-/// The conductance ngspice joins the drain to the source with where no drain-source
-/// resistance is given, in siemens, whatever the multiplier.
+/// Default drain-source shunt conductance added when `drain_source_resistance` is omitted,
+/// in siemens (independent of `multiplier`), matching ngspice.
 const LEAKAGE: f64 = 1e-15;
 
-/// The depletion threshold, `FC · VJ` at the transistor's temperature, in volts, above
-/// which ngspice's VDMOS replaces the body diode's junction potential with `2.5 / N`,
-/// which leaves its depletion charge discontinuous there.
+/// Upper limit on the body diode depletion threshold `FC · VJ` at operating temperature, in
+/// volts. Above 2.5 V, ngspice replaces junction potential with `2.5 / N`, introducing a
+/// discontinuity in depletion charge.
 const MAX_DEPLETION_THRESHOLD: f64 = 2.5;
 
-/// A vertical double-diffused power MOSFET, ngspice's VDMOS, between `drain`, `gate` and
-/// `source`, as ngspice 47 implements it.
+/// Vertical double-diffused power MOSFET (`VDMOS`) between `drain`, `gate`, and `source`,
+/// matching ngspice 47.
 ///
-/// The channel follows Shichman and Hodges's square law with no body effect, softened below
-/// the threshold: with `vgst = vgs − vto`, its overdrive is `k · ln(1 + e^{(vgst − shift) /
-/// k})`, `k` the subthreshold slope, and with `β' = kp · m · (1 + λ · vds) / (1 + θ ·
-/// max(vgst, 0))`, the drain current is `β' · vgst'² / 2` in saturation and `β' · vdss ·
-/// (vgst' − vdss / 2)` below it, `vdss` the drain-source voltage times the triode's
-/// conductance multiplier. With the drain below the source the two swap, and `vds` in the
-/// channel-length modulation keeps its sign, as in ngspice. Given both quasi-saturation
-/// parameters, the drain resistance grows as `rd + rq · vds / (vds + vq)` with the voltage
-/// across the terminals while the drain is at or above the source.
+/// Channel conduction follows a Shichman-Hodges square law without body effect, softened
+/// below threshold via `vgst' = k · ln(1 + e^{(vgst − shift) / k})` where `vgst = vgs − vto`
+/// and `k` is the subthreshold slope. Drain current uses
+/// `β' = kp · m · (1 + λ · vds) / (1 + θ · max(vgst, 0))` and `vdss = mtriode · vds`.
+/// Saturation gives `β' · vgst'² / 2`, and linear mode gives
+/// `β' · vdss · (vgst' − vdss / 2)`. Drain and source swap when `vds < 0`, while `vds`
+/// retains its sign in channel-length modulation. When quasi-saturation parameters are
+/// provided, forward drain resistance increases as `rd + rq · vds / (vds + vq)`.
 ///
-/// The gate holds a constant charge against the source, and against the drain one whose
-/// capacitance runs from its minimum, far below the drain, to its maximum, far above it:
-/// `s · atan(a · vgd) + y` below zero and `s · tanh(a · vgd) + y` above, with `s = (cgdmax
-/// − cgdmin) / (1 + π/2)` and `y = cgdmax − s`. The charge is the capacitance's integral,
-/// so it is conserved where ngspice integrates the capacitance by the trapezoidal rule.
+/// Gate-source capacitance is constant, while gate-drain capacitance transitions smoothly
+/// from `cgdmin` (negative `vgd`) to `cgdmax` (positive `vgd`). Negative `vgd` uses
+/// `s · atan(a · vgd) + y` and positive `vgd` uses `s · tanh(a · vgd) + y`. The scale and
+/// offset are `s = (cgdmax − cgdmin) / (1 + π/2)` and `y = cgdmax − s`. Integrating
+/// capacitance analytically conserves charge.
 ///
-/// A body diode, a junction with its own parameters, joins the source, through its
-/// series resistance, to the drain terminal, and a conductance joins the drain to the
-/// source. The drain, source, gate and body resistances each add an internal node,
-/// labelled `drain`, `source`, `gate` and `body_diode`; one below
-/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
-/// labelled `drain_current`, `source_current`, `gate_current` or `body_diode_current`.
+/// A dedicated body diode joins the source (behind body resistance) to the drain terminal,
+/// in parallel with a drain-source shunt conductance. Positive drain, source, gate, or body
+/// resistances add internal nodes (`drain`, `source`, `gate`, `body_diode`), and resistances
+/// below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) add branch-current unknowns
+/// (`drain_current`, `source_current`, `gate_current`, `body_diode_current`).
 #[derive(Debug, Clone, Copy)]
 pub struct Vdmos;
 
-/// Where a transistor's contributions go among its local unknowns: through its drain,
-/// source, gate and body resistances, among its gate, drain and source behind them, across
-/// its body diode, and from its drain to its source.
+/// Layout shape for [`Vdmos`] storing series resistances, intrinsic node matrix, optional
+/// quasi-saturation coupling, body diode `Pair`, and drain-source shunt `Pair`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VdmosShape {
     stamp: Nodes<3>,
-    /// The drain, source, gate and body resistances.
+    /// Drain, source, gate, and body series resistances.
     series: [Series; 4],
-    /// The entries through which the drain resistance follows the drain-source voltage,
-    /// where quasi-saturation raises it.
+    /// Matrix entries coupling quasi-saturated drain resistance to terminal `vds`.
     quasi: Option<Varying>,
-    /// The body diode, from its anode to its cathode: from behind the body resistance to
-    /// the drain for an n-channel, and back for a p-channel.
+    /// Body diode `Pair` oriented anode to cathode (body node to drain for n-channel,
+    /// reversed for p-channel).
     body: Pair,
-    /// The drain and the source terminals.
+    /// Drain-to-source terminal `Pair` carrying shunt conductance.
     shunt: Pair,
 }
 
-/// A transistor's numbers at its temperature.
+/// Prepared VDMOS parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedVdmos<R: Real> {
     sign: f64,
-    /// The drain, source, gate and body resistances, of all the parallel copies together.
+    /// Drain, source, gate, and body resistances scaled by `multiplier`.
     resistances: [R; 4],
     quasi: Option<Quasi<R>>,
-    /// The conductance from the drain to the source.
+    /// Drain-to-source shunt conductance.
     shunt: R,
     channel: Law<R>,
     gate: Gate<R>,
     body: Junction<R>,
     transit_time: R,
-    /// The threshold, oriented as an n-channel's, around which the gate's steps are
-    /// limited.
+    /// Threshold voltage in n-channel polarity used for gate step limiting.
     threshold: f64,
     temperature: f64,
-    /// The drain current's flicker noise, over the square of SPICE's oxide capacitance
-    /// per area.
+    /// Drain-current flicker noise scaled by the inverse square of default oxide capacitance
+    /// per unit area.
     flicker: Flicker,
 }
 
-/// What a transistor remembers.
+/// Persistent evaluation memory for [`Vdmos`] storing previous channel voltages, body diode
+/// voltage, and diagnostic variables.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VdmosMemory {
-    /// The gate-source and drain-source voltages of the last evaluation, oriented as an
-    /// n-channel's, from which the next steps are limited.
+    /// Gate-source and drain-source voltages from the last evaluation in n-channel polarity.
     last: [f64; 2],
-    /// The body diode's voltage at the last evaluation, from its anode to its cathode.
+    /// Body diode voltage from the last evaluation, anode to cathode.
     body: f64,
-    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    /// Values of [`VARIABLE_NAMES`] from the last evaluation.
     variables: [f64; 7],
 }
 
-/// The variables a transistor reports: its threshold and saturation voltages, in its own
-/// polarity, its capacitances from the gate to the source and to the drain and from the
-/// drain to the source, its body diode's, and its region among [`REGIONS`] and its margin.
+/// Diagnostic variable names reported by [`Vdmos`]: threshold and saturation voltages in
+/// device polarity, terminal capacitances (including body diode), operating region from
+/// [`REGIONS`], and saturation margin.
 const VARIABLE_NAMES: [&str; 7] = [
     "threshold_voltage",
     "saturation_voltage",
@@ -127,22 +122,22 @@ const VARIABLE_NAMES: [&str; 7] = [
     SATURATION_MARGIN,
 ];
 
-/// The regions of a transistor's channel, as `VDMOSload` switches between them, in the
-/// order of [`REGIONS`]' names: none below the threshold, where the softened overdrive
-/// keeps the channel conducting.
+/// Operating regions of a VDMOS channel matching `VDMOSload` in the order of [`REGIONS`].
+///
+/// Softened subthreshold overdrive keeps the channel conducting below threshold, so no
+/// cutoff region exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Region {
-    /// The drain below saturation.
+    /// Drain-source voltage below saturation.
     Linear,
-    /// The drain at or past saturation.
+    /// Drain-source voltage at or past saturation.
     Saturated,
 }
 
-/// The regions a transistor's equations distinguish, and its margin to their boundary,
-/// `vds − vdsat`, in an n-channel's sign as [`Regions::margins`] are, with the drain and the
-/// source swapped where the drain lies below the source: the drain-source voltage over the
-/// softened overdrive divided by the triode's multiplier, where the law turns from linear
-/// to saturated.
+/// Operating-region metadata for [`Vdmos`] reporting `vds − vdsat` in n-channel sign
+/// convention per [`Regions::margins`], swapping drain and source when `vds < 0`.
+///
+/// The boundary `vdsat` equals the softened overdrive divided by the triode multiplier.
 const REGIONS: Regions = Regions {
     names: &["linear", "saturated"],
     margins: &[SATURATION_MARGIN],
@@ -228,8 +223,7 @@ pub struct VdmosParameters<R: Real = f64> {
     /// 20 pF.
     #[dimension(CAPACITANCE)]
     pub min_gate_drain_capacitance: R,
-    /// How fast the gate-drain capacitance moves with the gate-drain voltage, `A`, per
-    /// volt; default 1.
+    /// Gate-drain capacitance transition steepness `A`, per volt; default 1.
     #[dimension(PER_VOLT)]
     pub gate_drain_capacitance_coefficient: R,
     /// The body diode's saturation current, `IS`, in amperes; default 1e-14.
@@ -269,14 +263,13 @@ pub struct VdmosParameters<R: Real = f64> {
     /// `EG`, in volts; default 1.11, silicon's.
     #[dimension(VOLTAGE)]
     pub energy_gap: R,
-    /// The exponent of the temperature ratio in the body diode's saturation current's
-    /// scaling, `XTI`; default 3.
+    /// Temperature-ratio exponent `XTI` scaling body-diode saturation current; default 3.
     pub saturation_current_temperature_exponent: R,
-    /// The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C.
+    /// Nominal measurement temperature `TNOM`, in kelvins; default 27 °C.
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts
-    /// per kelvin; default 0.
+    /// Linear threshold voltage temperature coefficient `TCVTH` (`VTOTC`), in volts per
+    /// kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter,
@@ -389,39 +382,39 @@ impl<R: Real> Default for VdmosParameters<R> {
     }
 }
 
-/// The channel's law, oriented as an n-channel's.
+/// Channel conduction law in n-channel polarity.
 #[derive(Debug, Clone, Copy)]
 struct Law<R: Real> {
-    /// `kp · m` at the transistor's temperature.
+    /// Scaled transconductance parameter `kp · m` at operating temperature.
     beta: R,
-    /// The threshold, `von`.
+    /// Threshold voltage `von`.
     threshold: R,
     lambda: R,
     theta: R,
-    /// The subthreshold slope at the transistor's temperature, and its shift.
+    /// Temperature-scaled subthreshold slope and threshold shift.
     slope: R,
     shift: R,
-    /// The factor on the drain-source voltage below saturation.
+    /// Triode drain-source conductance multiplier.
     triode: R,
 }
 
-/// What the channel's law yields at one bias.
+/// Channel evaluation result at a single bias point.
 #[derive(Debug, Clone, Copy)]
 struct Conduction<R: Real> {
-    /// The current from the drain to the source.
+    /// Drain-to-source current.
     current: Dual<R, 2>,
-    /// The saturation voltage, `max(vgst, 0)`.
+    /// Saturation voltage `max(vgst, 0)`.
     saturation: Dual<R, 2>,
-    /// Whether the drain is at or above the source; otherwise the two swap.
+    /// Flag indicating forward mode (`vds >= 0`); when `false`, drain and source swap.
     forward: bool,
     region: Region,
-    /// `vds − vdsat`, with the drain at or above the source.
+    /// Saturation margin `vds − vdsat` in forward orientation.
     margin: f64,
 }
 
 impl<R: Real> Law<R> {
-    /// The drain current at the gate-source and drain-source voltages, as ngspice's
-    /// `VDMOSload` computes it.
+    /// Evaluates drain current, saturation voltage, and region at `[vgs, vds]`, matching
+    /// ngspice `VDMOSload`.
     fn evaluate(&self, [vgs, vds]: [Dual<R, 2>; 2]) -> Conduction<R> {
         let forward = vds.value.value() >= 0.0;
         // With the drain below the source, the drain acts as the source.
@@ -458,7 +451,7 @@ impl<R: Real> Law<R> {
     }
 }
 
-/// `ln(1 + eˣ)`, with its slope, the logistic function, computed where neither overflows.
+/// Computes `ln(1 + eˣ)` and its logistic derivative without overflow.
 fn softplus<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
     let at = x.value.value();
     let falling = (-at.abs()).exp();
@@ -476,22 +469,22 @@ fn softplus<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
     ))
 }
 
-/// The gate's capacitances.
+/// Gate-source and nonlinear gate-drain capacitance parameters.
 #[derive(Debug, Clone, Copy)]
 struct Gate<R: Real> {
-    /// The gate-source capacitance.
+    /// Constant gate-source capacitance.
     source: R,
-    /// The gate-drain capacitance's swing, `s = (cgdmax − cgdmin) / (1 + π/2)`.
+    /// Gate-drain capacitance swing `s = (cgdmax − cgdmin) / (1 + π/2)`.
     swing: R,
-    /// Its middle, `y = cgdmax − s`, where the gate is at the drain.
+    /// Midpoint gate-drain capacitance `y = cgdmax − s` at `vgd = 0`.
     middle: R,
-    /// How fast it moves with the gate-drain voltage, `a`.
+    /// Transition steepness `a` with respect to `vgd`.
     rate: R,
 }
 
 impl<R: Real> Gate<R> {
-    /// The gate-drain charge at `vgd`, the integral of its capacitance from zero, with the
-    /// capacitance its derivative.
+    /// Evaluates gate-drain charge (analytical integral of capacitance from 0 V) and
+    /// capacitance derivative at `vgd`.
     fn drain_charge<const N: usize>(&self, vgd: Dual<R, N>) -> Dual<R, N> {
         let Self {
             swing,
@@ -529,19 +522,18 @@ impl<R: Real> Gate<R> {
     }
 }
 
-/// The quasi-saturation of the drain resistance.
+/// Quasi-saturation drain-resistance parameters.
 #[derive(Debug, Clone, Copy)]
 struct Quasi<R: Real> {
-    /// The quasi-saturation resistance at the transistor's temperature, of all the copies.
+    /// Temperature- and multiplier-scaled quasi-saturation resistance `rq`.
     resistance: R,
-    /// The voltage at which the drain resistance has grown by half of it.
+    /// Half-saturation drain-source voltage `vq`.
     voltage: R,
 }
 
 impl<R: Real> Quasi<R> {
-    /// The drain resistance `drain`, raised at the drain-source voltage `vds` across the
-    /// terminals, oriented as an n-channel's. Where the rise would make it no longer
-    /// positive, far below the source, ngspice takes the drain resistance alone.
+    /// Evaluates quasi-saturated drain resistance from base `drain` resistance and oriented
+    /// terminal `vds`, falling back to `drain` when the formula turns non-positive.
     fn resistance<const N: usize>(&self, drain: R, vds: Dual<R, N>) -> Dual<R, N> {
         let raised = (vds.scale(self.resistance) / vds.plus(self.voltage)).plus(drain);
         if raised.value.value() > 0.0 {
@@ -720,10 +712,11 @@ impl Kernel for Vdmos {
         REGIONS
     }
 
-    /// The thermal noise of the drain and source resistances and of the channel,
-    /// `8kT·gm / 3`, and the drain current's flicker noise, `KF · |Id|^AF / (f · Cox²)`
-    /// with SPICE's oxide of 0.1 µm, as ngspice's VDMOS models them: its gate and body
-    /// resistances and its body diode make none.
+    /// Appends ngspice VDMOS thermal noise for drain, source, and channel (`8kT·gm / 3`),
+    /// plus drain-current flicker noise `KF · |Id|^AF / (f · Cox²)` using the 0.1 µm oxide.
+    ///
+    /// Gate resistance, body resistance, and the body diode contribute no noise, matching
+    /// ngspice.
     fn noise<R: Real>(
         shape: &VdmosShape,
         prepared: &PreparedVdmos<R>,
@@ -771,9 +764,11 @@ impl Kernel for Vdmos {
 }
 
 impl<R: Real> VdmosParameters<R> {
-    /// The channel's law at `temperatures`, for `multiplier` copies in parallel, once each
-    /// of its parameters is checked: `kp` scales as `(T/Tn)^MU`, the threshold moves by its
-    /// temperature coefficient and the subthreshold slope by its own.
+    /// Validates channel parameters and prepares the temperature-scaled [`Law`] for
+    /// `multiplier` parallel copies at `temperatures`.
+    ///
+    /// Scales `kp` by `(T/Tn)^MU` and adjusts threshold voltage and subthreshold slope via
+    /// their respective temperature coefficients.
     fn law(&self, temperatures: Temperatures<R>, multiplier: R) -> Result<Law<R>, ParameterError> {
         let sign = self.channel.sign();
         let transconductance = ParameterError::non_negative(
@@ -812,9 +807,11 @@ impl<R: Real> VdmosParameters<R> {
         })
     }
 
-    /// The drain, source, gate and body resistances at `temperatures`, of `multiplier`
-    /// copies in parallel: the drain's scaled as `(T/Tn)^TEXP0` given that exponent and by
-    /// its temperature coefficients otherwise, and the others by theirs.
+    /// Validates and scales `[drain, source, gate, body]` series resistances at
+    /// `temperatures` for `multiplier` parallel copies.
+    ///
+    /// Scales drain resistance by `(T/Tn)^TEXP0` when given, or by quadratic temperature
+    /// coefficients otherwise.
     fn resistances(
         &self,
         temperatures: Temperatures<R>,
@@ -870,14 +867,13 @@ impl<R: Real> VdmosParameters<R> {
         ])
     }
 
-    /// The quasi-saturation at `temperatures`, of `multiplier` copies in parallel, given
-    /// both its resistance and its voltage, as ngspice takes it: its resistance scales as
-    /// `(T/Tn)^TEXP1`.
+    /// Prepares temperature-scaled quasi-saturation parameters (scaling `rq` by
+    /// `(T/Tn)^TEXP1`) for `multiplier` parallel copies when both `rq` and `vq` are given.
     ///
     /// # Errors
     ///
-    /// Returns an error without a drain resistance, whose internal node ngspice's
-    /// quasi-saturation needs and without which ngspice's equations turn infinite.
+    /// Returns an error when `drain_resistance` is zero; ngspice quasi-saturation requires an
+    /// internal drain node and diverges without one.
     fn quasi(
         &self,
         temperatures: Temperatures<R>,
@@ -905,7 +901,7 @@ impl<R: Real> VdmosParameters<R> {
         }))
     }
 
-    /// The gate's capacitances, of `multiplier` copies in parallel.
+    /// Validates and scales gate capacitances for `multiplier` parallel copies.
     fn gate(&self, multiplier: R) -> Result<Gate<R>, ParameterError> {
         let capacitance = |name: &str, value: R| {
             ParameterError::non_negative(name, value).map(|value| value * multiplier)
@@ -931,15 +927,16 @@ impl<R: Real> VdmosParameters<R> {
         })
     }
 
-    /// The body diode at `temperatures`, of `multiplier` copies in parallel: its
-    /// saturation current scaled with the energy gap and its potential and capacitance
-    /// with silicon's band gap, as ngspice's diode's, and its breakdown matched to the
-    /// breakdown current, which the copies share.
+    /// Prepares the temperature-scaled body diode [`Junction`] for `multiplier` parallel
+    /// copies at `temperatures`.
+    ///
+    /// Scales saturation current with the energy gap, scales potential and capacitance with
+    /// the silicon band gap, and matches breakdown to the shared breakdown current.
     ///
     /// # Errors
     ///
-    /// Returns an error where the depletion threshold, `FC · VJ` at the temperature, passes
-    /// 2.5 V, where ngspice's depletion charge jumps.
+    /// Returns an error when the depletion threshold `FC · VJ` exceeds 2.5 V, where ngspice
+    /// introduces a discontinuity in depletion charge.
     fn body(
         &self,
         temperatures: Temperatures<R>,
@@ -1016,7 +1013,7 @@ mod tests {
         "breakdown_voltage": 60, "breakdown_current": 2.5e-4,
         "breakdown_emission_coefficient": 3}"#;
 
-    /// The same transistor with the drain resistance quasi-saturating.
+    /// Returns `parameters` augmented with quasi-saturation drain resistance parameters.
     fn quasi(parameters: &str) -> String {
         parameters.replace(
             '{',
@@ -1024,7 +1021,7 @@ mod tests {
         )
     }
 
-    /// The same transistor with a p-channel.
+    /// Converts an n-channel VDMOS JSON parameter card to its p-channel mirror.
     fn p_channel(parameters: &str) -> String {
         parameters
             .replace(
@@ -1034,20 +1031,21 @@ mod tests {
             .replace('{', r#"{"channel": "p", "#)
     }
 
-    /// The channel alone, its body diode's leakage and its shunt negligible.
+    /// Channel-only VDMOS fixture with negligible body diode leakage and shunt conductance.
     const BARE: &str = r#"{"threshold_voltage": 3, "transconductance_parameter": 10,
         "channel_length_modulation": 0.01, "mobility_modulation": 0.05,
         "saturation_current": 1e-30, "drain_source_resistance": 1e30}"#;
 
-    /// The drain current of [`BARE`] at `vgs` and `vds`, the source grounded.
+    /// Evaluates drain current for `parameters` (such as [`BARE`]) at `vgs` and `vds` with
+    /// grounded source.
     fn drain_current(parameters: &str, vgs: f64, vds: f64) -> f64 {
         Bench::new::<Vdmos>(parameters)
             .settle(&[vds, vgs, 0.0])
             .residual[0]
     }
 
-    /// ngspice's drain current, forward, with `kp = 10`, `vto = 3`, `λ = 0.01`, `θ = 0.05`
-    /// and the default subthreshold slope of 0.1 V.
+    /// Computes reference ngspice forward drain current for `kp = 10`, `vto = 3`, `λ = 0.01`,
+    /// `θ = 0.05`, and default subthreshold slope `0.1 V`.
     fn expected(vgs: f64, vds: f64, triode: f64) -> f64 {
         let vgst = vgs - 3.0;
         let betap = 10.0 * (1.0 + 0.01 * vds) / (1.0 + 0.05 * vgst.max(0.0));
@@ -1115,7 +1113,7 @@ mod tests {
         let into = bench.settle(&x).residual[0];
         let expected = 0.1 / resistance + LEAKAGE * 30.0 + reversed(30.0);
         assert!((into / expected - 1.0).abs() < 1e-12, "{into} {expected}");
-        // Reversed, the drain resistance is its own, and the body diode conducts forward.
+        // In reverse mode, drain resistance returns to base `rd` and the body diode conducts.
         let into = bench.settle(&[-0.3, 0.0, 0.0, -0.2]).residual[0];
         let diode = 1e-14 * ((0.3 / vt).exp() - 1.0);
         let expected = -0.1 / 2.0 - LEAKAGE * 0.3 - diode;
@@ -1223,7 +1221,7 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"subthreshold_slope": 0}"#),
-            "subthreshold_slope must be positive, not 0.0"
+            "subthreshold_slope is positive, not 0.0"
         );
         assert_eq!(
             error(
@@ -1235,9 +1233,8 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges, in every region, in both modes and for both channels, with and without
-        /// quasi-saturation, the body diode forward, reversed and broken down.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across all regions, modes, channels, quasi-saturation, and body-diode regimes.
         #[test]
         fn jacobians_match_finite_differences(
             drain in -1.5..70.0f64,
@@ -1296,11 +1293,11 @@ mod tests {
         assert_eq!(sources.len(), 4, "{sources:?}");
     }
 
-    /// A transistor is linear with its drain below its softened overdrive and saturated
-    /// past it, there being no region below its threshold, where the softened overdrive
-    /// keeps it conducting, saturated; its margin vanishes where `VDMOSload` switches, the
-    /// drain and the source swapping where the drain lies below, a p-channel's equal to an
-    /// n-channel's at the voltages reversed.
+    /// Verifies that [`Vdmos`] classifies linear and saturated regions (with softened
+    /// subthreshold conduction remaining saturated), symmetric drain/source swap, and
+    /// p-channel mirror polarity.
+    ///
+    /// Saturation margin vanishes at the `VDMOSload` boundary.
     #[test]
     fn reports_its_region_and_margin() {
         let parameters = r#"{"triode_conductance_multiplier": 0.5}"#;

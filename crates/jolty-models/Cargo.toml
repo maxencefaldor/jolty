@@ -22,15 +22,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [features]
-# The bench that evaluates one device alone, for the tests of crates whose kernels
-# implement this crate's.
+# Exposes the single-device test bench for downstream crates whose kernels implement
+# `jolty-models` traits.
 testing = []
 
 [dev-dependencies]
 allocation-counter.workspace = true
 criterion.workspace = true
 gungraun.workspace = true
-# The crate itself with its bench, for its benchmarks.
+# Self-dependency with the `testing` feature enabled for benchmarks.
 # Path-only so `cargo package` / `cargo publish` strips this self-dependency rather than
 # requiring an already-published version on crates.io.
 jolty-models = { path = ".", features = ["testing"] }

@@ -8,9 +8,8 @@ use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
 };
 
-/// The parameters of an independent source held at a constant `value`, in volts or
-/// amperes, whatever its waveform: those of a source whose waveform is that value. A DC
-/// sweep makes its source from them at each of its values.
+/// Builds parameters for an independent source held at constant DC `value` (in volts or
+/// amperes), used by DC sweeps at each step.
 #[must_use]
 pub fn held_source(value: f64) -> Parameters {
     let mut parameters = Parameters::new();
@@ -82,15 +81,14 @@ macro_rules! source_common {
     };
 }
 
-/// An independent voltage source from terminal `negative` to terminal `positive`.
+/// Independent voltage source constraining `v_positive − v_negative` to its waveform value.
 ///
-/// It holds `v_positive − v_negative` at its value. Its current, flowing from `positive`
-/// through the source to `negative`, is an unknown labelled `current`, so a source that
-/// delivers power carries a negative current.
+/// The branch current flowing from `positive` through the source to `negative` is an unknown
+/// labelled `current`, so a source delivering power carries negative current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageSource;
 
-/// Where a voltage source's contributions go: through its branch.
+/// Layout shape for [`VoltageSource`] wrapping its branch-current equation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageSourceShape(CurrentBranch);
 
@@ -123,7 +121,8 @@ impl Kernel for VoltageSource {
         branch.add(at, stamp, -(value - voltage));
     }
 
-    /// The residual of the branch's equation, `v − value`, falls by one with the value.
+    /// Stamps `-1.0` into the branch equation residual (derivative of `v − value` with respect
+    /// to `value`).
     fn excite<R: Real>(VoltageSourceShape(branch): &VoltageSourceShape, stamp: &mut Stamp<'_, R>) {
         stamp.add_residual(branch.unknown(), R::constant(-1.0));
     }
@@ -162,7 +161,7 @@ impl Kernel for CurrentSource {
         stamp.add_residual(negative, -current);
     }
 
-    /// The current leaves `positive` and enters `negative`, one ampere per unit of its value.
+    /// Stamps `+1.0` at `positive` and `-1.0` at `negative` (unit excitation per ampere).
     fn excite<R: Real>((): &(), stamp: &mut Stamp<'_, R>) {
         let [positive, negative] = TERMINALS;
         stamp.add_residual(positive, R::constant(1.0));

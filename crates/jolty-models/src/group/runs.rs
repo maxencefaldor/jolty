@@ -15,48 +15,47 @@ use crate::{
     UnknownIndex,
 };
 
-/// What has changed of an instance since its run last prepared it.
+/// Scope of change to a device instance since the previous run preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Changed {
-    /// Nothing: its numbers stand.
+    /// Unchanged instance whose prepared parameters remain valid.
     Nothing,
-    /// Its temperature, or its parameters back to those its group was made of: its numbers
-    /// are prepared again, and its shape is its group's.
+    /// Temperature change or parameter restoration matching the existing group shape,
+    /// requiring re-preparation without layout verification.
     Numbers,
-    /// Its parameters, to others than its group was made of: its numbers are prepared
-    /// again, and its shape is checked against its group's.
+    /// Parameter modification requiring both re-preparation and layout shape verification
+    /// against the existing group.
     Parameters,
 }
 
-/// How a run splits a kind of its work among the threads of the current rayon pool: into
-/// tasks of at least `least` items each, such as a group's instances, and at most one a
-/// thread.
+/// Work-partitioning policy dividing items across threads in the active rayon pool into
+/// tasks of at least `least` items each and at most one task per thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
-    /// The fewest items a task takes.
+    /// Minimum number of items assigned to one parallel task.
     pub least: NonZeroUsize,
-    /// The threads the tasks share.
+    /// Maximum number of threads sharing the tasks.
     pub threads: NonZeroUsize,
 }
 
 impl Tasks {
-    /// How many tasks `items` items split into: one a thread, each of at least
-    /// [`Tasks::least`] items, and one when they fill fewer than two.
+    /// Computes the number of tasks for `items` (at least 1, capped by [`Tasks::threads`],
+    /// with at least [`Tasks::least`] items per task).
     #[must_use]
     pub fn count(&self, items: usize) -> usize {
         self.threads.get().min(items / self.least).max(1)
     }
 
-    /// How many of `items` items each of their [`Tasks::count`] tasks takes, the last the
-    /// rest.
+    /// Computes the item count assigned to each of [`Tasks::count`] tasks, with the final
+    /// task receiving any remainder.
     #[must_use]
     pub fn size(&self, items: usize) -> usize {
         items.div_ceil(self.count(items)).max(1)
     }
 }
 
-/// The slab: each instance's block of residuals, scales and charges of its local unknowns,
-/// and of conductances and capacitances of its local entries, group after group.
+/// Contiguous evaluation slab storing per-instance row planes (residuals, scales, charges)
+/// and entry planes (conductances, capacitances) across all groups.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Slab {
     rows: [Vec<f64>; 3],
@@ -64,7 +63,7 @@ pub(super) struct Slab {
 }
 
 impl Slab {
-    /// A zeroed slab of `rows` local unknowns and `entries` local entries.
+    /// Allocates a zero-initialized slab with `rows` row slots and `entries` entry slots.
     pub(super) fn sized((rows, entries): (usize, usize)) -> Self {
         Self {
             rows: std::array::from_fn(|_| vec![0.0; rows]),
@@ -72,14 +71,14 @@ impl Slab {
         }
     }
 
-    /// Shared views of all five slab planes.
+    /// Returns shared slice views of all five slab planes.
     fn slices(&self) -> ([&[f64]; 3], [&[f64]; 2]) {
         let [residual, scale, charge] = &self.rows;
         let [conductance, capacitance] = &self.entries;
         ([residual, scale, charge], [conductance, capacitance])
     }
 
-    /// Mutable views of all five slab planes.
+    /// Returns mutable slice views of all five slab planes.
     fn slices_mut(&mut self) -> Blocks<'_> {
         let [residual, scale, charge] = &mut self.rows;
         let [conductance, capacitance] = &mut self.entries;
@@ -89,20 +88,18 @@ impl Slab {
     }
 }
 
-/// What one run of a circuit's groups writes: each instance's prepared numbers and memory,
-/// and the slab its evaluations write.
+/// Mutable per-run simulation state across all device groups, holding prepared parameters,
+/// instance memory, and the evaluation slab.
 #[derive(Debug, Default)]
 pub struct Runs {
     pub(super) groups: Vec<Box<dyn GroupRun>>,
     pub(super) slab: Slab,
-    /// The layout each instance prepared again claims, to check its shape.
+    /// Reusable scratch layout used to verify shapes when preparing modified parameters.
     pub(super) layout: Layout,
-    /// Whether an instance of each group limited its voltages, as the group's last
-    /// evaluation in parallel found.
+    /// Per-group voltage-limiting flags recorded during the most recent parallel evaluation.
     pub(super) limited: Vec<bool>,
-    /// Whether the linear instances' blocks hold their entries, at their numbers now, and
-    /// the slab the base they sum to: false until the first evaluation, and again once an
-    /// instance is prepared afresh or the slab forgotten.
+    /// Flag indicating that linear entry blocks and the summed base region reflect current
+    /// prepared parameters; reset on parameter commits or [`Runs::forget`].
     pub(super) stamped: bool,
 }
 
@@ -118,50 +115,47 @@ impl Clone for Runs {
     }
 }
 
-/// One instance's block of a run's slab, as its last evaluation wrote it: the residual,
-/// scale and charge of each of its local unknowns, its terminals then its internal unknowns,
-/// and the conductance and capacitance of each of its local entries, each the pair of local
-/// unknowns `entries` gives, and the circuit's unknown of each local unknown, or
-/// [`UNMAPPED`] for one on ground.
+/// Borrowed view of one device instance's slab block from the most recent evaluation.
+///
+/// Exposes local unknown residuals, scales, and charges alongside local entry conductances,
+/// capacitances, row-column pairs, and global unknown indices ([`UNMAPPED`] for ground).
 #[derive(Debug, Clone, Copy)]
 pub struct Block<'a> {
-    /// The residual of each local unknown's equation.
+    /// Residual values for each local unknown equation.
     pub residual: &'a [f64],
-    /// The largest magnitude of a term of each residual.
+    /// Largest term magnitude contributing to each local residual.
     pub scale: &'a [f64],
-    /// The charge of each local unknown's equation.
+    /// Charge or flux values for each local unknown equation.
     pub charge: &'a [f64],
-    /// The conductance at each local entry.
+    /// Conductance Jacobian values for each local entry.
     pub conductance: &'a [f64],
-    /// The capacitance at each local entry.
+    /// Capacitance Jacobian values for each local entry.
     pub capacitance: &'a [f64],
-    /// The row and the column of each local entry, local unknowns both.
+    /// Local `(row, column)` unknown index pairs for each entry.
     pub entries: &'a [(usize, usize)],
-    /// The circuit's unknown of each local unknown.
+    /// Global unknown indices for each local unknown ([`UNMAPPED`] for ground).
     pub nodes: &'a [u32],
 }
 
-/// One instance's block of contributions, evaluated alone, and where its values go among
-/// the circuit's: the residual, scale and charge of each local unknown, the conductance and
-/// capacitance of each local entry, the circuit's unknown of each local unknown, or
-/// [`UNMAPPED`] for one on ground, and the stored position of each local entry, or
-/// [`UNMAPPED`] for none.
+/// Owned evaluation block produced by evaluating a single device instance in isolation,
+/// paired with global unknown (`nodes`) and sparsity (`slots`) maps ([`UNMAPPED`] for
+/// ground).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Alone {
-    /// The residual, the scale and the charge of each local unknown.
+    /// Residual, scale, and charge vectors for local unknowns.
     pub rows: [Vec<f64>; 3],
-    /// The conductance and the capacitance of each local entry.
+    /// Conductance and capacitance vectors for local entries.
     pub entries: [Vec<f64>; 2],
-    /// The circuit's unknown of each local unknown.
+    /// Global unknown index for each local unknown.
     pub nodes: Vec<u32>,
-    /// The stored position of each local entry.
+    /// Stored sparsity slot index for each local entry.
     pub slots: Vec<u32>,
-    /// Whether the instance limited its voltages.
+    /// Flag indicating whether voltage limiting triggered during evaluation.
     pub limited: bool,
 }
 
 impl Runs {
-    /// The group, its run, and the member index of `device`, if it is a kernel's instance.
+    /// Looks up the group, group run, and member index for `device`, if registered.
     fn entry<'a>(
         &'a self,
         groups: &'a Groups,
@@ -173,9 +167,8 @@ impl Runs {
         Some((of, run, member))
     }
 
-    /// Appends the noise of the instance the device `device` is, if it is a kernel's, at
-    /// `input`, the operating point a noise analysis linearizes about, to `sources`, each
-    /// source's equations the circuit's.
+    /// Appends circuit-mapped noise sources for `device` linearized about operating point
+    /// `input` to `sources`.
     pub fn noise(
         &self,
         groups: &Groups,
@@ -188,20 +181,19 @@ impl Runs {
         }
     }
 
-    /// Writes the variables of the instance the device `device` is, if it is a kernel's,
-    /// as its last evaluation left them, to `values`, one per name of
-    /// [`Instance::variable_names`].
+    /// Copies internal variable values recorded at the last evaluation of `device` into
+    /// `values`, ordered to match [`Instance::variable_names`].
     pub fn variables(&self, groups: &Groups, device: usize, values: &mut [f64]) {
         if let Some((_, run, member)) = self.entry(groups, device) {
             run.variables(member, values);
         }
     }
 
-    /// The twin of the instance the device `device` is, the `instance` of its parameters
-    /// as the run now makes it, at the temperature `temperature` of its surroundings,
-    /// differentiated along `seeds`, from its initial memory; `None` when its kernel reads
-    /// no real number at a seed's path, as when it reads it as a choice, such as a level,
-    /// or a parameter is out of range.
+    /// Builds a forward-mode sensitivity [`Twin`] for `device` from `instance` at ambient
+    /// `temperature` along `seeds`, starting from initial memory.
+    ///
+    /// Returns `None` when a seed path addresses a non-real choice parameter or validation
+    /// fails.
     #[must_use]
     pub fn twin(
         &self,
@@ -218,9 +210,9 @@ impl Runs {
         Some(Twin::new(evaluated, nodes, slots, seeds))
     }
 
-    /// Twins of the instance the device `device` is, at `temperature`, whose seeds move
-    /// each of the circuit's unknowns its local unknowns map to, once, up to
-    /// [`Seeds::MAX`] unknowns to a twin, its parameters constant.
+    /// Builds [`Twin`] instances for `device` at `instance.1` seeded along each distinct
+    /// non-ground circuit unknown mapped to `device`, batched up to [`Seeds::MAX`] per twin
+    /// with parameters held constant.
     #[must_use]
     pub fn unknown_twins(
         &self,
@@ -249,17 +241,15 @@ impl Runs {
             .collect()
     }
 
-    /// The DC value of the instance the device `device` is, if it is an independent source,
-    /// which analyses excite: its waveform's value at time zero.
+    /// Returns the time-zero DC value of `device` if it is an independent source.
     #[must_use]
     pub fn dc_value(&self, groups: &Groups, device: usize) -> Option<f64> {
         let (_, run, member) = self.entry(groups, device)?;
         run.dc_value(member)
     }
 
-    /// Adds the derivative of each of the circuit's residuals with respect to the value of
-    /// the instance the device `device` is, if it is an independent source, to
-    /// `derivative`, one value per unknown: how a small-signal analysis excites it.
+    /// Accumulates the small-signal residual derivative with respect to the source value of
+    /// `device` into `derivative`.
     pub fn excite(&self, groups: &Groups, device: usize, derivative: &mut [f64]) {
         let (Some(local), Some(block)) =
             (self.excitation(groups, device), self.block(groups, device))
@@ -273,17 +263,15 @@ impl Runs {
         }
     }
 
-    /// The derivative of each residual of the instance the device `device` is with respect
-    /// to its value, as an independent source's, one value per local unknown: zero for
-    /// each, for an instance that is no independent source.
+    /// Returns local residual derivatives with respect to source value for `device` (all
+    /// zeros if `device` is not an independent source).
     #[must_use]
     pub fn excitation(&self, groups: &Groups, device: usize) -> Option<Vec<f64>> {
         let (of, run, _) = self.entry(groups, device)?;
         Some(run.excitation(of))
     }
 
-    /// The block of the instance the device `device` is in the slab, as the last evaluation
-    /// wrote it.
+    /// Returns a read-only [`Block`] view of `device` in the evaluation slab.
     #[must_use]
     pub fn block<'a>(&'a self, groups: &'a Groups, device: usize) -> Option<Block<'a>> {
         let (of, member) = groups.group_of(device)?;
@@ -303,9 +291,8 @@ impl Runs {
         })
     }
 
-    /// Starts the instance the device `device` is, if it is a logic driver, moving to the
-    /// level `level` at `time`, at the rate that swings ground to supply in `transition`
-    /// seconds, and returns when it settles; `None` for an instance that drives no logic.
+    /// Starts logic driver `device` ramping toward `ramp.1` at `ramp.0` over full-swing
+    /// duration `ramp.2`, returning the settling timestamp or `None` for non-drivers.
     pub fn drive(
         &mut self,
         groups: &Groups,
@@ -316,34 +303,32 @@ impl Runs {
         self.groups.get_mut(group)?.drive(member, ramp)
     }
 
-    /// The unknown of the current through the instance the device `device` is, if it is a
-    /// logic driver, whose equation holds its voltage.
+    /// Returns the branch-current unknown constraining the output voltage of logic driver
+    /// `device`, if any.
     #[must_use]
     pub fn driven(&self, groups: &Groups, device: usize) -> Option<UnknownIndex> {
         let (of, run, member) = self.entry(groups, device)?;
         run.driven(member, of)
     }
 
-    /// How far the input of the instance the device `device` is, if it is a logic input's
-    /// detector, lies above its threshold at `input`, and the voltage of its supply above
-    /// its ground there, in volts.
+    /// Evaluates input threshold margin and supply swing (in volts) at `input` for logic
+    /// detector `device`, if applicable.
     #[must_use]
     pub fn sense(&self, groups: &Groups, device: usize, input: &Input<'_>) -> Option<(f64, f64)> {
         let (of, run, member) = self.entry(groups, device)?;
         run.sense(member, of, input)
     }
 
-    /// Appends the times in `[start, stop]` where an instance is not smooth to `times`, so
-    /// a transient analysis steps onto them exactly.
+    /// Appends non-smooth waveform breakpoints within `span` to `times` so transient stepping
+    /// lands on corners exactly.
     pub fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>) {
         for run in &self.groups {
             run.breakpoints(span, times);
         }
     }
 
-    /// The device indices of the instances of `groups` whose equations explicitly depend
-    /// on time, as [`Kernel::varies_in_time`](crate::Kernel::varies_in_time) states it, in
-    /// ascending order.
+    /// Collects sorted device indices in `groups` with explicit time dependence per
+    /// [`Kernel::varies_in_time`](crate::Kernel::varies_in_time).
     #[must_use]
     pub fn time_varying(&self, groups: &Groups) -> Vec<usize> {
         let mut found = Vec::new();
@@ -355,11 +340,8 @@ impl Runs {
         found
     }
 
-    /// Each part of the circuit's conductance that an instance of `groups` reads in the
-    /// past, as [`Kernel::delayed`](crate::Kernel::delayed) states it, placed among the
-    /// circuit's equations, in the order of the groups and their instances: none in a
-    /// circuit without a delay line. A part whose row or column is ground is not
-    /// among them.
+    /// Collects all non-ground delayed conductance entries reported by
+    /// [`Kernel::delayed`](crate::Kernel::delayed) across `groups` in group and member order.
     #[must_use]
     pub fn delayed(&self, groups: &Groups) -> Vec<DelayedEntry> {
         let mut found = Vec::new();
@@ -369,9 +351,8 @@ impl Runs {
         found
     }
 
-    /// The earliest fraction of the way from `before` to `after`, the states at the two
-    /// ends of a step, at which an instance's contribution jumps, as a choice its behavior
-    /// turns on changes, located by linear interpolation; `None` when none changes.
+    /// Locates the earliest linear-interpolation fraction between `before` and `after` where
+    /// any behavioral branch choice flips, returning `None` if no branch changes.
     pub fn first_jump(
         &mut self,
         groups: &Groups,
@@ -387,9 +368,8 @@ impl Runs {
         first
     }
 
-    /// Evaluates the instance the device `device` is, if it is a kernel's, alone at
-    /// `input`, into a block of its own, from what it remembers, which it updates, as its
-    /// group evaluates it: a linear instance's rows from its entries.
+    /// Evaluates `device` in isolation at `input` into a freshly allocated [`Alone`] block,
+    /// updating instance memory and using cached linear terms when linear.
     pub fn evaluate_alone(
         &mut self,
         groups: &Groups,
@@ -399,8 +379,8 @@ impl Runs {
         self.alone(groups, device, input, true)
     }
 
-    /// Evaluates the instance the device `device` is as [`Runs::evaluate_alone`] does, but
-    /// by its kernel at `input` even where it is linear.
+    /// Evaluates `device` in isolation like [`Runs::evaluate_alone`], always invoking the
+    /// underlying kernel directly even for linear instances.
     #[cfg(test)]
     pub(crate) fn evaluate_by_kernel(
         &mut self,
@@ -411,8 +391,8 @@ impl Runs {
         self.alone(groups, device, input, false)
     }
 
-    /// [`Runs::evaluate_alone`], a linear instance's rows from its entries when `linear`,
-    /// and else by its kernel.
+    /// Evaluates `device` into an [`Alone`] block, using cached linear terms when `linear` is
+    /// true or direct kernel evaluation otherwise.
     fn alone(
         &mut self,
         groups: &Groups,
@@ -444,14 +424,16 @@ impl Runs {
         Some(alone)
     }
 
-    /// Prepares again each instance of `groups` whose device `changed` says has changed,
-    /// from the instance `instance` gives of it, at the temperature `temperature` of its
-    /// surroundings, keeping the numbers apart until [`Runs::commit`] takes them. Returns
-    /// whether each has its group's kernel and shape; when one does not, nothing is kept.
+    /// Stages re-prepared parameters for every instance marked by `changed` at ambient
+    /// `temperature`, leaving committed state untouched until [`Runs::commit`].
+    ///
+    /// Returns `Ok(false)` and discards staged updates if any modified instance changes
+    /// kernel, linearity, or shape.
     ///
     /// # Errors
     ///
-    /// Returns each device whose parameters are out of range, with why; nothing is kept.
+    /// Returns all `(device_index, ParameterError)` pairs if validation fails, discarding all
+    /// staged updates.
     pub fn prepare<'a>(
         &mut self,
         groups: &Groups,
@@ -487,9 +469,8 @@ impl Runs {
         }
     }
 
-    /// Takes the numbers [`Runs::prepare`] kept apart, each instance prepared again
-    /// starting from its initial memory, as one made afresh, and every other keeping what
-    /// it remembers.
+    /// Commits staged updates from [`Runs::prepare`], resetting memory only on updated
+    /// instances and preserving memory on unchanged instances.
     pub fn commit(&mut self) {
         for run in &mut self.groups {
             if run.commit() {
@@ -498,8 +479,7 @@ impl Runs {
         }
     }
 
-    /// Forgets what every instance remembers and what the slab holds, so the run starts as
-    /// one made afresh.
+    /// Resets every instance's memory, zeroes the slab, and clears cached linear stamps.
     pub fn forget(&mut self) {
         for run in &mut self.groups {
             run.forget();
@@ -510,25 +490,22 @@ impl Runs {
         self.stamped = false;
     }
 
-    /// The slab as the last evaluation wrote it: each instance's residuals, scales and
-    /// charges of its local unknowns, and conductances and capacitances of its local
-    /// entries, and beyond every block the copies of those that contribute to a long
-    /// value, at the places [`Groups::gathers`] reads them.
+    /// Returns read-only slab planes holding per-instance blocks and trailing high-fanout
+    /// copies in the layout expected by [`Groups::gathers`].
     #[must_use]
     pub fn slab(&self) -> ([&[f64]; 3], [&[f64]; 2]) {
         self.slab.slices()
     }
 
-    /// Forgets the numbers [`Runs::prepare`] kept apart.
+    /// Discards staged updates from [`Runs::prepare`] across all groups.
     fn discard(&mut self) {
         for run in &mut self.groups {
             run.discard();
         }
     }
 
-    /// Writes into the block of each linear instance of `groups` its entries, as its kernel
-    /// evaluates them at [`Input::ZERO`], as at any state, and sums them into the base, each
-    /// value from zero, its sources one after another in their order.
+    /// Stamps constant Jacobian entries for all linear groups at [`Input::ZERO`] and sums
+    /// them into the shared base region in deterministic order.
     fn stamp(&mut self, groups: &Groups) {
         let (mut rows, mut entries) = self.slab.slices_mut();
         for (group, run) in groups.kernels.iter().zip(&mut self.groups) {
@@ -554,15 +531,13 @@ impl Runs {
         self.stamped = true;
     }
 
-    /// Evaluates every instance of `groups` at `input` and assembles their contributions in
-    /// `into`, whatever it held: serially without `tasks`, `into` zeroed, the base added to
-    /// it and each instance's block added as soon as it is written, and else in parallel,
-    /// every group at once, each that is not linear in the tasks of instances `tasks`
-    /// sets and each linear one in one, every block
-    /// written first and then gathered into `into`, each value from zero, the base's first,
-    /// as the threads take them. A linear instance's block keeps its entries, which the base
-    /// sums, and its residuals, their scales and its charges come from them. Returns
-    /// whether an instance limited its voltages.
+    /// Evaluates every instance in `groups` at `input`, assembles global contributions into
+    /// `into`, and returns whether any instance limited voltages.
+    ///
+    /// Serial mode (`tasks` is `None`) clears `into`, adds the linear base, and accumulates
+    /// each block immediately. Parallel mode (`tasks` is `Some`) evaluates groups
+    /// concurrently and gathers blocks deterministically into `into`, reusing cached entries
+    /// for linear groups.
     pub fn evaluate(
         &mut self,
         groups: &Groups,
@@ -574,7 +549,7 @@ impl Runs {
             self.stamp(groups);
         }
         let (mut rows, mut entries) = self.slab.slices_mut();
-        // The copies lie beyond every group's blocks, and the base beyond the copies.
+        // Copies follow all group blocks, and the linear base follows the entry copies.
         let (mut row_copies, mut entry_copies) = (
             beyond(&mut rows, groups.sizes.0),
             beyond(&mut entries, groups.sizes.1),
@@ -599,8 +574,8 @@ impl Runs {
             }
             return limited;
         };
-        // Each group writes blocks of its own, and says in a flag of its own whether it
-        // limited, so the groups evaluate at once, as they would one after another.
+        // Each group writes to disjoint slab blocks and a dedicated limiting flag so groups
+        // evaluate concurrently with deterministic results.
         self.limited.resize(groups.kernels.len(), false);
         rayon::scope(|scope| {
             for ((group, run), limited) in runs.zip(&mut self.limited) {

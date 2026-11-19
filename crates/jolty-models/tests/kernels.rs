@@ -12,10 +12,9 @@ use jolty_models::{
 };
 use jolty_numerics::PatternBuilder;
 
-/// Evaluates a device of the standard library's model `name` with `parameters`, its
-/// instance in a group of its own, each terminal on an unknown of its own, at the case's
-/// values `x` and around them, limiting its steps and not, at an operating point and in a
-/// transient, and returns how many allocations the evaluations made after the first.
+/// Evaluates a standard-library device (`name`, `parameters`) in an isolated group with
+/// dedicated terminal unknowns at and around `x`, exercising limited, unlimited, DC, and
+/// transient steps. Returns the heap allocation count after the first evaluation.
 fn allocations(name: &str, parameters: &str, x: &[f64]) -> u64 {
     let library = Library::standard();
     let parameters = serde_json::from_str(parameters).expect("parameters");
@@ -64,7 +63,8 @@ fn allocations(name: &str, parameters: &str, x: &[f64]) -> u64 {
     info.count_total
 }
 
-/// Every analog model's kernel evaluates without allocating, at each case of it.
+/// Verifies that every analog model kernel evaluates without heap allocations across all
+/// benchmarked cases.
 #[test]
 fn a_kernels_evaluation_allocates_nothing() {
     let library = Library::standard();

@@ -1,17 +1,17 @@
-//! The instructions one evaluation of a device's kernel, or of a twin of it, executes, in
-//! each of the cases of `cases/`, counted by Valgrind's Callgrind through gungraun, the
-//! case's making and dropping left out, the case returned to the harness: deterministic,
-//! so two builds compare to the instruction whatever the machine's load, where
-//! `evaluation.rs`'s times cannot. It needs Valgrind and the gungraun-runner
-//! of gungraun's version, `cargo install gungraun-runner --version 0.20.0 --locked`; run
-//! it as `cargo bench -p jolty-models --bench instructions`, which compares each count
-//! with the last run's, or name a baseline with `-- --save-baseline=NAME` and
-//! `-- --baseline=NAME`.
+//! Instruction counts for single kernel and twin evaluations across all cases in
+//! `cases/`, measured under Valgrind Callgrind via gungraun. Setup and drop are excluded
+//! by returning the case to the harness, yielding deterministic instruction counts
+//! unaffected by host load.
+//!
+//! Running the suite requires Valgrind and a matching `gungraun-runner`
+//! (`cargo install gungraun-runner --version 0.20.0 --locked`). Invoke
+//! `cargo bench -p jolty-models --bench instructions` to compare against the previous
+//! run, or pass `-- --save-baseline=NAME` and `-- --baseline=NAME`.
 
 #![expect(
     missing_docs,
     unused_qualifications,
-    reason = "gungraun's macros expand to items undocumented and paths qualified in full, which these lints read as the bench's own"
+    reason = "gungraun macros expand to undocumented items and qualified paths"
 )]
 
 mod cases;

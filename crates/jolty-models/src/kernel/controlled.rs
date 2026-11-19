@@ -58,16 +58,16 @@ macro_rules! controlled_common {
     };
 }
 
-/// A voltage-controlled voltage source.
+/// Linear voltage-controlled voltage source.
 ///
-/// It holds `v_positive − v_negative = gain · (v_control_positive − v_control_negative)`. Its
-/// current, flowing from `positive` through the source to `negative`, is an unknown labelled
-/// `current`. The control terminals draw no current.
+/// Constrains `v_positive − v_negative = gain · (v_control_positive − v_control_negative)`.
+/// Output current flowing from `positive` to `negative` is an unknown labelled `current`,
+/// while control terminals draw zero current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledVoltageSource;
 
-/// Where a voltage-controlled voltage source's contributions go: through its branch, and
-/// at the entries of its current's equation at each control terminal.
+/// Layout shape for [`VoltageControlledVoltageSource`] holding the output branch and
+/// control-voltage entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageControlledVoltageSourceShape {
     branch: CurrentBranch,
@@ -122,15 +122,15 @@ impl Kernel for VoltageControlledVoltageSource {
     }
 }
 
-/// A voltage-controlled current source.
+/// Linear voltage-controlled current source.
 ///
-/// It drives `transconductance · (v_control_positive − v_control_negative)` from `positive`
-/// through the source to `negative`. The control terminals draw no current.
+/// Drives `transconductance · (v_control_positive − v_control_negative)` from `positive`
+/// through the source to `negative`, drawing zero current at the control terminals.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledCurrentSource;
 
-/// Where a voltage-controlled current source's contributions go: at the entries joining
-/// each output terminal to each control terminal.
+/// Layout shape for [`VoltageControlledCurrentSource`] indexing the four output-to-control
+/// matrix entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoltageControlledCurrentSourceShape([usize; 4]);
 
@@ -189,18 +189,16 @@ impl Kernel for VoltageControlledCurrentSource {
     }
 }
 
-/// A current-controlled current source, after Modelica's: its control port is a short
-/// circuit that senses the current through it.
+/// Linear current-controlled current source modeled with a zero-volt sensing port.
 ///
-/// It drives `gain` times the control current from `positive` through the source to
-/// `negative`. The control current flows from `control_positive` through the port to
-/// `control_negative`, which it holds at the same voltage; it is an unknown labelled
-/// `control`.
+/// Drives `gain` times the control current from `positive` through the source to `negative`.
+/// The control port shorts `control_positive` to `control_negative` with a branch-current
+/// unknown labelled `control`.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledCurrentSource;
 
-/// Where a current-controlled current source's contributions go: through its sensing
-/// port, and at the entries of each output terminal's equation at the control.
+/// Layout shape for [`CurrentControlledCurrentSource`] holding the sensing branch and
+/// output-to-control matrix entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentControlledCurrentSourceShape {
     sense: CurrentBranch,
@@ -264,18 +262,16 @@ impl Kernel for CurrentControlledCurrentSource {
     }
 }
 
-/// A current-controlled voltage source, after Modelica's: its control port is a short
-/// circuit that senses the current through it.
+/// Linear current-controlled voltage source modeled with a zero-volt sensing port.
 ///
-/// It holds `v_positive − v_negative = transresistance · i_control`. The control current
-/// flows from `control_positive` through the port to `control_negative`, which it holds
-/// at the same voltage; it is an unknown labelled `control`. The output current, from
-/// `positive` through the source to `negative`, is an unknown labelled `current`.
+/// Constrains `v_positive − v_negative = transresistance · i_control`. The control port
+/// shorts `control_positive` to `control_negative` (unknown `control`), and output current
+/// flowing from `positive` to `negative` is an unknown labelled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledVoltageSource;
 
-/// Where a current-controlled voltage source's contributions go: through its sensing
-/// port and its output branch, and at the entry of its current's equation at the control.
+/// Layout shape for [`CurrentControlledVoltageSource`] holding the sensing port, output
+/// branch, and transresistance matrix entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurrentControlledVoltageSourceShape {
     sense: CurrentBranch,

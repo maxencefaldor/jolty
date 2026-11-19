@@ -22,12 +22,12 @@ const SOURCE_END_EXPONENT: f64 = 6.0;
 /// The least argument of `b4v5ld.c`'s gate-induced leakage's exponential, below whose
 /// negative it holds the leakage at its `3.720075976e-44` times its prefactor.
 const GIDL_EXPONENT: f64 = 100.0;
-/// `e^−100`, as `b4v5ld.c` writes it for the gate-induced leakage.
+/// Lower exponential floor `e^−100` used by `b4v5ld.c` for gate-induced leakage.
 const GIDL_MIN_EXP: f64 = 3.720_075_976e-44;
 
-/// What a channel of all its fingers carries at one bias, in the frame whose drain lies
-/// at or above its source, each with its derivatives with respect to the frame's gate-source,
-/// drain-source and body-source voltages.
+/// Multi-finger channel evaluation state at one bias in the forward frame (`vds >= 0`),
+/// carrying values and derivatives with respect to frame gate-source, drain-source, and
+/// body-source voltages.
 pub(super) struct Operating<R: Real> {
     /// The drain current.
     pub(super) ids: D<R>,
@@ -41,11 +41,10 @@ pub(super) struct Operating<R: Real> {
     pub(super) vbseff: D<R>,
     pub(super) n: D<R>,
     pub(super) abulk0: D<R>,
-    /// What the noise and the gate's intrinsic-input resistance read of one finger: the
-    /// mobility, the effective gate-source and drain-source voltages, `EsatL`, `Abulk`
-    /// after and before `keta`, the oxide's capacitance through the inversion layer, the
-    /// source and drain resistance, `β`, the current over `Vdseff` before the source
-    /// end's velocity limit and `nstar`.
+    /// Single-finger quantities read by noise and gate intrinsic-input resistance: mobility,
+    /// effective gate-source and drain-source voltages, `EsatL`, and `Abulk` before and
+    /// after `keta`. Subsequent fields store inversion-layer oxide capacitance, series
+    /// resistance, `β`, pre-velocity-limit `Ids / Vdseff`, and `nstar`.
     pub(super) ueff: D<R>,
     pub(super) vgsteff: D<R>,
     pub(super) vdseff: D<R>,
@@ -59,8 +58,8 @@ pub(super) struct Operating<R: Real> {
     pub(super) nstar: D<R>,
 }
 
-/// `b4v5temp.c`'s and `b4v5ld.c`'s `T1 / ((T1 − 1)² + 2·T1·MIN_EXP)` of `T1 = e^x`,
-/// held at `1 / (MAX_EXP − 2)` from [`EXP_THRESHOLD`] on.
+/// Evaluates `T1 / ((T1 − 1)² + 2·T1·MIN_EXP)` for `T1 = e^x`, held at `1 / (MAX_EXP − 2)`
+/// from [`EXP_THRESHOLD`] upward, matching `b4v5temp.c` and `b4v5ld.c`.
 pub(super) fn theta<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < EXP_THRESHOLD {
         let t1 = x.exp();
@@ -72,8 +71,8 @@ pub(super) fn theta<R: Real>(x: D<R>) -> D<R> {
 }
 
 impl<R: Real> Core<R> {
-    /// The gate's voltage less the poly gate's depletion, `BSIM4v5polyDepletion` at the
-    /// gate-source voltage `vgs`.
+    /// Computes gate-source voltage `vgs` reduced by polysilicon gate depletion, matching
+    /// `BSIM4v5polyDepletion`.
     fn poly_depletion(&self, vgs: D<R>) -> D<R> {
         poly_depletion(
             vgs,
@@ -84,8 +83,8 @@ impl<R: Real> Core<R> {
         )
     }
 
-    /// The channel at the gate-source, drain-source and body-source voltages of the frame
-    /// whose drain lies at or above its source.
+    /// Evaluates channel currents and operating state at forward-frame `[vgs, vds, vbs]`
+    /// (`vds >= 0`).
     #[expect(
         clippy::too_many_lines,
         clippy::similar_names,
@@ -340,9 +339,8 @@ impl<R: Real> Core<R> {
         }
     }
 
-    /// The gate-induced drain and source leakages of every finger, from the drain and
-    /// from the source into the body, at the gate-source, drain-source and body-source
-    /// voltages `voltages`, whichever end acts as the source.
+    /// Evaluates total gate-induced drain and source leakage currents into the body across
+    /// all fingers at `[vgs, vds, vbs]`.
     pub(super) fn gate_induced_leakages(&self, [vgs, vds, vbs]: [D<R>; 3]) -> [D<R>; 2] {
         let p = &self.binned;
         let vgd = vgs - vds;

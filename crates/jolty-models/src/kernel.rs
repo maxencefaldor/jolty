@@ -1,24 +1,18 @@
-//! Kernels: what a device model computes for one instance, apart from every other.
+//! Single-instance device kernels isolated from batching, threading, and global matrices.
 //!
-//! A [`Kernel`] is a device model as a pure function of one instance: its parameters,
-//! prepared once into the numbers its temperature sets, [`Kernel::Prepared`]; what it
-//! remembers from one evaluation to the next, [`Kernel::Memory`]; and its local unknowns,
-//! which a [`Local`] reads through the instance's node map. It writes what it contributes to
-//! the circuit's equations into a [`Stamp`], by local index: the residual of each local
-//! unknown's equation, the largest magnitude of a term of it and its charge, and the
-//! conductance and capacitance of each local entry. The local unknowns are the instance's
-//! terminals, then the internal unknowns its [`Layout`] claims; its local entries are the
-//! pairs of them the layout claims, each once.
+//! A [`Kernel`] defines a device model as a pure function of temperature-prepared parameters
+//! ([`Kernel::Prepared`]), instance state ([`Kernel::Memory`]), and local unknowns read via
+//! [`Local`]. Evaluation stamps local equation residuals, scales, charges, conductances, and
+//! capacitances into a [`Stamp`] by local index (terminals first, followed by internal
+//! unknowns claimed in [`Layout`]).
 //!
-//! A kernel allocates nothing, never panics, and knows nothing of threads, batches or the
-//! global matrix. The groups of the instances of a kernel ([`crate::Groups`]) evaluate it,
-//! serially or in parallel, each instance into a block of a slab of its own, which a gather
-//! in a fixed order assembles.
+//! A kernel performs no heap allocation, never panics, and has no dependency on threads,
+//! batches, or the global matrix. [`crate::Groups`] evaluates instances serially or in
+//! parallel into dedicated slab blocks and gathers them in a fixed order.
 //!
-//! Every kernel of the library is a module of this one, beside the numbers, junctions,
-//! regions and parts their equations are written with, so that clippy's `indexing_slicing`
-//! and `panic` lints, denied here once outside the tests, hold in each of them, and in a
-//! kernel added beside them.
+//! All library device kernels live in submodules alongside supporting scalar, junction,
+//! region, and part helpers so `clippy::indexing_slicing` and `clippy::panic` are denied
+//! uniformly across non-test code.
 
 #![cfg_attr(
     not(test),
@@ -97,24 +91,24 @@ macro_rules! numbered_enum {
 
 pub(crate) use numbered_enum;
 
-/// A device model computed one instance at a time, as a pure function of the instance's
-/// prepared parameters, its memory and its local unknowns.
+/// Single-instance device model evaluated as a pure function of prepared parameters, state
+/// memory, and local unknowns.
 ///
-/// Its evaluation allocates nothing, never panics, and knows nothing of threads, batches or
-/// the global matrix.
+/// Kernel evaluation performs no heap allocation, never panics, and has no dependency on
+/// threads, batches, or the global matrix.
 pub trait Kernel: Send + Sync + 'static {
-    /// The model's name, such as `diode`.
+    /// Model name registered in the library, such as `diode`.
     const NAME: &'static str;
 
-    /// Whether its instances are a foundry's, which ngspice simulates with the foundry's
-    /// models, as [`crate::Model::foundry`] says.
+    /// Flag indicating foundry models simulated externally by ngspice, matching
+    /// [`crate::Model::foundry`].
     const FOUNDRY: bool = false;
 
-    /// The parameters of an instance, each number an `R`. A twin lifts them from the
-    /// plain form `Parameters<f64>` field by field through [`Lift`]; JSON serialization,
-    /// deserialization and schema generation apply only to `Parameters<f64>`, where a
-    /// [`crate::Model`] adapter such as [`crate::Differentiable`] or [`crate::Thermal`]
-    /// requires them.
+    /// Typed parameter struct generic over scalar type `R`.
+    ///
+    /// Twins lift `Parameters<f64>` field by field via [`Lift`]. JSON serialization,
+    /// deserialization, and schema generation apply only to `Parameters<f64>` inside
+    /// [`crate::Model`] adapters such as [`crate::Differentiable`] or [`crate::Thermal`].
     type Parameters<R: Real>: Lift<R, Plain = Self::Parameters<f64>>
         + Clone
         + fmt::Debug
@@ -122,26 +116,25 @@ pub trait Kernel: Send + Sync + 'static {
         + Sync
         + 'static;
 
-    /// The structure an instance's parameters give it: the internal unknowns and the
-    /// entries it claims, and the local index of each. Instances of one kernel and one
-    /// shape are evaluated together.
+    /// Structural layout signature recording internal unknowns and matrix entry indices so
+    /// instances sharing a kernel and shape batch together.
     ///
-    /// Two shapes that differ claim different layouts, so that the unknowns and the entries
-    /// of an instance say what its shape is.
+    /// Distinct shapes correspond to distinct layouts, uniquely determining the unknowns and
+    /// entries claimed by an instance.
     type Shape: Clone + fmt::Debug + PartialEq + Send + Sync + 'static;
 
-    /// The numbers an instance's parameters set at its temperature, ready to evaluate.
+    /// Precomputed, temperature-scaled parameter set ready for evaluation.
     type Prepared<R: Real>: Clone + fmt::Debug + Send + Sync;
 
-    /// What an instance remembers from one evaluation to the next, such as the junction
-    /// voltage its next step is limited from, and the room it evaluates in, sized once;
-    /// [`Kernel::memory`] makes it as it is before the first evaluation.
+    /// Per-instance persistent state across evaluations (such as previous junction voltages
+    /// for step limiting and preallocated scratch buffers), initialized by [`Kernel::memory`].
     type Memory: Clone + fmt::Debug + Default + Send + Sync;
 
-    /// The terminals and branches of an instance with `parameters`.
+    /// Returns the terminal interface and branch topology for `parameters`.
     fn interface<R: Real>(parameters: &Self::Parameters<R>) -> Interface;
 
-    /// The numbers of an instance with `parameters` at `temperature`, in kelvins.
+    /// Validates `parameters` and precomputes temperature-dependent values at `temperature`
+    /// in kelvins.
     ///
     /// # Errors
     ///
@@ -151,9 +144,8 @@ pub trait Kernel: Send + Sync + 'static {
         temperature: R,
     ) -> Result<Self::Prepared<R>, ParameterError>;
 
-    /// Claims in `layout`, after the instance's terminals, the internal unknowns and the
-    /// entries of an instance with `parameters`, whose numbers [`Kernel::prepare`] has
-    /// checked and prepared into `prepared`, and returns its shape.
+    /// Claims internal unknowns and matrix entries in `layout` for `parameters` and
+    /// `prepared` (produced by [`Kernel::prepare`]), returning the instance shape.
     ///
     /// # Errors
     ///
@@ -164,17 +156,16 @@ pub trait Kernel: Send + Sync + 'static {
         layout: &mut Layout,
     ) -> Result<Self::Shape, ParameterError>;
 
-    /// What an instance of `shape` with the numbers `prepared` remembers before its first
-    /// evaluation: the memory's default, unless it sizes room of its own.
+    /// Constructs initial per-instance state for `shape` and `prepared` before the first
+    /// evaluation, defaulting to `Self::Memory::default()`.
     #[must_use]
     fn memory<R: Real>(shape: &Self::Shape, prepared: &Self::Prepared<R>) -> Self::Memory {
         let _ = (shape, prepared);
         Self::Memory::default()
     }
 
-    /// Writes into `stamp` what an instance of `shape`, with the numbers `prepared`,
-    /// contributes to the circuit's equations at `at`, from what it remembers, `memory`,
-    /// which it updates.
+    /// Evaluates equation contributions for `shape` and `prepared` at local state `at`,
+    /// updating `memory` and writing results into `stamp`.
     fn evaluate<R: Real>(
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,
@@ -183,56 +174,47 @@ pub trait Kernel: Send + Sync + 'static {
         stamp: &mut Stamp<'_, R>,
     );
 
-    /// Whether an instance of `shape` with the numbers `prepared` is linear: whether its
-    /// equations are its entries, conductances and capacitances that its parameters and its
-    /// temperature set, times its local unknowns. Its evaluation then writes the same
-    /// entries at every state, and each local unknown's residual and charge as the sum of
-    /// the entries of its row, in the order of their local indices, times the local
-    /// unknowns of their columns, to within their rounding, the residual as one term; it
-    /// reads nothing of the state but its local unknowns, nothing of its memory, and limits
-    /// nothing. Its groups evaluate it once a run, for its entries, and never again: each
-    /// residual, its scale and each charge come from the entries.
+    /// Reports whether an instance with `shape` and `prepared` is strictly linear with
+    /// constant conductance and capacitance entries.
     ///
-    /// False unless its kernel's equations say so; a test over the library checks it of
-    /// every instance that says so.
+    /// Linear kernels stamp identical entries at every state and produce residuals and
+    /// charges equal to row-wise matrix-vector products without reading memory or limiting
+    /// steps. Groups stamp linear entries once per run and derive residuals, scales, and
+    /// charges from those entries; a library test verifies every `true` claim.
     #[must_use]
     fn linear(shape: &Self::Shape, prepared: &Self::Prepared<f64>) -> bool {
         let _ = (shape, prepared);
         false
     }
 
-    /// Forgets what of `memory` depends on the temperature, when an instance is prepared
-    /// again at another, as a device that heats is between two evaluations: nothing,
-    /// unless its memory starts from its prepared numbers.
+    /// Clears temperature-dependent state inside `memory` when a self-heating instance is
+    /// re-prepared at a new temperature.
     fn reheat(memory: &mut Self::Memory) {
         let _ = memory;
     }
 
-    /// The names of the quantities an instance computes on its way to its currents that
-    /// neither its terminals, nor its unknowns, nor their derivatives show, such as a
-    /// transistor's threshold voltage, in the order of [`Kernel::variables`].
+    /// Returns internal diagnostic variable names (such as threshold voltage) in the order
+    /// written by [`Kernel::variables`].
     #[must_use]
     fn variable_names() -> &'static [&'static str] {
         &[]
     }
 
-    /// Writes the value of each of [`Kernel::variable_names`] at the last evaluation, which
-    /// `memory` keeps, in SI base units, to `values`.
+    /// Copies internal diagnostic variable values recorded in `memory` at the last evaluation
+    /// (in SI base units) into `values`, matching [`Kernel::variable_names`].
     fn variables(memory: &Self::Memory, values: &mut [f64]) {
         let _ = (memory, values);
     }
 
-    /// The regions of operation its equations distinguish, which the variable
-    /// [`REGION`](crate::REGION) among [`Kernel::variable_names`] numbers, and the
-    /// variables that are its margins to their boundaries: none, unless it is a transistor.
+    /// Returns operating-region metadata indexed by [`REGION`](crate::REGION) within
+    /// [`Kernel::variable_names`] along with boundary margin variables, or [`Regions::NONE`].
     #[must_use]
     fn regions() -> Regions {
         Regions::NONE
     }
 
-    /// Appends an instance's noise at `at`, the operating point a noise analysis linearizes
-    /// about, to `sources`, each source's equations those of local unknowns: the one at
-    /// local index `i` as `UnknownIndex::new(i)`. None for a noiseless instance.
+    /// Appends operating-point noise sources at `at` to `sources` using local unknown indices
+    /// (`UnknownIndex::new(i)`).
     fn noise<R: Real>(
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,
@@ -242,8 +224,8 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (shape, prepared, at, sources);
     }
 
-    /// Appends the times in `[start, stop]` where an instance with the numbers `prepared`
-    /// is not smooth, so a transient analysis steps onto them exactly: none, unless it is.
+    /// Appends non-smooth waveform breakpoints within `[start, stop]` to `times` so transient
+    /// stepping hits corners accurately.
     fn breakpoints<R: Real>(
         prepared: &Self::Prepared<R>,
         (start, stop): (f64, f64),
@@ -252,24 +234,20 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (prepared, start, stop, times);
     }
 
-    /// Whether an instance of `shape`, with the numbers `prepared`, explicitly depends on
-    /// time: `false` for every autonomous device, `true` for a source whose waveform varies
-    /// with time or a behavioral device whose expression reads `time`.
+    /// Returns whether an instance with `shape` and `prepared` depends explicitly on time
+    /// (true for time-varying sources or behavioral expressions referencing `time`).
     #[must_use]
     fn varies_in_time<R: Real>(shape: &Self::Shape, prepared: &Self::Prepared<R>) -> bool {
         let _ = (shape, prepared);
         false
     }
 
-    /// Appends to `found` each part of the conductance of an instance of `shape`, with the
-    /// numbers `prepared`, that reads a local unknown in the past, through
-    /// [`Local::delayed`]: none, unless it is a delay line.
+    /// Appends delayed conductance terms sampled through [`Local::delayed`] to `found`.
     ///
-    /// Each part is a constant its parameters set, which its evaluation adds, times the
-    /// weight [`Local::delayed`] gives: the whole at DC, where the past is the present. A
-    /// small-signal analysis at the complex frequency `s` multiplies it by `e^{−s·delay}`
-    /// instead, a transient keeps the past of each column, and steps onto each corner of
-    /// its waveforms the delay after the integration restarts.
+    /// Small-signal analysis scales each constant conductance by `e^{−s·delay}` at complex
+    /// frequency `s`, while DC uses the full value. Transient analysis records history for
+    /// each delayed column and schedules breakpoints `delay` seconds after integration
+    /// restarts.
     fn delayed<R: Real>(
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,
@@ -278,10 +256,8 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (shape, prepared, found);
     }
 
-    /// Appends to `found` the choices an instance's behavior turns on at `at`, where its
-    /// contribution jumps when one changes, so a transient analysis can step onto each
-    /// change, finding them in room of `memory` that its evaluation does not read: none
-    /// for an instance whose contribution is continuous.
+    /// Appends discontinuous branch choices evaluated at `at` to `found` (using scratch
+    /// buffers in `memory`) so transient stepping locates discontinuities accurately.
     fn choices<R: Real>(
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,
@@ -292,25 +268,21 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (shape, prepared, memory, at, found);
     }
 
-    /// The DC value of an instance that is an independent source, which analyses excite: its
-    /// waveform's value at time zero. `None` for an instance that is no independent source.
+    /// Returns the time-zero DC value for an independent source, or `None` for other devices.
     #[must_use]
     fn dc_value<R: Real>(prepared: &Self::Prepared<R>) -> Option<f64> {
         let _ = prepared;
         None
     }
 
-    /// Adds to `stamp` the derivative of each residual of an instance that is an
-    /// independent source, of `shape`, with respect to its value: how a small-signal
-    /// analysis excites it. Nothing for an instance that is no independent source.
+    /// Stamps unit small-signal excitation (residual derivative with respect to source value)
+    /// into `stamp` for independent sources.
     fn excite<R: Real>(shape: &Self::Shape, stamp: &mut Stamp<'_, R>) {
         let _ = (shape, stamp);
     }
 
-    /// Starts an instance that is a logic driver, from what it remembers, `memory`,
-    /// moving to `level` at `time`, at the rate that swings ground to supply in
-    /// `transition` seconds, at once when it is zero, and returns the time it settles.
-    /// `None`, and nothing done, for an instance that drives no logic.
+    /// Starts a logic-driver output ramp toward `level` at `time` with full-swing duration
+    /// `transition`, returning the settling timestamp or `None` for non-drivers.
     fn drive(
         memory: &mut Self::Memory,
         (time, level, transition): (f64, LogicLevel, f64),
@@ -319,17 +291,16 @@ pub trait Kernel: Send + Sync + 'static {
         None
     }
 
-    /// The local unknown of the current through an instance of `shape` that is a logic
-    /// driver, whose equation holds its voltage; `None` for one that drives no logic.
+    /// Returns the local branch-current unknown index for a logic driver, or `None` for
+    /// non-drivers.
     #[must_use]
     fn driven(shape: &Self::Shape) -> Option<usize> {
         let _ = shape;
         None
     }
 
-    /// How far the input of an instance of `shape` that is a logic input's detector lies
-    /// above its threshold at `at`, and the voltage of its supply above its ground there,
-    /// the swing of a full edge, in volts; `None` for one that detects no logic.
+    /// Evaluates input threshold margin and supply swing (in volts) at `at` for a logic
+    /// detector, or returns `None` for non-detectors.
     #[must_use]
     fn sense<R: Real>(
         shape: &Self::Shape,
@@ -340,14 +311,14 @@ pub trait Kernel: Send + Sync + 'static {
         None
     }
 
-    /// Every base parameter of the kernel and its physical dimension or kind, in
+    /// Returns all base kernel parameters paired with their physical dimension or kind in
     /// declaration order.
     #[must_use]
     fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
         &[]
     }
 
-    /// Base names of the parameters that expand into `l`, `w`, and `p` geometry-binning
+    /// Returns base names of parameters that expand into `l`, `w`, and `p` geometry-binning
     /// dependences.
     #[must_use]
     fn binned_parameters() -> &'static [&'static str] {
@@ -355,28 +326,25 @@ pub trait Kernel: Send + Sync + 'static {
     }
 }
 
-/// The local unknowns among the first of which [`Layout::entry`] finds the claim of a pair
-/// again at once, by the pair; it searches the claims for any other pair.
+/// Number of leading local unknowns covered by the direct lookup table in [`Layout::entry`];
+/// pairs beyond this index fall back to a linear scan.
 const INDEXED: usize = 16;
 
-/// The local unknowns and entries an instance claims: its terminals, then each internal
-/// unknown it adds, and each pair of them whose derivative it writes, once.
+/// Local unknown and matrix entry declarations claimed by a device instance.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     terminals: usize,
     internals: Vec<(Cow<'static, str>, Nature)>,
-    /// The pivot claimed of each internal unknown, its row and its column by local index,
-    /// as [`Layout::pivot`] claims it, in the order claimed.
+    /// Local `(row, column)` pivot pairs claimed via [`Layout::pivot`] in claim order.
     pivots: Vec<(usize, usize)>,
     entries: Vec<(usize, usize)>,
-    /// One more than the local index of the entry claimed at each pair of the first
-    /// [`INDEXED`] local unknowns, row by row, or zero for none.
+    /// Lookup table storing `entry_index + 1` (or `0` if unclaimed) for pairs within the
+    /// first [`INDEXED`] local unknowns.
     claimed: [[u16; INDEXED]; INDEXED],
 }
 
 impl Layout {
-    /// The layout of an instance of `terminals` terminals, which have the local indices
-    /// from 0, before it claims anything of its own.
+    /// Creates an empty layout pre-populated with `terminals` terminal indices `0..terminals`.
     #[must_use]
     pub const fn new(terminals: usize) -> Self {
         Self {
@@ -388,7 +356,8 @@ impl Layout {
         }
     }
 
-    /// Forgets every claim, for an instance of `terminals` terminals, keeping the memory.
+    /// Clears all claimed internals, pivots, and entries while retaining buffer capacity for
+    /// an instance with `terminals` terminals.
     pub fn clear(&mut self, terminals: usize) {
         self.terminals = terminals;
         self.internals.clear();
@@ -397,44 +366,40 @@ impl Layout {
         self.claimed = [[0; INDEXED]; INDEXED];
     }
 
-    /// Adds an internal unknown, of `nature`, labelled `label` after the instance's path,
-    /// and returns its local index.
+    /// Adds an internal unknown of `nature` named with suffix `label` and returns its local
+    /// index.
     pub fn internal(&mut self, label: impl Into<Cow<'static, str>>, nature: Nature) -> usize {
         self.internals.push((label.into(), nature));
         self.terminals + self.internals.len() - 1
     }
 
-    /// Adds an internal unknown as [`Layout::internal`] does, and claims its equation's
-    /// diagonal entry its [pivot](Layout::pivot).
+    /// Adds an internal unknown via [`Layout::internal`] and claims its diagonal entry as a
+    /// [pivot](Layout::pivot).
     pub fn pivoted(&mut self, label: impl Into<Cow<'static, str>>, nature: Nature) -> usize {
         let local = self.internal(label, nature);
         self.pivot(local, local);
         local
     }
 
-    /// Claims the entry at `row` and `column`, local unknowns, the pivot of the internal
-    /// unknown `column`: an entry at least as large as every other entry of its column at
-    /// every evaluation, in the conductances, in `G + αC` for every `α ≥ 0`, and in
-    /// `G + jωC` for every `ω`. The pivot so passes the sparse solver's threshold, a tenth
-    /// of its column's largest, whatever the circuit, and the solver eliminates the unknown
-    /// from each matrix by it before it factors the rest, as far as the other pivots
-    /// eliminated leave its column as proven, as [`jolty_numerics::Condensation`] says.
+    /// Claims local entry `(row, column)` as a guaranteed column-dominant pivot for internal
+    /// unknown `column` across `G`, `G + αC` (`α ≥ 0`), and `G + jωC`.
     ///
-    /// The kernel that claims one states why the entry is that large; a test over the
-    /// library checks it of every evaluation it makes.
+    /// [`jolty_numerics::Condensation`] eliminates `column` before general factorization
+    /// because the pivot exceeds the sparse solver threshold (one-tenth of the column
+    /// maximum). Each claiming kernel documents the dominance proof, and a library test
+    /// verifies it across evaluations.
     pub fn pivot(&mut self, row: usize, column: usize) {
         self.pivots.push((row, column));
     }
 
-    /// Withdraws the pivot claimed of the internal unknown `column`, whose column the
-    /// kernel no longer proves its pivot the largest of.
+    /// Withdraws any claimed pivot for internal unknown `column` when column dominance no
+    /// longer holds.
     pub fn unpivot(&mut self, column: usize) {
         self.pivots.retain(|&(_, claimed)| claimed != column);
     }
 
-    /// Claims the local entry at `row` and `column`, local unknowns, and returns its local
-    /// index: that of the claim before it at the same pair, if any, so that contributions
-    /// to one pair add in one place, in the order the instance makes them.
+    /// Claims local matrix entry `(row, column)` and returns its deduplicated local index so
+    /// repeated stamps accumulate into one slot.
     pub fn entry(&mut self, row: usize, column: usize) -> usize {
         let pair = (row, column);
         let index = self
@@ -443,8 +408,7 @@ impl Layout {
             .and_then(|columns| columns.get_mut(column));
         let found = match index.as_deref() {
             Some(&one_more) if one_more > 0 => Some(usize::from(one_more) - 1),
-            // A pair among the first local unknowns is held there once claimed, while its
-            // claim's index is within reach.
+            // Pairs within the indexed prefix are cached directly while indices fit in `u16`.
             Some(_) if self.entries.len() < usize::from(u16::MAX) => None,
             _ => self.entries.iter().position(|&claimed| claimed == pair),
         };
@@ -459,74 +423,72 @@ impl Layout {
         claimed
     }
 
-    /// The number of terminals.
+    /// Returns the number of terminal unknowns.
     #[must_use]
     pub const fn terminals(&self) -> usize {
         self.terminals
     }
 
-    /// The number of local unknowns: the terminals, then the internal unknowns.
+    /// Returns the total number of local unknowns (terminals plus internal unknowns).
     #[must_use]
     pub fn unknowns(&self) -> usize {
         self.terminals + self.internals.len()
     }
 
-    /// Each internal unknown's label and quantity, in the order of their local indices.
+    /// Returns internal unknown `(label, nature)` declarations in local index order.
     #[must_use]
     pub fn internals(&self) -> &[(Cow<'static, str>, Nature)] {
         &self.internals
     }
 
-    /// The pivot claimed of each internal unknown, its row and its column by local index,
-    /// in the order claimed.
+    /// Returns claimed local `(row, column)` pivots in claim order.
     #[must_use]
     pub fn pivots(&self) -> &[(usize, usize)] {
         &self.pivots
     }
 
-    /// Each local entry's row and column, by its local index.
+    /// Returns claimed local `(row, column)` matrix entries in local index order.
     #[must_use]
     pub fn entries(&self) -> &[(usize, usize)] {
         &self.entries
     }
 }
 
-/// The state an instance is evaluated at, as it sees it: its local unknowns' values, read
-/// through its node map, and what the analysis is doing.
+/// Instance-local view of the evaluation state, exposing mapped local unknown values and
+/// analysis flags.
 #[derive(Debug, Clone, Copy)]
 pub struct Local<'a> {
     x: &'a [f64],
     map: &'a [u32],
-    /// The time, in seconds; zero in every analysis but a transient one.
+    /// Simulation time, in seconds; zero in non-transient analyses.
     pub time: f64,
-    /// Whether time passes, as [`crate::Input::transient`] says.
+    /// Flag indicating active transient time stepping, matching [`crate::Input::transient`].
     pub transient: bool,
-    /// The factor every independent source is scaled by, as
-    /// [`crate::Input::source_scale`] says.
+    /// Independent-source continuation scale factor, matching
+    /// [`crate::Input::source_scale`].
     pub source_scale: f64,
-    /// The conductance placed across every nonlinear junction, in siemens.
+    /// Shunt conductance placed across nonlinear junctions, in siemens.
     pub gmin: f64,
-    /// Whether the instance limits each voltage's step from its last evaluation's.
+    /// Flag enabling per-iteration junction voltage-step limiting.
     pub limiting: bool,
     past: Option<&'a Past>,
     unknowns: UnknownSeeds<'a>,
 }
 
-/// How a twin seeds the circuit's unknowns in [`Local`].
+/// Unknown-seeding mode used by sensitivity twins inside [`Local`].
 #[derive(Debug, Clone, Copy)]
 enum UnknownSeeds<'a> {
-    /// No unknown moves: plain evaluation, or a twin seeding parameters alone.
+    /// Unseeded unknowns for plain evaluation or parameter-only twins.
     None,
-    /// Each seed moves one of the circuit's unknowns at rate one, in their order.
+    /// Unit seeds moving each listed circuit unknown at rate `1.0`.
     Units(&'a [u32]),
-    /// Each seed moves every unknown of the circuit along its tangent vector.
+    /// Tangent seeds moving all circuit unknowns along each tangent vector.
     Tangents(&'a [Vec<f64>]),
 }
 
 impl<'a> Local<'a> {
-    /// The state of an instance whose local unknown at each index is the unknown of `x`
-    /// that `map` gives there, or ground, whose value is zero, where it gives
-    /// [`jolty_numerics::UNMAPPED`], at `time` and the rest of `like`'s.
+    /// Constructs a local evaluation view mapping local unknown indices through `map` into
+    /// `x` ([`jolty_numerics::UNMAPPED`] reads zero for ground) with settings from `like`.
     #[must_use]
     pub(crate) const fn new(x: &'a [f64], map: &'a [u32], like: &crate::Input<'a>) -> Self {
         Self {
@@ -542,8 +504,8 @@ impl<'a> Local<'a> {
         }
     }
 
-    /// The same state, the circuit's unknowns `seeded` each moving along a seed of its own,
-    /// in their order, as a twin seeding its instance's unknowns reads them.
+    /// Returns a copy of `self` seeding each circuit unknown in `seeded` along a dedicated
+    /// unit direction.
     #[must_use]
     pub(crate) const fn seeding(self, seeded: &'a [u32]) -> Self {
         let unknowns = if seeded.is_empty() {
@@ -554,8 +516,8 @@ impl<'a> Local<'a> {
         Self { unknowns, ..self }
     }
 
-    /// The same state, the circuit's unknowns moving along each of `tangents`, one seed per
-    /// tangent.
+    /// Returns a copy of `self` seeding circuit unknowns along each tangent vector in
+    /// `tangents`.
     #[must_use]
     pub(crate) const fn along(self, tangents: &'a [Vec<f64>]) -> Self {
         let unknowns = if tangents.is_empty() {
@@ -566,14 +528,14 @@ impl<'a> Local<'a> {
         Self { unknowns, ..self }
     }
 
-    /// Whether a twin seeds the circuit's unknowns in this evaluation.
+    /// Returns whether circuit unknowns carry active twin differentiation seeds.
     #[must_use]
     pub(crate) const fn seeds_unknowns(&self) -> bool {
         !matches!(self.unknowns, UnknownSeeds::None)
     }
 
-    /// The local unknown at `local` as a number of `R`: its value, moving along each seed
-    /// when a twin seeds the unknowns, and constant otherwise.
+    /// Reads local unknown `local` as scalar type `R`, carrying active unknown seed
+    /// derivatives when evaluated inside an unknown-seeded twin.
     #[inline]
     #[must_use]
     pub fn unknown<R: Real>(&self, local: usize) -> R {
@@ -605,8 +567,8 @@ impl<'a> Local<'a> {
         }
     }
 
-    /// The derivative of the local unknown at `local` along seed `slot`: zero when no twin
-    /// seeds the unknowns or the unknown is on ground.
+    /// Returns the derivative of local unknown `local` along seed `slot`, or `0.0` for
+    /// unseeded evaluations or grounded unknowns.
     #[inline]
     #[must_use]
     pub fn unknown_derivative(&self, local: usize, slot: usize) -> f64 {
@@ -634,8 +596,8 @@ impl<'a> Local<'a> {
         }
     }
 
-    /// The value of the local unknown at `local`: zero for one on ground, and for
-    /// one the instance does not have.
+    /// Returns the scalar value of local unknown `local`, or `0.0` for ground or out-of-range
+    /// indices.
     #[must_use]
     pub fn value(&self, local: usize) -> f64 {
         self.map
@@ -645,14 +607,13 @@ impl<'a> Local<'a> {
             .unwrap_or(0.0)
     }
 
-    /// The circuit's unknown of each local unknown, [`jolty_numerics::UNMAPPED`] for one on
-    /// ground.
+    /// Returns the local-to-global unknown map ([`jolty_numerics::UNMAPPED`] for ground).
     pub(crate) const fn map(&self) -> &'a [u32] {
         self.map
     }
 
-    /// The same state as another instance sees it, whose local unknowns are the circuit's
-    /// that `map` gives, as a device that heats sees the instance it holds.
+    /// Returns a view sharing the same simulation state while substituting local unknown map
+    /// `map` (used by self-heating wrappers delegating to inner kernels).
     pub(crate) const fn remapped<'b>(&self, map: &'b [u32]) -> Local<'b>
     where
         'a: 'b,
@@ -670,14 +631,12 @@ impl<'a> Local<'a> {
         }
     }
 
-    /// The value the local unknown at `local` took `delay` seconds before the time, and
-    /// its derivative with respect to the local unknown's present value: the present
-    /// value, and 1, outside a transient, where the past is the present; in a transient,
-    /// as [`Past::at`] interpolates the points it accepted, and the present when the
-    /// time `delay` before lies within the step being solved. Zero, and 0, for one on ground.
+    /// Samples local unknown `local` at `time - delay`, returning `(value, weight)` where
+    /// `weight` is the derivative with respect to the present value.
     ///
-    /// The past keeps the unknowns of the columns [`Kernel::delayed`] states; any other
-    /// reads its present value, as at DC.
+    /// Returns `(present, 1.0)` outside transient analysis, `(0.0, 0.0)` for ground, and
+    /// interpolates via [`Past::at`] during transients for columns declared by
+    /// [`Kernel::delayed`].
     #[must_use]
     pub fn delayed(&self, local: usize, delay: f64) -> (f64, f64) {
         let Some(&unknown) = self.map.get(local) else {
@@ -691,10 +650,8 @@ impl<'a> Local<'a> {
             .unwrap_or((present, 1.0))
     }
 
-    /// The value the local unknown at `local` took `delay` seconds before the time, as
-    /// [`Local::delayed`] gives it, as a number of `R` together with its derivative weight
-    /// with respect to the unknown's present value, moving as that weight says when a twin
-    /// seeds the unknown.
+    /// Samples local unknown `local` at `time - delay` via [`Local::delayed`], lifting the
+    /// result into `R` scaled by the present-value derivative `weight` under unknown seeding.
     #[inline]
     #[must_use]
     pub fn delayed_unknown<R: Real>(&self, local: usize, delay: f64) -> (R, f64) {
@@ -709,11 +666,10 @@ impl<'a> Local<'a> {
     }
 }
 
-/// Where an instance writes its contributions during one evaluation: its own block of
-/// residuals, their scales and charges, one per local unknown, and conductances and
-/// capacitances, one per local entry, all zero when it starts.
+/// Mutable local output block receiving equation contributions from one kernel evaluation.
 ///
-/// A write to a local index the instance does not have goes nowhere.
+/// Holds zero-initialized slices for local unknown residuals, scales, and charges alongside
+/// local entry conductances and capacitances; writes to out-of-range indices are ignored.
 #[derive(Debug)]
 pub struct Stamp<'a, R: Real = f64> {
     residual: &'a mut [R],
@@ -725,8 +681,7 @@ pub struct Stamp<'a, R: Real = f64> {
 }
 
 impl<'a, R: Real> Stamp<'a, R> {
-    /// A stamp over a block: the residuals, scales and charges of the local unknowns, and
-    /// the conductances and capacitances of the local entries, each zeroed.
+    /// Zeroes all five local block slices and returns a [`Stamp`] writing into them.
     pub(crate) fn zeroed(
         [residual, scale, charge]: [&'a mut [R]; 3],
         [conductance, capacitance]: [&'a mut [R]; 2],
@@ -743,7 +698,8 @@ impl<'a, R: Real> Stamp<'a, R> {
         Self::over([residual, scale, charge], [conductance, capacitance])
     }
 
-    /// A stamp over a block that is already zero, as [`Stamp::zeroed`] leaves it.
+    /// Wraps five already-zeroed block slices (as prepared by [`Stamp::zeroed`]) in a
+    /// [`Stamp`].
     pub(crate) const fn over(
         [residual, scale, charge]: [&'a mut [R]; 3],
         [conductance, capacitance]: [&'a mut [R]; 2],
@@ -758,13 +714,13 @@ impl<'a, R: Real> Stamp<'a, R> {
         }
     }
 
-    /// Adds `value` to the residual of the local unknown `row`'s equation.
+    /// Adds `value` to the residual of local unknown `row`.
     pub fn add_residual(&mut self, row: usize, value: R) {
         self.add_residual_scaled(row, value, value);
     }
 
-    /// Adds `value` to the residual of `row`'s equation, `scale` the largest magnitude of
-    /// the terms it sums, as an instance that sums them itself reports them.
+    /// Adds `value` to the residual of local unknown `row` while updating the convergence
+    /// scale with `scale.abs()`.
     pub fn add_residual_scaled(&mut self, row: usize, value: R, scale: R) {
         if let (Some(residual), Some(largest)) =
             (self.residual.get_mut(row), self.scale.get_mut(row))
@@ -774,34 +730,33 @@ impl<'a, R: Real> Stamp<'a, R> {
         }
     }
 
-    /// Adds `value` to the charge of `row`'s equation.
+    /// Adds `value` to the charge of local unknown `row`.
     pub fn add_charge(&mut self, row: usize, value: R) {
         if let Some(charge) = self.charge.get_mut(row) {
             *charge += value;
         }
     }
 
-    /// Adds `value` to the conductance at the local entry `entry`.
+    /// Adds `value` to the conductance at local entry `entry`.
     pub fn add_conductance(&mut self, entry: usize, value: R) {
         if let Some(conductance) = self.conductance.get_mut(entry) {
             *conductance += value;
         }
     }
 
-    /// Adds `value` to the capacitance at the local entry `entry`.
+    /// Adds `value` to the capacitance at local entry `entry`.
     pub fn add_capacitance(&mut self, entry: usize, value: R) {
         if let Some(capacitance) = self.capacitance.get_mut(entry) {
             *capacitance += value;
         }
     }
 
-    /// Records that the instance evaluated at a limited voltage rather than the one it was
-    /// given, so the solution cannot have converged yet.
+    /// Marks the evaluation as voltage-limited so Newton iteration continues to another step.
     pub const fn mark_limited(&mut self) {
         self.limited = true;
     }
 
-    /// Whether the instance limited a voltage during this evaluation.
+    /// Returns whether voltage limiting occurred during this evaluation.
     #[must_use]
     pub const fn is_limited(&self) -> bool {
         self.limited

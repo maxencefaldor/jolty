@@ -1,13 +1,11 @@
-//! Self-heating: a device at the temperature of a thermal net, heated by the power it
-//! dissipates.
+//! Self-heating support coupling device operating temperature to a thermal net driven by
+//! dissipated electrical power.
 //!
-//! A [kernel](crate::Kernel) prepares an instance's numbers at any temperature, as at the
-//! simulation's. [`Thermal`] gives a kernel's model a thermal terminal, `thermal`, when an
-//! instance's parameters say `"thermal": true`: the instance is then at the ambient
-//! temperature plus that net's, and its power, the sum over its nodes of each voltage times
-//! the current into the instance there, flows into the net as heat. Its temperature is an
-//! unknown like any voltage, so Newton's iteration solves the circuit and its heating
-//! together, with every derivative exact.
+//! A [kernel](crate::Kernel) prepares parameters at any operating temperature. When an
+//! instance enables `"thermal": true`, [`Thermal`] appends a `thermal` terminal whose
+//! voltage represents temperature rise above ambient, and injects dissipated power (summed
+//! over terminal voltages and currents) into that thermal net. Newton iteration solves the
+//! coupled electrical and thermal equations simultaneously with exact derivatives.
 
 mod kind;
 
@@ -26,16 +24,16 @@ use crate::{
     Specification,
 };
 
-/// The numbers a device computes with, and those it computes with when it heats: the
-/// same, with their derivative with respect to its temperature beside them.
+/// Scalar trait augmenting a [`Real`] number type with temperature-derivative tracking for
+/// self-heating evaluation.
 pub trait Heating: Real {
-    /// The number with its derivative with respect to the temperature.
+    /// Augmented scalar carrying value and temperature derivative.
     type Warm: Real;
 
-    /// The temperature `kelvins`, the variable itself.
+    /// Seeds temperature `kelvins` as an independent variable with unit derivative.
     fn seed(kelvins: f64) -> Self::Warm;
 
-    /// A warm number's value, and its derivative with respect to the temperature.
+    /// Splits a warm scalar into `(value, d/dT)` components.
     fn split(warm: Self::Warm) -> (Self, Self);
 }
 
@@ -72,21 +70,19 @@ impl<const K: usize> Heating for Gradient<K> {
     }
 }
 
-/// The largest step a heated device's temperature takes from one evaluation to the next,
-/// in kelvins: a Newton step beyond it is limited, as a junction's voltage is, and the
-/// device evaluated there and extended linearly.
+/// Maximum temperature step permitted between consecutive Newton iterations, in kelvins;
+/// larger steps are clamped and extended linearly.
 const MAX_TEMPERATURE_STEP: f64 = 50.0;
 
-/// The lowest temperature a heated device is evaluated at, in kelvins, however far below
-/// it a Newton step goes.
+/// Lower temperature floor enforced during self-heating Newton evaluations, in kelvins,
+/// regardless of how far a trial step drops.
 const MIN_TEMPERATURE: f64 = 1.0;
 
-/// The [`Model`] of a [`Kernel`] `K`, whose instances heat when their parameters say
-/// `"thermal": true`.
+/// [`Model`] adapter wrapping [`Kernel`] `K` to enable self-heating whenever `"thermal": true`.
 pub struct Thermal<K>(std::marker::PhantomData<fn() -> K>);
 
 impl<K: Kernel> Thermal<K> {
-    /// The model of `K`.
+    /// Creates a self-heating-capable model adapter for kernel `K`.
     #[must_use]
     pub fn new() -> Self {
         Self(std::marker::PhantomData)
@@ -99,28 +95,29 @@ impl<K: Kernel> Default for Thermal<K> {
     }
 }
 
-/// Whether a device heats, as its parameters say.
+/// Self-heating flag parsed from device parameters.
 #[derive(Debug, Clone, Copy, JsonSchema)]
 struct Heats {
-    /// Whether the device heats by the power it dissipates, through a terminal `thermal`
-    /// joined to a thermal net, whose temperature above the ambient it runs at.
+    /// Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise
+    /// above ambient tracks dissipated power.
     #[schemars(default)]
     thermal: bool,
 }
 
 impl Heats {
-    /// Whether `parameters` say the device heats, and the parameters without saying so.
+    /// Extracts the optional boolean `thermal` flag from `parameters` and returns the
+    /// remaining kernel parameters.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when they say it with anything but true or false.
+    /// Returns [`ParameterError`] when `thermal` is neither `true` nor `false`.
     fn read(parameters: &Parameters) -> Result<(Self, Cow<'_, Parameters>), ParameterError> {
         let Some(said) = parameters.get("thermal") else {
             return Ok((Self { thermal: false }, Cow::Borrowed(parameters)));
         };
         let Some(thermal) = said.as_bool() else {
             return Err(ParameterError(format!(
-                "thermal must be true or false, not {said}"
+                "thermal is true or false, not {said}"
             )));
         };
         let mut others = parameters.clone();
@@ -245,7 +242,7 @@ mod tests {
         let error = model
             .read(&serde_json::from_str(r#"{"thermal": 1}"#).expect("JSON"))
             .unwrap_err();
-        assert_eq!(error.to_string(), "thermal must be true or false, not 1");
+        assert_eq!(error.to_string(), "thermal is true or false, not 1");
     }
 
     #[test]
@@ -253,7 +250,7 @@ mod tests {
         let model = Thermal::<Diode>::new();
         let mut heated = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
         let trial = heated.evaluate(&[0.72, 0.0, f64::INFINITY, 0.7]);
-        assert!(trial.limited, "infinite thermal step must be limited");
+        assert!(trial.limited, "infinite thermal step triggers limiting");
         let recovered = heated.settle(&[0.72, 0.0, 20.0, 0.7]);
         assert!(
             recovered.residual.iter().all(|value| value.is_finite()),

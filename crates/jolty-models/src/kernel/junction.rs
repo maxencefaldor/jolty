@@ -1,51 +1,50 @@
-//! What every semiconductor junction shares: its current, its depletion charge, and how
-//! Newton steps of its voltages are limited.
+//! Shared semiconductor junction physics: current-voltage equations, depletion charge,
+//! temperature scaling, and Newton step limiting.
 //!
-//! The equations and the limiting follow SPICE, as ngspice implements them, so a junction
-//! behaves the same in every model that has one: the diode, the JFET's gate and the
-//! bipolar transistor's base.
+//! Equations and limiting follow SPICE as implemented in ngspice, giving identical
+//! junction behavior across diodes, JFET gates, and BJT bases.
 //!
-//! Derived from ngspice 47's implementations of junctions, in `src/spicelib/devices/dio/`
-//! and `devsup.c`, their limiting among them:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! Derived from ngspice 47 junction implementations in `src/spicelib/devices/dio/` and
+//! `devsup.c`: Copyright 1985 - 2018, Regents of the University of California and others.
+//! Used under the ngspice Modified BSD license, reproduced in the repository `NOTICE` file.
 
 use crate::kernel::dual::Dual;
 use crate::{ParameterError, Real};
 
-/// The Boltzmann constant, in joules per kelvin.
+/// Boltzmann constant, in joules per kelvin.
 pub const BOLTZMANN: f64 = 1.380_649e-23;
-/// The elementary charge, in coulombs.
+/// Elementary charge, in coulombs.
 pub const ELEMENTARY_CHARGE: f64 = 1.602_176_634e-19;
-/// SPICE's reference temperature, 27 °C, in kelvins: the temperature a circuit is simulated
-/// at, and its devices' parameters were measured at, unless said otherwise.
+/// SPICE reference temperature (27 °C), in kelvins, used as the default simulation and
+/// parameter measurement temperature.
 pub const REFERENCE_TEMPERATURE: f64 = 300.15;
 
-/// The thermal voltage `k·T / q` at `temperature`, in volts.
+/// Computes the thermal voltage `k·T / q` at `temperature`, in volts.
 #[must_use]
 pub const fn thermal_voltage(temperature: f64) -> f64 {
     BOLTZMANN * temperature / ELEMENTARY_CHARGE
 }
 
-/// Silicon's band gap at `temperature`, in electronvolts, as SPICE models it.
+/// Computes the silicon band gap at `temperature`, in electronvolts, using the SPICE model.
 pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
     Varshni::silicon().at(temperature)
 }
 
-/// A band gap that follows Varshni's law, `Eg(T) = Eg(0) − α·T² / (T + β)`.
+/// Band gap temperature dependence following Varshni's law,
+/// `Eg(T) = Eg(0) − α·T² / (T + β)`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Varshni<R: Real = f64> {
-    /// The gap at 0 K, `Eg(0)`, in electronvolts.
+    /// Band gap at 0 K, `Eg(0)`, in electronvolts.
     pub(crate) gap: R,
-    /// `α`, in electronvolts per kelvin.
+    /// Varshni linear parameter `α`, in electronvolts per kelvin.
     pub(crate) alpha: R,
-    /// `β`, in kelvins.
+    /// Varshni offset temperature `β`, in kelvins.
     pub(crate) beta: R,
 }
 
 impl<R: Real> Varshni<R> {
-    /// Silicon's band gap as SPICE models it, 1.16 eV at 0 K with `α` 7.02e-4 eV/K and
-    /// `β` 1108 K (ngspice's `diotemp.c`, lines 60 to 63, as its other junctions').
+    /// Returns the SPICE silicon band-gap parameters (`1.16` eV at 0 K, `α = 7.02e-4` eV/K,
+    /// `β = 1108` K, matching ngspice `diotemp.c`).
     pub(crate) fn silicon() -> Self {
         Self {
             gap: R::constant(1.16),
@@ -54,30 +53,30 @@ impl<R: Real> Varshni<R> {
         }
     }
 
-    /// The gap at `temperature`, in kelvins.
+    /// Evaluates the band gap at `temperature`, in kelvins.
     pub(crate) fn at(self, temperature: R) -> R {
         -(temperature * self.alpha * temperature / (temperature + self.beta) - self.gap)
     }
 }
 
-/// The temperature a device is evaluated at, and the nominal temperature its parameters
-/// were measured at, in kelvins.
+/// Actual device temperature and nominal parameter measurement temperature, in kelvins.
 ///
-/// It scales parameters from the nominal temperature as ngspice does: saturation currents
-/// with the energy gap, built-in potentials and depletion capacitances with silicon's band
-/// gap, and other parameters by their own coefficients. The device's temperature is a
-/// number like any parameter, so a device that heats carries every scaled parameter's
-/// derivative with respect to it.
+/// Scales parameters from nominal temperature following ngspice conventions: saturation
+/// currents with the energy gap, built-in potentials and depletion capacitances with the
+/// silicon band gap, and remaining parameters via dedicated coefficients. Representing
+/// device temperature as a scalar `R` propagates temperature derivatives through every
+/// scaled parameter during self-heating.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Temperatures<R: Real = f64> {
-    /// The temperature the device is evaluated at.
+    /// Device operating temperature, in kelvins.
     pub(crate) actual: R,
-    /// The temperature its parameters were measured at.
+    /// Nominal parameter measurement temperature, in kelvins.
     pub(crate) nominal: R,
 }
 
 impl<R: Real> Temperatures<R> {
-    /// The device's temperature, `actual`, and its parameters' `nominal` temperature.
+    /// Constructs a temperature pair from `actual` device temperature and `nominal`
+    /// measurement temperature.
     ///
     /// # Errors
     ///
@@ -87,8 +86,9 @@ impl<R: Real> Temperatures<R> {
         Ok(Self { actual, nominal })
     }
 
-    /// A junction's temperatures, `actual` and `nominal`, both in kelvins, as
-    /// [`Temperatures::new`] makes them: a junction at 0 K has no thermal voltage.
+    /// Constructs junction temperatures from `actual` and `nominal`, both in kelvins,
+    /// enforcing positivity via [`Temperatures::new`] because a junction at 0 K lacks a
+    /// nonzero thermal voltage.
     ///
     /// # Errors
     ///
@@ -103,13 +103,13 @@ impl<R: Real> Temperatures<R> {
         Self::new(actual, nominal)
     }
 
-    /// The device's temperature less the nominal temperature.
+    /// Returns the temperature offset `actual − nominal`.
     pub(crate) fn difference(self) -> R {
         -(self.nominal - self.actual)
     }
 
-    /// The factor `1 + tc1 · ΔT + tc2 · ΔT²` of a parameter with linear coefficient
-    /// `linear` and quadratic coefficient `quadratic`.
+    /// Evaluates the quadratic temperature scaling factor `1 + tc1 · ΔT + tc2 · ΔT²` from
+    /// `linear` and `quadratic` coefficients.
     pub(crate) fn polynomial(self, linear: R, quadratic: R) -> R {
         let difference = self.difference();
         (linear + quadratic * difference) * difference + 1.0
@@ -117,34 +117,34 @@ impl<R: Real> Temperatures<R> {
 }
 
 impl<R: Real> Temperatures<R> {
-    /// The thermal voltage at the device's temperature.
+    /// Computes the thermal voltage at the device's actual temperature.
     pub(crate) fn thermal_voltage(self) -> R {
         self.actual * BOLTZMANN / ELEMENTARY_CHARGE
     }
 
-    /// The device's temperature over the nominal temperature.
+    /// Returns the ratio `actual / nominal`.
     pub(crate) fn ratio(self) -> R {
         self.actual / self.nominal
     }
 
-    /// The factor that scales a saturation current with `emission` coefficient, given the
-    /// `energy_gap` in volts and the temperature `exponent`, SPICE's XTI:
-    /// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)`.
+    /// Computes the saturation current scaling factor
+    /// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` from `energy_gap` in volts,
+    /// temperature `exponent` (SPICE `XTI`), and `emission` coefficient.
     pub(crate) fn saturation(self, energy_gap: R, exponent: R, emission: R) -> R {
         let ratio = self.ratio();
         (((ratio - 1.0) * energy_gap / self.thermal_voltage() + exponent * ratio.ln()) / emission)
             .exp()
     }
 
-    /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
-    /// coefficient, scaled to the device's temperature through silicon's band gap.
+    /// Scales a junction's built-in `potential` and zero-bias `capacitance` of `grading`
+    /// coefficient to the device's actual temperature using the silicon band gap.
     pub(crate) fn junction(self, potential: R, capacitance: R, grading: R) -> (R, R) {
         self.junction_of(potential, capacitance, grading, Varshni::silicon())
     }
 
-    /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
-    /// coefficient, scaled to the device's temperature through the band `gap`, as
-    /// ngspice's diode scales them (`diotemp.c`, lines 73 to 91).
+    /// Scales a junction's built-in `potential` and zero-bias `capacitance` of `grading`
+    /// coefficient to the device's actual temperature using band `gap`, matching ngspice
+    /// `diotemp.c`.
     pub(crate) fn junction_of(
         self,
         potential: R,
@@ -169,9 +169,8 @@ impl<R: Real> Temperatures<R> {
     }
 }
 
-/// How far a junction's built-in potential at `temperature` lies from the reference
-/// temperature's, through the band gap there, `band_gap` in electronvolts, and the
-/// intrinsic concentration: SPICE's `pbfact`.
+/// Computes SPICE `pbfact`, the built-in potential shift at `temperature` relative to the
+/// reference temperature given `band_gap` in electronvolts.
 fn potential_shift<R: Real>(temperature: R, band_gap: R) -> R {
     let gap = -band_gap / (temperature * (2.0 * BOLTZMANN))
         + 1.115_087_7 / (2.0 * BOLTZMANN * REFERENCE_TEMPERATURE);
@@ -180,12 +179,12 @@ fn potential_shift<R: Real>(temperature: R, band_gap: R) -> R {
         * ((temperature / REFERENCE_TEMPERATURE).ln() * 1.5 + gap * ELEMENTARY_CHARGE)
 }
 
-/// The current through a junction at `voltage`, with its derivatives, of `saturation`
-/// current and exponential `slope` (the emission coefficient times the thermal voltage).
+/// Evaluates junction current and derivatives at `voltage` for `saturation` current and
+/// exponential `slope` (emission coefficient times thermal voltage).
 ///
-/// Forward and slightly reversed, the current is `Is · (e^{v / slope} − 1)`. Below three
-/// slopes of reverse bias it follows SPICE's form, `−Is · (1 + (3·slope / (e·v))³)`, which
-/// joins the exponential with its slope and settles on `−Is`.
+/// Forward and mild reverse bias use `Is · (e^{v / slope} − 1)`. Below `-3 · slope`,
+/// switches to the SPICE cubic form `−Is · (1 + (3·slope / (e·v))³)`, matching value and
+/// slope at the join and asymptoting to `−Is`.
 pub(crate) fn junction_current<R: Real, const N: usize>(
     voltage: Dual<R, N>,
     saturation: R,
@@ -200,18 +199,18 @@ pub(crate) fn junction_current<R: Real, const N: usize>(
     }
 }
 
-/// The voltage above which a junction's steps are limited: where its current's curvature
-/// takes over, `slope · ln(slope / (√2 · Is))`.
+/// Computes the critical voltage `slope · ln(slope / (√2 · Is))` above which junction
+/// Newton steps undergo logarithmic limiting.
 pub(crate) fn critical_voltage(saturation: f64, slope: f64) -> f64 {
     slope * (slope / (std::f64::consts::SQRT_2 * saturation)).ln()
 }
 
-/// SPICE's limiting of a junction voltage's step from `old` to `new`, with exponential
-/// `slope` and `critical` voltage. Above the critical voltage, a step of more than two
-/// slopes forward becomes a logarithmic one the exponential follows safely, and one
-/// backward falls to the critical voltage, as in SPICE3. A step deep into reverse bias is
-/// bounded, as in ngspice. Returns the limited voltage, or `None` when `new` needs no
-/// limiting.
+/// Applies SPICE junction voltage limiting to a step from `old` to `new` given exponential
+/// `slope` and `critical` voltage.
+///
+/// Above `critical`, forward steps exceeding `2 · slope` are compressed logarithmically and
+/// backward steps fall back to `critical` (SPICE3). Deep reverse-bias steps are bounded as
+/// in ngspice. Returns the limited voltage, or `None` when `new` requires no limiting.
 #[must_use]
 pub fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
     if new > critical && (new - old).abs() > 2.0 * slope {
@@ -237,10 +236,10 @@ pub fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f
     }
 }
 
-/// SPICE's limiting of a field-effect transistor's gate voltage's step from `old` to `new`,
-/// around its `threshold`: steps are bounded relative to the distance from the threshold,
-/// so the drain current's square law cannot overshoot. Returns the limited voltage, or
-/// `None` when `new` needs no limiting.
+/// Applies SPICE gate voltage limiting to a FET step from `old` to `new` around `threshold`.
+///
+/// Bounds steps relative to the distance from `threshold` to prevent quadratic drain-current
+/// overshoot. Returns the limited voltage, or `None` when `new` requires no limiting.
 #[must_use]
 pub fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     let high = (2.0 * (old - threshold)).abs() + 2.0;
@@ -275,10 +274,12 @@ pub fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     }
 }
 
-/// SPICE's limiting of a field-effect transistor's steps of its gate-source and
-/// drain-source voltages from `old` to `new`, around its `threshold`: the gate's step from
-/// whichever end acted as the source, then the drain's. Returns the voltages as limited, and
-/// whether either step was.
+/// Applies SPICE channel limiting to FET gate-source and drain-source voltage steps from
+/// `old` to `new` around `threshold`.
+///
+/// Limits gate voltage relative to the active source end first, then limits drain-source
+/// voltage. Returns the limited `[vgs, vds]` pair and a boolean indicating whether limiting
+/// modified either step.
 pub(crate) fn limit_channel(new: [f64; 2], old: [f64; 2], threshold: f64) -> ([f64; 2], bool) {
     let [mut vgs, mut vds] = new;
     let [previous_gate, previous_drain] = old;
@@ -304,9 +305,10 @@ pub(crate) fn limit_channel(new: [f64; 2], old: [f64; 2], threshold: f64) -> ([f
     ([vgs, vds], limited)
 }
 
-/// SPICE's limiting of a field-effect transistor's drain voltage's step from `old` to
-/// `new`, both with the drain at or above the source. Returns the limited voltage, or
-/// `None` when `new` needs no limiting.
+/// Applies SPICE drain voltage limiting to a FET step from `old` to `new` with the drain at
+/// or above the source.
+///
+/// Returns the limited voltage, or `None` when `new` requires no limiting.
 pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
     if old >= 3.5 {
         if new > old {
@@ -321,36 +323,36 @@ pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
     }
 }
 
-/// The depletion charge of a junction: the classic power law below `threshold`, extended
-/// linearly in capacitance above it, where the power law would diverge.
+/// Junction depletion charge model combining a power law below `threshold` with a linear
+/// capacitance extension above `threshold` to prevent divergence.
 ///
-/// With zero-bias capacitance `C`, built-in potential `φ`, grading coefficient `m` and
-/// depletion coefficient `fc`, the charge is `C · φ · (1 − (1 − v / φ)^{1 − m}) / (1 − m)`
-/// below `fc · φ`, and above it the charge there plus
-/// `C · ((1 − fc · (1 + m)) · (v − fc · φ) + m / (2φ) · (v² − (fc · φ)²)) / (1 − fc)^{1 + m}`.
-/// The factors that do not depend on `v` are prepared once.
+/// Given zero-bias capacitance `C`, built-in potential `φ`, grading coefficient `m`, and
+/// depletion coefficient `fc`, charge equals `C·φ·(1 − (1 − v/φ)^{1 − m}) / (1 − m)` below
+/// `fc·φ`. Above `fc·φ`, charge adds the quadratic integral of the linear capacitance:
+/// `C·((1 − fc·(1 + m))·(v − fc·φ) + m/(2φ)·(v² − (fc·φ)²)) / (1 − fc)^{1 + m}`.
+/// Voltage-independent factors are precomputed once during construction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Depletion<R: Real = f64> {
-    /// `1 / φ`.
+    /// Reciprocal built-in potential `1 / φ`.
     inverse_potential: R,
-    /// `−m`.
+    /// Negated grading coefficient `−m`.
     exponent: R,
-    /// `C · φ / (1 − m)`.
+    /// Power-law prefactor `C · φ / (1 − m)`.
     scale: R,
-    /// `fc · φ`.
+    /// Linear-extension voltage threshold `fc · φ`.
     threshold: R,
-    /// The charge at the threshold.
+    /// Depletion charge evaluated at `threshold`.
     at_threshold: R,
-    /// `C · (1 − fc · (1 + m)) / (1 − fc)^{1 + m}`.
+    /// Linear capacitance coefficient `C · (1 − fc · (1 + m)) / (1 − fc)^{1 + m}`.
     linear: R,
-    /// `C · m / (2φ · (1 − fc)^{1 + m})`.
+    /// Quadratic charge coefficient `C · m / (2φ · (1 − fc)^{1 + m})`.
     quadratic: R,
 }
 
 impl<R: Real> Depletion<R> {
-    /// The depletion of a junction with zero-bias `capacitance`, built-in `potential`,
-    /// `grading` coefficient and depletion `coefficient`, the fraction of the potential
-    /// above which the capacitance is extended linearly; `None` without capacitance.
+    /// Prepares a depletion charge model from zero-bias `capacitance`, built-in `potential`,
+    /// `grading` coefficient, and linear-extension threshold `coefficient`, returning `None`
+    /// when `capacitance` is zero.
     pub(crate) fn new(capacitance: R, potential: R, grading: R, coefficient: R) -> Option<Self> {
         (capacitance.value() > 0.0).then(|| {
             let remaining = -(coefficient - 1.0);
@@ -368,14 +370,14 @@ impl<R: Real> Depletion<R> {
         })
     }
 
-    /// The charge, with its derivatives, at junction voltage `voltage`.
+    /// Evaluates depletion charge and derivatives at junction `voltage`.
     pub(crate) fn evaluate<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let threshold = self.threshold;
         if voltage.value.value() < threshold.value() {
-            // `1 − (1 − v/φ)^{1 − m}` as `−expm1((1 − m) ln1p(−v/φ))`, which keeps its
-            // digits near zero volts, where the difference from 1 loses them: an absolute
-            // error of `ε·C·φ/(1 − m)`, 3.5e-25 C at 1 nF, is 5e-12 A through a time step's
-            // weight of 1.5e13 /s, above a node's 1e-12 A of tolerance.
+            // Evaluates `1 − (1 − v/φ)^{1 − m}` via `−expm1((1 − m) · ln1p(−v/φ))` to retain
+            // precision near 0 V, where subtracting from 1 causes cancellation. At 1 nF, raw
+            // error `ε·C·φ/(1 − m) ≈ 3.5e-25 C` scales by a 1.5e13 /s step weight to 5e-12 A,
+            // exceeding the 1e-12 A nodal tolerance.
             let logarithm = (-voltage.scale(self.inverse_potential)).ln_1p();
             (-logarithm.scale(self.exponent + 1.0).exp_m1()).scale(self.scale)
         } else {
@@ -397,13 +399,13 @@ pub(crate) fn below_one<R: Real>(parameter: &str, value: R) -> Result<R, Paramet
     } else {
         let value = value.value();
         Err(ParameterError(format!(
-            "{parameter} must be at least 0 and below 1, not {value:?}"
+            "{parameter} is at least 0 and below 1, not {value:?}"
         )))
     }
 }
 
-/// The charge, with its derivatives, of an optional depletion at `voltage`, zero without
-/// one.
+/// Evaluates depletion charge and derivatives at `voltage` for an optional [`Depletion`],
+/// returning zero when `depletion` is `None`.
 pub(crate) fn depletion_charge<R: Real, const N: usize>(
     depletion: Option<&Depletion<R>>,
     voltage: Dual<R, N>,
@@ -418,7 +420,8 @@ mod tests {
     use super::*;
 
     proptest! {
-        /// The reverse-bias form joins the exponential with the same current and slope.
+        /// Verifies that the reverse-bias cubic joins the exponential with matching current
+        /// and slope.
         #[test]
         fn the_junction_current_is_smooth_and_its_slope_is_its_derivative(
             voltage in -10.0..0.8f64,
@@ -434,8 +437,8 @@ mod tests {
             prop_assert!(value >= -1e-12 * (1.0 + 1e-9));
         }
 
-        /// A limited step is finite, and a forward junction step, any gate step, and any
-        /// drain step at or above the source stay between the old voltage and the new one.
+        /// Verifies that limited steps stay finite and that forward junction steps, gate
+        /// steps, and forward drain steps remain between old and new voltages.
         #[test]
         fn limiting_never_overshoots(new in -20.0..20.0f64, old in -20.0..20.0f64) {
             let slope = thermal_voltage(REFERENCE_TEMPERATURE);

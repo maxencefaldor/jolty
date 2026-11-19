@@ -10,25 +10,25 @@ use serde_json::Value;
 
 use crate::{Instance, Interface, Kernel, ParameterKind, Real};
 
-/// A kind of device: its name, its parameters, and how to read an instance's into its
-/// kernel's instance.
+/// Device model descriptor providing the model name, parameter schema, and specification
+/// parsing into a kernel instance.
 pub trait Model: Send + Sync {
-    /// The name circuits refer to the model by, such as `resistor`.
+    /// Returns the model name used in circuit definitions, such as `resistor`.
     fn name(&self) -> &'static str;
 
-    /// Reads `parameters`, once, into the instance of a kernel they make.
+    /// Parses `parameters` into a validated device specification backed by a kernel.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when a parameter is missing, unknown or of the wrong
+    /// Returns [`ParameterError`] when a parameter is missing, unknown, or of the wrong
     /// kind.
     fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError>;
 
-    /// Every parameter a device of the model takes, with its type, its default and its
-    /// description, as a JSON schema of an object, every type within it written in place.
+    /// Returns the JSON schema describing all parameters of the model with types, defaults,
+    /// and descriptions inlined.
     fn schema(&self) -> Schema;
 
-    /// `parameters` as the model takes them: each one left out, written with its default.
+    /// Returns `parameters` normalized with all omitted parameters populated from defaults.
     ///
     /// # Errors
     ///
@@ -37,51 +37,52 @@ pub trait Model: Send + Sync {
         self.read(parameters)?.parameters()
     }
 
-    /// Whether its devices are a foundry's, which ngspice simulates with the foundry's
-    /// models: they elaborate, so the structural checks read their branches, but no
-    /// analysis runs on a circuit that holds one.
+    /// Returns whether instances represent foundry devices simulated externally by ngspice.
+    ///
+    /// Foundry devices elaborate so structural checks inspect their branches, while circuit
+    /// analyses refuse circuits containing them.
     fn foundry(&self) -> bool {
         false
     }
 
-    /// Every base parameter of the model and its physical dimension or kind, in
+    /// Returns all base model parameters paired with their physical dimension or kind in
     /// declaration order.
     fn parameter_kinds(&self) -> &'static [(&'static str, ParameterKind)] {
         &[]
     }
 
-    /// Base names of the parameters that expand into `l`, `w`, and `p` geometry-binning
+    /// Returns base names of parameters that expand into `l`, `w`, and `p` geometry-binning
     /// dependences.
     fn binned_parameters(&self) -> &'static [&'static str] {
         &[]
     }
 }
 
-/// An instance's parameters, read into its model's typed form: the terminals of its device,
-/// and the instance of a kernel they make.
+/// Validated, typed parameters for a single device instance, exposing its terminal interface
+/// and kernel binding.
 pub trait Specification: fmt::Debug + Send + Sync {
-    /// The terminals and branches of the device.
+    /// Returns the terminals and branches of the device.
     fn interface(&self) -> Interface;
 
-    /// The parameters, each one left out written with its default, which read back as
-    /// they are.
+    /// Returns the normalized parameter map with all omitted defaults filled in so it
+    /// round-trips identically.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when they cannot be written as a JSON object.
+    /// Returns [`ParameterError`] when the parameters cannot be serialized as a JSON object.
     fn parameters(&self) -> Result<Parameters, ParameterError>;
 
-    /// The instance as one of a [kernel](crate::Kernel)'s, which the engine evaluates
-    /// beside the other instances of its kernel and shape.
+    /// Returns the device as a [`Kernel`](crate::Kernel) instance for batched evaluation
+    /// alongside instances sharing the same kernel and shape.
     fn kernel(&self) -> Instance<'_>;
 }
 
-/// The [`Model`] of a [`Kernel`], whose instances give their exact derivatives with respect
-/// to any of their parameters.
+/// [`Model`] adapter wrapping a [`Kernel`] whose instances support exact parameter
+/// differentiation.
 pub struct Differentiable<K>(PhantomData<fn() -> K>);
 
 impl<K: Kernel> Differentiable<K> {
-    /// The model of `K`.
+    /// Creates a differentiable model adapter for kernel `K`.
     #[must_use]
     pub fn new() -> Self {
         Self(PhantomData)
@@ -155,12 +156,12 @@ where
     }
 }
 
-/// The typed parameters `P` in `parameters`.
+/// Deserializes typed parameters `P` from the JSON map `parameters`.
 pub(crate) fn read<P: DeserializeOwned>(parameters: &Parameters) -> Result<P, ParameterError> {
     P::deserialize(parameters).map_err(|error| ParameterError(error.to_string()))
 }
 
-/// The typed `parameters` written as a JSON object, each one as it reads.
+/// Serializes typed `parameters` into a JSON object map matching the input format.
 pub(crate) fn written<P: Serialize>(parameters: &P) -> Result<Parameters, ParameterError> {
     match serde_json::to_value(parameters) {
         Ok(Value::Object(written)) => Ok(written),
@@ -171,7 +172,7 @@ pub(crate) fn written<P: Serialize>(parameters: &P) -> Result<Parameters, Parame
     }
 }
 
-/// The JSON schema of the parameters `P`, every type within it written in place.
+/// Generates a draft 2020-12 JSON schema for parameter type `P` with all subschemas inlined.
 pub(crate) fn schema<P: JsonSchema>() -> Schema {
     SchemaSettings::draft2020_12()
         .with(|settings| settings.inline_subschemas = true)
@@ -179,8 +180,7 @@ pub(crate) fn schema<P: JsonSchema>() -> Schema {
         .into_root_schema_for::<P>()
 }
 
-/// `schema`, the schema of an object, with the properties of `more`, another's, among its
-/// own.
+/// Merges the `properties` entries from `more` into the object schema `schema`.
 pub(crate) fn extended(mut schema: Schema, more: &Schema) -> Schema {
     let Some(added) = more.get("properties").and_then(Value::as_object) else {
         return schema;
@@ -199,38 +199,38 @@ pub(crate) fn extended(mut schema: Schema, more: &Schema) -> Schema {
     schema
 }
 
-/// Why a device's parameters are invalid.
+/// Validation or deserialization error describing why device parameters are invalid.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ParameterError(pub String);
 
 impl ParameterError {
-    /// Checks that `value` is positive.
+    /// Checks that `value` is strictly positive.
     ///
     /// # Errors
     ///
-    /// Returns an error naming `parameter` otherwise.
+    /// Returns an error naming `parameter` when `value` is not strictly positive.
     pub fn positive<R: Real>(parameter: &str, value: R) -> Result<R, Self> {
         if value.value() > 0.0 {
             Ok(value)
         } else {
             let value = value.value();
-            Err(Self(format!("{parameter} must be positive, not {value:?}")))
+            Err(Self(format!("{parameter} is positive, not {value:?}")))
         }
     }
 
-    /// Checks that `value` is not negative.
+    /// Checks that `value` is non-negative.
     ///
     /// # Errors
     ///
-    /// Returns an error naming `parameter` otherwise.
+    /// Returns an error naming `parameter` when `value` is negative.
     pub fn non_negative<R: Real>(parameter: &str, value: R) -> Result<R, Self> {
         if value.value() >= 0.0 {
             Ok(value)
         } else {
             let value = value.value();
             Err(Self(format!(
-                "{parameter} must be at least 0, not {value:?}"
+                "{parameter} is at least 0, not {value:?}"
             )))
         }
     }

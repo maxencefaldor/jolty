@@ -1,7 +1,7 @@
-//! The Gummel-Poon bipolar transistor, derived from ngspice 47's implementation of it in
-//! `src/spicelib/devices/bjt/`:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! Gummel-Poon bipolar junction transistor (BJT) kernel, derived from ngspice 47
+//! `src/spicelib/devices/bjt/`: Copyright 1985 - 2018, Regents of the University of
+//! California and others. Used under the ngspice Modified BSD license, reproduced in the
+//! repository `NOTICE` file.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -26,19 +26,19 @@ use crate::{
     UnknownIndex,
 };
 
-/// The doping order of a bipolar transistor.
+/// Doping polarity of a bipolar junction transistor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Polarity {
-    /// An NPN transistor, conducting with its base above its emitter.
+    /// NPN transistor conducting with base above emitter.
     Npn,
-    /// A PNP transistor, the NPN's mirror: every voltage and current reversed.
+    /// PNP transistor with voltages and currents reversed relative to NPN.
     Pnp,
 }
 
 impl Polarity {
-    /// `1` for NPN, `−1` for PNP: the factor that orients voltages and currents as an
-    /// NPN's.
+    /// Returns `1.0` for NPN or `-1.0` for PNP to orient voltages and currents into NPN
+    /// convention.
     #[must_use]
     pub const fn sign(self) -> f64 {
         match self {
@@ -48,32 +48,30 @@ impl Polarity {
     }
 }
 
-/// How a bipolar transistor is built, which sets where its junction to the substrate lies.
+/// Physical BJT construction determining which internal node connects to the substrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Construction {
-    /// Built vertically, with the junction to the substrate at the collector.
+    /// Vertical structure placing the substrate junction on the internal collector.
     Vertical,
-    /// Built laterally, with the junction to the substrate at the base.
+    /// Lateral structure placing the substrate junction on the internal base.
     Lateral,
 }
 
-/// How a bipolar transistor's saturation currents and betas follow the temperature:
-/// SPICE's `TLEV`, as ngspice's `bjttemp.c` computes each (lines 162 to 253).
+/// Temperature scaling selector for BJT saturation currents and current gains (SPICE `TLEV`,
+/// matching ngspice `bjttemp.c`, lines 162 to 253).
 ///
-/// Either way, a saturation current `I` of emission coefficient `n` scales by
-/// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)`, and the leakage currents, `ISE` and
-/// `ISC`, are divided by the betas' factor. ngspice's `TLEV` 3, which raises each saturation
-/// current to the power `1 + TIS1·ΔT + TIS2·ΔT²`, a power that does not commute with the
-/// area a SPICE element scales the current by, is not modeled; nor is 2, for which ngspice
-/// computes no saturation current.
+/// Both models scale each saturation current of emission coefficient `n` by
+/// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` and divide `ISE` and `ISC` by the
+/// beta temperature factor. Ngspice `TLEV = 2` (computing no saturation scaling) and
+/// `TLEV = 3` (with exponent `1 + TIS1·ΔT + TIS2·ΔT²` breaking area scaling) are omitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum BipolarTemperatureModel {
-    /// `TLEV` 0: the betas scale by `(T/Tn)^XTB`.
+    /// Model 0 (`TLEV = 0`): scales betas by `(T/Tn)^XTB`.
     #[default]
     Zero,
-    /// `TLEV` 1: the betas scale by `1 + XTB · ΔT`.
+    /// Model 1 (`TLEV = 1`): scales betas linearly by `1 + XTB · ΔT`.
     One,
 }
 
@@ -86,16 +84,17 @@ super::numbered_enum!(
     }
 );
 
-/// How a bipolar transistor's depletion capacitances and built-in potentials follow the
-/// temperature: SPICE's `TLEVC`, as ngspice's `bjttemp.c` computes each (lines 260 to 313).
+/// Temperature scaling selector for BJT depletion capacitances and built-in potentials
+/// (SPICE `TLEVC`, matching ngspice `bjttemp.c`, lines 260 to 313).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum BipolarCapacitanceTemperatureModel {
-    /// `TLEVC` 0: through silicon's band gap and intrinsic concentration.
+    /// Model 0 (`TLEVC = 0`): scales potentials and capacitances via silicon band gap and
+    /// intrinsic carrier concentration.
     #[default]
     Zero,
-    /// `TLEVC` 1: linearly, each capacitance by `1 + CT · ΔT` and each potential falling
-    /// by `TVJ · ΔT`, their own coefficients.
+    /// Model 1 (`TLEVC = 1`): scales each capacitance linearly by `1 + CT · ΔT` and lowers
+    /// each potential linearly by `TVJ · ΔT`.
     One,
 }
 
@@ -108,53 +107,43 @@ super::numbered_enum!(
     }
 );
 
-/// The largest grading coefficient ngspice takes at a transistor's temperature: it limits
-/// one its temperature coefficients raise beyond to it, with a warning, as a depletion
-/// charge divides by `1 − m` (`bjttemp.c`, lines 133 to 146).
+/// Upper clamp applied to temperature-scaled grading coefficients (`bjttemp.c`, lines 133 to
+/// 146) because depletion charge divides by `1 − m`.
 const MAX_GRADING: f64 = 0.999;
 
-/// A bipolar junction transistor, in the Gummel-Poon model of SPICE, as ngspice implements
-/// it.
+/// Bipolar junction transistor implementing the SPICE Gummel-Poon model from ngspice 47.
 ///
-/// Two junctions, base-emitter and base-collector, each carry an ideal
-/// junction current and a leakage one. The transport current from
-/// collector to emitter, `(Ibe − Ibc) / qb`, falls with the base charge `qb`, which models
-/// the Early effect and high injection. The base resistance falls from `rb` towards `rbm`
-/// as the base charge or the base current grows. Each junction holds a depletion charge,
-/// and a diffusion charge set by its transit time; the forward transit time grows with
-/// the current and the base-collector voltage. Part of the base-collector depletion charge
-/// sits on the external base. A base, collector or emitter resistance adds an internal
-/// node, labelled `base`, `collector` or `emitter`; one below [`SMALL_RESISTANCE`], the
-/// base's at its minimum, also carries its current as an unknown, labelled `base_current`,
-/// `collector_current` or `emitter_current`.
+/// Base-emitter and base-collector junctions carry ideal and leakage currents, while
+/// transport current `(Ibe − Ibc) / qb` incorporates Early effect and high injection via
+/// base charge `qb`. Base resistance transitions from `rb` toward `rbm` with base charge or
+/// base current. Each junction stores depletion charge and transit-time diffusion charge,
+/// with forward transit time modulated by current and `vbc`, and a fraction of
+/// base-collector depletion placed on the external base. Positive series resistances add
+/// internal nodes (`base`, `collector`, `emitter`) and, below [`SMALL_RESISTANCE`] (at
+/// `rbm` for the base), branch currents (`base_current`, `collector_current`,
+/// `emitter_current`).
 ///
-/// A transistor with a substrate has a fourth terminal, `substrate`, joined by a junction
-/// to its internal collector if it is vertical or to its internal base if it is lateral.
-/// The junction conducts the minimum conductance, and its diode's current if it has a
-/// saturation current; its depletion capacitance grows linearly in forward bias.
+/// An optional fourth terminal `substrate` connects via a pn junction to the internal
+/// collector (vertical) or internal base (lateral), conducting `gmin` plus optional diode
+/// current and forward-linearized depletion charge.
 ///
-/// An excess phase delays the forward transport current, `Ibe / qb`, through Weil's
-/// approximation as SPICE makes it, a second-order Bessel filter,
-/// `3 / (s² · td² + 3 · s · td + 3)`: its group delay at low frequencies is `td`, and its
-/// phase at the frequency `1 / (2π · TF)` nearly the excess phase. Two unknowns carry the
-/// filter, labelled `delayed_transport` and `delayed_transport_slope`.
+/// Excess phase delays forward transport current `Ibe / qb` through SPICE's second-order
+/// Weil-Bessel filter `3 / (s² · td² + 3 · s · td + 3)`. The filter maintains low-frequency
+/// group delay `td`, matches the target phase at `1 / (2π · TF)`, and uses internal unknowns
+/// `delayed_transport` and `delayed_transport_slope`.
 ///
-/// Away from its nominal temperature, its saturation currents scale with the energy gap,
-/// its betas by their temperature exponent, exponentially or linearly as its
-/// [temperature model](BipolarTemperatureModel) says, and its junctions' potentials and
-/// capacitances with silicon's band gap or linearly, as its
-/// [capacitance temperature model](BipolarCapacitanceTemperatureModel) says; each other
-/// parameter that HSPICE gives temperature coefficients, its resistances, Early voltages,
-/// knee currents, emission and grading coefficients and transit times, and a beta given
-/// coefficients of its own, scales by `1 + c1·ΔT + c2·ΔT²`, as ngspice 47's `bjttemp.c`
-/// scales them.
+/// Away from nominal temperature, saturation currents scale with the energy gap, betas scale
+/// according to [temperature model](BipolarTemperatureModel), and potentials and
+/// capacitances scale according to
+/// [capacitance temperature model](BipolarCapacitanceTemperatureModel). Additional HSPICE
+/// parameters (resistances, Early voltages, knee currents, emission and grading
+/// coefficients, transit times, and betas with explicit coefficients) scale by
+/// `1 + c1·ΔT + c2·ΔT²`, matching ngspice 47 `bjttemp.c`.
 #[derive(Debug, Clone, Copy)]
 pub struct BipolarTransistor;
 
-/// Where a transistor's contributions go among its local unknowns: through its collector
-/// and emitter resistances and its base resistance, among the base terminal and the
-/// collector, base and emitter behind the resistances, and through its excess phase's
-/// filter and its substrate junction, if it has them.
+/// Layout shape for [`BipolarTransistor`] storing series resistances, intrinsic node matrix,
+/// optional excess-phase filter, and optional substrate junction nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BipolarTransistorShape {
     stamp: Nodes<STAMPED>,
@@ -162,65 +151,62 @@ pub struct BipolarTransistorShape {
     emitter_series: Series,
     base: Option<BaseForm>,
     excess: Option<ExcessPhase>,
-    /// The substrate, then the internal collector or base.
+    /// Substrate terminal and target internal node (collector or base).
     substrate: Option<Nodes<2>>,
 }
 
-/// A transistor's numbers at its temperature.
+/// Prepared BJT parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedBipolarTransistor<R: Real> {
     sign: f64,
-    /// The collector and the emitter resistances' conductances, or each resistance where
-    /// its current is an unknown.
+    /// Stamp values for collector and emitter series resistances.
     series: [R; 2],
     base: Option<BaseResistance<R>>,
     junctions: Junctions<R>,
     charges: Option<Charges<R>>,
-    /// The delay of the excess phase, in seconds.
+    /// Excess-phase group delay, in seconds.
     delay: R,
     substrate: Option<SubstrateJunction<R>>,
-    /// The thermal voltage at the transistor's temperature.
+    /// Thermal voltage at operating temperature.
     thermal_voltage: f64,
     critical_voltage: f64,
     temperature: f64,
     flicker: Flicker,
 }
 
-/// What a transistor remembers.
+/// Persistent evaluation memory for [`BipolarTransistor`] storing previous junction voltages
+/// and diagnostic variables.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BipolarTransistorMemory {
-    /// The base-emitter and base-collector voltages of the last evaluation, from which the
-    /// next steps are limited.
+    /// Base-emitter and base-collector voltages from the last evaluation for step limiting.
     last: [f64; JUNCTIONS],
-    /// The substrate junction's voltage of the last evaluation.
+    /// Substrate junction voltage from the last evaluation for step limiting.
     substrate: f64,
-    /// The values of [`Bipolar::VARIABLE_NAMES`] at the last evaluation.
+    /// Values of [`Bipolar::VARIABLE_NAMES`] from the last evaluation.
     variables: [f64; 3],
 }
 
-/// The indices of the terminals a substrate junction may join: the collector and the base.
+/// Terminal indices eligible for substrate junction attachment (`collector` and `base`).
 const COLLECTOR: usize = 0;
 const BASE: usize = 1;
 
-/// Local node indices: the base terminal, then the collector, base and emitter behind their
-/// resistances, which are the terminals themselves without one.
+/// Local node indices: external base plus internal collector, base, and emitter nodes.
 const OUTER_BASE: usize = 0;
 const INNER_COLLECTOR: usize = 1;
 const INNER_BASE: usize = 2;
 const INNER_EMITTER: usize = 3;
 
-/// The number of stamped nodes.
+/// Number of stamped nodes.
 const STAMPED: usize = 4;
 
-/// The number of voltages the transistor's equations take as variables.
+/// Number of controlling branch voltages in the BJT equations.
 const VARIABLE_COUNT: usize = 4;
 
-/// The number of those voltages, the first, across junctions, whose steps are limited.
+/// Number of leading junction voltages subject to step limiting.
 const JUNCTIONS: usize = 2;
 
-/// The pairs of stamped nodes across which the variables lie: the base-emitter and the
-/// base-collector junctions, the base resistance, and the external base-collector
-/// depletion, from the base terminal to the internal collector.
+/// Stamped node pairs for the four controlling voltages: base-emitter, base-collector,
+/// base-resistance drop, and external base-collector.
 const VARIABLES: [(usize, usize); VARIABLE_COUNT] = [
     BASE_EMITTER,
     BASE_COLLECTOR,
@@ -232,384 +218,344 @@ const BASE_COLLECTOR: (usize, usize) = (INNER_BASE, INNER_COLLECTOR);
 const BASE_SERIES: (usize, usize) = (OUTER_BASE, INNER_BASE);
 const EXTERNAL_BASE_COLLECTOR: (usize, usize) = (OUTER_BASE, INNER_COLLECTOR);
 
-/// The variables' positions among [`VARIABLES`], by ngspice's names, and `Vrb` for the
-/// drop across the base resistance.
+/// Variable positions in [`VARIABLES`], using ngspice names plus `VRB` for base-resistance
+/// drop.
 const VBE: usize = 0;
 const VBC: usize = 1;
 const VRB: usize = 2;
 const VBX: usize = 3;
 
-/// The variables each law of the transistor's equations reads, by their positions among
-/// [`VARIABLES`], in the order its numbers carry their derivatives: each law computes at
-/// the width of those alone.
-///
-/// The transport currents, the base resistance and the base-emitter charge read both
-/// junctions.
+/// Subset of [`VARIABLES`] read by transport currents, base resistance, and base-emitter
+/// charge: `[VBE, VBC]`.
 const INTRINSIC: [usize; 2] = [VBE, VBC];
-/// The base resistance's current, where it is a conductance, reads its own drop, then the
-/// junctions the resistance falls with.
+/// Subset of [`VARIABLES`] read by conductance-form base resistance: base-resistance drop
+/// followed by `[VBE, VBC]`.
 const BASE_RESISTANCE: [usize; 3] = [VRB, VBE, VBC];
 
-/// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
-/// treats as infinite at zero, such as an Early voltage, is infinite when left out.
+/// Parameters for [`BipolarTransistor`], with SPICE defaults.
+///
+/// Parameters treated by SPICE as infinite when zero (such as Early voltages and knee
+/// currents) default to infinite when omitted.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct BipolarTransistorParameters<R: Real = f64> {
-    /// The doping order; default `npn`.
+    /// Doping polarity; default `npn`.
     pub polarity: Polarity,
-    /// The transport saturation current, `IS`, in amperes; default 1e-16.
+    /// Transport saturation current `IS`, in amperes; default 1e-16.
     #[dimension(CURRENT)]
     pub saturation_current: R,
-    /// The ideal maximum forward current gain, `BF`; default 100.
+    /// Ideal maximum forward current gain `BF`; default 100.
     pub forward_beta: R,
-    /// The ideal maximum reverse current gain, `BR`; default 1.
+    /// Ideal maximum reverse current gain `BR`; default 1.
     pub reverse_beta: R,
-    /// The forward emission coefficient, `NF`; default 1.
+    /// Forward emission coefficient `NF`; default 1.
     pub forward_emission_coefficient: R,
-    /// The reverse emission coefficient, `NR`; default 1.
+    /// Reverse emission coefficient `NR`; default 1.
     pub reverse_emission_coefficient: R,
-    /// The forward Early voltage, `VAF`, in volts; infinite by default.
+    /// Forward Early voltage `VAF`, in volts; infinite by default.
     #[dimension(VOLTAGE)]
     pub forward_early_voltage: Option<R>,
-    /// The reverse Early voltage, `VAR`, in volts; infinite by default.
+    /// Reverse Early voltage `VAR`, in volts; infinite by default.
     #[dimension(VOLTAGE)]
     pub reverse_early_voltage: Option<R>,
-    /// The forward knee current, `IKF`, where high injection sets in, in amperes; infinite
-    /// by default.
+    /// Forward high-injection knee current `IKF`, in amperes; infinite by default.
     #[dimension(CURRENT)]
     pub forward_knee_current: Option<R>,
-    /// The reverse knee current, `IKR`, in amperes; infinite by default.
+    /// Reverse high-injection knee current `IKR`, in amperes; infinite by default.
     #[dimension(CURRENT)]
     pub reverse_knee_current: Option<R>,
-    /// The base-emitter leakage saturation current, `ISE`, in amperes; default 0.
+    /// Base-emitter leakage saturation current `ISE`, in amperes; default 0.
     #[dimension(CURRENT)]
     pub base_emitter_leakage_current: R,
-    /// The base-emitter leakage emission coefficient, `NE`; default 1.5.
+    /// Base-emitter leakage emission coefficient `NE`; default 1.5.
     pub base_emitter_leakage_emission_coefficient: R,
-    /// The base-collector leakage saturation current, `ISC`, in amperes; default 0.
+    /// Base-collector leakage saturation current `ISC`, in amperes; default 0.
     #[dimension(CURRENT)]
     pub base_collector_leakage_current: R,
-    /// The base-collector leakage emission coefficient, `NC`; default 2.
+    /// Base-collector leakage emission coefficient `NC`; default 2.
     pub base_collector_leakage_emission_coefficient: R,
-    /// The zero-bias base resistance, `RB`, in ohms; default 0.
+    /// Zero-bias base resistance `RB`, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub base_resistance: R,
-    /// The base resistance at high current, `RBM`, in ohms; the base resistance by default.
+    /// Minimum high-current base resistance `RBM`, in ohms; defaults to `base_resistance`.
     #[dimension(RESISTANCE)]
     pub min_base_resistance: Option<R>,
-    /// The base current, `IRB`, at which the base resistance falls halfway to its minimum,
-    /// in amperes; without it, the base resistance falls with the base charge.
+    /// Base current `IRB` at which base resistance falls halfway toward `RBM`, in amperes;
+    /// omitted modulates resistance by base charge.
     #[dimension(CURRENT)]
     pub base_resistance_current: Option<R>,
-    /// The emitter resistance, `RE`, in ohms; default 0.
+    /// Emitter series resistance `RE`, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub emitter_resistance: R,
-    /// The collector resistance, `RC`, in ohms; default 0.
+    /// Collector series resistance `RC`, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub collector_resistance: R,
-    /// The zero-bias base-emitter depletion capacitance, `CJE`, in farads; default 0.
+    /// Zero-bias base-emitter depletion capacitance `CJE`, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub base_emitter_capacitance: R,
-    /// The base-emitter built-in potential, `VJE`, in volts; default 0.75.
+    /// Base-emitter built-in potential `VJE`, in volts; default 0.75.
     #[dimension(VOLTAGE)]
     pub base_emitter_potential: R,
-    /// The base-emitter grading coefficient, `MJE`, below 1; default 0.33.
+    /// Base-emitter grading coefficient `MJE`, below 1; default 0.33.
     pub base_emitter_grading: R,
-    /// The ideal forward transit time, `TF`, in seconds; default 0.
+    /// Ideal forward transit time `TF`, in seconds; default 0.
     #[dimension(TIME)]
     pub forward_transit_time: R,
-    /// How much the forward transit time grows with bias, `XTF`; default 0.
+    /// Forward transit-time bias modulation coefficient `XTF`; default 0.
     pub transit_time_bias_coefficient: R,
-    /// The base-collector voltage, `VTF`, that sets how the forward transit time grows with
-    /// it, in volts; infinite by default.
+    /// Base-collector voltage `VTF` modulating forward transit time, in volts; infinite by
+    /// default.
     #[dimension(VOLTAGE)]
     pub transit_time_voltage: Option<R>,
-    /// The current, `ITF`, above which the forward transit time grows, in amperes;
-    /// default 0.
+    /// High-current threshold `ITF` for forward transit time growth, in amperes; default 0.
     #[dimension(CURRENT)]
     pub transit_time_current: R,
-    /// The zero-bias base-collector depletion capacitance, `CJC`, in farads; default 0.
+    /// Zero-bias base-collector depletion capacitance `CJC`, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub base_collector_capacitance: R,
-    /// The base-collector built-in potential, `VJC`, in volts; default 0.75.
+    /// Base-collector built-in potential `VJC`, in volts; default 0.75.
     #[dimension(VOLTAGE)]
     pub base_collector_potential: R,
-    /// The base-collector grading coefficient, `MJC`, below 1; default 0.33.
+    /// Base-collector grading coefficient `MJC`, below 1; default 0.33.
     pub base_collector_grading: R,
-    /// The fraction of the base-collector capacitance on the internal base, `XCJC`, the
-    /// rest on the external base; default 1.
+    /// Fraction `XCJC` of base-collector capacitance placed on the internal base; default 1.
     pub internal_base_fraction: R,
-    /// The ideal reverse transit time, `TR`, in seconds; default 0.
+    /// Ideal reverse transit time `TR`, in seconds; default 0.
     #[dimension(TIME)]
     pub reverse_transit_time: R,
-    /// The fraction of each junction's potential above which its depletion capacitance is
-    /// extended linearly, `FC`, below 1; default 0.5.
+    /// Fraction `FC` of junction potential above which depletion capacitance extends
+    /// linearly; below 1; default 0.5.
     pub depletion_coefficient: R,
-    /// The excess phase at the frequency `1 / (2π · TF)`, `PTF`, in degrees, which delays
-    /// the forward transport current by `PTF · π / 180 · TF`; default 0.
+    /// Excess phase `PTF` at `1 / (2π · TF)`, in degrees, giving delay
+    /// `PTF · π / 180 · TF`; default 0.
     pub excess_phase: R,
-    /// How the transistor is built, if it has a substrate, as ngspice's `SUBS` of 1 and −1
-    /// builds it; without it, the transistor has none. The parameters below, of the
-    /// junction to the substrate, need one.
+    /// Substrate construction (`vertical` or `lateral`, matching ngspice `SUBS = 1` and
+    /// `-1`); omitted disables the substrate terminal and requires substrate junction
+    /// parameters to remain unset.
     pub substrate: Option<Construction>,
-    /// The substrate junction's saturation current, `ISS`, in amperes; without it, the
-    /// junction carries the minimum conductance only.
+    /// Substrate junction saturation current `ISS`, in amperes; omitted conducts `gmin`
+    /// only.
     #[dimension(CURRENT)]
     pub substrate_saturation_current: Option<R>,
-    /// The substrate junction's emission coefficient, `NS`; default 1.
+    /// Substrate junction emission coefficient `NS`; default 1.
     pub substrate_emission_coefficient: Option<R>,
-    /// The substrate junction's zero-bias depletion capacitance, `CJS`, in farads;
-    /// default 0.
+    /// Zero-bias substrate depletion capacitance `CJS`, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub substrate_capacitance: Option<R>,
-    /// The substrate junction's built-in potential, `VJS`, in volts; default 0.75.
+    /// Substrate built-in potential `VJS`, in volts; default 0.75.
     #[dimension(VOLTAGE)]
     pub substrate_potential: Option<R>,
-    /// The substrate junction's grading coefficient, `MJS`, below 1; default 0.
+    /// Substrate grading coefficient `MJS`, below 1; default 0.
     pub substrate_grading: Option<R>,
-    /// The energy gap that scales the saturation currents with temperature, `EG`, in
-    /// volts; default 1.11, silicon's.
+    /// Energy gap `EG` scaling saturation currents with temperature, in volts; default 1.11
+    /// (silicon).
     #[dimension(VOLTAGE)]
     pub energy_gap: R,
-    /// The exponent of the temperature ratio in the saturation currents' scaling, `XTI`;
-    /// default 3.
+    /// Temperature-ratio exponent `XTI` scaling saturation currents; default 3.
     pub saturation_current_temperature_exponent: R,
-    /// The exponent of the temperature ratio that scales the betas where `TLEV` is 0, or
-    /// their linear temperature coefficient, per kelvin, where it is 1, `XTB`; default 0.
+    /// Beta temperature parameter `XTB`: exponent of `T/Tn` for `TLEV = 0`, or linear
+    /// coefficient per kelvin for `TLEV = 1`; default 0.
     pub beta_temperature_exponent: R,
-    /// How the saturation currents and the betas follow the temperature, `TLEV`; default
-    /// 0.
+    /// Saturation-current and beta temperature model `TLEV`; default 0.
     pub temperature_model: BipolarTemperatureModel,
-    /// How the junctions' depletion capacitances and built-in potentials follow the
-    /// temperature, `TLEVC`; default 0.
+    /// Junction-capacitance and potential temperature model `TLEVC`; default 0.
     pub capacitance_temperature_model: BipolarCapacitanceTemperatureModel,
-    /// The exponent of high injection in the base charge, `NKF`, above 0 and at most 1:
-    /// `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`; default 0.5, a square root.
+    /// High-injection base-charge exponent `NKF` in `(0, 1]`, giving
+    /// `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`; default 0.5.
     pub high_injection_exponent: R,
-    /// The forward beta's linear temperature coefficient, `TBF1`, per kelvin: given,
-    /// with `TBF2` or without, the beta scales by `1 + TBF1·ΔT + TBF2·ΔT²` from the
-    /// nominal temperature instead of by `XTB`'s factor; without either, by `XTB`'s
-    /// factor.
+    /// Linear forward-beta temperature coefficient `TBF1`, per kelvin. When `TBF1` or `TBF2`
+    /// is provided, scales `BF` by `1 + TBF1·ΔT + TBF2·ΔT²` instead of `XTB`.
     #[dimension(PER_KELVIN)]
     pub forward_beta_temperature_coefficient: Option<R>,
-    /// The forward beta's quadratic temperature coefficient, `TBF2`, per kelvin
-    /// squared, as `TBF1` says.
+    /// Quadratic forward-beta temperature coefficient `TBF2`, per kelvin squared (see `TBF1`).
     #[dimension(PER_KELVIN_SQUARED)]
     pub forward_beta_quadratic_temperature_coefficient: Option<R>,
-    /// The reverse beta's linear temperature coefficient, `TBR1`, per kelvin: given,
-    /// with `TBR2` or without, the beta scales by `1 + TBR1·ΔT + TBR2·ΔT²` from the
-    /// nominal temperature instead of by `XTB`'s factor; without either, by `XTB`'s
-    /// factor.
+    /// Linear reverse-beta temperature coefficient `TBR1`, per kelvin. When `TBR1` or `TBR2`
+    /// is provided, scales `BR` by `1 + TBR1·ΔT + TBR2·ΔT²` instead of `XTB`.
     #[dimension(PER_KELVIN)]
     pub reverse_beta_temperature_coefficient: Option<R>,
-    /// The reverse beta's quadratic temperature coefficient, `TBR2`, per kelvin
-    /// squared, as `TBR1` says.
+    /// Quadratic reverse-beta temperature coefficient `TBR2`, per kelvin squared (see `TBR1`).
     #[dimension(PER_KELVIN_SQUARED)]
     pub reverse_beta_quadratic_temperature_coefficient: Option<R>,
-    /// The forward knee current's linear temperature coefficient, `TIKF1`, per kelvin:
-    /// it scales by `1 + TIKF1·ΔT + TIKF2·ΔT²` from the nominal temperature; default 0.
+    /// Linear forward knee-current temperature coefficient `TIKF1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub forward_knee_current_temperature_coefficient: R,
-    /// The forward knee current's quadratic temperature coefficient, `TIKF2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic forward knee-current temperature coefficient `TIKF2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub forward_knee_current_quadratic_temperature_coefficient: R,
-    /// The reverse knee current's linear temperature coefficient, `TIKR1`, per kelvin:
-    /// it scales by `1 + TIKR1·ΔT + TIKR2·ΔT²` from the nominal temperature; default 0.
+    /// Linear reverse knee-current temperature coefficient `TIKR1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub reverse_knee_current_temperature_coefficient: R,
-    /// The reverse knee current's quadratic temperature coefficient, `TIKR2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic reverse knee-current temperature coefficient `TIKR2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub reverse_knee_current_quadratic_temperature_coefficient: R,
-    /// The forward Early voltage's linear temperature coefficient, `TVAF1`, per kelvin:
-    /// it scales by `1 + TVAF1·ΔT + TVAF2·ΔT²` from the nominal temperature; default 0.
+    /// Linear forward Early-voltage temperature coefficient `TVAF1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub forward_early_voltage_temperature_coefficient: R,
-    /// The forward Early voltage's quadratic temperature coefficient, `TVAF2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic forward Early-voltage temperature coefficient `TVAF2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub forward_early_voltage_quadratic_temperature_coefficient: R,
-    /// The reverse Early voltage's linear temperature coefficient, `TVAR1`, per kelvin:
-    /// it scales by `1 + TVAR1·ΔT + TVAR2·ΔT²` from the nominal temperature; default 0.
+    /// Linear reverse Early-voltage temperature coefficient `TVAR1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub reverse_early_voltage_temperature_coefficient: R,
-    /// The reverse Early voltage's quadratic temperature coefficient, `TVAR2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic reverse Early-voltage temperature coefficient `TVAR2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub reverse_early_voltage_quadratic_temperature_coefficient: R,
-    /// The zero-bias base resistance's linear temperature coefficient, `TRB1`, per
-    /// kelvin: it scales by `1 + TRB1·ΔT + TRB2·ΔT²` from the nominal temperature;
+    /// Linear zero-bias base-resistance temperature coefficient `TRB1`, per kelvin;
     /// default 0.
     #[dimension(PER_KELVIN)]
     pub base_resistance_temperature_coefficient: R,
-    /// The zero-bias base resistance's quadratic temperature coefficient, `TRB2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic zero-bias base-resistance temperature coefficient `TRB2`, per kelvin
+    /// squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_resistance_quadratic_temperature_coefficient: R,
-    /// The minimum base resistance's linear temperature coefficient, `TRM1`, per
-    /// kelvin: it scales by `1 + TRM1·ΔT + TRM2·ΔT²` from the nominal temperature;
-    /// default 0.
+    /// Linear minimum base-resistance temperature coefficient `TRM1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub min_base_resistance_temperature_coefficient: R,
-    /// The minimum base resistance's quadratic temperature coefficient, `TRM2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic minimum base-resistance temperature coefficient `TRM2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub min_base_resistance_quadratic_temperature_coefficient: R,
-    /// The base resistance's halfway current's linear temperature coefficient, `TIRB1`,
-    /// per kelvin: it scales by `1 + TIRB1·ΔT + TIRB2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear temperature coefficient `TIRB1` for halfway base-resistance current `IRB`, per
+    /// kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_resistance_current_temperature_coefficient: R,
-    /// The base resistance's halfway current's quadratic temperature coefficient,
-    /// `TIRB2`, per kelvin squared; default 0.
+    /// Quadratic temperature coefficient `TIRB2` for halfway base-resistance current `IRB`,
+    /// per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_resistance_current_quadratic_temperature_coefficient: R,
-    /// The collector resistance's linear temperature coefficient, `TRC1`, per kelvin:
-    /// it scales by `1 + TRC1·ΔT + TRC2·ΔT²` from the nominal temperature; default 0.
+    /// Linear collector-resistance temperature coefficient `TRC1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub collector_resistance_temperature_coefficient: R,
-    /// The collector resistance's quadratic temperature coefficient, `TRC2`, per kelvin
-    /// squared; default 0.
+    /// Quadratic collector-resistance temperature coefficient `TRC2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub collector_resistance_quadratic_temperature_coefficient: R,
-    /// The emitter resistance's linear temperature coefficient, `TRE1`, per kelvin: it
-    /// scales by `1 + TRE1·ΔT + TRE2·ΔT²` from the nominal temperature; default 0.
+    /// Linear emitter-resistance temperature coefficient `TRE1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub emitter_resistance_temperature_coefficient: R,
-    /// The emitter resistance's quadratic temperature coefficient, `TRE2`, per kelvin
-    /// squared; default 0.
+    /// Quadratic emitter-resistance temperature coefficient `TRE2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub emitter_resistance_quadratic_temperature_coefficient: R,
-    /// The forward emission coefficient's linear temperature coefficient, `TNF1`, per
-    /// kelvin: it scales by `1 + TNF1·ΔT + TNF2·ΔT²` from the nominal temperature;
+    /// Linear forward emission-coefficient temperature coefficient `TNF1`, per kelvin;
     /// default 0.
     #[dimension(PER_KELVIN)]
     pub forward_emission_coefficient_temperature_coefficient: R,
-    /// The forward emission coefficient's quadratic temperature coefficient, `TNF2`,
-    /// per kelvin squared; default 0.
+    /// Quadratic forward emission-coefficient temperature coefficient `TNF2`, per kelvin
+    /// squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub forward_emission_coefficient_quadratic_temperature_coefficient: R,
-    /// The reverse emission coefficient's linear temperature coefficient, `TNR1`, per
-    /// kelvin: it scales by `1 + TNR1·ΔT + TNR2·ΔT²` from the nominal temperature;
+    /// Linear reverse emission-coefficient temperature coefficient `TNR1`, per kelvin;
     /// default 0.
     #[dimension(PER_KELVIN)]
     pub reverse_emission_coefficient_temperature_coefficient: R,
-    /// The reverse emission coefficient's quadratic temperature coefficient, `TNR2`,
-    /// per kelvin squared; default 0.
+    /// Quadratic reverse emission-coefficient temperature coefficient `TNR2`, per kelvin
+    /// squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub reverse_emission_coefficient_quadratic_temperature_coefficient: R,
-    /// The base-emitter leakage emission coefficient's linear temperature coefficient,
-    /// `TNE1`, per kelvin: it scales by `1 + TNE1·ΔT + TNE2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear base-emitter leakage emission-coefficient temperature coefficient `TNE1`, per
+    /// kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_emitter_leakage_emission_coefficient_temperature_coefficient: R,
-    /// The base-emitter leakage emission coefficient's quadratic temperature
-    /// coefficient, `TNE2`, per kelvin squared; default 0.
+    /// Quadratic base-emitter leakage emission-coefficient temperature coefficient `TNE2`,
+    /// per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient: R,
-    /// The base-collector leakage emission coefficient's linear temperature
-    /// coefficient, `TNC1`, per kelvin: it scales by `1 + TNC1·ΔT + TNC2·ΔT²` from the
-    /// nominal temperature; default 0.
+    /// Linear base-collector leakage emission-coefficient temperature coefficient `TNC1`,
+    /// per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_collector_leakage_emission_coefficient_temperature_coefficient: R,
-    /// The base-collector leakage emission coefficient's quadratic temperature
-    /// coefficient, `TNC2`, per kelvin squared; default 0.
+    /// Quadratic base-collector leakage emission-coefficient temperature coefficient `TNC2`,
+    /// per kelvin squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient: R,
-    /// The substrate junction's emission coefficient's linear temperature coefficient,
-    /// `TNS1`, per kelvin: it scales by `1 + TNS1·ΔT + TNS2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear substrate emission-coefficient temperature coefficient `TNS1`, per kelvin;
+    /// default 0.
     #[dimension(PER_KELVIN)]
     pub substrate_emission_coefficient_temperature_coefficient: R,
-    /// The substrate junction's emission coefficient's quadratic temperature
-    /// coefficient, `TNS2`, per kelvin squared; default 0.
+    /// Quadratic substrate emission-coefficient temperature coefficient `TNS2`, per kelvin
+    /// squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub substrate_emission_coefficient_quadratic_temperature_coefficient: R,
-    /// The transit time's current's linear temperature coefficient, `TITF1`, per
-    /// kelvin: it scales by `1 + TITF1·ΔT + TITF2·ΔT²` from the nominal temperature;
+    /// Linear temperature coefficient `TITF1` for transit-time current `ITF`, per kelvin;
     /// default 0.
     #[dimension(PER_KELVIN)]
     pub transit_time_current_temperature_coefficient: R,
-    /// The transit time's current's quadratic temperature coefficient, `TITF2`, per
-    /// kelvin squared; default 0.
+    /// Quadratic temperature coefficient `TITF2` for transit-time current `ITF`, per kelvin
+    /// squared; default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub transit_time_current_quadratic_temperature_coefficient: R,
-    /// The forward transit time's linear temperature coefficient, `TTF1`, per kelvin:
-    /// it scales by `1 + TTF1·ΔT + TTF2·ΔT²` from the nominal temperature; default 0.
+    /// Linear forward transit-time temperature coefficient `TTF1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub forward_transit_time_temperature_coefficient: R,
-    /// The forward transit time's quadratic temperature coefficient, `TTF2`, per kelvin
-    /// squared; default 0.
+    /// Quadratic forward transit-time temperature coefficient `TTF2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub forward_transit_time_quadratic_temperature_coefficient: R,
-    /// The reverse transit time's linear temperature coefficient, `TTR1`, per kelvin:
-    /// it scales by `1 + TTR1·ΔT + TTR2·ΔT²` from the nominal temperature; default 0.
+    /// Linear reverse transit-time temperature coefficient `TTR1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub reverse_transit_time_temperature_coefficient: R,
-    /// The reverse transit time's quadratic temperature coefficient, `TTR2`, per kelvin
-    /// squared; default 0.
+    /// Quadratic reverse transit-time temperature coefficient `TTR2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub reverse_transit_time_quadratic_temperature_coefficient: R,
-    /// The base-emitter grading coefficient's linear temperature coefficient, `TMJE1`,
-    /// per kelvin: it scales by `1 + TMJE1·ΔT + TMJE2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear base-emitter grading temperature coefficient `TMJE1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_emitter_grading_temperature_coefficient: R,
-    /// The base-emitter grading coefficient's quadratic temperature coefficient,
-    /// `TMJE2`, per kelvin squared; default 0.
+    /// Quadratic base-emitter grading temperature coefficient `TMJE2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_emitter_grading_quadratic_temperature_coefficient: R,
-    /// The base-collector grading coefficient's linear temperature coefficient,
-    /// `TMJC1`, per kelvin: it scales by `1 + TMJC1·ΔT + TMJC2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear base-collector grading temperature coefficient `TMJC1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_collector_grading_temperature_coefficient: R,
-    /// The base-collector grading coefficient's quadratic temperature coefficient,
-    /// `TMJC2`, per kelvin squared; default 0.
+    /// Quadratic base-collector grading temperature coefficient `TMJC2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub base_collector_grading_quadratic_temperature_coefficient: R,
-    /// The substrate junction's grading coefficient's linear temperature coefficient,
-    /// `TMJS1`, per kelvin: it scales by `1 + TMJS1·ΔT + TMJS2·ΔT²` from the nominal
-    /// temperature; default 0.
+    /// Linear substrate grading temperature coefficient `TMJS1`, per kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub substrate_grading_temperature_coefficient: R,
-    /// The substrate junction's grading coefficient's quadratic temperature
-    /// coefficient, `TMJS2`, per kelvin squared; default 0.
+    /// Quadratic substrate grading temperature coefficient `TMJS2`, per kelvin squared;
+    /// default 0.
     #[dimension(PER_KELVIN_SQUARED)]
     pub substrate_grading_quadratic_temperature_coefficient: R,
-    /// The base-emitter depletion capacitance's temperature coefficient where `TLEVC`
-    /// is 1, `CTE`, per kelvin; default 0.
+    /// Linear base-emitter capacitance temperature coefficient `CTE` for `TLEVC = 1`, per
+    /// kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_emitter_capacitance_temperature_coefficient: R,
-    /// The base-collector depletion capacitance's temperature coefficient where `TLEVC`
-    /// is 1, `CTC`, per kelvin; default 0.
+    /// Linear base-collector capacitance temperature coefficient `CTC` for `TLEVC = 1`, per
+    /// kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub base_collector_capacitance_temperature_coefficient: R,
-    /// The substrate junction's depletion capacitance's temperature coefficient where
-    /// `TLEVC` is 1, `CTS`, per kelvin; default 0.
+    /// Linear substrate capacitance temperature coefficient `CTS` for `TLEVC = 1`, per
+    /// kelvin; default 0.
     #[dimension(PER_KELVIN)]
     pub substrate_capacitance_temperature_coefficient: R,
-    /// The base-emitter built-in potential's temperature coefficient where `TLEVC` is
-    /// 1, `TVJE`, in volts per kelvin; default 0.
+    /// Linear base-emitter built-in potential temperature coefficient `TVJE` for
+    /// `TLEVC = 1`, in volts per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub base_emitter_potential_temperature_coefficient: R,
-    /// The base-collector built-in potential's temperature coefficient where `TLEVC` is
-    /// 1, `TVJC`, in volts per kelvin; default 0.
+    /// Linear base-collector built-in potential temperature coefficient `TVJC` for
+    /// `TLEVC = 1`, in volts per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub base_collector_potential_temperature_coefficient: R,
-    /// The substrate junction's built-in potential's temperature coefficient where
-    /// `TLEVC` is 1, `TVJS`, in volts per kelvin; default 0.
+    /// Linear substrate built-in potential temperature coefficient `TVJS` for `TLEVC = 1`,
+    /// in volts per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub substrate_potential_temperature_coefficient: R,
-    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The flicker noise coefficient of the base current, `KF`; default 0, no flicker
-    /// noise.
+    /// Base-current flicker noise coefficient `KF`; default 0 (no flicker noise).
     pub flicker_coefficient: R,
-    /// The power of the base current in the flicker noise, `AF`; default 1.
+    /// Base-current flicker noise exponent `AF`; default 1.
     pub flicker_exponent: R,
 }
 
@@ -724,7 +670,7 @@ impl<R: Real> Default for BipolarTransistorParameters<R> {
     }
 }
 
-/// The DC currents of the two junctions and the base charge they share.
+/// DC junction current parameters and shared base-charge coefficients.
 #[derive(Debug, Clone, Copy)]
 struct Junctions<R: Real> {
     saturation_current: R,
@@ -736,38 +682,38 @@ struct Junctions<R: Real> {
     emitter_leakage_slope: R,
     collector_leakage: R,
     collector_leakage_slope: R,
-    /// `1 / VAF` and `1 / VAR`, zero for infinite Early voltages.
+    /// Reciprocal Early voltages `[1 / VAF, 1 / VAR]` (zero when infinite).
     inverse_early: [R; 2],
-    /// `1 / IKF` and `1 / IKR`, zero for infinite knee currents.
+    /// Reciprocal knee currents `[1 / IKF, 1 / IKR]` (zero when infinite).
     inverse_knee: [R; 2],
-    /// `NKF`, the exponent of high injection in the base charge.
+    /// High-injection base-charge exponent `NKF`.
     high_injection_exponent: R,
 }
 
-/// The junctions' DC state at one bias, each number with its derivatives with respect to
-/// the junction voltages it reads: its own junction's alone, or [`INTRINSIC`]'s.
+/// Intrinsic DC junction state at one bias point, carrying derivatives over either a single
+/// junction voltage or [`INTRINSIC`].
 #[derive(Debug, Clone, Copy)]
 struct State<R: Real> {
-    /// The ideal base-emitter and base-collector currents, `Ibe` and `Ibc`, each of its own
-    /// junction's voltage.
+    /// Ideal base-emitter and base-collector currents `[Ibe, Ibc]`, each differentiated over
+    /// its corresponding junction voltage.
     ideal: [Dual<R, 1>; 2],
-    /// The base current through each junction, to the emitter and to the collector, of its
-    /// own junction's voltage.
+    /// Base current components toward emitter and collector, each differentiated over its
+    /// corresponding junction voltage.
     base: [Dual<R, 1>; 2],
-    /// The transport current from collector to emitter.
+    /// Collector-to-emitter transport current `(Ibe − Ibc) / qb`.
     transport: Dual<R, 2>,
-    /// Its forward part, `Ibe / qb`, which an excess phase delays.
+    /// Forward transport component `Ibe / qb` subject to excess-phase delay.
     forward_transport: Dual<R, 2>,
-    /// Its reverse part, `Ibc / qb`, which it leaves: computed apart, not as the
-    /// difference of the two above, which cancel.
+    /// Reverse transport component `Ibc / qb` kept undelayed, computed directly to avoid
+    /// cancellation against `transport`.
     reverse_transport: Dual<R, 2>,
-    /// The normalized base charge, `qb`.
+    /// Normalized base charge `qb`.
     charge: Dual<R, 2>,
 }
 
 impl<R: Real> Junctions<R> {
-    /// The junctions' state at the base-emitter and base-collector `voltages`, with the
-    /// minimum conductance `gmin` across each junction.
+    /// Evaluates intrinsic DC [`State`] at `[vbe, vbc]` with minimum junction conductance
+    /// `gmin`.
     fn evaluate(&self, voltages: [R; 2], gmin: f64) -> State<R> {
         let [vbe, vbc] = voltages.map(Dual::<R, 1>::variable);
         let leakage = |voltage, current: R, slope| {
@@ -827,21 +773,19 @@ impl<R: Real> Junctions<R> {
     }
 }
 
-/// How the base resistance joins the base terminal to the internal base.
+/// Stamping form for base series resistance between external and internal base nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BaseForm {
-    /// A conductance between the two.
+    /// Conductance stamped directly between external and internal base.
     Conductance,
-    /// With a minimum below [`SMALL_RESISTANCE`], the base current as a local unknown of
-    /// its own, held by `drop − r · i = 0`.
+    /// Explicit base-current unknown used when `RBM` lies below [`SMALL_RESISTANCE`],
+    /// constrained by `drop − r · i = 0`.
     Current(BaseCurrent),
 }
 
 impl BaseForm {
-    /// Adds the current through the base `resistance`, a number of the intrinsic
-    /// transistor's law, `drop / r`, or the equation of the base current that crosses it,
-    /// of the transistor `added` adds for, its derivatives among the stamped nodes summed
-    /// into `derivatives`.
+    /// Stamps bias-dependent base `resistance` into `stamp` and `derivatives` for `added`,
+    /// using either conductance `drop / r` or the explicit base-current equation.
     fn add<R: Real>(
         &self,
         resistance: Dual<R, 2>,
@@ -869,9 +813,8 @@ impl BaseForm {
     }
 }
 
-/// The base current as a local unknown of its own, and the local entries of its equation
-/// at itself and at each stamped node, as the resistance depends on the junction
-/// voltages.
+/// Explicit base-current branch and matrix entries coupling its constitutive equation to
+/// itself and all stamped nodes for junction-modulated base resistance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BaseCurrent {
     branch: CurrentBranch,
@@ -880,8 +823,8 @@ struct BaseCurrent {
 }
 
 impl BaseCurrent {
-    /// The current from the base terminal to the internal base, the `stamp`ed nodes'
-    /// first and third, labelled `base_current`.
+    /// Allocates the `base_current` branch between `OUTER_BASE` and `INNER_BASE` in `stamp`
+    /// and claims all coupling entries in `layout`.
     fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
         let branch = CurrentBranch::new(
             layout,
@@ -896,8 +839,8 @@ impl BaseCurrent {
         }
     }
 
-    /// Adds the current's equation for `resistance`, a number of the intrinsic
-    /// transistor's law, of the transistor `added` adds for.
+    /// Stamps the explicit base-current equation `drop − resistance · i = 0` and junction
+    /// voltage derivatives for `added`.
     fn add<R: Real>(
         &self,
         resistance: Dual<R, 2>,
@@ -918,19 +861,18 @@ impl BaseCurrent {
     }
 }
 
-/// The base resistance, which falls from its zero-bias value towards its minimum.
+/// Bias-modulated base resistance transitioning from zero-bias `maximum` toward `minimum`.
 #[derive(Debug, Clone, Copy)]
 struct BaseResistance<R: Real> {
     maximum: R,
     minimum: R,
-    /// The base current at which the resistance falls halfway, or `None` for a resistance
-    /// that falls with the base charge.
+    /// Base current `IRB` for halfway reduction, or `None` for base-charge modulation.
     halfway_current: Option<R>,
 }
 
 impl<R: Real> BaseResistance<R> {
-    /// The resistance at the junctions' `state`, a number of the intrinsic transistor's
-    /// law.
+    /// Evaluates bias-dependent base resistance and intrinsic junction derivatives at
+    /// `state`.
     fn evaluate(&self, state: &State<R>) -> Dual<R, 2> {
         let excess = self.maximum - self.minimum;
         let Some(halfway) = self.halfway_current else {
@@ -948,8 +890,8 @@ impl<R: Real> BaseResistance<R> {
     }
 }
 
-/// SPICE's `z` for a base current `ratio` of the halfway current:
-/// `z = (√(1 + 144 x / π²) − 1) / ((24 / π²) · √x)`.
+/// Computes SPICE parameter `z = (√(1 + 144 x / π²) − 1) / ((24 / π²) · √x)` for normalized
+/// base current `ratio`.
 fn z_of<R: Real>(ratio: Dual<R, 1>) -> Dual<R, 1> {
     const A: f64 = 14.590_25;
     const B: f64 = 2.4317;
@@ -957,10 +899,10 @@ fn z_of<R: Real>(ratio: Dual<R, 1>) -> Dual<R, 1> {
     (root - 1.0) / (ratio.sqrt() * B)
 }
 
-/// `(tan z − z) / (z · tan² z)`.
+/// Evaluates `(tan z − z) / (z · tan² z)` for current-modulated base resistance.
 ///
-/// Below `z = 0.25`, where the subtraction loses `3ε / z²` of the precision, a series in
-/// `z²` takes over, accurate to within a few ulps there.
+/// Below `z = 0.25`, switches to a power series in `z²` to avoid `3ε / z²` cancellation,
+/// maintaining accuracy within a few ULPs.
 fn shape<R: Real>(z: Dual<R, 1>) -> Dual<R, 1> {
     const SERIES: [f64; 7] = [
         1.0 / 3.0,
@@ -985,26 +927,26 @@ fn shape<R: Real>(z: Dual<R, 1>) -> Dual<R, 1> {
     (tan - z) / (z * tan * tan)
 }
 
-/// The forward transport current `u` delayed through the filter of an excess phase: the
-/// delayed current `x` and `y = td · dx/dt`, both in amperes, held by `td · dx/dt − y = 0`
-/// and `td · dy/dt + 3 · y + 3 · x − 3 · u = 0`, so `td² · x'' + 3 · td · x' + 3 · x = 3 · u`.
-/// At the operating point `x` is `u`. Each is a current from the internal collector to the
-/// internal emitter, as the transistor's own currents are, so that a PNP's are its NPN
-/// mirror's reversed.
+/// Second-order Bessel excess-phase filter delaying forward transport current `u`.
+///
+/// Unknowns `x` (delayed current) and `y = td · dx/dt` satisfy `td · dx/dt − y = 0` and
+/// `td · dy/dt + 3 · y + 3 · x − 3 · u = 0`. At DC, the filter reduces to `x = u`. Both
+/// unknowns carry collector-to-emitter sign orientation matching the transistor polarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExcessPhase {
-    /// The local unknowns `x` and `y`.
+    /// Local unknown indices `[x, y]`.
     unknowns: [usize; 2],
-    /// The local entries of `x`'s equation at `x` and `y`, and of `y`'s at `x` and `y`.
+    /// Internal matrix entries for the `x` and `y` filter equations over `[x, y]`.
     own: [[usize; 2]; 2],
-    /// The local entries of `y`'s equation at each stamped node.
+    /// Matrix entries in the `y` equation for each stamped node.
     driven: [usize; STAMPED],
-    /// The local entries of the internal collector's and emitter's equations at `x`.
+    /// Matrix entries injecting `x` into internal collector and emitter node equations.
     delivered: [usize; 2],
 }
 
 impl ExcessPhase {
-    /// The filter, driven by the transport current among the `stamp`ed nodes.
+    /// Allocates `delayed_transport` and `delayed_transport_slope` unknowns and claims
+    /// filter matrix entries for `stamp`.
     fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
         let unknowns = [
             layout.internal("delayed_transport", Nature::Current),
@@ -1055,23 +997,24 @@ impl ExcessPhase {
     }
 }
 
-/// What the transistor stores: the junctions' depletion charges and transit times.
+/// Temperature-prepared BJT junction depletion and diffusion charge parameters.
 #[derive(Debug, Clone, Copy)]
 struct Charges<R: Real> {
     base_emitter: Option<Depletion<R>>,
-    /// The base-collector depletion on the internal base, and on the external one.
+    /// Internal and external base-collector depletion models.
     base_collector: Option<Depletion<R>>,
     external_base_collector: Option<Depletion<R>>,
     forward_transit_time: R,
     reverse_transit_time: R,
     bias_coefficient: R,
-    /// `1 / (1.44 · VTF)`, zero for an infinite `VTF`.
+    /// Transit-time voltage factor `1 / (1.44 · VTF)` (zero when `VTF` is infinite).
     voltage_factor: R,
     high_current: R,
 }
 
 impl<R: Real> Charges<R> {
-    /// The charges at the junctions' `state`, at `voltages`, [`VARIABLES`]' values.
+    /// Evaluates base-emitter, internal base-collector, and external base-collector charges
+    /// at [`VARIABLES`] `voltages` and intrinsic `state`.
     fn evaluate(&self, voltages: [R; VARIABLE_COUNT], state: &State<R>) -> JunctionCharges<R> {
         let [vbe, vbc, _, vbx] = voltages.map(Dual::<R, 1>::variable);
         let [forward, reverse] = state.ideal;
@@ -1135,24 +1078,23 @@ impl<R: Real> JunctionCharges<R> {
     }
 }
 
-/// The junction from the substrate to the internal collector of a vertical transistor or
-/// to the internal base of a lateral one.
+/// Substrate junction joining `substrate` to the internal collector (vertical) or internal
+/// base (lateral).
 #[derive(Debug, Clone, Copy)]
 struct SubstrateJunction<R: Real> {
-    /// `±1`: orients the junction's voltage and current, from the substrate, as a vertical
-    /// NPN's.
+    /// Polarity factor (`±1`) orienting substrate voltage and current to match a vertical
+    /// NPN junction.
     sign: f64,
-    /// The saturation current and exponential slope of the junction's diode, if it has one.
+    /// Optional saturation current and exponential slope for the substrate diode.
     diode: Option<(R, R)>,
-    /// The thermal voltage at the transistor's temperature.
+    /// Thermal voltage at operating temperature.
     thermal_voltage: f64,
     critical_voltage: f64,
-    /// The depletion, whose capacitance grows linearly from zero bias.
+    /// Depletion model whose capacitance extends linearly from zero bias.
     depletion: Option<Depletion<R>>,
 }
 
-/// The critical voltage of a substrate junction without a diode, from which ngspice limits
-/// its steps all the same.
+/// Critical voltage used by ngspice for step limiting on a diodeless substrate junction.
 const DIODELESS_CRITICAL_VOLTAGE: f64 = 50.0;
 
 impl<R: Real> SubstrateJunction<R> {
@@ -1185,7 +1127,8 @@ impl<R: Real> SubstrateJunction<R> {
 }
 
 impl<R: Real> BipolarTransistorParameters<R> {
-    /// The junctions' DC model at `temperatures`, once each of its parameters is checked.
+    /// Validates DC parameters and prepares the temperature-scaled [`Junctions`] model at
+    /// `temperatures`.
     fn junctions(&self, temperatures: Temperatures<R>) -> Result<Junctions<R>, ParameterError> {
         let positive = ParameterError::positive;
         let non_negative = ParameterError::non_negative;
@@ -1220,7 +1163,7 @@ impl<R: Real> BipolarTransistorParameters<R> {
         let exponent = self.high_injection_exponent;
         if !(exponent.value() > 0.0 && exponent.value() <= 1.0) {
             return Err(ParameterError(format!(
-                "high_injection_exponent must lie above 0 and at most 1, not {:?}",
+                "high_injection_exponent lies above 0 and at most 1, not {:?}",
                 exponent.value()
             )));
         }
@@ -1281,8 +1224,8 @@ impl<R: Real> BipolarTransistorParameters<R> {
         })
     }
 
-    /// The forward and reverse betas at `temperatures`, and the factor `TLEV` scales them
-    /// by, which divides the leakage currents (`bjttemp.c`, lines 231 to 249).
+    /// Computes `[forward_beta, reverse_beta, beta_factor]` at `temperatures`, where
+    /// `beta_factor` scales leakage currents (`bjttemp.c`, lines 231 to 249).
     fn betas(&self, temperatures: Temperatures<R>) -> Result<[R; 3], ParameterError> {
         let factor = positive_at(
             "the betas' temperature factor",
@@ -1323,9 +1266,9 @@ impl<R: Real> BipolarTransistorParameters<R> {
         ])
     }
 
-    /// The reciprocals of the Early voltages, forward and reverse, and of the knee
-    /// currents, at `temperatures`, each zero where it is left out, infinite
-    /// (`bjttemp.c`, lines 83 to 104).
+    /// Computes temperature-scaled reciprocals of `[VAF, VAR]` and `[IKF, IKR]` at
+    /// `temperatures`, returning zero for omitted (infinite) parameters (`bjttemp.c`, lines
+    /// 83 to 104).
     fn inverses(&self, temperatures: Temperatures<R>) -> Result<[[R; 2]; 2], ParameterError> {
         let inverse_at = |name, value: Option<R>, linear, quadratic| {
             value.map_or(Ok(R::constant(0.0)), |value| {
@@ -1366,7 +1309,8 @@ impl<R: Real> BipolarTransistorParameters<R> {
         ])
     }
 
-    /// The base resistance, if the transistor has one, once its parameters are checked.
+    /// Validates base resistance parameters and returns the nominal [`BaseResistance`] when
+    /// `base_resistance` is positive.
     fn base_resistance(&self) -> Result<Option<BaseResistance<R>>, ParameterError> {
         ParameterError::non_negative("base_resistance", self.base_resistance)?;
         let minimum = self.min_base_resistance.unwrap_or(self.base_resistance);
@@ -1383,10 +1327,9 @@ impl<R: Real> BipolarTransistorParameters<R> {
         )
     }
 
-    /// The base resistance at `temperatures`, if the transistor has one, once its
-    /// parameters are checked: `RB`, `RBM` and `IRB` each scaled by its own coefficients,
-    /// `RBM` left out by `RB`'s nominal value (`bjttemp.c`, lines 47 to 49 and 118 to
-    /// 123).
+    /// Validates and scales `RB`, `RBM`, and `IRB` to `temperatures` using their quadratic
+    /// coefficients, defaulting omitted `RBM` to nominal `RB` (`bjttemp.c`, lines 47 to 49
+    /// and 118 to 123).
     fn base_resistance_at(
         &self,
         temperatures: Temperatures<R>,
@@ -1429,8 +1372,8 @@ impl<R: Real> BipolarTransistorParameters<R> {
         }))
     }
 
-    /// What the transistor stores at `temperatures`, if anything, once each of its
-    /// parameters is checked.
+    /// Validates charge parameters and prepares temperature-scaled [`Charges`] at
+    /// `temperatures`, returning `None` when all capacitances and transit times are zero.
     fn charges(&self, temperatures: Temperatures<R>) -> Result<Option<Charges<R>>, ParameterError> {
         self.check_charges()?;
         let voltage_factor = inverse("transit_time_voltage", self.transit_time_voltage)? / 1.44;
@@ -1544,17 +1487,16 @@ impl<R: Real> BipolarTransistorParameters<R> {
         Ok(())
     }
 
-    /// A junction's built-in `potential`, zero-bias `capacitance` and `grading` at
-    /// `temperatures`, in that order (`bjttemp.c`, lines 132 to 146 and 260 to 313): the
-    /// grading by its own `grading_coefficients`, linear and quadratic, at most
-    /// [`MAX_GRADING`]; the potential and the capacitance through silicon's band gap at
-    /// that grading, or where `TLEVC` is 1 by their own `linear` coefficients, the
-    /// capacitance's and the potential's.
+    /// Computes temperature-scaled `[potential, capacitance, grading]` at `temperatures`
+    /// (`bjttemp.c`, lines 132 to 146 and 260 to 313).
+    ///
+    /// Scales `grading` quadratically and clamps to [`MAX_GRADING`], then scales `potential`
+    /// and `capacitance` via silicon band gap (`TLEVC = 0`) or linear coefficients
+    /// (`TLEVC = 1`).
     ///
     /// # Errors
     ///
-    /// Returns an error naming the `potential` parameter where the potential at the
-    /// temperature is not positive.
+    /// Returns an error naming `potential_name` when the scaled potential is not positive.
     fn junction_at(
         &self,
         temperatures: Temperatures<R>,
@@ -1586,8 +1528,8 @@ impl<R: Real> BipolarTransistorParameters<R> {
 }
 
 impl<R: Real> BipolarTransistorParameters<R> {
-    /// The substrate junction at `temperatures`, if the transistor has a substrate, once
-    /// each of its parameters is checked.
+    /// Validates substrate parameters and prepares the optional [`SubstrateJunction`] at
+    /// `temperatures`.
     fn substrate_junction(
         &self,
         temperatures: Temperatures<R>,
@@ -1685,7 +1627,7 @@ fn positive_at<R: Real>(name: &str, value: R) -> Result<R, ParameterError> {
         Ok(value)
     } else {
         Err(ParameterError(format!(
-            "{name} must be positive at the transistor's temperature, not {:?}",
+            "{name} is positive at the transistor's temperature, not {:?}",
             value.value()
         )))
     }
@@ -1698,15 +1640,14 @@ fn non_negative_at<R: Real>(name: &str, value: R) -> Result<R, ParameterError> {
         Ok(value)
     } else {
         Err(ParameterError(format!(
-            "{name} must be at least 0 at the transistor's temperature, not {:?}",
+            "{name} is at least 0 at the transistor's temperature, not {:?}",
             value.value()
         )))
     }
 }
 
-/// A series resistance at the transistor's temperature, `scaled`, in the form its
-/// `nominal` value lays it out in: its conductance, or the resistance itself where its
-/// current is an unknown, as [`series_value`] gives the nominal one.
+/// Converts temperature-scaled series resistance `scaled` into the stamp representation
+/// chosen from `nominal`, mirroring [`series_value`].
 fn series_at<R: Real>(nominal: R, scaled: R) -> R {
     if nominal.value() < SMALL_RESISTANCE {
         scaled
@@ -1906,8 +1847,8 @@ impl Kernel for BipolarTransistor {
         Bipolar::REGIONS
     }
 
-    /// The thermal noise of the series resistances, and the shot noise of the collector
-    /// and base currents, with the base current's flicker noise, as SPICE models them.
+    /// Appends SPICE thermal noise for series resistances, collector and base shot noise,
+    /// and base-current flicker noise.
     fn noise<R: Real>(
         shape: &BipolarTransistorShape,
         prepared: &PreparedBipolarTransistor<R>,
@@ -1965,9 +1906,9 @@ impl Kernel for BipolarTransistor {
     }
 }
 
-/// What a transistor's temperature sets.
+/// Temperature-scaled intrinsic BJT quantities computed during preparation.
 struct Scaled<R: Real> {
-    /// The collector and emitter resistances, in the form [`series_at`] gives them.
+    /// Collector and emitter series resistance stamp values from [`series_at`].
     series: [R; 2],
     base: Option<BaseResistance<R>>,
     junctions: Junctions<R>,
@@ -1979,8 +1920,8 @@ struct Scaled<R: Real> {
 }
 
 impl<R: Real> BipolarTransistorParameters<R> {
-    /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
-    /// reads is checked.
+    /// Validates parameters and computes temperature-scaled BJT quantities at `temperature`,
+    /// in kelvins.
     fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
         let temperatures = Temperatures::of_junction(temperature, self.nominal_temperature)?;
         let junctions = self.junctions(temperatures)?;
@@ -2026,14 +1967,14 @@ impl<R: Real> BipolarTransistorParameters<R> {
 }
 
 impl<R: Real> BipolarTransistorParameters<R> {
-    /// The delay of the excess phase, `excess_phase · π / 180 · forward_transit_time`,
-    /// once the excess phase is checked.
+    /// Validates `excess_phase` and returns the group delay
+    /// `excess_phase · π / 180 · forward_transit_time`.
     fn excess_phase_delay(&self) -> Result<R, ParameterError> {
         let excess_phase = ParameterError::non_negative("excess_phase", self.excess_phase)?;
         Ok(excess_phase * (std::f64::consts::PI / 180.0) * self.forward_transit_time)
     }
 
-    /// The collector and emitter resistances, once each is checked.
+    /// Validates and returns the `[collector_resistance, emitter_resistance]` pair.
     fn series_resistances(&self) -> Result<[R; 2], ParameterError> {
         let non_negative = ParameterError::non_negative;
         Ok([
@@ -2158,7 +2099,7 @@ mod tests {
         }
     }
 
-    /// [`FULL`] with an excess phase of 30°, a delay of 30 · π / 180 · 0.4 ns.
+    /// Returns [`FULL`] with 30° of excess phase (group delay `30 · π / 180 · 0.4 ns`).
     fn excess() -> String {
         FULL.replace('{', r#"{"excess_phase": 30, "#)
     }
@@ -2179,9 +2120,9 @@ mod tests {
         );
         let at = [3.0, 0.7, 0.0];
         let rest = plain.settle(&at);
-        // y's residual is 3 (x + y − u), so at x = y = 0 it gives the forward transport
-        // current u, `Ibe / qb`; at rest x is u, and the transistor's currents are those
-        // it has without the delay.
+        // The `y` residual equals `3 · (x + y − u)`, yielding forward transport `u = Ibe / qb`
+        // at `x = y = 0`. At DC equilibrium `x = u` and terminal currents match the undelayed
+        // transistor.
         let forward = -delayed.settle(&[at[0], at[1], at[2], 0.0, 0.0]).residual[4] / 3.0;
         let settled = delayed.settle(&[at[0], at[1], at[2], forward, 0.0]);
         assert_close(&settled.residual[..3], &rest.residual);
@@ -2222,10 +2163,7 @@ mod tests {
         let without = Bench::new::<BipolarTransistor>(r#"{"excess_phase": 30}"#);
         assert_eq!(without.unknowns(), ["n0", "n1", "n2"]);
         let error = Bench::try_new::<BipolarTransistor>(r#"{"excess_phase": -1}"#).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "excess_phase must be at least 0, not -1.0"
-        );
+        assert_eq!(error.to_string(), "excess_phase is at least 0, not -1.0");
     }
 
     #[test]
@@ -2318,7 +2256,7 @@ mod tests {
             Bench::try_new::<BipolarTransistor>(r#"{"forward_early_voltage": 0}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "forward_early_voltage must be positive, not 0.0"
+            "forward_early_voltage is positive, not 0.0"
         );
     }
 
@@ -2381,7 +2319,7 @@ mod tests {
         "substrate_grading_temperature_coefficient": 2e-3,
         "substrate_grading_quadratic_temperature_coefficient": 1e-6, "#;
 
-    /// `COEFFICIENTS` with `FULL`, under each pair of temperature models.
+    /// Builds [`FULL`] augmented with [`COEFFICIENTS`] for all four `(TLEV, TLEVC)` pairs.
     fn with_coefficients() -> Vec<String> {
         [(0, 0), (1, 0), (0, 1), (1, 1)]
             .map(|(tlev, tlevc)| {
@@ -2409,7 +2347,8 @@ mod tests {
                 assert_jacobians_match::<BipolarTransistor>(&parameters, &x);
                 assert_parameter_gradients_match::<BipolarTransistor>(&parameters, &x);
             }
-            // Its temperature coefficients follow its own temperature, exactly differentiated.
+            // Self-heating differentiates all temperature coefficients with respect to
+            // junction temperature.
             let heated = parameters.replace('{', r#"{"thermal": true, "#);
             for x in [
                 [3.0, 0.7, 0.0, -1.0, 20.0, 2.98, 0.69, 0.001],
@@ -2475,10 +2414,11 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges, forward, reverse and saturated, with the base resistance modulated by
-        /// the base charge or by the base current. Neither junction is forward-biased
-        /// beyond 0.85 V, where its current would be unphysical.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// in forward, reverse, and saturated modes with base-charge or base-current
+        /// resistance modulation.
+        ///
+        /// Junction voltages stay below 0.85 V to avoid unphysical current overflow.
         #[test]
         fn jacobians_match_finite_differences(
             base in -1.0..0.85f64,
@@ -2592,10 +2532,10 @@ mod tests {
         );
     }
 
-    /// A transistor is cut off with neither junction forward, active with its base-emitter
-    /// junction alone forward, saturated with both, and reversed with its base-collector
-    /// junction alone; its margins are the junctions' voltages, a PNP's equal to an NPN's
-    /// at the voltages reversed, and each region switches where its margin vanishes.
+    /// Verifies that [`BipolarTransistor`] classifies cut-off, active, saturated, and
+    /// reversed regions with PNP mirror polarity.
+    ///
+    /// Margins equal the junction voltages and vanish at every region boundary.
     #[test]
     fn reports_its_region_and_margins() {
         // The collector, the base and the emitter.

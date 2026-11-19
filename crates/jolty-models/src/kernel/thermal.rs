@@ -1,9 +1,9 @@
-//! The elements of a thermal network: its nets are temperatures above the ambient, in
-//! kelvins, its flows heat, in watts, and the ground is the ambient.
+//! Thermal network elements modeling temperature rises above ambient (in kelvins) and
+//! heat flows (in watts), with ground representing ambient temperature.
 //!
-//! A thermal resistance conducts heat as a resistor conducts current, a thermal
-//! capacitance stores it as a capacitor stores charge, and a heat source drives it as a
-//! current source drives current, so a network of them is solved as a circuit is.
+//! Thermal resistance, thermal capacitance, and heat sources correspond directly to
+//! electrical resistors, capacitors, and current sources, allowing thermal and electrical
+//! networks to share one solver.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use crate::{
     ParameterMetadata, Real, Stamp,
 };
 
-/// Where a thermal element's contributions go: across its terminals.
+/// Layout shape for two-terminal thermal elements storing the terminal `Pair`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThermalShape(Pair);
 
@@ -26,17 +26,17 @@ impl ThermalShape {
     }
 }
 
-/// A thermal resistance between thermal terminals `a` and `b`: heat flows through it from
-/// the hotter to the colder at their difference over its resistance.
+/// Thermal resistance between thermal terminals `a` and `b`, conducting heat from the hotter
+/// terminal to the colder terminal at `ΔT / R`.
 #[derive(Debug, Clone, Copy)]
 pub struct ThermalResistance;
 
-/// The parameters of a [`ThermalResistance`].
+/// Parameters for [`ThermalResistance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
-    /// The resistance, in kelvins per watt; positive.
+    /// Thermal resistance, in kelvins per watt; positive.
     #[dimension(THERMAL_RESISTANCE)]
     pub resistance: R,
 }
@@ -45,7 +45,7 @@ impl Kernel for ThermalResistance {
     const NAME: &'static str = "thermal_resistance";
     type Parameters<R: Real> = ThermalResistanceParameters<R>;
     type Shape = ThermalShape;
-    /// Its conductance.
+    /// Prepared thermal conductance in watts per kelvin.
     type Prepared<R: Real> = R;
     type Memory = ();
 
@@ -89,17 +89,17 @@ impl Kernel for ThermalResistance {
     }
 }
 
-/// A thermal capacitance between thermal terminals `a` and `b`: it stores heat in
-/// proportion to their difference, so it is open in a steady state.
+/// Thermal capacitance between thermal terminals `a` and `b`, storing heat proportional to
+/// temperature difference and acting as an open branch in steady state.
 #[derive(Debug, Clone, Copy)]
 pub struct ThermalCapacitance;
 
-/// The parameters of a [`ThermalCapacitance`].
+/// Parameters for [`ThermalCapacitance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalCapacitanceParameters<R: Real = f64> {
-    /// The heat capacity, in joules per kelvin; zero or positive.
+    /// Heat capacity, in joules per kelvin; non-negative.
     #[dimension(HEAT_CAPACITY)]
     pub capacitance: R,
 }
@@ -108,7 +108,7 @@ impl Kernel for ThermalCapacitance {
     const NAME: &'static str = "thermal_capacitance";
     type Parameters<R: Real> = ThermalCapacitanceParameters<R>;
     type Shape = ThermalShape;
-    /// Its heat capacity.
+    /// Prepared heat capacity in joules per kelvin.
     type Prepared<R: Real> = R;
     type Memory = ();
 
@@ -152,17 +152,17 @@ impl Kernel for ThermalCapacitance {
     }
 }
 
-/// A heat source between thermal terminals `a` and `b`: it drives a constant heat flow
-/// from `a` through itself into `b`, as a part beside a circuit heats the board under it.
+/// Constant heat source between thermal terminals `a` and `b` driving heat flow from `a`
+/// into `b` (for example, an adjacent component heating a shared board).
 #[derive(Debug, Clone, Copy)]
 pub struct HeatSource;
 
-/// The parameters of a [`HeatSource`].
+/// Parameters for [`HeatSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct HeatSourceParameters<R: Real = f64> {
-    /// The heat flow, in watts.
+    /// Heat flow, in watts.
     #[dimension(POWER)]
     pub power: R,
 }
@@ -171,7 +171,7 @@ impl Kernel for HeatSource {
     const NAME: &'static str = "heat_source";
     type Parameters<R: Real> = HeatSourceParameters<R>;
     type Shape = ThermalShape;
-    /// Its heat flow.
+    /// Prepared heat flow in watts.
     type Prepared<R: Real> = R;
     type Memory = ();
 
@@ -186,7 +186,7 @@ impl Kernel for HeatSource {
     fn prepare<R: Real>(parameters: &HeatSourceParameters<R>, _: R) -> Result<R, ParameterError> {
         if !parameters.power.value().is_finite() {
             return Err(ParameterError(format!(
-                "power must be finite, not {:?}",
+                "power is finite, not {:?}",
                 parameters.power.value()
             )));
         }
@@ -238,11 +238,11 @@ mod tests {
         for (result, message) in [
             (
                 Bench::try_new::<ThermalResistance>(r#"{"resistance": 0}"#),
-                "resistance must be positive, not 0.0",
+                "resistance is positive, not 0.0",
             ),
             (
                 Bench::try_new::<ThermalCapacitance>(r#"{"capacitance": -1}"#),
-                "capacitance must be at least 0, not -1.0",
+                "capacitance is at least 0, not -1.0",
             ),
         ] {
             assert_eq!(result.unwrap_err().to_string(), message);

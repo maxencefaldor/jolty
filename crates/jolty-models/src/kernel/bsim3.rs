@@ -2,16 +2,15 @@
 //! 0.13 µm, as ngspice 47 implements it in `src/spicelib/devices/bsim3/`, SPICE's level 8
 //! and 49 MOSFET.
 //!
-//! The equations and their defaults are those of the BSIM3v3.3 manual (W. Liu, X. Xi and
-//! others, UC Berkeley, 2005) as ngspice's `b3ld.c`, `b3temp.c`, `b3set.c` and `b3noi.c`
-//! write them, constants and all. They are written once, on numbers carrying their
-//! derivatives with respect to the voltages, so the conductances and capacitances are the
-//! exact derivatives of the currents and charges computed.
+//! Equations and defaults follow the BSIM3v3.3 manual (W. Liu, X. Xi, and others, UC
+//! Berkeley, 2005) as written in ngspice `b3ld.c`, `b3temp.c`, `b3set.c`, and `b3noi.c`,
+//! including constants. Equations evaluate once on dual numbers carrying voltage
+//! derivatives, yielding exact conductances and capacitances for all currents and charges.
 //!
-//! This model, here and in its submodules, is derived from BSIM3v3.3.0, developed by the UC
-//! Berkeley BSIM Research Group: Copyright 2004 Regents of the University of California.
-//! All rights reserved. It is used under the BSIM terms of use, which the repository's
-//! `NOTICE` reproduces.
+//! BSIM3 and its submodules are derived from BSIM3v3.3.0, developed by the UC Berkeley
+//! BSIM Research Group: Copyright 2004 Regents of the University of California. All
+//! rights reserved. Usage is governed by the BSIM terms of use reproduced in the
+//! repository's `NOTICE` file.
 
 mod channel;
 mod charges;
@@ -42,26 +41,27 @@ const EPSOX: f64 = 3.453_133e-11;
 /// writes it.
 const NOISE_KBOQ: f64 = 8.62e-5;
 
-/// `b3set.c`'s fringing capacitance per width of an oxide `tox` thick,
-/// `2 · εox / π · ln(1 + 0.4 µm / tox)`.
+/// Computes the `b3set.c` fringing capacitance per unit width
+/// `2 · εox / π · ln(1 + 0.4 µm / tox)` for oxide thickness `tox`.
 fn fringe<R: Real>(tox: R) -> R {
     fringe_factor(tox) * (2.0 * EPSOX / std::f64::consts::PI)
 }
 
-/// The mobility model, `mobmod`.
+/// Mobility model selector (`mobmod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum Mobility {
-    /// `mobmod` 1: the gate field degrades the mobility through `Vgsteff + 2·Vth`.
+    /// Mobility model 1 (`mobmod = 1`): gate field degrades mobility via `Vgsteff + 2·Vth`.
     One,
-    /// `mobmod` 2: through `Vgsteff` alone.
+    /// Mobility model 2 (`mobmod = 2`): gate field degrades mobility via `Vgsteff` alone.
     Two,
-    /// `mobmod` 3: as `mobmod` 1, the body effect a factor of its own.
+    /// Mobility model 3 (`mobmod = 3`): same gate-field term as `mobmod` 1 with a
+    /// multiplicative body effect.
     Three,
 }
 
 impl Mobility {
-    /// `others` at `mobmod` 1 and 2, `three` at `mobmod` 3.
+    /// Selects `others` for `mobmod` 1 and 2, or `three` for `mobmod` 3.
     const fn select(self, others: f64, three: f64) -> f64 {
         match self {
             Self::One | Self::Two => others,
@@ -76,17 +76,20 @@ super::numbered_enum!(Mobility, "BSIM3's mobility_model is 1, 2 or 3", {
     3 => Three,
 });
 
-/// The model of the charges under the gate, `capmod`.
+/// Intrinsic gate-charge model selector (`capmod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum Charges {
-    /// `capmod` 0: the original long-channel charges, piecewise across the regions.
+    /// Charge model 0 (`capmod = 0`): original long-channel charges defined piecewise
+    /// across regions.
     Zero,
-    /// `capmod` 1: charges continuous across the threshold but not across saturation.
+    /// Charge model 1 (`capmod = 1`): charges continuous across threshold and piecewise
+    /// across saturation.
     One,
-    /// `capmod` 2: smooth charges.
+    /// Charge model 2 (`capmod = 2`): smooth charges across all operating regions.
     Two,
-    /// `capmod` 3: smooth charges of an inversion layer of finite thickness.
+    /// Charge model 3 (`capmod = 3`): smooth charges modeling finite inversion-layer
+    /// thickness.
     Three,
 }
 
@@ -97,24 +100,24 @@ super::numbered_enum!(Charges, "BSIM3's capacitance_model is 0 to 3", {
     3 => Three,
 });
 
-/// The noise model, `noimod`: SPICE2's or BSIM3's channel thermal noise and flicker
-/// noise.
+/// Channel thermal and flicker noise model selector (`noimod`) combining SPICE2 and BSIM3
+/// formulations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum NoiseModel {
-    /// `noimod` 1: SPICE2's thermal and flicker noise.
+    /// Noise model 1 (`noimod = 1`): SPICE2 thermal noise and SPICE2 flicker noise.
     One,
-    /// `noimod` 2: BSIM3's thermal and flicker noise.
+    /// Noise model 2 (`noimod = 2`): BSIM3 thermal noise and BSIM3 flicker noise.
     Two,
-    /// `noimod` 3: SPICE2's thermal noise and BSIM3's flicker noise.
+    /// Noise model 3 (`noimod = 3`): SPICE2 thermal noise and BSIM3 flicker noise.
     Three,
-    /// `noimod` 4: BSIM3's thermal noise and SPICE2's flicker noise.
+    /// Noise model 4 (`noimod = 4`): BSIM3 thermal noise and SPICE2 flicker noise.
     Four,
-    /// `noimod` 5: SPICE2's thermal noise with ngspice's correction below saturation,
-    /// and SPICE2's flicker noise.
+    /// Noise model 5 (`noimod = 5`): SPICE2 thermal noise with ngspice sub-saturation
+    /// correction and SPICE2 flicker noise.
     Five,
-    /// `noimod` 6: SPICE2's thermal noise with ngspice's correction below saturation,
-    /// and BSIM3's flicker noise.
+    /// Noise model 6 (`noimod = 6`): SPICE2 thermal noise with ngspice sub-saturation
+    /// correction and BSIM3 flicker noise.
     Six,
 }
 
@@ -127,33 +130,27 @@ super::numbered_enum!(NoiseModel, "BSIM3's noise_model is 1 to 6", {
     6 => Six,
 });
 
-/// A MOSFET in BSIM3v3.3, SPICE's level 8 and 49 model of short channels, as ngspice 47
-/// implements it.
+/// MOSFET using BSIM3v3.3 (SPICE levels 8 and 49) for short channels, matching ngspice 47.
 ///
-/// The drain current folds in the threshold's short-channel, narrow-width and
-/// drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
-/// degradation by the gate field in `mobmod` 1 to 3, the carriers' velocity saturation,
-/// the channel-length modulation, the drain-induced barrier lowering and the substrate
-/// current's effect on the output resistance, and the source and drain resistance
-/// `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
-/// The charges under the gate follow `capmod` 0 to 3, the drain's share of the channel's
-/// charge `xpart`, beside the overlaps' charges, and two junctions join the bulk to the
-/// drain and the source, each carrying a diode's current and holding a depletion
-/// charge. Every parameter of a binned card has its length, width and area dependences,
-/// and each one scales with the temperature as `b3temp.c` scales it. The transistor is
-/// symmetric: with the drain below the source, the two swap.
+/// Drain current includes short-channel, narrow-width, and DIBL threshold shifts,
+/// polysilicon gate depletion, `mobmod` 1 to 3 mobility degradation, and velocity
+/// saturation. Output conductance includes channel-length modulation, DIBL,
+/// substrate-current body effect, and source/drain resistance `rdsw`, while impact
+/// ionization drives substrate current from drain to bulk. Gate charges follow `capmod` 0
+/// to 3 with `xpart` drain partitioning plus overlap charges, and bulk-drain and
+/// bulk-source junctions carry diode currents and depletion charges. Every binned
+/// parameter scales with length, width, area, and temperature per `b3temp.c`, and drain
+/// and source swap symmetrically when the drain lies below the source.
 ///
-/// A sheet resistance `rsh` adds an internal node behind the drain and the source,
-/// labelled `drain` and `source`; one below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE)
-/// also carries its current as an unknown, labelled `drain_current` or `source_current`.
-/// The non-quasi-static model, `nqsmod`, and the area calculation method of HSPICE,
-/// `acm`, are left out.
+/// Positive sheet resistance `rsh` adds internal nodes `drain` and `source`, and
+/// resistance below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) adds branch-current
+/// unknowns `drain_current` or `source_current`. The non-quasi-static model (`nqsmod`)
+/// and HSPICE area calculation (`acm`) are omitted.
 #[derive(Debug, Clone, Copy)]
 pub struct Bsim3;
 
-/// Where a BSIM3 transistor's contributions go among its local unknowns: through its
-/// drain and source resistances, and among its gate, bulk and the drain and source behind
-/// the resistances.
+/// Local matrix layout for [`Bsim3`] mapping drain and source series resistances plus the
+/// four intrinsic transistor nodes (gate, bulk, internal drain, and internal source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bsim3Shape {
     stamp: Nodes<4>,
@@ -161,7 +158,7 @@ pub struct Bsim3Shape {
     source_series: Series,
 }
 
-/// What a BSIM3 transistor remembers.
+/// Step-limiting state and cached operating variables for [`Bsim3`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bsim3Memory {
     /// The gate-source, drain-source and bulk-source voltages of the last evaluation, from
@@ -194,9 +191,8 @@ const VARIABLES: [(usize, usize); 3] = [
 /// n-channel's.
 type Bias = parts::Bias<3>;
 
-/// What a transistor carries and holds at one bias, oriented as an n-channel's, each
-/// with its derivatives with respect to the gate-source, drain-source and bulk-source
-/// voltages.
+/// Evaluated n-channel-oriented currents, charges, derivatives, and operating variables at
+/// one bias.
 struct Terminals<R: Real> {
     /// The channel's current from the drain to the source.
     channel: D<R>,
@@ -214,12 +210,13 @@ struct Terminals<R: Real> {
     threshold: f64,
     saturation: f64,
     region: Region,
-    /// `Vgst` and `Vds − Vdsat`.
+    /// Boundary margins `Vgst` and `Vds − Vdsat`.
     margins: [f64; 2],
 }
 
 impl<R: Real> Junctions<R> {
-    /// The current from the bulk into `junction` at its voltage `v`, with `gmin` across it.
+    /// Computes bulk-to-terminal diode current for `junction` at voltage `v` with shunt
+    /// `gmin`.
     fn current(&self, junction: &Junction<R>, v: D<R>, gmin: f64) -> D<R> {
         let leak = v * gmin;
         let saturation = junction.saturation_current;
@@ -240,8 +237,8 @@ impl<R: Real> Junctions<R> {
 }
 
 impl<R: Real> PreparedBsim3<R> {
-    /// What the transistor carries and holds at the gate-source, drain-source and
-    /// bulk-source voltages `voltages`, with `gmin` across each junction.
+    /// Evaluates terminal currents, charges, and operating variables at `[vgs, vds, vbs]`
+    /// with shunt `gmin`.
     #[expect(
         clippy::similar_names,
         reason = "the voltages' and overlaps' names in BSIM3"
@@ -293,8 +290,8 @@ impl<R: Real> PreparedBsim3<R> {
         }
     }
 
-    /// The terminal voltages at `at`, limited from the last evaluation's, which `memory`
-    /// keeps and takes the new ones.
+    /// Reads terminal voltages at `at`, applies step limiting against `memory`, and records
+    /// the new bias.
     fn bias(
         &self,
         shape: &Bsim3Shape,
@@ -315,12 +312,10 @@ impl<R: Real> PreparedBsim3<R> {
         Bias::new(applied, voltages)
     }
 
-    /// The `applied` gate-source, drain-source and bulk-source voltages limited from the
-    /// last evaluation's, which `memory` keeps, as `b3ld.c` limits them: the gate's step
-    /// around the threshold and the drain's, from whichever end acts as the source, then
-    /// the step of the junction with it, from the thermal voltage at 27 °C and the
-    /// critical voltage of a saturation current of 10 fA. Returns `None` when no step
-    /// needs limiting.
+    /// Limits `applied` `[vgs, vds, vbs]` against the previous bias in `memory`, matching
+    /// `b3ld.c`. Gate and drain steps limit around threshold from the active source end,
+    /// and the active junction limits using 27 °C thermal voltage and a 10 fA critical
+    /// voltage. Returns `None` when no step requires limiting.
     fn limit(&self, applied: [f64; 3], memory: &Bsim3Memory) -> Option<[f64; 3]> {
         let [vgs, vds, applied_vbs] = applied;
         let [previous_gate, previous_drain, previous_bulk] = memory.last;
@@ -420,8 +415,8 @@ impl Kernel for Bsim3 {
             bias: &bias,
             variables: VARIABLES,
         };
-        // Every derivative among the stamped nodes is summed here, and written once. Each
-        // term is added on a line of its own: added in a loop, its sums left the registers.
+        // Every derivative among the stamped nodes is summed here and written once. Each term
+        // stays on a separate line so LLVM keeps the running sums in registers.
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
         // `b3ld.c` multiplies every current and charge of one copy, `gmin`'s too, by `m`.
@@ -443,8 +438,8 @@ impl Kernel for Bsim3 {
         derivatives.stamp(&shape.stamp, stamp);
     }
 
-    /// The zero-bias threshold, which a transistor's first step is limited from, moves
-    /// with its temperature.
+    /// Clears the cached threshold voltage so the next step limits against the reheated
+    /// zero-bias threshold.
     fn reheat(memory: &mut Bsim3Memory) {
         memory.threshold = None;
     }
@@ -461,8 +456,8 @@ impl Kernel for Bsim3 {
         REGIONS
     }
 
-    /// The thermal noise of the series resistances, and the channel's thermal and flicker
-    /// noise of `noimod`, as `b3noi.c` computes them.
+    /// Emits series-resistance thermal noise plus channel thermal and flicker noise per
+    /// `noimod`, matching `b3noi.c`.
     fn noise<R: Real>(
         shape: &Bsim3Shape,
         prepared: &PreparedBsim3<R>,
@@ -558,8 +553,8 @@ impl<R: Real> PreparedBsim3<R> {
         }
     }
 
-    /// The flicker noise of BSIM3's strong inversion at 1 Hz, `b3noi.c`'s `Ssi`, where
-    /// the channel is `operating` and the drain-source voltage `vds` in magnitude.
+    /// Computes BSIM3 strong-inversion flicker noise at 1 Hz (`Ssi` in `b3noi.c`) for
+    /// `operating` and drain-source voltage magnitude `vds`.
     fn strong_inversion(&self, operating: &channel::Operating<R>, vds: f64) -> f64 {
         let core = &self.core;
         let noise = &self.noise;
@@ -616,20 +611,20 @@ mod tests {
         "ags": 0.2, "keta": -0.03, "etab": -0.1, "cit": 1e-4, "cdscd": 1e-3,
         "ijth": 1e-4, "jsw": 1e-10}"#;
 
-    /// The same transistor with a p-channel.
+    /// Returns `parameters` rewritten for a p-channel device.
     fn p_channel(parameters: &str) -> String {
         parameters
             .replace(r#""vth0": 0.5"#, r#""vth0": -0.5"#)
             .replace('{', r#"{"channel": "p", "#)
     }
 
-    /// `parameters` with `more`, a list of JSON members, before them.
+    /// Returns `parameters` with JSON fields `more` prepended.
     fn with(parameters: &str, more: &str) -> String {
         parameters.replacen('{', &format!("{{{more}, "), 1)
     }
 
-    /// The drain current of a device with `parameters` at the drain, gate and bulk
-    /// voltages `voltages`, its source grounded.
+    /// Computes steady-state drain current for `parameters` at `[drain, gate, bulk]` with
+    /// source grounded.
     fn drain_current(parameters: &str, [drain, gate, bulk]: [f64; 3]) -> f64 {
         Bench::new::<Bsim3>(parameters)
             .settle(&[drain, gate, 0.0, bulk])
@@ -637,10 +632,9 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges in every region, in both modes, for both channels, of every charge
-        /// model and partition and every mobility model, with the bulk up to 0.6 V forward
-        /// of the drain or the source.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across all regions, modes, channels, charge models, partitions, and mobility
+        /// models, including forward bulk bias up to 0.6 V.
         #[test]
         fn jacobians_match_finite_differences(
             drain in -3.0..3.0f64,
@@ -651,7 +645,10 @@ mod tests {
             xpart in proptest::sample::select(vec![0.0, 0.5, 1.0]),
             p in proptest::bool::ANY,
         ) {
-            let models = format!(r#""capacitance_model": {capmod}, "mobility_model": {mobmod}, "charge_partition": {xpart}"#);
+            let models = format!(
+                r#""capacitance_model": {capmod}, "mobility_model": {mobmod},
+                   "charge_partition": {xpart}"#
+            );
             let parameters = with(SHORT, &models);
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
@@ -667,8 +664,8 @@ mod tests {
             );
         }
 
-        /// A long channel with ngspice's defaults has the derivatives too, its threshold
-        /// derived from the doping.
+        /// Verifies analytical Jacobians for the default long-channel model card with
+        /// doping-derived threshold.
         #[test]
         fn default_jacobians_match_finite_differences(
             drain in -4.0..4.0f64,
@@ -723,27 +720,27 @@ mod tests {
     #[test]
     fn rejects_what_ngspice_stops_on() {
         let error = |parameters: &str| Bench::try_new::<Bsim3>(parameters).unwrap_err().0;
-        assert_eq!(error(r#"{"tox": 0}"#), "tox must be positive, not 0.0");
+        assert_eq!(error(r#"{"tox": 0}"#), "tox is positive, not 0.0");
         assert_eq!(
             error(r#"{"length": 1e-7, "lint": 6e-8}"#),
-            "the effective length must be positive, not -1.9999999999999994e-8"
+            "the effective length is positive, not -1.9999999999999994e-8"
         );
         assert_eq!(
             error(r#"{"length": 1e-6, "nlx": -2e-6}"#),
-            "nlx, -2e-6, must be at least the negative of the effective length, 1e-6"
+            "nlx, -2e-6, is at least the negative of the effective length, 1e-6"
         );
         assert_eq!(
             error(r#"{"dvt1": -0.1}"#),
-            "dvt1 must be at least 0, not -0.1"
+            "dvt1 is at least 0, not -0.1"
         );
-        assert_eq!(error(r#"{"pclm": 0}"#), "pclm must be positive, not 0.0");
+        assert_eq!(error(r#"{"pclm": 0}"#), "pclm is positive, not 0.0");
         assert_eq!(
             error(r#"{"mj": 1}"#),
-            "mj must be at least 0 and below 1, not 1.0"
+            "mj is at least 0 and below 1, not 1.0"
         );
         assert_eq!(
             error(r#"{"vsat": 1e4, "at": 1e6, "nominal_temperature": 250}"#),
-            "vsat at the temperature must be positive, not -190599.99999999988"
+            "vsat at the temperature is positive, not -190599.99999999988"
         );
         assert_eq!(
             error(r#"{"mobility_model": 4}"#),
@@ -852,10 +849,8 @@ mod tests {
         }
     }
 
-    /// A transistor is in weak inversion below its threshold, linear above it with its
-    /// drain below its saturation voltage, and saturated past it, each region switching
-    /// where its margin vanishes, the drain and the source swapping where the drain lies
-    /// below.
+    /// Verifies weak-inversion, linear, and saturated region classification and boundary
+    /// margins across forward and reversed drain-source biases.
     #[test]
     fn reports_its_region_and_margins() {
         let mut n = Bench::new::<Bsim3>("{}");
@@ -928,7 +923,7 @@ mod tests {
         bench.evaluate_with(&input)
     }
 
-    /// Largest absolute entry in a dense square matrix.
+    /// Returns the largest absolute entry in a dense square matrix.
     fn matrix_max(matrix: &[Vec<f64>]) -> f64 {
         matrix
             .iter()
@@ -952,7 +947,8 @@ mod tests {
         );
     }
 
-    /// Largest difference between two 4x4 matrices under the drain-source swap `[2, 1, 0, 3]`.
+    /// Returns the largest entrywise difference between two 4x4 matrices under drain-source
+    /// swap `[2, 1, 0, 3]`.
     fn max_matrix_swap_difference(first: &[Vec<f64>], second: &[Vec<f64>]) -> f64 {
         const SWAP: [usize; 4] = [2, 1, 0, 3];
         let mut worst = 0.0_f64;
@@ -977,7 +973,8 @@ mod tests {
         );
     }
 
-    /// Charge term magnitude bounding rounding error, matching `testing::laws::terms`.
+    /// Returns the charge term magnitude bounding rounding error, matching
+    /// `testing::laws::terms`.
     fn charge_scale(evaluation: &Evaluation, x: &[f64]) -> f64 {
         evaluation
             .charge
@@ -1048,8 +1045,9 @@ mod tests {
             }
         }
 
-        /// Analytical `C[b, d] - C[b, s]` jump in strong inversion at `vds = 0` for `capmod`
-        /// 0, `-CoxWL * ((AbulkCV - 1) + k1 * d(sqrt_phis)/d(vbs))`, from `b3ld.c`.
+        /// Computes the analytical `C[b, d] - C[b, s]` jump
+        /// `-CoxWL * ((AbulkCV - 1) + k1 * d(sqrt_phis)/d(vbs))` in strong inversion at
+        /// `vds = 0` for `capmod` 0 (`b3ld.c`).
         fn strong_inversion_bulk_jump(&self, bulk_voltage: f64) -> f64 {
             const CHANNEL_LENGTH: f64 = 5e-6;
             const JUNCTION_DEPTH: f64 = 1.5e-7;
@@ -1074,7 +1072,7 @@ mod tests {
         }
     }
 
-    /// Regression test for two BSIM3 bugs at `vbs = 0`:
+    /// Guards against two BSIM3 regressions at `vbs = 0`:
     /// 1. `capmod_zero` previously tested `channel.vbseff < 0`, sending `vbs = 0` into
     ///    `phi - channel.phis` and inheriting `channel.vbseff`'s left slope
     ///    `|vbsc| / (|vbsc| + 0.001)` instead of `1` (`1.85e-18 F` / `1.4e-4` error).
@@ -1099,10 +1097,9 @@ mod tests {
             "10u x 1u capmod 0 capacitance at vbs = 0",
         );
 
-        // One-sided finite differences of `Q_g` at `vbs = 0` with `h = 1e-6 V`:
-        // truncation error `0.5 * h * |d^2 Q_g / d V_b^2|` is `1.01e-21 F` on the left
-        // and `1.38e-20 F` on the right (`phi * vbs / (phi + vbs)` curvature); the pre-fix
-        // slope bug was `1.85e-18 F`.
+        // One-sided finite differences of `Q_g` at `vbs = 0` (`h = 1e-6 V`) have left
+        // truncation error `1.01e-21 F` and right error `1.38e-20 F` from
+        // `phi * vbs / (phi + vbs)` curvature. The pre-fix slope bug was `1.85e-18 F`.
         let step = 1e-6;
         let below = unlimited(&mut bench, &[0.0, 1.2, 0.0, -step], GMIN);
         let above = unlimited(&mut bench, &[0.0, 1.2, 0.0, step], GMIN);
@@ -1163,24 +1160,26 @@ mod tests {
                     // `b3ld.c` keeps `1 - |vbsc|/(|vbsc|+0.001)` (`1.92e-18` / `1.79e-18`).
                     assert!(
                         difference > 1.5e-18,
-                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: diff={difference:e}"
+                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: \
+                         diff={difference:e}"
                     );
                 } else {
                     // For `vbs > 0`, `vbs` replaces the smooth floor; max asymmetry at `1e-9`
                     // is `3.13e-22 F`, far below the pre-fix `1.79e-18 F` chatter.
                     assert!(
                         difference.abs() < 1e-20,
-                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: diff={difference:e}"
+                        "capmod {model_index} chattered at vbs={bulk_voltage:e}: \
+                         diff={difference:e}"
                     );
                 }
             }
         }
     }
 
-    /// Regression test for `effective_drain` catastrophic cancellation at small `vds`:
-    /// previously `vdsat - (t1 + t2) * 0.5` lost ~8 digits at `vds = 1e-9 V` (failing swap
-    /// symmetry by `8.58e-24 A`, `37,886` eps) and lost 5 to 14 digits on `Ids(vds) / vds`
-    /// at `1e-12` to `1e-15 V`.
+    /// Guards against catastrophic cancellation in `effective_drain` at small `vds`.
+    /// Previously `vdsat - (t1 + t2) * 0.5` lost ~8 digits at `vds = 1e-9 V` (breaking swap
+    /// symmetry by `8.58e-24 A`) and 5 to 14 digits on `Ids(vds) / vds` at `1e-12` to
+    /// `1e-15 V`.
     #[test]
     fn effective_drain_keeps_precision_at_small_vds() {
         const GMIN: f64 = 1e-12;
@@ -1238,7 +1237,8 @@ mod tests {
                 // (`vdsat ~ 0.037 V`); pre-fix cancellation error was `~1e-5` to `1.5e-2`.
                 assert!(
                     (secant - zero_slope).abs() <= 1e-9 * zero_slope,
-                    "vg={gate_voltage}, vb={bulk_voltage}, vds={drain_voltage:e}: secant={secant:e}, gds0={zero_slope:e}"
+                    "vg={gate_voltage}, vb={bulk_voltage}, vds={drain_voltage:e}: \
+                     secant={secant:e}, gds0={zero_slope:e}"
                 );
             }
         }

@@ -10,51 +10,44 @@ use super::kind::{Instance, Shaped};
 use super::runs::{Runs, Slab};
 use crate::{Binding, Layout, Node, ParameterError};
 
-/// The instances of one kernel and one shape, linear or not, as a circuit's structure fixes
-/// them.
+/// Immutable structural metadata for instances sharing a kernel, shape, and linearity.
 #[derive(Debug)]
 pub(super) struct Group {
     shaped: Box<dyn Shaped>,
     pub(super) layout: Layout,
-    /// Whether its instances are linear, as [`Kernel::linear`](crate::Kernel::linear) says:
-    /// evaluated once a run, for their entries, which the base sums, and their residuals
-    /// and charges each evaluation from them.
+    /// Flag indicating linear instances (per [`Kernel::linear`](crate::Kernel::linear)) that
+    /// stamp entries once per run into the base and derive rows from cached entries.
     pub(super) linear: bool,
-    /// Each instance's device, by its index among the circuit's devices, in their order.
+    /// Circuit device indices of group members in registration order.
     pub(super) members: Vec<usize>,
-    /// The circuit's unknown of each instance's local unknowns, instance after instance,
-    /// or [`UNMAPPED`] for one on ground.
+    /// Global unknown indices for each member's local unknowns, or [`UNMAPPED`] for ground.
     pub(super) nodes: Vec<u32>,
-    /// The circuit's entry of each instance's local entries, instance after instance, or
-    /// none for one that joins ground, until the pattern is known.
+    /// Temporary entry claims held before the final sparsity pattern is built.
     claims: Vec<Option<Entry>>,
-    /// The stored position of each instance's local entries, instance after instance, a
-    /// stride apart, or [`UNMAPPED`] for none.
+    /// Stored sparsity positions for each member's local entries (stride-aligned), or
+    /// [`UNMAPPED`] when connected to ground.
     pub(super) slots: Vec<u32>,
-    /// Where the group's blocks begin among the slab's local unknowns and its local
-    /// entries.
+    /// Starting slab offsets `(unknowns_start, entries_start)` for the group's blocks.
     pub(super) starts: (usize, usize),
-    /// Its instances' local unknowns, then their local entries, that contribute to a long
-    /// value, whose copies lie beyond the blocks.
+    /// Copy descriptors `[unknowns, entries]` for high-fanout targets mirrored beyond blocks.
     pub(super) copied: [Copied; 2],
 }
 
-/// The locals of a group's instances, its local unknowns or its local entries, that
-/// contribute to a long value of the circuit's equations, one of more than [`CHUNK`]
-/// contributions, and where their copies lie among the slab's.
+/// Descriptor of local unknowns or entries targeting high-fanout equations (more than
+/// [`CHUNK`] contributions) whose values are copied into contiguous slab regions.
 #[derive(Debug, Default)]
 pub(super) struct Copied {
-    /// Where each instance's begin among the group's copies, then where the last's end.
+    /// Prefix offsets delimiting each member's range inside `locals`.
     pub(super) starts: Vec<usize>,
-    /// The local index of each, instance after instance, in increasing order.
+    /// Sorted local indices copied for each member in sequence.
     locals: Vec<usize>,
-    /// Where the group's copies begin among the slab's.
+    /// Starting offset of this group's copy slice within the slab copy region.
     first: usize,
 }
 
 impl Copied {
-    /// The locals of each of `members` instances of `per` locals, whose targets are
-    /// `targets`, instance after instance, that contribute to a target `long` marks.
+    /// Identifies local slots across `members` instances (each of width `per`) whose entries
+    /// in `targets` hit a high-fanout index marked in `long`.
     fn from_targets(targets: &[u32], (members, per): (usize, usize), long: &[bool]) -> Self {
         let mut copied = Self {
             starts: Vec::with_capacity(members + 1),
@@ -74,13 +67,13 @@ impl Copied {
         copied
     }
 
-    /// The number of copies.
+    /// Returns the total number of copied local entries in the group.
     pub(super) fn len(&self) -> usize {
         self.locals.len()
     }
 
-    /// How many locals of the instances in `first..end` are copied, or `None` if out of
-    /// range.
+    /// Counts copied local slots across members `first..end`, or returns `None` if out of
+    /// bounds.
     pub(super) fn count_between(&self, first: usize, end: usize) -> Option<usize> {
         if self.locals.is_empty() {
             return Some(0);
@@ -88,8 +81,7 @@ impl Copied {
         self.starts.get(end)?.checked_sub(*self.starts.get(first)?)
     }
 
-    /// Where among the group's copies the copy of the local `local` of the instance
-    /// `member` lies, if it contributes to a long value.
+    /// Locates the offset within the group's copy slice for `local` of `member`, if copied.
     fn place(&self, member: usize, local: usize) -> Option<usize> {
         let (start, end) = (*self.starts.get(member)?, *self.starts.get(member + 1)?);
         let locals = self.locals.get(start..end)?;
@@ -97,9 +89,8 @@ impl Copied {
         Some(start + rank)
     }
 
-    /// Copies the values `block` holds, in its planes, of the locals it lists of the
-    /// instance `member` to their places among `copies`, the copies from the group's
-    /// `base`th on.
+    /// Copies values for copied locals of `member` from `block` planes into `copies` shifted
+    /// by slice base offset `base`.
     pub(super) fn copy<const N: usize>(
         &self,
         (member, base): (usize, usize),
@@ -130,86 +121,75 @@ impl Copied {
 }
 
 impl Group {
-    /// The number of local unknowns of each instance.
+    /// Returns the number of local unknowns per instance.
     pub(super) fn unknowns(&self) -> usize {
         self.layout.unknowns()
     }
 
-    /// The number of the slab's places for each instance's local entries: one for each,
-    /// and one for an instance with none, so that every block has a place.
+    /// Returns the entry stride per instance in the slab (at least 1 so every block is
+    /// non-empty).
     pub(super) fn stride(&self) -> usize {
         self.layout.entries().len().max(1)
     }
 
-    /// The circuit's unknown of each local unknown of the instance `member`.
+    /// Returns the global unknown mapping slice for `member`.
     pub(super) fn map_of(&self, member: usize) -> Option<&[u32]> {
         let unknowns = self.unknowns();
         self.nodes.get(member * unknowns..(member + 1) * unknowns)
     }
 
-    /// The stored position of each local entry of the instance `member`, a stride of them.
+    /// Returns the stride-aligned stored sparsity position slice for `member`.
     pub(super) fn slots_of(&self, member: usize) -> Option<&[u32]> {
         let stride = self.stride();
         self.slots.get(member * stride..(member + 1) * stride)
     }
 }
 
-/// The groups of a circuit's devices, each a kernel's instance: by kernel and shape, in the
-/// order their first instances appear.
+/// Circuit-wide collection of device groups partitioned by kernel, shape, and linearity.
 #[derive(Debug, Default)]
 pub struct Groups {
     pub(super) kernels: Vec<Group>,
-    /// Each device's group and its index among the group's instances, by the device's
-    /// index.
+    /// Mapping from circuit device index to `(group_index, member_index)`.
     places: Vec<(usize, usize)>,
-    /// The sources of each unknown's residual, scale and charge, and of each stored
-    /// entry's conductance and capacitance, among the slab's, made the first time a run
-    /// gathers its slab, as a run evaluated serially never does: a function of the rest,
-    /// which they never change.
+    /// Lazily built gather maps for unknown rows and matrix entries used in parallel runs.
     gathers: OnceLock<(GatherMap, GatherMap)>,
-    /// The circuit's unknowns and stored entries, the targets of the gathers.
+    /// Global target counts `(unknowns, stored_entries)` for gather maps.
     targets: (usize, usize),
-    /// The slab's local unknowns and local entries.
+    /// Block-region sizes `(unknowns_len, entries_len)` in the evaluation slab.
     pub(super) sizes: (usize, usize),
-    /// The copies beyond them of those that contribute to a long value.
+    /// High-fanout copy-region sizes `(unknown_copies, entry_copies)` beyond blocks.
     pub(super) copies: (usize, usize),
-    /// The stored entries the linear instances' entries add to, in increasing order, each
-    /// the target of one value of the base, which lies beyond the copies among the slab's
-    /// places for local entries, in their order.
+    /// Sorted global sparsity slots receiving linear contributions, paired with the base
+    /// region trailing the entry copies.
     pub(super) base: Vec<u32>,
-    /// The sources of each value of the base among the linear instances' local entries, in
-    /// the order they add, by its index among the base's values.
+    /// Gather map summing linear instance entry blocks into the shared base region once per
+    /// run.
     summed: GatherMap,
-    /// The layout each instance added claims, and its local unknowns' nodes, kept to be
-    /// used again.
+    /// Reusable scratch layout and terminal node buffer used while adding instances.
     scratch: (Layout, Vec<Node>),
-    /// The row and the column, circuit's unknowns, of every pivot an instance's layout
-    /// [claims](Layout::pivot), in the order the instances were added.
+    /// Global `(row, column)` pairs of every pivot claimed via [`Layout::pivot`].
     pivoted: Vec<(usize, usize)>,
 }
 
-/// Why a circuit's groups cannot be made: their slab, or the circuit, has more places than
-/// a 32-bit index reaches.
+/// Error returned when slab or circuit index counts exceed 32-bit addressable limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooLarge;
 
 impl Groups {
-    /// No groups yet, and no device.
+    /// Creates an empty group collection with no registered devices.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Adds the next device among the circuit's, the instance `instance` of a kernel at the
-    /// temperature `temperature` of its surroundings, to the group of its kernel and shape,
-    /// made the first time a kernel and shape appear: its numbers are prepared in `runs`,
-    /// and its internal unknowns and its entries claimed through `binding`, which binds
-    /// its terminals.
+    /// Registers `instance` at ambient `temperature`, preparing it in `runs` and claiming its
+    /// internal unknowns and matrix entries via `binding`.
+    ///
+    /// Creates a new group on the first occurrence of a kernel, shape, and linearity tuple.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when the instance's parameters are out of range; nothing
-    /// is added.
+    /// Returns [`ParameterError`] when parameters are out of range, leaving `self` unchanged.
     pub fn add(
         &mut self,
         runs: &mut Runs,
@@ -272,14 +252,12 @@ impl Groups {
         Ok(())
     }
 
-    /// Whether `instance`, the instance of the device `device` its parameters make at the
-    /// temperature `temperature` of its surroundings, has the kernel and the shape of the
-    /// device's group, and so claims the unknowns and the entries the circuit holds, and is
-    /// linear as the group's instances are or are not.
+    /// Checks whether `instance` at ambient `temperature` preserves the kernel, shape, and
+    /// linearity of `device`'s existing group.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when the instance's parameters are out of range.
+    /// Returns [`ParameterError`] when the instance parameters are out of range.
     pub fn keeps_shape(
         &self,
         device: usize,
@@ -295,32 +273,30 @@ impl Groups {
             && group.linear == made.linear())
     }
 
-    /// Whether the instance the device `device` is, if it is a kernel's, is linear.
+    /// Returns whether `device` belongs to a linear kernel group.
     #[must_use]
     pub fn is_linear(&self, device: usize) -> bool {
         self.group_of(device).is_some_and(|(of, _)| of.linear)
     }
 
-    /// The instance at the device `device`, if it is a kernel's: its group and its index
-    /// among the group's instances.
+    /// Returns `(group_index, member_index)` for `device`, if registered.
     pub(super) fn place(&self, device: usize) -> Option<(usize, usize)> {
         self.places.get(device).copied()
     }
 
-    /// The group and member index of `device`, if it is a kernel's instance.
+    /// Returns the group reference and member index for `device`, if registered.
     pub(super) fn group_of(&self, device: usize) -> Option<(&Group, usize)> {
         let (group, member) = self.place(device)?;
         Some((self.kernels.get(group)?, member))
     }
 
-    /// Fixes the groups once every device is added and the circuit's `pattern` is known:
-    /// where each instance's block lies in the slab, which `runs` makes, the stored
-    /// position of each of its local entries, and the maps that gather the blocks.
+    /// Finalizes slab offsets, sparsity slot mappings, copy ranges, and linear base gathers
+    /// once all devices have been added and `pattern` is built.
     ///
     /// # Errors
     ///
-    /// Returns [`TooLarge`] when the slab, the unknowns or the stored entries number more
-    /// than a 32-bit index reaches.
+    /// Returns [`TooLarge`] when slab slots, unknowns, or stored entries exceed 32-bit
+    /// indexing limits.
     pub fn finish(&mut self, runs: &mut Runs, pattern: &Pattern) -> Result<(), TooLarge> {
         let fits = |count: usize| u32::try_from(count).is_ok_and(|count| count < UNMAPPED);
         let (mut rows, mut stored) = (0, 0);
@@ -407,24 +383,23 @@ impl Groups {
         Ok(())
     }
 
-    /// The slab's places for local unknowns and for local entries: the blocks', then the
-    /// copies', then, for local entries, the base's values.
+    /// Returns total slab sizes `(unknowns_len, entries_len)` covering blocks, copies, and
+    /// the linear base region.
     fn slab_sizes(&self) -> (usize, usize) {
         let entries = self.sizes.1 + self.copies.1;
         (self.sizes.0 + self.copies.0, entries + self.base.len())
     }
 
-    /// Where the base's values begin among the slab's places for local entries, and the
-    /// sources of each among the linear instances' local entries, which sum into it once a
-    /// run, in the order they add.
+    /// Returns the starting slab offset of the linear base region and the gather map that
+    /// sums linear instance entries into it once per run.
     #[must_use]
     pub fn base(&self) -> (usize, &GatherMap) {
         (self.sizes.1 + self.copies.1, &self.summed)
     }
 
-    /// The maps that gather, from a run's [slab](Runs::slab), the contributions to each
-    /// unknown's residual, scale and charge, and to each stored entry's conductance and
-    /// capacitance, in the order they add: a long value's from their copies.
+    /// Returns the gather maps for rows (residuals, scales, charges) and entries
+    /// (conductances, capacitances) from a run's [slab](Runs::slab), reading high-fanout
+    /// targets from their copy slices.
     #[must_use]
     pub fn gathers(&self) -> (&GatherMap, &GatherMap) {
         let (rows, slots) = self.gathers.get_or_init(|| {
@@ -437,10 +412,8 @@ impl Groups {
         (rows, slots)
     }
 
-    /// Each contribution to the circuit's equations, as its target and its place in the
-    /// slab, in the order they add: of `kind`, the local unknowns' contributions to the
-    /// unknowns' values for 0, and for 1 the base's values, then the local entries of the
-    /// instances that are not linear, to the stored entries' values.
+    /// Yields `(target, slab_source)` pairs in deterministic summation order for `kind` (`0`
+    /// for unknown rows; `1` for base entries followed by nonlinear matrix entries).
     fn sources(&self, kind: usize) -> impl Iterator<Item = (u32, u32)> + Clone + '_ {
         let beyond = if kind == 0 {
             self.sizes.0
@@ -473,29 +446,27 @@ impl Groups {
         }))
     }
 
-    /// The row and the column, circuit's unknowns, of every pivot an instance's layout
-    /// [claims](Layout::pivot), by which the sparse solver may eliminate the column's
-    /// unknown first.
+    /// Returns global `(row, column)` pairs of all pivots [claimed](Layout::pivot) for early
+    /// elimination by the sparse solver.
     #[must_use]
     pub fn pivoted(&self) -> &[(usize, usize)] {
         &self.pivoted
     }
 
-    /// The number of groups of kernels' instances.
+    /// Returns the number of device groups.
     #[must_use]
     pub fn len(&self) -> usize {
         self.kernels.len()
     }
 
-    /// Whether no device is a kernel's instance.
+    /// Returns whether the collection contains no kernel groups.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.kernels.is_empty()
     }
 
-    /// The instances each evaluation evaluates: those of the groups that are not linear,
-    /// as a linear group's are evaluated once a run, for their entries, and each
-    /// evaluation takes their residuals and charges from them.
+    /// Counts nonlinear instances evaluated on every Newton iteration (excluding linear
+    /// instances evaluated once per run).
     #[must_use]
     pub fn evaluated(&self) -> usize {
         self.kernels
@@ -505,13 +476,13 @@ impl Groups {
             .sum()
     }
 
-    /// The devices of each group's instances, by index, group after group.
+    /// Iterates over the device-index slice of each group in registration order.
     pub fn members(&self) -> impl Iterator<Item = &[usize]> {
         self.kernels.iter().map(|group| group.members.as_slice())
     }
 
-    /// A run of the groups, its slab zeroed and no instance prepared yet, for
-    /// [`Runs::prepare`] to prepare every one.
+    /// Allocates a fresh [`Runs`] container with a zeroed slab and unprepared instances ready
+    /// for [`Runs::prepare`].
     #[must_use]
     pub fn runs(&self) -> Runs {
         Runs {
@@ -528,14 +499,14 @@ impl Groups {
     }
 }
 
-/// The index among the circuit's unknowns of `node`, or [`UNMAPPED`] for ground.
+/// Converts `node` to its 32-bit global unknown index, or [`UNMAPPED`] for ground.
 fn mapped(node: Node) -> u32 {
     node.and_then(|unknown| u32::try_from(unknown.index()).ok())
         .unwrap_or(UNMAPPED)
 }
 
-/// `slot`, a stored position, as a map holds it, or [`UNMAPPED`] beyond its reach, which
-/// [`Groups::finish`] rules out.
+/// Converts stored position `slot` to `u32`, saturating to [`UNMAPPED`] if out of range (a
+/// condition rejected by [`Groups::finish`]).
 fn mapped_slot(slot: usize) -> u32 {
     u32::try_from(slot).unwrap_or(UNMAPPED)
 }

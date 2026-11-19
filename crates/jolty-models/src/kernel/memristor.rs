@@ -1,10 +1,10 @@
-//! Memristors: each a resistance between `positive` and `negative` that its state moves,
-//! from its on resistance at 0 to its off resistance at 1, by its [law](MemristorLaw).
+//! Memristor models with a state-dependent resistance between `positive` and `negative`,
+//! varying from on-resistance at state 0 to off-resistance at state 1 by [law](MemristorLaw).
 //!
-//! The state is an unknown labelled `state`, which only time moves. At an operating point,
-//! and in the analyses about one, it is the state the memristor was made in, as SPICE's
-//! initial conditions hold a node; in a transient, what drives it moves it, and its window
-//! slows it at either bound.
+//! State is tracked as an internal unknown labelled `state` that evolves only in time.
+//! Operating-point and linearized analyses hold `state` at the initial value; transient
+//! integration evolves `state` under the control drive, damped near both bounds by a smooth
+//! window.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,25 +17,25 @@ use crate::{
     ParameterError, ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
-/// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
-/// off resistance at 1, as VTEAM gives it.
+/// Mapping from memristor state `x` in `[0, 1]` to resistance between on-resistance and
+/// off-resistance, following VTEAM conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemristorLaw {
-    /// `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves.
+    /// Linear series-boundary resistance `r_on + (r_off − r_on) · x`.
     #[default]
     Linear,
-    /// `r_on · (r_off / r_on)^x`, as a tunnel barrier whose width moves.
+    /// Exponential tunnel-barrier resistance `r_on · (r_off / r_on)^x`.
     Exponential,
 }
 
-/// A memristor's resistance law, and the window that slows its state at its bounds.
+/// Memristor resistance law and boundary-window damping parameters.
 #[derive(Debug, Clone, Copy)]
 struct Memristance<R: Real> {
     law: MemristorLaw,
     on_resistance: R,
     off_resistance: R,
-    /// `ln(r_off / r_on)`.
+    /// Natural logarithm of the resistance ratio, `ln(r_off / r_on)`.
     log_ratio: R,
     window: R,
 }
@@ -51,7 +51,7 @@ impl<R: Real> Memristance<R> {
         if off_resistance.value() <= on_resistance.value() {
             let (on, off) = (on_resistance.value(), off_resistance.value());
             return Err(ParameterError(format!(
-                "off_resistance must be above on_resistance, not {off:?} against {on:?}"
+                "off_resistance exceeds on_resistance, not {off:?} against {on:?}"
             )));
         }
         Ok(Self {
@@ -63,7 +63,7 @@ impl<R: Real> Memristance<R> {
         })
     }
 
-    /// The conductance at the state `state`, held within its bounds.
+    /// Evaluates conductance at `state`, clamping `state` within `[0, 1]`.
     fn conductance<const N: usize>(&self, state: Dual<R, N>) -> Dual<R, N> {
         let held = if (0.0..=1.0).contains(&state.value.value()) {
             state
@@ -81,16 +81,15 @@ impl<R: Real> Memristance<R> {
         }
     }
 
-    /// The rate at which the state moves, toward off when positive, given `drive`, the
-    /// rate with nothing slowing it, at the state `state`: the window slows a drive toward
-    /// either bound as the state nears it, and none away from it.
+    /// Computes windowed state rate of change (positive toward off) from `state` and raw
+    /// `drive`, slowing motion toward either bound without impeding departure.
     ///
-    /// With `d` the distance to the bound the drive moves toward, in widths of the window,
-    /// the drive is slowed by `1 − e^(−d)` short of the bound, which stops the state there,
-    /// and turned by `d` past it, which returns it, the two meeting with the same slope.
+    /// Let `d` be the distance to the target bound in window widths. Inside the bound, the
+    /// window multiplies `drive` by `1 − e^(−d)` so motion halts at the boundary; beyond the
+    /// bound, multiplying by `d` reverses motion with a matching slope.
     fn rate(&self, state: Dual<R, 2>, drive: Dual<R, 2>) -> Dual<R, 2> {
         let toward_off = drive.value.value() > 0.0;
-        // How free the state is to move is a law of the state alone.
+        // Window factor depends on state alone.
         let freedom = state.apply(|state| {
             let distance = if toward_off {
                 (1.0 - state).divide(self.window)
@@ -107,12 +106,12 @@ impl<R: Real> Memristance<R> {
     }
 }
 
-/// What moves a memristor's state.
+/// Control mechanism driving memristor state evolution.
 #[derive(Debug, Clone, Copy)]
 enum Control<R: Real> {
-    /// VTEAM's voltage thresholds: past `off_voltage`, the state moves toward off at
-    /// `off_rate · (v/v_off − 1)^α_off`, and past `on_voltage`, toward on at
-    /// `on_rate · (v/v_on − 1)^α_on`; between them, it holds.
+    /// VTEAM voltage thresholds: drives state toward off above `off_voltage` at
+    /// `off_rate · (v/v_off − 1)^α_off` and toward on below `on_voltage` at
+    /// `on_rate · (v/v_on − 1)^α_on`, holding constant in between.
     Voltage {
         on_voltage: R,
         off_voltage: R,
@@ -121,15 +120,14 @@ enum Control<R: Real> {
         on_exponent: R,
         off_exponent: R,
     },
-    /// Linear ion drift: the state moves by the charge through the memristor over
-    /// `charge`, the charge that carries it across its whole range.
+    /// Linear ion drift: evolves state in proportion to transferred charge divided by
+    /// full-range `charge`.
     Current { charge: R },
 }
 
 impl<R: Real> Control<R> {
-    /// The rate at which the state moves with nothing slowing it, toward off when positive,
-    /// at `voltage` across a memristor of conductance `conductance`, both numbers of the
-    /// voltage and the state.
+    /// Computes the unwindowed state rate (positive toward off) at `voltage` and
+    /// `conductance`, both differentiated with respect to voltage and state.
     fn drive(&self, voltage: Dual<R, 2>, conductance: Dual<R, 2>) -> Dual<R, 2> {
         match self {
             Self::Voltage {
@@ -156,28 +154,28 @@ impl<R: Real> Control<R> {
     }
 }
 
-/// Where a memristor's contributions go, among its local unknowns.
+/// Layout shape for a memristor storing its internal state unknown and matrix entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemristorShape {
     state: usize,
-    /// The entries joining `positive` and `negative` to both terminals and to the state.
+    /// Matrix entries joining `positive` and `negative` to both terminals and `state`.
     terminals: [[usize; 3]; 2],
-    /// The entries joining the state to both terminals and to itself.
+    /// Matrix entries joining `state` to both terminals and itself.
     own: [usize; 3],
 }
 
-/// A memristor's numbers.
+/// Prepared parameters for a memristor instance.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedMemristor<R: Real> {
     memristance: Memristance<R>,
     control: Control<R>,
-    /// The state it was made in.
+    /// Initial state held at operating-point analyses.
     initial: R,
     temperature: f64,
 }
 
-/// What a memristor remembers: its resistance, and the rate at which its state moves, at
-/// its last evaluation, unknown before the first.
+/// Memristor evaluation memory storing the most recent resistance and state rate (NaN
+/// before the first evaluation).
 #[derive(Debug, Clone, Copy)]
 pub struct MemristorMemory([f64; 2]);
 
@@ -187,19 +185,19 @@ impl Default for MemristorMemory {
     }
 }
 
-/// The local indices of a memristor's terminals, `positive` and `negative`.
+/// Local terminal indices for `positive` and `negative`.
 const POSITIVE_NEGATIVE: [usize; 2] = [0, 1];
 
-/// The terminals of a memristor.
+/// Terminal names of a memristor.
 const TERMINALS: &[&str] = &["positive", "negative"];
 
-/// The interface of a memristor: a resistance between its terminals.
+/// Builds the two-terminal conductive [`Interface`] shared by memristor kernels.
 fn interface() -> Interface {
     Interface::new(TERMINALS, &[Branch::new(0, 1, BranchKind::Conductive)])
 }
 
 impl<R: Real> PreparedMemristor<R> {
-    /// A memristor's numbers, made in the state `state`, at `temperature`.
+    /// Validates initial `state` and prepares a memristor at `temperature`.
     fn new(
         (memristance, control): (Memristance<R>, Control<R>),
         state: R,
@@ -209,7 +207,7 @@ impl<R: Real> PreparedMemristor<R> {
         if initial.value() > 1.0 {
             let state = initial.value();
             return Err(ParameterError(format!(
-                "state must be at most 1, not {state:?}"
+                "state is at most 1, not {state:?}"
             )));
         }
         Ok(Self {
@@ -282,7 +280,7 @@ impl MemristorShape {
         }
     }
 
-    /// The thermal noise of the resistance its state sets.
+    /// Appends thermal noise for the conductance determined by the current memristor state.
     fn noise<R: Real>(
         &self,
         prepared: &PreparedMemristor<R>,
@@ -304,9 +302,9 @@ impl MemristorShape {
     }
 }
 
-/// The names of a memristor's variables: its resistance, and the rate at which its state
-/// moves, toward off when positive, in full ranges per second, which an operating point
-/// shows though it holds the state.
+/// Diagnostic variable names for a memristor: instantaneous resistance and state rate (in
+/// full ranges per second, positive toward off), reported even during DC operating-point
+/// analyses.
 const VARIABLE_NAMES: [&str; 2] = ["resistance", "rate"];
 
 fn one<R: Real>() -> R {
@@ -317,59 +315,53 @@ fn a_hundredth<R: Real>() -> R {
     R::constant(0.01)
 }
 
-/// A voltage-controlled memristor, in VTEAM's model (Kvatinsky, Ramadan, Friedman and
-/// Kolodny, 2015): the voltage of `positive` over `negative` past `off_voltage` moves its
-/// state toward off, past `on_voltage` toward on, faster the further past, and between
-/// them leaves it where it is.
+/// Voltage-controlled memristor following the VTEAM model (Kvatinsky, Ramadan, Friedman,
+/// and Kolodny, 2015).
 ///
-/// With `v` that voltage, the state moves at `off_rate · (v/v_off − 1)^α_off` above
-/// `v_off`, and at `−on_rate · (v/v_on − 1)^α_on` below `v_on`, so each rate is the
-/// state's speed at twice its threshold, in full ranges per second; its window slows it
-/// at either bound.
+/// Terminal voltage `v = v(positive) − v(negative)` drives the state toward off above
+/// `off_voltage` at `off_rate · (v/v_off − 1)^α_off` and toward on below `on_voltage` at
+/// `−on_rate · (v/v_on − 1)^α_on`. Between thresholds the state holds constant. Each rate
+/// equals the speed at twice the corresponding threshold in full ranges per second, damped
+/// near either bound by the window.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledMemristor;
 
-/// The parameters of a [`VoltageControlledMemristor`].
+/// Parameters for [`VoltageControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
-    /// The resistance fully on, at a state of 0, in ohms; positive.
+    /// Fully on resistance at state 0, in ohms; positive.
     #[dimension(RESISTANCE)]
     pub on_resistance: R,
-    /// The resistance fully off, at a state of 1, in ohms; above the on resistance.
+    /// Fully off resistance at state 1, in ohms; greater than `on_resistance`.
     #[dimension(RESISTANCE)]
     pub off_resistance: R,
-    /// The voltage below which the state moves toward on, in volts; negative.
+    /// Voltage threshold below which state moves toward on, in volts; negative.
     #[dimension(VOLTAGE)]
     pub on_voltage: R,
-    /// The voltage above which the state moves toward off, in volts; positive.
+    /// Voltage threshold above which state moves toward off, in volts; positive.
     #[dimension(VOLTAGE)]
     pub off_voltage: R,
-    /// The state's speed toward on at twice the on voltage, in full ranges per second;
-    /// positive.
+    /// State speed toward on at twice `on_voltage`, in full ranges per second; positive.
     #[dimension(FREQUENCY)]
     pub on_rate: R,
-    /// The state's speed toward off at twice the off voltage, in full ranges per second;
-    /// positive.
+    /// State speed toward off at twice `off_voltage`, in full ranges per second; positive.
     #[dimension(FREQUENCY)]
     pub off_rate: R,
-    /// How steeply the speed toward on grows past the on voltage, `α_on`; at least 1;
-    /// default 1.
+    /// Nonlinearity exponent `α_on` for motion past `on_voltage`; at least 1; default 1.
     #[serde(default = "one::<R>")]
     pub on_exponent: R,
-    /// How steeply the speed toward off grows past the off voltage, `α_off`; at least 1;
-    /// default 1.
+    /// Nonlinearity exponent `α_off` for motion past `off_voltage`; at least 1; default 1.
     #[serde(default = "one::<R>")]
     pub off_exponent: R,
-    /// How the resistance follows the state; default linear.
+    /// Resistance-versus-state law; default linear.
     #[serde(default)]
     pub law: MemristorLaw,
-    /// The state it was made in, from 0, fully on, to 1, fully off; default 1.
+    /// Initial state from 0 (fully on) to 1 (fully off); default 1.
     #[serde(default = "one::<R>")]
     pub state: R,
-    /// The width of the window that slows the state at either bound, a fraction of its
-    /// range; positive; default 0.01.
+    /// Boundary window width as a fraction of the state range; positive; default 0.01.
     #[serde(default = "a_hundredth::<R>")]
     pub window: R,
 }
@@ -409,7 +401,7 @@ impl Kernel for VoltageControlledMemristor {
         if on_voltage.value() >= 0.0 {
             let on = on_voltage.value();
             return Err(ParameterError(format!(
-                "on_voltage must be negative, not {on:?}"
+                "on_voltage is negative, not {on:?}"
             )));
         }
         let control = Control::Voltage {
@@ -468,41 +460,41 @@ fn at_least_one<R: Real>(parameter: &str, value: R) -> Result<R, ParameterError>
     } else {
         let value = value.value();
         Err(ParameterError(format!(
-            "{parameter} must be at least 1, not {value:?}"
+            "{parameter} is at least 1, not {value:?}"
         )))
     }
 }
 
-/// A current-controlled memristor, in the linear ion drift model of HP's titanium dioxide
-/// memristor (Strukov, Snider, Stewart and Williams, 2008): its state moves with the
-/// charge through it, from `positive` to `negative` toward off, by `q/Q` for a charge `q`,
-/// where `Q` is the charge that carries it across its whole range; its window slows it at
-/// either bound.
+/// Current-controlled memristor following the HP titanium dioxide linear ion drift model
+/// (Strukov, Snider, Stewart, and Williams, 2008).
+///
+/// Charge `q` flowing from `positive` to `negative` shifts the state toward off by `q/Q`,
+/// where `Q` is the full-range switching charge. The boundary window damps state motion at
+/// either limit.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledMemristor;
 
-/// The parameters of a [`CurrentControlledMemristor`].
+/// Parameters for [`CurrentControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
-    /// The resistance fully on, at a state of 0, in ohms; positive.
+    /// Fully on resistance at state 0, in ohms; positive.
     #[dimension(RESISTANCE)]
     pub on_resistance: R,
-    /// The resistance fully off, at a state of 1, in ohms; above the on resistance.
+    /// Fully off resistance at state 1, in ohms; greater than `on_resistance`.
     #[dimension(RESISTANCE)]
     pub off_resistance: R,
-    /// The charge that carries the state across its whole range, in coulombs; positive.
+    /// Switching charge carrying the state across its full range, in coulombs; positive.
     #[dimension(CHARGE)]
     pub charge: R,
-    /// How the resistance follows the state; default linear.
+    /// Resistance-versus-state law; default linear.
     #[serde(default)]
     pub law: MemristorLaw,
-    /// The state it was made in, from 0, fully on, to 1, fully off; default 1.
+    /// Initial state from 0 (fully on) to 1 (fully off); default 1.
     #[serde(default = "one::<R>")]
     pub state: R,
-    /// The width of the window that slows the state at either bound, a fraction of its
-    /// range; positive; default 0.01.
+    /// Boundary window width as a fraction of the state range; positive; default 0.01.
     #[serde(default = "a_hundredth::<R>")]
     pub window: R,
 }
@@ -591,12 +583,12 @@ mod tests {
     const DRIFT: &str = r#"{"on_resistance": 100, "off_resistance": 1.6e4,
         "charge": 1e-4, "state": 0.4}"#;
 
-    /// `parameters` with `extra`, a JSON object's members, added.
+    /// Appends JSON object members `extra` to the JSON object `parameters`.
     fn with(parameters: &str, extra: &str) -> String {
         format!("{}, {extra}}}", parameters.trim_end().trim_end_matches('}'))
     }
 
-    /// The rate at which the state moves at `voltage` and `state`, as a transient sees it.
+    /// Evaluates the transient state rate at `voltage` and `state`.
     fn rate(bench: &mut Bench, voltage: f64, state: f64) -> f64 {
         -bench.evaluate(&[voltage, 0.0, state]).residual[2]
     }
@@ -621,7 +613,7 @@ mod tests {
     fn at_an_operating_point_its_state_is_the_one_it_was_made_in() {
         let mut bench = Bench::new::<VoltageControlledMemristor>(VTEAM);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:state"]);
-        // However far past its threshold the voltage is.
+        // Operating-point state remains fixed regardless of voltage overdrive.
         let evaluation = bench.evaluate(&[3.0, 0.0, 0.7]);
         assert_close(&[evaluation.residual[2]], &[0.3]);
         assert_close(&evaluation.conductance[2], &[0.0, 0.0, 1.0]);
@@ -709,25 +701,19 @@ mod tests {
     #[test]
     fn rejects_unphysical_values() {
         let cases = [
-            (
-                r#""on_voltage": 0.1"#,
-                "on_voltage must be negative, not 0.1",
-            ),
-            (
-                r#""off_voltage": 0"#,
-                "off_voltage must be positive, not 0.0",
-            ),
-            (r#""on_rate": -1"#, "on_rate must be positive, not -1.0"),
+            (r#""on_voltage": 0.1"#, "on_voltage is negative, not 0.1"),
+            (r#""off_voltage": 0"#, "off_voltage is positive, not 0.0"),
+            (r#""on_rate": -1"#, "on_rate is positive, not -1.0"),
             (
                 r#""off_exponent": 0.5"#,
-                "off_exponent must be at least 1, not 0.5",
+                "off_exponent is at least 1, not 0.5",
             ),
             (
                 r#""off_resistance": 500"#,
-                "off_resistance must be above on_resistance, not 500.0 against 1000.0",
+                "off_resistance exceeds on_resistance, not 500.0 against 1000.0",
             ),
-            (r#""state": 1.5"#, "state must be at most 1, not 1.5"),
-            (r#""window": 0"#, "window must be positive, not 0.0"),
+            (r#""state": 1.5"#, "state is at most 1, not 1.5"),
+            (r#""window": 0"#, "window is positive, not 0.0"),
         ];
         for (change, message) in cases {
             let parameters = dedupe(&with(VTEAM, change));
@@ -740,10 +726,10 @@ mod tests {
             r#""charge": 0"#,
         ))
         .expect_err("no charge");
-        assert_eq!(error.0, "charge must be positive, not 0.0");
+        assert_eq!(error.0, "charge is positive, not 0.0");
     }
 
-    /// The JSON object `parameters`, each member given twice keeping its last value.
+    /// Deduplicates repeated keys in JSON object `parameters`, keeping each key's last value.
     fn dedupe(parameters: &str) -> String {
         let object: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(parameters).expect("an object");

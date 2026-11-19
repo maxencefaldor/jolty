@@ -7,16 +7,16 @@ use super::kind::Kind;
 use super::layout::{Copied, Group};
 use crate::{Contributions, Input, Layout, Local, Stamp};
 
-/// A group's blocks in the slab: the residuals, scales and charges of its instances' local
-/// unknowns, and the conductances and capacitances of their local entries.
+/// Mutable slab planes for one group: `[residual, scale, charge]` rows and
+/// `[conductance, capacitance]` entries.
 pub(super) type Blocks<'a> = ([&'a mut [f64]; 3], [&'a mut [f64]; 2]);
 
-/// A linear group's blocks: the rows of its instances' local unknowns, which their
-/// evaluations write, and the entries of their local entries, which they read.
+/// Slab planes for a linear group: mutable row planes written during evaluation and shared
+/// entry planes read from cached stamps.
 pub(super) type LinearBlocks<'a> = ([&'a mut [f64]; 3], [&'a [f64]; 2]);
 
-/// The instances of a chunk of a group: their blocks, their memory and their prepared
-/// numbers.
+/// Mutable slice tuple for one evaluation chunk: block planes, instance memory, and prepared
+/// parameters.
 pub(super) type Chunk<'a, K> = (
     Blocks<'a>,
     &'a mut [<K as Kind>::Memory],
@@ -53,7 +53,7 @@ impl PlaneSlice for &mut [f64] {
     }
 }
 
-/// Whether every plane in `planes` holds at least `count` elements.
+/// Returns whether every slice in `planes` holds at least `count` elements.
 #[inline]
 fn all_fit<S: PlaneSlice, const N: usize>(planes: &[S; N], count: usize) -> bool {
     planes.iter().all(|plane| plane.len() >= count)
@@ -193,8 +193,8 @@ pub(super) fn as_refs<'a, const N: usize>(planes: &'a [&mut [f64]; N]) -> [&'a [
     planes.each_ref().map(|plane| &**plane)
 }
 
-/// The values of each of `planes` from `at` on, which keep those before it; none of any
-/// when one holds fewer.
+/// Splits off the suffix starting at `at` from each slice in `planes`, retaining the prefix
+/// in place and returning empty slices when any plane is shorter than `at`.
 pub(super) fn beyond<S: PlaneSlice, const N: usize>(planes: &mut [S; N], at: usize) -> [S; N] {
     let Some(before) = split(planes, at) else {
         return std::array::from_fn(|_| S::default());
@@ -202,8 +202,8 @@ pub(super) fn beyond<S: PlaneSlice, const N: usize>(planes: &mut [S; N], at: usi
     std::mem::replace(planes, before)
 }
 
-/// The first `count` values of each of `planes`, which keep the rest, or `None` when one
-/// holds fewer.
+/// Splits off the leading `count` elements from each slice in `planes`, retaining the
+/// remainder in place, or returns `None` when any plane is shorter than `count`.
 #[inline]
 pub(super) fn split<S: PlaneSlice, const N: usize>(
     planes: &mut [S; N],
@@ -212,10 +212,11 @@ pub(super) fn split<S: PlaneSlice, const N: usize>(
     all_fit(planes, count).then(|| take_prefix(planes, count))
 }
 
-/// The blocks of `group`'s instances, the first values of the slab's `planes`, which keep
-/// the rest, and its copies, the first of `copies`, likewise; `None` when one holds too
-/// few. A group that copies nothing takes no copies, so that a circuit with no long value
-/// pays nothing for them.
+/// Carves out the block and copy slices for `group` from the slab planes, returning `None`
+/// if any plane is too short.
+///
+/// Groups with no copied high-fanout targets return empty copy slices so circuits without
+/// high-fanout nodes incur no copy overhead.
 #[inline]
 pub(super) fn blocks_of<'a>(
     group: &Group,
@@ -238,11 +239,11 @@ pub(super) fn blocks_of<'a>(
     Some((blocks, copies))
 }
 
-/// Evaluates each instance of a chunk of a group of `shape`, of `sizes` local unknowns and
-/// places for local entries each, at `input`, into its block, which it zeroes first, and
-/// adds each block to `into`, when given, as soon as it is written, through the circuit's
-/// unknowns and stored positions of the instances' local ones, `maps`. Returns whether an
-/// instance limited its voltages.
+/// Evaluates every instance in a chunk of `shape` at `input` into zeroed slab blocks,
+/// returning whether any instance limited voltages.
+///
+/// When `into` is `Some`, accumulates each completed block directly into `into` via `nodes`
+/// and `slots`.
 pub(super) fn evaluate_chunk<K: Kind>(
     shape: &K::Shape,
     (unknowns, stride): (usize, usize),
@@ -276,9 +277,8 @@ pub(super) fn evaluate_chunk<K: Kind>(
     limited
 }
 
-/// Writes into `stamp` what a linear instance of `shape` with the numbers `prepared`, whose
-/// local unknowns are the circuit's of `map`, contributes at [`Input::ZERO`], from its
-/// initial memory: its entries, which are the same at every state.
+/// Stamps constant Jacobian entries for a linear instance (`shape`, `prepared`, `map`) into
+/// `stamp` by evaluating once at [`Input::ZERO`] from initial memory.
 pub(super) fn stamp_entries<K: Kind>(
     shape: &K::Shape,
     prepared: &K::Prepared,
@@ -289,11 +289,11 @@ pub(super) fn stamp_entries<K: Kind>(
     K::evaluate(shape, prepared, &mut memory, &Input::ZERO.local(map), stamp);
 }
 
-/// Writes the rows of each block of `group`, which is linear, of `blocks`, the first of the
-/// pair, from its entries, at `input`, copying its contributions to a long value to their
-/// places among the second, the group's copies: one after another, each block's rows added
-/// to `into` as soon as they are written, or without `into`, in parallel, `per_task`
-/// instances a task.
+/// Evaluates row planes for linear `group` from cached entries at `input` and mirrors
+/// high-fanout contributions into `copies`.
+///
+/// Serial mode (`into` is `Some`) accumulates rows immediately; parallel mode (`into` is
+/// `None`) partitions instances into rayon tasks of at least `per_task`.
 pub(super) fn evaluate_linear(
     (group, terms): (&Group, &Terms),
     input: &Input<'_>,
@@ -328,10 +328,8 @@ pub(super) fn evaluate_linear(
     copy_long(sizes, written, copies, (&group.copied, 0));
 }
 
-/// Writes the rows of each block of a chunk of a linear group, of `sizes` local unknowns
-/// and places for local entries each, whose residuals and charges sum `terms`, at `input`,
-/// from the block's entries, and adds each row to `into`, when given, as soon as it is
-/// written, through the circuit's unknowns of the instances' local ones, `nodes`.
+/// Evaluates row planes for a chunk of linear instances using `terms` at `input`, optionally
+/// accumulating each completed row into `into` via `nodes`.
 fn linear_chunk(
     terms: &Terms,
     (unknowns, stride): (usize, usize),
@@ -347,25 +345,23 @@ fn linear_chunk(
     }
 }
 
-/// The terms of the residuals and the charges of a linear group's instances: for its
-/// conductances, then its capacitances, each local unknown's row with an entry that is not
-/// zero in some instance, and those of its entries, each with its column, in the order of
-/// their local indices. Every other term of the group's is zero at every state, as is the
-/// row of one that has none: leaving it out of a sum, which starts from zero and so is
-/// never `-0`, changes no bit of it.
+/// Active nonzero row-entry products for a linear group's conductance and capacitance planes.
+///
+/// Only local entries nonzero in at least one member instance are stored, in local index
+/// order. Omitting identically zero entries preserves exact IEEE-754 summation bits starting
+/// from `+0.0`.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Terms {
-    /// For each plane, each row's local unknown, and where its entries begin and end among
-    /// the plane's.
+    /// Per plane (`[conductance, capacitance]`), `(local_row, start, end)` slices into
+    /// `entries`.
     rows: [Vec<(usize, usize, usize)>; 2],
-    /// For each plane, each row's entries, row after row: the local unknown of its column
-    /// and its local index.
+    /// Per plane, `(local_column, local_entry)` pairs ordered row by row.
     entries: [Vec<(usize, usize)>; 2],
 }
 
 impl Terms {
-    /// The terms of the instances of `layout` whose blocks' entries, a `stride` apart, are
-    /// `[conductances, capacitances]`.
+    /// Extracts nonzero linear multiplication terms for `layout` across stamped block
+    /// `planes` spaced by `stride`.
     pub(super) fn from_layout(layout: &Layout, stride: usize, planes: [&[f64]; 2]) -> Self {
         let mut terms = Self::default();
         let claimed = layout.entries();
@@ -391,13 +387,12 @@ impl Terms {
         terms
     }
 
-    /// Writes the rows of one instance's block at `at` from its entries,
-    /// `[conductances, capacitances]`: each listed residual and charge the sum of its terms,
-    /// its entries times the local unknowns of their columns, from zero, in their order,
-    /// and each listed residual's scale its magnitude, as a kernel's [`Stamp`] keeps the
-    /// largest of the one term it adds; and adds each, when `into` is given, to its
-    /// unknown's there, through `at`'s map, as soon as it is written. Those on
-    /// ground, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
+    /// Computes linear residuals, scales, and charges for one instance at `at` from stamped
+    /// `[conductance, capacitance]` entries.
+    ///
+    /// Sums each row's active `entry * x[column]` products from `+0.0`, records the residual
+    /// magnitude as `scale` (matching [`Stamp`]), and optionally adds results to `into`.
+    /// Ground entries ([`UNMAPPED`](jolty_numerics::UNMAPPED)) are ignored.
     #[inline]
     pub(super) fn write(
         &self,
@@ -450,12 +445,11 @@ impl Terms {
     }
 }
 
-/// Copies the contributions to a long value of each instance of a chunk of a group, of
-/// `sizes` local unknowns and places for local entries each, from its block of `blocks`,
-/// as [`evaluate_chunk`] wrote it, zero for an instance not prepared, to its places among
-/// the chunk's `copies`: those of the locals `copied` lists, for the instances from
-/// `first` on. A group with no copies returns at once, inlined where it is called, so that
-/// a circuit with no long value pays for no pass over its blocks.
+/// Copies high-fanout contributions for a chunk of instances starting at `first` from
+/// `blocks` (written by [`evaluate_chunk`]) into `copies` according to `lists`.
+///
+/// Returns immediately when `lists` is empty so circuits without high-fanout targets skip
+/// the copy pass entirely.
 #[inline]
 pub(super) fn copy_long(
     sizes: (usize, usize),
@@ -469,7 +463,7 @@ pub(super) fn copy_long(
     }
 }
 
-/// [`copy_long`] of a group with copies: each instance's after another.
+/// Executes the non-empty copy pass for [`copy_long`] across each instance in sequence.
 #[inline(never)]
 fn copy_each(
     (unknowns, stride): (usize, usize),
@@ -488,8 +482,8 @@ fn copy_each(
     }
 }
 
-/// Adds `[conductance, capacitance]` values into their stored positions of `into`, given by
-/// `slots`, in order; positions of [`UNMAPPED`](jolty_numerics::UNMAPPED) go nowhere.
+/// Accumulates `[conductance, capacitance]` values into stored positions of `into` given by
+/// `slots`, ignoring [`UNMAPPED`](jolty_numerics::UNMAPPED) slots.
 pub(super) fn add_entries(
     into: &mut Contributions,
     slots: &[u32],
@@ -508,10 +502,8 @@ pub(super) fn add_entries(
     }
 }
 
-/// Adds one instance's block to `into`: each local unknown's residual, scale and charge to
-/// its unknown's of `map`, and each local entry's conductance and capacitance to its
-/// stored position of `slots`, in the order of their local indices; those on
-/// ground, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
+/// Accumulates one instance block into `into`, mapping local rows through `map` and local
+/// entries through `slots`, ignoring [`UNMAPPED`](jolty_numerics::UNMAPPED) ground targets.
 fn add(
     into: &mut Contributions,
     (map, slots): (&[u32], &[u32]),

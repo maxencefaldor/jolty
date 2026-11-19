@@ -1,7 +1,7 @@
-//! The JFET, derived from ngspice 47's implementation of it in
-//! `src/spicelib/devices/jfet/`:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! Junction field-effect transistor (JFET) kernel, derived from ngspice 47
+//! `src/spicelib/devices/jfet/`: Copyright 1985 - 2018, Regents of the University of
+//! California and others. Used under the ngspice Modified BSD license, reproduced in the
+//! repository `NOTICE` file.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,19 +23,19 @@ use crate::{
     ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
-/// The channel of a field-effect transistor.
+/// Channel polarity of a field-effect transistor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
-    /// An n-channel, conducting with its gate above its threshold.
+    /// N-channel device conducting with gate voltage above threshold.
     N,
-    /// A p-channel, the n-channel's mirror: every voltage and current reversed.
+    /// P-channel device with voltages and currents reversed relative to n-channel.
     P,
 }
 
 impl Channel {
-    /// `1` for an n-channel, `−1` for a p-channel: the factor that orients voltages and
-    /// currents as an n-channel's.
+    /// Returns `1.0` for an n-channel device or `-1.0` for a p-channel device to orient
+    /// voltages and currents into n-channel convention.
     #[must_use]
     pub const fn sign(self) -> f64 {
         match self {
@@ -45,28 +45,27 @@ impl Channel {
     }
 }
 
-/// A junction field-effect transistor, in the SPICE model with Sydney University's doping
-/// tail, as ngspice implements it.
+/// Junction field-effect transistor implementing the SPICE model with the Sydney University
+/// doping tail, matching ngspice.
 ///
-/// Two junctions join the gate to the channel, one at each end, each carrying a
-/// junction current and holding a depletion charge of grading ½. The
-/// drain current follows the square law, softened near the threshold by the doping tail
-/// `b`: with `vgst = vgs − vto` and `β' = β · (1 + λ · vds)`, it is
-/// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))` in saturation. The transistor is
-/// symmetric: with the drain below the source, the two swap. A drain or source resistance
-/// adds an internal node, labelled `drain` or `source`; one below
-/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
-/// labelled `drain_current` or `source_current`.
+/// Two pn junctions join the gate to the drain and source with grading coefficient `½`.
+/// Drain current follows a square law softened near threshold by doping tail `b`. With
+/// `vgst = vgs − vto` and `β' = β · (1 + λ · vds)`, saturation current equals
+/// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))`. The channel is symmetric and swaps
+/// drain and source when `vds < 0`. Positive drain or source resistance adds an internal
+/// node (`drain` or `source`), and resistance below
+/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) adds a branch-current unknown
+/// (`drain_current` or `source_current`).
 ///
-/// Away from its nominal temperature, its gate junctions' saturation current scales with
-/// the energy gap and their potential and capacitances with silicon's band gap; its
-/// threshold moves, and its transconductance parameter scales, by their own coefficients,
-/// as ngspice scales them.
+/// Away from nominal temperature, gate saturation current scales with the energy gap,
+/// junction potentials and capacitances scale with the silicon band gap, and threshold
+/// voltage and transconductance parameter scale with dedicated coefficients, matching
+/// ngspice.
 #[derive(Debug, Clone, Copy)]
 pub struct Jfet;
 
-/// Where a JFET's contributions go among its local unknowns: through its drain and source
-/// resistances, and among its gate and the drain and source behind them.
+/// Layout shape for [`Jfet`] storing drain and source series resistances plus the intrinsic
+/// gate, drain, and source node matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JfetShape {
     stamp: Nodes<STAMPED>,
@@ -74,14 +73,13 @@ pub struct JfetShape {
     source_series: Series,
 }
 
-/// A JFET's numbers at its temperature.
+/// Prepared JFET parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedJfet<R: Real> {
     sign: f64,
-    /// The drain and the source resistances' conductances, or each resistance where its
-    /// current is an unknown.
+    /// Stamp values for drain and source series resistances.
     series: [R; 2],
-    /// The thermal voltage at the transistor's temperature.
+    /// Thermal voltage at operating temperature.
     thermal_voltage: R,
     channel: DrainCurrent<R>,
     saturation_current: R,
@@ -92,35 +90,34 @@ pub struct PreparedJfet<R: Real> {
     flicker: Flicker,
 }
 
-/// What a JFET remembers.
+/// Persistent evaluation memory for [`Jfet`] storing previous gate-junction voltages and
+/// diagnostic variables.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JfetMemory {
-    /// The gate-source and gate-drain voltages of the last evaluation, from which the next
-    /// steps are limited.
+    /// Gate-source and gate-drain voltages from the last evaluation for step limiting.
     last: [f64; JUNCTIONS],
-    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    /// Values of [`VARIABLE_NAMES`] from the last evaluation.
     variables: [f64; 3],
 }
 
-/// The variables a JFET reports: its region among [`REGIONS`] and its margins.
+/// Diagnostic variable names reported by [`Jfet`]: operating region from [`REGIONS`] and
+/// boundary margins.
 const VARIABLE_NAMES: [&str; 3] = [REGION, OVERDRIVE, SATURATION_MARGIN];
 
-/// The regions of a JFET's channel, as `jfetload.c` switches between them, in the order of
-/// [`REGIONS`]' names.
+/// Operating regions of a JFET channel matching `jfetload.c` and the order of [`REGIONS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Region {
-    /// At or below its threshold, conducting nothing.
+    /// At or below threshold, conducting zero channel current.
     Off,
-    /// Above its threshold, with the drain below saturation.
+    /// Above threshold with drain voltage below saturation.
     Linear,
-    /// Above its threshold, with the drain past saturation.
+    /// Above threshold with drain voltage past saturation.
     Saturated,
 }
 
-/// The regions a JFET's equations distinguish, and its margins to their boundaries:
-/// `vgs − vto` and `vds − vdsat`, `vdsat` being `max(vgs − vto, 0)`, in an n-channel's sign
-/// as [`Regions::margins`] are, with the drain and the source swapped where the drain lies
-/// below the source, as the equations swap them.
+/// Operating-region metadata for [`Jfet`] reporting `vgs − vto` and `vds − vdsat`
+/// (`vdsat = max(vgs − vto, 0)`) in n-channel sign convention per [`Regions::margins`],
+/// swapping drain and source when `vds < 0`.
 const REGIONS: Regions = Regions {
     names: &["off", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -132,93 +129,88 @@ const GATE: usize = 0;
 const INNER_DRAIN: usize = 1;
 const INNER_SOURCE: usize = 2;
 
-/// The number of stamped nodes.
+/// Number of stamped nodes.
 const STAMPED: usize = 3;
 
-/// The number of voltages the transistor's equations take as variables.
+/// Number of controlling branch voltages in the JFET equations.
 const VARIABLE_COUNT: usize = 3;
 
-/// The number of those voltages, the first, across the gate junctions, whose steps are
-/// limited.
+/// Number of leading controlling voltages (the two gate junctions) subject to step limiting.
 const JUNCTIONS: usize = 2;
 
-/// The pairs of stamped nodes across which the variables lie: the gate-source and the
-/// gate-drain junctions, and the channel, from the drain to the source.
+/// Stamped node pairs for the three controlling voltages: gate-source, gate-drain, and
+/// drain-source.
 const VARIABLES: [(usize, usize); VARIABLE_COUNT] = [GATE_SOURCE, GATE_DRAIN, DRAIN_SOURCE];
 const GATE_SOURCE: (usize, usize) = (GATE, INNER_SOURCE);
 const GATE_DRAIN: (usize, usize) = (GATE, INNER_DRAIN);
 const DRAIN_SOURCE: (usize, usize) = (INNER_DRAIN, INNER_SOURCE);
 
-/// The variables' positions among [`VARIABLES`], by SPICE's names.
+/// Variable positions in [`VARIABLES`], using SPICE names.
 const VGS: usize = 0;
 const VGD: usize = 1;
 const VDS: usize = 2;
 
-/// The variables the channel's law reads, by their positions among [`VARIABLES`], in the
-/// order its numbers carry their derivatives: the gate-source voltage, then the
+/// Subset of [`VARIABLES`] read by the channel current law: gate-source voltage followed by
 /// drain-source voltage.
 const CHANNEL: [usize; 2] = [VGS, VDS];
 
-/// The parameters of a [`Jfet`], with SPICE's defaults.
+/// Parameters for [`Jfet`], with SPICE defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct JfetParameters<R: Real = f64> {
-    /// The channel; default `n`.
+    /// Channel polarity; default `n`.
     pub channel: Channel,
-    /// The threshold voltage, `vto`, in volts; default −2.
+    /// Threshold voltage `vto`, in volts; default −2.
     #[dimension(VOLTAGE)]
     pub threshold_voltage: R,
-    /// The transconductance parameter, `β`, in amperes per square volt; default 1e-4.
+    /// Transconductance parameter `β`, in amperes per square volt; default 1e-4.
     #[dimension(TRANSCONDUCTANCE_PARAMETER)]
     pub transconductance_parameter: R,
-    /// The channel-length modulation, `λ`, per volt; default 0.
+    /// Channel-length modulation `λ`, per volt; default 0.
     #[dimension(PER_VOLT)]
     pub channel_length_modulation: R,
-    /// The drain resistance, in ohms; default 0.
+    /// Drain series resistance, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub drain_resistance: R,
-    /// The source resistance, in ohms; default 0.
+    /// Source series resistance, in ohms; default 0.
     #[dimension(RESISTANCE)]
     pub source_resistance: R,
-    /// The zero-bias gate-source capacitance, in farads; default 0.
+    /// Zero-bias gate-source capacitance, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub gate_source_capacitance: R,
-    /// The zero-bias gate-drain capacitance, in farads; default 0.
+    /// Zero-bias gate-drain capacitance, in farads; default 0.
     #[dimension(CAPACITANCE)]
     pub gate_drain_capacitance: R,
-    /// The gate junctions' potential, `pb`, in volts; default 1.
+    /// Gate junction built-in potential `pb`, in volts; default 1.
     #[dimension(VOLTAGE)]
     pub junction_potential: R,
-    /// The gate junctions' saturation current, in amperes; default 1e-14.
+    /// Gate junction saturation current, in amperes; default 1e-14.
     #[dimension(CURRENT)]
     pub saturation_current: R,
-    /// The fraction of the junction potential above which the depletion capacitance is
-    /// extended linearly, below 1; default 0.5.
+    /// Fraction of junction potential above which depletion capacitance extends linearly;
+    /// below 1; default 0.5.
     pub depletion_coefficient: R,
-    /// The doping tail, `b`: 1 for the plain square law; default 1.
+    /// Doping tail parameter `b` (`1` gives the plain square law); default 1.
     pub doping_tail: R,
-    /// How fast the threshold voltage rises with temperature, in volts per kelvin;
-    /// default 0.
+    /// Linear threshold voltage temperature coefficient, in volts per kelvin; default 0.
     #[dimension(VOLTS_PER_KELVIN)]
     pub threshold_voltage_temperature_coefficient: R,
-    /// The exponent of the temperature ratio that scales the transconductance parameter;
-    /// default 0.
+    /// Temperature-ratio exponent scaling the transconductance parameter; default 0.
     pub transconductance_parameter_temperature_exponent: R,
-    /// The energy gap that scales the saturation current with temperature, in volts;
-    /// default 1.11, silicon's.
+    /// Energy gap scaling saturation current with temperature, in volts; default 1.11
+    /// (silicon).
     #[dimension(VOLTAGE)]
     pub energy_gap: R,
-    /// The exponent of the temperature ratio in the saturation current's scaling; default
-    /// 0, as ngspice scales a JFET's by it only when it is given.
+    /// Temperature-ratio exponent scaling saturation current; default 0 (matching ngspice
+    /// JFET defaults).
     pub saturation_current_temperature_exponent: R,
-    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
-    /// noise.
+    /// Drain-current flicker noise coefficient `KF`; default 0 (no flicker noise).
     pub flicker_coefficient: R,
-    /// The power of the drain current in the flicker noise, `AF`; default 1.
+    /// Drain-current flicker noise exponent `AF`; default 1.
     pub flicker_exponent: R,
 }
 
@@ -248,21 +240,20 @@ impl<R: Real> Default for JfetParameters<R> {
     }
 }
 
-/// The drain current of the channel, as a function of the gate-source and drain-source
-/// voltages.
+/// Channel drain-current law as a function of gate-source and drain-source voltages.
 #[derive(Debug, Clone, Copy)]
 struct DrainCurrent<R: Real> {
     beta: R,
     threshold: R,
     lambda: R,
     tail: R,
-    /// `(1 − b) / (pb − vto)`.
+    /// Doping tail factor `(1 − b) / (pb − vto)`.
     tail_factor: R,
 }
 
 impl<R: Real> DrainCurrent<R> {
-    /// The channel's region at `vgs` and `vds`, and its margins `vgs − vto` and
-    /// `vds − vdsat`, with the drain at or above the source, the two swapped otherwise.
+    /// Determines the channel [`Region`] and boundary margins `[vgs − vto, vds − vdsat]` at
+    /// `vgs` and `vds`, swapping drain and source when `vds < 0`.
     fn region(&self, vgs: f64, vds: f64) -> (Region, [f64; 2]) {
         let (control, across) = if vds >= 0.0 {
             (vgs, vds)
@@ -280,8 +271,7 @@ impl<R: Real> DrainCurrent<R> {
         (region, [vgst, across - vgst.max(0.0)])
     }
 
-    /// The current from drain to source, a number of the channel's law, at `vgs` and
-    /// `vds`, in the channel's region there.
+    /// Evaluates drain-to-source channel current and derivatives at `vgs` and `vds`.
     fn evaluate(&self, vgs: Dual<R, 2>, vds: Dual<R, 2>) -> Dual<R, 2> {
         let Self {
             beta,
@@ -475,8 +465,8 @@ impl Kernel for Jfet {
         REGIONS
     }
 
-    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
-    /// the drain current's flicker noise, as SPICE models them.
+    /// Appends SPICE thermal noise for series resistances and the channel (`8kT·gm / 3`),
+    /// plus drain-current flicker noise.
     fn noise<R: Real>(
         shape: &JfetShape,
         prepared: &PreparedJfet<R>,
@@ -510,7 +500,7 @@ impl Kernel for Jfet {
     }
 }
 
-/// What a JFET's temperature sets.
+/// Temperature-scaled intrinsic JFET quantities computed during preparation.
 struct Scaled<R: Real> {
     thermal_voltage: R,
     channel: DrainCurrent<R>,
@@ -522,8 +512,8 @@ struct Scaled<R: Real> {
 }
 
 impl<R: Real> JfetParameters<R> {
-    /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
-    /// reads is checked.
+    /// Validates intrinsic parameters and computes temperature-scaled quantities at
+    /// `temperature`, in kelvins.
     fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
         let &Self {
             threshold_voltage,
@@ -603,7 +593,7 @@ impl<R: Real> JfetParameters<R> {
 }
 
 impl<R: Real> JfetParameters<R> {
-    /// The drain and source resistances, once each is checked.
+    /// Validates and returns the `[drain_resistance, source_resistance]` pair.
     fn series_resistances(&self) -> Result<[R; 2], ParameterError> {
         Ok([
             ParameterError::non_negative("drain_resistance", self.drain_resistance)?,
@@ -622,7 +612,8 @@ mod tests {
     };
 
     const CHARGED: &str = r#"{"gate_source_capacitance": 2e-12, "gate_drain_capacitance": 1e-12,
-        "channel_length_modulation": 0.02, "doping_tail": 0.8, "transconductance_parameter": 1e-3}"#;
+        "channel_length_modulation": 0.02, "doping_tail": 0.8,
+        "transconductance_parameter": 1e-3}"#;
 
     #[test]
     fn follows_the_square_law_in_saturation() {
@@ -633,11 +624,10 @@ mod tests {
         assert!((drain_current - 4e-3).abs() < 1e-12, "{drain_current}");
     }
 
-    /// A JFET is off at or below its threshold, linear with its drain within `vgs − vto`,
-    /// and saturated past it, the drain and the source swapping where the drain lies below;
-    /// its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which vanish where
-    /// `jfetload.c` switches, a p-channel's equal to an n-channel's at the voltages
-    /// reversed.
+    /// Verifies that [`Jfet`] classifies off, linear, and saturated regions with symmetric
+    /// drain/source swap and p-channel polarity inversion.
+    ///
+    /// Margins `vgs − vto` and `vds − max(vgs − vto, 0)` vanish at `jfetload.c` boundaries.
     #[test]
     fn reports_its_region_and_margins() {
         // The drain, the gate and the source, about the threshold of -2 V.
@@ -668,8 +658,8 @@ mod tests {
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges, in every region and in both modes.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across all operating regions and polarities.
         #[test]
         fn jacobians_match_finite_differences(
             drain in -4.0..4.0f64,
@@ -683,7 +673,10 @@ mod tests {
             };
             let sign = if p { -1.0 } else { 1.0 };
             assert_jacobians_match::<Jfet>(&parameters, &[sign * drain, sign * gate, 0.0]);
-            let resistive = parameters.replace('{', r#"{"drain_resistance": 50, "source_resistance": 20, "#);
+            let resistive = parameters.replace(
+                '{',
+                r#"{"drain_resistance": 50, "source_resistance": 20, "#,
+            );
             assert_jacobians_match::<Jfet>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * 0.9 * drain, sign * 0.01],

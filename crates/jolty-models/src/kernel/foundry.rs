@@ -1,9 +1,8 @@
-//! A foundry's transistor, which ngspice simulates with the foundry's own models.
+//! Placeholder transistor model for foundry PDK devices simulated externally by ngspice.
 //!
-//! The engine solves none: the device declares its terminals and branches, as a MOSFET's,
-//! so the structural checks read it, and an analysis of a circuit that holds one stops and
-//! names it. Its parameters name the process design kit and the kit's model, and give its
-//! size, which a netlist written for ngspice hands the kit's model.
+//! Structural checks inspect the MOSFET terminal and branch topology during elaboration,
+//! while native analyses reject circuits containing foundry instances. Instance parameters
+//! identify the PDK, model card name, and geometry forwarded to ngspice netlists.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -70,7 +69,7 @@ impl Kernel for FoundryMosfet {
         for (name, text) in [("pdk", &parameters.pdk), ("model", &parameters.model)] {
             if text.is_empty() {
                 return Err(ParameterError(format!(
-                    "{name} must name one, not be empty"
+                    "{name} is empty; expected a non-empty name"
                 )));
             }
         }
@@ -81,7 +80,7 @@ impl Kernel for FoundryMosfet {
             ("multiplier", parameters.multiplier),
         ] {
             if count == 0 {
-                return Err(ParameterError(format!("{name} must be at least 1, not 0")));
+                return Err(ParameterError(format!("{name} is at least 1, not 0")));
             }
         }
         Ok(())

@@ -1,13 +1,14 @@
-//! Logic devices, which an event scheduler simulates, and the elements that join them to the
-//! analog circuit.
+//! Event-driven logic devices and mixed-signal connect elements bridging logic and analog
+//! nets.
 //!
-//! A logic device reads the [`LogicLevel`]s of its input nets and drives its output nets to new
-//! levels after delays. Its pins join logic nets, which hold a level rather than a voltage,
-//! so the engine jumps from one change to the next instead of integrating. Where a logic pin
-//! joins an electrical net, the engine places a connect element between them: a
-//! [`ThresholdDetector`](crate::ThresholdDetector) turns the net's voltage into the level
-//! an input reads, and a [`LogicDriver`](crate::LogicDriver) turns an output's level into a voltage between the device's supply and
-//! ground.
+//! A logic device reads [`LogicLevel`] values on input nets and drives output nets to new
+//! levels after propagation delays. Logic pins attach to discrete logic nets so the event
+//! scheduler advances from transition to transition without numerical integration.
+//!
+//! When a logic pin connects to an electrical net, the engine inserts a connect element. A
+//! [`ThresholdDetector`](crate::ThresholdDetector) converts a net voltage into an input
+//! level, and a [`LogicDriver`](crate::LogicDriver) converts an output level into a voltage
+//! between supply and ground.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -40,13 +41,13 @@ pub enum LogicLevel {
 }
 
 impl LogicLevel {
-    /// The level of `bit`.
+    /// Converts boolean `bit` to [`LogicLevel::High`] (`true`) or [`LogicLevel::Low`] (`false`).
     #[must_use]
     pub const fn from_bool(bit: bool) -> Self {
         if bit { Self::High } else { Self::Low }
     }
 
-    /// The fraction of the supply a driver outputs at the level: 0, 1, or one half for
+    /// Returns the supply voltage fraction driven for `self`: `0.0`, `1.0`, or `0.5` for
     /// [`LogicLevel::Unknown`].
     #[must_use]
     pub const fn fraction(self) -> f64 {
@@ -57,8 +58,8 @@ impl LogicLevel {
         }
     }
 
-    /// The level of a net whose drivers drive `levels`: theirs if they all agree, and
-    /// [`LogicLevel::Unknown`] if they disagree or there are none.
+    /// Resolves multiple driver `levels` on one net, returning the shared level if all agree
+    /// or [`LogicLevel::Unknown`] if drivers conflict or none exist.
     #[must_use]
     pub fn resolve(levels: impl IntoIterator<Item = Self>) -> Self {
         let mut levels = levels.into_iter();
@@ -95,98 +96,94 @@ pub struct Change<'a> {
     pub slew: f64,
 }
 
-/// When an output reaches its new level, and how fast it moves.
+/// Output propagation delay and edge transition time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timing {
-    /// The time from the input's change to the output's, in seconds, each measured where it
-    /// crosses half the supply.
+    /// Delay from the input crossing to the output crossing at half supply, in seconds.
     pub delay: f64,
-    /// The output's transition: the time its edge takes to swing from ground to supply, in
-    /// seconds.
+    /// Output edge transition time from ground to supply, in seconds.
     pub transition: f64,
 }
 
-/// A change a logic device makes on its own, such as a source's.
+/// Autonomous output transition scheduled by a logic device, such as a stimulus source.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stimulus {
-    /// When the output reaches its new level, in seconds.
+    /// Timestamp when the output reaches the new level, in seconds.
     pub time: f64,
-    /// The output that changes.
+    /// Index of the changing output pin.
     pub output: usize,
-    /// The new level.
+    /// Target logic level.
     pub level: LogicLevel,
-    /// The output's transition, in seconds.
+    /// Output edge transition time, in seconds.
     pub transition: f64,
 }
 
-/// One placed logic device.
+/// Placed event-driven logic device.
 pub trait Logic: fmt::Debug + Send + Sync {
-    /// The device's pins.
+    /// Returns the logic and optional electrical pin declarations of the device.
     fn pins(&self) -> Pins;
 
-    /// Writes the levels the outputs settle at when the inputs hold `inputs`.
+    /// Evaluates steady-state output `levels` for the given `inputs`.
     fn levels(&self, inputs: &[LogicLevel], outputs: &mut [LogicLevel]);
 
-    /// When and how fast `output` reaches `level` after `change`, while driving a load of
-    /// `load` farads.
+    /// Computes propagation delay and transition time for `output` reaching `level` after
+    /// `change` while driving `load` farads.
     fn timing(&self, change: &Change<'_>, output: usize, level: LogicLevel, load: f64) -> Timing;
 
-    /// Appends the changes the device makes on its own in `(0, stop]`, in time order.
+    /// Appends autonomous stimulus events scheduled within `(0, stop]` in chronological order.
     fn stimuli(&self, stop: f64, stimuli: &mut Vec<Stimulus>) {
         let _ = (stop, stimuli);
     }
 
-    /// The capacitance input `input` loads its net with, in farads.
+    /// Returns the input pin capacitance loading `input`, in farads.
     fn input_capacitance(&self, input: usize) -> f64 {
         let _ = input;
         0.0
     }
 
-    /// Where the device's timing holds, if anywhere less than everywhere: a characterized
-    /// cell's, where it was measured.
+    /// Returns the characterized slew and load validity domain, or `None` if unbounded.
     fn domain(&self) -> Option<&Domain> {
         None
     }
 }
 
-/// Where a logic device's timing holds: the ranges it was measured over.
+/// Measured slew, load, and supply validity ranges of a characterized logic device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Domain {
-    /// The least and the most input transition, in seconds.
+    /// Minimum and maximum input transition times, in seconds.
     pub slews: (f64, f64),
-    /// The least and the most output load, in farads.
+    /// Minimum and maximum output load capacitances, in farads.
     pub loads: (f64, f64),
-    /// The voltage from ground to supply it was measured at, if it was.
+    /// Supply voltage relative to ground at which tables were characterized, if known.
     pub supply: Option<f64>,
 }
 
-/// How a logic device's pins may join electrical nets: through connect elements between the
-/// device's supply and ground terminals.
+/// Mixed-signal electrical interface configuration for connect elements bridging logic pins
+/// to analog nets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Electrical {
-    /// The fraction of the supply, from ground, at which an input switches.
+    /// Switching threshold as a fraction of supply voltage above ground.
     pub threshold: f64,
-    /// The name of the supply terminal.
+    /// Name of the supply terminal.
     pub supply: String,
-    /// The name of the ground terminal.
+    /// Name of the ground terminal.
     pub ground: String,
 }
 
-/// The pins of a logic device: its inputs and outputs, which join logic nets, and whether it
-/// has the electrical terminals that let them join electrical nets.
+/// Input, output, and optional electrical power pins declared by a logic device.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pins {
-    /// The inputs' names, in the order [`Logic::levels`] reads them.
+    /// Input pin names in the order read by [`Logic::levels`].
     pub inputs: Vec<String>,
-    /// The outputs' names, in the order [`Logic::levels`] writes them.
+    /// Output pin names in the order written by [`Logic::levels`].
     pub outputs: Vec<String>,
-    /// With them, the device's supply and ground terminals too.
+    /// Optional electrical interface adding supply and ground terminals.
     pub electrical: Option<Electrical>,
 }
 
 impl Pins {
-    /// The names of every pin and terminal, inputs first, then outputs, then the supply
-    /// and the ground if the device has them.
+    /// Returns all pin and terminal names in order: inputs, outputs, then optional supply
+    /// and ground terminals.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
         let terminals = self
@@ -202,23 +199,23 @@ impl Pins {
     }
 }
 
-/// A kind of logic device: its name, its parameters, and how to make one from them.
+/// Logic model factory providing the model name, parameter schema, and device instantiation.
 pub trait LogicModel: Send + Sync {
-    /// The name circuits refer to the model by, such as `logic_cell`.
+    /// Returns the model name used in circuit definitions, such as `logic_cell`.
     fn name(&self) -> &'static str;
 
-    /// Reads `parameters` and makes a device, which tells its pins.
+    /// Parses `parameters` and constructs a logic device instance.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when a parameter is missing, unknown or out of range.
+    /// Returns [`ParameterError`] when a parameter is missing, unknown, or out of range.
     fn instantiate(&self, parameters: &Parameters) -> Result<Box<dyn Logic>, ParameterError>;
 
-    /// Every parameter a device of the model takes, with its type, its default and its
-    /// description, as a JSON schema of an object, every type within it written in place.
+    /// Returns the JSON schema describing all parameters of the model with types, defaults,
+    /// and descriptions inlined.
     fn schema(&self) -> Schema;
 
-    /// `parameters` as the model takes them: each one left out, written with its default.
+    /// Returns `parameters` normalized with all omitted parameters populated from defaults.
     ///
     /// # Errors
     ///
@@ -226,14 +223,14 @@ pub trait LogicModel: Send + Sync {
     fn defaulted(&self, parameters: &Parameters) -> Result<Parameters, ParameterError>;
 }
 
-/// A logic device implemented in Rust, whose parameters deserialize into a typed struct.
+/// Native Rust logic device whose parameters deserialize into a strongly typed struct.
 pub trait NativeLogic: Logic + Sized + 'static {
-    /// The model's name.
+    /// Model name registered in the library.
     const NAME: &'static str;
-    /// The parameters, deserialized from the instance's parameter map.
+    /// Deserialized parameter struct type.
     type Parameters: DeserializeOwned + Serialize + JsonSchema;
 
-    /// Checks `parameters` and makes the device.
+    /// Validates `parameters` and constructs the logic device.
     ///
     /// # Errors
     ///
@@ -241,11 +238,11 @@ pub trait NativeLogic: Logic + Sized + 'static {
     fn new(parameters: Self::Parameters) -> Result<Self, ParameterError>;
 }
 
-/// The [`LogicModel`] of a [`NativeLogic`] device.
+/// [`LogicModel`] adapter wrapping a [`NativeLogic`] device type.
 pub struct NativeLogicModel<D>(PhantomData<fn() -> D>);
 
 impl<D: NativeLogic> NativeLogicModel<D> {
-    /// The model of `D`.
+    /// Creates a logic model adapter for device type `D`.
     #[must_use]
     pub fn new() -> Self {
         Self(PhantomData)
@@ -342,30 +339,29 @@ pub struct CharacterizedTiming {
     pub supply: Option<f64>,
 }
 
-/// How a logic cell's outputs follow its inputs in time.
+/// Timing specification controlling how logic cell outputs follow input changes.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TimingParameters {
-    /// The same delays after any input changes, whatever the load.
+    /// Constant rise, fall, and transition times independent of load.
     Fixed(FixedTiming),
-    /// Delays and transitions that depend on the arc, the input transition and the load.
+    /// Lookup-table delays and transitions indexed by arc, input slew, and output load.
     Characterized(CharacterizedTiming),
 }
 
-/// How a logic cell's pins cross to electrical nets.
+/// Electrical interface parameters for connecting logic cell pins to analog nets.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ElectricalParameters {
-    /// The fraction of the supply, from ground, at which an input switches; one half unless
-    /// given.
+    /// Switching threshold as a fraction of supply above ground; defaults to `0.5`.
     #[serde(default = "half")]
     pub threshold: f64,
-    /// The capacitance of each input, in farads, in the order of the inputs.
+    /// Input pin capacitances, in farads, ordered to match `inputs`.
     pub input_capacitances: Vec<f64>,
-    /// The name of the supply terminal; `supply` unless given.
+    /// Name of the supply terminal; defaults to `supply`.
     #[serde(default = "supply")]
     pub supply: String,
-    /// The name of the ground terminal; `ground` unless given.
+    /// Name of the ground terminal; defaults to `ground`.
     #[serde(default = "ground")]
     pub ground: String,
 }
@@ -382,18 +378,18 @@ fn ground() -> String {
     "ground".to_owned()
 }
 
-/// The parameters of a logic cell.
+/// Parameters defining a combinational logic cell.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogicCellParameters {
-    /// The inputs' names, in the order of the truth tables' bits.
+    /// Input pin names ordered to match truth-table bit positions.
     pub inputs: Vec<String>,
-    /// The outputs, each with its truth table.
+    /// Output pins paired with their truth tables.
     pub outputs: Vec<OutputParameters>,
-    /// How the outputs follow the inputs in time.
+    /// Propagation timing specification for the cell outputs.
     pub timing: TimingParameters,
-    /// With them, the cell has terminals `supply` and `ground`, and its pins may join
-    /// electrical nets.
+    /// Optional electrical interface enabling analog connections through supply and ground
+    /// terminals.
     #[serde(default)]
     pub electrical: Option<ElectricalParameters>,
 }
@@ -470,14 +466,18 @@ impl Tables {
             let input = position(&pins.inputs, &arc.input, "input")?;
             let output = position(&pins.outputs, &arc.output, "output")?;
             let count = pins.inputs.len();
-            let row = (arc.before.len() == count && arc.before.chars().all(|bit| matches!(bit, '0' | '1')))
+            let row = (arc.before.len() == count
+                && arc.before.chars().all(|bit| matches!(bit, '0' | '1')))
                 .then(|| usize::from_str_radix(&arc.before, 2).ok())
                 .flatten()
                 .or_else(|| (count == 0 && arc.before.is_empty()).then_some(0))
-                .ok_or_else(|| ParameterError(format!(
-                    "an arc's levels before its change are a 0 or a 1 for each of the {count} inputs, not {:?}",
-                    arc.before
-                )))?;
+                .ok_or_else(|| {
+                    ParameterError(format!(
+                        "an arc's levels before its change are a 0 or a 1 for each of the \
+                         {count} inputs, not {:?}",
+                        arc.before
+                    ))
+                })?;
             let after = row ^ (1 << (count - 1 - input));
             let table = &tables[output];
             if table[row] == table[after] {
@@ -525,8 +525,7 @@ impl Tables {
         })
     }
 
-    /// The timing of `arc` at `slew` and `load`, interpolated between the tables' points
-    /// and held at their edges.
+    /// Interpolates the timing of `arc` at `slew` and `load`, clamping outside table bounds.
     fn at(&self, arc: &Arc, slew: f64, load: f64) -> Timing {
         Timing {
             delay: interpolate(&self.slews, &self.loads, &arc.delay, slew, load),
@@ -534,9 +533,11 @@ impl Tables {
         }
     }
 
-    /// The timing of `output` reaching `level` after `change`. A change from inputs some of
-    /// which are unknown has no arc of its own, and takes the earliest of the output's arcs
-    /// that reach the level, or of all its arcs for an unknown level.
+    /// Computes timing for `output` reaching `level` after `change`.
+    ///
+    /// Transitions starting from unknown inputs have no dedicated arc and select the earliest
+    /// matching output arc reaching `level`, or the earliest arc for `output` when `level` is
+    /// unknown.
     fn timing(&self, change: &Change<'_>, output: usize, level: LogicLevel, load: f64) -> Timing {
         let count = change.before.len();
         let row = change
@@ -565,8 +566,8 @@ impl Tables {
     }
 }
 
-/// The value of `table`, one row per `rows` point and one column per `columns` point, at
-/// `(row, column)`: linear between the points, and held beyond the first and the last.
+/// Interpolates `table` (indexed by `rows` and `columns`) bilinearly at `(row, column)`,
+/// clamping to edge values outside the grid.
 fn interpolate(rows: &[f64], columns: &[f64], table: &[Vec<f64>], row: f64, column: f64) -> f64 {
     let (r, rf) = bracket(rows, row);
     let (c, cf) = bracket(columns, column);
@@ -578,8 +579,8 @@ fn interpolate(rows: &[f64], columns: &[f64], table: &[Vec<f64>], row: f64, colu
     low + (high - low) * rf
 }
 
-/// The point of `points` at or below `value`, and the fraction of the way to the next, held
-/// to the points' span.
+/// Locates the index in `points` at or below `value` and returns the interpolation fraction
+/// toward the next point, clamped to grid bounds.
 fn bracket(points: &[f64], value: f64) -> (usize, f64) {
     let last = points.len() - 1;
     if last == 0 || value <= points[0] {
@@ -596,8 +597,8 @@ fn bracket(points: &[f64], value: f64) -> (usize, f64) {
 }
 
 impl LogicCell {
-    /// The level of `table` at `inputs`, known only if every level the unknown inputs could
-    /// take gives the same.
+    /// Evaluates truth `table` for `inputs`, returning a known level only when every possible
+    /// assignment to unknown inputs agrees.
     fn level(table: &[bool], inputs: &[LogicLevel]) -> LogicLevel {
         let count = inputs.len();
         let mut known = 0;
@@ -928,7 +929,8 @@ mod tests {
                 format!(
                     r#"{{"inputs": ["a"], "outputs": [{{"name": "y", "table": "011"}}], {timing}}}"#
                 ),
-                "the table of output y has a 0 or a 1 for each of the 2 rows of 1 inputs, not \"011\"",
+                "the table of output y has a 0 or a 1 for each of the 2 rows of 1 inputs, \
+                 not \"011\"",
             ),
             (
                 format!(r#"{{"inputs": ["a"], "outputs": [], {timing}}}"#),
@@ -971,8 +973,8 @@ mod tests {
         assert_close(&[cell.input_capacitance(0)], &[2e-15]);
     }
 
-    /// An inverter characterized at two transitions and two loads: each delay grows by a
-    /// picosecond per femtofarad and by a tenth of the input's transition.
+    /// Builds an inverter characterized over two slews and two loads whose delay increases by
+    /// 1 ps/fF and 0.1 times the input transition.
     fn characterized() -> LogicCell {
         cell(
             r#"{"inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
@@ -1039,7 +1041,8 @@ mod tests {
         for (parameters, message) in [
             (
                 arc("2", "[[1e-11]]"),
-                "an arc's levels before its change are a 0 or a 1 for each of the 1 inputs, not \"2\"",
+                "an arc's levels before its change are a 0 or a 1 for each of the 1 inputs, \
+                 not \"2\"",
             ),
             (
                 arc("0", "[[1e-11, 2e-11]]"),

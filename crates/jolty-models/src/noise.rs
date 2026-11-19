@@ -1,30 +1,31 @@
-//! The noise devices make: random excitations of the circuit's equations, each with its
-//! one-sided power spectral density, as SPICE models them.
+//! Random noise excitations contributed by devices to the circuit equations, specified by
+//! one-sided power spectral density following SPICE conventions.
 
 use crate::{BOLTZMANN, ELEMENTARY_CHARGE, Node, ParameterError, Real, UnknownIndex};
 
-/// A random excitation of the circuit's equations, whose one-sided power spectral density
-/// is `white + flicker / f^exponent` at the frequency `f`: a current between two nodes, in
-/// A²/Hz, or a voltage in series with a branch whose current is an unknown, in V²/Hz.
+/// Random circuit excitation with one-sided power spectral density
+/// `white + flicker / f^exponent` at frequency `f`.
+///
+/// Represents either a noise current between two nodes (A²/Hz) or a series noise voltage on
+/// a branch with an unknown current (V²/Hz).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoiseSource {
-    /// What makes the noise, such as `thermal` or `collector shot`.
+    /// Physical mechanism producing the noise, such as `thermal` or `collector shot`.
     pub name: &'static str,
-    /// The equations the excitation enters, positively and negatively: those of the nodes
-    /// a current flows from and to, or a branch's own and none for a voltage in series
-    /// with it.
+    /// Equation pair receiving the positive and negative excitation stamps: two node
+    /// equations for a current source, or `[Some(branch), None]` for a series voltage source.
     pub equations: [Node; 2],
-    /// The density that does not change with frequency.
+    /// Frequency-independent white noise spectral density.
     pub white: f64,
-    /// The flicker density at 1 Hz.
+    /// Flicker noise spectral density at 1 Hz.
     pub flicker: f64,
-    /// The power of the frequency the flicker density falls with.
+    /// Frequency roll-off exponent of the flicker noise component.
     pub exponent: f64,
 }
 
 impl NoiseSource {
-    /// The thermal noise current of a `conductance` between `nodes` at `temperature`, in
-    /// kelvins: `4kT·g`.
+    /// Creates a thermal noise current source `4kT·g` for `conductance` across `nodes` at
+    /// `temperature` in kelvins.
     #[must_use]
     pub fn thermal(
         name: &'static str,
@@ -39,9 +40,8 @@ impl NoiseSource {
         )
     }
 
-    /// The thermal noise voltage of a `resistance` whose current is the unknown `branch`,
-    /// at `temperature`, in kelvins: `4kT·r`, in series with the branch, so that a short
-    /// makes none.
+    /// Creates a series thermal noise voltage source `4kT·r` on `branch` for `resistance` at
+    /// `temperature` in kelvins, producing zero noise for a short circuit.
     #[must_use]
     pub fn thermal_in_series(
         name: &'static str,
@@ -56,14 +56,14 @@ impl NoiseSource {
         )
     }
 
-    /// The shot noise of a `current` crossing a junction: `2q·|I|`.
+    /// Creates a junction shot noise current source `2q·|I|` for `current` across `nodes`.
     #[must_use]
     pub fn shot(name: &'static str, nodes: [Node; 2], current: f64) -> Self {
         Self::white(name, nodes, 2.0 * ELEMENTARY_CHARGE * current.abs())
     }
 
-    /// The flicker noise of a `current`: `coefficient · |I|^power / f`, as SPICE's `KF` and
-    /// `AF` give it.
+    /// Creates a SPICE `KF`/`AF` flicker noise current source `coefficient · |I|^power / f`
+    /// across `nodes`.
     #[must_use]
     pub fn flicker(
         name: &'static str,
@@ -81,7 +81,7 @@ impl NoiseSource {
         }
     }
 
-    /// A source of `density` at every frequency, entering `equations`.
+    /// Creates a white noise source with constant spectral `density` stamped into `equations`.
     #[must_use]
     pub fn white(name: &'static str, equations: [Node; 2], density: f64) -> Self {
         Self {
@@ -93,8 +93,8 @@ impl NoiseSource {
         }
     }
 
-    /// The density at `frequency`, in A²/Hz; the frequency must be positive where the
-    /// source flickers.
+    /// Evaluates the one-sided power spectral density at `frequency` (which is positive for
+    /// sources with nonzero flicker).
     #[must_use]
     pub fn density(&self, frequency: f64) -> f64 {
         if self.flicker == 0.0 {
@@ -105,8 +105,7 @@ impl NoiseSource {
     }
 }
 
-/// SPICE's flicker noise of a device's current: its coefficient, `KF`, and the power of
-/// the current, `AF`.
+/// SPICE current flicker noise parameters: coefficient `KF` and current exponent `AF`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Flicker {
     coefficient: f64,
@@ -114,7 +113,8 @@ pub(crate) struct Flicker {
 }
 
 impl Flicker {
-    /// The flicker noise of `coefficient` and `power`, checked as SPICE reads them.
+    /// Validates and constructs flicker noise parameters from `coefficient` (`KF`) and
+    /// `power` (`AF`).
     pub(crate) fn new<R: Real>(coefficient: R, power: R) -> Result<Self, ParameterError> {
         ParameterError::non_negative("flicker_coefficient", coefficient)?;
         ParameterError::positive("flicker_exponent", power)?;
@@ -124,7 +124,7 @@ impl Flicker {
         })
     }
 
-    /// The same noise, its coefficient multiplied by `factor`.
+    /// Returns a copy with the flicker coefficient multiplied by `factor`.
     pub(crate) fn scaled(self, factor: f64) -> Self {
         Self {
             coefficient: self.coefficient * factor,

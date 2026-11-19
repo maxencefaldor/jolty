@@ -9,17 +9,17 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use crate::Real;
 
-/// A value and its derivatives with respect to `N` variables.
+/// Scalar value paired with its first derivatives with respect to `N` independent variables.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dual<R: Real, const N: usize> {
-    /// The value.
+    /// Primal value.
     pub value: R,
-    /// Its derivative with respect to each variable.
+    /// Partial derivatives with respect to each variable.
     pub gradient: [R; N],
 }
 
 impl<R: Real, const N: usize> Dual<R, N> {
-    /// A constant, whose derivatives are all zero.
+    /// Creates a constant dual number with zero gradient.
     #[must_use]
     pub fn constant(value: R) -> Self {
         Self {
@@ -28,14 +28,14 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The constant `value`, a plain number.
+    /// Creates a constant dual number from plain `f64` scalar `value`.
     #[must_use]
     pub fn number(value: f64) -> Self {
         Self::constant(R::constant(value))
     }
 
-    /// The `N` variables at `values`, each the derivative of itself only, and each moving
-    /// as its value does when a twin seeds the unknowns it reads.
+    /// Constructs `N` independent dual variables initialized from `values`, each with unit
+    /// self-derivative and propagating any underlying unknown seeds in `R`.
     #[must_use]
     pub fn variables(values: [R; N]) -> [Self; N] {
         let mut variables = values.map(Self::constant);
@@ -47,7 +47,7 @@ impl<R: Real, const N: usize> Dual<R, N> {
         variables
     }
 
-    /// `f(self)`, given `f`'s value and derivative at `self`.
+    /// Applies the chain rule to `self` given output `value` and scalar derivative `slope`.
     #[must_use]
     pub fn chain(self, (value, slope): (R, R)) -> Self {
         Self {
@@ -56,9 +56,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// `function(self)`, for a function of one variable, computed at the width of that one
-    /// alone and chained into the derivatives with respect to every variable: how a law
-    /// of one number, however long, joins a law of more at the cost of one derivative.
+    /// Evaluates univariate `function` on a width-1 dual number and chains its slope into all
+    /// `N` gradient lanes of `self`.
     pub(crate) fn apply(self, function: impl FnOnce(Dual<R, 1>) -> Dual<R, 1>) -> Self {
         let Dual {
             value,
@@ -70,58 +69,57 @@ impl<R: Real, const N: usize> Dual<R, N> {
         self.chain((value, slope))
     }
 
-    /// `e` raised to the value.
+    /// Computes `e^self`.
     #[must_use]
     pub fn exp(self) -> Self {
         let exponential = self.value.exp();
         self.chain((exponential, exponential))
     }
 
-    /// The natural logarithm.
+    /// Computes the natural logarithm `ln(self)`.
     pub(crate) fn ln(self) -> Self {
         self.chain((self.value.ln(), self.value.recip()))
     }
 
-    /// `ln(1 + x)` of the value `x`, as [`Real::ln_1p`] computes it.
+    /// Computes `ln(1 + self)` accurately near zero using [`Real::ln_1p`].
     pub(crate) fn ln_1p(self) -> Self {
         self.chain((self.value.ln_1p(), (self.value + 1.0).recip()))
     }
 
-    /// `eˣ − 1` of the value `x`, as [`Real::exp_m1`] computes it.
+    /// Computes `e^self − 1` accurately near zero using [`Real::exp_m1`].
     pub(crate) fn exp_m1(self) -> Self {
         self.chain((self.value.exp_m1(), self.value.exp()))
     }
 
-    /// The value, which must be positive, raised to `exponent`, a number that the
-    /// variables do not move: the derivative, `exponent · value^exponent / value`, divides
-    /// the power by the value rather than raising the value again.
+    /// Raises positive `self` to a variable-independent `exponent`, reusing `value^exponent`
+    /// to compute the derivative `exponent · power / value` with one power call.
     pub(crate) fn pow(self, exponent: R) -> Self {
         let power = self.value.pow(exponent);
         self.chain((power, exponent * power / self.value))
     }
 
-    /// The reciprocal.
+    /// Computes the reciprocal `1 / self`.
     #[must_use]
     pub fn recip(self) -> Self {
         let reciprocal = self.value.recip();
         self.chain((reciprocal, -(reciprocal * reciprocal)))
     }
 
-    /// The square root.
+    /// Computes the square root `√self`.
     #[must_use]
     pub fn sqrt(self) -> Self {
         let root = self.value.sqrt();
         self.chain((root, R::constant(0.5) / root))
     }
 
-    /// The tangent.
+    /// Computes the tangent `tan(self)`.
     pub(crate) fn tan(self) -> Self {
         let tangent = self.value.tan();
         self.chain((tangent, tangent * tangent + 1.0))
     }
 
-    /// The larger of `self` and the constant `floor`: the floor itself, with no
-    /// derivatives, where `self` falls below it.
+    /// Returns the maximum of `self` and constant `floor`, returning constant `floor` with
+    /// zero gradient when `self` lies below `floor`.
     #[must_use]
     pub fn max(self, floor: f64) -> Self {
         if self.value.value() < floor {
@@ -131,7 +129,7 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The product with `factor`, a number that the variables do not move.
+    /// Scales `self` by variable-independent scalar `factor`.
     #[must_use]
     pub fn scale(self, factor: R) -> Self {
         Self {
@@ -140,9 +138,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The quotient by `divisor`, a number that the variables do not move: the value
-    /// divided, and the derivatives multiplied by the divisor's reciprocal, so that one
-    /// division serves them all.
+    /// Divides `self` by variable-independent scalar `divisor`, multiplying gradient lanes by
+    /// the reciprocal to share a single division.
     #[must_use]
     pub fn divide(self, divisor: R) -> Self {
         let reciprocal = divisor.recip();
@@ -152,7 +149,7 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The sum with `term`, a number that the variables do not move.
+    /// Adds variable-independent scalar `term` to `self` without changing the gradient.
     #[must_use]
     pub fn plus(self, term: R) -> Self {
         Self {
@@ -161,8 +158,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The value moved by the derivatives along `step`: how a value evaluated at limited
-    /// variables extends linearly to the applied ones.
+    /// Extends `self.value` linearly along `step` using the gradient (used to project
+    /// voltage-limited evaluations back to applied voltages).
     #[must_use]
     pub fn extend(&self, step: [f64; N]) -> R {
         self.value
@@ -175,10 +172,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
                 })
     }
 
-    /// The same number among `M` variables, each of its own `N` at its position among
-    /// them in `positions`, its derivative with respect to every other zero: how a law of
-    /// a few of a model's variables joins a law of more, so that each computes at the
-    /// width of the variables it reads. A position beyond the `M` variables is dropped.
+    /// Embeds an `N`-variable dual number into an `M`-variable dual number by placing each
+    /// derivative at the target lane in `positions` (ignoring out-of-range indices).
     #[must_use]
     pub fn embed<const M: usize>(self, positions: [usize; N]) -> Dual<R, M> {
         let mut gradient = [R::constant(0.0); M];
@@ -195,7 +190,7 @@ impl<R: Real, const N: usize> Dual<R, N> {
 }
 
 impl<R: Real> Dual<R, 1> {
-    /// The one variable at `value`, the derivative of itself.
+    /// Creates a single independent dual variable at `value` with unit derivative.
     #[must_use]
     pub fn variable(value: R) -> Self {
         Self {
@@ -336,7 +331,7 @@ mod tests {
         assert!((tangent.value - 6.0_f64.tan()).abs() < 1e-15);
         assert!((tangent.gradient[0] - 2.0 * secant_squared).abs() < 1e-14);
         assert!((tangent.gradient[1] - 3.0 * secant_squared).abs() < 1e-14);
-        // A function of one variable applied at its own width is the function composed.
+        // Applying a univariate function at width 1 matches direct composition.
         let product = x * y;
         assert_eq!(
             product.apply(|value| value * 2.0 + 1.0),

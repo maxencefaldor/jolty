@@ -1,7 +1,7 @@
-//! The MOSFET of levels 1 and 3, derived from ngspice 47's implementations of them in
-//! `src/spicelib/devices/mos1/` and `mos3/`:
-//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
-//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+//! SPICE Level 1 and Level 3 MOSFET kernel, derived from ngspice 47
+//! `src/spicelib/devices/mos1/` and `mos3/`: Copyright 1985 - 2018, Regents of the
+//! University of California and others. Used under the ngspice Modified BSD license,
+//! reproduced in the repository `NOTICE` file.
 
 mod semiempirical;
 
@@ -28,28 +28,28 @@ use crate::{
     Stamp,
 };
 
-/// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
-/// with which models are fitted, rather than CODATA's 8.8541878128e-12.
+/// Vacuum permittivity used by SPICE MOSFET models, in farads per meter (SPICE2 fitted
+/// constant rather than CODATA `8.8541878128e-12`).
 const VACUUM_PERMITTIVITY: f64 = 8.854_214_871e-12;
-/// The permittivity of silicon dioxide, in farads per meter.
+/// Silicon dioxide permittivity, in farads per meter.
 pub(crate) const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
-/// The permittivity of silicon, in farads per meter.
+/// Silicon permittivity, in farads per meter.
 const SILICON_PERMITTIVITY: f64 = 11.7 * VACUUM_PERMITTIVITY;
-/// Silicon's intrinsic carrier concentration at 300 K, per cubic meter.
+/// Silicon intrinsic carrier concentration at 300 K, per cubic meter.
 const INTRINSIC_CONCENTRATION: f64 = 1.45e16;
-/// The oxide thickness, in meters, SPICE takes where none is given: for a level 3
-/// transistor's process, and for any transistor's flicker noise.
+/// Default gate oxide thickness, in meters, used by SPICE Level 3 process calculations and
+/// MOSFET flicker noise when omitted.
 pub(crate) const DEFAULT_OXIDE_THICKNESS: f64 = 1e-7;
-/// The least saturation voltage Meyer's capacitances take, in volts.
+/// Minimum saturation voltage used by Meyer gate capacitances, in volts.
 const MEYER_SATURATION: f64 = 0.025;
 
-/// Which of SPICE's MOSFET models a transistor follows.
+/// SPICE MOSFET model level selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
 pub enum ModelLevel {
-    /// Level 1, Shichman and Hodges's square law.
+    /// Level 1, Shichman-Hodges square law.
     One,
-    /// Level 3, a semi-empirical law of short channels.
+    /// Level 3, semi-empirical short-channel model.
     Three,
 }
 
@@ -62,97 +62,86 @@ super::numbered_enum!(
     }
 );
 
-/// The material of a MOSFET's gate, which sets its work function.
+/// Gate electrode material determining work-function offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GateMaterial {
-    /// Polysilicon doped opposite to the substrate, as an n⁺ gate over a p substrate:
-    /// SPICE's `tpg = 1`.
+    /// Polysilicon doped opposite to the substrate (SPICE `tpg = 1`).
     OppositeDoping,
-    /// Polysilicon doped like the substrate: SPICE's `tpg = −1`.
+    /// Polysilicon doped like the substrate (SPICE `tpg = −1`).
     SameDoping,
-    /// Aluminum: SPICE's `tpg = 0`.
+    /// Aluminum gate (SPICE `tpg = 0`).
     Aluminum,
 }
 
-/// A metal-oxide-semiconductor field-effect transistor, in SPICE's level 1
-/// (Shichman-Hodges) or level 3 model with Meyer's gate capacitances, as ngspice
-/// implements them.
+/// Metal-oxide-semiconductor field-effect transistor implementing SPICE Level 1
+/// (Shichman-Hodges) and Level 3 with Meyer gate capacitances, matching ngspice.
 ///
-/// At level 1, the drain current follows the square law: with `vgst = vgs − von` and
-/// `β' = β · (1 + λ · vds)`, it is `β' · vgst² / 2` in saturation, where `vds ≥ vgst`, and
-/// `β' · vds · (vgst − vds / 2)` below it, with `β = kp · w / (l − 2 · ld)`. The threshold
-/// `von = vto + γ · (√(φ − vbs) − √φ)` rises as the source rises above the bulk. Level 3
-/// adds short and narrow channels' effects on the threshold, the drain's static feedback,
-/// the gate field's degradation of the mobility, carriers' velocity saturation, the
-/// channel's shortening in saturation, and weak inversion. The transistor is symmetric:
-/// with the drain below the source, the two swap.
+/// At Level 1, drain current follows the square law with `vgst = vgs − von`,
+/// `β = kp · w / (l − 2 · ld)`, and `β' = β · (1 + λ · vds)`. Saturation (`vds ≥ vgst`)
+/// gives `β' · vgst² / 2` and linear mode gives `β' · vds · (vgst − vds / 2)`, with
+/// threshold `von = vto + γ · (√(φ − vbs) − √φ)`. Level 3 adds short- and narrow-channel
+/// threshold shifts, static feedback, mobility degradation, velocity saturation,
+/// channel-length shortening, and weak inversion. The channel is symmetric and swaps drain
+/// and source when `vds < 0`.
 ///
-/// Two junctions join the bulk to the drain and the source, each carrying a
-/// junction current and holding a depletion charge, bottom and
-/// sidewall. The gate holds overlap charges against the source, the drain and the bulk,
-/// and, given an oxide thickness, Meyer's capacitances across the oxide. These depend on
-/// every terminal voltage and no charge yields them, so each carries a current
-/// `C(v) · dv/dt`, which follows an unknown of the transistor's own: the displacement
-/// current through the whole oxide, `Cox · dv/dt`, labelled `gate_source_displacement`,
-/// `gate_drain_displacement` or `gate_bulk_displacement`. A drain or source resistance adds
-/// an internal node, labelled `drain` or `source`; one below
-/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
-/// labelled `drain_current` or `source_current`.
+/// Bulk-drain and bulk-source junctions carry Shockley currents plus bottom and sidewall
+/// depletion charges. The gate carries overlap charges and, when an oxide thickness is
+/// active, Meyer capacitances across the oxide. Meyer capacitances are non-conservative, so
+/// each branch stamps `C(v) · dv/dt` via a dedicated displacement unknown `Cox · dv/dt`
+/// (`gate_source_displacement`, `gate_drain_displacement`, or `gate_bulk_displacement`).
+/// Positive drain or source resistance adds internal node `drain` or `source`, and
+/// resistance below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) adds `drain_current` or
+/// `source_current`.
 #[derive(Debug, Clone, Copy)]
 pub struct Mosfet;
 
-/// Where a transistor's contributions go among its local unknowns: through its drain and
-/// source resistances, among its gate, bulk and the drain and source behind the
-/// resistances, and through the displacements of its oxide, if it has one.
+/// Layout shape for [`Mosfet`] storing series resistances, intrinsic node matrix, and
+/// optional gate-oxide displacement unknowns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MosfetShape {
     stamp: Nodes<4>,
     drain_series: Series,
     source_series: Series,
-    /// The displacement currents towards the source, the drain and the bulk.
+    /// Gate-to-source, gate-to-drain, and gate-to-bulk displacement current unknowns.
     displacements: Option<[Displacement; 3]>,
 }
 
-/// A transistor's numbers at its temperature.
+/// Prepared MOSFET parameters at operating temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedMosfet<R: Real> {
     sign: f64,
-    /// The drain and the source resistances' conductances, or each resistance where its
-    /// current is an unknown.
+    /// Stamp values for drain and source series resistances.
     series: [R; 2],
     channel: Law<R>,
-    /// The bulk-drain and bulk-source junctions.
+    /// Bulk-drain and bulk-source junctions.
     junctions: [BulkJunction<R>; 2],
-    /// The gate-source, gate-drain and gate-bulk overlap capacitances.
+    /// Gate-source, gate-drain, and gate-bulk overlap capacitances.
     overlaps: [R; 3],
     oxide: Option<Oxide<R>>,
-    /// The threshold, signed as the channel conducts, from which the first step is limited.
+    /// Prepared threshold voltage in n-channel polarity used to seed the first step limit.
     threshold: f64,
     temperature: f64,
-    /// The flicker noise of the drain current: each copy's, of its share of the current
-    /// over its own gate's area and the oxide capacitance per area squared, summed over
-    /// the copies.
+    /// Drain-current flicker noise summed across parallel multiplier copies, scaled by
+    /// single-copy gate area and squared oxide capacitance per area.
     flicker: Flicker,
 }
 
-/// What a transistor remembers.
+/// Persistent evaluation memory for [`Mosfet`] storing previous bias voltages, threshold,
+/// and diagnostic variables.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MosfetMemory {
-    /// The gate-source, drain-source and bulk-source voltages of the last evaluation, from
-    /// which the next steps are limited.
+    /// Gate-source, drain-source, and bulk-source voltages from the last evaluation.
     last: [f64; 3],
-    /// The threshold of the last evaluation, signed as the channel conducts; before the
-    /// first, or since the transistor was prepared at another temperature, its prepared
-    /// one.
+    /// Last evaluated threshold in channel polarity, or `None` before the first evaluation
+    /// or after temperature re-preparation.
     threshold: Option<f64>,
-    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    /// Values of [`VARIABLE_NAMES`] from the last evaluation.
     variables: [f64; 8],
 }
 
-/// The variables a transistor reports: its threshold and saturation voltages, in its own
-/// polarity, Meyer's capacitances from the gate to the source, the drain and the bulk, and
-/// its region among [`REGIONS`] and its margins.
+/// Diagnostic variable names reported by [`Mosfet`]: threshold and saturation voltages (in
+/// device polarity), Meyer gate capacitances, operating region from [`REGIONS`], and margins.
 const VARIABLE_NAMES: [&str; 8] = [
     "threshold_voltage",
     "saturation_voltage",
@@ -164,25 +153,24 @@ const VARIABLE_NAMES: [&str; 8] = [
     SATURATION_MARGIN,
 ];
 
-/// The regions of a transistor's channel, as its level's equations switch between them
-/// (`mos1load.c`, `mos3load.c`), in the order of [`REGIONS`]' names.
+/// Operating regions of a MOSFET channel matching `mos1load.c` and `mos3load.c` in the
+/// order of [`REGIONS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Region {
-    /// At or below its threshold, conducting nothing.
+    /// At or below threshold, conducting zero channel current.
     Off,
-    /// Below its threshold at level 3 with fast surface states, its current falling
-    /// exponentially from the threshold's.
+    /// Below threshold at Level 3 with fast surface states, decaying exponentially from
+    /// threshold current.
     WeakInversion,
-    /// Above its threshold, with the drain below saturation.
+    /// Above threshold with drain voltage below saturation.
     Linear,
-    /// Above its threshold, with the drain at or past saturation.
+    /// Above threshold with drain voltage at or past saturation.
     Saturated,
 }
 
-/// The regions a transistor's equations distinguish, and its margins to their boundaries:
-/// `vgs − von` and `vds − vdsat`, in an n-channel's sign as [`Regions::margins`] are, with
-/// the drain and the source swapped where the drain lies below the source, as the
-/// equations swap them.
+/// Operating-region metadata for [`Mosfet`] reporting `vgs − von` and `vds − vdsat` in
+/// n-channel sign convention per [`Regions::margins`], swapping drain and source when
+/// `vds < 0`.
 const REGIONS: Regions = Regions {
     names: &["off", "weak_inversion", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -255,8 +243,8 @@ pub struct MosfetParameters<R: Real = f64> {
     /// derives; default 0.06.
     #[dimension(MOBILITY)]
     pub surface_mobility: R,
-    /// The substrate doping, `nsub`, per cubic meter, from which `vto`, `γ` and `φ` derive
-    /// unless given; default none. It needs an oxide thickness.
+    /// Substrate doping `nsub`, per cubic meter, used to derive `vto`, `γ`, and `φ` when
+    /// omitted (requires `oxide_thickness`); default none.
     #[dimension(LENGTH.pow(-3))]
     pub substrate_doping: Option<R>,
     /// The surface state density, `nss`, per square meter, which shifts a derived `vto`;
@@ -449,10 +437,10 @@ struct Process<R: Real> {
 }
 
 impl<R: Real> Process<R> {
-    /// The process parameters of a transistor of channel `sign` at `temperatures`, scaled
-    /// from the nominal temperature's as ngspice scales them: `kp` falls as `T^−1.5`, `φ`
-    /// follows silicon's band gap and intrinsic concentration, and `vto` moves with the
-    /// band gap and `φ`.
+    /// Scales process parameters for channel `sign` to `temperatures`, matching ngspice.
+    ///
+    /// Scales `kp` by `(T/Tn)^−1.5`, updates `φ` with the silicon band gap and intrinsic
+    /// concentration, and shifts `vto` with the band gap and `φ`.
     ///
     /// # Errors
     ///
@@ -483,8 +471,8 @@ impl<R: Real> Process<R> {
 }
 
 impl<R: Real> MosfetParameters<R> {
-    /// The process parameters, derived from the oxide thickness and the substrate doping
-    /// where not given, as SPICE derives them.
+    /// Resolves process parameters, deriving omitted values from oxide thickness and
+    /// substrate doping following SPICE rules.
     fn process(&self) -> Result<Process<R>, ParameterError> {
         let thickness = match self.level {
             ModelLevel::One => self.oxide_thickness,
@@ -543,7 +531,7 @@ impl<R: Real> MosfetParameters<R> {
         if doping.value() <= intrinsic.value() {
             let (doping, intrinsic) = (doping.value(), intrinsic.value());
             return Err(ParameterError(format!(
-                "substrate_doping must exceed silicon's intrinsic concentration, \
+                "substrate_doping exceeds silicon's intrinsic concentration, \
                  {intrinsic:e} per cubic meter, not {doping:?}"
             )));
         }
@@ -573,37 +561,38 @@ impl<R: Real> MosfetParameters<R> {
     }
 }
 
-/// The channel's square law, oriented as an n-channel's.
+/// Level 1 Shichman-Hodges square-law channel parameters in n-channel polarity.
 #[derive(Debug, Clone, Copy)]
 struct SquareLaw<R: Real> {
     beta: R,
     lambda: R,
     body_effect: R,
     surface_potential: R,
-    /// `√φ`.
+    /// Square root of surface potential, `√φ`.
     root_potential: R,
-    /// The threshold less the body effect at zero bias, `vto − γ · √φ`.
+    /// Zero-bias built-in threshold component `vto − γ · √φ`.
     built_in: R,
 }
 
-/// What the square law yields at one bias.
+/// Channel evaluation result at a single bias point.
 #[derive(Debug, Clone, Copy)]
 struct Conduction<R: Real> {
-    /// The current from drain to source.
+    /// Drain-to-source current.
     current: Dual<R, 3>,
-    /// The threshold, `von`.
+    /// Effective threshold voltage `von`.
     threshold: Dual<R, 3>,
-    /// The saturation voltage, `max(vgst, 0)`.
+    /// Saturation voltage `max(vgst, 0)`.
     saturation: Dual<R, 3>,
-    /// Whether the drain is at or above the source; otherwise the two swap.
+    /// Flag indicating forward mode (`vds >= 0`); when `false`, drain and source swap.
     forward: bool,
     region: Region,
-    /// `vgs − von` and `vds − vdsat`, with the drain at or above the source.
+    /// Boundary margins `[vgs − von, vds − vdsat]` in forward orientation.
     margins: [f64; 2],
 }
 
 impl<R: Real> SquareLaw<R> {
-    /// The drain current at the gate-source, drain-source and bulk-source voltages.
+    /// Evaluates Level 1 drain current, threshold, saturation voltage, and region at
+    /// `[vgs, vds, vbs]`.
     fn evaluate(&self, [vgs, vds, vbs]: [Dual<R, 3>; 3]) -> Conduction<R> {
         let forward = vds.value.value() >= 0.0;
         // With the drain below the source, the drain acts as the source.
@@ -646,7 +635,7 @@ impl<R: Real> SquareLaw<R> {
     }
 }
 
-/// The channel's law, of the transistor's level.
+/// Active channel current law selected by [`ModelLevel`].
 #[derive(Debug, Clone, Copy)]
 enum Law<R: Real> {
     SquareLaw(SquareLaw<R>),
@@ -654,7 +643,7 @@ enum Law<R: Real> {
 }
 
 impl<R: Real> Law<R> {
-    /// The drain current at the gate-source, drain-source and bulk-source voltages.
+    /// Evaluates drain current, threshold, saturation voltage, and region at `voltages`.
     fn evaluate(&self, voltages: [Dual<R, 3>; 3]) -> Conduction<R> {
         match self {
             Self::SquareLaw(law) => law.evaluate(voltages),
@@ -663,11 +652,11 @@ impl<R: Real> Law<R> {
     }
 }
 
-/// A junction between the bulk and the drain or the source.
+/// Bulk-drain or bulk-source pn junction.
 #[derive(Debug, Clone, Copy)]
 struct BulkJunction<R: Real> {
     saturation_current: R,
-    /// The thermal voltage at the transistor's temperature.
+    /// Thermal voltage at operating temperature.
     thermal_voltage: R,
     critical_voltage: f64,
     bottom: Option<Depletion<R>>,
@@ -675,8 +664,7 @@ struct BulkJunction<R: Real> {
 }
 
 impl<R: Real> BulkJunction<R> {
-    /// The junction's current, with `gmin` across it, and its charge, at `voltage`, the
-    /// voltage across it.
+    /// Evaluates junction current (including `gmin`) and depletion charge at `voltage`.
     fn evaluate(&self, voltage: Dual<R, 1>, gmin: f64) -> (Dual<R, 1>, Dual<R, 1>) {
         let current = junction_current(voltage, self.saturation_current, self.thermal_voltage)
             + voltage * gmin;
@@ -686,18 +674,17 @@ impl<R: Real> BulkJunction<R> {
     }
 }
 
-/// The gate oxide, across which Meyer's capacitances lie.
+/// Gate oxide capacitance parameters used for Meyer gate capacitances.
 #[derive(Debug, Clone, Copy)]
 struct Oxide<R: Real> {
-    /// The oxide's whole capacitance, `Cox`.
+    /// Total gate-oxide capacitance `Cox`.
     capacitance: R,
     surface_potential: R,
 }
 
 impl<R: Real> Oxide<R> {
-    /// Meyer's capacitances from the gate to the source, the drain and the bulk, at the
-    /// gate-source and gate-drain voltages, with the drain at or above the source, and the
-    /// channel's threshold and saturation voltage.
+    /// Computes Meyer capacitances `[Cgs, Cgd, Cgb]` at forward-oriented `vgs`, `vgd`, and
+    /// channel `conduction`.
     fn meyer(
         &self,
         vgs: Dual<R, 3>,
@@ -742,21 +729,17 @@ impl<R: Real> Oxide<R> {
     }
 }
 
-/// The displacement current through the whole gate oxide towards one node,
-/// `w = Cox · dv/dt`: a local unknown of the transistor's own, which Meyer's current between
-/// the gate and the node follows.
+/// Gate-oxide displacement current unknown `w = Cox · dv/dt` driving one Meyer branch.
 ///
-/// Its pivot is proven: its equation's diagonal entry is 1, a conductance, and the other
-/// entries of its column are Meyer's current's derivatives `±C/Cox`, conductances too, at
-/// the gate and the node, where Meyer's capacitance `C` never exceeds the oxide's: the
-/// bulk's at most `Cox`, the channel's at most two thirds of it ([`Oxide::meyer`]). So the
-/// layout claims it [pivoted](Layout::pivoted), and the solver eliminates it before it
-/// factors the transistor's nodes, as ngspice's matrix holds them.
+/// The diagonal entry is conductance `1`, and the only other column entries are `±C / Cox`
+/// at gate and node, with `C <= Cox` in every [`Oxide::meyer`] region. The pivot is
+/// unconditionally dominant, so layout claims the unknown [pivoted](Layout::pivoted) for
+/// elimination before factoring the transistor nodes, matching ngspice's matrix structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Displacement {
     unknown: usize,
-    /// The local entries at (unknown, unknown), (unknown, gate), (unknown, node),
-    /// (gate, unknown) and (node, unknown).
+    /// Local entries at `(unknown, unknown)`, `(unknown, gate)`, `(unknown, node)`,
+    /// `(gate, unknown)`, and `(node, unknown)`.
     entries: [usize; 5],
 }
 
@@ -777,10 +760,8 @@ impl Displacement {
         }
     }
 
-    /// Adds the displacement's equation, `w − Cox · d(v_gate − v_node)/dt = 0`, for the
-    /// `oxide`'s whole capacitance, and the derivatives with respect to `w` of Meyer's
-    /// current from the gate to the node, `C · w / Cox`, for the Meyer `capacitance`, the
-    /// node at index `index` among the stamped `nodes`. Returns `w`.
+    /// Stamps `w − Cox · d(v_gate − v_node)/dt = 0` for `oxide` plus Meyer current
+    /// derivatives `±capacitance / oxide` at `nodes[index]`, and returns `w`.
     fn add<R: Real>(
         &self,
         (nodes, index): (&Nodes<4>, usize),
@@ -803,8 +784,7 @@ impl Displacement {
     }
 }
 
-/// The voltage of the stamped node `plus` over `minus` in `bias`, as evaluated and as far
-/// as the applied one lies beyond it.
+/// Extracts the single-branch [`Bias`] for `v(plus) − v(minus)` from the 3-voltage `bias`.
 fn across(bias: &Bias<3>, (plus, minus): (usize, usize)) -> Bias<1> {
     // Each voltage of `bias` is a node's over the inner source.
     let over_source = |values: [f64; 3], node: usize| {
@@ -889,9 +869,8 @@ impl Kernel for Mosfet {
             .map_or(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS, |per_area| {
                 per_area.value()
             });
-        // The multiplier's copies are transistors of their own in parallel, each carrying
-        // its share of the drain current and the flicker noise of its own gate, which add:
-        // m · KF (Id/m)^AF / (f W L Cox²), as SPICE defines the multiplier.
+        // Parallel multiplier copies each carry `Id / m` over a single gate area; summing
+        // their uncorrelated flicker noise yields `m · KF (Id/m)^AF / (f W L Cox²)`.
         let copies = geometry.multiplier.value();
         let gate = geometry.area.value() / copies;
         let exponent = parameters.flicker_exponent.value();
@@ -1034,8 +1013,8 @@ impl Kernel for Mosfet {
         derivatives.stamp(&shape.stamp, stamp);
     }
 
-    /// The prepared threshold, which a transistor's first step is limited from, moves with
-    /// its temperature.
+    /// Resets the cached threshold so step limiting seeds from the newly prepared
+    /// temperature-adjusted threshold.
     fn reheat(memory: &mut MosfetMemory) {
         memory.threshold = None;
     }
@@ -1052,10 +1031,11 @@ impl Kernel for Mosfet {
         REGIONS
     }
 
-    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
-    /// the drain current's flicker noise, `KF · |Id|^AF / (f · W · L · Cox²)` over the
-    /// effective gate, every parallel copy's width counted, as ngspice models them, with
-    /// SPICE's oxide thickness of 0.1 µm where none is given.
+    /// Appends thermal noise for series resistances and the channel (`8kT·gm / 3`), plus
+    /// drain-current flicker noise `KF · |Id|^AF / (f · W · L · Cox²)`.
+    ///
+    /// Uses effective gate area across all parallel copies and SPICE's default 0.1 µm oxide
+    /// thickness when `oxide_thickness` is omitted.
     fn noise<R: Real>(
         shape: &MosfetShape,
         prepared: &PreparedMosfet<R>,
@@ -1094,16 +1074,16 @@ impl Kernel for Mosfet {
 struct Scaled<R: Real> {
     channel: Law<R>,
     junctions: [BulkJunction<R>; 2],
-    /// The surface potential, which Meyer's capacitances read.
+    /// Surface potential read by Meyer capacitances.
     surface_potential: R,
-    /// The threshold, signed as the channel conducts, from which steps are limited.
+    /// Prepared threshold in n-channel polarity used to seed step limiting.
     threshold: f64,
     temperature: f64,
 }
 
 impl<R: Real> MosfetParameters<R> {
-    /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
-    /// reads is checked.
+    /// Validates parameters and computes temperature-scaled intrinsic quantities at
+    /// `temperature`, in kelvins.
     fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
         let temperatures = Temperatures::of_junction(temperature, self.nominal_temperature)?;
         let sign = self.channel.sign();
@@ -1119,13 +1099,13 @@ impl<R: Real> MosfetParameters<R> {
     }
 }
 
-/// A transistor's extent: its effective length, and its width, the sum of its effective
-/// lengths and its gate's area with every parallel copy counted.
+/// Effective MOSFET geometry: single-copy length and width plus multiplier-scaled width,
+/// length sum, and gate area.
 #[derive(Debug, Clone, Copy)]
 struct Geometry<R: Real> {
     multiplier: R,
     length: R,
-    /// The effective width of one copy.
+    /// Effective width of a single copy.
     single_width: R,
     width: R,
     lengths: R,
@@ -1150,7 +1130,7 @@ impl<R: Real> Geometry<R> {
             let effective = effective.value();
             return Err(ParameterError(format!(
                 "the effective length, length − 2 · lateral_diffusion + length_adjustment, \
-                 must be positive, not {effective:?}"
+                 is positive, not {effective:?}"
             )));
         }
         let effective_width =
@@ -1158,8 +1138,8 @@ impl<R: Real> Geometry<R> {
         if effective_width.value() <= 0.0 {
             let effective_width = effective_width.value();
             return Err(ParameterError(format!(
-                "the effective width, width − 2 · width_narrowing + width_adjustment, must \
-                 be positive, not {effective_width:?}"
+                "the effective width, width − 2 · width_narrowing + width_adjustment, is \
+                 positive, not {effective_width:?}"
             )));
         }
         Ok(Self {
@@ -1174,7 +1154,7 @@ impl<R: Real> Geometry<R> {
 }
 
 impl<R: Real> MosfetParameters<R> {
-    /// The bulk-drain and bulk-source junctions at `temperatures`.
+    /// Prepares the bulk-drain and bulk-source junctions at `temperatures`.
     fn junctions(
         &self,
         geometry: &Geometry<R>,
@@ -1263,8 +1243,8 @@ impl<R: Real> MosfetParameters<R> {
         ])
     }
 
-    /// The channel's law, of the transistor's level, with `process` at `temperatures`,
-    /// once each of its parameters is checked.
+    /// Validates level-specific parameters and constructs the channel [`Law`] from `process`,
+    /// `geometry`, and `temperatures`.
     fn law(
         &self,
         process: &Process<R>,
@@ -1352,8 +1332,8 @@ impl<R: Real> MosfetParameters<R> {
         }))
     }
 
-    /// The drain and source resistances, given or from the sheet resistance, of all the
-    /// parallel copies together.
+    /// Computes effective parallel drain and source series resistances from explicit values
+    /// or sheet resistance.
     fn series_resistances(&self) -> Result<[R; 2], ParameterError> {
         let sheet = ParameterError::non_negative("sheet_resistance", self.sheet_resistance)?;
         let resistance = |name: &str, given: Option<R>, squares: R| {
@@ -1374,8 +1354,8 @@ impl<R: Real> MosfetParameters<R> {
 }
 
 impl<R: Real> MosfetParameters<R> {
-    /// Whether the transistor's gate has an oxide, and so Meyer's capacitances: given its
-    /// thickness, or always at level 3, which takes SPICE's by default.
+    /// Returns `true` when gate oxide capacitance and Meyer displacement unknowns are active
+    /// (explicit `oxide_thickness` at Level 1, or always at Level 3).
     fn has_oxide(&self) -> bool {
         match self.level {
             ModelLevel::One => self.oxide_thickness.is_some(),
@@ -1385,10 +1365,8 @@ impl<R: Real> MosfetParameters<R> {
 }
 
 impl<R: Real> PreparedMosfet<R> {
-    /// The `applied` gate-source, drain-source and bulk-source voltages limited from
-    /// `previous` around `threshold`, as SPICE limits them: the gate's step around the
-    /// threshold and the drain's, from whichever end acts as the source, then the step of
-    /// the junction with it. Returns `None` when no step needs limiting.
+    /// Applies SPICE channel and active bulk-junction limiting to `applied` `[vgs, vds, vbs]`
+    /// from `previous` around `threshold`, returning `None` when no step requires limiting.
     fn limit(&self, applied: [f64; 3], previous: [f64; 3], threshold: f64) -> Option<[f64; 3]> {
         let [applied_gate, applied_drain, applied_vbs] = applied;
         let [previous_gate, previous_drain, previous_bulk] = previous;
@@ -1444,7 +1422,7 @@ mod tests {
         "sidewall_capacitance": 5e-10, "gate_source_overlap": 4e-10,
         "gate_drain_overlap": 3e-10, "gate_bulk_overlap": 2e-10}"#;
 
-    /// The same transistor with a p-channel.
+    /// Converts an n-channel JSON parameter card to its p-channel mirror.
     fn p_channel(parameters: &str) -> String {
         parameters
             .replace(
@@ -1454,9 +1432,8 @@ mod tests {
             .replace('{', r#"{"channel": "p", "#)
     }
 
-    /// The drain current of a transistor with `β = 1e-4` and `vto = 1` at `vgs` and `vds`,
-    /// with the source grounded and the bulk well below both, its junctions' leakage
-    /// negligible.
+    /// Evaluates drain current at `vgs` and `vds` for a test MOSFET (`β = 1e-4`, `vto = 1`,
+    /// grounded source, strongly reverse-biased bulk).
     fn drain_current(vgs: f64, vds: f64) -> f64 {
         let parameters = r#"{"threshold_voltage": 1, "transconductance_parameter": 1e-4,
             "saturation_current": 1e-30}"#;
@@ -1509,11 +1486,10 @@ mod tests {
         assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
     }
 
-    /// A level 1 transistor is off at or below its threshold, saturated with its drain at
-    /// or past `vgs − vto`, and linear below it, the drain and the source swapping where the
-    /// drain lies below; its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which
-    /// vanish where `mos1load.c` switches, a p-channel's equal to an n-channel's at the
-    /// voltages reversed.
+    /// Verifies that Level 1 classifies off, linear, and saturated regions with symmetric
+    /// drain/source swap and p-channel polarity inversion.
+    ///
+    /// Margins `vgs − vto` and `vds − max(vgs − vto, 0)` vanish at `mos1load.c` boundaries.
     #[test]
     fn reports_its_region_and_margins() {
         let parameters = r#"{"threshold_voltage": 1, "saturation_current": 1e-30}"#;
@@ -1539,9 +1515,8 @@ mod tests {
         );
     }
 
-    /// A level 3 transistor is off at or below its threshold, or in weak inversion below it
-    /// given fast surface states, and linear or saturated above it, each region switching
-    /// where `mos3load.c` does, where its margin vanishes.
+    /// Verifies that Level 3 classifies off, weak-inversion, linear, and saturated regions
+    /// with margins vanishing at `mos3load.c` boundaries.
     #[test]
     fn reports_its_region_at_level_3() {
         let parameters = r#"{"level": 3, "threshold_voltage": 1, "saturation_current": 1e-30}"#;
@@ -1615,8 +1590,8 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"length": 1e-6, "lateral_diffusion": 5e-7}"#),
-            "the effective length, length − 2 · lateral_diffusion + length_adjustment, must \
-             be positive, not 0.0"
+            "the effective length, length − 2 · lateral_diffusion + length_adjustment, is \
+             positive, not 0.0"
         );
         assert_eq!(
             error(r#"{"mobility_modulation": 0.1}"#),
@@ -1628,14 +1603,13 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"bottom_grading": 1}"#),
-            "bottom_grading must be at least 0 and below 1, not 1.0"
+            "bottom_grading is at least 0 and below 1, not 1.0"
         );
     }
 
     proptest! {
-        /// The conductances and capacitances are the derivatives of the currents and
-        /// charges, in every region, in both modes and for both channels, with the bulk up
-        /// to 0.6 V forward of the drain or the source.
+        /// Verifies that analytical conductances and capacitances match finite differences
+        /// across all regions, modes, channels, and up to 0.6 V bulk forward bias.
         #[test]
         fn jacobians_match_finite_differences(
             drain in -4.0..4.0f64,
@@ -1663,8 +1637,8 @@ mod tests {
             );
         }
 
-        /// Level 3's derivatives hold in strong and weak inversion, below and beyond
-        /// saturation, with and without velocity saturation.
+        /// Verifies Level 3 analytical derivatives in strong and weak inversion, linear and
+        /// saturated modes, with and without velocity saturation.
         #[test]
         fn level_three_jacobians_match_finite_differences(
             drain in -4.0..4.0f64,
@@ -1692,8 +1666,8 @@ mod tests {
             );
         }
 
-        /// A transistor whose threshold derives from its substrate doping has the
-        /// derivatives too.
+        /// Verifies analytical derivatives when threshold and body effect derive from
+        /// substrate doping.
         #[test]
         fn derived_jacobians_match_finite_differences(
             drain in -4.0..4.0f64,
@@ -1712,8 +1686,8 @@ mod tests {
 
     #[test]
     fn its_channel_makes_thermal_and_flicker_noise() {
-        // SPICE's oxide of 0.1 µm; each copy carries its share of the current over its own
-        // effective gate, and the copies' noises add.
+        // SPICE default 0.1 µm oxide: parallel copies carry equal current shares over each
+        // effective gate, and their noise powers sum.
         let oxide = OXIDE_PERMITTIVITY / 1e-7;
         for copies in [1.0, 2.0] {
             let parameters = format!(
@@ -1748,9 +1722,9 @@ mod tests {
         bench.evaluate_with(&input)
     }
 
-    /// At `vds = 0`, both level 1 and level 3 MOSFETs swap drain and source cleanly across
-    /// every region when displacement currents are zero (`w = 0`), including with symmetric
-    /// drain and source series resistances.
+    /// Verifies that Level 1 and Level 3 MOSFETs preserve exact drain/source swap symmetry
+    /// at `vds = 0` when displacement currents vanish (`w = 0`), including symmetric series
+    /// resistances.
     #[test]
     fn swaps_drain_and_source_at_zero_vds_without_displacement_currents() {
         const SWAP_SEVEN: [usize; 7] = [2, 1, 0, 3, 5, 4, 6];
@@ -1814,11 +1788,13 @@ mod tests {
         }
     }
 
-    /// When displacement currents flow (`w != 0`) inside `-phi < vgst <= 0` at `vds = 0`,
-    /// Meyer's capacitances (`DEVqmeyer`, `devsup.c` lines 698 to 720) depend on
-    /// `vgst = Vg - min(Vd, Vs) - Von(Vb - min(Vd, Vs), |Vd - Vs|)`, whose first derivative
-    /// jumps across `Vd = Vs` by `|w| / phi * (1 - d(Von)/d(vbs) + 2 * sigma)` (`1.6667e-9`
-    /// at `[1e-9; 7]` for default `vto = 0` at both levels 1 and 3).
+    /// Verifies the analytical Meyer capacitance derivative jump across `Vd = Vs` when
+    /// displacement currents are nonzero (`w != 0`) inside `-phi < vgst <= 0`.
+    ///
+    /// In `DEVqmeyer` (`devsup.c`, lines 698 to 720), capacitance depends on
+    /// `vgst = Vg - min(Vd, Vs) - Von(Vb - min(Vd, Vs), |Vd - Vs|)`. Across `Vd = Vs`, the
+    /// derivative jumps by `|w| / phi * (1 - d(Von)/d(vbs) + 2 * sigma)` (`1.6667e-9` at
+    /// `[1e-9; 7]` for default `vto = 0`).
     #[test]
     fn meyer_derivative_kink_matches_exact_formula_at_zero_vds() {
         const ROUNDING: f64 = 1024.0;

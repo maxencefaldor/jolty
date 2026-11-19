@@ -2,10 +2,10 @@
 //! and BSIM4.5, as ngspice 47 implements them in `src/spicelib/devices/bsim3/` and
 //! `src/spicelib/devices/bsim4v5/`.
 //!
-//! This module is derived from BSIM3v3.3.0 and BSIM4.5.0, developed by the UC Berkeley
-//! BSIM Research Group: Copyright 2004, 2005 Regents of the University of California.
-//! All rights reserved. It is used under the BSIM terms of use, which the repository's
-//! `NOTICE` reproduces.
+//! Shared BSIM3 and BSIM4 helpers derived from BSIM3v3.3.0 and BSIM4.5.0, developed by
+//! the UC Berkeley BSIM Research Group: Copyright 2004, 2005 Regents of the University
+//! of California. All rights reserved. Usage is governed by the BSIM terms of use
+//! reproduced in the repository's `NOTICE` file.
 
 use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
@@ -24,9 +24,9 @@ pub(crate) const Q: f64 = 1.602_19e-19;
 /// The intrinsic carrier concentration of silicon at 300.15 K, per cubic centimeter, as
 /// ngspice's `b3temp.c` and `b4v5temp.c` take it.
 pub(crate) const INTRINSIC: f64 = 1.45e10;
-/// `e^34`, where ngspice's `b3ld.c` and `b4v5ld.c` stop their exponentials.
+/// Upper exponential ceiling `e^34` used by ngspice `b3ld.c` and `b4v5ld.c`.
 pub(crate) const MAX_EXP: f64 = 5.834_617_425e14;
-/// `e^−34`, as ngspice's `b3ld.c` and `b4v5ld.c` write it.
+/// Lower exponential floor `e^−34` used by ngspice `b3ld.c` and `b4v5ld.c`.
 pub(crate) const MIN_EXP: f64 = 1.713_908_431e-15;
 /// The argument beyond which ngspice's `b3ld.c` and `b4v5ld.c` stop their exponentials.
 pub(crate) const EXP_THRESHOLD: f64 = 34.0;
@@ -46,8 +46,8 @@ pub(crate) const NGSPICE_BOLTZMANN: f64 = 1.380_648_52e-23;
 /// `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps.
 pub(crate) const VT0: f64 = NGSPICE_BOLTZMANN * 300.15 / NOISE_CHARGE;
 
-/// The variables a BSIM transistor reports: its threshold and saturation voltages, in
-/// its own polarity, and its region among [`REGIONS`] and its margins.
+/// Variables reported by a BSIM transistor: threshold and saturation voltages in channel
+/// polarity, operating region from [`REGIONS`], and boundary margins.
 pub(crate) const VARIABLE_NAMES: [&str; 5] = [
     "threshold_voltage",
     "saturation_voltage",
@@ -56,10 +56,9 @@ pub(crate) const VARIABLE_NAMES: [&str; 5] = [
     SATURATION_MARGIN,
 ];
 
-/// The regions a BSIM transistor's equations distinguish, and its margins to their
-/// boundaries: `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in an n-channel's sign as
-/// [`Regions::margins`] are, with the drain and the source swapped where the drain lies
-/// below the source, as the equations swap them.
+/// Operating regions distinguished by BSIM equations and boundary margins
+/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, signed as n-channel [`Regions::margins`].
+/// Drain and source swap whenever the drain lies below the source, matching the equations.
 pub(crate) const REGIONS: Regions = Regions {
     names: &["weak_inversion", "linear", "saturated"],
     margins: &[OVERDRIVE, SATURATION_MARGIN],
@@ -96,15 +95,15 @@ impl Region {
     }
 }
 
-/// How `xpart` shares the channel's charge in saturation: the drain takes none, 40 % or
-/// half.
+/// Saturation channel charge partitioning selected by `xpart` (drain share of 0%, 40%, or
+/// 50%).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Partition {
-    /// `xpart` above 0.5: 0/100.
+    /// Drain share 0/100 (`xpart > 0.5`).
     None,
-    /// `xpart` below 0.5: 40/60.
+    /// Drain share 40/60 (`xpart < 0.5`).
     Forty,
-    /// `xpart` of 0.5: 50/50.
+    /// Drain share 50/50 (`xpart == 0.5`).
     Half,
 }
 
@@ -121,13 +120,13 @@ impl Partition {
     }
 }
 
-/// The critical voltage of a junction of 10 fA at [`VT0`], `VT0 · ln(VT0 / (√2 · 10 fA))`,
-/// from which `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps, their `vcrit`.
+/// Returns the junction critical voltage `VT0 · ln(VT0 / (√2 · 10 fA))` at [`VT0`],
+/// matching `vcrit` in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn critical_voltage() -> f64 {
     VT0 * (VT0 / (std::f64::consts::SQRT_2 * 1.0e-14)).ln()
 }
 
-/// `n` for an n-channel and `p` for a p-channel.
+/// Selects `n` for an n-channel MOSFET and `p` for a p-channel MOSFET.
 pub(crate) const fn by_channel(channel: Channel, n: f64, p: f64) -> f64 {
     match channel {
         Channel::N => n,
@@ -135,7 +134,7 @@ pub(crate) const fn by_channel(channel: Channel, n: f64, p: f64) -> f64 {
     }
 }
 
-/// The four-terminal MOSFET interface shared by BSIM3 and BSIM4.
+/// Builds the four-terminal MOSFET interface shared by BSIM3 and BSIM4.
 pub(crate) fn interface() -> Interface {
     Interface::new(
         &["drain", "gate", "source", "bulk"],
@@ -163,9 +162,8 @@ pub(crate) fn forward_frame<R: Real>(voltages: [R; 3]) -> (bool, [R; 3]) {
     (forward, frame)
 }
 
-/// `function`, of the gate-source, drain-source and bulk-source voltages of the frame
-/// whose source is the drain, with its derivatives with respect to the terminals' own
-/// voltages.
+/// Transforms `function` from the drain-source swapped frame back to terminal voltages
+/// and terminal derivatives.
 pub(crate) fn unswapped<R: Real>(function: D<R>) -> D<R> {
     let [gate, drain, bulk] = function.gradient;
     D {
@@ -174,7 +172,7 @@ pub(crate) fn unswapped<R: Real>(function: D<R>) -> D<R> {
     }
 }
 
-/// The values of [`VARIABLE_NAMES`] of a channel of `sign`, in its own polarity.
+/// Packs [`VARIABLE_NAMES`] values for a channel with polarity `sign`.
 pub(crate) fn variables(
     sign: f64,
     threshold: f64,
@@ -191,7 +189,7 @@ pub(crate) fn variables(
     ]
 }
 
-/// The logarithmic fringing capacitance factor `ln(1 + 0.4 µm / tox)`, shared by
+/// Computes the logarithmic fringing capacitance factor `ln(1 + 0.4 µm / tox)`, shared by
 /// `b3set.c` and `b4v5set.c`.
 pub(crate) fn fringe_factor<R: Real>(oxide_thickness: R) -> R {
     (R::constant(0.4e-6) / oxide_thickness + 1.0).ln()
@@ -207,7 +205,7 @@ pub(crate) fn check(failed: bool, message: impl FnOnce() -> String) -> Result<()
     }
 }
 
-/// The reciprocal-free length or width lost, `int + l / L^ln + w / W^wn + wl / (L^ln · W^wn)`.
+/// Computes geometry shrinkage `base + l / L^ln + w / W^wn + wl / (L^ln · W^wn)`.
 pub(crate) fn lost<R: Real>(
     base: R,
     [by_length, by_width, by_area]: [R; 3],
@@ -216,15 +214,15 @@ pub(crate) fn lost<R: Real>(
     base + by_length / length + by_width / width + by_area / (length * width)
 }
 
-/// Silicon's band gap at `temperature`, in electronvolts, as `b3temp.c` and `b4v5temp.c`
-/// compute it: `1.16 − 7.02e-4 · T² / (T + 1108)`.
+/// Computes the silicon band gap in electronvolts at `temperature` as
+/// `1.16 − 7.02e-4 · T² / (T + 1108)`, matching `b3temp.c` and `b4v5temp.c`.
 pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
     -(temperature * temperature * 7.02e-4 / (temperature + 1108.0)) + 1.16
 }
 
-/// Silicon's intrinsic carrier concentration at `nominal_temperature`, per cubic
-/// centimeter, given its `band_gap` and `thermal_voltage`, as `b3temp.c` and `b4v5temp.c`
-/// compute it.
+/// Computes silicon intrinsic carrier concentration per cubic centimeter at
+/// `nominal_temperature` from `band_gap` and `thermal_voltage`, matching `b3temp.c` and
+/// `b4v5temp.c`.
 pub(crate) fn intrinsic_carrier<R: Real>(
     nominal_temperature: R,
     band_gap: R,
@@ -263,8 +261,8 @@ pub(crate) fn derived_body_factors<R: Real>(
     (k1, k2, max_bulk_bias)
 }
 
-/// The most negative effective bulk voltage `vbsc`, clamped to `[-30, -3]` V and at most
-/// `max_bulk_bias`, as `b3temp.c` and `b4v5temp.c` compute it.
+/// Computes the lower bulk-voltage clamp `vbsc`, bounded to `[-30, -3]` V and at most
+/// `max_bulk_bias`, matching `b3temp.c` and `b4v5temp.c`.
 pub(crate) fn vbsc_clamp<R: Real>(phi: R, k1: R, k2: R, max_bulk_bias: R) -> R {
     let bound = if k2.value() < 0.0 {
         let t0 = k1 * 0.5 / k2;
@@ -309,8 +307,8 @@ pub(crate) fn default_overlaps<R: Real>(
     ]
 }
 
-/// A junction capacitance scaled linearly with `delta_temperature`, floored at zero, as
-/// `b3temp.c` and `b4v5temp.c` compute it.
+/// Scales a junction capacitance linearly with `delta_temperature`, flooring the result at
+/// zero as in `b3temp.c` and `b4v5temp.c`.
 pub(crate) fn heated_capacitance<R: Real>(
     capacitance: R,
     coefficient: R,
@@ -324,16 +322,15 @@ pub(crate) fn heated_capacitance<R: Real>(
     }
 }
 
-/// A junction built-in potential raised to at least 0.1 V and shifted linearly with
-/// `delta_temperature`, floored at 0.01 V, as `b3temp.c` and `b4v5temp.c` compute it.
+/// Raises a junction built-in potential to at least 0.1 V and shifts it linearly with
+/// `delta_temperature`, floored at 0.01 V as in `b3temp.c` and `b4v5temp.c`.
 pub(crate) fn heated_potential<R: Real>(potential: R, coefficient: R, delta_temperature: R) -> R {
     let raised = potential.max(R::constant(0.1));
     (raised - coefficient * delta_temperature).max(R::constant(0.01))
 }
 
-/// The clamp of `b3ld.c` and `b4v5ld.c` that keeps a factor `1 + x` from approaching
-/// zero: `1 + x` down to `x = −0.9`, then `(17 + 20x) / (0.8 + x)`'s reciprocal, its
-/// first form's value and slope continued.
+/// Evaluates the reciprocal `1 / (1 + x)` clamped smoothly above 0.1 in `b3ld.c` and
+/// `b4v5ld.c`, continuing below `x = −0.9` via `(17 + 20x) / (0.8 + x)`.
 pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.9 {
         (x + 1.0).recip()
@@ -342,8 +339,8 @@ pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// `1 + x`, continued below `x = −0.9` by `(0.8 + x) / (17 + 20x)`, as `b3ld.c` and
-/// `b4v5ld.c` keep such a factor positive.
+/// Evaluates `1 + x` continued smoothly below `x = −0.9` by `(0.8 + x) / (17 + 20x)` to
+/// keep the factor positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
     let above = if inclusive {
         x.value.value() >= -0.9
@@ -357,7 +354,7 @@ pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
     }
 }
 
-/// `x`, continued below 0.1 by `(0.2 − x) / (3 − 20x)`.
+/// Evaluates `x` continued smoothly below 0.1 by `(0.2 − x) / (3 − 20x)`.
 pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < 0.1 {
         (-x + 0.2) / (-(x * 20.0) + 3.0)
@@ -366,8 +363,8 @@ pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// `1 + x`, continued below `x = −0.8` by `(0.6 + x) / (7 + 10x)`, keeping the mobility
-/// denominator positive in `b3ld.c` and `b4v5ld.c`.
+/// Evaluates `1 + x` continued smoothly below `x = −0.8` by `(0.6 + x) / (7 + 10x)`,
+/// keeping the mobility denominator positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn above_fifth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.8 {
         x + 1.0
@@ -376,7 +373,7 @@ pub(crate) fn above_fifth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// `1 + x`, continued below `x = −0.5` by `(1 + 3x) / (3 + 8x)`.
+/// Evaluates `1 + x` continued smoothly below `x = −0.5` by `(1 + 3x) / (3 + 8x)`.
 pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.5 {
         x + 1.0
@@ -385,8 +382,8 @@ pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// `x`, continued below `1e-4` by `(2e-4 − x) / (3 − 2e4 · x)`, keeping the
-/// drain-induced barrier lowering factor positive in `b3ld.c` and `b4v5ld.c`.
+/// Evaluates `x` continued smoothly below `1e-4` by `(2e-4 − x) / (3 − 2e4 · x)`, keeping
+/// the drain-induced barrier lowering factor positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn above_dibl_floor<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < 1.0e-4 {
         (2.0e-4 - x) / (3.0 - x * 2.0e4)
@@ -395,9 +392,8 @@ pub(crate) fn above_dibl_floor<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// The effective width `width`, continued below 20 nm by
-/// `2e-8 · (4e-8 − width) / (6e-8 − 2 · width)`, as `b3ld.c` and `b4v5ld.c` keep it
-/// positive.
+/// Evaluates effective channel `width` continued smoothly below 20 nm by
+/// `2e-8 · (4e-8 − width) / (6e-8 − 2 · width)` as in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn effective_width<R: Real>(width: D<R>) -> D<R> {
     if width.value.value() < 2.0e-8 {
         (4.0e-8 - width) * 2.0e-8 / (6.0e-8 - width * 2.0)
@@ -406,8 +402,8 @@ pub(crate) fn effective_width<R: Real>(width: D<R>) -> D<R> {
     }
 }
 
-/// `(x + √(x² + spread)) / 2`, the positive branch of a smooth clamp: written as
-/// `(spread / 2) / (√(x² + spread) − x)` where `x < 0` so `x` and its root never cancel.
+/// Evaluates the smooth positive clamp `(x + √(x² + spread)) / 2`, rationalized as
+/// `(spread / 2) / (√(x² + spread) − x)` for `x < 0` to avoid cancellation.
 pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
     let root = (x * x + spread).sqrt();
     if x.value.value() >= 0.0 {
@@ -417,16 +413,16 @@ pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
     }
 }
 
-/// The smooth lower clamp `bound + (shifted + √(shifted² − 0.004 · bound)) / 2` with
-/// `shifted = x − bound − 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
+/// Evaluates the smooth lower clamp `bound + (shifted + √(shifted² − 0.004 · bound)) / 2`
+/// with `shifted = x − bound − 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
 ///
 /// By `(shifted² − 0.004 · bound) − (x − bound + 0.001)² = −0.004 · x`, the curve passes
 /// through zero, lies strictly above `x` for `x < 0`, and lies strictly below `x` for
-/// `x > 0`. For `x >= bound / 2`, rationalizing it as
-/// `x − 0.002 · x / (root + x − bound + 0.001)` prevents `bound` and `smooth_positive`
-/// from cancelling near `x = 0` (losing ~12 digits and chattering BSIM3's `vbseff < vbs`
-/// clamp within ~6e-12 V of zero); below `bound / 2`, `smooth_positive(shifted, ...) + bound`
-/// stays exact through the knee and at large negative `x`.
+/// `x > 0`. For `x >= bound / 2`, rationalizing as
+/// `x − 0.002 · x / (root + x − bound + 0.001)` avoids `bound` cancellation near `x = 0`
+/// (~12-digit loss and `vbseff < vbs` chatter). Below `bound / 2`,
+/// `smooth_positive(shifted, ...) + bound` stays exact through the knee and at large
+/// negative `x`.
 pub(crate) fn smooth_floor<R: Real>(x: D<R>, bound: R) -> D<R> {
     let shifted = (x - 0.001).plus(-bound);
     let spread = D::constant(bound * -0.004);
@@ -439,10 +435,10 @@ pub(crate) fn smooth_floor<R: Real>(x: D<R>, bound: R) -> D<R> {
     }
 }
 
-/// The gate-source voltage less the poly gate's depletion, shared by `b3ld.c` and
+/// Computes `gate_source` reduced by polysilicon gate depletion, shared by `b3ld.c` and
 /// `b4v5ld.c` (`BSIM4v5polyDepletion`), with `gate_doping` in cm⁻³,
-/// `flat_band_potential = vfb + phi`, oxide capacitance `cox`, and elementary charge
-/// `charge` ([`Q`] in BSIM3, [`NOISE_CHARGE`] in BSIM4).
+/// `flat_band_potential = vfb + phi`, oxide capacitance `cox`, and elementary `charge`
+/// ([`Q`] in BSIM3, [`NOISE_CHARGE`] in BSIM4).
 pub(crate) fn poly_depletion<R: Real>(
     gate_source: D<R>,
     gate_doping: R,
@@ -466,17 +462,16 @@ pub(crate) fn poly_depletion<R: Real>(
     }
 }
 
-/// The smooth minimum of `vds >= 0` and `vdsat >= 0` with smoothing `delta >= 0`,
-/// `vdsat − (shifted + root) / 2` where `shifted = vdsat − vds − delta` and
-/// `root = √(shifted² + 4 · delta · vdsat)`, shared by BSIM3 and BSIM4 for both `Vdseff`
-/// and `VdseffCV`.
+/// Evaluates the smooth minimum `vdsat − (shifted + root) / 2` of `vds >= 0` and
+/// `vdsat >= 0` with smoothing `delta >= 0`, shared by BSIM3 and BSIM4 for `Vdseff` and
+/// `VdseffCV`. Both branches use `shifted = vdsat − vds − delta` and
+/// `root = √(shifted² + 4 · delta · vdsat)`.
 ///
-/// Rationalized on both sides of `vds = vdsat + delta`:
-/// - `vds <= vdsat + delta`: `2 · vdsat · vds / (vdsat + vds + delta + root)` eliminates
-///   cancellation of `vdsat` near `vds = 0` (even when `vdsat < delta`), gives exact zero
-///   with zero `gate` and `bulk` derivatives at `vds = 0`, and keeps full precision at
-///   small `vds` such as 1e-9 V where the raw difference loses ~8 digits;
-/// - `vds > vdsat + delta`: `vdsat · (1 − 2 · delta / (root − shifted))` keeps
+/// Rationalization around `vds = vdsat + delta`:
+/// - For `vds <= vdsat + delta`, `2 · vdsat · vds / (vdsat + vds + delta + root)` avoids
+///   `vdsat` cancellation near `vds = 0`. Both `gate` and `bulk` derivatives vanish exactly
+///   at `vds = 0`, preventing ~8-digit loss at `vds = 1e-9` V.
+/// - For `vds > vdsat + delta`, `vdsat · (1 − 2 · delta / (root − shifted))` keeps
 ///   `2 · delta / (root − shifted) <= 0.5` and preserves full precision on `d/d(vds)` at
 ///   large `vds`.
 pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R> {
@@ -495,8 +490,8 @@ pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R>
     }
 }
 
-/// `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` written in its
-/// excess over unity so `1 − λ` and `1 / λ − 1` never cancel as `λ → 1`.
+/// Computes `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` shifted
+/// from unity so `1 − λ` and `1 / λ − 1` avoid cancellation as `λ → 1`.
 pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R> {
     let slope = a1.value();
     if slope == 0.0 {
@@ -513,10 +508,9 @@ pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R
     }
 }
 
-/// The saturation voltage `Vdsat` of `b3ld.c` and `b4v5ld.c`, rationalized to
-/// `2 · c / (b + √(b² − 2·a·c))` where `b ≥ 0` so `b` and its root never cancel when `a`
-/// is small (as with `rds = 0` and `λ → 1`), and continuous through `a = 0` without a
-/// special branch.
+/// Computes the saturation voltage `Vdsat` of `b3ld.c` and `b4v5ld.c`, rationalized to
+/// `2 · c / (b + √(b² − 2·a·c))` when `b ≥ 0`. Rationalization prevents `b` and its root
+/// from cancelling for small `a` (`rds = 0`, `λ → 1`) and remains continuous at `a = 0`.
 pub(crate) fn saturation_voltage<R: Real>(
     vgst2vtm: D<R>,
     esat_l: D<R>,
@@ -536,7 +530,7 @@ pub(crate) fn saturation_voltage<R: Real>(
     }
 }
 
-/// The substrate current's Early voltage `Vascbe` of `b3ld.c` and `b4v5ld.c`.
+/// Computes the substrate-current Early voltage `Vascbe` of `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn substrate_early_voltage<R: Real>(
     diff_vds: D<R>,
     (pscbe1, pscbe2): (R, R),
@@ -554,9 +548,9 @@ pub(crate) fn substrate_early_voltage<R: Real>(
     }
 }
 
-/// The impact ionization multiplier
+/// Computes the impact-ionization multiplier
 /// `(alpha0 / leff + alpha1) · diff_vds · exp(−beta0 / diff_vds)` of `b3ld.c` and
-/// `b4v5ld.c`, or `None` when impact ionization is inactive.
+/// `b4v5ld.c`, returning `None` when impact ionization is inactive.
 pub(crate) fn impact_ionization_factor<R: Real>(
     diff_vds: D<R>,
     (alpha0, alpha1, beta0): (R, R, R),
@@ -576,9 +570,9 @@ pub(crate) fn impact_ionization_factor<R: Real>(
     Some(factor)
 }
 
-/// `x0 − ½ · (v + √(v² ± 4δ · x0))`, the smooth minimum of `b3ld.c`'s and `b4v5ld.c`'s
-/// effective flat-band voltage, with `v = x0 − x − δ`, the sign of the root's term that
-/// of `x0`.
+/// Evaluates the smooth minimum `x0 − ½ · (v + √(v² ± 4δ · x0))` for the effective
+/// flat-band voltage in `b3ld.c` and `b4v5ld.c`. The shifted argument is `v = x0 − x − δ`,
+/// and the root term sign matches the sign of `x0`.
 pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
     let t0 = if vfb.value() <= 0.0 {
         (v3 * v3 - D::constant(vfb * (4.0 * DELTA))).sqrt()
@@ -588,8 +582,8 @@ pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
     (-((v3 + t0) * 0.5)).plus(vfb)
 }
 
-/// The depletion charge under the gate, `CoxWL · k1ox · (√(k1ox²/4 + v) − k1ox/2)`,
-/// continued linearly below `v = 0`, with `capacitance` the gate's oxide capacitance.
+/// Evaluates depletion charge `CoxWL · k1ox · (√(k1ox²/4 + v) − k1ox/2)` under the gate
+/// with oxide `capacitance`, continued linearly below `v = 0`.
 pub(crate) fn depletion<R: Real>(k1ox: R, voltage: D<R>, capacitance: D<R>) -> D<R> {
     let t0 = k1ox * 0.5;
     let t1 = if k1ox.value() == 0.0 {
@@ -602,8 +596,8 @@ pub(crate) fn depletion<R: Real>(k1ox: R, voltage: D<R>, capacitance: D<R>) -> D
     capacitance * t1.plus(-t0).scale(k1ox)
 }
 
-/// The effective gate overdrive of the capacitance model, shifted by `voffcv` and scaled
-/// by `noff`, as `b3ld.c` (`capmod` 1 to 3) and `b4v5ld.c` (`capmod` 2) compute it.
+/// Computes the capacitance-model effective gate overdrive shifted by `voffcv` and scaled
+/// by `noff`, matching `b3ld.c` (`capmod` 1 to 3) and `b4v5ld.c` (`capmod` 2).
 pub(crate) fn cv_overdrive<R: Real>(
     gate_source: D<R>,
     threshold: D<R>,
@@ -622,9 +616,9 @@ pub(crate) fn cv_overdrive<R: Real>(
     }
 }
 
-/// The accumulation and depletion charge centroid `Tcen` of the charge-thickness model
-/// (`b3ld.c`'s `capmod` 3 and `b4v5ld.c`'s `capmod` 2), smoothly bounded above by the
-/// Debye length `debye_length`.
+/// Computes the accumulation and depletion charge centroid `Tcen` for the charge-thickness
+/// model (`b3ld.c` `capmod` 3 and `b4v5ld.c` `capmod` 2), smoothly bounded above by
+/// `debye_length`.
 pub(crate) fn accumulation_centroid<R: Real>(
     gate_bulk_over_flat: D<R>,
     oxide_thickness: R,
@@ -647,18 +641,17 @@ pub(crate) fn accumulation_centroid<R: Real>(
     (-((v3 + v4) * 0.5)).plus(debye_length)
 }
 
-/// The inversion charge centroid `Tcen = 1.9 nm / (1 + field^0.7)` of the
-/// charge-thickness model (`b3ld.c` and `b4v5ld.c`), at the normalized vertical field
-/// `field`.
+/// Computes the inversion charge centroid `Tcen = 1.9 nm / (1 + field^0.7)` for the
+/// charge-thickness model (`b3ld.c` and `b4v5ld.c`) at normalized vertical `field`.
 pub(crate) fn inversion_centroid<R: Real>(field: D<R>) -> D<R> {
     let tmp = (field.ln() * 0.7).exp();
     (tmp + 1.0).recip() * 1.9e-9
 }
 
-/// The effective oxide capacitance over the channel's area for a charge centroid
-/// `centroid` in the charge-thickness model (`b3ld.c`'s `capmod` 3 and `b4v5ld.c`'s
-/// `capmod` 2): `Coxeff · (channel_oxide_cap / electrical_oxide_cap)` where
-/// `Ccen = εsi / centroid` and
+/// Computes effective channel oxide capacitance
+/// `Coxeff · (channel_oxide_cap / electrical_oxide_cap)` for charge `centroid` in the
+/// charge-thickness model (`b3ld.c` `capmod` 3 and `b4v5ld.c` `capmod` 2). The series
+/// capacitance uses `Ccen = εsi / centroid` and
 /// `Coxeff = Ccen · physical_oxide_cap / (Ccen + physical_oxide_cap)`.
 pub(crate) fn effective_oxide_capacitance<R: Real>(
     centroid: D<R>,
@@ -675,9 +668,9 @@ pub(crate) fn effective_oxide_capacitance<R: Real>(
     coxeff.scale(channel_oxide_cap / electrical_oxide_cap)
 }
 
-/// The gate overdrive less the surface potential's rise `δφ` in the charge-thickness
-/// model (`b3ld.c`'s `capmod` 3 and `b4v5ld.c`'s `capmod` 2), using `ln_1p` and
-/// rationalized [`smooth_positive`] to preserve precision in deep subthreshold.
+/// Computes gate overdrive reduced by the surface-potential rise `δφ` in the
+/// charge-thickness model (`b3ld.c` `capmod` 3 and `b4v5ld.c` `capmod` 2), using `ln_1p`
+/// and rationalized [`smooth_positive`] to preserve precision in deep subthreshold.
 pub(crate) fn surface_potential_overdrive<R: Real>(
     vgsteff: D<R>,
     k1ox: R,
@@ -696,11 +689,10 @@ pub(crate) fn surface_potential_overdrive<R: Real>(
     smooth_positive(shifted, vgsteff * 0.004)
 }
 
-/// The source's share of the inversion charge under Ward-Dutton charge partitioning
-/// (`xpart`), given `partition`, `(overdrive, scaled_drain, denominator)` where
-/// `scaled_drain = Abulk · Vds` and
-/// `denominator = 12 · (overdrive − scaled_drain / 2 + 1e-20)`, the oxide capacitance
-/// `cox_wl`, and the total inversion charge `inversion`.
+/// Computes the source share of inversion charge under Ward-Dutton partitioning (`xpart`)
+/// from `partition`, oxide capacitance `cox_wl`, and total `inversion` charge. The voltage
+/// tuple `(overdrive, scaled_drain, denominator)` supplies `scaled_drain = Abulk · Vds`
+/// and `denominator = 12 · (overdrive − scaled_drain / 2 + 1e-20)`.
 pub(crate) fn source_partition_charge<R: Real>(
     partition: Partition,
     (overdrive, scaled_drain, denominator): (D<R>, D<R>, D<R>),
@@ -750,9 +742,9 @@ pub(crate) fn charge_thickness_charges<R: Real>(
     [gate, bulk, drain, inversion]
 }
 
-/// The `DELTA`-smoothed bias-dependent gate-overlap charge of `b3ld.c` (`capmod` 2 and 3)
-/// and `b4v5ld.c` (`capmod` 2), at terminal `voltage` with fixed overlap `fixed`,
-/// lightly-doped overlap `lightly`, and parameter `kappa`.
+/// Evaluates the `DELTA`-smoothed bias-dependent gate-overlap charge of `b3ld.c`
+/// (`capmod` 2 and 3) and `b4v5ld.c` (`capmod` 2) at terminal `voltage` with `fixed`,
+/// `lightly`, and `kappa`.
 pub(crate) fn smooth_overlap<R: Real>(voltage: D<R>, fixed: R, lightly: R, kappa: R) -> D<R> {
     let t0 = voltage + DELTA;
     let t1 = (t0 * t0 + 4.0 * DELTA).sqrt();
@@ -761,10 +753,10 @@ pub(crate) fn smooth_overlap<R: Real>(voltage: D<R>, fixed: R, lightly: R, kappa
     voltage.scale(fixed + lightly) - (t2 + (t4 - 1.0).scale(kappa * 0.5)).scale(lightly)
 }
 
-/// The depletion charge of a three-part junction (bottom, isolation sidewall and gate
-/// sidewall) with zero-bias `capacitances`, built-in `potentials` and grading
-/// coefficients `gradings` at its `voltage`: each part's power law in reverse bias, and
-/// its linear continuation in forward bias, as `b3ld.c` and `b4v5ld.c` compute it.
+/// Evaluates three-part junction depletion charge (bottom, isolation sidewall, and gate
+/// sidewall) from zero-bias `capacitances`, built-in `potentials`, and `gradings` at
+/// `voltage`. Reverse bias sums each power law, and forward bias continues linearly,
+/// matching `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn three_part_depletion<R: Real, const N: usize>(
     capacitances: [R; 3],
     potentials: [R; 3],
@@ -802,8 +794,8 @@ pub(crate) fn three_part_depletion<R: Real, const N: usize>(
     }
 }
 
-/// The channel-length modulation length of BSIM3's and BSIM4's strong-inversion flicker
-/// noise (`b3noi.c` and `b4v5noi.c`).
+/// Computes the channel-length modulation length for BSIM3 and BSIM4 strong-inversion
+/// flicker noise (`b3noi.c` and `b4v5noi.c`).
 pub(crate) fn clm_noise_length(vds: f64, vdseff: f64, litl: f64, esat: f64, em: f64) -> f64 {
     if em <= 0.0 {
         0.0
