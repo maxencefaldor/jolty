@@ -26,26 +26,26 @@ import decimal
 import itertools
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass as stdlib_dataclass
 from dataclasses import field, fields
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Final, Literal, LiteralString, Never
+from typing import Annotated, Final, Literal, LiteralString
 
 from pydantic import (
+    BeforeValidator,
     ConfigDict,
     JsonValue,
     ValidationError,
     ValidationInfo,
-    field_validator,
     model_validator,
 )
 from pydantic.dataclasses import dataclass, rebuild_dataclass
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from jolty import _core, ir
-from jolty.errors import DimensionError
+from jolty.errors import DimensionError, detail, fail, raise_if_errors
 from jolty.spice import PeriodicSteadyStateCard, ngspice
 from jolty.units import (
     FREQUENCY,
@@ -73,53 +73,43 @@ type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 backward Euler for the most damping."""
 
 
-def _fail(kind: LiteralString, message: str) -> Never:
-    """Raises a Pydantic custom error holding literal `message` safe from braces."""
-    raise PydanticCustomError(kind, "{message}", {"message": message})
-
-
-def _detail(
-    kind: LiteralString,
-    message: str,
-    value: object,
-    location: tuple[int | str, ...] = (),
-) -> InitErrorDetails:
-    """One structured validation error entry at `location` with literal `message`."""
-    return InitErrorDetails(
-        type=PydanticCustomError(kind, "{message}", {"message": message}),
-        loc=location,
-        input=value,
-    )
-
-
-def _raise_if_errors(title: str, found: Sequence[InitErrorDetails]) -> None:
-    """Raises `ValidationError` holding every entry of `found`, if any."""
-    if found:
-        raise ValidationError.from_exception_data(title, list(found))
-
-
-def _check_integer(
-    value: object,
-    name: str,
+def _integer(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
-    minimum_message: str | None = None,
-) -> int:
-    """Validates `value` is a strict integer (not bool) within `[minimum, maximum)`."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        _fail("int_type", f"{name} is an integer, not {value!r}")
-    if minimum is not None and value < minimum:
-        message = (
-            f"{name} is {minimum} or more, not {value}"
-            if minimum_message is None
-            else minimum_message
-        )
-        _fail("int_range", message)
-    if maximum is not None and value >= maximum:
-        message = f"{name} lies from {minimum or 0} to {maximum - 1}, not {value}"
-        _fail("int_range", message)
-    return value
+    range_message: str | None = None,
+    optional: bool = False,
+) -> BeforeValidator:
+    """Builds a strict integer field validator over `[minimum, maximum)`."""
+
+    def validate(value: object, info: ValidationInfo) -> int | None:
+        if optional and value is None:
+            return None
+        name = info.field_name or "option"
+        if isinstance(value, bool) or not isinstance(value, int):
+            fail("int_type", f"{name} is an integer, not {value!r}")
+        if (minimum is not None and value < minimum) or (
+            maximum is not None and value >= maximum
+        ):
+            message = (
+                f"{name} is {minimum} or more, not {value}"
+                if range_message is None
+                else range_message.format(value=value)
+            )
+            fail("int_range", message)
+        return value
+
+    return BeforeValidator(validate)
+
+
+def _seed(label: str, *, optional: bool = False) -> BeforeValidator:
+    """Builds a 64-bit unsigned integer seed validator."""
+    return _integer(
+        minimum=0,
+        maximum=_SEED_LIMIT,
+        range_message=f"{label} lies from 0 to 2**64 - 1, not {{value}}",
+        optional=optional,
+    )
 
 
 def _check_float(
@@ -131,377 +121,554 @@ def _check_float(
 ) -> float:
     """Validates `value` is a strict real number (not bool), finite and in range."""
     if isinstance(value, bool) or not isinstance(value, int | float):
-        _fail("float_type", f"{name} is a real number, not {value!r}")
+        fail("float_type", f"{name} is a real number, not {value!r}")
     converted = float(value)
     if not math.isfinite(converted):
-        _fail("finite", f"{name} is finite, not {converted!r}")
+        fail("finite", f"{name} is finite, not {converted!r}")
     if positive and converted <= 0.0:
-        _fail("positive", f"{name} is positive, not {converted!r}")
+        fail("positive", f"{name} is positive, not {converted!r}")
     if non_negative and converted < 0.0:
-        _fail("non_negative", f"{name} is 0 or more, not {converted!r}")
+        fail("non_negative", f"{name} is 0 or more, not {converted!r}")
     return converted
 
 
-def _check_boolean(value: object, name: str) -> bool:
-    """Validates `value` is a strict boolean."""
-    if not isinstance(value, bool):
-        _fail("bool_type", f"{name} is a boolean, not {value!r}")
-    return value
+def _real(
+    *,
+    positive: bool = False,
+    non_negative: bool = False,
+    optional: bool = False,
+) -> BeforeValidator:
+    """Builds a strict finite float field validator."""
+
+    def validate(value: object, info: ValidationInfo) -> float | None:
+        if optional and value is None:
+            return None
+        return _check_float(
+            value,
+            info.field_name or "option",
+            positive=positive,
+            non_negative=non_negative,
+        )
+
+    return BeforeValidator(validate)
 
 
-def _check_string(value: object, name: str, *, non_empty: bool = False) -> str:
-    """Validates `value` is a string, and non-empty when `non_empty`."""
+def _boolean(*, optional: bool = False) -> BeforeValidator:
+    """Builds a strict boolean field validator."""
+
+    def validate(value: object, info: ValidationInfo) -> bool | None:
+        if optional and value is None:
+            return None
+        if not isinstance(value, bool):
+            name = info.field_name or "flag"
+            fail("bool_type", f"{name} is a boolean, not {value!r}")
+        return value
+
+    return BeforeValidator(validate)
+
+
+def _check_non_empty(value: object, name: str) -> str:
+    """Validates `value` is a non-empty string."""
     if not isinstance(value, str):
-        _fail("string_type", f"{name} is a string, not {value!r}")
-    if non_empty and not value:
-        _fail("empty", f"{name} is non-empty, not ''")
+        fail("string_type", f"{name} is a string, not {value!r}")
+    if not value:
+        fail("empty", f"{name} is non-empty, not ''")
     return value
+
+
+def _text(*, optional: bool = False) -> BeforeValidator:
+    """Builds a non-empty string field validator."""
+
+    def validate(value: object, info: ValidationInfo) -> str | None:
+        return (
+            None
+            if optional and value is None
+            else _check_non_empty(value, info.field_name or "name")
+        )
+
+    return BeforeValidator(validate)
+
+
+def _validate_reference(value: object, info: ValidationInfo) -> str | None:
+    """Validates an optional reference node distinct from `output`."""
+    if value is None:
+        return None
+    checked = _check_non_empty(value, "reference")
+    if checked == info.data.get("output"):
+        fail("same_node", f"the output `{checked}` is taken over itself")
+    return checked
 
 
 def _check_method(value: object) -> Method:
     """Validates `value` is one of the supported integration methods."""
     match value:
-        case "trapezoidal":
-            return "trapezoidal"
-        case "gear2":
-            return "gear2"
-        case "backward_euler":
-            return "backward_euler"
+        case "trapezoidal" | "gear2" | "backward_euler":
+            return value
         case _:
             message = (
-                "an integration method is 'trapezoidal', 'gear2' or 'backward_euler', "
-                f"not {value!r}"
+                "an integration method is 'trapezoidal', 'gear2' or "
+                f"'backward_euler', not {value!r}"
             )
-            _fail("method", message)
+            fail("method", message)
 
 
 def _check_quantity(
-    value: object,
-    dimension: Dimension,
-    what: str,
-    *,
-    positive: bool = False,
-    non_negative: bool = False,
+    value: object, dimension: Dimension, what: str, *, positive: bool = False
 ) -> Quantity:
-    """Validates `value` is a `Quantity` of `dimension`, finite and in range.
+    """Validates `value` is a finite `Quantity` of `dimension`.
 
     Raises:
         DimensionError: When `value` is a `Quantity` with another dimension.
-        PydanticCustomError: When `value` is not a `Quantity`, non-finite, or outside
-            the requested sign range.
+        PydanticCustomError: When `value` is not a `Quantity`, non-finite, or
+            non-positive when `positive` is true.
     """
     if not isinstance(value, Quantity):
-        _fail("quantity_type", f"{what} is a Quantity, not {value!r}")
+        fail("quantity_type", f"{what} is a Quantity, not {value!r}")
     if value.dimension != dimension:
         message = f"{what} takes a quantity in {dimension}, not {value}"
         raise DimensionError(message)
     if not math.isfinite(value.value):
-        _fail("finite", f"{what} is finite, not {value}")
+        fail("finite", f"{what} is finite, not {value}")
     if positive and value.value <= 0.0:
-        _fail("positive", f"{what} is positive, not {value}")
-    if non_negative and value.value < 0.0:
-        _fail("non_negative", f"{what} is at least 0 {dimension}, not {value}")
+        fail("positive", f"{what} is positive, not {value}")
     return value
 
 
-def _check_voltage_map(value: object, title: str, what: str) -> dict[str, Quantity]:
-    """Validates a mapping of net names to finite voltage quantities."""
-    if not isinstance(value, Mapping):
-        _fail("mapping_type", f"{title} is a mapping of net names to voltages")
-    errors: list[InitErrorDetails] = []
-    checked: dict[str, Quantity] = {}
-    for net, level in value.items():
-        if not isinstance(net, str):
-            errors.append(
-                _detail(
-                    "string_type",
-                    f"a net name is a string, not {net!r}",
-                    net,
-                    (repr(net),),
-                )
-            )
-            continue
-        if not isinstance(level, Quantity):
-            errors.append(
-                _detail(
-                    "quantity_type",
-                    f"{what} for {net!r} is a Quantity, not {level!r}",
-                    level,
-                    (net,),
-                )
-            )
-            continue
-        if level.dimension != VOLTAGE:
-            message = f"{what} takes a quantity in {VOLTAGE}, not {level}"
-            raise DimensionError(message)
-        if not math.isfinite(level.value):
-            errors.append(
-                _detail(
-                    "finite",
-                    f"{what} of {net!r} is finite, not {level}",
-                    level,
-                    (net,),
-                )
-            )
-            continue
-        checked[net] = level
-    _raise_if_errors(title, errors)
-    return checked
-
-
-def _check_frequencies(
-    value: object,
-    title: str,
+def _quantity(
+    dimension: Dimension,
+    what: str,
     *,
-    strictly_positive: bool,
-    empty_message: str,
-) -> tuple[Quantity, ...]:
-    """Validates a non-empty sequence of finite frequency quantities."""
-    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-        _fail(
-            "sequence_type",
-            f"frequencies is a sequence of quantities, not {value!r}",
+    positive: bool = False,
+    optional: bool = False,
+) -> BeforeValidator:
+    """Builds a `Quantity` field validator enforcing `dimension` and finiteness."""
+
+    def validate(value: object) -> Quantity | None:
+        return (
+            None
+            if optional and value is None
+            else _check_quantity(value, dimension, what, positive=positive)
         )
-    items = tuple(value)
-    if not items:
-        _fail("empty", empty_message)
-    errors: list[InitErrorDetails] = []
-    checked: list[Quantity] = []
-    for index, frequency in enumerate(items):
-        if not isinstance(frequency, Quantity):
-            errors.append(
-                _detail(
-                    "quantity_type",
-                    f"a frequency is a Quantity, not {frequency!r}",
-                    frequency,
-                    (index,),
-                )
-            )
-            continue
-        if frequency.dimension != FREQUENCY:
-            message = f"a frequency takes a quantity in {FREQUENCY}, not {frequency}"
-            raise DimensionError(message)
-        if not math.isfinite(frequency.value):
-            errors.append(
-                _detail(
-                    "finite",
-                    f"frequencies are finite, not {frequency}",
-                    frequency,
-                    (index,),
-                )
-            )
-        elif strictly_positive and frequency.value <= 0.0:
-            errors.append(
-                _detail(
-                    "positive",
-                    f"noise frequencies are positive, not {frequency}",
-                    frequency,
-                    (index,),
-                )
-            )
-        elif not strictly_positive and frequency.value < 0.0:
-            errors.append(
-                _detail(
-                    "non_negative",
-                    f"frequencies are at least 0 Hz, not {frequency}",
-                    frequency,
-                    (index,),
-                )
-            )
-        else:
-            checked.append(frequency)
-    _raise_if_errors(title, errors)
-    return tuple(checked)
+
+    return BeforeValidator(validate)
 
 
-def _check_breakpoints(
-    value: object,
-    title: str,
+def _model(
+    expected: type[object], label: str, *, optional: bool = False
+) -> BeforeValidator:
+    """Builds a validator accepting `expected`, a mapping, or None when `optional`."""
+
+    def validate(value: object, info: ValidationInfo) -> object:
+        if optional and value is None:
+            return None
+        if isinstance(value, expected | Mapping):
+            return value
+        name = info.field_name or label
+        fail("model_type", f"{name} is {label}, not {value!r}")
+
+    return BeforeValidator(validate)
+
+
+def _instance(
+    expected: type[object] | tuple[type[object], ...],
+    kind: LiteralString,
+    message: str,
     *,
-    upper: Quantity | None,
-    upper_name: str,
-    require_period: bool = False,
-) -> tuple[Quantity, ...]:
-    """Validates breakpoint times against `(0, upper]` when `upper` is known."""
+    optional: bool = False,
+) -> BeforeValidator:
+    """Builds a validator checking `value` is an instance of `expected`."""
+
+    def validate(value: object) -> object:
+        if optional and value is None:
+            return None
+        if isinstance(value, expected):
+            return value
+        fail(kind, message.format(value=repr(value)))
+
+    return BeforeValidator(validate)
+
+
+def _as_sequence(
+    value: object, not_sequence: str, *, string_error: str | None = None
+) -> tuple[object, ...]:
+    """Validates `value` is a non-string, non-bytes `Sequence`."""
+    if isinstance(value, str) and string_error is not None:
+        fail("sequence_type", string_error.format(value=repr(value)))
     if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-        _fail(
-            "sequence_type",
-            f"breakpoints is a sequence of times, not {value!r}",
-        )
-    items = tuple(value)
-    if require_period and items:
-        message = (
-            "an oscillator's period is found, not fixed, so its periodic steady "
-            "state has no times to step onto"
-        )
-        _fail("oscillator_breakpoints", message)
-    errors: list[InitErrorDetails] = []
-    checked: list[Quantity] = []
-    limit = upper.value if upper is not None and upper.value > 0.0 else None
-    for index, time in enumerate(items):
-        if not isinstance(time, Quantity):
-            errors.append(
-                _detail(
-                    "quantity_type",
-                    f"a time to step onto is a Quantity, not {time!r}",
-                    time,
-                    (index,),
-                )
-            )
-            continue
-        if time.dimension != TIME:
-            message = f"a time to step onto takes a quantity in {TIME}, not {time}"
-            raise DimensionError(message)
-        if not math.isfinite(time.value):
-            errors.append(
-                _detail(
-                    "finite",
-                    f"a time to step onto is finite, not {time}",
-                    time,
-                    (index,),
-                )
-            )
-        elif not (time.value > 0.0 and (limit is None or time.value <= limit)):
-            errors.append(
-                _detail(
-                    "breakpoint_range",
-                    f"the times to step onto lie after 0 and at most {upper_name}, "
-                    f"not {time}",
-                    time,
-                    (index,),
-                )
-            )
-        else:
-            checked.append(time)
-    _raise_if_errors(title, errors)
-    return tuple(checked)
+        fail("sequence_type", not_sequence.format(value=repr(value)))
+    return tuple(value)
 
 
-def _check_string_sequence(
-    value: object, title: str, item_noun: str
-) -> tuple[str, ...]:
-    """Validates a sequence of strings, rejecting a bare string."""
-    if isinstance(value, str):
-        message = (
-            f"{title} is a sequence of {item_noun}, such as [{value!r}], "
-            f"not the string {value!r}"
-        )
-        _fail("sequence_type", message)
-    if isinstance(value, bytes) or not isinstance(value, Sequence):
-        message = f"{title} is a sequence of {item_noun}, not {value!r}"
-        _fail("sequence_type", message)
-    items = tuple(value)
+def _collect_items[T](
+    items: tuple[object, ...], title: str, check_item: Callable[[object], T]
+) -> tuple[T, ...]:
+    """Validates every entry of `items`, collecting all per-item errors."""
     errors: list[InitErrorDetails] = []
-    checked: list[str] = []
+    checked: list[T] = []
     for index, item in enumerate(items):
-        if not isinstance(item, str):
-            errors.append(
-                _detail(
-                    "string_type",
-                    f"{title} is a sequence of {item_noun}, not {item!r}",
-                    item,
-                    (index,),
-                )
-            )
-        else:
-            checked.append(item)
-    _raise_if_errors(title, errors)
+        try:
+            checked.append(check_item(item))
+        except PydanticCustomError as error:
+            errors.append(InitErrorDetails(type=error, loc=(index,), input=item))
+    raise_if_errors(title, errors)
     return tuple(checked)
 
 
-def _check_differentiated(value: object) -> Differentiated:
-    """Validates `value` is `None` or a differentiable analysis."""
-    if value is None or isinstance(
-        value, DcSweep | Ac | Transient | PeriodicSteadyState
-    ):
-        return value
-    message = (
-        "a differentiated analysis is a DcSweep, Ac, Transient, "
-        f"PeriodicSteadyState or None, not {value!r}"
-    )
-    _fail("analysis_type", message)
-
-
-def _check_variants(value: object, subject: str) -> Variants:
-    """Validates `value` is a `Variants` instance."""
-    if isinstance(value, MonteCarlo | Grid | Explicit | Product):
-        return value
-    _fail("variants_type", f"{subject}, not {value!r}")
-
-
-def _check_rising_grid(
-    value: object, name: str, *, strictly_positive: bool
-) -> tuple[float, ...]:
-    """Validates a strictly increasing sequence of finite floats."""
-    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-        _fail("sequence_type", f"the {name} is a sequence of numbers, not {value!r}")
-    above = "above zero" if strictly_positive else "from zero or more"
-    raw = tuple(value)
-    numbers: list[float] = []
-    for item in raw:
-        if isinstance(item, bool) or not isinstance(item, int | float):
-            _fail("float_type", f"the {name} holds real numbers, not {item!r}")
-        converted = float(item)
-        if not math.isfinite(converted):
-            _fail("finite", f"the {name} are finite, not {raw}")
-        numbers.append(converted)
-    values = tuple(numbers)
-    rising = all(a < b for a, b in itertools.pairwise(values))
-    first = values[0] if values else math.nan
-    starts = first > 0.0 if strictly_positive else first >= 0.0
-    if not values or not rising or not starts:
-        _fail("grid_order", f"the {name} rise {above}, not {values}")
-    return values
-
-
-@stdlib_dataclass(frozen=True, slots=True)
-class _IdentifierRule:
-    """Describes the messages for an identifier-keyed mapping field."""
-
-    title: str
-    kind: str
-    type_message: str
-    non_empty_message: str | None = None
-
-
-def _check_identifier_mapping[T](
+def _collect_mapping[T](
     value: object,
-    expected_type: type[T] | tuple[type[object], ...],
-    rule: _IdentifierRule,
+    title: str,
+    key_noun: str,
+    check_value: Callable[[str, object], T],
 ) -> dict[str, T]:
-    """Validates a mapping keyed by Python identifiers to instances of `expected_type`.
-
-    Reports every invalid key and every wrong-typed value at once.
-    """
+    """Validates a string-keyed mapping, collecting all key and entry errors."""
     if not isinstance(value, Mapping):
-        _fail("mapping_type", f"{rule.title} is a mapping, not {value!r}")
-    if rule.non_empty_message is not None and not value:
-        _fail("empty", rule.non_empty_message)
+        fail("mapping_type", f"{title} is a mapping, not {value!r}")
     errors: list[InitErrorDetails] = []
     checked: dict[str, T] = {}
     for key, item in value.items():
-        if not isinstance(key, str) or not key.isidentifier():
+        if not isinstance(key, str):
             errors.append(
-                _detail(
-                    "identifier",
-                    f"{rule.kind} is named by a Python identifier, not {key!r}",
+                detail(
+                    "string_type",
+                    f"{key_noun} is a string, not {key!r}",
                     key,
-                    (str(key),),
+                    (repr(key),),
                 )
             )
-        if not isinstance(item, expected_type):
-            errors.append(
-                _detail(
-                    "value_type",
-                    rule.type_message.format(key=key, item=repr(item)),
-                    item,
-                    (str(key),),
-                )
+            continue
+        try:
+            checked[key] = check_value(key, item)
+        except PydanticCustomError as error:
+            errors.append(InitErrorDetails(type=error, loc=(key,), input=item))
+        except ValidationError as error:
+            errors.extend(
+                detail("nested", entry["msg"], entry["input"], (key, *entry["loc"]))
+                for entry in error.errors()
             )
-        elif isinstance(key, str) and key.isidentifier():
-            checked[key] = item
-    _raise_if_errors(rule.title, errors)
+    raise_if_errors(title, errors)
     return checked
+
+
+def _voltage_map(title: str, what: str) -> BeforeValidator:
+    """Builds a validator for a mapping of net names to finite voltage quantities."""
+
+    def check_level(_net: str, level: object) -> Quantity:
+        return _check_quantity(level, VOLTAGE, what)
+
+    def validate(value: object) -> dict[str, Quantity]:
+        return _collect_mapping(value, title, "a net name", check_level)
+
+    return BeforeValidator(validate)
+
+
+def _frequencies(empty_message: str, *, strictly_positive: bool) -> BeforeValidator:
+    """Builds a validator for a non-empty sequence of finite frequency quantities."""
+
+    def check_one(item: object) -> Quantity:
+        frequency = _check_quantity(item, FREQUENCY, "a frequency")
+        if strictly_positive and frequency.value <= 0.0:
+            fail("positive", f"noise frequencies are positive, not {frequency}")
+        if not strictly_positive and frequency.value < 0.0:
+            fail("non_negative", f"frequencies are at least 0 Hz, not {frequency}")
+        return frequency
+
+    def validate(value: object) -> tuple[Quantity, ...]:
+        items = _as_sequence(
+            value, "frequencies is a sequence of quantities, not {value}"
+        )
+        if not items:
+            fail("empty", empty_message)
+        return _collect_items(items, "frequencies", check_one)
+
+    return BeforeValidator(validate)
+
+
+def _breakpoints(
+    upper_field: str, upper_name: str, *, require_upper: bool = False
+) -> BeforeValidator:
+    """Builds a validator for breakpoint times within `(0, upper]`."""
+
+    def validate(value: object, info: ValidationInfo) -> tuple[Quantity, ...]:
+        items = _as_sequence(value, "breakpoints is a sequence of times, not {value}")
+        upper = info.data.get(upper_field)
+        if require_upper and upper_field in info.data and upper is None and items:
+            message = (
+                "an oscillator's period is found, not fixed, so its periodic steady "
+                "state has no times to step onto"
+            )
+            fail("oscillator_breakpoints", message)
+        limit = (
+            upper.value if isinstance(upper, Quantity) and upper.value > 0.0 else None
+        )
+
+        def check_time(item: object) -> Quantity:
+            time = _check_quantity(item, TIME, "a time to step onto")
+            if not (time.value > 0.0 and (limit is None or time.value <= limit)):
+                message = (
+                    f"the times to step onto lie after 0 and at most {upper_name}, "
+                    f"not {time}"
+                )
+                fail("breakpoint_range", message)
+            return time
+
+        return _collect_items(items, "breakpoints", check_time)
+
+    return BeforeValidator(validate)
+
+
+def _check_quantity_sequence(
+    value: object,
+    title: str,
+    what: str,
+    *,
+    empty_message: str,
+    expected: Dimension | None = None,
+) -> tuple[Quantity, ...]:
+    """Validates a non-empty sequence of finite quantities sharing one dimension."""
+    items = _as_sequence(value, f"{title} is a sequence of quantities, not {{value}}")
+    if not items:
+        fail("empty", empty_message)
+    dimension = expected
+
+    def check_one(item: object) -> Quantity:
+        nonlocal dimension
+        if not isinstance(item, Quantity):
+            fail("quantity_type", f"{what} is a Quantity, not {item!r}")
+        if dimension is None:
+            dimension = item.dimension
+        return _check_quantity(item, dimension, what)
+
+    return _collect_items(items, "values", check_one)
+
+
+def _check_typed_sequence[T](
+    value: object,
+    expected: type[T],
+    title: str,
+    noun: str,
+    *,
+    empty_message: str | None = None,
+) -> tuple[T, ...]:
+    """Validates a sequence whose entries are instances of `expected`."""
+    string_error = (
+        f"{title} is a sequence of {noun}, such as [{{value}}], "
+        "not the string {value}"
+        if expected is str
+        else None
+    )
+    items = _as_sequence(
+        value,
+        f"{title} is a sequence of {noun}, not {{value}}",
+        string_error=string_error,
+    )
+    if empty_message is not None and not items:
+        fail("empty", empty_message)
+
+    def check_one(item: object) -> T:
+        if not isinstance(item, expected):
+            kind: LiteralString = "string_type" if expected is str else "item_type"
+            fail(kind, f"{title} is a sequence of {noun}, not {item!r}")
+        return item
+
+    return _collect_items(items, title, check_one)
+
+
+def _sequence_of[T](
+    expected: type[T],
+    title: str,
+    noun: str,
+    *,
+    empty_message: str | None = None,
+) -> BeforeValidator:
+    """Builds a validator for a sequence whose items are instances of `expected`."""
+
+    def validate(value: object) -> tuple[T, ...]:
+        return _check_typed_sequence(
+            value, expected, title, noun, empty_message=empty_message
+        )
+
+    return BeforeValidator(validate)
+
+
+def _rising_grid(name: str, *, strictly_positive: bool) -> BeforeValidator:
+    """Builds a validator for a strictly increasing sequence of finite floats."""
+    above = "above zero" if strictly_positive else "from zero or more"
+
+    def validate(value: object) -> tuple[float, ...]:
+        raw = _as_sequence(value, f"the {name} is a sequence of numbers, not {{value}}")
+        values = tuple(_check_float(item, f"the {name}") for item in raw)
+        rising = all(a < b for a, b in itertools.pairwise(values))
+        first = values[0] if values else math.nan
+        starts = first > 0.0 if strictly_positive else first >= 0.0
+        if not values or not rising or not starts:
+            fail("grid_order", f"the {name} rise {above}, not {values}")
+        return values
+
+    return BeforeValidator(validate)
+
+
+@stdlib_dataclass(frozen=True, slots=True)
+class _MappingRule:
+    """Describes key and value error messages for a validated mapping field."""
+
+    title: str
+    key_message: str
+    type_message: str
+    non_empty_message: str | None = None
+    identifier_keys: bool = True
+
+
+def _valid_mapping_key(key: object, *, identifier_keys: bool) -> bool:
+    """Whether `key` satisfies a mapping rule's key constraint."""
+    if not isinstance(key, str):
+        return False
+    return key.isidentifier() if identifier_keys else bool(key)
+
+
+def _mapping(
+    expected_type: type[object] | tuple[type[object], ...], rule: _MappingRule
+) -> BeforeValidator:
+    """Builds a validator for a string-keyed mapping, reporting every error at once."""
+    key_kind: LiteralString = "identifier" if rule.identifier_keys else "string_type"
+
+    def validate(value: object) -> dict[str, object]:
+        if not isinstance(value, Mapping):
+            fail("mapping_type", f"{rule.title} is a mapping, not {value!r}")
+        if rule.non_empty_message is not None and not value:
+            fail("empty", rule.non_empty_message)
+        errors: list[InitErrorDetails] = []
+        checked: dict[str, object] = {}
+        for key, item in value.items():
+            key_ok = _valid_mapping_key(key, identifier_keys=rule.identifier_keys)
+            if not key_ok:
+                message = rule.key_message.format(key=repr(key))
+                errors.append(detail(key_kind, message, key, (str(key),)))
+            if not isinstance(item, expected_type):
+                message = rule.type_message.format(key=key, item=repr(item))
+                errors.append(detail("value_type", message, item, (str(key),)))
+            elif key_ok and isinstance(key, str):
+                checked[key] = item
+        raise_if_errors(rule.title, errors)
+        return checked
+
+    return BeforeValidator(validate)
+
+
+def _check_random_variables(value: object) -> tuple[ir.RandomVariable, ...]:
+    """Validates a sequence of `RandomVariable` objects with finite derivatives."""
+    items = _as_sequence(
+        value, "random_variables is a sequence of RandomVariable, not {value}"
+    )
+    errors: list[InitErrorDetails] = []
+    checked: list[ir.RandomVariable] = []
+    for index, variable in enumerate(items):
+        if not isinstance(variable, ir.RandomVariable):
+            errors.append(
+                detail(
+                    "random_variable_type",
+                    f"random_variables holds RandomVariable objects, not {variable!r}",
+                    variable,
+                    (index,),
+                )
+            )
+            continue
+        checked.append(variable)
+        errors.extend(
+            detail(
+                "finite",
+                f"derivative of {path} {parameter} is finite, not {derivative!r}",
+                derivative,
+                (index, path, parameter),
+            )
+            for path, named in variable.derivatives.items()
+            for parameter, derivative in named.items()
+            if not math.isfinite(derivative)
+        )
+    raise_if_errors("random_variables", errors)
+    return tuple(checked)
+
+
+def _check_overrides(value: object) -> dict[str, dict[str, float]]:
+    """Validates a nested mapping of instance paths to finite float overrides."""
+
+    def check_parameter(name: str, number: object) -> float:
+        return _check_float(number, name)
+
+    def check_instance(path: str, named: object) -> dict[str, float]:
+        return _collect_mapping(
+            named, f"overrides for {path!r}", "a parameter name", check_parameter
+        )
+
+    return _collect_mapping(value, "overrides", "an instance path", check_instance)
+
+
+def _check_sweep_values(value: object) -> tuple[Quantity, ...]:
+    """Validates a non-empty sequence of finite same-dimension DC sweep levels."""
+    return _check_quantity_sequence(
+        value,
+        "a DC sweep's values",
+        "a sweep level",
+        empty_message="a DC sweep has at least one level",
+    )
+
+
+def _check_worst_case_step(value: object) -> float:
+    """Validates a worst-case probe step in `(0, 1]`."""
+    converted = _check_float(value, "step")
+    if not 0.0 < converted <= 1.0:
+        message = f"a worst case moves a step above 0 and at most 1, not {converted!r}"
+        fail("step_range", message)
+    return converted
+
+
+def _validate_axis_parameter(value: object, info: ValidationInfo) -> str | None:
+    """Validates `Axis.parameter` is paired with `Axis.instance`."""
+    checked = None if value is None else _check_non_empty(value, "parameter")
+    if "instance" in info.data and (info.data["instance"] is None) != (checked is None):
+        fail("axis_pairing", "an axis names an instance and its parameter, or neither")
+    return checked
+
+
+def _validate_axis_values(value: object, info: ValidationInfo) -> tuple[Quantity, ...]:
+    """Validates `Axis.values`, enforcing temperature units for temperature axes."""
+    is_temperature = (
+        "instance" in info.data
+        and "parameter" in info.data
+        and info.data["instance"] is None
+        and info.data["parameter"] is None
+    )
+    return _check_quantity_sequence(
+        value,
+        "an axis's values",
+        "an axis's value",
+        empty_message="an axis steps a value or more",
+        expected=TEMPERATURE if is_temperature else None,
+    )
+
+
+def _check_record(record: object) -> tuple[str, ...] | None:
+    """Validates `record` as `None` or a sequence of string patterns."""
+    if record is None:
+        return None
+    return _check_typed_sequence(record, str, "a record", "instance paths")
+
+
+def _check_product_part(value: object) -> Variants:
+    """Validates one operand of a `Product` is a `Variants` instance."""
+    if isinstance(value, MonteCarlo | Grid | Explicit | Product):
+        return value
+    fail("variants_type", f"a product is of variants, not {value!r}")
+
+
+_STRICT_BOOL: Final = _boolean()
+_NON_EMPTY: Final = _text()
+_OPTIONAL_NON_EMPTY: Final = _text(optional=True)
+_REFERENCE: Final = BeforeValidator(_validate_reference)
+_METHOD: Final = BeforeValidator(_check_method)
+_RECORD: Final = BeforeValidator(_check_record)
+_OPTIONAL_POSITIVE_FLOAT: Final = _real(positive=True, optional=True)
+_OPTIONAL_POSITIVE_INT: Final = _integer(minimum=1, optional=True)
+_OUTPUTS: Final = _sequence_of(str, "outputs", "unknown names")
 
 
 def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
@@ -513,50 +680,18 @@ def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
     return {net: voltage.to(VOLTAGE, what) for net, voltage in given.items()}
 
 
-def _raise_one(title: str, detail: InitErrorDetails) -> Never:
-    """Raises `ValidationError` holding a single `detail`."""
-    raise ValidationError.from_exception_data(title, [detail])
-
-
-def _check_record(record: object) -> tuple[str, ...] | None:
-    """Validates `record` as `None` or a sequence of string patterns."""
-    if record is None:
-        return None
-    if isinstance(record, str):
-        message = (
-            "a record is a sequence of instance paths, such as "
-            f"[{record!r}], not the string {record!r}"
-        )
-        _raise_one("record", _detail("record_type", message, record))
-    if isinstance(record, bytes) or not isinstance(record, Sequence):
-        message = f"a record is a sequence of instance paths, not {record!r}"
-        _raise_one("record", _detail("record_type", message, record))
-    patterns = tuple(record)
-    errors: list[InitErrorDetails] = []
-    checked: list[str] = []
-    for index, pattern in enumerate(patterns):
-        if not isinstance(pattern, str):
-            errors.append(
-                _detail(
-                    "string_type",
-                    f"a record is a sequence of instance paths, not {patterns!r}",
-                    pattern,
-                    (index,),
-                )
-            )
-        else:
-            checked.append(pattern)
-    _raise_if_errors("record", errors)
-    return tuple(checked)
-
-
 def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
     """`record` as a tuple of patterns, or None when it is left out.
 
     Raises:
         ValidationError: When `record` is a string, or holds anything but strings.
     """
-    return _check_record(record)
+    try:
+        return _check_record(record)
+    except PydanticCustomError as error:
+        raise ValidationError.from_exception_data(
+            "record", [InitErrorDetails(type=error, loc=(), input=record)]
+        ) from None
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -569,18 +704,8 @@ class Recorded:
     margins to the regions' boundaries alone, which an operating point's `region` reads.
     """
 
-    record: Sequence[str] | None = field(default=None, kw_only=True)
-    regions: bool = field(default=False, kw_only=True)
-
-    @field_validator("record", mode="before")
-    @classmethod
-    def _validate_record(cls, value: object) -> tuple[str, ...] | None:
-        return _check_record(value)
-
-    @field_validator("regions", mode="before")
-    @classmethod
-    def _validate_regions(cls, value: object) -> bool:
-        return _check_boolean(value, "regions")
+    record: Annotated[Sequence[str] | None, _RECORD] = field(default=None, kw_only=True)
+    regions: Annotated[bool, _STRICT_BOOL] = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -602,19 +727,13 @@ class OperatingPoints(Recorded):
     reference its zero-current state beside its working one.
     """
 
-    max_solutions: int = 8
-
-    @field_validator("max_solutions", mode="before")
-    @classmethod
-    def _validate_max_solutions(cls, value: object) -> int:
-        return _check_integer(
-            value,
-            "max_solutions",
+    max_solutions: Annotated[
+        int,
+        _integer(
             minimum=1,
-            minimum_message=(
-                f"a search for operating points finds 1 or more, not {value}"
-            ),
-        )
+            range_message="a search for operating points finds 1 or more, not {value}",
+        ),
+    ] = 8
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -631,67 +750,9 @@ class DcSweep(Recorded):
     device made again from its parameters with the number replaced.
     """
 
-    source: str
-    values: Sequence[Quantity]
-    parameter: str | None = None
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def _validate_source(cls, value: object) -> str:
-        return _check_string(value, "source", non_empty=True)
-
-    @field_validator("values", mode="before")
-    @classmethod
-    def _validate_values(cls, value: object) -> tuple[Quantity, ...]:
-        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
-                "sequence_type",
-                f"a DC sweep's values is a sequence of quantities, not {value!r}",
-            )
-        items = tuple(value)
-        if not items:
-            _fail("empty", "a DC sweep has at least one level")
-        errors: list[InitErrorDetails] = []
-        checked: list[Quantity] = []
-        first_dimension: Dimension | None = None
-        for index, level in enumerate(items):
-            if not isinstance(level, Quantity):
-                errors.append(
-                    _detail(
-                        "quantity_type",
-                        f"a sweep level is a Quantity, not {level!r}",
-                        level,
-                        (index,),
-                    )
-                )
-                continue
-            if first_dimension is None:
-                first_dimension = level.dimension
-            elif level.dimension != first_dimension:
-                message = (
-                    f"a sweep level takes a quantity in {first_dimension}, not {level}"
-                )
-                raise DimensionError(message)
-            if not math.isfinite(level.value):
-                errors.append(
-                    _detail(
-                        "finite",
-                        f"a DC sweep's levels are finite, not {level}",
-                        level,
-                        (index,),
-                    )
-                )
-            else:
-                checked.append(level)
-        _raise_if_errors("values", errors)
-        return tuple(checked)
-
-    @field_validator("parameter", mode="before")
-    @classmethod
-    def _validate_parameter(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, "parameter", non_empty=True)
+    source: Annotated[str, _NON_EMPTY]
+    values: Annotated[Sequence[Quantity], BeforeValidator(_check_sweep_values)]
+    parameter: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self, dimension: Dimension) -> JsonValue:
         """The analysis in the engine's format, checked against `dimension`."""
@@ -708,23 +769,14 @@ class DcSweep(Recorded):
 class Ac(Recorded):
     """The small-signal response to a unit excitation of a source, at each frequency."""
 
-    source: str
-    frequencies: Sequence[Quantity]
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def _validate_source(cls, value: object) -> str:
-        return _check_string(value, "source", non_empty=True)
-
-    @field_validator("frequencies", mode="before")
-    @classmethod
-    def _validate_frequencies(cls, value: object) -> tuple[Quantity, ...]:
-        return _check_frequencies(
-            value,
-            "frequencies",
+    source: Annotated[str, _NON_EMPTY]
+    frequencies: Annotated[
+        Sequence[Quantity],
+        _frequencies(
+            "a small-signal analysis has at least one frequency",
             strictly_positive=False,
-            empty_message="a small-signal analysis has at least one frequency",
-        )
+        ),
+    ]
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -754,52 +806,20 @@ class Transient(Recorded):
         {'out': 1.0}
     """
 
-    stop: Quantity
-    max_step: Quantity | None = None
-    method: Method = "trapezoidal"
-    breakpoints: Sequence[Quantity] = ()
-    initial_conditions: Mapping[str, Quantity] = field(default_factory=dict)
-    operating_point: bool = True
-
-    @field_validator("stop", mode="before")
-    @classmethod
-    def _validate_stop(cls, value: object) -> Quantity:
-        return _check_quantity(value, TIME, "a transient's stop time", positive=True)
-
-    @field_validator("max_step", mode="before")
-    @classmethod
-    def _validate_max_step(cls, value: object) -> Quantity | None:
-        if value is None:
-            return None
-        return _check_quantity(value, TIME, "a transient's longest step", positive=True)
-
-    @field_validator("method", mode="before")
-    @classmethod
-    def _validate_method(cls, value: object) -> Method:
-        return _check_method(value)
-
-    @field_validator("breakpoints", mode="before")
-    @classmethod
-    def _validate_breakpoints(
-        cls, value: object, info: ValidationInfo
-    ) -> tuple[Quantity, ...]:
-        stop = info.data.get("stop")
-        return _check_breakpoints(
-            value,
-            "breakpoints",
-            upper=stop if isinstance(stop, Quantity) else None,
-            upper_name="the stop time",
-        )
-
-    @field_validator("initial_conditions", mode="before")
-    @classmethod
-    def _validate_initial_conditions(cls, value: object) -> dict[str, Quantity]:
-        return _check_voltage_map(value, "initial_conditions", "an initial condition")
-
-    @field_validator("operating_point", mode="before")
-    @classmethod
-    def _validate_operating_point(cls, value: object) -> bool:
-        return _check_boolean(value, "operating_point")
+    stop: Annotated[Quantity, _quantity(TIME, "a transient's stop time", positive=True)]
+    max_step: Annotated[
+        Quantity | None,
+        _quantity(TIME, "a transient's longest step", positive=True, optional=True),
+    ] = None
+    method: Annotated[Method, _METHOD] = "trapezoidal"
+    breakpoints: Annotated[
+        Sequence[Quantity], _breakpoints("stop", "the stop time")
+    ] = ()
+    initial_conditions: Annotated[
+        Mapping[str, Quantity],
+        _voltage_map("initial_conditions", "an initial condition"),
+    ] = field(default_factory=dict)
+    operating_point: Annotated[bool, _STRICT_BOOL] = True
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -841,10 +861,21 @@ class PeriodicSteadyState(Recorded):
         {'periodic_steady_state': {'method': 'trapezoidal'}}
     """
 
-    period: Quantity | None = None
-    max_step: Quantity | None = None
-    method: Method = "trapezoidal"
-    breakpoints: Sequence[Quantity] = ()
+    period: Annotated[
+        Quantity | None,
+        _quantity(
+            TIME, "a periodic steady state's period", positive=True, optional=True
+        ),
+    ] = None
+    max_step: Annotated[
+        Quantity | None,
+        _quantity(TIME, "a period's longest step", positive=True, optional=True),
+    ] = None
+    method: Annotated[Method, _METHOD] = "trapezoidal"
+    breakpoints: Annotated[
+        Sequence[Quantity],
+        _breakpoints("period", "the period", require_upper=True),
+    ] = ()
 
     @classmethod
     def from_spice(cls, card: PeriodicSteadyStateCard) -> PeriodicSteadyState:
@@ -870,42 +901,6 @@ class PeriodicSteadyState(Recorded):
             method=card.method or "trapezoidal",
         )
 
-    @field_validator("period", mode="before")
-    @classmethod
-    def _validate_period(cls, value: object) -> Quantity | None:
-        if value is None:
-            return None
-        return _check_quantity(
-            value, TIME, "a periodic steady state's period", positive=True
-        )
-
-    @field_validator("max_step", mode="before")
-    @classmethod
-    def _validate_max_step(cls, value: object) -> Quantity | None:
-        if value is None:
-            return None
-        return _check_quantity(value, TIME, "a period's longest step", positive=True)
-
-    @field_validator("method", mode="before")
-    @classmethod
-    def _validate_method(cls, value: object) -> Method:
-        return _check_method(value)
-
-    @field_validator("breakpoints", mode="before")
-    @classmethod
-    def _validate_breakpoints(
-        cls, value: object, info: ValidationInfo
-    ) -> tuple[Quantity, ...]:
-        period_present = "period" in info.data
-        period = info.data.get("period")
-        return _check_breakpoints(
-            value,
-            "breakpoints",
-            upper=period if isinstance(period, Quantity) else None,
-            upper_name="the period",
-            require_period=period_present and period is None,
-        )
-
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
         steady: dict[str, JsonValue] = {"method": self.method}
@@ -923,6 +918,14 @@ class PeriodicSteadyState(Recorded):
 type Differentiated = DcSweep | Ac | Transient | PeriodicSteadyState | None
 """An analysis a sensitivity or a mismatch analysis differentiates, None for the
 operating point."""
+
+_DIFFERENTIATED: Final = _instance(
+    (DcSweep, Ac, Transient, PeriodicSteadyState),
+    "analysis_type",
+    "a differentiated analysis is a DcSweep, Ac, Transient, PeriodicSteadyState "
+    "or None, not {value}",
+    optional=True,
+)
 
 
 def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
@@ -958,18 +961,8 @@ class Sensitivity:
     the fewer solves.
     """
 
-    outputs: Sequence[str]
-    of: Differentiated = None
-
-    @field_validator("outputs", mode="before")
-    @classmethod
-    def _validate_outputs(cls, value: object) -> tuple[str, ...]:
-        return _check_string_sequence(value, "outputs", "unknown names")
-
-    @field_validator("of", mode="before")
-    @classmethod
-    def _validate_of(cls, value: object) -> Differentiated:
-        return _check_differentiated(value)
+    outputs: Annotated[Sequence[str], _OUTPUTS]
+    of: Annotated[Differentiated, _DIFFERENTIATED] = None
 
     def to_json(self, level: Dimension = VOLTAGE) -> JsonValue:
         """The analysis in the engine's format.
@@ -1000,58 +993,11 @@ class Mismatch:
     random variable's share of its variance is its own term's.
     """
 
-    outputs: Sequence[str]
-    of: Differentiated = None
-    random_variables: Sequence[ir.RandomVariable] = ()
-
-    @field_validator("outputs", mode="before")
-    @classmethod
-    def _validate_outputs(cls, value: object) -> tuple[str, ...]:
-        return _check_string_sequence(value, "outputs", "unknown names")
-
-    @field_validator("of", mode="before")
-    @classmethod
-    def _validate_of(cls, value: object) -> Differentiated:
-        return _check_differentiated(value)
-
-    @field_validator("random_variables", mode="before")
-    @classmethod
-    def _validate_random_variables(cls, value: object) -> tuple[ir.RandomVariable, ...]:
-        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
-                "sequence_type",
-                f"random_variables is a sequence of RandomVariable, not {value!r}",
-            )
-        items = tuple(value)
-        errors: list[InitErrorDetails] = []
-        checked: list[ir.RandomVariable] = []
-        for index, variable in enumerate(items):
-            if not isinstance(variable, ir.RandomVariable):
-                errors.append(
-                    _detail(
-                        "random_variable_type",
-                        f"random_variables holds RandomVariable objects, "
-                        f"not {variable!r}",
-                        variable,
-                        (index,),
-                    )
-                )
-                continue
-            checked.append(variable)
-            for path, named in variable.derivatives.items():
-                for parameter, derivative in named.items():
-                    if not math.isfinite(derivative):
-                        errors.append(
-                            _detail(
-                                "finite",
-                                f"derivative of {path} {parameter} is finite, "
-                                f"not {derivative!r}",
-                                derivative,
-                                (index, path, parameter),
-                            )
-                        )
-        _raise_if_errors("random_variables", errors)
-        return tuple(checked)
+    outputs: Annotated[Sequence[str], _OUTPUTS]
+    of: Annotated[Differentiated, _DIFFERENTIATED] = None
+    random_variables: Annotated[
+        Sequence[ir.RandomVariable], BeforeValidator(_check_random_variables)
+    ] = ()
 
     def to_json(
         self, level: Dimension = VOLTAGE, toleranced: Sequence[JsonValue] = ()
@@ -1086,23 +1032,13 @@ class Stability:
     1975). Negative feedback makes the loop gain positive at low frequencies.
     """
 
-    probe: str
-    frequencies: Sequence[Quantity]
-
-    @field_validator("probe", mode="before")
-    @classmethod
-    def _validate_probe(cls, value: object) -> str:
-        return _check_string(value, "probe", non_empty=True)
-
-    @field_validator("frequencies", mode="before")
-    @classmethod
-    def _validate_frequencies(cls, value: object) -> tuple[Quantity, ...]:
-        return _check_frequencies(
-            value,
-            "frequencies",
-            strictly_positive=False,
-            empty_message="a stability analysis has at least one frequency",
-        )
+    probe: Annotated[str, _NON_EMPTY]
+    frequencies: Annotated[
+        Sequence[Quantity],
+        _frequencies(
+            "a stability analysis has at least one frequency", strictly_positive=False
+        ),
+    ]
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -1127,29 +1063,9 @@ class TransferFunction:
         {'transfer_function': {'source': 'V1', 'output': 'out'}}
     """
 
-    source: str
-    output: str
-    reference: str | None = None
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def _validate_source(cls, value: object) -> str:
-        return _check_string(value, "source", non_empty=True)
-
-    @field_validator("output", mode="before")
-    @classmethod
-    def _validate_output(cls, value: object) -> str:
-        return _check_string(value, "output", non_empty=True)
-
-    @field_validator("reference", mode="before")
-    @classmethod
-    def _validate_reference(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        checked = _check_string(value, "reference", non_empty=True)
-        if checked == info.data.get("output"):
-            _fail("same_node", f"the output `{checked}` is taken over itself")
-        return checked
+    source: Annotated[str, _NON_EMPTY]
+    output: Annotated[str, _NON_EMPTY]
+    reference: Annotated[str | None, _REFERENCE] = None
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -1171,42 +1087,15 @@ class Noise:
     the noise back to it, as an input's noise.
     """
 
-    output: str
-    frequencies: Sequence[Quantity]
-    reference: str | None = None
-    source: str | None = None
-
-    @field_validator("output", mode="before")
-    @classmethod
-    def _validate_output(cls, value: object) -> str:
-        return _check_string(value, "output", non_empty=True)
-
-    @field_validator("frequencies", mode="before")
-    @classmethod
-    def _validate_frequencies(cls, value: object) -> tuple[Quantity, ...]:
-        return _check_frequencies(
-            value,
-            "frequencies",
-            strictly_positive=True,
-            empty_message="a noise analysis has at least one frequency",
-        )
-
-    @field_validator("reference", mode="before")
-    @classmethod
-    def _validate_reference(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        checked = _check_string(value, "reference", non_empty=True)
-        if checked == info.data.get("output"):
-            _fail("same_node", f"the output `{checked}` is taken over itself")
-        return checked
-
-    @field_validator("source", mode="before")
-    @classmethod
-    def _validate_source(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, "source", non_empty=True)
+    output: Annotated[str, _NON_EMPTY]
+    frequencies: Annotated[
+        Sequence[Quantity],
+        _frequencies(
+            "a noise analysis has at least one frequency", strictly_positive=True
+        ),
+    ]
+    reference: Annotated[str | None, _REFERENCE] = None
+    source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -1235,26 +1124,9 @@ class PoleZero:
     over a `reference` node.
     """
 
-    source: str | None = None
-    output: str | None = None
-    reference: str | None = None
-
-    @field_validator("source", "output", mode="before")
-    @classmethod
-    def _validate_endpoint(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, info.field_name or "name", non_empty=True)
-
-    @field_validator("reference", mode="before")
-    @classmethod
-    def _validate_reference(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        checked = _check_string(value, "reference", non_empty=True)
-        if checked == info.data.get("output"):
-            _fail("same_node", f"the output `{checked}` is taken over itself")
-        return checked
+    source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
+    output: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
+    reference: Annotated[str | None, _REFERENCE] = None
 
     @model_validator(mode="after")
     def _validate_pairing(self) -> PoleZero:
@@ -1263,7 +1135,7 @@ class PoleZero:
             self.source is None and self.output is None and self.reference is None
         )
         if not (both_set or none_set):
-            _fail(
+            fail(
                 "pairing",
                 "a pole-zero analysis's zeros require a source and an output, "
                 "both or neither",
@@ -1350,25 +1222,11 @@ class Parallelism:
         {'max_threads': 1}
     """
 
-    max_threads: int | None = None
-    min_solves_per_task: int | None = None
-    min_instances_per_task: int | None = None
-    min_unknowns_per_task: int | None = None
-    max_unknowns_per_interior: int | None = None
-
-    @field_validator(
-        "max_threads",
-        "min_solves_per_task",
-        "min_instances_per_task",
-        "min_unknowns_per_task",
-        "max_unknowns_per_interior",
-        mode="before",
-    )
-    @classmethod
-    def _validate_threshold(cls, value: object, info: ValidationInfo) -> int | None:
-        if value is None:
-            return None
-        return _check_integer(value, info.field_name or "threshold", minimum=1)
+    max_threads: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    min_solves_per_task: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    min_instances_per_task: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    min_unknowns_per_task: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    max_unknowns_per_interior: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
 
     def to_json(self) -> dict[str, JsonValue]:
         """The settings in the engine's format, without those left to defaults."""
@@ -1421,73 +1279,29 @@ class Options:
         {'parallelism': {'min_solves_per_task': 16}}
     """
 
-    relative_tolerance: float | None = None
-    voltage_tolerance: float | None = None
-    current_tolerance: float | None = None
-    charge_tolerance: float | None = None
-    gmin: float | None = None
-    max_dc_iterations: int | None = None
-    max_transient_iterations: int | None = None
-    truncation_tolerance: float | None = None
-    max_memory: float | None = None
-    profile: bool | None = None
+    relative_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    voltage_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    current_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    charge_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    gmin: Annotated[float | None, _real(non_negative=True, optional=True)] = None
+    max_dc_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    max_transient_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
+    truncation_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    max_memory: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    profile: Annotated[bool | None, _boolean(optional=True)] = None
     """Whether a transient measures where its time goes, into its statistics' profile;
     it changes no other result."""
-    parallelism: Parallelism = field(default_factory=Parallelism)
-    nodesets: Mapping[str, Quantity] = field(default_factory=dict)
+    parallelism: Annotated[Parallelism, _model(Parallelism, "a Parallelism")] = field(
+        default_factory=Parallelism
+    )
+    nodesets: Annotated[
+        Mapping[str, Quantity], _voltage_map("nodesets", "a nodeset")
+    ] = field(default_factory=dict)
     """The voltage each net named, by path, is held at while an operating point is
     first solved from zero, then released and solved again from there, as SPICE's
     ``.nodeset``: a guess that leads it to one solution of several. A net that voltage
     sources and inductors join to the ground, or to a net named before it, is left to
     them."""
-
-    @field_validator(
-        "relative_tolerance",
-        "voltage_tolerance",
-        "current_tolerance",
-        "charge_tolerance",
-        "truncation_tolerance",
-        "max_memory",
-        mode="before",
-    )
-    @classmethod
-    def _validate_positive(cls, value: object, info: ValidationInfo) -> float | None:
-        if value is None:
-            return None
-        return _check_float(value, info.field_name or "option", positive=True)
-
-    @field_validator("gmin", mode="before")
-    @classmethod
-    def _validate_gmin(cls, value: object) -> float | None:
-        if value is None:
-            return None
-        return _check_float(value, "gmin", non_negative=True)
-
-    @field_validator("max_dc_iterations", "max_transient_iterations", mode="before")
-    @classmethod
-    def _validate_iterations(cls, value: object, info: ValidationInfo) -> int | None:
-        if value is None:
-            return None
-        return _check_integer(value, info.field_name or "option", minimum=1)
-
-    @field_validator("profile", mode="before")
-    @classmethod
-    def _validate_profile(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        return _check_boolean(value, "profile")
-
-    @field_validator("parallelism", mode="before")
-    @classmethod
-    def _validate_parallelism(cls, value: object) -> object:
-        if isinstance(value, Parallelism | Mapping):
-            return value
-        _fail("parallelism_type", f"parallelism is a Parallelism, not {value!r}")
-
-    @field_validator("nodesets", mode="before")
-    @classmethod
-    def _validate_nodesets(cls, value: object) -> dict[str, Quantity]:
-        return _check_voltage_map(value, "nodesets", "a nodeset")
 
     def to_json(self) -> dict[str, JsonValue]:
         """The options in the engine's format, without those left to defaults."""
@@ -1513,35 +1327,16 @@ class Conditions:
     A Monte Carlo sample and a corner each run at conditions of their own.
     """
 
-    temperature: float
+    temperature: Annotated[float, _real()]
     """The temperature, in kelvins."""
-    process: str | None = None
+    process: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
     """The process corner of a foundry's devices, such as ``ss``, its kit's typical one
     unless set."""
     overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     """The parameters that replace the circuit's, by instance path, then by parameter
     path, such as ``waveform.dc``, in SI base units."""
-    mismatch: int | None = None
+    mismatch: Annotated[int | None, _seed("mismatch", optional=True)] = None
     """The seed a foundry's devices draw their kit's mismatch from, if they draw it."""
-
-    @field_validator("temperature", mode="before")
-    @classmethod
-    def _validate_temperature(cls, value: object) -> float:
-        return _check_float(value, "temperature")
-
-    @field_validator("process", mode="before")
-    @classmethod
-    def _validate_process(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, "process", non_empty=True)
-
-    @field_validator("mismatch", mode="before")
-    @classmethod
-    def _validate_mismatch(cls, value: object) -> int | None:
-        if value is None:
-            return None
-        return _check_integer(value, "mismatch", minimum=0, maximum=_SEED_LIMIT)
 
 
 @stdlib_dataclass(frozen=True, slots=True, init=False)
@@ -1591,12 +1386,12 @@ class Corner:
                 )
         if process is not None:
             try:
-                _check_string(process, "process", non_empty=True)
+                _check_non_empty(process, "process")
             except PydanticCustomError as error:
                 errors.append(
                     InitErrorDetails(type=error, loc=("process",), input=process)
                 )
-        _raise_if_errors("Corner", errors)
+        raise_if_errors("Corner", errors)
         object.__setattr__(self, "temperature", temperature)
         object.__setattr__(self, "process", process)
         object.__setattr__(self, "arguments", arguments)
@@ -1613,30 +1408,14 @@ class MonteCarlo:
     it. As variants, sample `i` is run `i`.
     """
 
-    samples: int
-    seed: int = 0
-
-    @field_validator("samples", mode="before")
-    @classmethod
-    def _validate_samples(cls, value: object) -> int:
-        return _check_integer(
-            value,
-            "samples",
+    samples: Annotated[
+        int,
+        _integer(
             minimum=1,
-            minimum_message=(
-                f"a Monte Carlo analysis draws a sample or more, not {value}"
-            ),
-        )
-
-    @field_validator("seed", mode="before")
-    @classmethod
-    def _validate_seed(cls, value: object) -> int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            _fail("int_type", f"seed is an integer, not {value!r}")
-        if not 0 <= value < _SEED_LIMIT:
-            message = f"a Monte Carlo seed lies from 0 to 2**64 - 1, not {value}"
-            _fail("seed_range", message)
-        return value
+            range_message="a Monte Carlo analysis draws a sample or more, not {value}",
+        ),
+    ]
+    seed: Annotated[int, _seed("a Monte Carlo seed")] = 0
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -1653,81 +1432,13 @@ class Variant:
         {'R1': {'resistance': 2000.0}}
     """
 
-    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
-    temperature: Quantity | None = None
-
-    @field_validator("overrides", mode="before")
-    @classmethod
-    def _validate_overrides(cls, value: object) -> dict[str, dict[str, float]]:
-        if not isinstance(value, Mapping):
-            _fail("mapping_type", f"overrides is a mapping, not {value!r}")
-        errors: list[InitErrorDetails] = []
-        numbers: dict[str, dict[str, float]] = {}
-        for path, named in value.items():
-            if not isinstance(path, str):
-                errors.append(
-                    _detail(
-                        "string_type",
-                        f"an instance path is a string, not {path!r}",
-                        path,
-                        (repr(path),),
-                    )
-                )
-                continue
-            if not isinstance(named, Mapping):
-                errors.append(
-                    _detail(
-                        "mapping_type",
-                        f"overrides for {path!r} is a mapping, not {named!r}",
-                        named,
-                        (path,),
-                    )
-                )
-                continue
-            inner: dict[str, float] = {}
-            for name, number in named.items():
-                if not isinstance(name, str):
-                    errors.append(
-                        _detail(
-                            "string_type",
-                            f"a parameter name is a string, not {name!r}",
-                            name,
-                            (path, repr(name)),
-                        )
-                    )
-                    continue
-                if isinstance(number, bool) or not isinstance(number, int | float):
-                    errors.append(
-                        _detail(
-                            "float_type",
-                            f"{name} is a real number, not {number!r}",
-                            number,
-                            (path, name),
-                        )
-                    )
-                    continue
-                converted = float(number)
-                if not math.isfinite(converted):
-                    errors.append(
-                        _detail(
-                            "finite",
-                            f"{name} is finite, not {converted!r}",
-                            number,
-                            (path, name),
-                        )
-                    )
-                    continue
-                inner[name] = converted
-            numbers[path] = inner
-        _raise_if_errors("overrides", errors)
-        return numbers
-
-    @field_validator("temperature", mode="before")
-    @classmethod
-    def _validate_temperature(cls, value: object) -> Quantity | None:
-        if value is None:
-            return None
-        return _check_quantity(value, TEMPERATURE, "a variant's temperature")
+    overrides: Annotated[
+        Mapping[str, Mapping[str, float]], BeforeValidator(_check_overrides)
+    ] = field(default_factory=dict)
+    temperature: Annotated[
+        Quantity | None,
+        _quantity(TEMPERATURE, "a variant's temperature", optional=True),
+    ] = None
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -1742,35 +1453,15 @@ class Explicit:
         2
     """
 
-    variants: Sequence[Variant]
-
-    @field_validator("variants", mode="before")
-    @classmethod
-    def _validate_variants(cls, value: object) -> tuple[Variant, ...]:
-        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
-                "sequence_type",
-                f"explicit variants is a sequence of variants, not {value!r}",
-            )
-        listed = tuple(value)
-        if not listed:
-            _fail("empty", "explicit variants list a run or more")
-        errors: list[InitErrorDetails] = []
-        checked: list[Variant] = []
-        for index, variant in enumerate(listed):
-            if not isinstance(variant, Variant):
-                errors.append(
-                    _detail(
-                        "variant_type",
-                        f"explicit variants are variants, not {variant!r}",
-                        variant,
-                        (index,),
-                    )
-                )
-            else:
-                checked.append(variant)
-        _raise_if_errors("variants", errors)
-        return tuple(checked)
+    variants: Annotated[
+        Sequence[Variant],
+        _sequence_of(
+            Variant,
+            "explicit variants",
+            "variants",
+            empty_message="explicit variants list a run or more",
+        ),
+    ]
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -1789,83 +1480,9 @@ class Axis:
         [233.14999999999998, 398.15]
     """
 
-    instance: str | None
-    parameter: str | None
-    values: Sequence[Quantity]
-
-    @field_validator("instance", mode="before")
-    @classmethod
-    def _validate_instance(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, "instance", non_empty=True)
-
-    @field_validator("parameter", mode="before")
-    @classmethod
-    def _validate_parameter(cls, value: object, info: ValidationInfo) -> str | None:
-        checked = (
-            None if value is None else _check_string(value, "parameter", non_empty=True)
-        )
-        if "instance" in info.data and (info.data["instance"] is None) != (
-            checked is None
-        ):
-            _fail(
-                "axis_pairing",
-                "an axis names an instance and its parameter, or neither",
-            )
-        return checked
-
-    @field_validator("values", mode="before")
-    @classmethod
-    def _validate_values(
-        cls, value: object, info: ValidationInfo
-    ) -> tuple[Quantity, ...]:
-        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
-                "sequence_type",
-                f"an axis's values is a sequence of quantities, not {value!r}",
-            )
-        items = tuple(value)
-        if not items:
-            _fail("empty", "an axis steps a value or more")
-        is_temperature = (
-            info.data.get("instance") is None
-            and info.data.get("parameter") is None
-            and "instance" in info.data
-            and "parameter" in info.data
-        )
-        errors: list[InitErrorDetails] = []
-        checked: list[Quantity] = []
-        expected: Dimension | None = TEMPERATURE if is_temperature else None
-        for index, item in enumerate(items):
-            if not isinstance(item, Quantity):
-                errors.append(
-                    _detail(
-                        "quantity_type",
-                        f"an axis's value is a Quantity, not {item!r}",
-                        item,
-                        (index,),
-                    )
-                )
-                continue
-            if expected is None:
-                expected = item.dimension
-            elif item.dimension != expected:
-                message = f"an axis's value takes a quantity in {expected}, not {item}"
-                raise DimensionError(message)
-            if not math.isfinite(item.value):
-                errors.append(
-                    _detail(
-                        "finite",
-                        f"an axis's value is finite, not {item}",
-                        item,
-                        (index,),
-                    )
-                )
-            else:
-                checked.append(item)
-        _raise_if_errors("values", errors)
-        return tuple(checked)
+    instance: Annotated[str | None, _OPTIONAL_NON_EMPTY]
+    parameter: Annotated[str | None, BeforeValidator(_validate_axis_parameter)]
+    values: Annotated[Sequence[Quantity], BeforeValidator(_validate_axis_values)]
 
     @classmethod
     def temperature(cls, values: Sequence[Quantity]) -> Axis:
@@ -1903,38 +1520,8 @@ class Grid:
         2
     """
 
-    axes: Sequence[Axis]
-    warm: bool = False
-
-    @field_validator("axes", mode="before")
-    @classmethod
-    def _validate_axes(cls, value: object) -> tuple[Axis, ...]:
-        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-            _fail(
-                "sequence_type", f"a grid's axes is a sequence of axes, not {value!r}"
-            )
-        listed = tuple(value)
-        errors: list[InitErrorDetails] = []
-        checked: list[Axis] = []
-        for index, axis in enumerate(listed):
-            if not isinstance(axis, Axis):
-                errors.append(
-                    _detail(
-                        "axis_type",
-                        f"a grid's axes are axes, not {axis!r}",
-                        axis,
-                        (index,),
-                    )
-                )
-            else:
-                checked.append(axis)
-        _raise_if_errors("axes", errors)
-        return tuple(checked)
-
-    @field_validator("warm", mode="before")
-    @classmethod
-    def _validate_warm(cls, value: object) -> bool:
-        return _check_boolean(value, "warm")
+    axes: Annotated[Sequence[Axis], _sequence_of(Axis, "a grid's axes", "axes")]
+    warm: Annotated[bool, _STRICT_BOOL] = False
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -1946,13 +1533,8 @@ class Product:
     samples and a sweep make one batch. Its chains are those of `second`.
     """
 
-    first: Variants
-    second: Variants
-
-    @field_validator("first", "second", mode="before")
-    @classmethod
-    def _validate_part(cls, value: object) -> Variants:
-        return _check_variants(value, "a product is of variants")
+    first: Annotated[Variants, BeforeValidator(_check_product_part)]
+    second: Annotated[Variants, BeforeValidator(_check_product_part)]
 
 
 type Variants = MonteCarlo | Grid | Explicit | Product
@@ -1994,18 +1576,7 @@ class WorstCase:
     standard deviations.
     """
 
-    step: float = 0.1
-
-    @field_validator("step", mode="before")
-    @classmethod
-    def _validate_step(cls, value: object) -> float:
-        converted = _check_float(value, "step")
-        if not 0.0 < converted <= 1.0:
-            message = (
-                f"a worst case moves a step above 0 and at most 1, not {converted!r}"
-            )
-            _fail("step_range", message)
-        return converted
+    step: Annotated[float, BeforeValidator(_check_worst_case_step)] = 0.1
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -2026,54 +1597,21 @@ class Characterized:
         (0.0, 1.0, 2.0, 4.0)
     """
 
-    supply: Quantity
-    slews: Sequence[float] = (0.5, 1.0, 2.0, 4.0)
-    fanouts: Sequence[float] = (0.0, 1.0, 2.0, 4.0)
-    spot_checks: int = 1
-    tolerance: float = 0.1
-    seed: int = 0
-
-    @field_validator("supply", mode="before")
-    @classmethod
-    def _validate_supply(cls, value: object) -> Quantity:
-        return _check_quantity(
-            value, VOLTAGE, "a characterization's supply", positive=True
-        )
-
-    @field_validator("slews", mode="before")
-    @classmethod
-    def _validate_slews(cls, value: object) -> tuple[float, ...]:
-        return _check_rising_grid(value, "slews", strictly_positive=True)
-
-    @field_validator("fanouts", mode="before")
-    @classmethod
-    def _validate_fanouts(cls, value: object) -> tuple[float, ...]:
-        return _check_rising_grid(value, "fanouts", strictly_positive=False)
-
-    @field_validator("spot_checks", mode="before")
-    @classmethod
-    def _validate_spot_checks(cls, value: object) -> int:
-        return _check_integer(
-            value,
-            "spot_checks",
-            minimum=0,
-            minimum_message=f"spot_checks is zero or more, not {value}",
-        )
-
-    @field_validator("tolerance", mode="before")
-    @classmethod
-    def _validate_tolerance(cls, value: object) -> float:
-        return _check_float(value, "tolerance", non_negative=True)
-
-    @field_validator("seed", mode="before")
-    @classmethod
-    def _validate_seed(cls, value: object) -> int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            _fail("int_type", f"seed is an integer, not {value!r}")
-        if not 0 <= value < _SEED_LIMIT:
-            message = f"a seed lies from 0 to 2**64 - 1, not {value}"
-            _fail("seed_range", message)
-        return value
+    supply: Annotated[
+        Quantity, _quantity(VOLTAGE, "a characterization's supply", positive=True)
+    ]
+    slews: Annotated[
+        Sequence[float], _rising_grid("slews", strictly_positive=True)
+    ] = (0.5, 1.0, 2.0, 4.0)
+    fanouts: Annotated[
+        Sequence[float], _rising_grid("fanouts", strictly_positive=False)
+    ] = (0.0, 1.0, 2.0, 4.0)
+    spot_checks: Annotated[
+        int,
+        _integer(minimum=0, range_message="spot_checks is zero or more, not {value}"),
+    ] = 1
+    tolerance: Annotated[float, _real(non_negative=True)] = 0.1
+    seed: Annotated[int, _seed("a seed")] = 0
 
 
 TIGHT: Final = Options(
@@ -2119,121 +1657,64 @@ class Plan:
     instances rated for a current or a power, whose ratings the checks hold them to.
     """
 
-    analyses: Mapping[str, Analysis]
-    options: Options = field(default_factory=Options)
-    temperature: Quantity | None = None
-    corners: Mapping[str, Corner] = field(default_factory=dict)
-    monte_carlo: MonteCarlo | None = None
-    worst_case: WorstCase | None = None
-    fidelity: Mapping[str, Characterized] = field(default_factory=dict)
-    process: str | None = None
-    record: Sequence[str] | None = None
-    variants: Variants | None = None
-
-    @field_validator("analyses", mode="before")
-    @classmethod
-    def _validate_analyses(cls, value: object) -> dict[str, Analysis]:
-        return _check_identifier_mapping(
-            value,
+    analyses: Annotated[
+        Mapping[str, Analysis],
+        _mapping(
             _ANALYSIS_TYPES,
-            _IdentifierRule(
-                title="analyses",
-                kind="an analysis",
-                type_message="the analysis {key} is {item}, not an Analysis",
-                non_empty_message="a plan runs at least one analysis",
+            _MappingRule(
+                "analyses",
+                "an analysis is named by a Python identifier, not {key}",
+                "the analysis {key} is {item}, not an Analysis",
+                "a plan runs at least one analysis",
             ),
-        )
-
-    @field_validator("options", mode="before")
-    @classmethod
-    def _validate_options(cls, value: object) -> object:
-        if isinstance(value, Options | Mapping):
-            return value
-        _fail("options_type", f"options is an Options, not {value!r}")
-
-    @field_validator("temperature", mode="before")
-    @classmethod
-    def _validate_temperature(cls, value: object) -> Quantity | None:
-        if value is None:
-            return None
-        return _check_quantity(value, TEMPERATURE, "a plan's temperature")
-
-    @field_validator("corners", mode="before")
-    @classmethod
-    def _validate_corners(cls, value: object) -> dict[str, Corner]:
-        return _check_identifier_mapping(
-            value,
+        ),
+    ]
+    options: Annotated[Options, _model(Options, "an Options")] = field(
+        default_factory=Options
+    )
+    temperature: Annotated[
+        Quantity | None, _quantity(TEMPERATURE, "a plan's temperature", optional=True)
+    ] = None
+    corners: Annotated[
+        Mapping[str, Corner],
+        _mapping(
             Corner,
-            _IdentifierRule(
-                title="corners",
-                kind="a corner",
-                type_message="the corner {key} is {item}, not a Corner",
+            _MappingRule(
+                "corners",
+                "a corner is named by a Python identifier, not {key}",
+                "the corner {key} is {item}, not a Corner",
             ),
-        )
-
-    @field_validator("monte_carlo", mode="before")
-    @classmethod
-    def _validate_monte_carlo(cls, value: object) -> object:
-        if value is None or isinstance(value, MonteCarlo | Mapping):
-            return value
-        _fail("monte_carlo_type", f"monte_carlo is a MonteCarlo, not {value!r}")
-
-    @field_validator("worst_case", mode="before")
-    @classmethod
-    def _validate_worst_case(cls, value: object) -> object:
-        if value is None or isinstance(value, WorstCase | Mapping):
-            return value
-        _fail("worst_case_type", f"worst_case is a WorstCase, not {value!r}")
-
-    @field_validator("fidelity", mode="before")
-    @classmethod
-    def _validate_fidelity(cls, value: object) -> dict[str, Characterized]:
-        if not isinstance(value, Mapping):
-            _fail("mapping_type", f"fidelity is a mapping, not {value!r}")
-        errors: list[InitErrorDetails] = []
-        checked: dict[str, Characterized] = {}
-        for scope, model in value.items():
-            if not isinstance(scope, str) or not scope:
-                errors.append(
-                    _detail(
-                        "string_type",
-                        f"a fidelity scope is a non-empty string, not {scope!r}",
-                        scope,
-                        (str(scope),),
-                    )
-                )
-            if not isinstance(model, Characterized):
-                errors.append(
-                    _detail(
-                        "characterized_type",
-                        f"the scope {scope} takes {model!r}, not a Characterized model",
-                        model,
-                        (str(scope),),
-                    )
-                )
-            elif isinstance(scope, str) and scope:
-                checked[scope] = model
-        _raise_if_errors("fidelity", errors)
-        return checked
-
-    @field_validator("process", mode="before")
-    @classmethod
-    def _validate_process(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        return _check_string(value, "process", non_empty=True)
-
-    @field_validator("record", mode="before")
-    @classmethod
-    def _validate_record(cls, value: object) -> tuple[str, ...] | None:
-        return _check_record(value)
-
-    @field_validator("variants", mode="before")
-    @classmethod
-    def _validate_variants(cls, value: object) -> Variants | None:
-        if value is None:
-            return None
-        return _check_variants(value, "a plan's variants are variants")
+        ),
+    ] = field(default_factory=dict)
+    monte_carlo: Annotated[
+        MonteCarlo | None, _model(MonteCarlo, "a MonteCarlo", optional=True)
+    ] = None
+    worst_case: Annotated[
+        WorstCase | None, _model(WorstCase, "a WorstCase", optional=True)
+    ] = None
+    fidelity: Annotated[
+        Mapping[str, Characterized],
+        _mapping(
+            Characterized,
+            _MappingRule(
+                "fidelity",
+                "a fidelity scope is a non-empty string, not {key}",
+                "the scope {key} takes {item}, not a Characterized model",
+                identifier_keys=False,
+            ),
+        ),
+    ] = field(default_factory=dict)
+    process: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
+    record: Annotated[Sequence[str] | None, _RECORD] = None
+    variants: Annotated[
+        Variants | None,
+        _instance(
+            (MonteCarlo, Grid, Explicit, Product),
+            "variants_type",
+            "a plan's variants are variants, not {value}",
+            optional=True,
+        ),
+    ] = None
 
     def process_at(self, corner: Corner | None = None) -> str | None:
         """The process corner of the plan's own run, or of `corner`'s.

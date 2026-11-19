@@ -39,6 +39,8 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from pydantic import JsonValue
+
 from jolty import _core, ir
 
 
@@ -74,6 +76,19 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     )
 
 
+def payload(varied: Iterable[Toleranced]) -> list[JsonValue]:
+    """Encodes `varied` as the JSON payload expected by the engine."""
+    return [
+        {
+            "instance": parameter.instance,
+            "parameter": parameter.parameter,
+            "nominal": parameter.nominal,
+            "tolerance": parameter.tolerance.model_dump(mode="json"),
+        }
+        for parameter in varied
+    ]
+
+
 def sample(
     varied: Iterable[Toleranced], seed: int, index: int
 ) -> dict[str, dict[str, float]]:
@@ -88,18 +103,7 @@ def sample(
         OverflowError: When the seed or the index is negative, or 2**64 or more.
     """
     chosen = tuple(varied)
-    encoded = json.dumps(
-        [
-            {
-                "instance": parameter.instance,
-                "parameter": parameter.parameter,
-                "nominal": parameter.nominal,
-                "tolerance": parameter.tolerance.model_dump(mode="json"),
-            }
-            for parameter in chosen
-        ],
-        allow_nan=False,
-    )
+    encoded = json.dumps(payload(chosen), allow_nan=False)
     drawn: dict[str, dict[str, float]] = {}
     for parameter, value in zip(
         chosen, _core.sample(encoded, seed, index), strict=True

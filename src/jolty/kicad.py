@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from jolty import catalog, ir
 from jolty.errors import JoltyError, NetlistError
@@ -56,11 +56,7 @@ _NAMESPACE: Final = uuid.UUID("21d190f3-3f5d-4c5c-a8d6-37c2b6468bba")
 so a footprint keeps its identifier from one netlist of a component to the next."""
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class Node(_Model):
+class Node(ir.FrozenModel):
     """A footprint's pad, on a net."""
 
     reference: str = Field(description="The footprint's designator, such as R1.")
@@ -70,14 +66,14 @@ class Node(_Model):
     )
 
 
-class Net(_Model):
+class Net(ir.FrozenModel):
     """A net, and the pads it joins."""
 
     name: str
     nodes: tuple[Node, ...]
 
 
-class Footprint(_Model):
+class Footprint(ir.FrozenModel):
     """The footprint of the part that builds an instance."""
 
     reference: str = Field(description="Its reference designator, such as R1.")
@@ -95,7 +91,7 @@ class Footprint(_Model):
         return part.part_number or ""
 
 
-class Netlist(_Model):
+class Netlist(ir.FrozenModel):
     """The footprints of a component's parts, and the nets that join their pads."""
 
     footprints: tuple[Footprint, ...]
@@ -147,14 +143,7 @@ def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> 
     """
     component = _component_at(circuit, instance)
     alone = circuit.model_copy(update={"top": component})
-    ground = next(
-        (
-            port.name
-            for port in alone.components[component].ports
-            if port.role == ir.Role.GROUND
-        ),
-        None,
-    )
+    ground = alone.ground_port()
     if ground is None:
         message = (
             f"the component {component} has no ground port, the reference its nets "

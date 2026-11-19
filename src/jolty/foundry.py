@@ -23,14 +23,14 @@ the others', as a Monte Carlo sample of the process does; the same seed draws th
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import ir, results
+from jolty import ir, results, unknowns
 from jolty.errors import JoltyError, SimulationError
 from jolty.plan import (
     Ac,
@@ -44,7 +44,7 @@ from jolty.plan import (
     voltages,
 )
 from jolty.spice import export, ngspice, sky130
-from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, Quantity
+from jolty.units import FREQUENCY, TIME, Quantity
 
 STRATEGY: Final = "ngspice"
 """The strategy of an operating point ngspice found."""
@@ -357,6 +357,18 @@ class _Deck:
         return sources, contributions
 
 
+def _index_flat[T](entries: Iterable[tuple[str, T]], what: str) -> dict[str, T]:
+    """Maps each path's flattened ngspice name to its value, rejecting collisions."""
+    indexed: dict[str, T] = {}
+    for path, value in entries:
+        flat_name = path.replace("/", "_")
+        if flat_name in indexed:
+            message = f"{what} `{path}` collides on flattened name `{flat_name}`"
+            raise SimulationError(message)
+        indexed[flat_name] = value
+    return indexed
+
+
 def _flattened(
     circuit: ir.Circuit, overrides: Mapping[str, Mapping[str, float]]
 ) -> tuple[ir.Circuit, dict[str, str]]:
@@ -365,12 +377,16 @@ def _flattened(
     Each device's id is its path, its ids joined by underscores, as a netlist writes
     it; the mapping gives each device's path by that id.
     """
-    paths = {
-        path.replace("/", "_"): path
-        for path, instance in _devices_within(circuit, circuit.top, "")
-    }
-    replaced = {path.replace("/", "_"): values for path, values in overrides.items()}
     flat = export.flatten(circuit)
+    paths = _index_flat(
+        (
+            (path, path)
+            for path, instance in circuit.walk()
+            if isinstance(instance.of, ir.DeviceOf)
+        ),
+        "device",
+    )
+    replaced = _index_flat(overrides.items(), "override")
     top = flat.components[flat.top]
     instances = []
     for instance in top.instances:
@@ -384,20 +400,6 @@ def _flattened(
         update={"components": {**flat.components, flat.top: placing}}
     )
     return flattened, paths
-
-
-def _devices_within(
-    circuit: ir.Circuit, component: str, prefix: str
-) -> list[tuple[str, ir.Instance]]:
-    """Every device within `component`, by path."""
-    found = []
-    for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.name}"
-        if isinstance(instance.of, ir.ComponentOf):
-            found.extend(_devices_within(circuit, instance.of.component, f"{path}/"))
-        else:
-            found.append((path, instance))
-    return found
 
 
 def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
@@ -494,7 +496,7 @@ def _sweep(
             levels do not rise or fall in even steps, as ngspice sweeps a source.
     """
     found, nature = _source(flat, sweep.source)
-    dimension = VOLTAGE if nature == "voltage" else CURRENT
+    dimension = unknowns.DIMENSIONS[nature]
     given = [level.to(dimension, "a sweep level") for level in sweep.values]
     levels = np.array(given)
     if len(levels) < 2:  # noqa: PLR2004 - a sweep's first and last levels

@@ -3,10 +3,38 @@
 
 import difflib
 from collections.abc import Sequence
-from typing import Final
+from typing import Final, LiteralString, Never
+
+from pydantic import ValidationError
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 _SHORT_NAME_LENGTH: Final = 2
 """Names of two characters score at most 0.5 for a single-character edit."""
+
+
+def fail(kind: LiteralString, message: str) -> Never:
+    """Raises a Pydantic custom error holding literal `message` safe from braces."""
+    raise PydanticCustomError(kind, "{message}", {"message": message})
+
+
+def detail(
+    kind: LiteralString,
+    message: str,
+    value: object,
+    location: tuple[int | str, ...] = (),
+) -> InitErrorDetails:
+    """One structured validation error entry at `location` with literal `message`."""
+    return InitErrorDetails(
+        type=PydanticCustomError(kind, "{message}", {"message": message}),
+        loc=location,
+        input=value,
+    )
+
+
+def raise_if_errors(title: str, found: Sequence[InitErrorDetails]) -> None:
+    """Raises `ValidationError` holding every entry of `found`, if any."""
+    if found:
+        raise ValidationError.from_exception_data(title, list(found))
 
 
 def close_names(names: Sequence[str], name: str) -> str:

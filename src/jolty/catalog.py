@@ -29,7 +29,7 @@ from functools import cache
 from pathlib import Path
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from jolty import _core, ir
 from jolty.units import format_si
@@ -122,17 +122,13 @@ def _within(value: float, low: float, high: float) -> bool:
     return (low < value or _same(value, low)) and (value < high or _same(value, high))
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
 type Pins = dict[str, tuple[Annotated[str, Field(min_length=1)], ...]]
 """The pads of a part's package each terminal or port of its instance joins, by name,
 such as ``{"collector": ("3",), "base": ("2",), "emitter": ("1",)}``; a terminal of no
 pads joins none."""
 
 
-class Part(_Model):
+class Part(ir.FrozenModel):
     """A part at a unit price: a device of one value and tolerance, numbered, or both.
 
     A part that states no device is any device or component its number names. Its
@@ -221,7 +217,7 @@ class Part(_Model):
         return ", ".join(said)
 
 
-class Catalog(_Model):
+class Catalog(ir.FrozenModel):
     """The parts a circuit can be built from, priced in one currency."""
 
     format: Literal["jolty-catalog"] = "jolty-catalog"
@@ -315,21 +311,21 @@ class Catalog(_Model):
                 yield part, part.value
 
 
-class Line(_Model):
+class Line(ir.FrozenModel):
     """An instance, and the part that builds it."""
 
     instance: str = Field(description="The instance's path.")
     part: Part
 
 
-class Unpriced(_Model):
+class Unpriced(ir.FrozenModel):
     """An instance that no part of the catalog builds."""
 
     instance: str = Field(description="The instance's path.")
     reason: str = Field(description="Why no part builds it.")
 
 
-class Bill(_Model):
+class Bill(ir.FrozenModel):
     """The parts that build the instances of a circuit, and what they cost.
 
     Its instances are the numbered ones, devices or component instances, and the other
@@ -371,29 +367,23 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     Raises:
         KeyError: When no component instance is at `instance`.
     """
-    component = circuit.top
-    for id in filter(None, instance.split("/")):
-        placed = next(
-            (
-                each
-                for each in circuit.components[component].instances
-                if each.name == id
-            ),
-            None,
-        )
-        if placed is None or not isinstance(placed.of, ir.ComponentOf):
+    if not instance:
+        component = circuit.top
+    else:
+        found = circuit.find(instance)
+        if found is None or not isinstance(found.of, ir.ComponentOf):
             message = f"no component instance is at {instance!r}"
             raise KeyError(message)
-        component = placed.of.component
+        component = found.of.component
     prefix = f"{instance}/" if instance else ""
     lines: list[Line] = []
     unpriced: list[Unpriced] = []
     for path, placed in built(circuit, component, prefix):
-        found = catalog.part_for(placed)
-        if isinstance(found, Part):
-            lines.append(Line(instance=path, part=found))
+        part = catalog.part_for(placed)
+        if isinstance(part, Part):
+            lines.append(Line(instance=path, part=part))
         else:
-            unpriced.append(Unpriced(instance=path, reason=found))
+            unpriced.append(Unpriced(instance=path, reason=part))
     return Bill(currency=catalog.currency, lines=tuple(lines), unpriced=tuple(unpriced))
 
 
@@ -405,13 +395,11 @@ def built(
     They are the numbered instances, devices or component instances, and the device
     instances outside them, in the order the components place them.
     """
-    for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.name}"
-        match instance:
-            case ir.Instance(part=None, of=ir.ComponentOf(component=inner)):
-                yield from built(circuit, inner, f"{path}/")
-            case _:
-                yield path, instance
+    for path, instance in circuit.walk(
+        component, prefix=prefix, descend=lambda placed: placed.part is None
+    ):
+        if instance.part is not None or isinstance(instance.of, ir.DeviceOf):
+            yield path, instance
 
 
 def _valued(instance: ir.Instance, kind: PartKind) -> tuple[float, float] | str:

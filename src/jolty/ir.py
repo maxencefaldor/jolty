@@ -13,7 +13,8 @@ parameters it moves, is no part of a circuit, but what its tolerances and a proc
 kit's statistical functions make.
 """
 
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self, override
 
@@ -30,7 +31,9 @@ SEPARATOR: Final = "/"
 """What separates the levels of a path, such as ``X1/R1``, which no name holds."""
 
 
-class _Model(BaseModel):
+class FrozenModel(BaseModel):
+    """Immutable Pydantic model forbidding unknown fields."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -44,26 +47,26 @@ class Role(StrEnum):
     GROUND = "ground"
 
 
-class Port(_Model):
+class Port(FrozenModel):
     """A net a component exposes, under the name of the net inside it."""
 
     name: str
     role: Role
 
 
-class DeviceOf(_Model):
+class DeviceOf(FrozenModel):
     """What a device instance is: a device of the named model."""
 
     model: str
 
 
-class ComponentOf(_Model):
+class ComponentOf(FrozenModel):
     """What a component instance is: an instance of the named component."""
 
     component: str
 
 
-class SourceLocation(_Model):
+class SourceLocation(FrozenModel):
     """The line of a build script that placed an instance."""
 
     file: str
@@ -93,7 +96,7 @@ it sets does.
 """
 
 
-class _Spread(_Model):
+class _Spread(FrozenModel):
     """A tolerance and how values spread within it."""
 
     relative: float = Field(ge=0, allow_inf_nan=False)
@@ -133,7 +136,7 @@ class Tolerance(_Spread):
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 
-class RandomVariable(_Model):
+class RandomVariable(FrozenModel):
     """A number a Monte Carlo sample draws at random, and how it moves the devices.
 
     A part's tolerance draws one for its own factor and one for its lot's, and a process
@@ -186,7 +189,7 @@ raised by its thermal net's where it heats, the net its terminal ``thermal`` joi
 _TERMINALS: dict[str, int] = {"voltage": 2, "current": 1, "power": 0, "temperature": 0}
 
 
-class Rating(_Model):
+class Rating(FrozenModel):
     """A limit a part's maker states on one of its stresses, which a simulation checks.
 
     The terminals are two for a voltage, the first's over the second's, one for a
@@ -242,7 +245,7 @@ class Rating(_Model):
         return self
 
 
-class Instance(_Model):
+class Instance(FrozenModel):
     """One placed device or component, and the net each of its terminals joins."""
 
     name: str
@@ -266,7 +269,7 @@ class Instance(_Model):
     source_location: SourceLocation | None = None
 
 
-class Component(_Model):
+class Component(FrozenModel):
     """A component's ports and the instances it places."""
 
     ports: tuple[Port, ...] = ()
@@ -279,7 +282,7 @@ class Component(_Model):
         )
 
 
-class Circuit(_Model):
+class Circuit(FrozenModel):
     """A circuit: every component, and the one at the top of the hierarchy."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
@@ -301,6 +304,81 @@ class Circuit(_Model):
                 else None
             )
         return found
+
+    def ground_port(self, component: str | None = None) -> str | None:
+        """The ground port of `component`, or of the top component when omitted."""
+        found = self.components.get(self.top if component is None else component)
+        if found is None:
+            return None
+        return next(
+            (port.name for port in found.ports if port.role is Role.GROUND),
+            None,
+        )
+
+    def walk(
+        self,
+        component: str | None = None,
+        *,
+        prefix: str = "",
+        breadth_first: bool = False,
+        descend: Callable[[Instance], bool] | None = None,
+    ) -> Iterator[tuple[str, Instance]]:
+        """Yields `(path, instance)` across the component hierarchy iteratively.
+
+        Starts at `component` (defaulting to `self.top`), prepending `prefix` to each
+        path. Traverses depth-first in placement order by default, or breadth-first
+        (outer instances first) when `breadth_first` is true. Descends into a
+        `ComponentOf` instance when `descend` is None or `descend(instance)` is true.
+        """
+        root = self.top if component is None else component
+        if breadth_first:
+            yield from self._walk_breadth_first(root, prefix, descend)
+        else:
+            yield from self._walk_depth_first(root, prefix, descend)
+
+    def _walk_breadth_first(
+        self,
+        root: str,
+        prefix: str,
+        descend: Callable[[Instance], bool] | None,
+    ) -> Iterator[tuple[str, Instance]]:
+        pending: deque[tuple[str, str]] = deque([(prefix, root)])
+        while pending:
+            current_prefix, name = pending.popleft()
+            for instance in self.components[name].instances:
+                path = f"{current_prefix}{instance.name}"
+                yield path, instance
+                if (inner := _descend_into(instance, descend)) is not None:
+                    pending.append((f"{path}{SEPARATOR}", inner))
+
+    def _walk_depth_first(
+        self,
+        root: str,
+        prefix: str,
+        descend: Callable[[Instance], bool] | None,
+    ) -> Iterator[tuple[str, Instance]]:
+        stack: deque[tuple[str, Instance]] = deque(
+            (f"{prefix}{instance.name}", instance)
+            for instance in reversed(self.components[root].instances)
+        )
+        while stack:
+            path, instance = stack.pop()
+            yield path, instance
+            if (inner := _descend_into(instance, descend)) is not None:
+                children = self.components[inner].instances
+                stack.extend(
+                    (f"{path}{SEPARATOR}{child.name}", child)
+                    for child in reversed(children)
+                )
+
+
+def _descend_into(
+    instance: Instance, descend: Callable[[Instance], bool] | None
+) -> str | None:
+    """The inner component name when `walk` descends into `instance`, else None."""
+    if isinstance(instance.of, ComponentOf) and (descend is None or descend(instance)):
+        return instance.of.component
+    return None
 
 
 def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | None:

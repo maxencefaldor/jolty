@@ -23,13 +23,14 @@ mean delay, violates the contract, and the report says where.
 
 import itertools
 import math
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Final
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import Field, JsonValue
 
 from jolty import devices, ir, results
 from jolty.errors import CharacterizationError, JoltyError, PlanError, close_names
@@ -60,13 +61,11 @@ _STEPS: Final = 20
 output's time constant."""
 
 
-class Arc(BaseModel):
+class Arc(ir.FrozenModel):
     """One timing arc: how an output follows one input changing from one combination.
 
     Its tables span the grid of input transitions and output loads.
     """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     input: str
     before: str = Field(description="Every input's level before the change.")
@@ -79,10 +78,8 @@ class Arc(BaseModel):
     )
 
 
-class Characterization(BaseModel):
+class Characterization(ir.FrozenModel):
     """A component characterized as a logic cell."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     component: str
     supply: float = Field(description="The supply it was characterized at, in volts.")
@@ -231,11 +228,13 @@ class _Cell:
 def _subtree(built: ir.Circuit, name: str) -> list[str]:
     """`name` and every component it places, however deep."""
     found: list[str] = []
-    pending = [name]
+    seen: set[str] = set()
+    pending: deque[str] = deque([name])
     while pending:
         current = pending.pop()
-        if current in found:
+        if current in seen:
             continue
+        seen.add(current)
         found.append(current)
         pending.extend(
             instance.of.component
@@ -587,16 +586,11 @@ def _interpolate(
 
 def instances(built: ir.Circuit) -> list[tuple[str, str]]:
     """Every component instance of `built`, outer ones first: its path and component."""
-    found: list[tuple[str, str]] = []
-    pending = [("", built.top)]
-    while pending:
-        prefix, name = pending.pop(0)
-        for instance in built.components[name].instances:
-            if isinstance(instance.of, ir.ComponentOf):
-                path = f"{prefix}{instance.name}"
-                found.append((path, instance.of.component))
-                pending.append((f"{path}/", instance.of.component))
-    return found
+    return [
+        (path, instance.of.component)
+        for path, instance in built.walk(breadth_first=True)
+        if isinstance(instance.of, ir.ComponentOf)
+    ]
 
 
 def scopes(
@@ -739,10 +733,8 @@ def resolve(
     return Fidelity(built, temperature, matched, models, process)
 
 
-class CharacterizedModel(BaseModel):
+class CharacterizedModel(ir.FrozenModel):
     """A component characterized as a logic cell, as a report states it."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     component: str
     instances: tuple[str, ...] = Field(description="The paths it stands in for.")
@@ -769,10 +761,8 @@ class CharacterizedModel(BaseModel):
         )
 
 
-class Contract(BaseModel):
+class Contract(ir.FrozenModel):
     """A spot check: whether an instance's model agrees with its circuit."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     instance: str
     component: str
@@ -804,10 +794,8 @@ class Contract(BaseModel):
 _UNITS: Final = {"input transition": "s", "load": "F", "supply": "V"}
 
 
-class Outside(BaseModel):
+class Outside(ir.FrozenModel):
     """An analysis that used a model outside its domain."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     analysis: str
     excursion: Excursion
@@ -826,10 +814,8 @@ class Outside(BaseModel):
         )
 
 
-class Dependence(BaseModel):
+class Dependence(ir.FrozenModel):
     """A requirement whose verdict changes when an instance runs as its circuit."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     instance: str
     modeled: Verdict = Field(description="The verdict with every model.")
@@ -867,10 +853,8 @@ def dependences(
     ]
 
 
-class FidelityReport(BaseModel):
+class FidelityReport(ir.FrozenModel):
     """The models a plan's fidelity chose, its spot checks, and what they found."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     models: tuple[CharacterizedModel, ...]
     contracts: tuple[Contract, ...]
@@ -1035,11 +1019,11 @@ def _component(instance: ir.Instance) -> str:
 
 def _placed(built: ir.Circuit, component: str, id: str) -> ir.Instance:
     """The instance `id` that `component` places."""
-    return next(
-        instance
-        for instance in built.components[component].instances
-        if instance.name == id
-    )
+    found = built.components[component].instance(id)
+    if found is None:
+        message = f"{component} places no instance `{id}`"
+        raise KeyError(message)
+    return found
 
 
 def _changes(
