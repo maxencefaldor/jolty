@@ -2355,7 +2355,7 @@ class _Planned:
                 each(run)
 
         handing = each is not None or bool(self._in_python())
-        found = simulation._core.batch(  # noqa: SLF001 - one simulation's own
+        return simulation._core.batch(  # noqa: SLF001 - one simulation's own
             self.settings,
             ran,
             (runs.start, runs.stop),
@@ -2364,8 +2364,6 @@ class _Planned:
             _engine(),
             hand if handing else None,
         )
-        found["parameters"] = ran.parameters
-        return found
 
     def _run(
         self,

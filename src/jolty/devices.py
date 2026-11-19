@@ -148,7 +148,7 @@ class Device:
         The device runs at the simulation's temperature raised by that net's, and the
         power its electrical terminals take, each one's voltage times the current into
         it, flows into the net as heat. A resistor, a diode, a JFET, a bipolar
-        transistor, a MOSFET, a BSIM3 and a VDMOS heat.
+        transistor, a VBIC, a MOSFET, a VDMOS, a BSIM3, and a BSIM4 heat.
 
         Examples:
             >>> diode().heated().terminals

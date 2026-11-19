@@ -1708,9 +1708,11 @@ def test_expression_parser_regression_bugs() -> None:
     assert empty_call != expressions.Call("g", ())
     assert hash(empty_call) == hash(expressions.Call("f", ()))
     translated = expressions.translate(long_sum, {}, str.lower, str.lower)
-    assert nesting_depth(translated) == 1500
+    assert nesting_depth(translated) == 0
+    assert expressions.evaluate(long_sum, {}) == 1501.0
+    deep_parens = "(" * 300 + "1" + ")" * 300
     with pytest.raises(SpiceError, match="parentheses deep"):
-        expressions.evaluate(long_sum, {})
+        expressions.check_core_depth(deep_parens)
 
     # Zero-argument call AST inlines cleanly; empty parse syntax raises SpiceError.
     with pytest.raises(SpiceError):
@@ -2167,7 +2169,7 @@ def test_valid_spice_subcircuits_round_trip_through_export(text: str) -> None:
             "frequency `F`",
         ),
         # Non-finite values and Rust device validation errors (were raw ValueError).
-        (".subckt s a b\nR1 a b 1k temp=1e500\n.ends", 300.15, "expected value"),
+        (".subckt s a b\nR1 a b 1k temp=1e500\n.ends", 300.15, "not finite"),
         (".subckt s a b\nV1 a b PWL(1 0 0 1)\n.ends", 300.15, "must increase"),
         (".subckt s a b\nV1 a b PWL(1 0 0 1) DC 0\n.ends", 300.15, "must increase"),
         (
@@ -2186,7 +2188,7 @@ def test_valid_spice_subcircuits_round_trip_through_export(text: str) -> None:
         (
             ".subckt s a b\nL1 a b 1u\nL2 a b 1u\nK1 L1 L2 1e500\n.ends",
             300.15,
-            "expected value",
+            "not finite",
         ),
     ],
 )
