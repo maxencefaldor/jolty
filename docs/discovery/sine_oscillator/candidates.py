@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Wien bridge oscillators, each with its own amplitude control, and their bench."""
+"""Wien bridge sine oscillator candidates with distinct amplitude control loops."""
 
 import math
 import sys
@@ -43,7 +43,7 @@ def _jfet_wien_stage(
 def bridge(
     c: Builder, output: Connectable, plus: Connectable, ground: Connectable
 ) -> None:
-    """The Wien network: R and C in series from the output, R and C in parallel."""
+    """Places the Wien RC bridge network and startup current kick."""
     series_r = c.place(devices.resistor(RESISTANCE * ohm), name="R1")
     series_c = c.place(devices.capacitor(CAPACITANCE * F), name="C1")
     shunt_r = c.place(devices.resistor(RESISTANCE * ohm), name="R2")
@@ -65,7 +65,7 @@ def bridge(
 
 @component
 def diodes(c: Builder, fixed: float = 12e3, limited: float = 10e3) -> None:
-    """Gain 1 + (fixed + limited)/10 kΩ, two diodes across `limited` holding it."""
+    """Builds a diode-clamped Wien bridge with gain 1 + (fixed + limited)/10 kΩ."""
     output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
     amplifier = c.place(opamp(), name="U1")
     plus, minus = c.net("plus"), c.net("minus")
@@ -92,12 +92,12 @@ def agc(
     *,
     linearized: bool = True,
 ) -> None:
-    """Gain 1 + 20 kΩ/(fixed + the JFET's channel), its gate on the output's peak.
+    """Builds a JFET-AGC Wien bridge with gain 1 + 20 kΩ/(fixed + Rds).
 
-    A negative peak detector of the output holds the JFET's gate, so a larger swing
-    pinches the channel and lowers the gain. When `linearized`, two 100 kΩ resistors
-    from the drain feed half the channel's voltage to its gate, which cancels the square
-    law's even distortion.
+    A negative peak detector biases the JFET gate so larger swings pinch the channel
+    and reduce loop gain.
+    When `linearized` is true, two 100 kΩ resistors feed half the drain-source voltage
+    to the gate to cancel quadratic even-order distortion.
     """
     output, ground, amplifier, feedback, channel, drain = _jfet_wien_stage(c, fixed)
     detector = c.place(d1n4148(), name="D1")
@@ -121,7 +121,7 @@ def agc(
 
 @component
 def bench(c: Builder, oscillator: Component) -> None:
-    """The oscillator alone."""
+    """Builds a test bench exposing the oscillator output over ground."""
     ground = c.port("ground", Role.GROUND)
     placed = c.place(oscillator, name="X1")
     c.connect(placed.output, name="out")
@@ -132,12 +132,11 @@ def bench(c: Builder, oscillator: Component) -> None:
 def sensed_agc(
     c: Builder, fixed: float = 9.5e3, sense: float = 0.45, hold: float = 0.22e-6
 ) -> None:
-    """The JFET's gate held at the negative peak of a fraction `sense` of the output.
+    """Builds a Wien bridge whose JFET gate tracks the peak of `sense` times output.
 
-    Dividing the output before the detector, rather than after it, scales the JFET's
-    threshold and the diode's drop alike, so their drifts, -2.5 mV/K and -2 mV/K,
-    nearly cancel in the amplitude. The hold capacitor's 1 MΩ discharge sets how fast
-    the loop settles, and how much ripple reaches the gate.
+    Dividing the output before the detector scales both the JFET threshold and diode
+    drop together, partially offsetting their -2.5 mV/K and -2 mV/K drifts.
+    The 1 MΩ discharge resistor across `hold` governs settling time and gate ripple.
     """
     output, ground, amplifier, feedback, channel, _ = _jfet_wien_stage(c, fixed)
     upper = c.place(devices.resistor(10e3 * (1 - sense) / sense * ohm), name="RS1")

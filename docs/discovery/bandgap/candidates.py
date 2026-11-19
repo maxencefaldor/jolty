@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""References without an op-amp, each a component of ports vcc, out and ground."""
+"""Op-amp-free voltage reference candidates with ``vcc``, ``out``, and ``ground``."""
 
 import sys
 from pathlib import Path
@@ -44,7 +44,7 @@ def _widlar_core(
 
 @component
 def diode(c: Builder, bias: float = 4.3e3) -> None:
-    """A forward-biased diode: one Vbe, falling 2 mV/K."""
+    """Builds a forward-biased diode reference producing one Vbe drop (~-2 mV/K)."""
     vcc, out = c.port("vcc", Role.SUPPLY), c.port("out", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
     feed = c.place(devices.resistor(bias * ohm), name="R1")
@@ -58,10 +58,11 @@ def diode(c: Builder, bias: float = 4.3e3) -> None:
 def widlar(
     c: Builder, top: float = 600.0, widlar_r: float = 60.0, ptat: float = 600.0
 ) -> None:
-    """Widlar's bandgap: a CTAT voltage and a PTAT one, summed.
+    """Builds a resistor-fed Widlar bandgap summing CTAT and PTAT voltages.
 
-    Q1 is diode-connected, Q2 a Widlar source of it whose emitter resistor takes
-    Vt·ln(I1/I2), and Q3 holds the output at its own Vbe plus Q2's current across
+    Diode-connected Q1 and degenerated Q2 form a Widlar source whose emitter resistor
+    drops Vt·ln(I1/I2).
+    Transistor Q3 holds the output at its Vbe plus the drop of Q2 current across
     `ptat`.
     """
     _widlar_core(c, top, widlar_r, ptat, jfet=False)
@@ -69,7 +70,7 @@ def widlar(
 
 @component
 def bench(c: Builder, reference: Component, supply: float = 5.0) -> None:
-    """The reference on its supply, loaded by 100 kΩ."""
+    """Builds a bench powering `reference` from `supply` volts with a 100 kΩ load."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(supply * V), name="VCC")
     placed = c.place(reference, name="X1")
@@ -83,8 +84,8 @@ def bench(c: Builder, reference: Component, supply: float = 5.0) -> None:
 def widlar_jfet(
     c: Builder, top: float = 600.0, widlar_r: float = 500.0, ptat: float = 6000.0
 ) -> None:
-    """Widlar's bandgap fed by a JFET's Idss instead of a resistor.
+    """Builds a Widlar bandgap fed by a JFET Idss current source instead of a resistor.
 
-    The current it takes, and so its output, barely follow the supply.
+    Constant JFET bias current isolates the bandgap output from supply variations.
     """
     _widlar_core(c, top, widlar_r, ptat, jfet=True)

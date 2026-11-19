@@ -1,21 +1,21 @@
 # Findings: a NOR gate of three memristors
 
-The prompt asks for a NOR gate of three VTEAM memristors and one pulse of at most 10 ns, every output within 0.1 of its NOR and every input within 0.05 of its bit, with the pulse's amplitude 10 % off either way.
-MAGIC's gate, the textbook answer, works only between 1.30 V and 1.32 V, ±0.8 %; a 2.2 kΩ resistor across its inputs widens that to 1.14 V to 1.91 V, ±25 %, and meets the prompt.
+The prompt requires a three-memristor VTEAM NOR gate driven by a single pulse up to 10 ns, holding every output within 0.1 and every input within 0.05 across ±10% pulse amplitude variation.
+The textbook MAGIC gate operates only from 1.30 V to 1.32 V (±0.8%), whereas a 2.2 kΩ input shunt widens the window to 1.14 V through 1.91 V (±25%) and passes all bounds.
 
 ## Method
 
-`candidates.py` writes MAGIC's NOR gate with its inputs and its output oriented as Kvatinsky et al. give them, and a bench of four gates, one per pair of inputs, written by one pulse.
-`explore.py` scans the pulse's amplitude in steps of 10 mV, runs a transient of each, and reads every memristor's state where the pulse has ended; a gate works where every output and input lies within its bound, and what fails a step beyond each end of the range is named.
-Beside each range stands the one the thresholds alone allow, before any state moves, from the resistances each gate starts with.
+`candidates.py` implements the Kvatinsky et al. MAGIC NOR gate plus a four-gate bench testing all input pairs under a shared pulse.
+`explore.py` sweeps pulse amplitude in 10 mV steps, runs a transient at each step, and inspects post-pulse memristor states to identify passing windows and boundary failure modes.
+Each transient window is compared against the static threshold-only window computed from initial device resistances before switching begins.
 
 ## Results
 
 | Gate | Pulse | Works from | to | Margin | Fails below | Fails above |
 | --- | --- | --- | --- | --- | --- | --- |
-| MAGIC's | 10 ns | 1.30 V | 1.32 V | ±0.8 % | output of 01 and 10 | inputs of 00 |
-| MAGIC's | 100 ns | 1.10 V | 1.16 V | ±2.7 % | output of 01 and 10 | inputs of 00 |
-| MAGIC's | 1 µs | 1.03 V | 1.08 V | ±2.4 % | output of 01 and 10 | inputs of 00 |
+| MAGIC | 10 ns | 1.30 V | 1.32 V | ±0.8 % | output of 01 and 10 | inputs of 00 |
+| MAGIC | 100 ns | 1.10 V | 1.16 V | ±2.7 % | output of 01 and 10 | inputs of 00 |
+| MAGIC | 1 µs | 1.03 V | 1.08 V | ±2.4 % | output of 01 and 10 | inputs of 00 |
 | Shunted by 20 kΩ | 10 ns | 1.27 V | 1.38 V | ±4.2 % | output of 01 and 10 | inputs of 00 |
 | Shunted by 5 kΩ | 10 ns | 1.21 V | 1.57 V | ±12.9 % | output of 01 and 10 | inputs of 00 |
 | Shunted by 3 kΩ | 10 ns | 1.17 V | 1.75 V | ±19.9 % | output of 01 and 10 | inputs of 00 |
@@ -27,22 +27,25 @@ Beside each range stands the one the thresholds alone allow, before any state mo
 
 ## What the experiments showed
 
-1. **MAGIC's window is a coincidence of thresholds.**
-    A gate with one input on starts as two 1 kΩ resistances in series, so its output turns off only once the pulse passes twice its 0.5 V threshold; a gate with both inputs off starts as 50 kΩ over 1 kΩ, so its inputs take 98 % of the pulse and turn on past 1 V. With these memristors, whose on threshold is twice their off one, the thresholds alone leave 0.995 V to 1.02 V.
-1. **Time moves the window but does not open it.**
-    In 10 ns the output turns only when driven well past its threshold, its speed growing as the cube of the excess, while inputs barely past theirs move little: the window rises to 1.30 V and 1.32 V. Longer pulses bring it back toward the thresholds' and widen it to ±2.7 % at 100 ns, but no pulse length reaches ±10 %.
-1. **A resistor across the inputs separates the two bounds.**
-    It takes the voltage off a gate whose inputs are both off, raising the upper bound, while a gate with one input on, already 1 kΩ, barely changes.
-    Too small, it leaves so much of the pulse across the output of a gate with both inputs off that the output turns off; too large, the inputs still turn on.
-    The thresholds alone balance at 2.1 kΩ, where the inputs' share of the pulse is 2 kΩ; the transients put the best at 2.2 kΩ, where the upper bound passes from the inputs to the output.
+1. **MAGIC's window is a tight threshold coincidence.**
+    With one input on (`01`/`10`), two 1 kΩ resistors sit in series so the output switches off only above twice the 0.5 V off-threshold.
+    With both inputs off (`00`), 50 kΩ over 1 kΩ places 98% of the pulse across the inputs and flips them above the 1 V threshold.
+    With an on-threshold twice the off-threshold, static thresholds permit only 0.995 V to 1.02 V.
+1. **Pulse duration shifts the window without widening it enough.**
+    At 10 ns, cubic overdrive pushes the active window to 1.30 V through 1.32 V because outputs must switch fully while inputs barely move.
+    Longer 100 ns pulses pull the window down and widen margin to ±2.7%, still well short of ±10%.
+1. **A shunt resistor across the inputs separates the two failure bounds.**
+    The shunt diverts voltage off the high-resistance `00` inputs (raising the upper bound) while barely affecting the already-1 kΩ `01`/`10` input pair.
+    An overly small shunt leaves enough pulse voltage on the `00` output to flip it off, whereas an overly large shunt allows the `00` inputs to turn on.
+    Static thresholds balance at 2.1 kΩ (matching 2 kΩ across inputs), while full transients peak at 2.2 kΩ where the upper limit transitions from input disturbance to `00` output disturbance.
 
 ## Conclusion
 
-`design.py` is the gate: MAGIC's NOR of three memristors with 2.2 kΩ across its inputs, written by a 10 ns pulse of 1.525 V, working from 1.14 V to 1.91 V, ±25 %.
-At 10 % below and above the nominal amplitude, every output ends within 0.002 of its NOR and no input moves by more than 0.006, and ngspice agrees within 1e-4 at each.
+`design.py` implements the MAGIC NOR gate with a 2.2 kΩ input shunt driven by a 10 ns, 1.525 V pulse, operating across 1.14 V to 1.91 V (±25%).
+At ±10% nominal pulse amplitude, every output finishes within 0.002 of its NOR target, no input drifts past 0.006, and ngspice agrees within `1e-4`.
 
 ## Limits
 
-The agent that wrote this prompt also designed the gate, knowing MAGIC's, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
-The memristors are VTEAM's model with one set of parameters and no spread; a real memristor's thresholds and resistances vary from device to device and from one write to the next, which would narrow the window, and VTEAM's thresholds are sharper than many devices'.
-The shunt draws current through every write, and a gate in a crossbar would need it switched out, or shared, which this bench does not model.
+The agent that wrote the prompt also designed the gate with knowledge of MAGIC and judged the output, making this a capability showcase rather than a blind benchmark.
+All memristors share identical nominal VTEAM parameters; device-to-device variability, cycle-to-cycle jitter, and softer physical thresholds would narrow the real margin.
+The shunt resistor draws write current continuously and would require switching or sharing in a crossbar array, which this single-gate bench omits.

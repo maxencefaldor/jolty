@@ -1,8 +1,8 @@
 # Fidelity
 
-A component defined by its circuit is exact by definition, and as costly as its circuit.
-A plan's fidelity simulates chosen component instances with cheaper models instead: logic cells characterized from their components' own circuits, which the [event scheduler](logic.md) runs at event speed.
-The circuit stays as it is; only the plan chooses.
+A transistor-level component is exact by definition, and as expensive to simulate as its full circuit.
+Plan fidelity replaces selected component instances with faster models: logic cells characterized from the underlying component circuits and simulated by the [event scheduler](logic.md).
+The circuit itself remains unchanged; only the plan controls model selection.
 
 ## Choosing models
 
@@ -18,32 +18,32 @@ def plan() -> Plan:
 
 In a scope, `*` matches within a level of the hierarchy and `**` across levels.
 An instance within another that a scope matches takes the outer one's model, and a scope that matches no component instance is an error.
-The models stand in at the plan's own conditions, at each corner, and on each Monte Carlo sample, where they stand for their circuits' nominal parts.
+Characterized models apply under nominal plan conditions, at every corner, and across Monte Carlo samples (representing nominal internal parts).
 
 ## Characterization
 
-A component characterized as a logic cell has ports that are inputs (`Role.INPUT`), outputs (`Role.OUTPUT`), one supply and one ground.
-The supply is held at the setting's `supply`, the devices at the run's temperature, and the cell is measured as a standard cell library measures its cells:
+A component characterized as a logic cell exposes input ports (`Role.INPUT`), output ports (`Role.OUTPUT`), one supply port, and one ground port.
+Characterization holds the supply at the configured `supply` voltage and devices at the run temperature, measuring standard cell properties:
 
-- its truth tables, from an operating point at each combination of its inputs, each output within a tenth of the supply of a rail;
-- each input's capacitance, its mean small-signal capacitance over the combinations;
-- for each change of one input that changes an output, its arc, the output's delay and transition over a grid of input transitions and output loads, from transients.
+- truth tables from an operating point at every input combination, requiring each output within 10% of a rail;
+- input capacitance as the mean small-signal capacitance across input combinations;
+- timing arcs (delay and transition time) from transients over a grid of input slews and output loads for every single-input transition affecting an output.
 
-The delay runs from the input's crossing of half the supply to the output's, and the transition is the time an edge at the output's rate there takes to swing the supply.
-The grid's scale is the cell's own: its loads are `fanouts` times its mean input capacitance, `(0, 1, 2, 4)` unless given, and its transitions `slews` times its outputs' mean transition at a fanout of one, `(0.5, 1, 2, 4)` unless given.
-Transients at the midpoints between the grid's points measure the error of interpolating it, which the report states.
+Delay spans from the input crossing half-supply to the output crossing half-supply, and transition time measures the full rail-to-rail swing at the crossing slope.
+Grid scales adapt to each cell: loads equal `fanouts` times mean input capacitance (default `(0, 1, 2, 4)`), and input slews equal `slews` times mean fanout-1 output transition (default `(0.5, 1, 2, 4)`).
+Transients at grid midpoints quantify interpolation error, which appears in the simulation report.
 
-A characterization needs the transistors' capacitances: an input with no capacitance gives the loads no scale, and a node joined only by Meyer's gate capacitances stalls a transient, in ngspice as in jolty.
+Characterization requires transistor capacitances: zero input capacitance leaves load scaling undefined, and nodes coupled only by Meyer gate capacitances stall transients in both ngspice and jolty.
 
-In the event scheduler, a cell's output changes the arc's delay after its input crosses half the supply, its tables read at the input's transition and the load the output drives, linearly between their points and held at their edges.
-A logic net's load is its inputs' capacitance; an electrical net's, which a logic driver drives, is its whole small-signal capacitance at the operating point, transistors' gates included.
-An output that turns back before its edge reaches its rail has less to swing, and crosses half the supply sooner.
+During event simulation, each output switches after the delay interpolated linearly from the input slew and output load (clamped at table boundaries).
+Logic-net loads sum downstream input capacitances, while electrical-net loads equal total operating-point small-signal capacitance including transistor gates.
+An output reversing before reaching a rail swings less voltage and crosses half-supply sooner.
 
 ## Spot checks
 
-Each run, `spot_checks` of the instances a scope matches, drawn with its `seed`, run the plan again at their circuit's own fidelity, their neighbors still models.
-Each output's changes must reach the same levels in the same order as the model's, each within the model's measured error plus `tolerance`, 0.1 unless given, times its mean delay; at an operating point and over a sweep, each output must hold the same levels.
-An output that does not violates the contract, and the report states where:
+On each run, `spot_checks` matched instances (chosen deterministically using `seed`) re-run the plan at full transistor fidelity while neighbors stay characterized.
+Every output transition must match the model's level sequence within the model's interpolation error plus `tolerance` (default 0.1) times mean delay; operating points and DC sweeps must match logic levels identically.
+Any mismatch violates the fidelity contract and reports the divergence:
 
 <!-- output of: jolty simulate full_adder.py --plan contract.py --no-schematic --no-plot -->
 
@@ -59,7 +59,7 @@ A violated contract fails the simulation, as a failed spec does.
 ## Validity and dependence
 
 A characterized cell's timing holds where it was measured: between its least and its most input transition and load, at its supply.
-The engine watches every analysis for a cell read outside that domain, a supply further from its own than the relative tolerance included, and the report states each one at the rule `outside-validity`, a warning:
+The engine monitors every analysis for out-of-range cell inputs, loads, or supply deviations beyond relative tolerance, warning under `outside-validity`:
 
 <!-- output of: jolty simulate validity.py --no-schematic --no-plot -->
 
@@ -84,14 +84,14 @@ fidelity:
 
 ## Limits
 
-A cell's arcs each measure one input changing alone.
-Where a gate's inputs change within its delay of each other, as inside an XOR built of NAND gates, its output may turn back before reaching its rail in ways no single arc measures, and the gate follows its cell less closely; the spot checks measure how closely.
-A cell draws no current from its supply, and stands for its circuit's nominal parts, whatever their tolerances.
+Each timing arc characterizes a single input changing in isolation.
+When multiple inputs switch within one gate delay (as in an XOR built from NAND gates), outputs may reverse mid-swing outside single-arc data, and spot checks measure the resulting deviation.
+Characterized cells draw zero supply current and always reflect nominal internal part values regardless of tolerances.
 
 ## From transistors to a full adder
 
-The example [`full_adder.py`](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py) builds a full adder of nine NAND gates of four transistors each, runs it on characterized cells, and holds them to half a mean delay:
+The example [`full_adder.py`](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py) builds a full adder of nine four-transistor NAND gates, simulates it with characterized cells, and holds timing within half a mean delay:
 
 ![The full adder: nine NAND gates between the inputs a, b and carry_in on the left and the outputs sum and carry_out on the right](../images/full_adder.adder.schematic.png)
 
-![The full adder counting through its eight combinations in Gray code: sum and carry_out follow the inputs, and the logic net half, the XOR of a and b, changes in its own lane](../images/full_adder.count.plot.png)
+![The full adder counting through its eight combinations in Gray code: sum and carry_out follow the inputs, and the logic net half, the XOR of a and b, changes in a dedicated lane](../images/full_adder.count.plot.png)

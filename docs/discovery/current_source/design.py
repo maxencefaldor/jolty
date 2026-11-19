@@ -1,13 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The best two-terminal 1 mA source found: a limiter fed by a mirror of its current.
+"""Mirror-fed two-transistor 1 mA current source.
 
-Q1 passes the current, and Q2 steals Q1's base drive once the current holds a Vbe
-across Rs. A plain limiter feeds Q2 through a resistor from the line, so Q2's current,
-and its Vbe, follow the line: 17 % over 3 V to 24 V. Here a PNP mirror feeds Q2 a
-tenth of the source's own current instead, and the line regulation falls to 2.6 %,
-what the 2N3906's 18.7 V Early voltage leaves. The current is Vbe/Rs, so it still
-falls 0.3 %/K with temperature. Simulate it with
-``jolty simulate docs/discovery/current_source/design.py``.
+Transistor Q1 passes the load current while Q2 shunts Q1 base drive once sense
+resistor Rs drops one Vbe.
+Feeding Q2 through a supply resistor causes Q2 current and Vbe to track the line,
+yielding 17% regulation error from 3 V to 24 V.
+Replacing the resistor with a 1:10 PNP mirror lowers line regulation error to 2.6%,
+limited by the 2N3906 18.7 V Early voltage.
+Output current equals Vbe/Rs and still falls at 0.3%/K with temperature.
+Simulate via ``jolty simulate docs/discovery/current_source/design.py``.
 """
 
 import candidates
@@ -18,16 +19,16 @@ from jolty.specs import value
 from jolty.units import V, celsius, mA
 
 SENSE = 722.0
-"""Rs, tuned to 1 mA at 12 V and 27 °C."""
+"""Sense resistance Rs in ohms, tuned for 1 mA at 12 V and 27 °C."""
 
 
 def build() -> Component:
-    """The source across 12 V."""
+    """Builds the mirror-fed current source across a 12 V supply."""
     return candidates.bench(candidates.mirrored_limiter(SENSE, 10.0), 12.0)
 
 
 def plan() -> Plan:
-    """The current at 12 V, and across 3 V to 24 V, at 27 °C, -40 °C and 85 °C."""
+    """Returns the plan for 12 V DC and 3 V to 24 V sweeps across temperature."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -41,10 +42,10 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The prompt's bound, 1 mA within 2 % from 3 V to 24 V and -40 °C to 85 °C.
+    """Returns specs checking 1 mA within 2% across 3 V to 24 V and temperature.
 
-    The design meets it at 27 °C, within 2.6 % across the line, and fails it at the
-    temperature corners, as any current set by a Vbe over a resistor does.
+    The design meets the bound at 27 °C within 2.6% line variation and fails at extreme
+    temperature corners due to Vbe thermal drift.
     """
     return Specs(
         [

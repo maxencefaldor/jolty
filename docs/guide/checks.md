@@ -8,10 +8,11 @@ The checks read the flattened circuit as a graph: nodes joined by the branches o
 Each device declares its branches: a resistor or a diode conducts, a capacitor stores charge and is open at DC, an inductor is a short at DC, a voltage source fixes a voltage, and a current source fixes a current.
 A controlled source's control inputs only sense their nodes.
 
-From that graph alone, the checks find what makes a circuit's equations singular or meaningless: a terminal that connects to nothing, a source shorted by its own net, a loop of voltage sources, or a group of nodes with no DC path to the ground.
-The [rules reference](../reference/rules.md) gives each rule's exact condition.
+From that graph alone, checks identify issues that make circuit equations singular or meaningless: unconnected terminals, shorted sources, voltage-source loops, and node groups lacking a DC path to ground.
+The [rules reference](../reference/rules.md) specifies each rule's exact condition.
 
-A check also reads each resistor's, capacitor's and inductor's value against the E series of IEC 60063, the preferred values parts are made in: a resistance in none from E3 to E192, or a capacitance or inductance in none from E3 to E24, is one no standard part has, which the rule `non-standard-value` states:
+Checks also compare every resistor, capacitor, and inductor value against IEC 60063 preferred E-series values.
+A resistance outside E3 through E192, or a capacitance or inductance outside E3 through E24, matches no standard part and triggers `non-standard-value`:
 
 <!-- output of: jolty build divider.py --no-schematic -->
 
@@ -35,8 +36,8 @@ The rule `gmin-dependence` names every net whose voltage doubling gmin would mov
 warn[gmin-dependence]: the operating point depends on gmin: to first order, doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
 ```
 
-A circuit whose DC equations have more than one solution can rest in more than one state: a latch in either of its own, a bias circuit that can also rest with no current, which never starts.
-The rule `multiple-operating-points` states it when an operating-points analysis would find a solution besides the operating point, naming the nets that differ most between the two:
+A circuit whose DC equations admit multiple solutions can settle in more than one state, such as a bistable latch or a bias circuit with an unintended zero-current state.
+The rule `multiple-operating-points` reports any additional DC solution found beyond the primary operating point, naming the nets that differ most between solutions:
 
 <!-- output of: jolty simulate bistable.py --no-schematic --no-plot -->
 
@@ -44,8 +45,8 @@ The rule `multiple-operating-points` states it when an operating-points analysis
 warn[multiple-operating-points]: the circuit has another DC solution, where `x` at 1.9486832970234704 V rather than 0.05131670197609366 V
 ```
 
-A pole of the linearized circuit with a positive real part is a natural mode that grows away from the operating point, so the circuit does not rest there: an amplifier whose feedback makes it oscillate, or a latch balanced between its states.
-The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
+A linearized pole with a positive real part represents a growing natural mode, indicating that the circuit will drift away from the operating point (such as an unstable amplifier or a latch balanced between states).
+The rule `unstable-pole` reports growing modes and the nets with the largest amplitude even when the plan omits stability or pole-zero analyses:
 
 <!-- output of: jolty simulate oscillator.py --no-schematic --no-plot -->
 
@@ -57,10 +58,10 @@ An oscillator raises it by design, so it is a warning, which a plan for one can 
 The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is checked at its operating point for gmin-dependence alone.
 A circuit with a [transmission line](devices.md#transmission-lines), whose delay gives it infinitely many poles, is not checked for them either.
 
-## On analyses' results
+## On analysis results
 
-Once its analyses end, a simulation checks their results too.
-A stability analysis's loop gain raises `low-phase-margin` when it falls through 0 dB with less than 45° of phase margin, and `low-gain-margin` when its phase falls through -180° with less than 6 dB of gain margin, each measured as the specs' `phase_margin` and `gain_margin` measure them:
+Once analyses finish, a simulation checks their results as well.
+A stability analysis triggers `low-phase-margin` when loop gain crosses 0 dB with less than 45° of phase margin, and `low-gain-margin` when phase crosses -180° with less than 6 dB of gain margin, matching `phase_margin` and `gain_margin` specs:
 
 <!-- output of: jolty simulate loop.py --no-schematic --no-plot -->
 
@@ -68,12 +69,14 @@ A stability analysis's loop gain raises `low-phase-margin` when it falls through
 warn[low-phase-margin]: the loop broken at `VP` has a phase margin of 18.171071365739664° at its crossover, 327206.47668315953 Hz
 ```
 
-A spec on the margin states a design's own bound; the rules state the usual ones for any loop a plan measures.
+A margin spec defines a design-specific bound, while these rules enforce standard defaults on every measured loop.
 
-The [ratings](devices.md#ratings) of every device and component instance are held to every operating point and transient the plan solves, at the furthest point of each: a stress beyond a rating raises `over-rating`, an error, and one within it but past 80 % of a bound away from zero, a temperature's from 0 °C, raises `near-rating`, a warning, as derating guidelines keep that margin for heat, ageing and spread.
-A component instance's stresses are at its ports, and its power is all it dissipates; an instance a plan's fidelity replaces by a device is held to its own ratings, not to those of the instances inside it, and a rating of the voltage or the current of a terminal on a logic or a thermal net is not checked, as the terminal has no voltage or current.
-A rating of a current or a power reads the instance's terminals' currents, which an operating point and a transient [record](results.md#what-a-result-records) whatever the plan's record names.
-A temperature is the simulation's, or the device's own where it has one, raised by the thermal net that an instance's terminal `thermal` joins where it [heats](devices.md#self-heating), and stated in degrees Celsius:
+Every device and component instance's [ratings](devices.md#ratings) are checked at the peak excursion of each operating point and transient.
+Exceeding a rating raises `over-rating` (an error), while exceeding 80% of a bound away from zero (or from 0 °C for temperature) raises `near-rating` (a warning) to reflect standard derating margins.
+Component stresses evaluate at ports, and component power equals total internal dissipation.
+Instances replaced by a characterized model check only the top-level instance ratings rather than internal device ratings, and ratings on logic or thermal nets are skipped because those terminals carry no electrical voltage or current.
+Current and power ratings read terminal currents, which operating points and transients [record](results.md#what-a-result-records) automatically regardless of the plan's `record` filter.
+Device temperature starts from the simulation or per-device temperature, adds any thermal-net rise for [self-heated](devices.md#self-heating) instances, and is reported in degrees Celsius:
 
 <!-- output of: jolty simulate supply.py --no-schematic --no-plot -->
 
@@ -109,9 +112,9 @@ A check reports each rule at a level, as ty names them:
 
 - `error`: the fact surely breaks the circuit, and the command exits with 1.
 - `warn`: the fact may break the circuit; the command still exits with 0.
-- `ignore`: the check leaves the rule out.
+- `ignore`: the check omits the rule.
 
-Each rule has a default level, and the settings set others in the `[tool.jolty.rules]` table of `pyproject.toml`, where `all` sets every rule and a rule's own entry overrides it:
+Each rule has a default level, which `[tool.jolty.rules]` in `pyproject.toml` can override using `all` as a baseline and per-rule entries for specific overrides:
 
 ```toml title="pyproject.toml"
 [tool.jolty.rules]
@@ -131,4 +134,5 @@ uv run jolty build coupled.py --warn no-dc-path
 `jolty check` checks a saved circuit file, with no script to run.
 A report lists the errors first, up to the setting `max_diagnostics`, and counts the rest.
 
-A circuit the engine cannot elaborate, such as one with a negative resistance or no ground port, is not checked: the command lists every reason it does not elaborate instead, in the same form as a diagnostic but with no rule, since no level turns a problem off.
+A circuit the engine cannot elaborate (such as one with a negative resistance or no ground port) skips rule checks.
+Instead, the command lists every elaboration problem in the same format without a rule name, since elaboration problems cannot be silenced.

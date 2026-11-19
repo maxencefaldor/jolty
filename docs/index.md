@@ -14,7 +14,7 @@ A compiler and simulator for electronic circuits, built for AI agents.
 { .jolty-tagline }
 
 An agent writes a circuit as a Python script of reusable components.
-Each build checks every device and connection, reports each problem with the script line behind it, and simulates the circuit with a native engine written in Rust.
+jolty checks every device and connection, reports each problem with the script line behind it, draws the schematic, and simulates the circuit with a native engine written in Rust.
 
 [Get started](get-started.md){ .md-button .md-button--primary } [Guide](guide/index.md){ .md-button }
 
@@ -50,11 +50,11 @@ Each build checks every device and connection, reports each problem with the scr
 
 </div>
 
-## How it works
+## How jolty works
 
-A script describes a circuit and a plan says how to simulate it.
-jolty saves the circuit, simulates every analysis of the plan, saves the results and reports what each analysis found.
-The agent reads the report, edits the script and runs it again.
+A script describes a circuit, and a plan specifies how to simulate it.
+jolty saves the circuit, runs every analysis in the plan, writes the results, and reports the findings.
+The agent reads the report, edits the script, and runs the simulation again.
 
 ```mermaid
 flowchart LR
@@ -78,7 +78,7 @@ def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
     c.connect(capacitor.b, ground)
 ```
 
-The engine solves the circuit's equations as SPICE does, and its results agree with ngspice's on a corpus of reference circuits.
+The engine solves the circuit equations using SPICE formulations, and simulation results agree with ngspice across a corpus of reference circuits.
 
 ## Install
 

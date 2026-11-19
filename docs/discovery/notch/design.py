@@ -1,13 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The best 50 Hz notch found: band-pass and inverted low-pass, summed through C and R.
+"""Tolerance-immune 50 Hz notch filter summing biquad band-pass and low-pass outputs.
 
-A Tow-Thomas biquad, Q = 1, gives a band-pass output and, two integrations on, an
-inverted low-pass output exactly 90° behind it at every frequency. Summed into a
-virtual ground through a capacitor and a resistor, which turn them 90° further apart,
-their currents cancel at the frequency where their magnitudes meet: the parts' values
-place the notch, but cannot make it shallow. Over 200 samples of 1 % resistors and 5 %
-capacitors, every one notches deeper than 65 dB between 45 Hz and 55 Hz. Simulate it
-with ``jolty simulate docs/discovery/notch/design.py``.
+A Q = 1 Tow-Thomas biquad generates a band-pass output and an inverted low-pass
+output exactly 90° apart at every frequency.
+Summing both outputs into a virtual ground through a capacitor and resistor adds
+another 90° shift, forcing exact cancellation where current magnitudes match.
+Component tolerances shift notch frequency without making the notch shallow.
+Across 200 Monte Carlo samples of 1% resistors and 5% capacitors, every circuit
+notches deeper than 65 dB between 45 Hz and 55 Hz.
+Simulate via ``jolty simulate docs/discovery/notch/design.py``.
 """
 
 import candidates
@@ -19,12 +20,12 @@ from jolty.units import Hz, kHz
 
 
 def build() -> Component:
-    """The notch on its bench."""
+    """Builds the summed Tow-Thomas notch filter on the AC test bench."""
     return candidates.bench(candidates.summed(1.0))
 
 
 def plan() -> Plan:
-    """The frequency response, nominal and over 200 samples of the tolerances."""
+    """Returns the AC response plan with 200 Monte Carlo tolerance samples."""
     return Plan(
         {"bode": Ac("V1", decade(1 * Hz, 10 * kHz, 100))},
         monte_carlo=MonteCarlo(200, seed=1),
@@ -32,7 +33,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The passband within 3 dB at 25 Hz and 100 Hz, on 95 % of the samples."""
+    """Returns specs checking ±3 dB passband at 25 Hz and 100 Hz for 95% yield."""
     return Specs(
         [
             gain("bode", "out", at=25 * Hz).within(0, 3),

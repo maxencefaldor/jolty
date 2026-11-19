@@ -2,18 +2,18 @@
 
 A compiler and simulator for electronic circuits, built for AI agents.
 
-An agent writes a circuit as a Python script.
-jolty checks every device and connection, points each problem at the script line behind it, draws the schematic, and simulates the circuit with a native engine written in Rust.
+An agent writes a circuit as a Python script of reusable components.
+jolty checks every device and connection, reports each problem with the script line behind it, draws the schematic, and simulates the circuit with a native engine written in Rust.
 
-## What it does
+## What jolty does
 
 - **Builds** circuits from reusable Python components, with units checked: a capacitance passed where a resistance belongs fails on that line.
-- **Simulates** operating points, DC sweeps, AC, transients, periodic steady states, noise, stability, pole-zero, transfer functions, sensitivities and mismatch, beside event-driven logic.
-- **Checks specs**: every simulation measures its results against the circuit's requirements, at each temperature and corner, over Monte Carlo samples and at worst-case extremes.
-- **Scales** across every core and across machines, with results the same bit for bit on any number of threads.
-- **Works with SPICE**: it reads vendors' SPICE models and agrees with ngspice, writes SPICE and KiCad netlists, and runs SKY130 transistors through ngspice with the foundry's models.
+- **Simulates** operating points, DC sweeps, AC, transients, periodic steady states, noise, stability, pole-zero, transfer functions, sensitivities, and mismatch alongside event-driven logic.
+- **Checks specs**: every simulation measures its results against the circuit requirements at each temperature and corner, over Monte Carlo samples, and at worst-case extremes.
+- **Scales** across every core and across machines, producing bit-identical results on any thread count.
+- **Works with SPICE**: reads vendor SPICE models, agrees with ngspice, writes SPICE and KiCad netlists, and runs SKY130 transistors through ngspice using foundry models.
 
-jolty stops at the circuit: board and chip layout is left to the tools made for it.
+jolty stops at the circuit: board and chip layout remain with dedicated physical-design tools.
 
 ## Quick start
 
@@ -26,7 +26,7 @@ uv sync                                        # builds the engine and installs 
 uv run jolty simulate examples/rc_filter.py    # builds the filter and runs its plan
 ```
 
-This saves the circuit, its schematic, its results and their plots beside the script, and prints a report:
+Running `jolty simulate` saves the circuit, schematic, results, and plots next to the script and prints a summary report:
 
 <!-- output of: jolty simulate rc_filter.py --no-schematic --no-plot -->
 
@@ -38,14 +38,14 @@ step: transient to 10 µs in 73 steps, 3 rejected
   V1:current  0 A    -999.5 µA  0 A       -119.9 nA
 ```
 
-## Use it with an agent
+## Using jolty with an agent
 
 - **Command line**, for any harness that runs shell commands: `uv run jolty build` and `uv run jolty simulate`.
 - **MCP server**, for any harness that speaks the Model Context Protocol: `claude mcp add jolty -- uv run --project /path/to/jolty jolty-mcp`.
 
-Both take the same arguments and print the same text.
+Both interfaces accept the same arguments and print the same text.
 
-## A circuit, its plan and its specs
+## A circuit, plan, and specs
 
 ```python
 @component
@@ -80,7 +80,8 @@ def specs() -> Specs:
 ```
 
 A component places devices and other components, so circuits grow into hierarchies.
-The plan says how to simulate the circuit, and the specs what its results must show: each simulation gives a verdict on every requirement, with the value it read.
+The plan specifies how to simulate the circuit, and the specs define requirements on its results.
+Each simulation reports a verdict and measured value for every requirement.
 
 ## Learn more
 
@@ -90,15 +91,15 @@ The plan says how to simulate the circuit, and the specs what its results must s
 
 ## Architecture
 
-| Part | What it holds |
+| Part | Responsibility |
 | --- | --- |
-| `crates/jolty-derive` | The derive macros (`Lift`), lifting device parameters across scalar and dual types |
-| `crates/jolty-ir` | The circuit format and its validation |
-| `crates/jolty-numerics` | Sparse LU for circuit matrices, and integration formulas |
-| `crates/jolty-expressions` | The behavioral-source expression language, compiled and differentiated |
-| `crates/jolty-models` | The device models, each a kernel evaluated in parallel |
-| `crates/jolty-engine` | Elaboration, Newton iteration, the analyses and the batch executor |
+| `crates/jolty-derive` | Derive macros (`Lift`) converting device parameters across scalar and dual types |
+| `crates/jolty-ir` | Circuit intermediate representation and validation |
+| `crates/jolty-numerics` | Sparse LU factorization for circuit matrices and integration formulas |
+| `crates/jolty-expressions` | Behavioral-source expression language, compiled and differentiated |
+| `crates/jolty-models` | Device models, each evaluated as a parallel kernel |
+| `crates/jolty-engine` | Elaboration, Newton iteration, analyses, and batch execution |
 | `crates/jolty-checks` | Structural and linearized operating-point rules and diagnostics |
-| `crates/jolty-veriloga` | The Verilog-A compiler and its compiled device kernels |
-| `crates/jolty-python` | The Python extension module `jolty._core` |
-| `src/jolty` | What an agent reads and writes: units, the builder, plans, specs, results, reports, the command line and the MCP server |
+| `crates/jolty-veriloga` | Verilog-A compiler and compiled device kernels |
+| `crates/jolty-python` | Python extension module `jolty._core` |
+| `src/jolty` | Python API, units, builder, plans, specs, results, reports, CLI, and MCP server |

@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""Monte Carlo yields of the notches.
+"""Monte Carlo yield script for 50 Hz notch filter candidates.
 
-Each sample's depth is read between 45 Hz and 55 Hz, and its passband at 25 Hz and
-100 Hz.
+Evaluates notch depth between 45 Hz and 55 Hz and passband flatness at 25 Hz and
+100 Hz across tolerance samples.
 """
 
 import candidates
@@ -17,22 +17,22 @@ FREQUENCIES = [25.0, *np.linspace(45.0, 55.0, 401), 100.0]
 def response(
     drawn: ir.Circuit, overrides: dict[str, dict[str, float]] | None = None
 ) -> np.ndarray:
-    """The gain at each of FREQUENCIES, in decibels."""
+    """Computes AC output gain in decibels at every frequency in `FREQUENCIES`."""
     simulation = Simulation(drawn, overrides=overrides or {})
     found = simulation.run(Ac("V1", [f * Hz for f in FREQUENCIES]))
-    with np.errstate(divide="ignore"):  # a balanced notch is infinitely deep
+    with np.errstate(divide="ignore"):  # a balanced notch has zero magnitude at null
         return 20 * np.log10(np.abs(found.voltage("out")))
 
 
 def judge(gains: np.ndarray) -> tuple[float, float, bool]:
-    """The notch's depth and the passband's worst deviation, and whether both pass."""
+    """Computes notch depth, worst passband error, and whether both pass the bounds."""
     depth = float(-gains[1:-1].min())
     passband = float(max(abs(gains[0]), abs(gains[-1])))
     return depth, passband, depth >= 50 and passband <= 3
 
 
 def study(name: str, notch: Component, samples: int = 200) -> None:
-    """Prints the notch's nominal depth and passband, and its Monte Carlo yield."""
+    """Prints nominal notch metrics and Monte Carlo yield for one filter topology."""
     drawn = circuit(candidates.bench(notch))
     nominal = judge(response(drawn))
     varied = variation.toleranced(drawn)

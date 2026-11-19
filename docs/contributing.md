@@ -1,6 +1,6 @@
 # Contributing
 
-The page gives the checks a change must pass, the commands that build the docs, and the rules for changing jolty.
+Contribution guidelines cover required checks, documentation build commands, and repository rules.
 
 The rules live in `AGENTS.md` at the repository root, so people and every agent harness read the same rules.
 

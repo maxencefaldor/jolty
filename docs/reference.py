@@ -1,14 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""Write the reference pages that come from the code.
+"""Generator for code-derived reference documentation pages.
 
-Run from the repository root: ``uv run python docs/reference.py``. Every option's flag,
-default and description come from the request models in `jolty.service`, the single
-definition the command line and the MCP server share; every rule's level and condition
-come from the engine, as ``jolty explain`` prints them; every setting comes from
-`jolty.settings.Settings`; the expression language's description comes with the
-engine's parser; and every model's parameters, with their defaults and descriptions,
-come from the schemas the engine derives from its own parameter types. The pages
-therefore match the tools exactly, and CI fails when a page is stale.
+Run from the repository root via ``uv run python docs/reference.py``.
+Command flags, defaults, and descriptions come from the `jolty.service` request models
+shared by the CLI and MCP server.
+Rule levels and conditions come from the engine (matching ``jolty explain``), settings
+come from `jolty.settings.Settings`, and expression documentation comes from the
+engine parser.
+Device model parameters, defaults, and descriptions come from JSON schemas derived
+from the engine parameter types so the generated pages stay synchronized in CI.
 """
 
 import inspect
@@ -100,7 +100,7 @@ _SENTENCE_END: Final = re.compile(r"(?<=[.:])\s+(?=[A-Z`(])")
 
 
 def _positional(field: FieldInfo) -> bool:
-    """Whether pydantic-settings marks the field as a positional argument."""
+    """Returns whether pydantic-settings marks `field` as a positional CLI argument."""
     return any(
         getattr(item, "__name__", "") == "_CliPositionalArg" for item in field.metadata
     )
@@ -127,7 +127,7 @@ def _default(field: FieldInfo) -> str:
 
 
 def _cell(text: str | None) -> str:
-    """A description as one table cell: one line, escaped, its links clickable."""
+    """Formats a description as a single-line escaped Markdown cell with linked URLs."""
     cell = escape(" ".join((text or "").split()), quote=False).replace("|", "\\|")
     return _URL.sub(r"<\1>\2", cell)
 
@@ -142,7 +142,7 @@ def _options(command: type[BaseModel]) -> list[str]:
 
 
 def _commands() -> list[tuple[str, type[BaseModel], str]]:
-    """Each subcommand of ``jolty``: its name, its model and its summary."""
+    """Returns each ``jolty`` subcommand as its name, request model, and summary."""
     found = []
     for name, field in Jolty.model_fields.items():
         command = next(
@@ -155,7 +155,7 @@ def _commands() -> list[tuple[str, type[BaseModel], str]]:
 
 
 def cli_page() -> str:
-    """The page of commands: one section per command, with a table of its options."""
+    """Builds the CLI reference page with one section and options table per command."""
     lines = [CLI_INTRODUCTION]
     for name, command, summary in _commands():
         lines.extend(
@@ -174,15 +174,15 @@ def cli_page() -> str:
 def _setting_default(field: FieldInfo) -> str:
     factory = field.default_factory
     if inspect.isfunction(factory) and factory.__doc__ is not None:
-        # A default computed where jolty runs, as the function that computes it says,
-        # rather than what it computes on the machine that writes the page.
+        # Use the factory docstring for runtime-computed defaults rather than
+        # evaluating a value specific to the machine generating the docs.
         return factory.__doc__.strip().removesuffix(".")
     value = field.get_default(call_default_factory=True, validated_data={})
     return "unset" if value is None or value == {} else f"`{value}`"
 
 
 def settings_page() -> str:
-    """The page of settings: where they come from, then one row each."""
+    """Builds the configuration reference page listing every setting and its default."""
     rows = [
         f"| `{name}` | `JOLTY_{name.upper()}` | {_setting_default(field)} | "
         f"{_cell(field.description)} |"
@@ -192,7 +192,7 @@ def settings_page() -> str:
 
 
 def rules_page() -> str:
-    """The page of rules: a table, then each rule's condition, one sentence a line."""
+    """Builds the rules reference page with a summary table and rule conditions."""
     known = rules()
     lines = [
         RULES_INTRODUCTION,
@@ -210,13 +210,13 @@ _SCHEMA: Final = TypeAdapter[dict[str, JsonValue]](dict[str, JsonValue])
 
 
 def _object(value: JsonValue) -> Mapping[str, JsonValue]:
-    """`value` if it is a JSON object, or an empty one."""
+    """Returns `value` when `value` is a JSON object, or an empty mapping otherwise."""
     empty: dict[str, JsonValue] = {}
     return value if isinstance(value, dict) else empty
 
 
 def _objects(value: JsonValue) -> list[Mapping[str, JsonValue]]:
-    """The JSON objects in `value`, if it is a list."""
+    """Extracts all JSON object elements from `value` when `value` is a list."""
     return (
         [item for item in value if isinstance(item, dict)]
         if isinstance(value, list)
@@ -225,7 +225,7 @@ def _objects(value: JsonValue) -> list[Mapping[str, JsonValue]]:
 
 
 def _value(value: JsonValue) -> str:
-    """A JSON value as a table cell: a number in its shortest form, text as it is."""
+    """Formats a JSON value as a Markdown code span using compact numeric notation."""
     match value:
         case bool() | None | list() | dict():
             written = json.dumps(value)
@@ -237,7 +237,7 @@ def _value(value: JsonValue) -> str:
 
 
 def _constants(schema: Mapping[str, JsonValue]) -> list[JsonValue]:
-    """The values a schema allows, if it allows only some, however deep they lie."""
+    """Collects all enumerated or constant values in `schema` regardless of depth."""
     enumerated = schema.get("enum")
     found = list(enumerated) if isinstance(enumerated, list) else []
     if "const" in schema:
@@ -248,7 +248,7 @@ def _constants(schema: Mapping[str, JsonValue]) -> list[JsonValue]:
 
 
 def _choices(schema: Mapping[str, JsonValue]) -> str:
-    """The values a parameter chooses among, as a sentence, if it chooses among some."""
+    """Formats enumerated choices from `schema` as a trailing sentence or empty."""
     choices = [_value(choice) for choice in _constants(schema) if choice is not None]
     return f" One of {', '.join(choices)}." if choices else ""
 
@@ -260,10 +260,10 @@ def _parameters(
     required: bool,
     described: JsonValue = None,
 ) -> list[str]:
-    """The table rows of the parameter at `path` and of every parameter within it.
+    """Builds Markdown table rows for the parameter at `path` and nested parameters.
 
-    A parameter that is one of several shapes, such as ``waveform.pulse``, is described
-    as its shape is, `described`, rather than as its type is.
+    Variant parameters such as ``waveform.pulse`` inherit the variant description
+    passed in `described` instead of the inner type description.
     """
     description = described or schema.get("description")
     text = description if isinstance(description, str) else ""
@@ -296,9 +296,10 @@ def _parameters(
 
 
 def models_page() -> str:
-    """The page of models: for each, a table of its parameters, required ones first.
+    """Builds the device models reference page with one parameter table per model.
 
-    Each parameter comes with its default and its description, from the engine.
+    Each table lists required parameters before optional parameters, pulling defaults
+    and descriptions directly from the engine schemas.
     """
     lines = [MODELS_INTRODUCTION]
     for model in _core.models():
@@ -324,7 +325,7 @@ def models_page() -> str:
 
 
 def main() -> None:
-    """Writes every page."""
+    """Writes all code-generated reference pages into ``docs/reference``."""
     REFERENCE.mkdir(parents=True, exist_ok=True)
     pages = {
         REFERENCE / "cli.md": cli_page(),

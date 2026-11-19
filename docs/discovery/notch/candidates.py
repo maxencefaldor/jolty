@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Notch filters for 50 Hz, with toleranced parts, and their bench."""
+"""Toleranced 50 Hz notch filter candidates and AC evaluation bench."""
 
 import math
 import sys
@@ -17,16 +17,16 @@ FREQUENCY = 50.0
 CAPACITANCE = 100e-9
 RESISTANCE = 1 / (2 * math.pi * FREQUENCY * CAPACITANCE)
 RESISTOR, CAPACITOR = 0.01, 0.05
-"""The tolerances of the resistors and of the capacitors."""
+"""Relative tolerances applied to resistors (1%) and capacitors (5%)."""
 
 
 def r(ohms: float) -> devices.Device:
-    """A 1 % resistor."""
+    """Builds a resistor with 1% tolerance."""
     return devices.resistor(ohms * ohm, tolerance=RESISTOR)
 
 
 def cap(farads: float) -> devices.Device:
-    """A 5 % capacitor."""
+    """Builds a capacitor with 5% tolerance."""
     return devices.capacitor(farads * F, tolerance=CAPACITOR)
 
 
@@ -52,7 +52,7 @@ def _twin_t_bridge(
 
 @component
 def twin_t(c: Builder) -> None:
-    """The passive twin-T: two resistors R over 2C, two capacitors C over R/2."""
+    """Builds a passive twin-T notch with R over 2C and C over R/2 branches."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     bridge_out, leg = _twin_t_bridge(c, source)
@@ -62,14 +62,13 @@ def twin_t(c: Builder) -> None:
 
 @component
 def summed(c: Builder, quality: float = 1.0) -> None:
-    """A Tow-Thomas biquad's band-pass and inverted low-pass outputs, summed.
+    """Builds a Tow-Thomas biquad summing band-pass and inverted low-pass outputs.
 
-    The band-pass output, through C, and the inverted low-pass output, through R, meet
-    at a summing amplifier's virtual ground.
-
-    The two outputs are exactly 90° apart at every frequency, so their currents, 90°
-    apart again through C and R, cancel wherever their magnitudes meet: the parts'
-    values move the notch, never its depth.
+    The band-pass output through C and the inverted low-pass output through R meet at
+    the summing amplifier virtual ground.
+    Both outputs remain exactly 90° apart at every frequency, so adding another 90°
+    through C and R guarantees exact cancellation wherever magnitudes match.
+    Component tolerances shift notch frequency without reducing notch depth.
     """
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
@@ -112,7 +111,7 @@ def summed(c: Builder, quality: float = 1.0) -> None:
 
 @component
 def bench(c: Builder, notch: Component) -> None:
-    """The notch fed by a source, its output loaded by 1 MΩ."""
+    """Builds a test bench driving `notch` from an AC source with a 1 MΩ load."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     placed = c.place(notch, name="X1")
@@ -124,11 +123,11 @@ def bench(c: Builder, notch: Component) -> None:
 
 @component
 def bootstrapped(c: Builder, feedback: float = 0.75) -> None:
-    """The twin-T with its ground leg driven by a fraction of its buffered output.
+    """Builds a twin-T notch whose ground leg is driven by a buffered output fraction.
 
-    A follower buffers the notch, and a second follows a divider of its output into the
-    junction of R/2 and 2C, which raises the notch's Q to 1/(4(1 - k)): 1 at k = 3/4.
-    The bridge's balance, and so the depth, is the passive twin-T's.
+    A unity follower buffers the notch output and a second follower drives a fraction
+    into the R/2 and 2C junction, raising Q to 1/(4(1 - k)).
+    Notch depth still depends on the passive twin-T bridge balance.
     """
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)

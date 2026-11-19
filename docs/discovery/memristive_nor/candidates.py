@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""NOR gates of three memristors, MAGIC's, and the bench that writes all four inputs.
+"""MAGIC three-memristor NOR gates and four-case write test bench.
 
-Each gate drives its two inputs in parallel from `drive`, in series with its output to
-the ground, oriented as MAGIC's (Kvatinsky et al., 2014): the current turns the inputs
-toward on and the output toward off. Its output starts at 1, on, and stays there only
-if both inputs are 0, off, so their resistance holds the voltage across it below its
-threshold.
+Each gate connects two parallel input memristors in series with an output memristor
+from `drive` to ground per MAGIC (Kvatinsky et al., 2014).
+Current drives inputs toward the on state and the output toward the off state.
+The output begins at logic 1 (on) and stays on only when both inputs are 0 (off),
+keeping voltage across the output below its switching threshold.
 """
 
 from typing import Final
@@ -15,14 +15,14 @@ from jolty.units import V, kohm, ns, ohm, s
 from jolty.waveforms import Pulse
 
 CASES: Final = ((0, 0), (0, 1), (1, 0), (1, 1))
-"""The inputs each gate of the bench holds, from X1 to X4."""
+"""Input bit pairs assigned to gates X1 through X4 on the test bench."""
 
 WIDTH: Final = 10.0
-"""The pulse's width, in nanoseconds, the longest the prompt allows."""
+"""Nominal write pulse duration in nanoseconds, matching the prompt limit."""
 
 
 def memristor(bit: int) -> devices.Device:
-    """The prompt's VTEAM memristor, holding `bit`: on, at 1 kΩ, for 1."""
+    """Builds the prompt's VTEAM memristor initialized to `bit` (1 kΩ on for 1)."""
     return devices.voltage_controlled_memristor(
         on_resistance=1 * kohm,
         off_resistance=100 * kohm,
@@ -39,7 +39,7 @@ def memristor(bit: int) -> devices.Device:
 
 @component
 def nor(c: Builder, a: int, b: int, shunt: float | None = None) -> None:
-    """MAGIC's NOR of the bits `a` and `b`, its inputs shunted by `shunt` ohms."""
+    """Builds a MAGIC NOR gate for bits `a` and `b` with optional `shunt` ohms."""
     drive = c.port("drive")
     ground = c.port("ground", Role.GROUND)
     first = c.place(memristor(a), name="MA")
@@ -58,10 +58,10 @@ def nor(c: Builder, a: int, b: int, shunt: float | None = None) -> None:
 def bench(
     c: Builder, amplitude: float, shunt: float | None = None, width: float = WIDTH
 ) -> None:
-    """Four gates, X1 to X4, one per pair of `CASES`, written by a pulse of `amplitude`.
+    """Builds four MAGIC NOR gates (X1 to X4) driven by a pulse of `amplitude`.
 
-    The pulse rises in 0.1 ns after 1 ns, holds for `width` nanoseconds, and falls in
-    0.1 ns.
+    The pulse rises in 0.1 ns after a 1 ns delay, holds for `width` nanoseconds, and
+    falls in 0.1 ns.
     """
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(

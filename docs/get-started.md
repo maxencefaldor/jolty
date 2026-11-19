@@ -1,11 +1,11 @@
 # Get started
 
-The page installs jolty, writes a first circuit, simulates it and reads the results.
+Install jolty, write a first circuit, simulate it, and read the results.
 
 ## Install
 
 jolty builds from source.
-It needs [uv](https://docs.astral.sh/uv/), which installs Python 3.15, and a [Rust toolchain](https://rustup.rs/), which builds the engine:
+Building jolty requires [uv](https://docs.astral.sh/uv/) (which installs Python 3.15) and a [Rust toolchain](https://rustup.rs/) for the native engine:
 
 ```sh
 git clone https://github.com/maxencefaldor/jolty
@@ -73,9 +73,9 @@ The component `low_pass` takes its resistance and capacitance as parameters, so 
 The component `bench` places one of them as the instance `X1` and drives it.
 The function `plan()` names three analyses; the [Simulation](guide/simulation.md) page describes each one.
 
-## Build it
+## Build the circuit
 
-The command `jolty build` runs `build()`, saves the circuit beside the script as `low_pass.jolty.json`, and checks that the engine can simulate it:
+The command `jolty build` runs `build()`, saves the circuit next to the script as `low_pass.jolty.json`, and checks that the engine can simulate it:
 
 ```sh
 uv run jolty build low_pass.py
@@ -90,9 +90,9 @@ took 0.27 s
 The engine solves for three unknowns: the voltages of the nets `in` and `out`, and the current through the source `V1`.
 When the circuit has problems, the command lists every one, each with the script line that placed the instance, and exits with 1.
 
-## Simulate it
+## Simulate the circuit
 
-The command `jolty simulate` builds the circuit, runs every analysis of `plan()`, saves the results as `low_pass.results.npz` and reports what each analysis found:
+The command `jolty simulate` builds the circuit, runs every analysis in `plan()`, saves the results as `low_pass.results.npz`, and reports what each analysis found:
 
 ```sh
 uv run jolty simulate low_pass.py

@@ -24,52 +24,61 @@ c.connect(supply.positive, part["VCC"], name="supply")
 c.connect(supply.negative, part["VEE"], part[spice.GROUND], ground)
 ```
 
-A subcircuit's pins become its ports, in order.
-A subcircuit that reaches SPICE's global ground, node `0`, has one more port, `spice.GROUND`, which the circuit joins to its own ground.
-Each instance records the file and the line of the statement that placed it, so a problem in an imported part names where the part says it.
+A subcircuit's pins become its ports in declared order.
+Subcircuits referencing SPICE global ground (node `0`) expose an additional `spice.GROUND` port for connection to the circuit ground.
+Each imported instance records the SPICE file and line number so diagnostics pinpoint the exact netlist statement.
 
-`spice.fetch(url, digest)` downloads a model file from where its maker publishes it, checks its SHA-256 digest, and keeps it in the [`cache`](../reference/configuration.md) directory, where later calls read it.
+`spice.fetch(url, digest)` downloads a vendor model file, verifies its SHA-256 digest, and caches it under [`cache`](../reference/configuration.md) for reuse.
 
 ## What jolty reads
 
-jolty reads a file as PSpice and ngspice read it:
+jolty parses SPICE files following PSpice and ngspice conventions:
 
-- resistors, capacitors and inductors, with PSpice's model cards' scales and their copies, `M`, SPICE3's cards of a resistor or a capacitor, of type `R` or `C`, which size an element of no value of its own by its width and length as ngspice does, its sheet resistance or its capacitances per area and per perimeter, its narrowing and shortening, and its default size and value, and mutual inductances, `K`, which couple inductors;
-- independent sources at their DC level, or with their `PULSE`, `SIN`, `PWL` or `EXP` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
-- diodes of level 1, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, positive areas and multipliers, and models that inherit from one another through `AKO:`;
-- a resistor whose value reads a voltage or a current, as ngspice makes it a behavioral current, `m · V(a, b) / R`, divided by `1 + TC1 · ΔT + TC2 · ΔT²`, ΔT the temperature the library is read at above 27 °C, without noise, as ngspice's has none;
-- a capacitor of a charge, `Q=` an expression, which ngspice makes the current of the charge's rate of change, as a [behavioral capacitor](devices.md#behavioral-sources) of that charge, times its copies `m`; and a capacitor whose value reads its own voltage, `C=` an expression, which ngspice makes a current `m · C(v) · dv/dt`, as a behavioral capacitor of its charge, the value's integral from 0 to its voltage, in closed form where the value, its other terms evaluated, is a polynomial of the voltage, plus numbers times `exp`, `sinh`, `cosh`, `tanh`, `sin` or `cos` of a line of it; a value that reads another voltage or a current, which makes no charge, or has no closed integral is refused by name, as are temperature and voltage coefficients and sizes on either, and its own temperature, which ngspice drops, changes nothing; ngspice's 1e15 Ω across such a capacitor, which keeps a node it alone joins from floating, is left out, and its current is not delayed by the 1 fs of ngspice's differentiation of the voltage ([departures](departures.md));
-- linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;
-- `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
-- switches of PSpice's `VSWITCH` and `ISWITCH` models, `S` and `W`, a `W` switch reading the current of a source of a voltage as a current-controlled source does;
-- subcircuit instances, with their parameters, and a multiplier `m`, where the subcircuit has no parameter of that name, which multiplies each element it holds as ngspice's: a resistor's and an inductor's copies divide its value, a capacitor's multiply it, and a diode's, a transistor's and an instance's copies are multiplied by it, sources of a current under a multiplier being errors; and `.param` statements;
-- what process design kits write, as the [foundry's guide](foundry.md#the-open-process-kits) tells: `.include` and `.lib` sections (both outside and inside subcircuits, resolved relative to the containing file and checked for cycles), `.option scale`, a subcircuit's `.if` blocks and its own parameters, which its instances may give, `temper`, and the statistical functions `agauss`, `gauss`, `aunif`, `unif` and two-argument `limit`, at their nominal values unless a placement is drawn in a sample;
-- `.ic` and `.nodeset`, both outside and inside subcircuits, each node's voltage written `V(node)=value`, and device `IC=` on capacitors (linear and behavioral) and inductors: top-level declarations live in `initial_conditions` and `nodesets`, while `library.initial_conditions_of(name, path="", *, operating_point=True, connections=None, **parameters)` and `library.nodesets_of(...)` gather hierarchical voltages with subcircuit ports remapped onto parent nets; with `operating_point=False` (`UIC`), capacitor `IC=` voltages are solved alongside `.ic` into node voltages, contradicting conditions are refused, and non-zero inductor `IC=` currents are refused because `Transient.initial_conditions` accepts net voltages alone (`library.initial_currents_of(...)` reports each inductor's initial current, scaled by `M` and subcircuit multipliers, with coupled windings named `K1:current1` and so on).
+- Resistors, capacitors, and inductors supporting PSpice model scales, multiplicity `M`, mutual inductances `K`, and SPICE3 `R`/`C` model cards.
+  SPICE3 geometric cards size elements without explicit values from width, length, sheet resistance or area/perimeter capacitances, narrowing/shortening offsets, and defaults matching ngspice.
+- Independent sources with DC levels or `PULSE`, `SIN`, `PWL`, and `EXP` waveforms (in parenthesized or SPICE2 trailing-argument syntax), using the time-zero waveform value for non-transient analyses.
+- Level 1 diodes, JFETs, BJTs, and level 1 and 3 MOSFETs with model cards, positive areas and multipliers, and `AKO:` model inheritance.
+- Voltage- or current-dependent resistors mapped to ngspice-equivalent behavioral currents `m · V(a, b) / R` scaled by `1 + TC1 · ΔT + TC2 · ΔT²` (referenced to 27 °C, noiseless as in ngspice).
+- Charge-defined `Q=` capacitors mapped directly to charge-conserving [behavioral capacitors](devices.md#behavioral-sources) scaled by multiplier `m`.
+  Voltage-dependent `C=` capacitors integrate `C(v)` analytically from 0 to `v` into a behavioral charge when `C(v)` is a polynomial plus scaled `exp`, `sinh`, `cosh`, `tanh`, `sin`, or `cos` of affine voltage terms.
+  Expressions depending on other voltages or currents, non-integrable expressions, and unsupported temperature/voltage/geometry modifiers are rejected by name; ngspice's 1e15 Ω shunt and 1 fs differentiation lag are omitted ([departures](departures.md)).
+- Linear controlled sources along with `POLY`, `VALUE`, and `TABLE` variants.
+- `B` behavioral sources (`V=` or `I=`) capable of referencing any voltage-source current, including self-currents.
+- PSpice `VSWITCH` (`S`) and `ISWITCH` (`W`) switches, with `W` sensing voltage-source currents identically to current-controlled sources.
+- Subcircuit instances with parameter overrides, `.param` statements, and instance multipliers `m` (when not shadowed by a subcircuit parameter).
+  Subcircuit multipliers propagate as in ngspice: dividing resistances and inductances, multiplying capacitances, scaling semiconductor/subcircuit multiplicities, and rejecting multiplied current sources.
+- Open-PDK directives detailed in the [foundry guide](foundry.md#the-open-process-kits): top-level and subcircuit `.include`/`.lib` sections (relative paths with cycle checks), `.option scale`, `.if` blocks, subcircuit parameters, `temper`, and statistical functions (`agauss`, `gauss`, `aunif`, `unif`, two-argument `limit`).
+- Top-level and subcircuit `.ic` and `.nodeset` declarations (`V(node)=value`) alongside device `IC=` on linear/behavioral capacitors and inductors.
+  Top-level declarations populate `initial_conditions` and `nodesets`, while `library.initial_conditions_of(...)` and `library.nodesets_of(...)` resolve hierarchical subcircuit voltages onto parent nets.
+  With `operating_point=False` (`UIC`), capacitor `IC=` voltages solve alongside `.ic` while rejecting contradictions and non-zero inductor `IC=` currents (`library.initial_currents_of(...)` reports scaled inductor initial currents, naming coupled windings `K1:current1` and onward).
 
-Parameters may read one another in any order, and expressions know PSpice's `TEMP`, `VT` and `GMIN`.
-A `.func name(parameters) {expression}`, outside or inside a subcircuit (including inside `.if` branches), defines a function that parameters, `.if` conditions, element values, behavioral expressions, `TABLE` sources, subcircuit instance arguments, and both global and local `.model` cards (including `AKO:`, binned MOSFET bounds, geometric `R`/`C` cards, and VBIC self-heating) may call, written out in place of each call; local `.func` definitions stay scoped to their subcircuit and shadow global ones without mutating the library.
-A function may call another, but one that calls itself, directly or through others, is an error that names each, as jolty's expressions have no recursion.
-Expressions are read with PSpice's functions and ngspice's meanings, written in [jolty's expression language](../reference/expressions.md): `PWR(x, y)` is `|x|^y`, `POW(x, y)` and `x ** y` keep a negative base's sign to an odd constant power, as ngspice's, and are otherwise of the magnitude of the base, a `TABLE` within an expression extends beyond its ends, and a `TABLE` source holds beyond its ends with its corners rounded, as ngspice's XSPICE `pwl` model rounds them.
-A switch follows ngspice's log-cubic law between its on and off voltages or currents.
-A waveform must give what SPICE would take from the transient analysis: a `PULSE` its rise, fall and width, positive, a `SIN` its frequency, and an `EXP` its two delays and two time constants, positive, since ngspice 47 takes each that is 0 from the transient's step (measured: `EXP(0 1 0 1n 6n 2n)` holds 0 V until the step, 0.5 ns, under `tran 0.5n 12n`), and a circuit is read apart from any analysis; a source's DC level beside its waveform must be the waveform's level at zero, as jolty's source has one level there for every analysis; and `SFFM` and `AM` waveforms, which jolty has not, are errors.
-An element or a node whose name holds a `/`, as a flattened hierarchy writes them, is an error, as jolty's paths separate their levels with `/`.
-A bipolar transistor has a substrate, as in SPICE: the ground unless its instance names a fourth node, at its collector for an NPN and at its base for a PNP unless `SUBS` builds it otherwise.
+Parameters may reference one another in any order, and expressions recognize PSpice constants `TEMP`, `VT`, and `GMIN`.
+Top-level and subcircuit-scoped `.func name(parameters) {expression}` definitions (including inside `.if` blocks) expand inline across parameters, `.if` conditions, elements, expressions, `TABLE` sources, instance arguments, and `.model` cards (covering `AKO:`, binned MOSFETs, geometric `R`/`C`, and VBIC self-heating).
+Local `.func` definitions stay scoped to their subcircuit and shadow global functions without mutating the library.
+Functions may call other functions, while direct or mutual recursion fails with every participating function named.
+Expressions translate PSpice functions with ngspice semantics into [jolty's expression language](../reference/expressions.md): `PWR(x, y)` evaluates `|x|^y`, and `POW(x, y)` and `x ** y` preserve sign for odd integer powers of negative bases.
+Inline `TABLE` expressions extrapolate beyond endpoints, whereas `TABLE` sources clamp at endpoints with rounded corners matching ngspice XSPICE `pwl`.
+Switches follow ngspice's log-cubic transition law between on and off thresholds.
+Waveforms must specify parameters SPICE otherwise borrows from the transient step: positive `PULSE` rise/fall/width, `SIN` frequency, and positive `EXP` delays and time constants (`EXP(0 1 0 1n 6n 2n)` holds 0 V until the 0.5 ns step under `tran 0.5n 12n`).
+A source specifying both a DC value and a waveform must match the waveform's time-zero value, and unsupported `SFFM` and `AM` waveforms raise errors.
+Element or node names containing `/` are rejected because jolty uses `/` as its hierarchy separator.
+Bipolar transistors connect their substrate to ground unless a fourth instance node is given, attaching to collector (NPN) or base (PNP) unless overridden by `SUBS`.
 
-An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.
-The inductors that mutual inductances couple, directly or through one another, become one device of [coupled inductors](devices.md#coupled-inductors), its windings in the order the file writes them, which takes the name and the line of the first mutual inductance: `K1 L1 L2 0.99` gives `K1`, whose currents are `K1:current1` and `K1:current2`.
-A mutual inductance may name any number of inductors, as PSpice's does, each pair coupled by its coefficient; one with a magnetic core's model is an error.
+Elements sensing a voltage-source current connect through series sense ports (`V1.sense1`, `V1.sense2`, and so on for `V1`).
+Inductors linked by mutual inductances merge into a single [coupled inductors](devices.md#coupled-inductors) device preserving file winding order and taking the first `K` element's name and line (`K1 L1 L2 0.99` yields `K1` with currents `K1:current1` and `K1:current2`).
+Mutual inductances accept any number of inductors (as in PSpice), coupling every pair by the given coefficient; magnetic-core models raise an error.
 
-Temperature parameters become the devices' own: a model's `TNOM`, or PSpice's `T_MEASURED`, is its nominal temperature, and a resistor's, capacitor's or inductor's `TC=tc1,tc2`, `TC1`, `TC2` and `TCE` drift its value.
-A resistor's or capacitor's `VC1` and `VC2`, as HSPICE and Spectre write them, bend its value with its voltage; ngspice has no such parameters, so a netlist written for it gives that resistor or capacitor as an expression.
-A device's own temperature comes from its model card's `T_ABS` or `T_REL_GLOBAL`, PSpice's, or its element's `TEMP` or `DTEMP`, ngspice's, as [`held_at` and `warmer_by`](devices.md) set it: `T_ABS=-273.15`, with which macromodels keep resistors quiet, holds a resistor at 0 K, where it makes no noise.
-PSpice's `T_REL_LOCAL`, relative to the card a card inherits from, is an error, as is a device that sets its own temperature twice; a netlist written for ngspice gives each device its `TEMP` or `DTEMP`.
-Expressions read `TEMP` and `VT` at 27 °C, whatever the temperature the circuit is simulated at.
-A diode's, transistor's or resistor's `KF` and `AF` give its flicker noise; PSpice's `NLEV` and `GDSNOI`, which choose other noise equations, are left out, as ngspice leaves them; and a capacitor's or inductor's `KF`, flicker noise neither makes, is an error unless zero.
-Any other parameter or element that jolty does not model is an error that names the file, the line and the statement; nothing is silently dropped.
+Temperature parameters map directly to device fields: `TNOM` (PSpice `T_MEASURED`) sets nominal temperature, and `TC=tc1,tc2`, `TC1`, `TC2`, and `TCE` set passive temperature drift.
+Resistor and capacitor voltage coefficients (`VC1`, `VC2` from HSPICE and Spectre) export to ngspice as behavioral expressions because ngspice lacks those parameters.
+Per-device temperatures come from model cards (`T_ABS`, `T_REL_GLOBAL`) or elements (`TEMP`, `DTEMP`), mapping to [`held_at` and `warmer_by`](devices.md) (for example, `T_ABS=-273.15` holds macromodel resistors noiseless at 0 K).
+PSpice `T_REL_LOCAL` and duplicate per-device temperature declarations fail; ngspice exports emit `TEMP` or `DTEMP`.
+SPICE expressions evaluate `TEMP` and `VT` at 27 °C regardless of simulation temperature.
+`KF` and `AF` configure flicker noise on diodes, transistors, and resistors; PSpice `NLEV` and `GDSNOI` are ignored (matching ngspice), and non-zero `KF` on capacitors or inductors raises an error.
+Any unrecognized parameter or element fails with file, line, and statement details; nothing is silently dropped.
 
 ## Agreement with ngspice
 
-jolty's tests read vendors' macromodels from ngspice's own examples and compare every net and current of each with ngspice's, on the same file:
+Differential tests load vendor macromodels from ngspice examples and compare every node voltage and branch current against ngspice on the same file:
 
 | Part | Maker | Analyses |
 | --- | --- | --- |
@@ -78,12 +87,12 @@ jolty's tests read vendors' macromodels from ngspice's own examples and compare 
 | AD22057 | Analog Devices | operating point, DC sweep, AC, transient |
 | OPA171 | Texas Instruments | operating point |
 
-ngspice runs PSpice's switches as XSPICE's, which stamp the negative of their conductance in an AC analysis, so the OPA171's frequency responses, which its ESD switches load, differ from jolty's by that error.
-Every part's operating point also agrees at -40 °C and at 125 °C, but the AD22057's at 125 °C: ngspice scales a transistor's base-collector saturation current by its area twice, and the leakage of the AD22057's large transistors at that temperature makes the error visible.
+ngspice runs PSpice switches through XSPICE, which negates small-signal AC conductance; OPA171 frequency responses loaded by ESD switches differ from jolty by that ngspice defect.
+Operating points also agree at -40 °C and 125 °C except AD22057 at 125 °C, where ngspice scales BJT base-collector saturation current by area twice and amplifies high-temperature leakage.
 
 ## Writing SPICE
 
-`jolty.spice.export` writes a circuit the other way, as a SPICE netlist that ngspice reads, to check jolty against the reference simulator:
+`jolty.spice.export` exports jolty circuits as SPICE netlists for ngspice validation:
 
 <!-- not run: it exports a circuit `bench`, which the page does not build, and runs ngspice -->
 
@@ -96,15 +105,15 @@ raw = ngspice.run(lines, "ac dec 20 10 1meg")
 raw.vectors[export.vector(drawn, unknown)]  # ngspice's values of a jolty unknown
 ```
 
-The netlist flattens the hierarchy into devices whose names and nets join their paths with underscores, as `RX1_R1` and `x1_mid`; components read from SPICE libraries stay instances of their subcircuits, named in `subcircuits`.
-Behavioral sources become ngspice's `B` sources, and so do switches, each a current of its own law; coupled inductors become inductors and their `K` elements, a foundry's transistors instances of their [kit's](foundry.md) subcircuits, and each model card carries the device's parameters in SPICE's units.
-ngspice reads a pulse's width of 0 as the transient's stop time, so a pulse with no width is written with a width of 1e-40 s, which vanishes beside its rise.
-Logic devices have no SPICE element, so a circuit that holds one cannot be written.
-`jolty.spice.ngspice` runs it: `run` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.
-The [gallery](../gallery.md) replicates every example without logic devices this way.
+Export flattens hierarchy into underscore-joined names (`RX1_R1`, `x1_mid`), while preserving imported SPICE subcircuit instances listed in `subcircuits`.
+Behavioral sources and switches export as ngspice `B` sources implementing the exact switch law; coupled inductors export as `L` and `K` elements, foundry transistors instantiate [kit](foundry.md) subcircuits, and model cards convert parameters to SPICE units.
+ngspice interprets zero pulse width as the transient stop time, so zero-width pulses export as `1e-40` s (negligible compared to rise time).
+Logic devices have no SPICE equivalent, so circuits containing logic cannot export to SPICE.
+`jolty.spice.ngspice.run` executes one analysis with matched tolerances at the thermal-voltage-matched temperature and parses the raw output.
+The [gallery](../gallery.md) replicates every analog example in ngspice using this export pipeline.
 
-`export.netlist(..., dialect=export.XYCE)` writes the netlist for Xyce 7.10.0 instead, Sandia's simulator, which `jolty.spice.xyce.run` runs as a separate program, as its GPL asks, reading the values it prints and the times it reports.
-The dialect states only where Xyce departs from ngspice, each fact read from Xyce's sources: the parameters each of its models takes, a source's DC level, which Xyce takes as 0 where none is given, a pulse of no width, and temperatures where Xyce's thermal voltage, from SPICE3's constants, is jolty's.
-What Xyce lacks or defines otherwise is refused by name, never dropped: BSIM3, whose Xyce version is 3.2.2, VDMOS and VBIC, other models in Xyce, excess phase, a parameter its model has not, and, for now, every device jolty writes as an expression.
-Where Xyce's models compute otherwise, `tests/test_xyce.py` compares everything but the departure and names it: its MOSFETs of levels 1 and 3 keep SPICE3f5's reverse-biased bulk junction, a conductance `Is/vt`, where jolty's and ngspice's current settles on `−Is`; its JFET makes no noise and keeps SPICE3f5's temperature dependence; its bipolar transistor adds gmin to each junction's current before beta divides it, where jolty and ngspice add it to the base current undivided.
-Xyce finds no operating point of one test circuit, `negative_load`, after 7,692 Newton iterations, and two disagreements of level 1 MOSFETs at 125 °C and across an inverter's threshold, up to 1.4e-4 of their values, are not explained yet.
+`export.netlist(..., dialect=export.XYCE)` emits netlists for Sandia's Xyce 7.10.0, executed as a separate GPL process via `jolty.spice.xyce.run` to collect printed vectors and reported runtimes.
+The Xyce dialect encodes exact source-verified differences from ngspice: model parameter names, default 0 DC source levels, zero-width pulses, and SPICE3 thermal-voltage temperature offsets.
+Unsupported or differently modeled features fail by name without silent omission: BSIM3 (Xyce uses 3.2.2), VDMOS, VBIC, excess phase, unrecognized parameters, and behavioral-expression exports.
+`tests/test_xyce.py` compares every shared feature while documenting known Xyce model departures: level 1/3 MOSFET reverse bulk conductance `Is/vt` (vs `-Is` saturation), noiseless SPICE3f5 JFETs, and pre-beta BJT gmin injection.
+Xyce fails to find an operating point on `negative_load` after 7,692 Newton iterations, and two level 1 MOSFET discrepancies up to `1.4e-4` (at 125 °C and across an inverter threshold) remain under investigation.

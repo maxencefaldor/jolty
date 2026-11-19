@@ -1,6 +1,7 @@
 # Simulation
 
-A simulation runs a plan's analyses on a circuit, its results read by net and by instance, and its specs measure them; a catalog prices its parts, and a KiCad netlist places them on a board.
+A simulation runs a plan's analyses on a circuit, exposes results by net and instance, and checks specs against them.
+Catalog pricing and KiCad netlist export operate on the same circuit components.
 
 ::: jolty.simulate
 

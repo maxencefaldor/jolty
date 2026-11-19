@@ -66,11 +66,11 @@ Each requirement's verdict is one of four:
 - **passed:** the value lies within its bounds;
 - **marginal:** the value lies within its bounds, by less than the requirement's margin, set with `.with_margin(margin)`;
 - **failed:** the value lies outside its bounds;
-- **unmeasured:** its analysis failed or is not in the plan, or the measure cannot be read, such as a crossing that never happens.
-  An infinity is read, not unmeasured: the gain of a response of exactly nothing, such as a twin T's at its notch, is −∞ dB, which passes an upper bound and fails a lower one; JSON writes it as `"-Infinity"`.
+- **unmeasured:** the target analysis failed or is absent from the plan, or the measure is undefined (such as a crossing that never occurs).
+  Infinite readings still evaluate normally: an exact zero response (such as a twin-T notch) yields `-∞` dB, passing upper bounds and failing lower bounds, serialized as `"-Infinity"` in JSON.
 
-A requirement holds at the plan's own conditions and at each of its [corners](simulation.md#corners), and its verdict is the worst of them: failed, then unmeasured, then marginal, then passed, and the least slack among equals.
-A verdict states the value read and the slack, how far the value lies inside its bounds, negative outside them, the corner it comes from, and the script line that stated the requirement:
+Each requirement applies at nominal plan conditions and every [corner](simulation.md#corners), taking the worst verdict (failed, unmeasured, marginal, passed) and smallest slack on ties.
+Each verdict reports the measured value, slack (positive inside bounds, negative outside), governing corner, and the script line defining the requirement:
 
 <!-- output of: jolty simulate hot.py --no-schematic --no-plot -->
 
@@ -79,12 +79,12 @@ failed: rise time of out in step ≤ 2.3 µs: read 2.406 µs at the corner hot, 
   = hot.py:44 in specs()
 ```
 
-`jolty simulate` exits with 1 when a requirement fails or is unmeasured, as when an analysis fails at the plan's own conditions or at a corner.
+`jolty simulate` exits with 1 when any requirement fails or is unmeasured, or when an analysis fails at nominal conditions or at a corner.
 
 ## Yield
 
-Over a plan's [Monte Carlo](simulation.md#monte-carlo) samples, or the runs of its [variants](simulation.md#variants), each requirement's spread states on how many it passed, and the lowest, highest and mean values read with their standard deviation.
-The yield is the fraction of samples on which every requirement passes, if marginally, with its 95 % Wilson interval, which `jolty.specs.wilson(passing, samples)` gives of any proportion:
+Over [Monte Carlo](simulation.md#monte-carlo) samples or [variant](simulation.md#variants) runs, each requirement reports its pass count alongside minimum, maximum, mean, and standard deviation.
+Yield equals the fraction of runs passing every requirement (including marginal passes), reported with an exact 95% Wilson confidence interval from `jolty.specs.wilson(passing, samples)`.
 
 For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op", "out").within(2.5 * V, 15e-3 * V)` and a target of 90 %:
 

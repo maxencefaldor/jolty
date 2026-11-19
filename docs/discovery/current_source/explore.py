@@ -1,7 +1,7 @@
 # Copyright 2026 Maxence Faldor
-"""Each candidate tuned to 1 mA at 12 V and 27 °C, then its line regulation and drift.
+"""Tuning and characterization script for two-terminal 1 mA current source candidates.
 
-Run with ``uv run python docs/discovery/current_source/explore.py``.
+Run via ``uv run python docs/discovery/current_source/explore.py``.
 """
 
 import math
@@ -19,7 +19,7 @@ TARGET = 1e-3
 def current(
     candidate: Component, volts: float = 12.0, temperature: float = 27.0
 ) -> float:
-    """The current from a to b."""
+    """Returns the DC current flowing from port `a` to port `b` in amperes."""
     simulation = Simulation(
         circuit(candidates.bench(candidate, volts)), temperature=celsius(temperature)
     )
@@ -27,9 +27,10 @@ def current(
 
 
 def tune(make: Callable[[float], Component], low: float, high: float) -> float:
-    """The resistance between `low` and `high` that makes 1 mA at 12 V.
+    """Finds the resistance between `low` and `high` ohms that produces 1 mA at 12 V.
 
-    It bisects in the logarithm: every candidate's current falls as its resistor grows.
+    Uses logarithmic bisection because every candidate's current decreases monotonically
+    with resistance.
     """
     for _ in range(50):
         middle = math.sqrt(low * high)
@@ -41,7 +42,7 @@ def tune(make: Callable[[float], Component], low: float, high: float) -> float:
 
 
 def measure(name: str, made: Component) -> dict[str, float]:
-    """The line regulation from 3 V to 24 V and the drift from -40 °C to 85 °C."""
+    """Measures line regulation from 3 V to 24 V and drift from -40 °C to 85 °C."""
     simulation = Simulation(circuit(candidates.bench(made, 12.0)))
     sweep = simulation.run(DcSweep("V1", linear(3 * V, 24 * V, 43)))
     flowing = -sweep.current("V1")

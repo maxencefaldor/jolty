@@ -1,25 +1,22 @@
 # Copyright 2026 Maxence Faldor
-"""Build the docs' gallery and discoveries: each simulated by jolty, then by ngspice.
+"""Generator for the documentation gallery and discovery pages.
 
-Run from the repository root: ``uv run python docs/gallery.py``, or name examples or
-discoveries, such as ``sallen_key``, to build only those. Each example in `ENTRIES`,
-and each discovery's design in `DISCOVERIES`, runs through
-`jolty.service.simulate`, the function behind ``jolty simulate``, which draws its
-schematic and plots its analyses, checks its structure and judges its specs. Then, for
-an example without logic devices, `jolty.spice.export` writes its circuit as a SPICE
-netlist, ngspice runs every analysis of its plan, and the gallery reads ngspice's
-results as jolty's own: it judges the same specs on them, and measures how far each
-signal both engines report lies from the other's.
+Run from the repository root via ``uv run python docs/gallery.py``, or pass specific
+example or discovery names such as ``sallen_key`` to build a subset.
+Each example in `ENTRIES` and each discovery design in `DISCOVERIES` runs through
+`jolty.service.simulate`, generating schematics, analysis plots, structural check
+reports, and spec verdicts.
+For analog circuits without logic devices, `jolty.spice.export` writes a SPICE
+netlist, ngspice runs every analysis in the plan, and the script evaluates identical
+specs and waveform deviations across both engines.
 
-Each runs its plan recording every instance, so its 3D viewer plays every device's
-currents, charges and variables. The script writes ``docs/gallery.md``, a page per
-example under ``docs/gallery``, the images under ``docs/images/gallery``, and each
-example's 3D viewer as
-``docs/gallery/<name>.view.html``; and ``docs/discovery.md``, with a page holding its
-findings and a viewer per discovery under ``docs/discovery``. Once every page is
-written, the script fails on a spec an example fails in either engine, and on a spec
-on whose verdict the engines disagree for a discovery, whose findings report the
-bounds it misses.
+Every entry records all device instances so the 3D viewer animates branch currents,
+charges, and internal variables.
+Generated outputs include ``docs/gallery.md``, per-example pages and 3D viewers under
+``docs/gallery``, images under ``docs/images/gallery``, and ``docs/discovery.md``
+plus per-discovery findings pages and viewers under ``docs/discovery``.
+After writing all pages, the script fails if an example fails any spec in either
+engine, or if the two engines disagree on a discovery spec verdict.
 """
 
 import asyncio
@@ -77,9 +74,9 @@ ASSETS: Final = DOCS / "assets"
 IMAGES: Final = DOCS / "images" / "gallery"
 REPOSITORY: Final = "https://github.com/maxencefaldor/jolty/blob/main"
 SAME: Final = 1e-9
-"""Two frequencies within this many decades of each other are the same."""
+"""Frequency tolerance in decades below which two frequencies count as identical."""
 PERCENT: Final = 1e-3
-"""Deviations from this one up read as percentages, smaller ones as powers of ten."""
+"""Threshold at or above which deviations format as percentages instead of exponents."""
 RECORDED: Final = """\
 # The plan and specs of {script}, its plan recording every instance.
 
@@ -98,16 +95,16 @@ def specs():
     stated = _ENTRY.get("specs")
     return stated() if callable(stated) else None
 """
-"""A plan script that runs an entry's plan recording every instance, for its viewer."""
+"""Template plan wrapper enabling full-circuit recording for 3D viewer playback."""
 
 
 @dataclass(frozen=True)
 class Entry:
-    """An example the gallery shows: its script's name, its title and its section.
+    """Metadata identifying a gallery example or discovery entry.
 
-    A free-running oscillator's phase drifts with any difference in two engines'
-    numerics, so its waveforms compare through its specs' readings, its period and
-    its amplitude, rather than point by point.
+    Free-running oscillators accumulate phase drift from tiny numerical differences
+    between engines, so comparison relies on spec readings such as period and
+    amplitude rather than pointwise waveform error.
     """
 
     name: str
@@ -115,37 +112,37 @@ class Entry:
     section: str
     free_running: bool = False
     discovered: bool = False
-    """Whether the entry is a discovery's design rather than an example."""
+    """Flag indicating a discovery design rather than a standard gallery example."""
 
     @property
     def script(self) -> Path:
-        """The script that builds the entry's circuit."""
+        """Path to the Python script that constructs the circuit."""
         if self.discovered:
             return DISCOVERY / self.name / "design.py"
         return EXAMPLES / f"{self.name}.py"
 
     @property
     def folder(self) -> str:
-        """The folder of the docs that holds the entry's page and viewer."""
+        """Documentation subdirectory holding the generated page and 3D viewer."""
         return "discovery" if self.discovered else "gallery"
 
     @property
     def slug(self) -> str:
-        """The name of the entry's page and viewer."""
+        """Hyphenated URL slug used for the generated page and 3D viewer filenames."""
         return self.name.replace("_", "-")
 
     @property
     def viewer(self) -> str:
-        """The address of the entry's viewer, beside its page.
+        """Relative URL of the 3D viewer next to the generated page.
 
-        A discovery's opens inside its design, the instance its bench places as ``X1``.
+        Discovery viewers open focused inside the design instance placed as ``X1``.
         """
         page = f"{self.slug}.view.html"
         return f"{page}#view=X1" if self.discovered else page
 
     @property
     def source(self) -> str:
-        """The address of the entry's script in the repository."""
+        """GitHub blob URL pointing to the circuit script in the repository."""
         return f"{REPOSITORY}/{self.script.relative_to(ROOT).as_posix()}"
 
 
@@ -233,37 +230,36 @@ DISCOVERIES: Final = (
 )
 
 
-# Running ngspice on an example's plan.
+# Replicate an example plan in ngspice.
 
 
 @dataclass
 class Replication:
-    """What ngspice found of an example, and how far it lies from jolty's results."""
+    """ngspice replication results and comparison metrics for a circuit entry."""
 
     solved: dict[str, results.AnalysisResult] = field(default_factory=dict)
     corners: dict[str, dict[str, results.AnalysisResult]] = field(default_factory=dict)
     deviations: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict)
-    """Per analysis, per quantity, the signals compared and the largest deviation,
-    relative to each signal's largest value."""
+    """Per-analysis, per-quantity signal count and worst relative deviation."""
     verdicts: tuple[specs.Verdict, ...] = ()
     loosened: list[str] = field(default_factory=list)
-    """The analyses ngspice could not finish with tolerances as tight as jolty's, run
-    again with its own defaults."""
+    """Analyses where ngspice failed at jolty tolerances and retried with defaults."""
     unfinished: list[tuple[str | None, str]] = field(default_factory=list)
-    """The analyses ngspice finished with neither, within its time limit, each with
-    its corner, None for the plan's own conditions."""
+    """Corner and analysis pairs where ngspice timed out under both tolerance sets.
+
+    A corner of `None` represents nominal plan conditions.
+    """
     unreplicated: tuple[bool, ...] = ()
-    """For each of the verdicts, whether it reads an analysis ngspice did not
-    finish."""
+    """Per-verdict flags marking specs whose analysis did not complete in ngspice."""
 
 
 def _commands(
     analysis: object, circuit: ir.Circuit
 ) -> tuple[list[str], str | None, str] | None:
-    """The ngspice commands of a jolty analysis, its excited source, and its method.
+    """Builds ngspice commands, excited source name, and option line for an analysis.
 
-    A frequency response off a decade's grid runs once more for each frequency off it,
-    and a transient's integration method is an option line.
+    AC sweeps with off-grid frequencies append single-point sweeps, and transient
+    analyses emit integration method options.
     """
     match analysis:
         case OperatingPoint():
@@ -297,10 +293,10 @@ def _commands(
 def _run(
     lines: list[str], commands: list[str], option: str, kelvins: float
 ) -> tuple[ngspice.Result | None, bool]:
-    """What ngspice finds of `commands`, merged along their axis, and if it loosened.
+    """Runs ngspice `commands`, merges sweeps along the axis, and reports fallback.
 
-    A transient that stops before its end, or a run that fails, runs again with
-    ngspice's default tolerances, and loosened says so; none when that fails too.
+    Failed runs or early-stopping transients retry once with default ngspice
+    tolerances, setting the flag to `True` or returning `None` if retry also fails.
     """
     raws: list[ngspice.Result] = []
     loosened = False
@@ -341,9 +337,9 @@ def _run(
 def _from_raw(
     raw: ngspice.Result, circuit: ir.Circuit, unknowns: tuple[results.Unknown, ...]
 ) -> tuple[np.ndarray, list[int]]:
-    """Each jolty unknown's ngspice vector, and the columns both engines report.
+    """Maps ngspice output vectors onto jolty unknowns and returns shared columns.
 
-    An unknown ngspice names its own way, a device's internal one, is NaN.
+    Internal device unknowns using engine-specific naming are filled with NaN.
     """
     length = len(next(iter(raw.vectors.values())))
     table = np.full((length, len(unknowns)), np.nan, dtype=np.complex128)
@@ -360,7 +356,7 @@ def _from_raw(
 
 
 def _stopped_early(raw: ngspice.Result, command: str) -> bool:
-    """Whether a transient stopped before the end its `command` asks for."""
+    """Returns whether a transient stopped before the stop time in `command`."""
     if not command.startswith("tran"):
         return False
     stop = float(command.split()[2])
@@ -375,10 +371,10 @@ def _replicate(
     *,
     free_running: bool,
 ) -> Replication:
-    """Runs `plan` in ngspice, and compares what it finds with jolty's `solved`.
+    """Runs `plan` in ngspice and compares outputs against jolty's `solved` results.
 
-    `circuits` holds the circuit of each condition, by its corner's name or `None`; a
-    corner that builds no circuit of its own runs the plan's.
+    The `circuits` mapping holds each corner's circuit (or `None` for nominal
+    conditions); corners without a dedicated circuit reuse the nominal circuit.
     """
     replication = Replication()
     conditions = [(None, plan.temperature_at())]
@@ -448,7 +444,7 @@ def _replicate(
 def _result(
     jolty: results.AnalysisResult, raw: ngspice.Result, table: np.ndarray
 ) -> results.AnalysisResult:
-    """The results ngspice found, as jolty's, on the same unknowns."""
+    """Converts raw ngspice output vectors into a jolty result on the same unknowns."""
     match jolty:
         case results.OperatingPointResult():
             return results.OperatingPointResult(
@@ -482,11 +478,10 @@ def _result(
 def _deviation(
     jolty: results.AnalysisResult, spice: results.AnalysisResult, shared: Sequence[int]
 ) -> float:
-    """The largest deviation between the engines, relative to each signal's size.
+    """Computes the worst relative deviation between jolty and ngspice on `shared`.
 
-    Operating points and sweeps compare point for point; responses at the frequencies
-    both computed; transients at ngspice's times, each value within a window of a
-    step of jolty's waveform, as two engines stepping differently round corners.
+    Operating points and sweeps compare pointwise, AC responses compare common
+    frequencies, and transients compare within one step window around corners.
     """
     worst = 0.0
     for column in shared:
@@ -530,7 +525,7 @@ def _closest(
     targets: np.ndarray,
     window: float,
 ) -> np.ndarray:
-    """The values of a waveform nearest `targets`, each within `window` of its time."""
+    """Finds waveform values nearest `targets` within `window` around each time."""
     starts, stops = at - window, at + window
     ends = np.stack([np.interp(starts, times, values), np.interp(stops, times, values)])
     lower, upper = ends.min(axis=0), ends.max(axis=0)
@@ -544,12 +539,12 @@ def _closest(
     return np.clip(targets, lower, upper)
 
 
-# The pages.
+# Build gallery and discovery Markdown pages.
 
 
 @dataclass
 class Built:
-    """What the gallery made of one example."""
+    """Compiled build artifacts, verdicts, and replication metrics for one entry."""
 
     entry: Entry
     summary: str
@@ -563,10 +558,10 @@ class Built:
 
 
 def build(entry: Entry) -> Built:
-    """Simulates an entry, replicates it in ngspice, and writes its images.
+    """Simulates an entry, replicates analog circuits in ngspice, and writes images.
 
-    A discovery's images take its name in place of its script's, ``design``, and its
-    schematic is drawn inside the instance its bench places, ``X1``.
+    Discovery images use the discovery name instead of ``design``, and discovery
+    schematics render the design subcircuit placed as ``X1``.
     """
     script = entry.script
     sys.path.insert(0, str(script.parent))
@@ -617,7 +612,7 @@ def build(entry: Entry) -> Built:
     replication = None
     replicated_plots: list[str] = []
     if not logic:
-        # A corner that passes arguments to `build()` builds a circuit of its own.
+        # Corners passing arguments to `build()` instantiate a dedicated circuit.
         circuits: dict[str | None, ir.Circuit] = {None: circuit}
         for name, corner in plan.corners.items():
             if corner.arguments:
@@ -657,7 +652,7 @@ def build(entry: Entry) -> Built:
 def _replication_plot(
     name: str, ours: results.AnalysisResult, theirs: results.AnalysisResult
 ) -> Figure:
-    """The signals jolty found, solid, and ngspice's, dashed, on one plot."""
+    """Renders a figure overlaying solid jolty traces and dashed ngspice traces."""
     traces = plots.default_traces(ours.unknowns)[:4]
     figure = Figure(
         figsize=(8, 3.4), dpi=150, layout="constrained", facecolor="#fcfcfb"
@@ -695,7 +690,7 @@ def _replication_plot(
 def _trace(
     result: results.AnalysisResult, column: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The abscissa and one unknown of a result, magnitudes in decibels."""
+    """Extracts the x-axis array and selected column, converting AC values to dB."""
     match result:
         case results.AcResult():
             magnitude = np.abs(result.values[:, column])
@@ -708,7 +703,7 @@ def _trace(
 
 
 def _si(value: float | None, unit: str | None) -> str:
-    """A value with an SI prefix, as reports write it, to six digits."""
+    """Formats `value` with an SI prefix to six significant digits."""
     if value is None:
         return "-"
     if unit in {"dB", "%", "°", None, ""}:
@@ -717,7 +712,7 @@ def _si(value: float | None, unit: str | None) -> str:
 
 
 def _ratio(value: float) -> str:
-    """A relative deviation, as a power of ten or a percentage."""
+    """Formats a relative deviation in scientific notation or as a percentage."""
     if value == 0:
         return "0"
     if value < PERCENT:
@@ -726,7 +721,7 @@ def _ratio(value: float) -> str:
 
 
 def _specs_section(built: Built) -> list[str]:
-    """The specs' verdicts, jolty's beside ngspice's when ngspice ran the example."""
+    """Builds the Specs Markdown section comparing jolty and ngspice verdicts."""
     if not built.verdicts:
         return ["## Specs", "", "The example states no specs.", ""]
     replicated = built.replication is not None
@@ -750,7 +745,7 @@ def _specs_section(built: Built) -> list[str]:
 
 
 def _reading(verdict: specs.Verdict | None) -> str:
-    """A verdict's value, the corner it comes from if any, and its status."""
+    """Formats a verdict value, optional corner label, and pass or fail status."""
     if verdict is None:
         return "-"
     at = "" if verdict.corner is None else f" at {verdict.corner}"
@@ -758,10 +753,10 @@ def _reading(verdict: specs.Verdict | None) -> str:
 
 
 def _difference(ours: specs.Verdict, theirs: specs.Verdict | None) -> str:
-    """How far two engines' readings lie apart, relative to the larger.
+    """Formats the relative distance between jolty and ngspice verdict readings.
 
-    Readings that are not both finite lie no relative distance apart, so the
-    difference says what each engine reads that is not a finite number.
+    When either reading is non-finite, the string reports each non-finite value
+    explicitly instead of a relative ratio.
     """
     if theirs is None or theirs.value is None or ours.value is None:
         return "-"
@@ -780,14 +775,14 @@ def _difference(ours: specs.Verdict, theirs: specs.Verdict | None) -> str:
 
 
 def _unbounded(value: float, unit: str | None) -> str:
-    """A reading that is not a finite number, in words: -inf dB is an exact zero."""
+    """Formats a non-finite reading in words, rendering -inf dB as an exact zero."""
     if unit == "dB" and value == -math.inf:
         return "an exact zero"
     return f"{value} {unit or ''}".strip()
 
 
 def _replication_section(built: Built) -> list[str]:
-    """How ngspice replicated the example, or why it could not."""
+    """Builds the ngspice replication or closed-form verification Markdown section."""
     replication = built.replication
     if replication is None:
         return [
@@ -871,7 +866,7 @@ def _replication_section(built: Built) -> list[str]:
 
 
 def page(built: Built) -> str:
-    """The entry's own page: a discovery's holds its prompt and its findings too."""
+    """Builds the Markdown page for a gallery example or discovery entry."""
     entry = built.entry
     buttons = (
         f"[Open in 3D]({entry.viewer}){{ .md-button .md-button--primary }} "
@@ -908,7 +903,7 @@ def page(built: Built) -> str:
 
 
 def _discovery_sections(entry: Entry) -> list[str]:
-    """A discovery's prompt, quoted, and its findings, but for their titles."""
+    """Builds the quoted prompt and findings sections for a discovery entry."""
     folder = DISCOVERY / entry.name
     prompt = (folder / "prompt.md").read_text(encoding="utf-8").splitlines()[1:]
     findings = (folder / "findings.md").read_text(encoding="utf-8").splitlines()[1:]
@@ -917,7 +912,7 @@ def _discovery_sections(entry: Entry) -> list[str]:
 
 
 def _trimmed(lines: Sequence[str]) -> list[str]:
-    """`lines` without the blank lines at either end."""
+    """Returns `lines` with leading and trailing blank lines removed."""
     kept = list(lines)
     while kept and not kept[0].strip():
         kept.pop(0)
@@ -927,7 +922,7 @@ def _trimmed(lines: Sequence[str]) -> list[str]:
 
 
 def _worst_voltage(replication: Replication) -> float | None:
-    """The largest deviation of a voltage between the engines, or None."""
+    """Returns the largest relative voltage deviation across analyses, or `None`."""
     found = [
         natures["voltage"][1]
         for natures in replication.deviations.values()
@@ -937,7 +932,7 @@ def _worst_voltage(replication: Replication) -> float | None:
 
 
 def _card(built: Built) -> list[str]:
-    """An entry's card on an index page: its schematic, its title, its summary."""
+    """Builds a Markdown grid card containing schematic, title, summary, and links."""
     entry = built.entry
     drawn = next(
         (image for image in built.images if image.endswith("schematic.png")), None
@@ -976,7 +971,7 @@ def _card(built: Built) -> list[str]:
 
 
 def index(built: Sequence[Built]) -> str:
-    """The gallery's page: a card per example, in sections."""
+    """Builds the top-level gallery index page grouped by circuit section."""
     lines = [
         "# Gallery",
         "",
@@ -1013,7 +1008,7 @@ def index(built: Sequence[Built]) -> str:
 
 
 def discoveries(built: Sequence[Built]) -> str:
-    """The discoveries' page: how they were made, and a card per problem."""
+    """Builds the top-level discovery index page linking each problem."""
     lines = [
         "# Discovery",
         "",
@@ -1058,15 +1053,15 @@ def discoveries(built: Sequence[Built]) -> str:
 
 
 def _failures(built: Built) -> int:
-    """The specs that stop the script.
+    """Counts spec failures that should fail the build script.
 
-    They are an example's that either engine fails, and a discovery's on which the
-    engines disagree: its findings report the bounds it misses.
+    Examples fail when either engine fails a spec; discoveries fail only when the
+    two engines disagree on a verdict, since missed bounds appear in findings.
     """
     ours = built.verdicts
     replication = built.replication
     theirs = replication.verdicts if replication else ()
-    # A spec on an analysis ngspice did not finish is none of ngspice's to judge.
+    # Exclude specs whose underlying analysis did not complete in ngspice.
     skipped = {
         index
         for index, unreplicated in enumerate(
@@ -1085,7 +1080,7 @@ def _failures(built: Built) -> int:
 
 
 def _copy_viewer_assets() -> None:
-    """Copies the viewer's shared stylesheet and script into ``docs/assets``."""
+    """Copies the shared viewer stylesheet and script into ``docs/assets``."""
     ASSETS.mkdir(parents=True, exist_ok=True)
     bundled = files("jolty").joinpath("assets")
     for name in ("viewer.css", "viewer.js"):
@@ -1093,7 +1088,7 @@ def _copy_viewer_assets() -> None:
 
 
 def main(names: Sequence[str]) -> int:
-    """Builds the entries named, or all, and returns the failures."""
+    """Builds the requested entries (or all entries) and returns the failure count."""
     chosen = [
         entry for entry in (*ENTRIES, *DISCOVERIES) if not names or entry.name in names
     ]
@@ -1101,9 +1096,8 @@ def main(names: Sequence[str]) -> int:
         (DOCS / folder).mkdir(exist_ok=True)
     IMAGES.mkdir(parents=True, exist_ok=True)
     _copy_viewer_assets()
-    # Each entry builds in a process of its own: a discovery imports its modules by
-    # name, such as its `candidates`, and a process that built another discovery would
-    # hand it that one's.
+    # Run each entry in a separate process because discovery scripts import local
+    # modules such as `candidates` by unqualified name.
     with ProcessPoolExecutor(max_workers=4, max_tasks_per_child=1) as pool:
         built = list(pool.map(build, chosen))
     failures = 0
@@ -1126,10 +1120,10 @@ def main(names: Sequence[str]) -> int:
             discoveries([made[entry] for entry in DISCOVERIES]), encoding="utf-8"
         )
         written += [DOCS / "gallery.md", DOCS / "discovery.md"]
-    # One sentence per line, as the docs' Markdown is checked: the pages quote
-    # docstrings, which wrap at 88 columns.
+    # Enforce one sentence per line across generated pages because embedded
+    # docstrings wrap at 88 columns.
     rumdl = Path(sys.executable).parent / "rumdl"
-    subprocess.run([rumdl, "fmt", "--quiet", *written], check=True)  # noqa: S603 - this environment's rumdl, on the pages just written
+    subprocess.run([rumdl, "fmt", "--quiet", *written], check=True)  # noqa: S603 - invokes the environment rumdl binary on generated pages
     return failures
 
 

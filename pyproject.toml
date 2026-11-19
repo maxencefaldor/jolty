@@ -52,7 +52,7 @@ docs = [
 ]
 
 [tool.uv]
-# uv rebuilds the extension when one of these changes, its Rust sources included.
+# uv rebuilds the extension whenever any listed file changes, including Rust sources.
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "Cargo.toml" },
@@ -75,42 +75,37 @@ include = [
     { path = "docs.json", from = "out-dir", to = "jolty/assets" },
 ]
 
-# ruff: the formatter at its defaults (4 spaces, 88 columns), so no width and
-# no indent appear here. The lint is strict: every stable rule is on.
+# ruff uses default formatting (4 spaces, 88 columns) and enables every stable lint rule.
 [tool.ruff]
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["ALL"]
-# The one rule the formatter contradicts: it places trailing commas itself.
-# TC: pydantic reads annotations at runtime, so an import used only in an
-# annotation is still a runtime import.
+# COM812 conflicts with the ruff formatter, which manages trailing commas automatically.
+# TC: pydantic evaluates type annotations at runtime, so annotated types stay runtime imports.
 ignore = ["COM812", "TC"]
 
 [tool.ruff.lint.flake8-builtins]
-# "id" names an instance in the circuit format, the engine and the builder alike.
+# "id" names an instance across the circuit format, engine, and builder.
 builtins-ignorelist = ["id"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# pytest checks with assert and imports tests by path; a test's name says what it
-# checks, and the values it expects are its content.
+# pytest uses assert statements and path-based imports; test names describe intent, and
+# literal expectations are test data.
 "tests/**" = ["D100", "D103", "INP001", "PLR2004", "S101"]
-# Examples are circuits written as scripts: their numbers are the circuit, and
-# they run as scripts, outside any package.
+# Example scripts run outside any package and embed circuit literal values directly.
 "examples/**" = ["INP001", "PLR2004"]
-# Scripts that write the docs' pages run outside any package, and say what they wrote.
+# Documentation generator scripts run outside any package and print progress.
 "docs/*.py" = ["INP001", "T201"]
-# Discoveries run as scripts, outside any package: their numbers are the circuit, and
-# their explorations print what they found.
+# Discovery scripts run outside any package, embed circuit literals, and print findings.
 "docs/discovery/**" = ["INP001", "PLR2004", "T201"]
-# The agents' benchmark runs as scripts, outside any package, and prints what it found.
+# Agent benchmark scripts run outside any package and print evaluation results.
 "benchmarks/agents/**/*.py" = ["INP001", "T201"]
-# The other suites, their fixtures' scripts and their runners run as scripts, outside
-# any package: the fixtures' numbers are their circuits, and the suites print what they
-# measured.
+# Benchmark suites and fixtures run as standalone scripts, embed circuit literals, and
+# print measurements.
 "benchmarks/deterministic/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/measuring.py" = ["INP001", "T201"]
 "benchmarks/simulators.py" = ["INP001"]
@@ -118,13 +113,13 @@ convention = "google"
 "benchmarks/precision/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/robustness/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/coverage/**/*.py" = ["INP001", "PLR2004", "T201"]
-"src/jolty/cli.py" = ["T201"]  # a command line prints
-"src/jolty/units.py" = ["N816"]  # unit names keep their SI case: kHz, mV, uF
+"src/jolty/cli.py" = ["T201"]  # CLI prints directly to stdout
+"src/jolty/units.py" = ["N816"]  # unit names preserve SI case: kHz, mV, uF
 
 [tool.ruff.format]
 docstring-code-format = true
 
-# ty: every rule is an error, including those it leaves off or only warns on.
+# ty treats every rule as an error, including rules disabled or warned on by default.
 [tool.ty.rules]
 all = "error"
 
@@ -132,16 +127,13 @@ all = "error"
 include = ["src", "tests", "examples", "docs", "benchmarks"]
 
 [tool.ty.environment]
-# The tests import their shared harness, `tests/differential.py`, as pytest does, the
-# agents' benchmark's scripts, which import each other, as their runs do, the
-# discoveries the parts the examples share, `examples/common.py`, as their scripts do,
-# the speed suite's `bjt_amp.py` the amplifier of `examples/cluster/amplifier.py`,
-# and every other suite the measuring helpers and runners of `benchmarks/`, and its own
-# modules beside it: the speed suite its timing, `benchmarks/speed/timing.py`, which its
-# tests import too, and its fixtures' scripts what they share,
-# `benchmarks/speed/circuits/fixture.py`, the corpus of hard circuits
-# `benchmarks/robustness/corpus.py` and those beside it, the precision suite its
-# modules, and the coverage matrix `benchmarks/coverage/matrix.py` and those beside it.
+# Additional import roots matching standalone execution paths for tests, benchmarks,
+# examples, and discoveries. Tests import shared harnesses (`tests/differential.py`),
+# and agent benchmark scripts import sibling modules directly. Discovery scripts
+# import `examples/common.py`, and `bjt_amp.py` imports `examples/cluster/amplifier.py`.
+# Benchmark suites import helpers from `benchmarks/` and sibling modules such as
+# `benchmarks/speed/timing.py`, `benchmarks/speed/circuits/fixture.py`,
+# `benchmarks/robustness/corpus.py`, precision modules, and `benchmarks/coverage/matrix.py`.
 extra-paths = [
     "tests",
     "benchmarks/agents",
@@ -155,9 +147,9 @@ extra-paths = [
     "benchmarks/coverage",
 ]
 
-# coverage.py, which scripts/coverage runs the Python tests under: the package's lines
-# and branches, in every process the tests start, pytest-xdist's workers and the scripts
-# jolty.runner runs among them, each writing a data file of its own until combined.
+# coverage.py configuration used by scripts/coverage for Python line and branch coverage.
+# Subprocess patching captures pytest-xdist workers and jolty.runner child processes,
+# writing a separate data file per process before combining results.
 [tool.coverage.run]
 source_pkgs = ["jolty"]
 branch = true
@@ -166,11 +158,8 @@ patch = ["subprocess"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
-# The tests share harness modules, `differential` and `strategies`, which they import
-# from there, and import the suites' measuring helpers and runners from `benchmarks`,
-# the agents' benchmark's modules, the speed suite's timing, the corpus of hard
-# circuits' modules, the precision suite's modules and the coverage matrix's from
-# beside them.
+# Import paths for shared test harnesses (`differential`, `strategies`) and benchmark
+# modules across `benchmarks/` and each benchmark suite directory.
 pythonpath = [
     "tests",
     "benchmarks",
@@ -180,9 +169,8 @@ pythonpath = [
     "benchmarks/precision",
     "benchmarks/coverage",
 ]
-# The tests run in a process per processor, pytest-xdist's. Each test of random circuits
-# is one item that runs for minutes, so a process that finishes its share takes tests
-# still waiting behind another's, rather than wait idle: worksteal.
+# Run tests across one pytest-xdist worker per CPU core. Random-circuit tests run for
+# minutes, so worksteal scheduling lets idle workers pull queued tests.
 addopts = [
     "--import-mode=importlib",
     "--doctest-modules",
@@ -194,22 +182,22 @@ addopts = [
 ]
 filterwarnings = ["error"]
 xfail_strict = true
-# Expected output in docstrings wraps at 88 columns like the code around it.
+# Expected output in docstrings wraps at 88 columns like surrounding code.
 doctest_optionflags = ["NORMALIZE_WHITESPACE"]
 
-# Markdown lints and formats with rumdl, beside ruff for the code. jolty's docs are a
-# Zensical site, which reads MkDocs Markdown: admonitions, content tabs and grid cards,
-# built from <div> blocks.
+# Markdown linting and formatting via rumdl, complementing ruff for Python code.
+# Documentation builds with Zensical using MkDocs Markdown (admonitions, tabs, and
+# <div> grid cards).
 [tool.rumdl]
 flavor = "mkdocs"
 
-# Prose is one sentence per line and the renderer wraps: no width limit, and
-# the formatter joins a wrapped sentence and splits a line holding two.
+# Prose uses one sentence per line so the renderer handles wrapping with no width limit.
+# The formatter joins wrapped sentences and splits lines containing multiple sentences.
 [tool.rumdl.MD013]
 line-length = 0
 reflow = true
 reflow-mode = "sentence-per-line"
-# A sentence may open with a lowercase name: ruff, uv, jax.
+# Sentences may open with lowercase tool names such as ruff, uv, or jax.
 require-sentence-capital = false
 
 [tool.rumdl.MD004]
@@ -218,18 +206,16 @@ style = "dash"
 [tool.rumdl.MD025]
 front-matter-title = ""
 
-# Fenced blocks, never indented: only a fence can name its language, and the
-# code-block tools below key on that name.
+# Require fenced code blocks rather than indented blocks so language tags drive
+# code-block tools below.
 [tool.rumdl.MD046]
 style = "fenced"
 
 [tool.rumdl.MD029]
 style = "one"
 
-# Python examples in the markdown are held to the same ruff rules as the code,
-# except the rules a whole module answers to: an example is an excerpt, so its
-# names are defined, and its docstrings and copyright line written, in the
-# module it is lifted from.
+# Python blocks in Markdown follow standard ruff rules except whole-module checks.
+# Excerpts omit module imports, docstrings, and copyright headers present in full scripts.
 [tool.rumdl.code-block-tools]
 enabled = true
 

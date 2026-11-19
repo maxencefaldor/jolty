@@ -1,7 +1,7 @@
 # Schematics
 
-`jolty build` and `jolty simulate` draw the top component's schematic beside the circuit, as `<script>.schematic.png`, and the MCP server sends it with its text.
-A script holds no coordinates: jolty lays the schematic out from the connections alone, the way an engineer draws one.
+`jolty build` and `jolty simulate` draw the top component's schematic next to the circuit as `<script>.schematic.png`, and the MCP server sends it alongside text output.
+Scripts contain no coordinates: jolty lays out the schematic purely from connectivity, following standard engineering conventions.
 
 ![The schematic of the RC filter's bench: a source feeding the low_pass component, drawn as a box with its arguments inside](../images/rc_filter.schematic.png)
 
@@ -21,19 +21,19 @@ Ground and supply nets draw no wires: a ground symbol, or a bar with the supply'
 A net is a ground or a supply when a port on it is one, of the component drawn or of a component it places.
 
 Every other net is a wire, routed around the symbols.
-Wires of two nets cross at right angles but never meet, so a wire touches only its own net; a dot marks where three wires of a net join.
-A net the router cannot fit carries its name at each of its pins instead.
+Wires of different nets cross at right angles without joining, so each wire touches only its net; dots mark three-way junctions on the same net.
+A net the router cannot fit displays its name at each connected pin instead.
 
-The component's own signal ports stand at its edges as flags pointing the way signal flows: inputs on the left, outputs on the right.
+Signal ports of the displayed component appear along the edges as directional flags: inputs on the left, outputs on the right.
 
 ## Facts on a schematic
 
-A schematic carries what the build and the simulation found:
+A schematic annotates findings from build and simulation:
 
-- `jolty simulate` writes on each net its voltage at the plan's first operating point;
-- an instance a listed diagnostic names is drawn in red, its name marked with `!`, and a box holding such an instance is marked too.
+- `jolty simulate` labels each net with its voltage from the plan's first operating point;
+- any instance referenced by a listed diagnostic renders in red with a `!` marker, propagating the marker to enclosing component boxes.
 
-The option `--no-schematic` leaves the schematic out.
+Passing `--no-schematic` omits schematic rendering.
 
 ## Inside a component
 

@@ -1,11 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Draw the docs' images by simulating the examples, as an agent would.
+"""Documentation image generator using example circuit simulations.
 
-Run from the repository root: ``uv run python docs/illustrate.py``. Each example runs
-through `jolty.service.simulate`, the same function behind ``jolty simulate``, and the
-component inside each of its instances through `jolty.service.draw`, behind
-``jolty draw``. The images land in ``docs/images`` under the names the commands give
-them, such as ``rc_filter.step.plot.png`` and ``rectifier.X1.schematic.png``.
+Run from the repository root via ``uv run python docs/illustrate.py``.
+Each example runs through `jolty.service.simulate`, the function backing
+``jolty simulate``, and draws nested subcircuit instances through `jolty.service.draw`,
+the function backing ``jolty draw``.
+Generated images are written to ``docs/images`` using the command output names, such as
+``rc_filter.step.plot.png`` and ``rectifier.X1.schematic.png``.
 """
 
 import asyncio
@@ -23,16 +24,16 @@ IMAGES: Final = ROOT / "docs" / "images"
 
 
 class Example(NamedTuple):
-    """What to draw of an example."""
+    """Configuration specifying which images to render for an example."""
 
     traces: list[str]
-    """The unknowns to plot, or none for the defaults."""
+    """Unknowns to plot, or an empty list for default trace selection."""
     inside: list[str]
-    """The instances whose components to draw."""
+    """Hierarchical instance names whose subcircuit schematics are drawn."""
     schematic: bool = True
-    """Whether to draw the top component's schematic."""
+    """Flag enabling schematic generation for the top-level component."""
     analyses: tuple[str, ...] = ()
-    """The analyses whose plots to keep, or none for every plot."""
+    """Analysis names whose plots are retained, or an empty tuple for all plots."""
 
 
 EXAMPLES: Final = {
@@ -52,7 +53,7 @@ EXAMPLES: Final = {
 
 
 async def illustrate(name: str, example: Example, scratch: Path) -> None:
-    """Simulates the example `name` and copies its images into the docs' images."""
+    """Simulates the example `name` and copies generated images into ``docs/images``."""
     request = service.SimulateRequest(
         script=ROOT / "examples" / f"{name}.py",
         output=scratch / f"{name}.jolty.json",
@@ -87,7 +88,7 @@ async def illustrate(name: str, example: Example, scratch: Path) -> None:
 
 
 async def main() -> None:
-    """Draws every image, replacing those drawn before."""
+    """Generates all documentation images, replacing existing PNG files."""
     IMAGES.mkdir(parents=True, exist_ok=True)
     for stale in IMAGES.glob("*.png"):
         stale.unlink()

@@ -1,8 +1,8 @@
 # Logic
 
-Logic devices compute levels rather than voltages.
-Their pins join logic nets, which hold a level, `0`, `1` or unknown, and an event scheduler simulates them: it jumps from one change to the next instead of integrating, so logic costs nothing between its edges.
-Where a logic pin meets an analog circuit, the engine joins the two through a connect element, so one circuit mixes both.
+Logic devices compute discrete levels rather than continuous voltages.
+Logic pins connect to logic nets holding `0`, `1`, or unknown, and an event scheduler advances directly from transition to transition at zero cost between edges.
+Where a logic pin meets an analog net, the engine inserts a connect element so one circuit mixes both domains cleanly.
 
 ## Logic devices
 
@@ -28,28 +28,28 @@ nand = devices.logic_cell(
 
 An output fed unknown inputs is known only when every level they could take gives it the same level: a NAND with a `0` on one input is `1`, whatever the other.
 
-An output reaches its new level `rise` after an input changes when it rises, and `fall` after when it falls.
-The delay is inertial, as a gate's is: a pulse at the inputs shorter than the delay never reaches the output.
-`transition` is how long an edge takes to swing from ground to supply.
+An output reaches its new level `rise` after an input change when rising and `fall` after when falling.
+Delay is inertial (matching physical gates): input pulses shorter than the delay never propagate to the output.
+`transition` sets the duration for an edge to swing from ground to supply.
 
-A logic source's `changes` are times and levels in time order, each the time its edge crosses half the supply; a level is `0`, `1`, or `None` for unknown.
+A logic source's `changes` list time-ordered `(time, level)` pairs where edges cross half-supply, using `0`, `1`, or `None` for unknown.
 
 ## Logic nets
 
-A net that only logic pins join is a logic net.
-Its level is its outputs' level when they agree, and unknown when they disagree or when no output drives it.
-Two rules state these facts: [`driver-conflict`](../reference/rules.md#driver-conflict) for a net several outputs drive, and [`floating-input`](../reference/rules.md#floating-input) for one that inputs read and nothing drives.
+A net connected solely to logic pins is a logic net.
+A logic net takes the common output level when all drivers agree, and becomes unknown when drivers disagree or no output drives it.
+Two rules report these cases: [`driver-conflict`](../reference/rules.md#driver-conflict) for multi-driver conflicts, and [`floating-input`](../reference/rules.md#floating-input) for undriven inputs.
 
-At the operating point, the logic settles at once, every delay taken as zero.
-A loop that would oscillate, such as an enabled ring of inverters, settles unknown.
+At the operating point, logic settles instantaneously with zero delay.
+Oscillating feedback loops (such as an enabled odd ring of inverters) settle to unknown.
 
 ## Mixed circuits
 
-An `electrical=True` cell has the terminals `supply` and `ground` too, and its pins may join electrical nets.
-Each such pin joins the net through a connect element of its own:
+An `electrical=True` cell exposes `supply` and `ground` terminals and allows pins to connect to electrical nets.
+Each pin on an electrical net inserts a dedicated connect element:
 
-- an input reads the net through a threshold detector, at `threshold` of the supply above ground, one half unless given, and loads the net with `input_capacitance` to ground;
-- an output drives the net through a logic driver: a voltage between ground and supply that ramps over the transition, crossing half the supply when the output's level changes, and holds half the supply while the level is unknown.
+- inputs sense the net through a threshold detector at `threshold` of supply above ground (default 0.5) and load the net with `input_capacitance` to ground;
+- outputs drive the net through a logic driver that ramps between ground and supply over `transition`, crossing half-supply at the event time and holding half-supply while unknown.
 
 <!-- not run: a fragment of a component that defines the nets `vdd` and `analog_input` and places `load` -->
 
@@ -64,15 +64,15 @@ c.connect(inverter.a, analog_input)  # an electrical net: a threshold detector r
 c.connect(inverter.y, load.a)  # an electrical net: a logic driver drives it
 ```
 
-A logic pin on an electrical net of a cell without a supply is a problem.
-The net between a pin and its connect element is a logic net of its own, named after the instance and the pin, such as `U1:a`.
+Connecting a logic pin to an electrical net on a cell without a supply is an error.
+The net between a pin and its connect element forms a dedicated logic net named after the instance and pin, such as `U1:a`.
 
-In a transient, the analog steps land where a detector crosses its threshold, and where a driver starts to ramp, so each crossing is found within the relative tolerance of its step.
-At the operating point, the logic and the analog circuit settle each other until they agree.
+In a transient, analog steps land where detectors cross thresholds and where drivers start ramping so every crossing meets relative tolerance.
+At the operating point, logic and analog domains iterate until both agree.
 
 ## Levels in results
 
-Every result holds the logic nets' levels beside its unknowns, and `logic_level(net)` reads them, as a number: `0`, `1`, or NaN for unknown.
+Every result stores logic-net levels alongside electrical unknowns, accessible via `logic_level(net)` as `0`, `1`, or `NaN` for unknown.
 
 <!-- not run: it reads the results of a circuit with a logic net `carry`, which the page does not build -->
 
@@ -84,5 +84,5 @@ changes = trace.times, trace.levels  # the level at time zero, then each change
 sampled = trace.at(times)  # the level at each of times
 ```
 
-Reports list each logic net's level at an operating point, and its first and last level and how often it changed over a sweep or a transient.
-Plots draw logic nets in a panel of their own, one lane each, unknown levels hatched.
+Reports list each logic net's operating-point level, or its initial level, final level, and transition count across a sweep or transient.
+Plots render logic nets in a dedicated panel with one lane per net and hatched regions for unknown levels.

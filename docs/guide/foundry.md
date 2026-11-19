@@ -1,11 +1,11 @@
 # Foundry processes
 
-A chip's transistors are its foundry's, and only the foundry's models say how they behave.
-jolty places SkyWater's SKY130 transistors as foundry devices: the engine checks them but does not solve them, and ngspice simulates every analysis of a circuit that holds one with the process design kit's own models.
+Integrated-circuit transistors are defined by foundry process design kits (PDKs).
+jolty supports SkyWater SKY130 transistors as foundry devices: the engine checks circuit structure while ngspice simulates every analysis using the pinned PDK models.
 
 ## Placing a transistor
 
-`sky130.mosfet(transistor, width, length, fingers=1, multiplier=1)` places one of the kit's transistors, named by its model without the library's prefix, its width all its fingers together:
+`sky130.mosfet(transistor, width, length, fingers=1, multiplier=1)` places a SKY130 transistor using its short model name (without library prefix), with `width` specifying total width across all fingers:
 
 ```python
 from jolty import Builder, Role, component, devices
@@ -25,31 +25,32 @@ def inverter(c: Builder) -> None:
     c.connect(supply.negative, lower.source, lower.bulk, ground)
 ```
 
-Its terminals are `drain`, `gate`, `source` and `bulk`.
-`sky130.TRANSISTORS` lists the transistors: the 1.8 V core ones, of standard, low and high threshold, the native ones of 3.3 V and 5 V, and those whose gates stand 5 V and whose drains stand 10.5 V or 16 V, as their names say.
-The kit's models bin their sizes, so a width or a length that no bin holds fails when ngspice runs.
+Each transistor exposes `drain`, `gate`, `source`, and `bulk` terminals.
+`sky130.TRANSISTORS` lists all supported models: 1.8 V core transistors (standard, low, and high threshold), 3.3 V and 5 V native transistors, and extended-drain devices rated for 5 V gates with 10.5 V or 16 V drains.
+Foundry models use binned geometry ranges, so widths or lengths outside every bin fail during ngspice execution.
 
-A build elaborates the circuit and checks its structure as any other, through the branches the transistor declares, a MOSFET's: the engine solves none of a foundry's devices, so the checks at the operating point do not run.
+Builds elaborate and structurally check foundry circuits using MOSFET branch declarations, while skipping operating-point checks because the native engine does not solve foundry devices.
 
 ## Simulating in ngspice
 
-`jolty simulate` and `Simulation.run` hand each analysis of a circuit that holds a foundry's device to ngspice, which reads the kit's model library and runs it at the plan's temperature, with its options, in its HSPICE compatibility mode, as the kit asks.
-The circuit is written as a [SPICE netlist](spice.md#writing-spice), each transistor an instance of the kit's subcircuit, its sizes in micrometers, as the kit's library scales them, and its diffusions' areas, perimeters and squares estimated as the kit's xschem symbols estimate them, from a diffusion 0.29 µm long beside each finger.
-ngspice reads the whole library, which takes seconds, before each analysis.
+`jolty simulate` and `Simulation.run` dispatch circuits containing foundry devices to ngspice, loading the PDK library at the plan temperature and options in HSPICE compatibility mode.
+The exporter writes a [SPICE netlist](spice.md#writing-spice) instantiating each transistor subcircuit in micrometers (matching PDK scaling) and estimating diffusion areas, perimeters, and squares using xschem's 0.29 µm finger-diffusion rule.
+ngspice parses the full PDK library before each analysis, taking several seconds per run.
 
-Its results are jolty's: reports, plots, specs and corners read them as they read the engine's.
-They hold the circuit's nets and the currents of its sources and inductors, as jolty names them; a device's own unknowns and its terminals' currents ngspice keeps to itself, whatever the options [record](results.md#what-a-result-records), so a rating of a current or a power goes unjudged, and an operating point is found by `ngspice`.
+Foundry results use the standard jolty result types, working transparently with reports, plots, specs, and corners.
+Results contain all circuit net voltages plus independent-source and inductor currents under jolty names.
+ngspice does not expose internal device unknowns or terminal currents regardless of [`record`](results.md#what-a-result-records) settings, so current and power ratings are skipped and operating points report strategy `ngspice`.
 
-An operating point, a DC sweep in even steps, a small-signal response, a transient and the noise at a voltage run this way.
-A transient takes the steps ngspice chooses, and lands on the times its analysis names only where they fall.
-A noise analysis gives each device's sources of noise as ngspice names them, such as a transistor's `id`, its channel's thermal noise, and `1overf`, its flicker noise; ngspice refers noise to a source, so it takes the circuit's first independent source when the analysis names none, and the result then leaves the referral out.
-Any other analysis of such a circuit fails, and says so.
+Supported analyses for foundry circuits are operating point, evenly stepped DC sweep, AC response, transient, and voltage-output noise.
+Transients use ngspice step selection without forcing exact landing on `breakpoints`.
+Noise analysis reports ngspice noise-source names (such as `id` thermal channel noise and `1overf` flicker noise); when no input source is specified, ngspice refers noise to the first independent source and jolty omits the referral.
+Unsupported analyses on foundry circuits fail with an explicit error.
 
-A netlist holds no level-1 or level-3 MOSFET beside a foundry's, since the kit scales the sizes of every MOSFET, and no foundry's device at a temperature of its own.
+Foundry netlists cannot mix level 1 or level 3 MOSFETs alongside foundry devices (because the PDK globally rescales MOSFET dimensions), nor assign per-device temperatures to foundry devices.
 
 ## Process corners
 
-A plan's `process` is the corner of the kit's model library its foundry's devices run at, `tt`, the typical one, unless given, and each [corner](simulation.md#corners) may name its own:
+A plan's `process` parameter selects the PDK corner (defaulting to typical `tt`), and each [corner](simulation.md#corners) can override the process corner:
 
 ```python
 Plan(
@@ -61,34 +62,38 @@ Plan(
 )
 ```
 
-`sky130.CORNERS` lists them: `tt`, then `ff`, `ss`, `sf` and `fs`, fast and slow, the n-channel transistors first where they differ, and `ll`, `hh`, `hl` and `lh`, which move the resistors and capacitors too.
-A process corner of a circuit that holds no foundry's device is an error.
+`sky130.CORNERS` lists all valid corners: `tt`, MOSFET corners `ff`, `ss`, `sf`, `fs` (NMOS first, PMOS second), and passive corners `ll`, `hh`, `hl`, `lh`.
+Specifying a process corner on a circuit without foundry devices raises an error.
 
 ## Mismatch
 
-A [Monte Carlo](simulation.md#monte-carlo) analysis draws the kit's mismatch on each sample, as the kit models it at the corner's process: each transistor's threshold, oxide and mobility apart from the others', by how far its area lies from the kit's, from a seed of the sample's own, as well as the tolerances of jolty's own devices, which the netlist carries to ngspice.
-A sample draws the same mismatch at every corner, so a corner runs the same transistors, and the report counts the foundry's devices whose mismatch each sample draws.
-`Simulation(circuit, mismatch=seed)` draws one sample of it.
+[Monte Carlo](simulation.md#monte-carlo) analysis draws per-instance PDK mismatch on every sample alongside native device tolerances, varying transistor threshold, oxide, and mobility by area using a per-sample seed.
+Each sample reuses the same mismatch draw across all corners so corners evaluate identical silicon, and reports count matched foundry devices.
+`Simulation(circuit, mismatch=seed)` draws a single mismatch sample explicitly.
 
 ## The open process kits
 
-`kits.read(kit, sections)` reads a process design kit's model libraries at a corner, as ngspice reads them, into a [`Library`](spice.md) of its subcircuits and models: SkyWater's SKY130, `sky130.KIT`, GlobalFoundries' GF180MCU, `gf180mcu.KIT`, and IHP's SG13G2, `sg13g2.KIT`.
-A kit's files, which ngspice reads whole, come first, then one section of each of its libraries, each library's typical one unless given; `kit.sections` lists every section, each corner of its libraries and their statistical sections.
-The reader takes what the kits write: `.lib` sections and `.include`, each file's path read from the directory of the file that names it, `.option scale`, which scales a MOSFET's sizes as ngspice's, parameters, a subcircuit's own among them, which its instances may give as ngspice lets them, and their expressions, quoted in braces or quotes, a subcircuit's `.if` blocks, chosen by its parameters, and binned models, a bin chosen by its card's `LMIN` to `WMAX`, which hold a transistor's width divided among its fingers, `nf`, where the kit asks for HSPICE's compatibility, as SKY130 does, or sets the option `wnflag`, as ngspice selects it.
+`kits.read(kit, sections)` loads PDK model libraries at a corner into a [`Library`](spice.md) matching ngspice for SkyWater SKY130 (`sky130.KIT`), GlobalFoundries GF180MCU (`gf180mcu.KIT`), and IHP SG13G2 (`sg13g2.KIT`).
+Whole-file kit includes load first, followed by one section per library (defaulting to typical); `kit.sections` enumerates every corner and statistical section.
+The reader supports `.lib` sections, relative `.include` paths, `.option scale`, subcircuit parameters and braced or quoted expressions, conditional `.if` blocks, and binned models (`LMIN` to `WMAX`).
+Under HSPICE compatibility (such as SKY130) or `wnflag`, transistor width divides across fingers (`nf`) identically to ngspice `INPgetModBin`.
 
-`temper` is the temperature the library is read at, 27 °C unless given, in kelvins: SG13G2's bipolar transistors read it in their transit time.
-The statistical functions `agauss`, `gauss`, `aunif`, `unif` and `limit` take their nominal values, unless a placement is drawn in a Monte Carlo sample: `library.drawn(name, Sample(seed, index), path)` places the subcircuit `name` at `path` of the circuit it goes in, each of its statistical functions drawn as ngspice defines it from a standard variate of the engine's generator, keyed by the seed, the sample's index, the placement's path and which call it is.
-A sample's mismatch is then the same bits however many shards run it, and each placement draws its own.
-`library.random_variables(name, path)` reads the same placement's statistical functions as the random variables of a [mismatch analysis](simulation.md#mismatch), `Mismatch(outputs, random_variables=...)`: each call that the placement's definitions make, within those it places too, of its nominal value as mean and of the standard deviation its function draws with, `agauss(x, a, s)` `a / s`, `gauss(x, r, s)` `|x| r / s`, `aunif(x, a)` `|a| / √3`, `unif(x, r)` `|x r| / √3` and `limit(x, a)` `|a|`, with the derivative of each number of its devices that moves with it, a central difference of the reading, ε^⅓ of its standard deviation either way, exact to rounding where the number is a polynomial of degree two or less in it, as the open kits write them.
-A call of the library's own parameters, which every placement shares, is the process's, not a placement's, and is left out.
-A resistor or a capacitor on a VBIC's thermal node, which ngspice's untyped nodes allow, is a thermal resistance or capacitance of its value.
+`temper` evaluates to the library load temperature in kelvins (default 27 °C), used by SG13G2 bipolar transit times.
+Statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`) default to nominal values unless drawn via `library.drawn(name, Sample(seed, index), path)`.
+Each drawn placement evaluates statistical calls from deterministic engine variates keyed by seed, sample index, placement path, and call order.
+Deterministic keying guarantees identical mismatch bits across arbitrary shard splits while drawing independent mismatch per placement.
+`library.random_variables(name, path)` exposes the same placement's statistical calls (including nested placements) for first-order [mismatch analysis](simulation.md#mismatch) via `Mismatch(outputs, random_variables=...)`.
+Each random variable pairs its nominal mean with its analytical standard deviation: `a / s` for `agauss(x, a, s)`, `|x| r / s` for `gauss(x, r, s)`, `|a| / √3` for `aunif(x, a)`, `|x r| / √3` for `unif(x, r)`, and `|a|` for `limit(x, a)`.
+Parameter derivatives use `ε^(1/3) σ` central differences, which are exact to floating-point rounding for the quadratic or linear parameter expressions used in open PDKs.
+Global library-level statistical calls represent process variation shared by every instance and are excluded from per-placement mismatch.
+Resistors and capacitors attached to a VBIC thermal node automatically map to thermal resistances and capacitances.
 
-`kits.inventory(kit)` states, for each device a kit defines, a subcircuit or a model, every element it holds, the model each needs and why jolty cannot read it.
-Each is read at its parameters' defaults, but a subcircuit whose defaults are a size no bin of a transistor it holds holds, and that gives its length `l` and width `w`, is read at the middle of that transistor's first bin, which its `parameters` state.
-A subcircuit whose defaults read a parameter nothing defines is read as the kit's first placement of it within another subcircuit places it, as GF180MCU's `nmos_3p3_sab` places `nplus_u_m1`, or, where none does, with each parameter that defaults to SPICE's length or width, `l` or `w`, at 10 µm, the size ngspice gives a resistor whose element and card give none, as GF180MCU's resistors and capacitors write their sizes.
-Its status is `native` where jolty reads every element, `verilog-a` where only Verilog-A models are left, which ngspice loads compiled through OSDI and jolty would compile into kernels, `neither` where a SPICE model jolty lacks is left, `unread` where only a placement the reader cannot read is, such as a subcircuit's multiplier, and `unvalued` where an element reads a parameter nothing gives a value.
-Of SG13G2's Verilog-A models, jolty's compiler compiles PSP 103's `psp103va`, `r3_cmc` and `mosvar` whole ([`tests/test_veriloga.py`](https://github.com/maxencefaldor/jolty/blob/main/tests/test_veriloga.py)), and stops at the MOM capacitors' `cap_cmomi` and `cap_cmomf`, whose `localparam` it does not read yet.
-At their typical corners, SKY130 has 251 of its 263 devices native, GF180MCU 65 of 72 and SG13G2 36 of 53, 14 more of whose are Verilog-A models:
+`kits.inventory(kit)` inspects every subcircuit and model in a PDK, listing constituent elements, required models, and any blocker preventing native loading.
+Inventory evaluation uses parameter defaults; when defaults miss every MOSFET bin, `l` and `w` fall back to the first bin midpoint (reported in `parameters`).
+When defaults reference undefined parameters, evaluation falls back to the first internal kit placement (such as GF180MCU `nmos_3p3_sab` placing `nplus_u_m1`) or ngspice's 10 µm default for SPICE `l` and `w`.
+Each device receives a status: `native` (all elements supported), `verilog-a` (only Verilog-A models remain, which ngspice loads via OSDI), `neither` (missing SPICE model), `unread` (unsupported syntax), or `unvalued` (undefined parameter).
+Among SG13G2 Verilog-A models, `jolty-veriloga` compiles `psp103va`, `r3_cmc`, and `mosvar` cleanly ([`tests/test_veriloga.py`](https://github.com/maxencefaldor/jolty/blob/main/tests/test_veriloga.py)) alongside MOM capacitors `cap_cmomi` and `cap_cmomf`.
+At typical corners, native coverage stands at 251 of 263 devices for SKY130, 65 of 72 for GF180MCU, and 36 of 53 for SG13G2 (with 14 more in Verilog-A):
 
 ### SKY130
 
@@ -166,12 +171,27 @@ At their typical corners, SKY130 has 251 of its 263 devices native, GF180MCU 65 
 | neither | diode (level 1); Gummel-Poon (level 1); resistor; capacitor | `AREA` has one value, not `((Nx*Ny)*(l*w)) /(scaling*scaling)` | 1: `schottky_nbl1` |
 | native | capacitor's model card |  | 1: `cmim_core` (model) |
 
-The native devices agree with ngspice reading the same kit at the same corner: every native subcircuit of the three kits at its typical corner and at the size the inventory reads it at, but SG13G2's `pnpMPA`, whose area of 2 ngspice multiplies its reverse saturation current by twice, and GF180MCU's poly resistors, whose bodies ngspice gives their length in meters for their resistance ([departures](departures.md)), its current at an operating point, a bipolar transistor's within the two engines' Boltzmann constants' 3.4e-7 times its junctions' exponents too, and, but for a BSIM4's, whose capacitances with respect to the body ngspice computes inexactly, and a resistor's whose value reads a voltage, whose `POW` of a negative base ngspice differentiates with the wrong sign ([departures](departures.md)), from 1 kHz to 100 GHz, with its first pin at 0.5 V and its others grounded, a capacitor's whose value reads a voltage with its current delayed by the 1 fs ngspice's differentiation of it lags by ([departures](departures.md)); every native card of a resistor or a capacitor, SPICE3's, or a diode, a bare element of each at its card's default size, alike, but for a value in double quotes outside braces, which ngspice drops ([departures](departures.md)); a diode's currents within the further 6.9e-6 by which the two engines' thermal voltages part at the same kelvins, but where ngspice departs from its own model ([departures](departures.md)): a sidewall without `NS` away from its nominal temperature, as GF180MCU's `nwp_3p3`, and in the frequency response a recombination current, as SG13G2's antenna diodes', and `TLEVC` 1 measured at a nominal temperature other than 27 °C, as SKY130's 30 °C and GF180MCU's 25 °C; every part of the diode, at 27 °C and 85 °C, from 6 V of reverse bias through its breakdown to 0.75 V forward; every native device of a capacitor of a charge or of a value that reads its voltage, SKY130's varactors and GF180MCU's MIM and MOS capacitors, its admittance at 1 MHz from −2 to 2 V, across which their capacitances move up to 173-fold, within twice the relative tolerance; one Gummel-Poon transistor of each kit and polarity, SKY130's of HSPICE's temperature coefficients, GF180MCU's of `TLEVC` 1 and `NKF`, and SG13G2's `pnpMPA`, its collector and base currents as its base sweeps from 0.4 to 0.9 V at −40, 27 and 125 °C, within twice the relative tolerance and the two engines' Boltzmann constants' 3.4e-7 times each junction's exponents; SG13G2's `npn13G2`, a VBIC heated through its fifth node, within twice the relative tolerance from off to 1 V of base drive, where it warms by 60 to 130 K, at its three corners, and its gain to 10 GHz at 85 °C, which reads its transit time at that temperature; SKY130's MIM capacitor, its admittance to 100 GHz at its `tt`, `ll` and `hh` corners at 85 °C; SKY130's `nfet_01v8` and `pfet_01v8`, [BSIM4](devices.md#bsim4) cards of version 4.5, in 81 sizes each in a bin of its own, their drain currents swept by their drains and their gates within twice the relative tolerance at `tt`, `ff` and `ss`, their admittances to 10 GHz at `tt`, and an inverter of the two switching within 1e-3 of the supply at each corner; four of SKY130's RF transistors, BSIM4 cards of `rgatemod` 3 with `rdsmod` and `rbodymod` 1, of the 1.8 V n- and p-channels, the low-threshold n-channel and the 5 V n-channel, their currents at an operating point and their admittances to 10 GHz at `tt` within twice the relative tolerance, and the stage of each whose output conductance ngspice computes as its current's derivative making ngspice's noise to 100 MHz.
-ngspice runs GF180MCU with its statistical switches on, `sw_stat_global` and `sw_stat_mismatch` set by `design.ngspice`, drawing every instance's mismatch, so the comparisons give it both at 0, where it computes the nominal values jolty reads.
-Away from its card's nominal temperature, a heated VBIC departs from ngspice's, as the [departures](departures.md) state.
+Native devices agree with ngspice reading the same kit at the same corner across the verification suites below:
+
+- **Subcircuits across all three kits (typical corner, inventory sizes):** operating-point currents match ngspice (allowing `3.4e-7` Boltzmann-constant scaling on BJT junction exponents), excluding SG13G2 `pnpMPA` (double area scaling) and GF180MCU poly resistors (length misread as resistance; see [departures](departures.md)).
+  AC admittances from 1 kHz to 100 GHz (first pin at 0.5 V, remaining pins grounded) agree after applying ngspice's 1 fs capacitor lag, excluding inexact BSIM4 body capacitances and negative-base `POW` derivatives ([departures](departures.md)).
+- **Bare passive and diode model cards (default sizes):** SPICE3 resistor, capacitor, and diode cards match ngspice except where ngspice drops double-quoted values outside braces ([departures](departures.md)).
+  Diode currents agree within the `6.9e-6` thermal-voltage difference at 27 °C and 85 °C from -6 V breakdown to 0.75 V forward bias.
+  Documented ngspice diode departures remain excluded: sidewalls without `NS` away from `TNOM` (GF180MCU `nwp_3p3`), recombination conductance (SG13G2 antenna diodes), and `TLEVC = 1` referenced to 27 °C instead of `TNOM` (SKY130 30 °C, GF180MCU 25 °C).
+- **Varactors and voltage-dependent capacitors:** SKY130 varactors and GF180MCU MIM and MOS capacitors match 1 MHz admittances from -2 V to 2 V (spanning up to 173× capacitance variation) within twice relative tolerance.
+- **Gummel-Poon BJTs:** one transistor per kit and polarity (SKY130 HSPICE temperature terms, GF180MCU `TLEVC = 1` and `NKF`, SG13G2 `pnpMPA`) agrees across -40, 27, and 125 °C.
+  Collector and base currents match across `Vbe` from 0.4 V to 0.9 V within twice relative tolerance plus `3.4e-7` Boltzmann scaling.
+- **SG13G2 heated VBIC (`npn13G2`):** self-heated through its fifth node (warming 60 to 130 K up to 1 V base drive), DC currents match within twice relative tolerance across all three corners and 85 °C gain matches to 10 GHz.
+- **SKY130 MIM capacitor:** 85 °C admittance agrees up to 100 GHz across `tt`, `ll`, and `hh` corners.
+- **SKY130 core [BSIM4](devices.md#bsim4) (`nfet_01v8`, `pfet_01v8`):** across 81 individually binned sizes at `tt`, `ff`, and `ss`, drain- and gate-swept currents agree within twice relative tolerance, `tt` admittances agree to 10 GHz, and an inverter switches within `1e-3` of supply.
+- **SKY130 RF BSIM4 transistors:** four models (`rgatemod = 3`, `rdsmod = 1`, `rbodymod = 1`: 1.8 V NMOS/PMOS, LVT NMOS, 5 V NMOS) match `tt` operating-point currents and admittances to 10 GHz within twice relative tolerance.
+  Amplifier stages whose ngspice `gds` matches exact current derivatives also agree in output noise to 100 MHz.
+
+GF180MCU's `design.ngspice` enables `sw_stat_global` and `sw_stat_mismatch` by default, so differential comparisons set both switches to 0 to match nominal jolty values.
+Away from nominal card temperature, heated VBIC behavior differs from ngspice as documented in [departures](departures.md).
 
 ## The process design kit
 
-jolty pins one release of the kit, `sky130.KIT`, as open_pdks builds it and ciel publishes it.
-`kits.root(sky130.KIT)` fetches its ngspice models, about 20 MB, into the [`cache`](../reference/configuration.md) the first time, each archive checked against its SHA-256 digest, and reads them from there after.
-The setting `pdk_root` names the kits installed elsewhere instead, the directory that holds `sky130A`, `gf180mcuD` and `ihp-sg13g2`, as open_pdks, volare and ciel install them; GF180MCU's and SG13G2's pinned files, fetched from their foundries' repositories by digest, are laid out alike.
+jolty pins one release of SKY130 (`sky130.KIT`) as built by open_pdks and published by ciel.
+`kits.root(sky130.KIT)` downloads roughly 20 MB of ngspice models into [`cache`](../reference/configuration.md) on first use, verifies each archive's SHA-256 digest, and reuses the cached files afterward.
+Setting `pdk_root` points instead to an existing directory containing `sky130A`, `gf180mcuD`, and `ihp-sg13g2` (as installed by open_pdks, volare, or ciel), matching the layout of digest-fetched GF180MCU and SG13G2 releases.

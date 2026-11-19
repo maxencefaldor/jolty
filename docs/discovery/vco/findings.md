@@ -1,14 +1,14 @@
 # Findings: a linear voltage-controlled oscillator
 
-The prompt asks for 1 kHz per volt from 0.5 V to 5 V, every frequency within 1 % of the line through the origin that fits them best, with at most two op-amps.
-The textbook integrator and Schmitt trigger missed the linearity by a factor of three; jolty traced the error to the Schmitt trigger's delay, and two parts that cancel it brought every frequency within 0.1 % of 996 Hz/V.
+The prompt requires 1 kHz/V from 0.5 V to 5 V with every frequency within 1% of the best-fit line through the origin, using at most two op-amps.
+The textbook integrator plus Schmitt trigger missed linearity by 3×; jolty traced the error to Schmitt trigger regeneration delay, and two compensating parts brought linearity within 0.1% of 996 Hz/V.
 
 ## Method
 
-`candidates.py` writes each VCO as a component of `control`, `output` and `ground`: an integrator whose non-inverting input sits at half the control, fed through R from the control, and a switch that draws twice that current through R/2, reversed by an inverting Schmitt trigger at ±10 % of its ±13 V swing.
-A 10 µA pulse at 1 µs starts the oscillation, as noise would.
-`explore.py` simulates 16 periods at each control, 4000 steps a period, and reads the frequency over the last 12 from the triangle's rises, then fits the line through the origin.
-It also reads the trigger's delay: the time from the triangle crossing the trigger's threshold to the trigger's output crossing zero.
+`candidates.py` defines each VCO exposing `control`, `output`, and `ground`: an integrator biased at half `control` fed through `R`, paired with a switch sinking twice that current through `R/2` controlled by a ±10% inverting Schmitt trigger (±13 V rails).
+A 10 µA startup pulse at 1 µs initiates oscillation.
+`explore.py` simulates 16 periods per control voltage at 4,000 steps per period, extracts frequency from the final 12 rising edges, and fits a line through the origin.
+The script also measures trigger delay from triangle threshold crossing to trigger output zero crossing.
 
 ## Results
 
@@ -16,54 +16,55 @@ It also reads the trigger's delay: the time from the triangle crossing the trigg
 | --- | --- | --- |
 | 2N3904 switch | 889.7 Hz/V | 3.08 % |
 | MOSFET switch | 905.0 Hz/V | 8.05 % |
-| MOSFET, 5.8 kΩ in series with the 1 nF capacitor | | stalls from 2 V |
-| MOSFET, 100 pF across the trigger's feedback | 935.3 Hz/V | 5.35 % |
-| MOSFET, 1 nF across the trigger's feedback | 963.1 Hz/V | 2.93 % |
-| MOSFET, 100 pF across the feedback, 1 kΩ in series | | stalls from 4 V |
-| MOSFET, 1 nF across the feedback, 2 kΩ in series with the capacitor | 994.1 Hz/V | 0.22 % |
-| MOSFET, 2.2 nF across the feedback, 1.5 kΩ in series | 988.5 Hz/V | 0.71 % |
-| **MOSFET, 2.2 nF across the feedback, 2 kΩ in series** | **996.1 Hz/V** | **0.096 %** |
-| MOSFET, 2.2 nF across the feedback, 2.5 kΩ in series | 1003.7 Hz/V | 0.72 % |
+| MOSFET, 5.8 kΩ in series with 1 nF capacitor | | stalls from 2 V |
+| MOSFET, 100 pF across trigger feedback | 935.3 Hz/V | 5.35 % |
+| MOSFET, 1 nF across trigger feedback | 963.1 Hz/V | 2.93 % |
+| MOSFET, 100 pF across feedback, 1 kΩ in series | | stalls from 4 V |
+| MOSFET, 1 nF across feedback, 2 kΩ in series with capacitor | 994.1 Hz/V | 0.22 % |
+| MOSFET, 2.2 nF across feedback, 1.5 kΩ in series | 988.5 Hz/V | 0.71 % |
+| **MOSFET, 2.2 nF across feedback, 2 kΩ in series** | **996.1 Hz/V** | **0.096 %** |
+| MOSFET, 2.2 nF across feedback, 2.5 kΩ in series | 1003.7 Hz/V | 0.72 % |
 
-The first six rows read six controls, 0.5 V to 5 V; the last four read nineteen, every 0.25 V.
+The first six rows sample six control voltages (0.5 V to 5 V), and the last four sample nineteen (every 0.25 V).
 
 | Trigger | Delay at 0.5 V | Delay at 5 V |
 | --- | --- | --- |
 | 10 kΩ feedback alone | 9.06 µs | 5.82 µs |
-| 1 nF across it | 2.21 µs | 1.96 µs |
-| 2.2 nF across it | 2.27 µs | 1.93 µs |
+| 1 nF across feedback | 2.21 µs | 1.96 µs |
+| 2.2 nF across feedback | 2.27 µs | 1.93 µs |
 
 ## What the experiments showed
 
-1. **The error is a delay, not a nonlinearity.**
-    Every half period, the triangle overshoots the threshold for as long as the trigger takes to switch, so the period is 4·Vth·C/I plus four delays.
-    A fixed delay costs little at 0.5 V, where the period is 2 ms, and 12 % at 5 V, where it is 200 µs: the frequencies bend down from the line as they rise.
-1. **The trigger's delay is its regeneration, not its slew.**
-    The op-amp slews 13 V/µs, so its output crosses zero 1 µs after it starts; the rest is the time its positive feedback, 10 % of its output, takes to grow from the triangle's slow overdrive.
-    The slower the triangle, the smaller the overdrive and the longer the wait: 9.1 µs at 0.5 V, 5.8 µs at 5 V.
-1. **A transistor switch hides the delay behind its own error.**
-    The 2N3904's saturation voltage, in series with R/2, slows the reversed current most at the lowest control, which bends the low end the other way.
-    The two errors partly cancel, 3.1 %; a MOSFET's channel is a resistance, which only scales the current, and leaves the delay alone, 8.1 %.
+1. **Nonlinearity stems from switching delay rather than analog distortion.**
+    Each half-period overshoots the threshold during trigger switching, yielding total period `4·Vth·C/I + 4·td`.
+    A constant delay barely perturbs the 2 ms period at 0.5 V yet adds 12% at 5 V (200 µs period), bending high frequencies downward.
+1. **Trigger delay is dominated by positive-feedback regeneration rather than slew rate.**
+    Slew at 13 V/µs accounts for only 1 µs; the remainder is regeneration time from slow triangle overdrive through the 10% positive-feedback divider.
+    Slower triangle slopes provide smaller overdrive and longer waits: 9.1 µs at 0.5 V versus 5.8 µs at 5 V.
+1. **A BJT switch partially masks delay error with saturation voltage.**
+    2N3904 `Vce(sat)` in series with `R/2` slows low-control discharge most, bending the low end opposite to delay error (3.1% net).
+    A resistive MOSFET switch scales current cleanly without `Vce(sat)`, exposing the full 8.1% delay droop.
 1. **A resistor in series with the integrating capacitor advances each reversal.**
-    The integrator's output steps by twice its current times the resistor, towards the next threshold: the voltage the triangle travels in R·C, a fixed time at every frequency, which cancels a fixed delay.
-    5.8 kΩ, the delay at 5 V over 1 nF, should have cancelled it there.
-1. **But it can stall the oscillator.**
-    Through the MOSFET's channel and that resistor, the trigger's output moves its own inverting input, a negative feedback much stronger than its 10 % positive feedback when the MOSFET sits near its threshold.
-    The circuit finds a steady state, its trigger at 0.76 V and its triangle at 76 mV, and holds it from 2 V up.
-1. **A capacitor across the trigger's feedback resistor fixes both.**
-    At the edges it feeds the whole output back, so the trigger regenerates three times faster, in about 2 µs, and its positive feedback outweighs the resistor's: with 1 nF or more, no control of the nineteen stalled.
-    100 pF acts above the op-amp's bandwidth, and with 1 kΩ in series it still stalls at 4 V and 5 V; 2.2 nF holds the delay near 2 µs at every control.
-1. **Matching the resistor to the remaining delay** cancels it: 2 kΩ times 1 nF is 2 µs, and every frequency lies within 0.1 % of the line, the step size's own resolution.
-    1.5 kΩ leaves the low end high and 2.5 kΩ the high end, 0.7 % either way.
+    Reversing current steps the integrator output by `2·I·R`, subtracting fixed time `R·C` from every half-period regardless of frequency.
+    Matching the 5 V delay over 1 nF predicted 5.8 kΩ.
+1. **Large series resistance can stall oscillation.**
+    Through the MOSFET channel and series resistor, trigger output feeds negative feedback into the inverting input exceeding the 10% positive feedback near threshold.
+    The loop locks into a stable equilibrium (trigger at 0.76 V, triangle at 76 mV) above 2 V.
+1. **A speed-up capacitor across trigger feedback solves both delay and stalling.**
+    Transient edges feed full output swing back immediately, accelerating regeneration 3× to ~2 µs and overcoming negative feedback so zero controls stall at 1 nF or above.
+    100 pF acts above op-amp bandwidth and still stalls at 4 V and 5 V with 1 kΩ series resistance, whereas 2.2 nF holds delay near 2 µs across all controls.
+1. **Matching the series resistor to the 2 µs delay** (`2 kΩ × 1 nF = 2 µs`) reduces worst-case deviation to 0.096% (at the time-step resolution limit).
+    1.5 kΩ leaves the low end high and 2.5 kΩ leaves the high end high (0.7% error either way).
 
 ## Conclusion
 
-`design.py` steps its control through 0.5, 1, 2, 3, 4 and 5 V in one transient, and each frequency lands within 0.09 % of 996.1 Hz/V, ten times inside the bound, as ngspice confirms, with two op-amps, a MOSFET, seven resistors and two capacitors.
-What limits it now is the delay's remaining dependence on the triangle's slope, 2.27 µs at 0.5 V against 1.93 µs at 5 V, and the time step: with 800 steps a period, the frequency at 5 V reads 0.37 % above its value with 8000.
-The slope itself, 0.4 % below 1 kHz/V, is set by R and C and the trigger's thresholds, and so would follow their tolerances in a built circuit.
+`design.py` steps control through 0.5, 1, 2, 3, 4, and 5 V in one transient using two op-amps, one MOSFET, seven resistors, and two capacitors.
+Every stepped frequency lands within 0.09% of 996.1 Hz/V, achieving 10× spec margin with ngspice confirmation.
+Residual limits are slope-dependent trigger delay (2.27 µs at 0.5 V vs 1.93 µs at 5 V) and numerical step size (800 steps/period reads 0.37% higher at 5 V than 8,000 steps/period).
+Nominal slope (-0.4% from 1 kHz/V) depends on R, C, and trigger thresholds and would track component tolerances in hardware.
 
 ## Limits
 
-The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
-Both remedies are known: a speed-up capacitor across a Schmitt trigger's feedback, and a resistor in series with the integrating capacitor to cancel the comparator's delay.
-The 2 µs delay belongs to the op-amp macromodel, so a real comparator would need its own resistor; offsets, the MOSFET's charge injection beyond its Meyer model, and the capacitor's tolerance are not simulated, so 0.09 % is a simulated figure, not a built one.
+The agent that wrote the prompt also designed the circuit using textbook knowledge and judged the output, making this a capability showcase rather than a blind benchmark.
+Both techniques (Schmitt feedback speed-up capacitance and integrator series lead resistance) are standard design remedies.
+The 2 µs delay reflects the op-amp macromodel, so real comparators require retuning; offsets, non-Meyer MOSFET charge injection, and capacitor tolerances are unmodeled, making 0.09% a simulated figure.

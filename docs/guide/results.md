@@ -6,59 +6,60 @@
 
 A report states facts, one section per analysis in the plan's order:
 
-- an operating point lists every unknown's value and every logic net's level, the strategy that found it and its Newton iterations, and each transistor's [region of operation](#regions-of-operation) with its margins to the regions' boundaries, those nearest a boundary first;
+- an operating point lists every unknown value, logic net level, convergence strategy, Newton iteration count, and each transistor's [region of operation](#regions-of-operation) with boundary margins ordered from tightest margin first;
 - a search for operating points lists every unknown's value at each DC solution it found, the operating point first, and the Newton iterations that found each;
 - a DC sweep states the Newton iterations of all its values, and how many values each strategy but Newton iteration alone found;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
 - a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
 - a pole-zero analysis lists each pole and zero, a conjugate pair once, with its natural frequency and damping ratio;
-- a noise analysis states the noise density at its lowest and highest frequencies, the RMS noise over them at the output and referred to its input, and the noisiest sources with their RMS noise and share of the output's noise power;
-- a failed analysis says why it failed.
+- a noise analysis reports band-edge noise densities, output and input-referred RMS noise, and top noise contributors with RMS levels and variance shares;
+- failed analyses state the failure reason.
 
-A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
-A report lists the first unknowns, then the first logic nets, up to the setting `max_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
-With `--output-format json`, the command prints the same report as data.
+Frequency responses report magnitudes per unit excitation (such as volts per volt for a voltage source).
+Reports print up to `max_unknowns` unknowns, logic nets, operating-point transistors, and sensitivity parameters; the results file stores all of them.
+With `--output-format json`, the command prints the same report as structured JSON.
 
 ## Plots
 
-`jolty simulate` plots every analysis but operating points, searches for them and sensitivities beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
-A transient plots over time, a sweep along its source's values, and a frequency response as a Bode plot, as is a loop gain, against 0 dB and -180°, where its margins are read; a noise analysis plots its output's noise density, with its noisiest sources', and the noise referred to its input on log axes; and a pole-zero analysis plots each pole and zero at its natural frequency and damping ratio, against the line at zero below which a pole grows:
+`jolty simulate` saves plots next to results as `<script>.<analysis>.plot.png` for every analysis except operating points, operating-point searches, and sensitivities, and the MCP server returns them with text output.
+Transients plot against time, DC sweeps plot against swept values, and AC and stability analyses render Bode plots (marking 0 dB and -180° for margin readings).
+Noise analyses plot output noise density, top contributors, and input-referred noise on log axes, while pole-zero analyses plot poles and zeros by natural frequency and damping ratio against the zero-damping instability line:
 
 ![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.plot.png)
 
 ![The Bode plot of the RC low-pass filter: flat to its corner at 159 kHz, then falling 20 dB a decade as its phase falls to -90°](../images/rc_filter.bode.plot.png)
 
-Voltages, currents, temperatures and devices' states never share an axis: each quantity has a panel of its own, and a frequency response has two, its magnitude in decibels and its phase.
-A legend names the series, and up to four are also labeled at their end:
+Voltages, currents, temperatures, and device states never share an axis: each physical nature gets a dedicated panel, and frequency responses split magnitude (dB) and phase into two panels.
+A legend names every series, and up to four curves carry end labels:
 
 ![The half-wave rectifier over three periods: the output holds near the peak of the input, and the source delivers a pulse of current at each peak](../images/rectifier.ripple.plot.png)
 
-Logic nets share a panel of their own, one lane each, with unknown levels hatched (see [Logic](logic.md#levels-in-results)).
+Logic nets share a dedicated panel with one lane per net and hatched unknown regions (see [Logic](logic.md#levels-in-results)).
 
-By default a plot draws the nets the top component names, voltages then logic nets, up to eight.
-The option `--traces` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other traces, without simulating:
+By default, plots render up to eight named top-component nets (voltages followed by logic nets).
+Passing `--traces` selects custom unknowns such as `X1/mid` or `V1:current`, and `jolty plot` re-renders saved results with different traces without re-simulating:
 
 ```sh
 uv run jolty plot rectifier.results.npz --analyses ripple --traces out --traces V1:current
 ```
 
-A plan's [Monte Carlo analysis](simulation.md#monte-carlo) and [variants](simulation.md#variants) plot the distribution of their runs at the plan's own conditions, not each run: a histogram of what each requirement read, against its bounds, as `<script>.monte-carlo.plot.png` or `<script>.variant-runs.plot.png`, and the envelope of each plotted net along each analysis, its least, median and greatest value at each point, as `<script>.monte-carlo.<analysis>.plot.png`.
+[Monte Carlo](simulation.md#monte-carlo) and [variant](simulation.md#variants) plans plot nominal-condition distributions instead of individual runs: requirement histograms against bounds (`<script>.monte-carlo.plot.png` or `<script>.variant-runs.plot.png`) and min/median/max trace envelopes (`<script>.monte-carlo.<analysis>.plot.png`).
 
-The option `--no-plot` leaves plots out.
+Passing `--no-plot` omits plot generation.
 
 ## Unknowns
 
-Every result holds the circuit's unknowns, named by path:
+Every result stores the circuit's unknowns, named by path:
 
-- the voltage of a net, such as `out` or `X1/mid`, relative to the ground;
-- the temperature of a thermal net above the ambient, in kelvins, such as `junction`;
-- the current through a voltage source, inductor or voltage-controlled voltage source, such as `V1:current`;
-- the junction voltage of a diode with a series resistance, such as `D1:junction`.
+- net voltages relative to ground, such as `out` or `X1/mid`;
+- thermal-net temperature rises above ambient in kelvins, such as `junction`;
+- branch currents through voltage sources, inductors, or voltage-controlled voltage sources, such as `V1:current`;
+- internal device unknowns such as a diode junction voltage behind series resistance (`D1:junction`).
 
 ## What a result records
 
-Beside the unknowns, a result records what its plan's `record`, or its analysis's own, names of the circuit's devices and component instances, at every point it solved:
+In addition to unknowns, results record devices and component instances matched by the `record` list on the plan or analysis at every solved point:
 
 ```python
 analyses = {"op": OperatingPoint(), "step": Transient(stop=1 * ms)}
@@ -68,18 +69,19 @@ Plan(analyses, record=["**"])  # every instance
 Transient(stop=1 * ms, record=["D1"])  # this analysis records D1, whatever the plan's
 ```
 
-Each entry is an instance's path, or a pattern of paths as a plan's [fidelity](fidelity.md) scopes are written, where `*` matches within a level of the hierarchy and `**` across levels.
-An entry after `!` takes back what the entries before it named, and the last entry that matches an instance decides, as in a `.gitignore`.
-The plan's record holds for each of its analyses that records, an operating point, a sweep, a small-signal response or a transient, unless the analysis names its own; left out, it records nothing.
-A device recorded keeps its terminals' currents and charges, its own small-signal model and its variables.
-A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
-An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
+Each entry is an exact instance path or a glob pattern matching [fidelity](fidelity.md) scopes (`*` within one hierarchy level, `**` across levels).
+Entries prefixed with `!` exclude prior matches, and the last matching pattern wins just like `.gitignore`.
+The plan's `record` list applies to operating point, DC sweep, AC, and transient analyses unless overridden per analysis; omitting `record` records no devices.
+Recorded devices store terminal currents and charges, small-signal matrices, and internal variables.
+Recorded components and logic devices store port currents and charges summed from underlying device terminals without storing internal device records.
+Requesting an unknown path or unmatched pattern fails the analysis while listing the closest valid paths.
 
-Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, the [region](#regions-of-operation) and margins alone of each transistor the record leaves out, which their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
-A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
+Regardless of `record`, operating points and transients automatically record instances carrying current or power ratings for [rating checks](checks.md#on-analysis-results).
+Nominal `jolty simulate` operating points also record compact [regions](#regions-of-operation) and margins for unrecorded transistors; specs, plots, schematics, and operating-point rules read unknowns alone.
+Corners, Monte Carlo samples, worst-case runs, and spot checks record nothing extra beyond rating checks because only specs inspect them.
 
-Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `max_memory` option bounds them all (see [Options](simulation.md#options)).
-Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
+Recording consumes memory at every solved point: a recorded MOSFET stores 48 floats (114 with three gate-oxide unknowns), all bounded by `max_memory` (see [Options](simulation.md#options)).
+Accessing an unrecorded device or terminal raises `KeyError` listing the closest recorded names and showing how to enable recording:
 
 <!-- output of: python unrecorded.py -->
 
@@ -87,40 +89,40 @@ Reading what a result did not record raises a `KeyError` that suggests the close
 KeyError: "the result recorded no terminal named 'R1.a'; close names: R2.a; record its instance, as an analysis's or a plan's record=['R1'] does, or every instance, as record=['**'] does"
 ```
 
-A name mistaken for one of a recorded instance's says so, and suggests the closest names alone, such as `'R1', which the result recorded, has no terminal named 'R1.aa'; close names: R1.a`.
+Mistyping a terminal on a recorded instance reports that instance and suggests only its valid terminals (for example, `'R1', which the result recorded, has no terminal named 'R1.aa'; close names: R1.a`).
 
-A result's `recording` says what it holds: `devices`, each with its `path`, `terminals`, `internals` and `variables`, and `summed_terminals`, such as `X1.vdd`.
-`terminals` names the columns of `currents` and `charges`: each device's terminals, then each summed terminal.
+`result.recording` describes recorded metadata: `devices` (each listing `path`, `terminals`, `internals`, and `variables`) and `summed_terminals` (such as `X1.vdd`).
+`terminals` lists column names for `currents` and `charges`, ordering device terminals before summed terminals.
 
 ## Terminals
 
-A recorded terminal's current is exact: the engine evaluates each recorded device alone at the solution, each terminal on a node of its own, so terminals that share a net, or join the ground, keep their own currents.
-In a transient, a current includes its charge's derivative, taken by the very integration formula the step was solved with, so the currents into a net sum to its equation's residual, which Newton iteration drives within tolerance.
-A frequency response holds each recorded terminal current's phasor.
+Recorded terminal currents are exact: the engine evaluates each recorded device with separate terminal slots so terminals sharing a net or ground retain individual currents.
+In transients, terminal currents include charge time derivatives evaluated with the active integration formula, so currents entering any net sum to its converged Newton residual.
+Frequency responses store complex phasors for each recorded terminal current.
 
-A component instance's terminals, its ports such as `X1.vdd`, sum the device terminals inside it that join each port's net there, at any depth.
-Ports tied together outside keep their own currents.
-A logic device's pins on electrical nets, and its supply and ground, carry the currents of its connect elements: the threshold detector that loads an input with its capacitance, and the driver that holds an output at its level's fraction of the supply.
+Component ports (such as `X1.vdd`) sum all underlying device terminals connected to that port net at any hierarchy depth.
+Externally shorted ports still keep separate currents.
+Logic pins on electrical nets (plus supply and ground pins) report currents from their connect elements: threshold-detector capacitive loads and logic-driver output stages.
 
-## Devices' own models
+## Device models
 
-At every point it solved, a result holds each recorded device's small-signal model exactly: the derivative of each of the device's equations with respect to each of its unknowns, taken at the solution as Newton iteration takes them.
-A device's unknowns are its terminals, each on a node of its own, and its internal unknowns, such as a transistor's internal drain behind its series resistance, `M1:drain`, or a source's branch current, `V1:current`.
-`conductance(equation, unknown)` reads the derivative of an equation's residual, and `capacitance(equation, unknown)` that of its charge.
-Between two terminals, the first is the current into the first terminal, the second the voltage at the second: a transistor's transconductance is `conductance("M1.drain", "M1.gate")`, its output conductance `conductance("M1.drain", "M1.drain")`, and its gate-drain capacitance, where a charge describes it, `-capacitance("M1.gate", "M1.drain")`.
-An internal unknown's equation is its own: Kirchhoff's current law at an internal node, or the branch equation that holds a source's voltage.
-The columns of `conductances` and `capacitances` hold, for each recorded device, every pair of its terminals and internal unknowns, row by row, so a device's block reshapes into its square matrices.
+At every solved point, results expose exact small-signal matrices for each recorded device: derivatives of device equations with respect to device unknowns at the converged solution.
+Device unknowns cover external terminals plus internal nodes or branch currents (such as `M1:drain` behind a series resistance or `V1:current`).
+`conductance(equation, unknown)` returns the residual derivative, and `capacitance(equation, unknown)` returns the charge derivative.
+Between terminals, the first argument selects terminal current and the second selects terminal voltage: `conductance("M1.drain", "M1.gate")` gives transconductance, `conductance("M1.drain", "M1.drain")` gives output conductance, and `-capacitance("M1.gate", "M1.drain")` gives gate-drain capacitance.
+Internal unknown equations correspond to internal KCL nodes or voltage-source branch constraints.
+Columns of `conductances` and `capacitances` store row-major entries over each recorded device's unknowns so each block reshapes directly into a square matrix.
 
-A device's variables are the quantities it computes on its way to its currents that neither its terminals, nor its unknowns, nor their derivatives show.
-`variable(instance, name)` reads one, and each recorded device's `variables` names its own.
+Device variables expose internal model quantities beyond terminal flows and small-signal derivatives.
+`variable(instance, name)` reads one variable, and each recorded device's `variables` attribute lists available names.
 
 | Model | Variables |
 | --- | --- |
-| `mosfet` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; Meyer's `gate_source_capacitance`, `gate_drain_capacitance` and `gate_bulk_capacitance`; its region and margins |
-| `bsim3` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; its region and margins |
-| `vdmos` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; `gate_source_capacitance`, `gate_drain_capacitance` and its body diode's `drain_source_capacitance`; its region and margin |
-| `jfet`, `bipolar_transistor`, `vbic` | its region and margins |
-| `voltage_controlled_memristor`, `current_controlled_memristor` | `resistance`, the one its state sets, and `rate`, how fast its state moves, toward off when positive, in full ranges per second |
+| `mosfet` | Polarity-signed `threshold_voltage` and `saturation_voltage`; Meyer `gate_source_capacitance`, `gate_drain_capacitance`, and `gate_bulk_capacitance`; region and margins |
+| `bsim3` | Polarity-signed `threshold_voltage` and `saturation_voltage`; region and margins |
+| `vdmos` | Polarity-signed `threshold_voltage` and `saturation_voltage`; `gate_source_capacitance`, `gate_drain_capacitance`, body-diode `drain_source_capacitance`; region and margin |
+| `jfet`, `bipolar_transistor`, `vbic` | Operating region and margins |
+| `voltage_controlled_memristor`, `current_controlled_memristor` | State-determined `resistance` and state `rate` (positive toward off, in full ranges per second) |
 
 <!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, and its results, which the page does not build -->
 
@@ -133,8 +135,8 @@ results["step"].variable("M1", "saturation_voltage")  # one per time point
 
 ## Regions of operation
 
-Each transistor states its region of operation, as its model's equations distinguish it, and its margins to the regions' boundaries, in volts: each margin is zero on a boundary, where the equations switch from one region to the next, and changes sign across it.
-Its variable `region` numbers its region among those its recorded device's `regions` names, and its device's `margins` names the variables that are its margins; `region(instance)` reads the region by name, and a simulation's `transistors` are the paths of its transistors:
+Each transistor reports its operating region (per its model equations) and voltage margins to region boundaries, where each margin equals zero on a boundary and flips sign across it.
+The numeric `region` variable indexes into the recorded device's `regions` tuple, while `margins` names its margin variables; `region(instance)` returns the region string, and `simulation.transistors` lists all transistor paths:
 
 <!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, which the page does not build -->
 
@@ -145,7 +147,7 @@ point.variable("M1", "saturation_margin")  # vds - vdsat, in volts
 regions = point.recording.devices[0].regions  # ("off", ..., "saturated")
 ```
 
-An analysis's `regions` keeps, of each transistor its record leaves out, its region and its margins alone, three of a MOSFET's 48 numbers, which `region` and `variable` read as they read a transistor recorded whole; `jolty simulate` asks for them at the plan's own operating points:
+Setting `regions=True` on an analysis keeps only the region and margins (three floats instead of a full 48-float MOSFET record) for unrecorded transistors, readable via `region` and `variable`; `jolty simulate` enables `regions=True` on nominal operating points:
 
 <!-- not run: it reads a simulation of a circuit with a MOSFET `M1`, which the page does not build -->
 
@@ -163,12 +165,12 @@ kept = point.recording.devices[0].variables  # ("region", "overdrive_voltage", .
 | `vdmos` | `linear` with the drain below its softened overdrive, `saturated` at or past it, as `VDMOSload` switches | `saturation_margin`, `vds` less the softened overdrive over the triode's multiplier |
 | `bipolar_transistor`, `vbic` | `cut_off`, neither junction injecting, `active`, the base-emitter junction alone, `saturated`, both, and `reversed`, the base-collector junction alone | `base_emitter_voltage` and `base_collector_voltage`, its intrinsic junctions' |
 
-A margin is in an n-channel's or an NPN's sign whatever the transistor's polarity, a p-channel's or a PNP's taken at its voltages reversed, so a positive margin means on, or saturated, for every transistor, as designers write `|vgs| − |vth|`: a p-channel's overdrive is positive above its threshold, and a PNP's base-emitter voltage, its emitter's over its base's, positive where its junction injects.
-Where a field-effect transistor's drain lies below its source, its equations swap the two, and so do its margins: `vds` is then the source's voltage over the drain's.
-A junction injects where its ideal current, `Is · (e^{v / (N · Vt)} − 1)`, is positive, at a positive voltage, so a bipolar transistor saturates as its base-collector voltage turns positive, where `vce` falls below `vbe`: Gummel-Poon's and VBIC's equations define no saturation voltage of their own.
-BSIM3's equations blend one region into the next, through `Vgsteff` and `Vdseff`, and switch at neither boundary; its regions are those its manual derives its current in, bounded by its own threshold and saturation voltages.
-VDMOS's softened overdrive keeps it conducting below its threshold, so its equations distinguish no region there.
-No region is guessed: a device whose model distinguishes none, such as a resistor, raises a `KeyError` that says so, and a circuit of a foundry's devices, which ngspice simulates, records no device and states no region.
+Margins follow n-channel/NPN sign conventions regardless of polarity (reversing p-channel/PNP terminal voltages), so positive margins always signify on or saturated (`|vgs| - |vth|`, or `veb` for a PNP).
+When an FET's drain drops below its source, the equations swap drain and source and evaluate `vds` as `vs - vd`.
+A bipolar junction injects when ideal current `Is · (e^{v / (N · Vt)} - 1)` is positive (`v > 0`), so saturation begins when base-collector voltage turns positive (`vce < vbe`); Gummel-Poon and VBIC define no separate saturation voltage.
+BSIM3 smooths transitions through `Vgsteff` and `Vdseff` without hard region switches, so regions follow the manual's `Vth` and `Vdsat` boundaries.
+VDMOS uses softened overdrive that conducts continuously below threshold, so VDMOS distinguishes only `linear` and `saturated`.
+Devices lacking model-defined regions (such as resistors) raise `KeyError` instead of guessing, and ngspice-simulated foundry circuits record no regions.
 
 The report lists each transistor's region and margins, the transistor with the margin nearest zero first, such as the [common-emitter amplifier](../gallery/common-emitter.md)'s:
 
@@ -183,16 +185,17 @@ op: operating point, found by Newton iteration in 11 iterations
 
 ## The results file
 
-`jolty simulate` saves the results beside the script as `<script>.results.npz`, or where `--results` says.
-The file holds the analyses that ran to their end; when none did, the command removes an earlier results file at that path, so it never describes another circuit.
+`jolty simulate` saves results next to the script as `<script>.results.npz`, or at the path given by `--results`.
+The archive stores every completed analysis; if all analyses fail, any prior results file at that path is removed so stale data is never left behind.
 
-`jolty.files.save_raw(path, results, binary=True)` writes results of operating points, DC sweeps, small-signal responses and transients, by analysis name, as SPICE's raw file, binary or ASCII, a plot each, in the format ngspice writes and other tools read, such as waveform viewers and ngspice itself: a net's vector named by its path, a source's current as ngspice names it, `V1#branch`, a thermal unknown with type `temperature`, and a device's state with `notype`.
-`jolty.files.load_raw(path)` reads either binary or ASCII SPICE raw files back into a dictionary of `OperatingPointResult`, `DcSweepResult`, `AcResult`, and `TransientResult` keyed by plot title, preserving exact IEEE-754 bits for binary files; `jolty.spice.ngspice.read` also reads raw vectors directly.
-From the command line or MCP server, `jolty simulate --raw out.raw` (with `--raw-format binary` or `ascii`) writes every completed raw-writable analysis to `out.raw` alongside the `.results.npz` archive.
+`jolty.files.save_raw(path, results, binary=True)` exports operating points, DC sweeps, AC responses, and transients as binary or ASCII SPICE raw files compatible with ngspice and waveform viewers.
+Raw vectors use path names for nets, `V1#branch` for source currents, `temperature` type for thermal unknowns, and `notype` for dimensionless states.
+`jolty.files.load_raw(path)` parses binary or ASCII SPICE raw files back into typed results (`OperatingPointResult`, `DcSweepResult`, `AcResult`, `TransientResult`) keyed by plot title with exact binary IEEE-754 bits, and `jolty.spice.ngspice.read` exposes raw vectors directly.
+From CLI or MCP, `jolty simulate --raw out.raw` (with `--raw-format binary` or `ascii`) writes raw output alongside `.results.npz`.
 
-A plan's batches go beside it as `<script>.batches.npz`, which `jolty.files.load_batches` reads back as each batch's [result](simulation.md#batches), with the requirements it measured.
+Batch outputs save next to results as `<script>.batches.npz`, which `jolty.files.load_batches` restores as [batch results](simulation.md#batches) with measured requirements.
 
-`jolty.files.load_results` reads it back as a dictionary of results by analysis name:
+`jolty.files.load_results` restores `.results.npz` as a dictionary keyed by analysis name:
 
 <!-- not run: it reads the results file of a script `filter.py`, which the page does not write -->
 
@@ -219,17 +222,19 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `NoiseResult` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
 | `PoleZeroResult` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
-An operating point's `strategy` says how the engine found it, by Newton iteration alone, `direct`, or by the aid that took over where it failed, and its `iterations` count the Newton iterations that found it: the strategy's that found it, those of every strategy tried before it, and those of each solve again as the logic settled with it, as solving it afresh runs them, whatever the simulation remembered.
-A DC sweep's `strategies` and `iterations` say the same of the operating point at each value, from the value before it.
-A transient's `statistics` count its steps, accepted, rejected or tried again to land on an event, and the Newton iterations of those accepted.
-Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
-With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.
-Its `charge_leak` holds each equation's converged residual integrated over the accepted steps by those steps' own integration formulas, in the order of `unknowns`: `signed` for the net integral (coulombs for electrical nodes, webers for current branches, joules for thermal nets) and `absolute` for the cumulative sum of step leak magnitudes without cancellation; `result.charge_leak(unknown)` and `result.charge_leak(unknown, absolute=True)` read them by name.
+An operating point's `strategy` records whether direct Newton (`direct`) or a continuation aid succeeded, and `iterations` sums Newton iterations across the winning strategy, prior failed attempts, and logic-settling re-solves.
+A DC sweep's `strategies` and `iterations` record the same statistics at every swept value.
+Transient `statistics` count accepted steps, rejected steps, event retries, and accepted-step Newton iterations.
+`statistics.work` counts all Newton iterations (including operating-point solve unless cached) plus sparse solver full factorizations, refactorizations, pivot fallbacks, and factor reuses.
+When `profile` is enabled, `statistics.profile` breaks runtime down in seconds across preparation, device evaluation, matrix assembly, factoring, solving, step control, recording, and overhead.
+`statistics.charge_leak` integrates each equation's converged residual over accepted steps using the active integration formulas, ordered by `unknowns`.
+`signed` stores the net integral (coulombs for electrical nodes, webers for branches, joules for thermal nets) and `absolute` accumulates step magnitudes without cancellation, readable via `result.charge_leak(unknown, absolute=...)`.
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, `region(instance)` a recorded transistor's region of operation at an operating point, and `logic_level(net)` reads a logic net's level.
-Each finds its column by name in a dictionary, so a read costs the same however large the circuit.
-A name that is not an unknown, a recorded terminal, derivative or variable, or a logic net raises a `KeyError` that suggests the closest names.
+Accessor methods read individual quantities by name: `voltage(net, reference=None)` for net voltage, `rise(net)` for thermal rise above ambient, `state(name)` for dimensionless device state (such as `M1:state`), and `logic_level(net)` for logic nets.
+Current and charge accessors include `current(instance)` for branch currents, `current(instance, terminal)` (watts on thermal terminals) and `charge(instance, terminal)` for recorded terminals, `conductance`, `capacitance`, and `variable` for recorded device models, and `region(instance)` for transistor operating regions.
+Dictionary-indexed lookups run in O(1) regardless of circuit size.
+Requesting an unknown name raises `KeyError` suggesting the closest valid names.
 
-The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the summed terminals, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
-Any program that reads NumPy files reads it.
-The header is in version 20 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+Results archives use NumPy `.npz` containers with a JSON header listing unknowns, logic nets, deduplicated recording schemas (paths, terminals, internals, variables, regions, margins, and summed terminals), and per-analysis metadata followed by keys like `step.times`.
+Any tool supporting NumPy `.npz` files can inspect the archive directly.
+The header uses format version 20; earlier format versions are rejected on load and regenerated by re-simulating.

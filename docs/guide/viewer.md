@@ -7,17 +7,17 @@ uv run jolty simulate examples/common_emitter.py
 uv run jolty view examples/common_emitter.jolty.json --results examples/common_emitter.results.npz
 ```
 
-The page, `<script>.view.html` beside the circuit, opens in any browser and loads three.js from jsDelivr.
-Every example of the [gallery](../gallery.md) opens in one.
+The generated page (`<script>.view.html` next to the circuit) opens in any browser and loads three.js from jsDelivr.
+Every example in the [gallery](../gallery.md) includes a 3D viewer page.
 
-The viewer plays what the results [recorded](results.md#what-a-result-records): every net's voltage, and the currents, charges, variables and conductances of the instances the plan records, by default those rated for a current or a power.
-A plan that records every instance, with `record=["**"]`, lights every lead, as the gallery's do.
+The viewer animates every [recorded](results.md#what-a-result-records) quantity: all net voltages plus currents, charges, internal variables, and conductances for recorded instances (rated instances by default).
+Recording every instance via `record=["**"]` illuminates every lead, matching the gallery pages.
 
 ## The board
 
-The board lays out one component at a time, as its [schematic](schematics.md) does: each device a part standing on its pins, each wire a copper trace, each ground or supply pin a post, and each port a flag at the edge.
-Resistors carry their value's color bands, inductors their coil, diodes the band at their cathode, and transistors their package.
-A component instance is a chip with its name on it; double-clicking it opens its own board, and the path above the board leads back up.
+The board lays out one component at a time like its [schematic](schematics.md): devices stand on pins, wires render as copper traces, ground and supply pins appear as posts, and ports appear as edge flags.
+Resistors display value color bands, inductors show coils, diodes display cathode bands, and transistors show packages.
+Each subcircuit renders as a labeled chip; double-clicking opens that subcircuit's board, and the breadcrumb path above returns up the hierarchy.
 
 ## The simulation
 
@@ -34,12 +34,12 @@ A plot below the board draws the voltages of the top component's named nets, a d
 
 ## The inspector
 
-Clicking a part opens the inspector, which shows at the current point:
+Clicking a part opens the inspector, displaying the following details at the current point:
 
-- each terminal's net, voltage, current in and charge, and the power the part takes;
-- the part's [variables](results.md#devices-own-models), such as a transistor's threshold voltage;
-- its small-signal conductances between its terminals, each the change of a terminal's current with another's voltage;
-- its terminals' currents over the whole analysis, and its parameters.
+- net name, voltage, incoming current, charge, and total dissipated power for every terminal;
+- internal [device variables](results.md#device-models), such as transistor threshold voltage;
+- small-signal conductances between terminals, showing how each terminal current varies with another terminal's voltage;
+- terminal currents across the full analysis together with device parameters.
 
 Clicking a trace shows its net's voltage now and over the analysis.
 

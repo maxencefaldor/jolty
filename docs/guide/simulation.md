@@ -1,11 +1,11 @@
 # Simulation
 
-A plan names the analyses to run on a circuit, the numerical options they share, and what their results record.
-It stays apart from the circuit: the same circuit runs under any plan.
+A plan defines the analyses to run on a circuit, shared numerical options, and which instances to record.
+Plans stay independent of circuits, allowing the same circuit to run under any plan.
 
 ## Plans
 
-A script defines `plan()`, which returns a `Plan` of analyses by name:
+A build script can define `plan()`, returning a `Plan` mapping analysis names to analysis objects:
 
 ```python
 def plan() -> Plan:
@@ -20,44 +20,45 @@ def plan() -> Plan:
     )
 ```
 
-Each name is a Python identifier and names the analysis's results.
-A plan's `fidelity` may choose characterized logic cells for some component instances (see [Fidelity](fidelity.md)).
-`jolty simulate` takes the plan from the build script, or from another script given with `--plan`.
+Each analysis name must be a Python identifier identifying its result entry.
+A plan's `fidelity` mapping can substitute characterized logic cells for chosen component instances (see [Fidelity](fidelity.md)).
+`jolty simulate` loads `plan()` from the build script unless `--plan` points to a separate script.
 
 ## Analyses
 
 | Analysis | Finds |
 | --- | --- |
-| `OperatingPoint()` | the DC solution, every source at its level at time zero |
-| `OperatingPoints(max_solutions=8)` | every DC solution, up to `max_solutions`, the operating point first |
-| `DcSweep(source, values)` | the DC solution at each level of one independent source |
-| `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
-| `Transient(stop, max_step=None, method="trapezoidal", breakpoints=(), initial_conditions={}, operating_point=True)` | the response over time, from the operating point, or from [initial conditions](#initial-conditions-and-nodesets), until `stop` |
-| `PeriodicSteadyState(period=None, max_step=None, method="trapezoidal", breakpoints=())` | one period of the [steady state](#periodic-steady-state) a circuit repeats: driven by sources of `period`, or an oscillator's, whose period it finds |
-| `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters but a device's [own temperature](devices.md), at the operating point or at each point of the analysis `of` |
-| `Mismatch(outputs, of=None, random_variables=())` | each output's [standard deviation](#mismatch), to first order, with the circuit's tolerances and the random variables given, such as a process kit's, and which of them it comes from |
-| `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
-| `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
-| `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |
-| `TransferFunction(source, output, reference=None)` | SPICE's `.tf`: the gain at DC from an independent source to a net's voltage or a voltage source's current, the resistance the source sees, and the one the output sees with the source at its level |
+| `OperatingPoint()` | DC solution with every source evaluated at time zero |
+| `OperatingPoints(max_solutions=8)` | All discovered DC solutions up to `max_solutions`, starting with the primary operating point |
+| `DcSweep(source, values)` | DC solution at each stepped value of one independent source or device parameter |
+| `Ac(source, frequencies)` | Small-signal frequency response to a unit excitation of one source around the operating point |
+| `Transient(stop, max_step=None, method="trapezoidal", breakpoints=(), initial_conditions={}, operating_point=True)` | Time-domain response until `stop`, starting from the operating point or [initial conditions](#initial-conditions-and-nodesets) |
+| `PeriodicSteadyState(period=None, max_step=None, method="trapezoidal", breakpoints=())` | One period of a repeating [periodic steady state](#periodic-steady-state) for a driven circuit or autonomous oscillator |
+| `Sensitivity(outputs, of=None)` | Derivatives of outputs with respect to all numeric device parameters (except [device temperature](devices.md)) at DC or across analysis `of` |
+| `Mismatch(outputs, of=None, random_variables=())` | First-order [standard deviation](#mismatch) and variance shares from circuit tolerances and supplied random variables (such as PDK statistics) |
+| `Stability(probe, frequencies)` | Loop gain across a probe inserted in series with a feedback loop at each frequency |
+| `Noise(output, frequencies, reference=None, source=None)` | Output noise spectral density from all device noise sources, optionally referred to an input source |
+| `PoleZero(source=None, output=None, reference=None)` | Linearized operating-point poles and optional transfer-function zeros from a source to an output |
+| `TransferFunction(source, output, reference=None)` | SPICE `.tf` DC gain plus input resistance at the source and output resistance at the output |
 
-A source is named by its path, such as `V1` or `bias/I1`.
-A transfer function linearizes the circuit at its operating point and solves it twice: driven by its source, for the gain and the input resistance, and driven at its output, a unit current into the net or a volt in series with the source whose current it is, for the output resistance; a voltage source is a short to that second solve and a current source is open, as in SPICE.
-A resistance through which no current can flow, such as a voltage source's that drives nothing, is infinite, where ngspice writes 10²⁰ Ω.
-`linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
-A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
-Its longest step defaults to a fiftieth of `stop`.
-It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
+Sources are addressed by hierarchical path, such as `V1` or `bias/I1`.
+Transfer function analysis linearizes the circuit at the operating point and executes two solves: excited at `source` for gain and input resistance, then excited at `output` (unit net current or series unit voltage) for output resistance.
+During the second solve, independent voltage sources act as shorts and current sources as opens, matching SPICE.
+Any port unable to carry current (such as an unloaded voltage source) reports infinite resistance rather than ngspice's `10²⁰` Ω.
+`linear(start, stop, points)` generates evenly spaced values, and `decade(start, stop, per_decade)` generates logarithmically spaced frequencies.
+Transient integration selects `"trapezoidal"` (default), `"gear2"` (for stiff ringing circuits), or `"backward_euler"` (maximum damping).
+Default `max_step` equals one fiftieth of `stop`.
+Transients step exactly onto every time in `breakpoints` without restarting integration, giving solved values for every unknown and recorded terminal at those instants.
 
-A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `max_transient_iterations`, `truncation_tolerance`, `max_memory` and `profile`, which a DC solution does not read.
-Under other tolerances or another `max_dc_iterations` alone, Newton iteration goes on from where it stopped, as from zero it would, since it takes the same iterates from zero under any tolerances.
+A `Simulation` caches the last operating point and reuses it across small-signal analyses, matching DC sweeps, and operating-point checks whenever DC-relevant options stay unchanged (ignoring `charge_tolerance`, `max_transient_iterations`, `truncation_tolerance`, `max_memory`, and `profile`).
+If only tolerances or `max_dc_iterations` change, Newton iteration resumes from the prior iterate because starting from zero yields identical steps.
 
 ## Initial conditions and nodesets
 
-A transient's `initial_conditions` give nets, by path, the voltages they start from, as SPICE's `.ic`: each is held at its voltage, as by an ideal source whose current takes up the sum of the net's, while the operating point the transient starts from is solved, and is left free from the first step on.
-With `operating_point=False`, as SPICE's `UIC`, the transient starts from its initial conditions alone, every other unknown at zero, an inductor's current among them, so a circuit starts from rest or from a state no DC solution has, such as an oscillator kicked off its balance; the first step, by backward Euler, takes each capacitor's charge from that state, and its results' statistics give no strategy for the operating point.
-The options' `nodesets` give nets, by path, voltages an operating point starts from, as SPICE's `.nodeset`: the circuit is solved from zero with each held at its voltage, then released and solved again from there, as SPICE releases them once the circuit converges with them, so that a circuit with several DC solutions, such as a latch, settles in the one they lead to; where the circuit has no solution with them held, it is solved from zero.
-A net that voltage sources and inductors join to the ground, or to a net named before it in the order of the names, is not held, as two ideal sources cannot hold one voltage: the sources fix it, and an initial condition there must agree with the voltage they give it within the tolerances, or the transient states both.
+Transient `initial_conditions` specify starting net voltages by path (SPICE `.ic`), clamping each net with an ideal source during the initial operating-point solve before releasing it at `t = 0`.
+Setting `operating_point=False` (SPICE `UIC`) skips the operating point, initializes all remaining unknowns (including inductor currents) to zero, and starts from the stated voltages using backward Euler on the first step (reporting no operating-point strategy).
+Option `nodesets` (SPICE `.nodeset`) temporarily clamps nets during an initial solve from zero and then releases them for a final unconstrained solve, guiding multistable circuits like latches toward a desired branch (falling back to zero if the clamped solve fails).
+Nets already constrained by voltage sources or inductors (or by an earlier named net) are not double-clamped; conflicting initial conditions fail while reporting both values.
 
 ```python
 from jolty.plan import Options, Plan, Transient
@@ -71,74 +72,73 @@ Plan(
 
 ## Periodic steady state
 
-A circuit driven by periodic sources, such as a rectifier, a mixer or a power converter, settles into a steady state that repeats each period, but a transient from the operating point reaches it only after its slowest time constant has died away many times over.
-A periodic steady state finds it directly, given the period of every source, as ngspice's `.pss`, Spectre's `pss` and Xyce's `.HB` are analyses of their own:
+Circuits driven by periodic sources (such as rectifiers, mixers, or power converters) settle into a periodic steady state that time-domain transients reach only after slow time constants decay.
+`PeriodicSteadyState` computes one steady-state period directly, analogous to ngspice `.pss`, Spectre `pss`, and Xyce `.HB`:
 
 ```python
 Plan({"steady": PeriodicSteadyState(period=1 * us, max_step=5 * ns)})
 ```
 
-The steady state is a state `x₀` that one period of the circuit's equations carries back to itself, `φ(x₀) = x₀`, and shooting solves it by Newton iteration (Aprille and Trick, *Steady-state analysis of nonlinear circuits with periodic inputs*, Proceedings of the IEEE 60(1), 1972).
-Each period, simulated from the state it starts at, carries the derivatives of its solution with respect to that state along every step, by the direct method of the transient sensitivities, and ends with the monodromy matrix `Φ = ∂φ/∂x₀`; the next period starts at `x₀ + Δ`, where `(Φ − I) Δ = x₀ − φ(x₀)`.
-The first starts at the operating point, and the search ends when a period ends within tolerance of every unknown where it started, or fails after 40 periods, naming the unknowns furthest from repeating.
-The steady state of a nearly linear circuit is found in two or three periods however slowly it settles, where a transient would take tens or hundreds.
-The result, a `PeriodicSteadyStateResult`, holds the last period's waveforms, its times from zero to the period, as a transient's result does, which measures, plots and the viewer read alike; its `period` is the period, and its `periods` count the periods shooting simulated.
-The period's steps are at most `max_step`, by default a fiftieth of the period, and land on each of `breakpoints`, times within the period.
+Shooting solves `φ(x₀) = x₀` by Newton iteration over the period map `φ` (Aprille and Trick, *Proceedings of the IEEE* 60(1), 1972).
+Each period propagates sensitivities along every step to assemble monodromy matrix `Φ = ∂φ/∂x₀` and updates `x₀` by solving `(Φ - I) Δ = x₀ - φ(x₀)`.
+Shooting starts from the operating point and stops when end-of-period mismatch satisfies tolerances across all unknowns, or fails after 40 periods while naming the worst-mismatching unknowns.
+Nearly linear circuits converge in two or three periods regardless of settling time, where transients require tens or hundreds of cycles.
+`PeriodicSteadyStateResult` exposes one period of waveforms from `0` to `period` (compatible with measures, plots, and the 3D viewer) plus `period` and shooting iteration count `periods`.
+Step lengths respect `max_step` (default `period / 50`) and land on all `breakpoints` within the period.
 
-A circuit can have a neutral direction, a quantity a period carries back as it was wherever it starts: the state of a memristor its drive leaves alone, or the charge a memristor and a capacitor in series share.
-Every value of it has a steady state of its own, and `Φ − I` is singular.
-The step `Δ` is then the least-squares solution of least norm among those in the range of `Φ − I`, which leaves every quantity a period conserves as it was, so shooting keeps the start's place along the neutral directions and finds the steady state a transient from the operating point would settle into; where `Φ − I` is regular, it is Newton's step.
-The system is measured in each unknown's tolerance, as the mismatches are, and a direction is neutral when its singular value is within the rounding of the matrix, or below the relative tolerance with the start already repeating along it within its tolerance: there the period moves the state by too little for the tolerances to place the steady state along it.
-The monodromy matrix and the dense factorizations of `Φ − I` hold up to 14 numbers per unknown squared, so a circuit whose matrices would pass the `max_memory` option fails before the first period, and each period's waveforms may hold what the matrices leave of it.
-A circuit with logic, whose state shooting does not carry, has no periodic steady state.
+Some circuits contain neutral directions (conserved quantities such as an unexcited memristor state or floating series capacitor-memristor charge), making `Φ - I` singular with a continuum of steady states.
+Shooting computes the minimum-norm least-squares step inside the range of `Φ - I`, preserving the starting state along neutral directions (reducing to standard Newton when `Φ - I` is regular).
+The linear system is scaled by unknown tolerances, treating a direction as neutral when its singular value lies within numerical rounding or below `relative_tolerance` with the starting state already repeating within tolerance.
+Monodromy and dense SVD factorizations use up to 14 floats per squared unknown, so circuits exceeding `max_memory` fail immediately before simulating a period, leaving remaining memory for period waveforms.
+Circuits containing event-driven logic cannot run periodic steady state because shooting does not carry discrete logic state.
 
 ### Oscillators
 
-Without a period, the circuit is an oscillator, such as a ring oscillator, an LC oscillator or a relaxation oscillator, whose sources hold steady and whose period is its own; shooting finds the period with the state:
+Omitting `period` configures autonomous shooting for free-running oscillators (ring, LC, or relaxation oscillators with constant sources), solving simultaneously for state `x₀` and unknown period `T`:
 
 ```python
 Plan({"ring": PeriodicSteadyState()})
 ```
 
-The unknowns are then `x₀` and the period `T`, and the equations `φ(x₀, T) = x₀` are one fewer: any state along the orbit starts a period as well as any other.
-The phase condition takes that freedom out, as the least-norm step takes out a neutral direction: the start moves only across the orbit, its step `Δx` orthogonal to the flow there, `ẋᵀ Δx = 0`, each unknown in units of its tolerance (the orthogonal phase condition; R. Seydel, *Practical Bifurcation and Stability Analysis*, 3rd ed., Springer, 2010, §7.1).
-The flow is `∂φ/∂T`, the end's derivative with respect to the period, which at the steady state is the start's, and each period carries it along its steps as it carries `Φ`, every step's length a fixed fraction of the period: a step's formula scales its charges' terms by `1/T`, which makes the derivative exact for the steps taken.
-Newton's step solves the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [Δx, ΔT] = [x₀ − φ(x₀, T), 0]`, regular where the orbit is isolated, and measured in each unknown's tolerance and the period in its relative tolerance; a neutral direction of the circuit's own is left as it was, as above.
+Any phase shift along the orbit satisfies `φ(x₀, T) = x₀`, so an orthogonal phase condition `ẋᵀ Δx = 0` (scaled by unknown tolerances) constrains state updates perpendicular to the orbit (Seydel, *Practical Bifurcation and Stability Analysis*, 3rd ed., 2010, §7.1).
+Each period propagates `∂φ/∂T` alongside `Φ` by scaling step charges by `1/T` at fixed period fractions, keeping step derivatives exact.
+Newton solves the bordered system `[[Φ - I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [Δx, ΔT] = [x₀ - φ(x₀, T), 0]` in tolerance-scaled coordinates while preserving any neutral directions.
 
-An oscillator's operating point is an equilibrium it leaves, and a state every period repeats, so shooting cannot start there: it starts on the orbit, which a transient from the operating point finds.
-The transient starts from the operating point kicked along the natural mode that grows fastest, its pole the [pole-zero analysis's](#poles-and-zeros) with the largest real part, by one tolerance in the unknown the mode moves most in units of its tolerance, the smallest step off the operating point the analysis resolves.
-It returns to the hyperplane through the operating point across the kick once a period, and runs, in stretches twice as long as the one before, the first the mode's natural period, until a return comes no further from the one before than that one from its own, which was further than their tolerance: the oscillation has grown past what the analysis resolves and stopped growing; returns within tolerance of each other come nearer or further by the chance of each step's own error.
-Each stretch restarts the integration with backward Euler's steps, which damp the oscillation a little, so a return is compared only with those of its own stretch, and a stretch's steps are at most a fiftieth of the period the returns before it show, as a period's own are.
-Shooting starts from that return, its period the time since the one before, and converges, as the circuits of the tests do, in three or four periods.
-An oscillator whose operating point no mode grows from, such as a lossless tank, does not start, and the analysis says so, as it does when shooting converges onto the operating point, a state every period repeats, where no unknown moves by its tolerance as the period moves by its own; one that has not stopped growing after 40 stretches, such as a latch, which tips into a stable state and never returns, fails, saying how long its transient ran and how often it returned.
-The sources hold steady over each period, so a source that kicks a transient, such as the examples' pulses, has no place in an oscillator's circuit.
-A tank whose conductance feeds it inside a circle and drains it outside, so that it is lossless on the circle, has the period `2π√(LC)` exactly, and the analysis finds it within the trapezoidal formula's phase error, `(ωh)²/12` of the period for a step `h`, and the circle's radius within the energy the period's first two steps of backward Euler drain (`crates/jolty-engine/tests/periodic.rs`).
-The examples' five-stage ring oscillator's period agrees with its long transient's settled period to 2.8·10⁻⁸ at a relative tolerance of 10⁻⁹ and steps of at most 1 ps, within the 5.9·10⁻⁸ its transient's periods scatter by; at the default tolerance and steps of at most 5 ps, it lies 2.9·10⁻⁵ from that reference, where the transient's settled period lies 1.7·10⁻⁴ from it, and at 10⁻⁵, 2.7·10⁻⁴, where the transient's lies 1.6·10⁻⁴ from it (`tests/test_periodic.py`, on an Apple M2 Max).
+Since an oscillator's DC operating point is an unstable equilibrium, autonomous shooting initializes on the limit cycle using a startup transient.
+Startup perturbs the operating point along the fastest-growing [pole-zero](#poles-and-zeros) mode by one unit of tolerance in the dominant unknown.
+The transient runs in doubling time stretches (starting from one natural period), tracking returns to the hyperplane orthogonal to the perturbation until consecutive returns stabilize above tolerance.
+Each stretch restarts integration with backward Euler, so returns compare only within the same stretch using `max_step` capped at 1/50 of the observed period.
+Shooting launches from that converged return and typically finishes in three or four periods.
+Autonomous shooting fails explicitly if no growing mode exists (such as an ideal lossless tank), if shooting collapses onto the DC equilibrium, or if 40 stretches fail to stabilize (such as a latch).
+Sources must stay constant throughout an autonomous period; pulsed kick sources belong only in transient startups.
+On an exact-period `2π√(LC)` nonlinear tank, shooting matches the exact period within trapezoidal phase error `(ωh)²/12` and amplitude within backward-Euler startup damping (`crates/jolty-engine/tests/periodic.rs`).
+On the five-stage ring oscillator example, shooting matches a long settled transient within `2.8e-8` at `reltol = 1e-9` and `max_step = 1` ps (within transient scatter of `5.9e-8`), and within `2.9e-5` at default tolerances and `5` ps steps (`tests/test_periodic.py`, Apple M2 Max).
 
 ## Several DC solutions
 
-A circuit with feedback can have several DC solutions: a latch one per state and one balanced between them, and a self-biased reference its zero-current state beside its working one.
-A search for them finds the operating point first, then each other solution its equations lead to once deflated by those found so far:
+Feedback circuits can possess multiple DC operating points: bistable latches hold two stable states plus a metastable balance point, and self-biased references often admit a zero-current state alongside the active operating point.
+`OperatingPoints` finds the primary operating point first and then discovers additional solutions via deflation:
 
 ```python
 Plan({"states": OperatingPoints(max_solutions=8)})
 ```
 
-The deflated equations are `m(x)·f(x) = 0`, with `m(x) = Π (1/‖x − r‖² + 1)` over the solutions `r` found, the distance taken over the node voltages: each found solution becomes infinitely repelling, so Newton iteration, whose deflated step is the plain step scaled by `1 / (1 − ∇m·δ/m)`, leaves it for another (Farrell, Birkisson and Funke, *Deflation techniques for finding distinct solutions of nonlinear partial differential equations*, SIAM Journal on Scientific Computing 37(4), 2015).
-Each new solution is searched from zero, by Newton iteration, then gmin stepping across the nodes and then across the junctions, then source stepping, then pseudo-transient continuation, and else by Newton iteration from the reflection of a solution found through another, or from beside one, its node voltages moved 0.1 V up and down in turn, which breaks the symmetry a balanced latch's start keeps; the search ends when none leads to a new solution, ten tolerances or more from every one found in some unknown, or at `most`.
-The result's `points` hold an operating point per solution, and `voltages(net)` reads a net's voltage at each; the report lists every unknown's value at each solution, and the specs' `solutions` reads how many there are.
+Deflation modifies the residual to `m(x)·f(x) = 0` with `m(x) = Π (1/‖x - r‖² + 1)` over found voltage vectors `r`, scaling each Newton step by `1 / (1 - ∇m·δ/m)` to repel converged roots (Farrell, Birkisson, and Funke, *SIAM Journal on Scientific Computing* 37(4), 2015).
+Each search attempts Newton, node/junction gmin stepping, source stepping, and pseudo-transient continuation from zero, followed by reflections across prior solutions and alternating ±0.1 V perturbations to break latch symmetry.
+Search stops at `max_solutions` or once no candidate yields a new root separated by at least ten tolerances in some unknown.
+`OperatingPointsResult.points` lists every `OperatingPointResult`, `voltages(net)` returns net voltages across roots, reports print every solution, and `specs.solutions` returns the solution count.
 
 ## Sensitivities
 
-Every analysis that solves for the unknowns, the operating point, a DC sweep, a small-signal response, a transient and a periodic steady state, is a function of the circuit's parameters, which jolty differentiates exactly.
-`jolty.function(circuit, analysis)` gives that function, `f(parameters)`, and `jolty.jvp` and `jolty.vjp` differentiate it as `jax.jvp` and `jax.vjp` differentiate a function.
-The `parameters` are a nested dictionary of numbers of devices' parameters, by instance path, then by parameter path, in SI base units, as a simulation's overrides name them; those given are the ones differentiated, the circuit's others held.
-A parameter path names a number of a device's parameters by its keys, such as `resistance`, or `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
-The outputs are a dictionary of each unknown's values over the analysis's points, by the unknown's name, such as `out` or `V1:current`: one value at the operating point, one per value, frequency, time or point of the period otherwise, phasors over frequency; an oscillator's periodic steady state adds its period, in seconds, under `jolty.simulate.PERIOD`.
+Every primary analysis (operating point, DC sweep, AC, transient, and periodic steady state) is differentiable with respect to circuit parameters.
+`jolty.function(circuit, analysis)` wraps an elaborated circuit as callable `f(parameters)`, and `jolty.jvp` and `jolty.vjp` differentiate `f` with the same calling conventions as `jax.jvp` and `jax.vjp`.
+`parameters` is a nested dictionary indexed by instance path then parameter path in SI base units; only listed parameters are differentiated while all other circuit parameters remain constant.
+Parameter paths use dot-separated keys (such as `resistance` or `waveform.dc`) and 0-based list indices (such as `waveform.piecewise.1.1`).
+Outputs form a dictionary mapping each unknown name to its scalar or array values (complex phasors for AC), adding oscillator period in seconds under `jolty.simulate.PERIOD`.
 
-`jvp(function, parameters, tangents)` returns the outputs and their derivatives along `tangents`, which moves some of the parameters given, by the same keys: the JVP, a Jacobian-vector product, by the direct method, one solve at each point of the analysis.
-`vjp(function, parameters)` returns the outputs and a pullback, which takes a cotangent on the outputs, by the same keys, those it leaves out zero, and gives its value on each parameter given: the VJP, a vector-Jacobian product, by the adjoint method, one transposed solve at each point however many the parameters.
-A scalar loss's derivatives with respect to the outputs are a cotangent, and its pullback is the loss's gradient, as here over a crossbar's weights:
+`jvp(function, parameters, tangents)` computes outputs and forward directional derivatives along `tangents` via the direct method (one linear solve per analysis point).
+`vjp(function, parameters)` computes outputs and a `pullback` function mapping output cotangents (defaulting omitted entries to zero) back to parameter gradients via one transposed solve per point regardless of parameter count.
+Scalar loss derivatives form a cotangent whose pullback yields exact gradients across all parameters at once, illustrated below on a resistive crossbar:
 
 ```python
 from jolty import Net, component, devices, function, vjp
@@ -169,11 +169,11 @@ distances = {name: outputs[name] - target for name, target in targets.items()}
 gradient = pullback({name: 2 * distance for name, distance in distances.items()})
 ```
 
-The loss here is the sum of the squares of each output's distance to its target, so its cotangent is twice each distance; `gradient["W00"]["resistance"]` is the loss's derivative with respect to that weight, per ohm, and every weight's together cost one transposed solve.
-Over frequency, cotangents and their values are complex, `vᵀ dx/dp`; a real loss of the phasors `a + jb` takes the real part of the pullback of `∂L/∂a − j ∂L/∂b`.
+For this squared-error loss, passing `2 * distance` as the cotangent yields `gradient["W00"]["resistance"]` (and all other weight gradients) in a single transposed solve.
+In AC analyses, cotangents and gradients are complex (`vᵀ dx/dp`); differentiating a real loss over phasors `a + jb` takes the real part of the pullback applied to `∂L/∂a - j ∂L/∂b`.
 
-A batch of runs of the function, `f.batch(names, values)`, runs a row of `values` of the parameters `names` on each run, across the engine's threads, and `f.batch_vjp(names, values)` gives the batch's outputs and a pullback that pulls each run's cotangent back, as a batch too.
-With the optional `jax` extra (`pip install 'jolty[jax]'`), `jolty.jax.function` exposes the same dict-to-dict map as a `jax.custom_vjp` callable that works inside `jax.jit`, `jax.grad`, `jax.vjp`, `jax.remat` and `jax.vmap`, each call one batch forward and one backward, however `vmap` maps it:
+`f.batch(names, values)` evaluates rows of `values` across engine threads in parallel, and `f.batch_vjp(names, values)` returns batched outputs plus a batched pullback.
+With optional extra `jolty[jax]` (`pip install 'jolty[jax]'`), `jolty.jax.function` exposes the map as a `jax.custom_vjp` compatible with `jax.jit`, `jax.grad`, `jax.vjp`, `jax.remat`, and `jax.vmap` (running one forward batch and one backward batch regardless of `vmap` nesting):
 
 ```python
 import jax
@@ -200,45 +200,46 @@ jax_gradient = jax.jit(jax.grad(loss))(
 )
 ```
 
-A batch reads a transient's outputs at its `breakpoints`, which a transient or a driven periodic steady state then needs, so that every output has a fixed shape; an oscillator's outputs hold no point, and its period is under `jolty.jax.PERIOD`.
-A mapped call finds, row by row, the bits of an unmapped one; a batch's runs dissect no matrix unless the options set the interiors, and a call of `jolty.function` alone may, so the two can differ in the last digits.
-A derivative's forward pass keeps its runs' pullbacks for its backward pass, those of the latest `saved_pullbacks` forward passes (16 unless set), so `jax.grad` and `jax.value_and_grad` run the circuit once; a backward pass whose pullbacks were dropped runs its forward pass again, which finds the same bits.
-Only first-order reverse-mode differentiation is supported (`jax.jvp`, `jax.grad(jax.grad(...))` and `jax.hessian` are refused).
+Batched transients and driven periodic steady states require explicit `breakpoints` so every row returns a fixed shape; autonomous oscillators expose only `jolty.jax.PERIOD`.
+Mapped calls match unmapped batch rows bit for bit; standalone `jolty.function` calls may dissect large matrices while batches default to minimum-degree ordering, causing rounding-level trailing-digit differences.
+Forward passes cache up to `saved_pullbacks` (default 16) pullbacks so `jax.grad` and `jax.value_and_grad` simulate once; evicted pullbacks recompute identically on demand.
+Only first-order reverse-mode differentiation is supported (`jax.jvp`, second-order `jax.grad`, and `jax.hessian` raise errors).
 
-The derivatives are exact, both directions of one computation.
-Each device's own derivatives with respect to its parameters, `∂F/∂p`, come from its twins: its instance prepared again computing with dual numbers that carry the derivative of each value along up to eight directions of its parameters through the same equations, temperature scaling included, evaluated where the instance is, so that one evaluation gives a device's derivatives along eight directions.
-A VJP seeds each parameter on a direction of its own, a device's parameters eight to a twin; a JVP seeds each tangent on one direction of each device it moves, its components on that device's parameters, so that a tangent costs a device one direction however many of its parameters it moves.
-Each direction's numbers are those of a twin along it alone, bit for bit.
-The solution then moves by the implicit function theorem, `dx/dp = −J⁻¹ ∂F/∂p` with `J = ∂F/∂x`, which the JVP evaluates from the right and the VJP from the left, one factorization at each point serving every tangent and cotangent; the two are transposes of one linear map, and the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` holds to 7.4·10⁻¹⁶ of its terms at every analysis (`crates/jolty-engine/tests/sensitivity.rs`).
-At a DC point, `J` is the DC Jacobian, and a number a DC sweep holds moves nothing at its values.
-Over frequency, `G + jωC` moves with each parameter directly and through the operating point, both exact: every device reads its unknowns as dual numbers when a twin seeds them, so the JVP pushes directional second derivatives `(∂G/∂x · dx₀/dp, ∂C/∂x · dx₀/dp)` directly across nonlinear devices, and the VJP accumulates the frequency weights on the nonlinear devices' matrix entries and pulls them back through one transposed DC solve at the operating point per active cotangent regardless of parameter count; purely linear circuits skip the operating-point term altogether.
-Over time, the JVP carries each tangent's derivative of the solution from step to step through the same integration formula, each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985), and the VJP is its transpose step for step, the discrete adjoint, one backward pass through the steps the transient took for every cotangent at once; a derivative moves no step and no logic event.
-A transient's derivatives start from those of the state it starts from: the operating point's, its rows of the nets the initial conditions hold while it is solved replaced by theirs, which no parameter moves, or none for a transient from its initial conditions alone; an RC from `out` = 0 V meets the closed form `d out/dR = −(t/(R²C)) e^(−t/RC)` from either start.
-The VJP over time evaluates the circuit again at each point after the run, so it refuses circuits with logic, whose drivers it does not see as they were, and both refuse circuits with delay lines, whose past their derivatives would leave out.
-Over a [periodic steady state](#periodic-steady-state), the converged period's steps carry each tangent's derivatives, the start held, to its end, `∂φ/∂p`; the steady state moves so that it still repeats, `(Φ − I) dx₀/dp = −∂φ/∂p`, by the converged period's monodromy matrix, in shooting's units, a neutral direction left where it was, and an oscillator's period moves with it, by the bordered system `[[Φ − I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [dx₀/dp, dT/dp] = [−∂φ/∂p, 0]`, its start still orthogonal to the flow.
-A second pass through the same steps then carries each tangent's derivatives from `dx₀/dp`, each step's charge terms scaled by `−(dT/dp)/T` too, every step a fixed fraction of the period, so the derivatives along the period are at fixed fractions of it; the VJP takes the three steps backward, the transposed bordered system between its two passes.
-No singular value of the bordered system counts as zero but within its rounding.
-A tank whose conductance holds its radius through an impedance of its own scales with time, L and C alike, so `L ∂T/∂L + C ∂T/∂C = T`: the derivatives meet it as far as Newton's iterates meet each step's equations, to 256 ε at a relative tolerance of 10⁻¹⁰ and 7·10⁻¹⁰ at the default 10⁻³, and central differences of the period, each run settled and shot afresh, to 1.2·10⁻⁷, a square root's truncation for steps of 10⁻³ (`crates/jolty-engine/tests/periodic.rs`).
-A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
+Forward and reverse derivatives are exact transposes of one linear computation.
+Parameter partial derivatives `∂F/∂p` evaluate via dual-number device twins propagating up to eight directions per pass through identical equations including temperature scaling.
+VJP packs up to eight device parameters per twin, while JVP seeds each tangent direction once per affected device regardless of how many parameters that tangent moves.
+Chunked twin directions match single-direction evaluations bit for bit.
+The implicit function theorem `dx/dp = -J⁻¹ ∂F/∂p` (`J = ∂F/∂x`) reuses one factorization per point for all tangents and cotangents, satisfying `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` to `7.4e-16` across all analyses (`crates/jolty-engine/tests/sensitivity.rs`).
+At DC, `J` is the DC Jacobian, and swept parameters have zero derivative at fixed sweep points.
+In AC, every nonlinear kernel evaluates seeded dual unknowns so JVP pushes exact second derivatives `(∂G/∂x · dx₀/dp, ∂C/∂x · dx₀/dp)` directly.
+AC VJP accumulates frequency weights over nonlinear matrix slots and executes one transposed DC solve per active cotangent regardless of parameter count, skipping the DC solve on purely linear circuits.
+In transients, JVP propagates sensitivities step by step using the active integration formula (Hocevar, Yang, Trick, and Epler, 1985), while VJP executes the exact discrete adjoint backward across all steps (holding step sizes and logic events fixed).
+Transient derivatives start from the initial-condition-constrained DC Jacobian (or zero under `UIC`), matching closed form `d out/dR = -(t/(R²C)) e^(-t/RC)` on an RC started at `out = 0` V under either mode.
+Time-domain VJP replays steps post-run and therefore rejects logic circuits (event drivers cannot replay statelessly), and both JVP and VJP reject transmission lines (history terms are omitted from derivatives).
+For [periodic steady state](#periodic-steady-state), one pass over the converged period computes `∂φ/∂p`, and the monodromy matrix (or bordered oscillator system) solves for `dx₀/dp` and `dT/dp` while keeping neutral directions fixed.
+A second pass propagates sensitivities at fixed period fractions (scaling charges by `-(dT/dp)/T`), while VJP executes the exact three-stage transpose backward.
+Bordered-system singular values are zeroed only within numerical rounding.
+On an exact-period LC tank, period derivatives satisfy `L ∂T/∂L + C ∂T/∂C = T` within `256 ε` at `reltol = 1e-10` (`7e-10` at default `1e-3`) and match central differences within `1.2e-7` (`crates/jolty-engine/tests/periodic.rs`).
+Discrete integer mode selectors (such as MOSFET `level`) are not continuous parameters and carry no derivative.
 
-A sensitivity analysis is the whole Jacobian of some outputs, each against every parameter of every device:
+`Sensitivity` computes the full Jacobian of selected outputs against every numeric parameter in the circuit:
 
 ```python
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
-Given another analysis, it differentiates the outputs at each of its points instead: each value of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, each time of a transient, and each point of a periodic steady state's period, at its fraction of the period:
+Passing `of=` differentiates outputs at every point of a DC sweep, AC sweep (yielding complex derivatives), transient, or periodic steady state:
 
 ```python
 Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
 ```
 
-It takes the VJP of a cotangent on each output at each point, or the JVP along each parameter, whichever costs the fewer solves for the circuit at hand.
-At a DC point and over frequency, the `k` outputs cost `k` transposed solves a point and the `P` parameters `P` solves, so it takes the VJP unless there are fewer parameters than outputs.
-Over time a cotangent at a point pulls back over every step before it, so the outputs at `N + 1` points cost `k (N + 1)(N + 2) / 2` transposed solves against the JVP's `P (N + 1)`: it takes the JVP at once when that costs no more at the least number of points the transient can take, one per longest step, or for a circuit with logic, and otherwise records the steps and goes through them by the cheaper once the run has ended; along a period, likewise once shooting has converged.
+`Sensitivity` automatically chooses VJP or JVP to minimize total linear solves.
+At DC and AC points, `k` outputs require `k` transposed solves versus `P` forward solves for `P` parameters, selecting VJP whenever `k ≤ P`.
+In transients and periodic steady states, `N + 1` points cost `k (N + 1)(N + 2) / 2` backward solves versus `P (N + 1)` forward solves; `Sensitivity` selects JVP upfront when cheaper at minimum step count (or when logic is present) and chooses dynamically after step recording otherwise.
 
-The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, a number at the operating point and an array over the points otherwise, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
-Its `result` holds the result of the analysis differentiated, whose levels, frequencies or times the derivatives follow, and for an oscillator's periodic steady state, `period_derivative(instance, parameter)` reads its period's derivative, in seconds per the parameter's unit, and `period_derivatives` all of them, in the order of `parameters`:
+`SensitivityResult.derivative(output, instance, parameter)` returns one SI derivative (scalar at DC, array otherwise), and `gradient(output)` returns all derivatives ordered by `parameters`.
+`SensitivityResult.result` holds the differentiated base analysis, while autonomous oscillators additionally expose `period_derivative(instance, parameter)` and `period_derivatives`:
 
 ```python
 Plan({"tuning": Sensitivity(["out"], of=PeriodicSteadyState())})
@@ -246,8 +247,8 @@ Plan({"tuning": Sensitivity(["out"], of=PeriodicSteadyState())})
 
 ## Stability
 
-A stability analysis finds a feedback loop's gain, from which its phase and gain margins are read.
-The loop runs through a probe: a voltage source, usually of 0 V, placed in series with the loop where it carries the loop's signal on, its `positive` terminal toward the side the signal enters, as between an amplifier's output and its feedback network:
+Stability analysis computes open-loop gain around a feedback loop to determine phase and gain margins.
+Insert a probe (typically a 0 V voltage source) in series with the loop with `positive` facing the downstream input (such as between an amplifier output and its feedback network):
 
 <!-- not run: a fragment of a component that places `amplifier` and `feedback` -->
 
@@ -257,72 +258,75 @@ c.connect(amplifier.output, probe.negative)
 c.connect(probe.positive, feedback.a)
 ```
 
-A plan then finds the loop gain through it:
+Then configure a `Stability` analysis targeting the probe:
 
 ```python
 Plan({"loop": Stability("VP", decade(1 * Hz, 1 * GHz, 20))})
 ```
 
-The engine linearizes the circuit at its operating point and, at each frequency, injects a unit voltage in series through the probe and a unit current from the ground into its `positive` terminal.
-From the two, Middlebrook's formula gives the loop gain `T` however the two sides load each other, as Tian's method and Spectre's `stb` analysis do (Middlebrook, *Measurement of loop gain in feedback systems*, International Journal of Electronics 38(4), 1975).
-The injected current returns through the ground, so neither of the probe's terminals may be the ground.
-Negative feedback makes `T` positive at low frequencies, and divides each response it encloses by `1 + T`.
+At each frequency around the linearized operating point, the engine injects a unit series voltage across the probe and a unit shunt current from ground into `positive`.
+Combining both responses via Middlebrook's double-injection formula yields the exact loop gain `T` regardless of bidirectional loading, matching Tian's method and Spectre `stb` (Middlebrook, *International Journal of Electronics* 38(4), 1975).
+Injected current returns through ground, so neither probe terminal may connect to ground.
+Negative feedback produces positive low-frequency `T` and attenuates closed-loop sensitivity by `1 + T`.
 
-The result's `gains` hold `T` at each of its `frequencies`.
-The report states it at the lowest frequency, where it first falls through 0 dB, the phase margin there, and the gain margin where its phase first falls through -180°; the specs' `crossover`, `phase_margin` and `gain_margin` read the same, and `gain` and `phase` read it at a frequency.
+`StabilityResult.gains` holds complex `T` across `frequencies`.
+Reports list low-frequency gain, unity-gain crossover frequency, phase margin, and gain margin at -180°; specs expose matching `crossover`, `phase_margin`, `gain_margin`, `gain`, and `phase` measures.
 
 ## Noise
 
-A noise analysis finds the noise density at an output, at each frequency, from every device's noise:
+Noise analysis computes output noise spectral density at every frequency from all active device noise sources:
 
 ```python
 Plan({"hiss": Noise("out", decade(10 * Hz, 100 * kHz, 10), source="V1")})
 ```
 
-The output is an unknown, a voltage such as `out` or a current such as `V1:current`, or a voltage over a `reference` node, for a differential output.
-Devices make noise as SPICE models it: a resistance thermal noise, `4kT/R`, a junction's current shot noise, `2qI`, a field-effect transistor's channel thermal noise, `8kT·gm/3`, and a diode or transistor with a flicker coefficient `KF` flicker noise, `KF·|I|^AF/f`, of its current, a bipolar transistor's base current, or a MOSFET's drain current over its gate's area and the oxide capacitance squared, as [Devices](devices.md) says.
-A resistance under 1 Ω, whose current is an unknown of its own, makes its noise as a voltage in series, `4kTR`, so a short makes none.
-Frequencies are positive, as flicker noise needs.
+The output specifies a net voltage (optionally differential with `reference`) or a branch current such as `V1:current`.
+Noise sources follow SPICE equations: resistor thermal noise `4kT/R`, junction shot noise `2qI`, FET channel thermal noise `8kT·gm/3`, and flicker noise `KF·|I|^AF/f` (using base current for BJTs or gate-area-scaled drain current for MOSFETs; see [Devices](devices.md)).
+Resistances below 1 Ω stamp thermal noise as a series voltage `4kTR`, so zero-ohm shorts generate zero noise.
+All noise frequencies must be strictly positive because flicker noise diverges at DC.
 
-The engine linearizes the circuit at its operating point and, at each frequency, solves the transposed system once, with the output as its right-hand side: the solution weighs every equation's effect on the output, so every noise source's share comes from one solve, and the sources being independent, their densities add.
-Given a `source`, an independent source such as `V1`, the same solution gives the gain from its level to the output, and the output's density over the gain's square is the noise referred to that input, as SPICE's input noise is.
+At each frequency around the operating point, the engine solves the transposed linearized system once with the output vector on the right-hand side.
+One adjoint solve gives every device's transfer function to the output, summing independent source power densities directly.
+When an independent input `source` is provided, the same solve gives source-to-output gain, dividing output density by squared gain for SPICE-compatible input-referred noise.
 
-The result's `densities` are the output's power densities, in V²/Hz or A²/Hz, at each of its `frequencies`, and `contributions` what each of its `sources`, a device and the noise it makes such as `thermal` or `collector shot`, adds to them.
-`referred()` gives the noise referred to the input, `contribution(instance, name=None)` what a device's noise, or one of its sources, adds, `density(at)` the density at a frequency, and `rms(start=None, stop=None)` the RMS noise over a band, each density a power law between frequencies as SPICE integrates it.
-The report states the noise density at the lowest and highest frequencies, the RMS noise over them, at the output and referred to the input, and the noisiest sources with their share of the output's noise power; the plot draws the noise density with the noisiest sources', and the noise referred to the input, on log axes; the specs' `noise_density` and `integrated_noise` read them.
+`NoiseResult.densities` holds output power spectral density (V²/Hz or A²/Hz), and `contributions` lists each source's contribution (`thermal`, `collector shot`, etc.).
+Helper methods provide `referred()`, `contribution(instance, name=None)`, `density(at)`, and band-integrated `rms(start=None, stop=None)` using SPICE power-law log-log integration.
+Reports summarize band-edge densities, output and input-referred RMS noise, and top contributors; plots graph densities on log axes, and specs provide `noise_density` and `integrated_noise`.
 
 ## Poles and zeros
 
-A pole-zero analysis finds the circuit's poles, its natural frequencies, and, given a source and an output, the zeros of the transfer function between them:
+Pole-zero analysis computes the linearized circuit's natural frequencies (poles) and optional transfer-function zeros between a `source` and `output`:
 
 ```python
 Plan({"pz": PoleZero(source="V1", output="out")})
 ```
 
-Linearized at its operating point, the circuit's small-signal equations are `(G + sC) x = −u·b` at the complex frequency `s`, where `u` is the source's level.
-The poles are the `s` at which `G + sC` is singular, the finite generalized eigenvalues of the pencil `(G, −C)`, and the zeros those at which the transfer function vanishes, the finite eigenvalues of the pencil bordered by the source's excitation and the output's reading.
-The engine solves both pencils, dense, by the QZ algorithm (Moler and Stewart, 1973) in complex arithmetic, as LAPACK's ZGGHRD and ZHGEQZ, after scaling the frequency by the circuit's own and equilibrating their rows and columns; an eigenvalue beyond 10¹² times the circuit's frequency is infinite, and a zero within 10⁻¹⁰ times the largest pole or zero lies at the origin, as a coupling capacitor's does.
-The circuit has an operating point, so no pole lies at the origin.
-The pencils hold up to eight dense matrices of a row per unknown, a row more for the zeros, so an analysis whose matrices would pass the `max_memory` option fails before it begins.
-A natural frequency the source cannot excite, or the output cannot see, is both a pole and a zero, as ngspice reports it too.
+Around the operating point, small-signal equations read `(G + sC) x = -u·b` for complex frequency `s` and source amplitude `u`.
+Poles are finite generalized eigenvalues of pencil `(G, -C)`, while zeros are finite eigenvalues of the pencil bordered by the source excitation and output selector.
+The engine equilibrates and frequency-scales dense pencils and solves them with a complex QZ algorithm (Moler and Stewart, 1973, matching LAPACK `ZGGHRD`/`ZHGEQZ`).
+Eigenvalues above `10¹²` times the circuit frequency scale are treated as infinite, and zeros within `10⁻¹⁰` of the largest finite root clamp to the origin (such as coupling-capacitor zeros).
+The circuit possesses a nonsingular operating point, so no pole lies at the origin.
+Dense pencils require up to eight square matrices of unknowns (plus one row/column for zeros) and fail upfront if they exceed `max_memory`.
+Uncontrollable or unobservable natural modes appear as coinciding pole-zero pairs, matching ngspice.
 
-The result's `poles` and `zeros` are complex frequencies in radians per second, by increasing magnitude, a conjugate pair's upper member first, and `natural_frequencies(roots)` and `dampings(roots)` read each as a frequency in hertz, its magnitude over 2π, and a damping ratio, minus its real part over its magnitude: 1 for a real root in the left half-plane, between 0 and 1 for a pair that rings, and negative for a pole in the right half-plane, which grows.
-The report lists each root, a pair once, with its frequency and damping; the plot draws each at its natural frequency and damping ratio; and the specs' `damping` and `dominant_pole` read the least damping ratio and the slowest pole's frequency.
+`PoleZeroResult.poles` and `zeros` store complex angular frequencies (rad/s) sorted by magnitude (upper conjugate first).
+`natural_frequencies(roots)` returns `|s| / (2π)` in hertz, and `dampings(roots)` returns `-Re(s) / |s|` (1 for negative real roots, 0 to 1 for damped complex pairs, negative for unstable right-half-plane poles).
+Reports list each unique root and conjugate pair, plots graph roots by frequency and damping, and specs provide `damping` and `dominant_pole`.
 
 ## Temperature
 
-A plan's `temperature` is the temperature every device is simulated at, 27 °C unless given:
+`Plan.temperature` sets the ambient simulation temperature for all devices (default 27 °C):
 
 ```python
 Plan({"op": OperatingPoint()}, temperature=celsius(85))
 ```
 
-`celsius(degrees)` gives a temperature in kelvins, as every temperature is.
-Away from each device's nominal temperature, its parameters scale as [Devices](devices.md) says.
+`celsius(degrees)` converts degrees Celsius into kelvins.
+Device parameters scale away from nominal temperature as described in [Devices](devices.md).
 
 ## Corners
 
-A plan's corners run its analyses again in other conditions: another temperature, another [process corner](foundry.md#process-corners) of a foundry's devices, or other arguments to the build script's `build()`, which builds the circuit again with them:
+Plan `corners` re-run analyses under alternate temperatures, foundry [process corners](foundry.md#process-corners), or keyword arguments passed to `build()` to reconstruct the circuit:
 
 ```python
 def build(supply: Quantity = 3.3 * V) -> Component:
@@ -339,72 +343,72 @@ def plan() -> Plan:
     )
 ```
 
-Each corner is named by a Python identifier, and runs at the plan's temperature and process corner unless it gives its own.
-The corners that build the plan's own circuit, changing only its temperature, run as one [batch](#batches), each corner's temperature the values of a run of it; a corner whose arguments build the circuit again runs a batch of its own.
-The report, the results file and the plots hold the plan's own run; a corner's report says whether the circuit elaborates there and which analyses failed.
-[Specs](specs.md) hold at every corner.
+Corner names must be Python identifiers and inherit the plan's temperature and process corner unless overridden.
+Temperature-only corners execute together as one [batch](#batches) on the shared elaborated circuit, while corners modifying `build()` arguments run in a separate batch.
+Reports, results archives, and plots store nominal results alongside per-corner elaboration status and analysis failures.
+[Specs](specs.md) evaluate across every corner.
 
 ## Monte Carlo
 
-A device may give its parameters tolerances: a resistor's, capacitor's or inductor's `tolerance=0.01` spreads its value evenly within 1 %, and `device.toleranced(parameter, relative, distribution)` gives any number parameter a `"uniform"` or a `"normal"` tolerance, the tolerance three standard deviations.
-The parameter is named by its path, so `devices.voltage_source(5 * V).toleranced("waveform.dc", 0.05)` is a supply within 5 %.
-A plan's `monte_carlo=MonteCarlo(samples, seed=0)` runs its analyses again on each sample, at the plan's own conditions and at each of its corners:
+Devices attach parameter tolerances via passive `tolerance=0.01` (uniform ±1%) or `device.toleranced(parameter, relative, distribution)` supporting `"uniform"` and `"normal"` (3σ = `relative`).
+Parameter paths address nested fields such as `devices.voltage_source(5 * V).toleranced("waveform.dc", 0.05)` for a ±5% supply.
+Setting `monte_carlo=MonteCarlo(samples, seed=0)` runs plan analyses across `samples` random draws at nominal conditions and every corner:
 
 ```python
 def plan() -> Plan:
     return Plan({"op": OperatingPoint()}, monte_carlo=MonteCarlo(1000, seed=1))
 ```
 
-Each sample draws every toleranced parameter of every device instance independently, so two placements of one component vary apart, and a seed draws the same samples from the same circuit.
-A parameter that sets an exponential's argument spreads in its logarithm: `toleranced("saturation_current", 0.08, "log_uniform")` keeps a transistor's saturation current within a factor of 1.08 either way, its base-emitter voltage within 2 mV, and `"log_normal"` makes that factor three standard deviations.
-Parts that drift together, as resistors on one die do, share a lot: `toleranced("resistance", 0.001, lot=ir.Lot(name="die", relative=0.2))` scales the part's own factor, within 0.1 %, by the lot's, drawn once per sample for each parameter and shared by every part that names the lot, wherever it lies in the hierarchy.
-A sample runs on the same parts at every corner whose circuit holds the same toleranced parameters, and each requirement's verdict on it is its worst at any of them.
-A sample of a circuit of a foundry's devices draws its kit's [mismatch](foundry.md#mismatch) too.
-The samples run as a [batch](#batches) at the plan's own conditions and one at each corner, on the circuit elaborated once for the conditions that share it: the engine draws sample `i` from the seed and `i` alone, and runs the samples across its threads, so they are the same however many threads run them, and however many machines, as [shards](machines.md) of the samples.
-The report counts the samples on which the circuit did not elaborate or an analysis failed, at the plan's own conditions or a corner; with [specs](specs.md), it states what each requirement read over the samples and the yield.
-The plots draw the samples at the plan's own conditions: a histogram of what each requirement read, against its bounds, and the envelope of each plotted net along each analysis, as [Results](results.md#plots) shows.
+Each sample draws every toleranced instance parameter independently (so repeated component placements vary independently), deterministically determined by `seed`.
+Exponential parameters use multiplicative spreads: `"log_uniform"` keeps saturation current within `1.08×` (`±2` mV on `Vbe`), and `"log_normal"` sets that factor at 3σ.
+Correlated parts (such as on-die resistors) share an `ir.Lot(name="die", relative=0.2)`, multiplying each part's individual draw by one shared per-sample lot draw regardless of hierarchy location.
+Each sample reuses identical part draws across corners sharing the same toleranced parameters, taking each requirement's worst corner verdict.
+Circuits with foundry devices additionally draw PDK [mismatch](foundry.md#mismatch) per sample.
+Samples execute as a parallel [batch](#batches) per condition on a shared elaborated circuit, seeded solely by `(seed, sample_index)` for bit-identical outputs across any thread count or [shard](machines.md) split.
+Reports count elaboration and analysis failures alongside requirement distributions and yield ([Specs](specs.md)).
+Plots render nominal-condition requirement histograms and trace envelopes ([Results](results.md#plots)).
 
 ## Worst case
 
-A plan's `worst_case=WorstCase(step=0.1)` judges each requirement of the [specs](specs.md) at the extremes of the tolerances that worsen it, as PSpice's worst-case analysis does:
+Setting `worst_case=WorstCase(step=0.1)` evaluates every [spec](specs.md) requirement at the tolerance extremes that degrade it most, matching PSpice worst-case analysis:
 
 ```python
 def plan() -> Plan:
     return Plan({"op": OperatingPoint()}, worst_case=WorstCase())
 ```
 
-At the plan's own conditions and at each corner, a run per toleranced parameter, moved `step` of its tolerance, finds which way each requirement's value moves with it.
-Then, for each bound of each requirement, every parameter goes to the extreme of its tolerance that moves the value toward the bound, and a lot's spread to the extreme its parts move it toward together, so a spread that cancels, as a matched pair's in a ratio, stays at its nominal value; runs at the same extremes are shared.
-A normal tolerance's extreme is its three standard deviations, and a logarithmic one's its factor.
-The runs of each circuit run as a [batch](#batches) of listed values, one for the moves and one for the extremes.
-The extremes follow each value's first-order slope, as PSpice's do, so a value that bends over a tolerance may be worse inside it; a Monte Carlo analysis samples the inside.
-The report states how many runs it took and each requirement's verdict, its worst over its bounds and conditions, and `jolty simulate` exits with 1 when one fails.
+At nominal conditions and every corner, one probe run per toleranced parameter (perturbed by `step` times tolerance) determines the direction in which each requirement moves.
+For each requirement bound, every independent parameter moves to its worst extreme and each shared lot moves to the net worst extreme of its members (leaving cancelling matched pairs nominal), deduplicating identical extreme runs.
+Normal extremes sit at ±3σ and logarithmic extremes at the specified factor.
+Probe runs and extreme runs execute as explicit [batches](#batches) per circuit.
+Extremes extrapolate from first-order slopes as in PSpice, so strongly nonlinear optima may lie inside the tolerance box; use Monte Carlo to probe interior points.
+Reports list run counts and worst verdicts across bounds and conditions, and `jolty simulate` exits with 1 if any worst-case check fails.
 
 ## Mismatch
 
-A mismatch analysis states how far each output spreads, one standard deviation, and which random variables it spreads with, from one analysis rather than many samples, as Spectre's `dcmatch` and `acmatch` do:
+Mismatch analysis computes first-order output standard deviations and per-source variance shares in a single pass, matching Spectre `dcmatch` and `acmatch`:
 
 ```python
 def plan() -> Plan:
     return Plan({"spread": Mismatch(["out"])})
 ```
 
-A random variable is a number a Monte Carlo sample draws at random, with its mean, its standard deviation and the derivative of each device's number it moves (`ir.RandomVariable`).
-Each toleranced parameter draws one for its own factor, `instance` its device's path and `name` the parameter's: of mean 0 and standard deviation the tolerance over √3 for a uniform one and over 3 for a normal one, its parameter moving by its value per unit; a logarithmic one draws the exponent of its factor, of standard deviation 1/√3 or 1/3, its parameter moving by its value times `ln(1 + relative)`.
-Each lot draws one per parameter, its `lot` the lot's name, which moves every part that names it alike.
-`random_variables` adds others, such as those of a process kit's statistical functions, which [`Library.random_variables`](foundry.md#the-open-process-kits) reads for a placement.
-An output's derivative with respect to a random variable is the [sensitivity analysis's](#sensitivities) derivative with respect to each number it moves, times the number's own derivative, summed, at the operating point or at each point of the analysis `of`, at the values the parameters take in the run, so that a corner or a variant spreads about its own values.
-The random variables are drawn apart from one another, so to first order the output spreads with the root of the sum of each random variable's contribution squared, its derivative times its standard deviation, and each random variable's share of the variance is its own term's.
-A response's phasor spreads in magnitude and in phase, each to first order of its phasor: the magnitude by the phasor's derivative along the phasor, the phase, in radians, across it.
+An `ir.RandomVariable` defines a stochastic draw by mean, standard deviation, and affected device-parameter derivatives.
+Each toleranced parameter generates a zero-mean variable with standard deviation `relative / √3` (uniform) or `relative / 3` (normal) scaled by nominal value, or `1/√3` and `1/3` scaled by `value · ln(1 + relative)` for logarithmic tolerances.
+Each shared lot generates one variable per parameter name, shifting all member instances together.
+`random_variables` appends external sources such as PDK statistical draws from [`Library.random_variables`](foundry.md#the-open-process-kits).
+Output derivatives with respect to each random variable combine [sensitivity](#sensitivities) gradients with parameter derivatives at the active run point (nominal, corner, or variant).
+Random variables are independent, so total standard deviation equals the root-sum-square of individual contributions (`derivative × σ`) and each variance share equals its squared fraction.
+For AC phasors, magnitude standard deviation projects derivatives along the phasor while phase standard deviation (in radians) projects orthogonally across it.
 
-The result's `standard_deviation(output, part=None)` reads an output's standard deviation, a number at the operating point and an array over the points otherwise, `contributions(output, part=None)` each random variable's contribution and `shares(output, part=None)` its share, in the order of `random_variables`; a response takes `part`, `"magnitude"` or `"phase"`.
-For an oscillator's periodic steady state, `period_derivatives` holds its period's derivative with respect to each random variable, and `period_standard_deviation()` its period's standard deviation.
-The report states each output's standard deviation, at the operating point or where it is largest, and the random variables that contribute most there, the largest share first, a phase's in degrees, and an oscillator's period's standard deviation.
-First order is exact as the spreads go to zero; how far it lies from a Monte Carlo analysis on the same circuit is measured in `tests/test_mismatch.py`, where it agrees within the samples' own statistics.
+`MismatchResult` provides `standard_deviation(output, part=None)`, `contributions(output, part=None)`, and `shares(output, part=None)` in `random_variables` order (passing `part="magnitude"` or `"phase"` for AC).
+Autonomous periodic steady states also expose `period_derivatives` and `period_standard_deviation()`.
+Reports display peak standard deviations (phase in degrees, plus oscillator period deviation) and top variance contributors sorted largest first.
+First-order mismatch matches Monte Carlo within sampling uncertainty across differential pairs, current mirrors, and PDK stages (`tests/test_mismatch.py`).
 
 ## Variants
 
-A plan's `variants` runs its analyses again on many runs of the circuit, each at values of its own, at the plan's own conditions and at each corner, as a Monte Carlo analysis's samples are:
+`Plan.variants` executes analyses across deterministic parameter and temperature sweeps at nominal conditions and every corner:
 
 ```python
 def plan() -> Plan:
@@ -419,19 +423,19 @@ def plan() -> Plan:
     )
 ```
 
-Variants are the values of every run, each a pure function of the run's index:
+Each variant generator defines per-run values as a pure function of run index:
 
-- `Explicit([Variant(overrides, temperature), ...])` lists them, each run's numbers by instance path then by parameter path, as a [`Simulation`](#analyses)'s overrides, and its temperature;
-- `Grid([Axis(instance, parameter, values), Axis.temperature(values), ...], warm=False)` takes every combination of its axes' values, the last axis fastest, its lines chains of runs each starting from the operating point of the one before, as a DC sweep's levels do, when `warm`;
-- `MonteCarlo(samples, seed)` draws [samples](#monte-carlo) of the circuit's tolerances;
-- `Product(first, second)` runs every run of `second` at every run of `first`, the values of `second` in place of those of `first` where both give one, so `Product(grid, MonteCarlo(100))` samples the tolerances at every point of the grid.
+- `Explicit([Variant(overrides, temperature), ...])`: explicit list of per-run parameter dictionaries (matching `Simulation` overrides) and temperatures;
+- `Grid([Axis(instance, parameter, values), Axis.temperature(values), ...], warm=False)`: Cartesian grid varying the last axis fastest, optionally chaining converged operating points along inner lines when `warm=True`;
+- `MonteCarlo(samples, seed)`: draws random tolerance [samples](#monte-carlo);
+- `Product(first, second)`: combines every run of `second` with every run of `first` (`second` taking precedence on overlap), such as `Product(grid, MonteCarlo(100))`.
 
-The report states the runs and the numbers they vary, how many failed, and, with [specs](specs.md), each requirement's spread and the yield; the plots draw the runs at the plan's own conditions as a Monte Carlo analysis's samples are.
+Reports summarize run counts, varied parameters, failure counts, requirement spreads, and yield ([Specs](specs.md)); plots render nominal-condition distributions matching Monte Carlo output.
 
 ## Batches
 
-Every many-runs analysis runs as a batch: one call to the engine for many runs of one circuit, spread across its threads, each run a pure function of its index and of nothing else, so the same bits whatever the threads.
-`Simulation.batch` runs one from Python:
+All multi-run plans execute as parallel batches inside one engine call, keeping each run a pure function of its index so outputs stay bit-identical across thread counts.
+Python callers invoke batches directly through `Simulation.batch`:
 
 <!-- not run: it batches a circuit `bench`, which the page does not build -->
 
@@ -449,45 +453,45 @@ failed = found.failed  # whether each run failed; found.failure(run) says why
 responses = found.traces[1].values_of("out")  # a row per run, a column per frequency
 ```
 
-The result holds its columns as NumPy arrays, one row per run, which the engine writes at each run's row as it ends: the values each run took, whether each analysis ended, what each [measure](specs.md#measures) read and why one read nothing, and the values of the unknowns `traces` names at each point of an operating point, a DC sweep, a response and a transient that names its `times`, which it steps onto.
-The engine reads every measure of `jolty.specs` itself, without Python; a measure a script writes is read under the interpreter's lock as each run ends, as is the function given as `each`, which sees every analysis's result.
-Each run finds what a simulation at its values alone finds, bit for bit.
-`runs=range(start, stop)` runs only those runs, row 0 the run at `start`: the result holds the rows of the whole batch's that the range names, and `BatchResult.joined` joins the results of ranges that tile the runs into the whole batch's, as `rows` cuts one into ranges.
-A result's reasons are each named once, in the order its rows first name them, so that a range's and a join's are those of a batch of their runs.
-A run whose values give the circuit another structure, as a resistance below 1 Ω carries its current as an unknown, runs on the circuit elaborated once for that structure, and its measures read the unknowns of the names they read.
-A run whose values put a device out of range, or one of whose analyses fails, says why, and the batch goes on.
-The threads are the engine's: the setting `threads`, or `jolty.simulate.threads(count)` for a block of code.
-A circuit of a foundry's devices runs each run in ngspice instead, as many at once as the engine has threads.
+`BatchResult` stores columnar NumPy arrays populated directly by the Rust sink: parameter values, analysis statuses, [measure](specs.md#measures) values and unmeasured reasons, and traced unknowns (evaluated at `breakpoints` for transients).
+Built-in `jolty.specs` measures evaluate inside Rust without Python overhead; custom Python measures and `each` callbacks run under the GIL as runs finish.
+Every batch row matches a standalone simulation bit for bit.
+Passing `runs=range(start, stop)` evaluates a slice starting at row 0; `BatchResult.joined` reassembles contiguous slices, and `rows` slices an existing batch.
+Deduplicated failure reasons preserve first-seen row order so sliced and joined batches match full batches identically.
+Parameter values that alter matrix structure (such as a resistor crossing 1 Ω) automatically share one cached elaboration per structure.
+Out-of-range parameters or failed analyses record their failure message without halting the remaining runs.
+Batch concurrency follows the `threads` setting or the `jolty.simulate.threads(count)` context manager.
+Foundry circuits execute batch runs concurrently in ngspice up to the configured thread limit.
 
 ## Options
 
-`Options` sets the tolerances, each one left out taking SPICE's default, and how a run spends its iterations, memory and threads; what a run records is its plan's.
+`Options` configures numerical tolerances (defaulting to SPICE values), iteration caps, memory limits, and parallelism; device recording stays on `Plan` or individual analyses.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `relative_tolerance` | 1e-3 | relative accuracy of every unknown and residual |
-| `voltage_tolerance` | 1e-6 V | absolute accuracy of voltages |
-| `current_tolerance` | 1e-12 A | absolute accuracy of currents |
-| `charge_tolerance` | 1e-14 C | the least charge the time step's tolerance on a charge is relative to, as SPICE's `chgtol`: a charge is held to `relative_tolerance` times the larger of its magnitude and `charge_tolerance` |
-| `gmin` | 1e-12 S | the conductance across every junction |
-| `max_dc_iterations` | 100 | Newton iterations allowed for a DC solution |
-| `max_transient_iterations` | 10 | the most Newton iterations a time step takes, SPICE's `itl4`, the iterate after the last judged as any other, where ngspice 47 allows 100 whatever `itl4` says (`niiter.c`, lines 37 to 39) |
-| `truncation_tolerance` | 7 | how much the time step's truncation error, as SPICE estimates it, may exceed the tolerances, as SPICE's `TRTOL` |
-| `max_memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
-| `profile` | off | whether a transient measures where its time goes, into its statistics' `profile`; the clock adds about a tenth to a small circuit's transient, and changes no other result |
-| `parallelism` | every thread | how a run spreads its own work across the engine's threads, a `Parallelism`, each threshold at its break-even; no setting changes any result but `max_unknowns_per_interior`, in the last digits |
-| `nodesets` | none | the voltage each net named, by path, holds while an operating point is first solved, then [released](#initial-conditions-and-nodesets), as SPICE's `.nodeset` |
+| `relative_tolerance` | 1e-3 | Relative accuracy of every unknown and residual |
+| `voltage_tolerance` | 1e-6 V | Absolute accuracy of voltages |
+| `current_tolerance` | 1e-12 A | Absolute accuracy of currents |
+| `charge_tolerance` | 1e-14 C | Charge floor matching SPICE `chgtol`: holds charge `q` to `relative_tolerance · max(|q|, charge_tolerance)` |
+| `gmin` | 1e-12 S | Minimum conductance placed across every semiconductor junction |
+| `max_dc_iterations` | 100 | Maximum Newton iterations per DC operating-point or sweep solve |
+| `max_transient_iterations` | 10 | Maximum Newton iterations per time step (SPICE `itl4`, judging the final iterate; ngspice 47 forces at least 100 in `niiter.c`, lines 37 to 39) |
+| `truncation_tolerance` | 7 | Scaling multiplier for local truncation error bounds, matching SPICE `TRTOL` |
+| `max_memory` | 2 GiB | Memory budget capping transient waveforms and dense pole-zero or periodic matrices before allocation |
+| `profile` | off | Records per-phase transient timings in `statistics.profile` (roughly 10% overhead on tiny circuits; zero numerical change) |
+| `parallelism` | every thread | `Parallelism` work-distribution policy with measured break-even thresholds (only `max_unknowns_per_interior` shifts rounding) |
+| `nodesets` | none | Initial net voltage hints by path applied during operating-point startup then [released](#initial-conditions-and-nodesets) (SPICE `.nodeset`) |
 
-A `Parallelism` spreads each kind of a run's work over the engine's threads in tasks of at least its threshold, its least size per task, once the work fills such a task for every thread the run may use, as its break-even was measured, and keeps it on the run's own thread for less, since waking threads costs more than a small run's work repays.
-Each threshold left out takes its break-even on the threads the run may use, below:
+`Parallelism` distributes each work category across engine threads in tasks of at least its threshold once total work fills one task per thread, running smaller workloads serially to avoid synchronization overhead.
+Omitted thresholds default to measured break-evens for the active thread count:
 
-| Setting | Default | What it spreads |
+| Setting | Default | Work distributed |
 | --- | --- | --- |
-| `max_threads` | none | at most so many of the engine's threads, every one by default; 1 runs a run serially |
-| `min_solves_per_task` | its break-even | the frequencies of a response, a noise or a stability analysis and the right-hand sides of sensitivities, in tasks of at least so many |
-| `min_instances_per_task` | its break-even | the evaluation of the devices, each group of one model's instances in tasks of at least so many; a linear device, which is evaluated once a run, for its entries, counts none |
-| `min_unknowns_per_task` | its break-even | the work of the Newton iteration and of a transient's step control on each unknown and each stored entry of the matrix, in tasks of at least so many, in whole chunks of 1,024 that the threads take as they free |
-| `max_unknowns_per_interior` | its break-even | the factorization of the matrix: each block of more unknowns whose elimination nested dissection makes cheaper is ordered so, into interiors of at most so many, which factor at once, and the separators between them, each once the parts it separates are done |
+| `max_threads` | none | Maximum engine threads used per analysis (all threads by default; `1` forces serial execution) |
+| `min_solves_per_task` | break-even | AC, noise, and stability frequencies plus sensitivity right-hand sides |
+| `min_instances_per_task` | break-even | Nonlinear device kernel evaluations per model group (linear devices evaluate once per run and do not count) |
+| `min_unknowns_per_task` | break-even | Newton matrix assembly, convergence checks, updates, and transient step control in work-stolen 1,024-element chunks |
+| `max_unknowns_per_interior` | break-even | Nested-dissection interior size limit for parallel sparse LU factorization on blocks where dissection reduces arithmetic |
 
 ```python
 from jolty.plan import Options, Parallelism
@@ -496,17 +500,18 @@ options = Options(parallelism=Parallelism(min_solves_per_task=16))
 serial = Options(parallelism=Parallelism(max_threads=1))
 ```
 
-A batch runs each of its runs on one thread whenever it has a run for every thread, so the parallelism matters for one run, or for fewer runs than threads.
-`jolty simulate` takes each threshold too, as `--min-solves-per-task` and its kin, in place of the plan's.
+Batches run one circuit per thread whenever run count meets or exceeds thread count, so per-run parallelism mainly accelerates single runs or small batches.
+`jolty simulate` accepts matching CLI overrides such as `--min-solves-per-task`.
 
-Whether to dissect a block is decided by computing what each ordering costs, not by its size: the engine counts the multiply-adds of eliminating the block by the minimum degree ordering and by nested dissection, each on the symbolic factor of the block's pattern plus its transpose, and dissects the block only where nested dissection costs fewer.
-On a square grid, as of a mesh of resistors, nested dissection into interiors of at most 157 nodes costs 1.06 times the minimum degree's multiply-adds at 60 nodes a side and 0.96 times at 70, and 0.70 times at 300; on a path, as of a chain of inverters, which the minimum degree eliminates with no fill, 3.9 times at 5,000 nodes, so a chain is never dissected.
-The ordering depends on the circuit and on `max_unknowns_per_interior` alone, so a run finds the same bits on the same number of threads, and a dissected factorization orders its operations otherwise than the minimum degree's, so its results differ from those of one with no block dissected in their last digits, within the factorization's rounding.
-The default interiors are a break-even on the run's threads, so a circuit large enough to dissect finds other last digits on another number of threads: `rc_mesh_100`, whose mesh of 10,000 nodes the default orders by the minimum degree on one thread and dissects on two or more, finds the same 109 points in its 10 µs on 1, 2 and 4 threads of an Apple M2 Max, its voltages within 2.1e-15 V of one another's.
-A batch's runs take the minimum degree's ordering unless the options set the interiors, so that they find the same bits however many threads run them.
+Nested dissection activates strictly by cost: the engine counts symbolic elimination multiply-adds for minimum-degree versus nested dissection on the symmetrized block pattern and dissects only when nested dissection costs less.
+At `max_unknowns_per_interior = 157`, nested dissection costs `1.06×` minimum-degree arithmetic on a 60 × 60 grid, `0.96×` on 70 × 70, and `0.70×` on 300 × 300, versus `3.9×` on a 5,000-node inverter chain (which stays undissected).
+Ordering depends solely on circuit structure and `max_unknowns_per_interior`, so fixed thread counts yield bit-identical results while differing interior limits shift trailing digits within factorization rounding.
+For example, `rc_mesh_100` (10,000 nodes) takes the same 109 steps over 10 µs on 1, 2, and 4 threads of an Apple M2 Max with voltages agreeing within `2.1e-15` volts.
+Batch runs default to minimum-degree ordering unless `max_unknowns_per_interior` is set explicitly so batches stay bit-identical across thread counts.
 
-Each break-even is the least size of a task from which spreading a kind of work over every thread made a run faster than a serial one, measured by `scripts/bench --break-even` on `cedar`, an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads, on 16 November 2026, on circuits of the benchmarks' scripts at several sizes: `bjt_amp`'s response at 1 to 1,111 frequencies a decade for `min_solves_per_task`, chains of 1 to 1,000 inverters of level 1 MOSFETs for `min_instances_per_task`, chains of 100 to 2,000 inverters and meshes of resistors and capacitors of 10 to 300 nodes a side for `min_unknowns_per_task`, and meshes of 10 to 300 a side for `max_unknowns_per_interior`, while the load average, the measurement's own threads included, was 1.4 to 37 on the 64 threads; [the speed suite's page](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens) gives every size measured.
-A run takes the break-even measured on the most threads it may use or fewer, and spreads none of a kind of work whose break-even is none, as no size measured paid; `jolty.plan.BREAK_EVENS` holds them:
+Default break-evens were measured via `scripts/bench --break-even` on `cedar` (32-core, 64-thread AMD Ryzen Threadripper 3970X, 16 November 2026, load 1.4 to 37).
+Benchmarks covered `bjt_amp` frequency sweeps, 1 to 1,000-stage inverter chains, and 10 × 10 to 300 × 300 RC meshes (see [break-evens](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens)).
+Each run selects the break-even at or below its thread limit, disabling parallelism for categories with `none`; `jolty.plan.BREAK_EVENS` exposes these defaults:
 
 | Threshold | 2 threads | 4 threads | 8 threads | 64 threads |
 | --- | --- | --- | --- | --- |
@@ -515,54 +520,54 @@ A run takes the break-even measured on the most threads it may use or fewer, and
 | `min_unknowns_per_task` | none | none | none | none |
 | `max_unknowns_per_interior` | 5,001 | 2,501 | 1,251 | 157 |
 
-Each break-even was measured with the other thresholds spreading none of the work, and the rounds of runs alternating their order, as [the speed suite's page](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens) says.
-A chain's devices spread paid in tasks of 250 MOSFETs on 4 threads and of 125 on 8, but on no chain up to 1,000 inverters on 2 threads, a task taking each group of MOSFETs whole, or on 64, in tasks of 31, so a run on 2 or 3 threads, or on 64 or more, evaluates its devices on its own thread.
-A mesh of 100 a side, dissected into interiors of a thread's unknowns, ran 21% faster on 2 threads, 29% on 4, 41% on 8 and 20% on 64, but 51% slower on 64 threads in interiors of 5,001, its break-even on 2, so `max_unknowns_per_interior` takes its break-even on the run's threads too, and a run on one thread orders by the minimum degree.
-The work on each unknown spread lost on every chain up to 2,000 inverters, by 8.0% to 39.9% at 2,000, and gained 0.7% to 1.2% on the mesh of 300 a side alone, so it spreads on no number of threads; on 2 threads, the amplifier's frequencies paid from 9,999 alone, as two tasks of 2,250 gained nothing where tasks of 900 had gained 22.6%.
+Each break-even was measured with all other categories serial and alternating run rounds (see [break-evens](https://github.com/maxencefaldor/jolty/blob/main/benchmarks/speed/README.md#break-evens)).
+Device evaluation sped up at 250 MOSFETs/task on 4 threads and 125 on 8 threads, while failing to beat serial on 2 or 64 threads up to 1,000 inverters.
+On a 100 × 100 mesh, thread-matched dissection ran 21% faster on 2 threads, 29% on 4, 41% on 8, and 20% on 64, whereas 64 threads slowed 51% under 5,001-node interiors.
+Unknown-level parallelism lost 8.0% to 39.9% on inverter chains up to 2,000 stages and gained only 0.7% to 1.2% on 300 × 300 meshes, so it defaults to disabled.
 
-The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.
-An operating point and a transient record the instances rated for a current or a power, whose ratings the checks read, and what the plan's or the analysis's [record](results.md#what-a-result-records) names, so a transient of a large circuit holds about its unknowns alone unless asked for more; recording every instance multiplies what it holds by thirty or more, and reaches `max_memory` sooner.
+Transient storage uses 8 bytes per unknown per point, while recorded devices add terminal currents/charges, two square derivative matrices, and variables (12 floats per resistor, 111 per gate-oxide MOSFET).
+Operating points and transients automatically record rated instances plus paths matched by [`record`](results.md#what-a-result-records); recording every instance multiplies memory 30× or more and hits `max_memory` sooner.
 
 ## How the engine solves a circuit
 
-The engine flattens the hierarchy into devices bound to unknowns: the voltage of every node but the ground, and the current through every voltage source, inductor and voltage-controlled voltage source.
-It writes the circuit's equations in charge-oriented modified nodal analysis, `f(x) + d/dt q(x) = 0`, where `f` sums the currents into each node and `q` the charges.
+The engine flattens circuit hierarchy into devices bound to unknowns: all non-ground node voltages plus branch currents for voltage sources, inductors, and controlled voltage sources.
+Equations follow charge-oriented modified nodal analysis `f(x) + d/dt q(x) = 0`, where `f` sums branch currents and `q` sums terminal charges.
 
-Newton iteration solves them, with one sparse LU solver whose ordering every analysis shares, real and complex.
-Every other choice the engine makes is one SPICE simulators make, save those the table marks as jolty's own, and [Departures from ngspice](departures.md) lists every place where it computes otherwise than ngspice 47, with the evidence:
+Newton iteration solves the nonlinear equations using a single sparse LU ordering shared across real and complex analyses.
+Every numerical choice follows SPICE conventions unless noted as a jolty refinement below, with full evidence cataloged in [Departures from ngspice](departures.md):
 
-| Choice | What the engine does | Where it comes from |
+| Choice | Engine behavior | Origin and comparison |
 | --- | --- | --- |
-| Convergence | An iteration converges when its last step is within tolerance of every unknown, every equation balances within tolerance of the terms it sums, and no device limited a voltage; an equation also balances within the rounding of the unknowns it reads, and a residual within that rounding drives no step. | SPICE's tests on `reltol`, `vntol` and `abstol`; the rounding floor is jolty's own, so a milliohm between two nodes at hundreds of volts can converge, and a source's current beside a node at megavolts settles. ngspice tests each update and each device's prediction of its own current, never the residual (`niconv.c`, lines 40 to 95), and holds an iteration back for its junction limiter alone (`mos1load.c`, lines 376 to 384 and 719 to 720). |
-| Limiting | A junction's voltage steps at most logarithmically above its critical voltage, and a field-effect transistor's gate and drain step a bounded distance around its threshold, each device evaluated at the limited voltage and extended linearly to the applied one. | SPICE's `pnjlim`, `fetlim` and `limvds`. ngspice 47's junction limiter is its own, which for a step just over 2vt steps backward (`devsup.c`, lines 54 to 61), and a step's first iteration limits from the last accepted point (`mos1load.c`, lines 201 to 208), where jolty's devices limit from their last evaluation. |
-| Self-heating | A heated device's temperature steps at most 50 K from one iteration to the next, and never below 1 K, the device evaluated there and extended linearly to the temperature applied; its parameters are scaled to its temperature at each one. | jolty's own: SPICE heats no device but its few electrothermal models, such as VBIC's. |
-| `gmin` | A conductance of 1e-12 S across every junction. | SPICE. |
-| Small resistors | A resistor, or a device's series resistance, below 1 Ω carries its current as an unknown, held by Ohm's law, so that its conductance cannot swamp a node's picosiemens in floating point. | Modified nodal analysis's second group of elements (Ho, Ruehli and Brennan, 1975); the threshold is jolty's own, where gmin keeps four digits beside the conductance. |
-| Operating point | Newton from zero; then a conductance from every node to the ground, stepped down from 10 mS, ten times at a time when the steps converge quickly and less otherwise; then the conductance across every junction, stepped down the same way to `gmin`; then every source ramped up from zero; then a pseudo-transient from zero, each node held to its last voltage by a conductance that starts at 1 S, a farad over a second, and shrinks as the circuit settles, until a step leaves it where it was. | ngspice's dynamic and true gmin stepping, SPICE's source stepping, and in place of ngspice's transient operating point, pseudo-transient continuation (Kelley and Keyes, 1998), which follows the circuit past the folds where its solutions turn back as the sources ramp. ngspice starts Newton with each junction at its critical voltage and each MOSFET at its threshold (`dioload.c`, lines 162 to 165; `mos1load.c`, lines 397 to 408), and takes its transient operating point, 10 µs at 100 ns steps (`init.c`, lines 77 to 93), without a check that the circuit rests there. |
-| DC sweep | Each level starts from the last solution, and a level Newton cannot reach in one step is approached in steps halved after each failure; a first level no strategy reaches from zero is approached from the circuit's own operating point. | Natural-parameter continuation; ngspice solves a level that fails as a new operating point (`dctrcurv.c`, lines 306 to 313), which may land on another branch. |
-| Periodic steady state | Newton iteration on the state each period starts at, with the monodromy matrix carried along the period's steps and solved densely by its singular value decomposition, each step in the range of `Φ − I`, which leaves every quantity a period conserves where it started; an oscillator's period is an unknown too, its derivative carried along the steps as the period stretches them, fixed by the orthogonal phase condition, from a start where a transient from the operating point kicked along its fastest-growing mode stops growing. | Shooting (Aprille and Trick, 1972), as Spectre's periodic steady-state analysis; the orthogonal phase condition (Seydel, 2010, §7.1); the step along neutral directions and the start from the fastest-growing mode are jolty's own, where ngspice's `.pss` asks for a guess of the frequency and a settling time (ngspice 47 manual, §11.3.12). |
-| Integration | The trapezoidal rule by default, or Gear's second-order formula or backward Euler, as the transient asks. | SPICE. |
-| Linear devices | A resistor or a capacitor without voltage coefficients, an inductor, coupled inductors, a controlled source, a thermal resistance and a thermal capacitance are evaluated once a run, for their conductances and capacitances, which sum once into the matrix every iteration starts from; each iteration takes their currents and charges from those, so the equations are the same, to within rounding, and every iteration evaluates only the devices whose equations are not linear. | jolty's own: ngspice loads every device at every iteration (`cktload.c`, lines 62 to 75). |
-| Linear solves | The matrix's rows and columns are ordered once per circuit: each column matched with a row so that the diagonal holds an entry, the matrix split into its block triangular form, so a supply's many entries are never factored, and each block ordered by approximate minimum degree. A factorization pivots on the ordering's diagonal where it holds at least a tenth of its column's largest entry, and on the largest otherwise; the next keeps those pivots while each holds a tenth, and searches afresh from the first that does not; and a Jacobian bitwise unchanged since the last factorization keeps its factors, so a linear circuit's transient factors only when its step or its formula changes. Before it factors, the solver eliminates each unknown whose pivot is proven to be the largest entry of its column, a MOSFET's displacements, by that pivot, and recovers it after each solve: the same solution in exact arithmetic, every unknown still solved for and judged, from a matrix of the other unknowns alone. | KLU (Davis and Palamadai Natarajan, 2010), which Xyce uses; SPICE's own solver keeps its pivots from one iteration to the next too. The elimination is the static condensation of finite elements (Wilson, 1974), which neither ngspice nor Xyce does; ngspice needs no displacement unknowns, as it integrates Meyer's capacitances inside the device, which conserves no charge. The tenth is jolty's own, where KLU and SPICE take a thousandth: on the examples' matrices it fills alike but for one entry of one, and on random circuits' matrices the backward errors of its solutions stay below 10⁻¹⁴, where a thousandth's reach 10⁻⁸. |
-| Truncation error | Each step's error is estimated from divided differences of the charges at the points since the last corner, as many as the step's order and two, filtered through the step's own equations, `C (G + αC)⁻¹ α`, so that a component that settles within the step, which its formula damps, is not read as an error, against the larger of a tolerance on the charge, `relative_tolerance` times the larger of its magnitude and `charge_tolerance`, and one on the current it carries, the step's length times `relative_tolerance` times the current plus `current_tolerance`, or `voltage_tolerance` for a flux, whose derivative is a voltage, both times `truncation_tolerance` and the factorial `(p+1)!` that SPICE's estimate leaves out, so that the options mean what SPICE's `reltol`, `chgtol` and `trtol` do. The first step after a corner has no such points before it: it is accepted only with the second, whose three points estimate the curvature both steps share, and taken again shorter from the corner when that shows its own error too large. Gear2's error constant is taken at the step's ratio `ω` to the one before it, `(1 + ω)²/(6ω(1 + 2ω))`, and the longest step after it, or in its place, is solved for at its own ratio, so that a Gear2 step whose length changed is held to its tolerance. | SPICE's `CKTterr`, its tolerances (ngspice 47's `cktterr.c`, lines 37 to 42) and `trtol`; the filtering, Shampine's (1980), as stiff solvers such as RADAU5 filter their estimates (Hairer and Wanner, 1996, IV.8); judging the first step after a corner by the second's points is jolty's own, so that no step but one ending at a corner goes unjudged. Every charge is judged, a MOSFET's bulk junctions' among them, where ngspice's MOSFETs judge only their gate charges (`MOS1trunc`): on the benchmarks' synchronous buck, whose switched node the junctions hold, ngspice takes 56,624 time points to jolty's 103,349 steps tried, and 143,339 when made to judge the junctions too. SPICE takes Gear2's constant-step constant, 2/9, at every step (`cktterr.c`, lines 24 to 31), which after a step cut to a tenth estimates the error 7.6 times too small. SPICE holds a charge to `reltol` times the larger of its magnitude and `chgtol` (lines 40 and 41), as jolty does; it also floors the error constant times the divided difference at `abstol` (line 69), and holds an inductor's flux to `abstol` rather than to a voltage's tolerance (lines 37 and 38); jolty does neither. |
-| Step length | At most a fiftieth of the run unless `max_step` says otherwise; the next step, or a step retried for too large an error, is 0.9 of the longest every charge's error allows, by the same estimate: its error grows as the step's power one past the formula's order, against the larger of the charge's tolerance, which holds, and the current's, which grows with the step, so the longest is the longer of the steps meeting each; a step grows by at most twice and shrinks by at most ten times; one whose Newton iteration fails is retried an eighth as long; and no step is shorter than 10⁻¹¹ of the longest. A transient whose results would pass its `max_memory`, 2 GiB by default, before it stops, every unknown's and every recorded device's at each point, fails and says how long its steps were where it stopped, rather than fill the memory. | SPICE, whose step follows the charge's tolerance alone; solving for the longest step against both tolerances is jolty's own, as the current's grows with the step. The shortest step is SPICE's (`traninit.c`, line 36): a charge behind a small resistance settles within picoseconds of a corner, and resolving it to SPICE's charge tolerance can take steps shorter than the 10⁻⁹ of the longest jolty took, which stopped the benchmarks' buck at a relative tolerance of 1e-5. SPICE accepts a step when the step its error allows is longer than 0.9 of it (`dctran.c`, line 801), and takes its longest by default the print step where that is shorter than a fiftieth of the run (`traninit.c`, lines 26 to 34). |
-| Corners | Steps land on every corner of every waveform, and on every time asked for; after a corner, the first step is a tenth of the shorter of the step the error allowed before it and the gap to the next corner, and the steps take backward Euler until enough points follow the corner to estimate the error of the transient's own method. | SPICE, whose saved step `CKTsaveDelta` is the step the error allowed before it was cut short to land on the corner; ngspice also halves the gap to a corner that 1.9 steps would pass (`dctran.c`, lines 588 to 598), which on the benchmarks' buck cost 11% more accepted steps and 47% more rejected ones. |
-| Jumps | A behavioral source's value jumps where a comparison, `u`, `sgn`, `floor` or `ceil` it reads through the branches it takes changes; the change is located by linear interpolation of its input within a step, a step in which it comes early is retried to land on it, and the integration restarts after it as after a corner. | jolty's own, as hybrid-system simulators locate zero crossings; SPICE steps across such a jump unlocated, and ngspice may stall there. |
-| Ringing | Whenever some charge's derivative under the trapezoidal rule turns back and forth twice in a row by more than its tolerance, the engine first tests whether that oscillation satisfies the exact variable-step harmonic restoring-force identity `(a_k − a_{k−1}) · (q_{k+1} − q_{k−1})/2 ≤ 0`; any alternating unknown not explained by a single-mode oscillation is then checked against the step's cached factorization of `G + αC` in its own physical domain (a Meyer displacement rings when its filter diagonal `F_{i,i} < 1/2`, a dissipative domain rings when `uᵀ S G u ≥ uᵀ S (αC) u` on the suspects' Nyquist third difference or unit probe, skipped in zero solves when `S G` is skew-symmetric and decoupled), and ideal capacitor-voltage-source loops (grounded or floating) are separated from lossless oscillations by a local saddle-point projection `[C_SS / c_scale, B_S; A_S, 0]`; only confirmed numerical ringing takes the next step with backward Euler. | jolty's own, from Dahlquist's (1963) stability function `R = 2 F − I = (αC − G)(αC + G)⁻¹` and Shampine's (1980) filter `F = αC(G + αC)⁻¹` (Hairer and Wanner, 1996, IV.3 and IV.8): real decaying modes with `σ > α = 2/h` map to `(−1, 0)` and algebraic constraints map to `−1`, while lossless oscillations with `ω h > 2` map to the unit circle `e^(∓jθ)` and alternate in sign without ringing. |
-| Prediction | Each step's Newton iteration starts on the line through the last two accepted points, carried on to the step's end, and at the last point after a corner, a jump or a logic driver's change. | SPICE's predictor, which extrapolates its devices' junction voltages the same way. |
-| Convergence of a time step | A time step's Newton iteration takes at most `max_transient_iterations` steps, and judges the iterate after the last as any other; it measures how fast it contracts, `θ`, each step's largest move of an unknown against that unknown's tolerance over the step before's, between steps from evaluations no device limited, and takes a step as within tolerance once `θ/(1 − θ)` times it is. A first step, a step from an evaluation a device limited or after one, and a step no shorter than the one before are within tolerance when they are themselves, as in SPICE. A time step whose iteration fails is retried shorter from its last iterate rather than from the last solution. | Hairer and Wanner's test for stopping the Newton iteration of an implicit integration step ("Solving Ordinary Differential Equations II", 1996, section IV.8), as RADAU5 makes it: `θ/(1 − θ)` times the last step bounds the distance an iteration contracting by `θ` leaves to the solution (Deuflhard, "Newton Methods for Nonlinear Problems", 2004, section 2.1), more than the step itself once `θ` passes ½, which SPICE's test on the step alone takes as converged, and less below. A limited step is the limiter's rather than Newton's, so no rate is measured across it. Hairer and Wanner also stop an iteration as soon as `θ` reaches 1, or as soon as the steps left at the rate `θ` could not converge, which jolty does not: on the benchmarks' buck and chain of 500 inverters and the boost and astable examples, 91%, 92%, 100% and 60% of the iterations those tests would stop converge within 10 steps, as a full Newton iteration, unlike their simplified one, contracts faster as it nears the solution, and stopping them took the chain 6,103 steps where it takes 2,358, and stopped the buck at 41 µs. SPICE judges each step alone and stops at a count, 100 in ngspice 47 (`niiter.c`, lines 37 to 39). |
-| Loop gain | A unit voltage injected in series through the probe and a unit current injected from the ground into its `positive` terminal, both solved with one factorization at each frequency, give `u = v_x − i`, the voltage entering the loop less the current the probe carries on, and the loop gain `T = −u / (1 + u)`. | Middlebrook's double injection, the loop gain of Tian's method and Spectre's `stb`. |
-| Logic | Detectors' crossings are located by linear interpolation within a step, and a step that crosses early is retried to land on the crossing; at DC the logic and the analog circuit settle each other at most four times before the detectors still changing read unknown levels. | jolty's own event scheduler, after the connect elements of mixed-signal simulators. |
-| Logic loads | Each logic driver's load is the capacitance it drives, read from its small-signal current at 1 Hz at the operating point. | jolty's own. |
+| Convergence | Requires step updates within unknown tolerances, equation residuals within tolerance plus floating-point rounding floor, and zero active voltage limiters. Residuals within rounding drive no further update. | Extends SPICE `reltol`/`vntol`/`abstol` with a rounding floor so milliohm branches at high voltage converge. ngspice skips residual checks (`niconv.c`, lines 40 to 95) and blocks convergence only on junction limiting (`mos1load.c`, lines 376 to 384, 719 to 720). |
+| Limiting | Limits junction voltages logarithmically above critical voltage and constrains FET gate/drain steps near threshold, linearizing outward from the limited point. | Standard SPICE `pnjlim`, `fetlim`, and `limvds`. ngspice 47 uses a custom backward-stepping junction limiter (`devsup.c`, lines 54 to 61) and limits first steps from the last accepted point (`mos1load.c`, lines 201 to 208). |
+| Self-heating | Caps per-iteration temperature steps at 50 K and floors temperature at 1 K, linearizing from the clamped temperature with rescaled parameters. | jolty-specific: SPICE lacks general thermal-network self-heating outside dedicated models like VBIC. |
+| `gmin` | Places `1e-12` S across every semiconductor junction. | Standard SPICE. |
+| Small resistors | Formulates resistors and series resistances below 1 Ω with branch-current unknowns so conductances above 1 S never swamp picosiemens shunts. | Modified nodal analysis group 2 (Ho, Ruehli, and Brennan, 1975); the 1 Ω threshold keeps at least four significant digits on `gmin`. |
+| Operating point | Tries direct Newton from zero, then node-to-ground gmin stepping from 10 mS, junction gmin stepping to `gmin`, source stepping, and pseudo-transient continuation from 1 S until steady state. | Combines ngspice gmin/source stepping with pseudo-transient continuation (Kelley and Keyes, 1998) to cross folds. ngspice starts at non-zero guesses (`dioload.c`, lines 162 to 165) and ends with an unchecked 10 µs transient (`init.c`, lines 77 to 93). |
+| DC sweep | Warm-starts each point from the previous solution and halves step sizes on failure; failed initial points approach from the DC operating point. | Natural-parameter continuation. ngspice restarts failed points from default guesses (`dctrcurv.c`, lines 306 to 313), risking branch jumps. |
+| Periodic steady state | Applies shooting Newton with monodromy SVD projecting steps into the range of `Φ - I`; oscillators add period `T` under an orthogonal phase condition launched from the fastest-growing mode. | Shooting (Aprille and Trick, 1972) plus orthogonal phase condition (Seydel, 2010, §7.1); neutral-direction projection and automatic startup replace ngspice `.pss` manual frequency/settling guesses. |
+| Integration | Uses trapezoidal integration by default, with optional Gear2 or backward Euler. | Standard SPICE. |
+| Linear devices | Evaluates linear passives, controlled sources, and thermal elements once per run into a base matrix, skipping them during nonlinear Newton iterations. | jolty optimization: ngspice re-evaluates every device on every Newton iteration (`cktload.c`, lines 62 to 75). |
+| Linear solves | Computes one BTF + AMD ordering per circuit, pivots with threshold 0.1 (reusing valid pivots and unchanged factors), and statically condenses proven-pivot unknowns such as Meyer displacements before factoring. | KLU (Davis and Palamadai Natarajan, 2010) plus static condensation (Wilson, 1974). Threshold 0.1 keeps random-circuit backward error below `10⁻¹⁴` versus `10⁻⁸` at KLU's 0.001. |
+| Truncation error | Filters divided differences through `C (G + αC)⁻¹ α`, checking every charge against `reltol · max(|q|, chgtol)` and step-scaled current tolerance (`voltage_tolerance` for flux) times `trtol · (p+1)!`. Judges first post-corner steps from second-step curvature and applies variable-step Gear2 `(1 + ω)²/(6ω(1 + 2ω))`. | Combines SPICE `CKTterr` (`cktterr.c`, lines 37 to 42) with Shampine (1980) filtering (Hairer and Wanner, 1996, IV.8) and variable-step Gear2. By contrast, ngspice skips MOSFET bulk junctions (`MOS1trunc`), uses constant 2/9 for Gear2 (7.6× under-estimate after 10× cut), floors at `abstol`, and applies `abstol` to flux. |
+| Step length | Caps default `max_step` at `stop / 50` and sets next/retried steps to `0.9` of the largest step meeting both charge and current tolerances. Limits growth to 2×, shrinkage to 10× (8× on Newton failure), enforces `10⁻¹¹` minimum step ratio, and respects `max_memory`. | Extends SPICE step control (`traninit.c`, line 36) by solving against both charge and step-scaled current tolerances. ngspice accepts steps whenever permitted step exceeds 0.9× current step (`dctran.c`, line 801) and defaults `max_step` to `TSTEP`. |
+| Corners | Lands exactly on every waveform corner and breakpoint, restarts at 0.1× the smaller of prior permitted step and next-corner gap, and uses backward Euler until enough points build for higher order. | Matches SPICE `CKTsaveDelta`. ngspice pre-equalizes pairs within 1.9 steps of a corner (`dctran.c`, lines 588 to 598), adding 11% accepted and 47% rejected steps on the buck benchmark. |
+| Jumps | Detects behavioral discontinuities (`u`, `sgn`, `floor`, `ceil`, comparisons), locates crossings by linear interpolation, lands on the crossing, and restarts integration. | Hybrid-system zero-crossing location; SPICE steps blindly across discontinuities and ngspice can stall. |
+| Ringing | Tests twice-alternating trapezoidal derivatives with a variable-step harmonic restoring-force check, linearized passivity `uᵀ S G u ≥ uᵀ S (αC) u` (`F_{i,i} < 0.5` for Meyer displacements), and saddle-point projection for capacitive loops before inserting one backward Euler step. | Derived from Dahlquist (1963) stability function `R = 2F - I` and Shampine (1980) filter `F = αC(G + αC)⁻¹` (Hairer and Wanner, 1996, IV.3, IV.8), separating stiff/algebraic ringing from lossless LC oscillations (`ωh > 2`). |
+| Prediction | Extrapolates node voltages linearly from the last two accepted points, falling back to constant prediction immediately after corners, jumps, or logic transitions. | Matches SPICE prediction, which extrapolates per-device junction voltages. |
+| Time-step Newton | Caps iterations at `max_transient_iterations` (judging the final iterate), scales contracting un-limited steps by `θ/(1 - θ)` (using raw steps on initial, limited, or non-contracting steps), and retries failed steps from the last iterate. | Follows Hairer and Wanner (1996, IV.8) and Deuflhard (2004, §2.1) without early aborts because full Newton contracts faster near roots. Early aborts inflated 500-inverter steps from 2,358 to 6,103 and halted the buck at 41 µs. ngspice ignores `ITL4` below 100 (`niiter.c`, lines 37 to 39). |
+| Loop gain | Injects unit series voltage and unit shunt current across the probe using one factorization per frequency, computing `u = v_x - i` and `T = -u / (1 + u)`. | Middlebrook double injection, matching Tian's method and Spectre `stb`. |
+| Logic | Locates threshold-detector crossings by linear interpolation, lands steps on crossings, and iterates DC analog-logic coupling up to four times before marking oscillating nets unknown. | Mixed-signal event scheduler with connect elements. |
+| Logic loads | Computes each logic driver's electrical load capacitance from its 1 Hz small-signal current at the operating point. | jolty-specific load extraction. |
 
-When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
-Equations singular at every attempt fail the operating point, and an analysis whose linearized circuit is singular at a frequency fails too, each naming up to three of the unknowns the equations leave undetermined: the currents of two voltage sources in parallel, of which only the sum is determined, or the voltage of a node only a capacitor joins to the circuit.
+When no time step converges down to the minimum step, transients fail while naming the worst non-converging unknowns or the equation violating truncation tolerance.
+Singular DC or AC systems fail while naming up to three undetermined unknowns (such as parallel voltage-source currents or capacitor-isolated nodes).
 
-The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.
-Random circuits agree too, of every device and up to a hundred unknowns: each operating point and frequency response within a millionth of the circuit's largest voltage or current, and each transient within a thousandth, jolty stepping onto every time ngspice took.
-Where the two engines rest in different states of a circuit with several, ngspice started from jolty's finds jolty's.
-Where two transients differ, both run again with steps a quarter as long, then a sixteenth and a sixty-fourth, and agree then if one had not settled; one that jolty's own shorter steps still move, as a chaotic one's, is no reference for either engine.
-Where jolty stops short of ngspice, the same circuit with 10 fF from every net to the ground, as real nets have, must finish: without capacitance, the equations of a net that only resistive devices hold can fold into a point past which no solution continues, which ngspice may leap past.
-An operating point ngspice reaches only by its last resort, the end of a transient of fixed length that it does not check to be one, is no reference either.
-The same random circuits, written differently, simulate the same: with their nets renamed, their instances reordered, a resistor split in two in series, or a source of 0 V in series with a terminal, which reads the current into it.
-Each integration method converges at its order: halving the step halves backward Euler's error and quarters the trapezoidal rule's and Gear's, against a low-pass's closed form and after a diode clamps.
+Reference-corpus tests verify agreement with ngspice within `10⁻⁶` on operating points, sweeps, and AC responses, and within `10⁻³` of signal swing on transients.
+Random circuits spanning all devices up to 100 unknowns agree to the same tolerances when jolty steps onto ngspice's time points.
+When multistable circuits settle on different branches, initializing ngspice at jolty's solution confirms agreement.
+Disagreeing transients are refined by 4×, 16×, and 64× smaller steps; chaotic trajectories that fail to stabilize under refinement are excluded as references.
+If jolty hits a singular fold on a purely resistive net where ngspice jumps past, adding 10 fF parasitic capacitance to ground must succeed.
+Operating points that ngspice reaches only via an unchecked fixed-length transient are excluded as DC references.
+Metamorphic tests confirm identical simulation results under net renamings, instance reorderings, split series resistors, and inserted 0 V current-sense sources.
+Order-of-accuracy tests verify 1st-order convergence for backward Euler and 2nd-order convergence for trapezoidal and Gear2 against closed forms and diode-clamped transients.

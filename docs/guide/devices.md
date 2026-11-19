@@ -1,22 +1,23 @@
 # Devices
 
-The module `jolty.devices` holds every device a script can place.
-Each function checks its parameters' units and returns a device ready to place; parameters left out take the engine's defaults, which the [models reference](../reference/models.md) lists with every parameter of every model.
+The module `jolty.devices` provides every device constructor available in build scripts.
+Each constructor validates parameter dimensions and returns a placeable device; omitted parameters take engine defaults listed in the [models reference](../reference/models.md).
 
-Devices are simulated at the plan's temperature, 27 °C unless it gives one, and each device's parameters were measured at its `nominal_temperature`, 27 °C unless given.
-Away from it, passive values drift by their temperature coefficients, and semiconductors scale as ngspice scales them, as the sections below say.
-A device that [heats](#self-heating) runs at its own temperature instead, which the power it dissipates raises.
+Devices simulate at the plan temperature (default 27 °C), while model parameters are referenced to `nominal_temperature` (default 27 °C).
+Away from nominal temperature, passive values drift by temperature coefficients and semiconductor models scale as documented in each section below.
+Devices with [self-heating](#self-heating) instead run at a dynamic temperature raised by dissipated power.
 
-Any device may run at a temperature of its own, as on a hot board: `device.held_at(celsius(85))` holds it there whatever the plan's, as SPICE's `TEMP` and PSpice's `T_ABS` do, and `device.warmer_by(20 * K)` holds it that far above the plan's, below where negative, as SPICE's `DTEMP` and PSpice's `T_REL_GLOBAL` do.
-Its parameters scale to that temperature, its noise is at it, a heated device warms from it, and its temperature rating holds it there, though sensitivities do not differentiate it.
-A resistor held at 0 K makes no noise, while a junction needs a temperature above zero.
+Any device can run at an independent temperature: `device.held_at(celsius(85))` fixes absolute temperature regardless of plan settings (SPICE `TEMP`, PSpice `T_ABS`), while `device.warmer_by(20 * K)` offsets the plan temperature (SPICE `DTEMP`, PSpice `T_REL_GLOBAL`).
+Model scaling, noise, self-heating ambient reference, and temperature ratings all honor per-device temperature overrides, though sensitivity analyses do not differentiate device temperature.
+A resistor held at 0 K generates no thermal noise, whereas semiconductor junctions require temperatures strictly above 0 K.
 
-Logic devices, whose pins join logic nets, have a page of their own: [Logic](logic.md).
+Logic devices connect to logic nets and are documented separately under [Logic](logic.md).
 
-The diode, the JFET, the bipolar transistors, the MOSFETs of levels 1 and 3 and VDMOS follow ngspice 47's implementations of them, and BSIM3 is derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group; the repository's `NOTICE` holds their copyright notices and terms.
-Where the two engines compute differently, the device's section says so, and [Departures from ngspice](departures.md) lists every such place.
+The diode, JFET, bipolar transistors, level 1 and 3 MOSFETs, and VDMOS follow ngspice 47 implementations, while BSIM3 derives from BSIM3v3.3.0 (UC Berkeley BSIM Research Group); copyright notices and terms appear in `NOTICE`.
+Each device section documents behavioral differences from ngspice, summarized in [Departures from ngspice](departures.md).
 
-The thermal voltage `kT/q` takes the SI's exact Boltzmann constant and elementary charge, 1.380649e-23 J/K and 1.602176634e-19 C, where ngspice 47 takes CODATA 2014's, 1.38064852e-23 J/K and 1.6021766208e-19 C (`const.h`, lines 32 and 37), so jolty's is 3.4e-7 of itself larger at any temperature; a comparison runs ngspice where its thermal voltage is jolty's, as `jolty.spice.ngspice` does.
+Thermal voltage `kT/q` uses exact SI constants (`k = 1.380649e-23` J/K, `q = 1.602176634e-19` C), whereas ngspice 47 uses CODATA 2014 values (`1.38064852e-23` J/K, `1.6021766208e-19` C in `const.h`, lines 32 and 37).
+jolty's thermal voltage is therefore `3.4e-7` higher at identical kelvins, so differential tests adjust ngspice temperature via `jolty.spice.ngspice` to match thermal voltage exactly.
 
 ## Passive devices
 
@@ -26,10 +27,10 @@ The thermal voltage `kT/q` takes the SI's exact Boltzmann constant and elementar
 | `capacitor(capacitance)` | `a`, `b` | a capacitance, zero or more |
 | `inductor(inductance)` | `a`, `b` | a positive inductance |
 
-An inductor adds its current to the unknowns, as `L1:current` for an inductor `L1`: the current from `a` through the inductor to `b`.
-So does a resistor below 1 Ω, as `R1:current`: beside its conductance, a node's picosiemens, such as gmin's, would round away in floating point, and the current unknown keeps them, as modified nodal analysis does for the elements of its second group.
+Every inductor adds a branch-current unknown named `L1:current` (for inductor `L1`), flowing from terminal `a` through the inductor to `b`.
+Resistors below 1 Ω similarly add `R1:current` as a modified nodal analysis group-2 unknown so conductances above 1 S do not swamp picosiemens shunts such as `gmin` in floating-point arithmetic.
 
-Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `ΔT` is the temperature less the nominal one, as SPICE's do:
+Passive values scale with temperature difference `ΔT = T - Tnom` as `1 + tc1 · ΔT + tc2 · ΔT²`, matching SPICE:
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
@@ -38,27 +39,29 @@ Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `Δ
 | `exponential_temperature_coefficient` | `TCE` | percent per kelvin, a number | none: a resistor drifts by `1.01^(tce · ΔT)` instead |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 
-Only a resistor has an exponential coefficient, and a resistance the coefficients scale to zero is a problem.
+Only resistors accept `exponential_temperature_coefficient`, and any coefficient combination scaling resistance to zero fails elaboration.
 
-A resistor's or capacitor's value also bends with the voltage `v` from `a` to `b`, by `1 + vc1 · v + vc2 · v²`, as ngspice's expressions would write it:
+Resistor and capacitor values also vary with terminal voltage `v = v(a) - v(b)` by `1 + vc1 · v + vc2 · v²`:
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
 | `voltage_coefficient` | `VC1` | V⁻¹ | 0 |
 | `quadratic_voltage_coefficient` | `VC2` | V⁻² | 0 |
 
-A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacitor holds the charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose slope is its bent capacitance.
-The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
+A voltage-dependent resistor conducts `v / (r · (1 + vc1 · v + vc2 · v²))`, while a voltage-dependent capacitor stores charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)` whose derivative equals the voltage-modulated capacitance.
+Both formulas apply at all voltages as in ngspice, allowing negative values if coefficients drive the polynomial below zero.
 
-In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT/R` A²/Hz at its resistance there, or a voltage of `4kT·R` V²/Hz in series below 1 Ω, as a switch, a photocell and a memristor do at theirs; capacitors and inductors make none.
-Given a flicker coefficient `KF`, `flicker_coefficient`, a resistor's current `I` also makes flicker noise of `KF · |I|^AF / f` A²/Hz across it, `AF` its `flicker_exponent`, 1 unless given, as ngspice's resistor does.
+In [noise analysis](simulation.md#noise), resistors generate thermal noise `4kT/R` A²/Hz (or series voltage noise `4kT·R` V²/Hz below 1 Ω), matching switches, photocells, and memristors, whereas capacitors and inductors are noiseless.
+When `flicker_coefficient` (`KF`) is set, resistor current `I` adds flicker noise `KF · |I|^AF / f` A²/Hz with `flicker_exponent` `AF` (default 1), matching ngspice.
 
-A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"`, `"normal"`, `"log_uniform"` or `"log_normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them, and [worst-case analyses](simulation.md#worst-case) set them at their extremes.
+Passing `tolerance` (such as `0.01` for 1%) adds a uniform tolerance to passive values.
+`device.toleranced(parameter, relative, distribution, lot)` attaches `"uniform"`, `"normal"`, `"log_uniform"`, or `"log_normal"` tolerances (with optional shared `lot`) to any numeric parameter path (such as `waveform.dc`) for [Monte Carlo](simulation.md#monte-carlo) and [worst-case](simulation.md#worst-case) analyses.
 
 ### Coupled inductors
 
-`coupled_inductors(windings, couplings)` links inductors' fluxes, as a transformer's windings or a common-mode choke's: each winding is an `inductor(...)`, with its tolerance and drift, and winding `k`, from 1, joins terminals `a{k}` and `b{k}`, its current the unknown `current{k}`.
-`couplings` gives the coefficient between pairs of windings, by their numbers, from -1 to 1; their mutual inductance is the coefficient times the root of their inductances' product, and currents into both `a` terminals add their fluxes where it is positive, as SPICE's `K` couples its inductors' first nodes.
+`coupled_inductors(windings, couplings)` couples magnetic fluxes across inductors (such as transformers or common-mode chokes).
+Each winding is an `inductor(...)` with optional tolerance and drift; winding `k` (1-indexed) exposes terminals `a{k}` and `b{k}` and branch-current unknown `current{k}`.
+`couplings` maps winding index pairs to coefficients in `[-1, 1]`, producing mutual inductance `k · √(L_i L_j)` where positive coefficients add fluxes for currents entering both `a` terminals (matching SPICE `K`).
 
 ```python
 transformer = c.place(
@@ -69,33 +72,35 @@ transformer = c.place(
 )
 ```
 
-Each winding is a short at DC, so a winding across a voltage source is a loop the [checks](checks.md) flag.
+Each winding acts as a DC short, so placing a winding directly across a voltage source triggers a loop diagnostic in [checks](checks.md).
 
 ### Transmission lines
 
-`transmission_line(characteristic_impedance, delay)` is a lossless line, SPICE's `T`, as ngspice 47 defines it: port `k`, 1 or 2, joins terminals `positive{k}` and `negative{k}`, and its current, from `positive{k}` into the line and out at `negative{k}`, is the unknown `current{k}`.
-Each port is a voltage behind the characteristic impedance `Z₀`, the wave that left the other port a delay `τ` before: `v₁ − Z₀ i₁ = v₂(t − τ) + Z₀ i₂(t − τ)`, and the same with the ports swapped.
+`transmission_line(characteristic_impedance, delay)` models a lossless SPICE `T` line matching ngspice 47.
+Port `k` (1 or 2) exposes terminals `positive{k}` and `negative{k}` with branch-current unknown `current{k}` flowing from `positive{k}` to `negative{k}`.
+Each port enforces `v₁ - Z₀ i₁ = v₂(t - τ) + Z₀ i₂(t - τ)` (and symmetrically with ports swapped) for characteristic impedance `Z₀` and propagation delay `τ`.
 
 ```python
 line = c.place(devices.transmission_line(50 * ohm, 1 * ns), name="T2")
 ```
 
-At DC a line is exactly a short through from port to port, `v₁ = v₂` and `i₁ = −i₂`, and an AC analysis multiplies each delayed term by `e^{−jωτ}`, so a quarter-wave line inverts its load's impedance about `Z₀`.
-A transient keeps the points it accepted over the longest delay of its lines, and reads each delayed wave from them by interpolation of its integration method's order, within the run between two corners, so that no interpolation spans the corner a wave turns at.
-Before time zero the lines rest at the operating point.
-Every corner of the waveforms, the start, each breakpoint and each restart of the integration, arrives at a line's other port a delay later, and the transient steps onto it there: its steps are never longer than the shortest delay while edges keep arriving, and where its waves are piecewise linear they agree with the lattice of their reflections to rounding.
-ngspice departs from this three ways: it steps onto an arriving corner only where the wave's slope changes by more than its tolerances, `REL` and `ABS` of 1 (`traacct.c`, lines 94 to 120); it reads each delayed wave through three points whatever corner lies between them (`traload.c`, lines 89 to 141); and it scales one term of its DC equations by `1 − gmin` (line 56).
-jolty steps onto every corner, interpolates within the runs between them, and its DC equations are the line's own.
-In `tests/test_ngspice.py`'s `transmission_lines`, at steps of 20 ps, ngspice's wave at `near` peaks 3 mV high at 11.5 ns, where the source's fall meets a reflection's corner, 0.4 mV at 2 ps and 0.08 mV at 0.5 ps, converging on jolty's 0.809548 V, which jolty reaches within 1e-5 V at 20 ps; the transients compare at 2 ps.
-The interpolation's error is of the order of a step's truncation error, which the transient controls on the circuit's charges and not on the lines' waves themselves: a circuit of resistors and lines alone takes steps as long as its longest step allows between the corners.
-A pole-zero analysis, a periodic steady state, and sensitivities over frequency and time refuse a circuit with a line, whose delay gives it infinitely many poles, makes the state a period starts from hold the waves on its lines, and puts its past in its derivatives; the [checks](checks.md) leave its growing modes unchecked.
-The SPICE reader reads `T` elements, their delay `TD` or a normalized length `NL` at a frequency `F`, defaulting as ngspice does to a quarter wavelength at 1 GHz, and takes their initial conditions as it takes any element's; ngspice's lossy lines, `O`, `U`, `Y` and `P`, it refuses by name.
+At DC, the line acts as an ideal port-to-port short (`v₁ = v₂`, `i₁ = -i₂`), while AC multiplies delayed waves by `e^(-jωτ)` so a quarter-wave line inverts load impedance around `Z₀`.
+Transients retain accepted points spanning the longest line delay and interpolate delayed waves at the integration order strictly within smooth intervals between corners.
+Before time zero, transmission lines rest at the DC operating point.
+Every waveform corner (start, breakpoint, or restart) propagates across each line and forces a transient step at arrival, matching piecewise-linear reflection lattices within floating-point rounding.
+ngspice diverges in three ways: skipping corners below `REL`/`ABS` slope thresholds (`traacct.c`, lines 94 to 120), interpolating across corners (`traload.c`, lines 89 to 141), and scaling a DC term by `1 - gmin` (line 56).
+jolty lands on every arriving corner, keeps interpolation inside smooth runs, and enforces exact DC short equations.
+On `transmission_lines` in `tests/test_ngspice.py`, ngspice at 20 ps steps overshoots `near` by 3 mV at 11.5 ns (0.4 mV at 2 ps, 0.08 mV at 0.5 ps) while converging toward jolty's 0.809548 volts.
+jolty reaches 0.809548 V within `1e-5` V at 20 ps, and differential tests compare at 2 ps.
+Interpolation accuracy matches the integration order controlled by circuit charges, so purely resistive transmission-line circuits take steps up to `max_step` between corners.
+Pole-zero, periodic steady state, and frequency/time sensitivities reject transmission lines (whose delays create infinitely many poles and state-history dependencies), and [checks](checks.md) skip growing-mode analysis on them.
+The SPICE reader imports `T` lines via `TD` or normalized length `NL` at frequency `F` (defaulting to quarter-wave at 1 GHz) plus initial conditions, while rejecting lossy lines (`O`, `U`, `Y`, `P`) by name.
 
 ## Ratings
 
-Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, minimum=..., terminals=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, the `"power"` it dissipates, or its `"temperature"`.
-A voltage is of the device's first two terminals by default, in order, and a current into its first; the power is what its electrical terminals take, and the temperature the simulation's, raised by its thermal net's where it [heats](#self-heating).
-A rating bounds its stress from above, from below or both, as its maker states it; a power's only from above, and a temperature's in kelvins, as `celsius(150)`.
+Any device can declare manufacturer operating limits via `device.rated(stress, maximum, minimum=..., terminals=...)` for `"voltage"`, `"current"`, `"power"`, or `"temperature"`.
+Voltage ratings default across the first two terminals, current ratings measure current entering the first terminal, power sums electrical dissipation, and temperature sums ambient plus any [self-heating](#self-heating) rise.
+Ratings accept upper bounds, lower bounds, or both (power accepts upper bounds only, and temperatures use kelvins such as `celsius(150)`).
 
 ```python
 devices.resistor(100 * ohm).rated("power", 0.25 * W)
@@ -107,9 +112,9 @@ switch = devices.bipolar_transistor().rated(
 switch.rated("power", 0.625 * W).rated("temperature", celsius(150))
 ```
 
-A component rates its ports the same way, `component.rated(...)`, and its power is all it dissipates.
-`device.numbered("2N3904")` and `component.numbered(...)` name the part an instance stands for, which a [bill of materials](parts.md#bills-of-materials) prices it by; [`jolty.parts`](parts.md#real-parts) holds real parts, each with its model, its number and its ratings.
-A simulation holds every rating to every operating point and transient its plan solves, as the [checks](checks.md#on-analyses-results) describe.
+Components support port and total-power ratings identically via `component.rated(...)`.
+`device.numbered("2N3904")` and `component.numbered(...)` attach manufacturer part numbers for [bill of materials](parts.md#bills-of-materials) pricing, and [`jolty.parts`](parts.md#real-parts) provides pre-rated real parts.
+Simulations verify every rating across all operating points and transients as described in [checks](checks.md#on-analysis-results).
 
 ## Independent sources
 
@@ -118,25 +123,25 @@ A simulation holds every rating to every operating point and transient its plan 
 | `voltage_source(waveform)` | `positive`, `negative` | a voltage, or a waveform of voltages |
 | `current_source(waveform)` | `positive`, `negative` | a current, or a waveform of currents |
 
-A voltage source holds `positive` minus `negative` at its level.
-Its current, from `positive` through the source to `negative`, is the unknown `V1:current` for a source `V1`: negative while the source delivers power.
+A voltage source constrains `v(positive) - v(negative)` to its waveform value.
+Source current (unknown `V1:current` for source `V1`) flows from `positive` through the source to `negative`, making it negative when delivering power.
 
-A current source drives its level through itself from `positive` to `negative`, so the current enters the circuit at `negative`.
+A current source drives its waveform value internally from `positive` to `negative`, injecting current into the external circuit at `negative`.
 
-A plan names a source to sweep it or to excite it for a frequency response; see [Simulation](simulation.md).
+Plans reference independent sources by path for DC sweeps and AC excitations; see [Simulation](simulation.md).
 
 ## Waveforms
 
-A source's level is a constant quantity or a waveform from `jolty.waveforms`.
-Every analysis but a transient reads the level at time zero.
+Independent sources accept either a constant quantity or a `jolty.waveforms` object.
+All non-transient analyses evaluate each waveform at time zero.
 
-- `Dc(level)`: a constant level, as passing the quantity itself.
-- `Pulse(initial, pulsed, rise, fall, width, delay=0 s, period=None)`: a trapezoidal pulse from `initial` to `pulsed` and back, once, or every `period`.
-- `Sine(offset, amplitude, frequency, delay=0 s, damping=0 Hz, phase=0)`: `offset + amplitude·exp(-damping·t')·sin(2π·frequency·t' + phase)`, where `t'` is the time since the delay and the phase is in radians; before the delay the level holds its value at `t' = 0`.
-- `Piecewise(points)`: straight lines through `(time, level)` points, holding the first level before them and the last after.
-- `Exponential(initial, pulsed, rise_time_constant, fall_delay, fall_time_constant, rise_delay=0 s)`: SPICE's `EXP`, `initial` until the rise delay, then `initial + (pulsed - initial)·(1 - exp(-t₁/rise_time_constant))`, with `t₁` the time since the rise delay, and from the fall delay, at or after the rise delay, that minus `(pulsed - initial)·(1 - exp(-t₂/fall_time_constant))`, with `t₂` the time since the fall delay.
+- `Dc(level)`: constant value equivalent to passing a bare quantity.
+- `Pulse(initial, pulsed, rise, fall, width, delay=0 s, period=None)`: trapezoidal pulse transitioning from `initial` to `pulsed` and back once, or repeating every `period`.
+- `Sine(offset, amplitude, frequency, delay=0 s, damping=0 Hz, phase=0)`: `offset + amplitude·exp(-damping·t')·sin(2π·frequency·t' + phase)` for elapsed time `t' = max(t - delay, 0)` and `phase` in radians.
+- `Piecewise(points)`: linear interpolation through `(time, level)` pairs, clamping to the first level before start and the last level after end.
+- `Exponential(initial, pulsed, rise_time_constant, fall_delay, fall_time_constant, rise_delay=0 s)`: SPICE `EXP` waveform holding `initial` until `rise_delay`, rising exponentially toward `pulsed` with `rise_time_constant`, and decaying after `fall_delay` with `fall_time_constant`.
 
-The transient analysis lands a time step on every corner of a waveform, so a pulse's edges and an exponential's delays are never stepped over.
+Transient integration lands an exact time step on every waveform corner so pulse edges and exponential delays are never skipped.
 
 ## Controlled sources
 
@@ -147,16 +152,16 @@ The transient analysis lands a time step on every corner of a waveform, so a pul
 | `current_controlled_current_source(gain)` | the same | a gain, a plain number |
 | `current_controlled_voltage_source(transresistance)` | the same | a transresistance |
 
-A voltage-controlled source's control voltage is `control_positive` minus `control_negative`, and its control terminals draw no current.
-A current-controlled source's control port, as in Modelica, is a short circuit from `control_positive` to `control_negative` that senses the current through it: placed in series with a branch, it senses that branch's current, which it adds to the unknowns as `F1:control` for a source `F1`.
+Voltage-controlled sources sense `v(control_positive) - v(control_negative)` with zero control input current.
+Current-controlled sources model their control port as a zero-volt short from `control_positive` to `control_negative` (as in Modelica), adding branch current `F1:control` (for `F1`) to the unknowns.
 
-A voltage-controlled or current-controlled voltage source holds its output at the gain or transresistance times its control, and adds its current to the unknowns as a voltage source does.
-A current source of either kind drives the transconductance or gain times its control from `positive` through itself to `negative`.
+Controlled voltage sources enforce output voltage equal to gain or transresistance times control and add an output branch-current unknown.
+Controlled current sources drive transconductance or gain times control internally from `positive` to `negative`.
 
 ## Behavioral sources
 
-`behavioral_voltage_source(expression)` holds `positive` minus `negative` at an expression, and `behavioral_current_source(expression)` drives an expression from `positive` through itself to `negative`.
-The expression reads `v(a)`, the voltage of terminal `a`, `v(a, b)`, that of `a` over `b`, `i(p)`, the current through a sensing port `p`, and `time`, in a [language](../reference/expressions.md) of arithmetic, comparisons, conditionals and functions:
+`behavioral_voltage_source(expression)` constrains `v(positive) - v(negative)` to an expression, while `behavioral_current_source(expression)` drives an expression current from `positive` to `negative`.
+Expressions read node voltages `v(a)` or `v(a, b)`, sensing-port currents `i(p)`, and `time` using the [expression language](../reference/expressions.md):
 
 ```python
 gain = devices.behavioral_voltage_source("limit(1e5 * v(inp, inn), -12, 12)")
@@ -164,40 +169,39 @@ amplifier = c.place(gain, name="E1")
 c.connect(amplifier.inp, name="signal")
 ```
 
-A source's terminals are `positive` and `negative`, then each terminal its expression reads, then `p_positive` and `p_negative` for each port `p`.
-A port, as a current-controlled source's control port, is a short circuit whose current, from `p_positive` to `p_negative`, it adds to the unknowns as `B1:p` for a source `B1`.
-A behavioral voltage source adds its own current to the unknowns as a voltage source does.
-`behavioral_capacitor(expression)` holds an expression, in coulombs, as its charge on `positive` against `negative`, its current that charge's rate of change, as Verilog-A's `I(p, n) <+ ddt(q)`; its charge is a function of what it reads, so it conserves charge, and its capacitances are the expression's derivatives.
-The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
+Behavioral source terminals list `positive` and `negative`, followed by every referenced voltage terminal and `p_positive`/`p_negative` pairs for every sensing port `p`.
+Each sensing port acts as a zero-volt short adding unknown `B1:p` (for `B1`), and behavioral voltage sources also add an output branch-current unknown.
+`behavioral_capacitor(expression)` stores charge `q` (in coulombs) on `positive` against `negative` with current `dq/dt` (matching Verilog-A `I(p, n) <+ ddt(q)`), conserving charge with exact capacitance derivatives.
+The engine differentiates every expression exactly so Newton iterations and small-signal analyses observe exact slopes.
 
-Written for ngspice, a behavioral capacitor is a capacitor of the charge `Q=`, which ngspice makes the current of the charge's rate of change, and a behavioral source's expression, a capacitor's too, is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
+When exporting to ngspice, behavioral capacitors emit `Q=` charges and all expressions translate directly from AST trees with explicit parentheses for semantic equivalence.
+Power operations emit `pow` (or `pwr` for odd integer exponents to preserve sign under negative bases), `limit` expands via `min`/`max` (avoiding ngspice's different `limit` function), and `table` expands into piecewise linear and parabolic-corner branches.
 
 ## Switches
 
-`voltage_controlled_switch(...)` is a resistance between `positive` and `negative` that the voltage of `control_positive` over `control_negative` moves, in PSpice's model, from `off_resistance` to `on_resistance`: logarithmically and smoothly, with zero slope at each end, as the control moves from `off_voltage` to `on_voltage`.
-Beyond either voltage, the resistance holds.
-The control terminals draw no current.
+`voltage_controlled_switch(...)` varies resistance between `positive` and `negative` smoothly and logarithmically (with zero end slopes) from `off_resistance` to `on_resistance` as `v(control_positive) - v(control_negative)` moves from `off_voltage` to `on_voltage`, matching PSpice.
+Resistance clamps outside `[off_voltage, on_voltage]`, and control terminals draw zero current.
 
 | Parameter | PSpice | Unit | Default |
 | --- | --- | --- | --- |
 | `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
 | `on_voltage`, `off_voltage` | `VON`, `VOFF` | V | 1 V, 0 V |
 
-`current_controlled_switch(...)` is the same switch moved by a current: its control port, from `control_positive` to `control_negative`, is a short circuit whose current is an unknown labelled `control`, as a current-controlled source's is, and moves the resistance from `off_current` to `on_current`, as PSpice's `ISWITCH` does.
+`current_controlled_switch(...)` applies the same transition law to control current through a short from `control_positive` to `control_negative` (unknown `control`), sweeping from `off_current` to `on_current` like PSpice `ISWITCH`.
 
 | Parameter | PSpice | Unit | Default |
 | --- | --- | --- | --- |
 | `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
 | `on_current`, `off_current` | `ION`, `IOFF` | A | 1 mA, 0 A |
 
-A netlist written for ngspice gives each switch as a behavioral current of its own law, reading a current-controlled switch's control through a zero-volt source: ngspice's XSPICE switches follow the same law, but ngspice 42 gives their small-signal conductance the opposite sign of their DC one.
+SPICE export translates switches into behavioral current sources (sensing current-controlled switches via a 0 V source) because ngspice 42 XSPICE switches negate small-signal AC conductance relative to DC.
 
 ## Photocell
 
-`photocell(resistance, ...)` is a light-dependent resistor between `a` and `b`, as its maker's datasheet states one: its resistance at a reference illuminance and how steeply it falls with light.
-The voltage of `light_positive` over `light_negative` is the illuminance on it, 1 V for each lux, and those terminals draw no current, so a source, or a behavioral source that turns a lamp's or an LED's current into light, drives it.
-Its conductance is `1/r_dark + s/r`, where `s = (E/E₀)^γ` at the illuminance `E`, held at zero or above and rounded off over a microlux so its slope stays finite in darkness.
-With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's conductance does over milliseconds, and is a state labelled `response`, as `P1:response`, which results read with `state(name)`.
+`photocell(resistance, ...)` models a datasheet-specified light-dependent resistor between `a` and `b` using reference resistance at reference illuminance and power-law slope `gamma`.
+Terminal voltage `v(light_positive) - v(light_negative)` encodes illuminance at 1 V/lux with zero input current, allowing direct drive from voltage or behavioral sources.
+Photocell conductance equals `1/r_dark + s/r`, where `s = (E/E₀)^γ` floors illuminance `E` smoothly above zero over 1 microlux so the derivative stays finite in darkness.
+When `response_time` `τ` is positive, internal state `s` lags illuminance via `τ · ds/dt = (E/E₀)^γ - s` (unknown `P1:response`, readable via `state(name)`).
 
 | Parameter | Unit | Default |
 | --- | --- | --- |
@@ -205,58 +209,57 @@ With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`
 | `illuminance` | lux, a number | 10 |
 | `gamma` | a number | 0.6 |
 | `dark_resistance` | Ω | 1 MΩ |
-| `response_time` | s | 0: the cell follows the light at once |
+| `response_time` | s | 0: instantaneous response |
 
-The defaults of `gamma` and `dark_resistance` are those of Senba's GL5528, the most common cell of its GL55 series, whose resistance at 10 lux is 10 to 20 kΩ.
+Default `gamma` and `dark_resistance` match the Senba GL5528 cell (typically 10 to 20 kΩ at 10 lux).
 
-SPICE has no photocell; written for ngspice, it is a behavioral current whose response lags through 1 Ω and a capacitance of its response time.
+SPICE has no native photocell, so ngspice export emits a behavioral current source whose response state filters through a 1 Ω / `τ` RC network.
 
 ## Memristors
 
-A memristor is a resistance between `positive` and `negative` that remembers what drove it.
-Its state, from 0, fully on, at `on_resistance`, to 1, fully off, at `off_resistance`, moves only while it is driven, and holds where the drive left it.
-The resistance follows the state by a `law`: `"linear"`, `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves, or `"exponential"`, `r_on · (r_off / r_on)^x`, as a tunnel barrier whose width moves.
-The state is an unknown labelled `state`, as `M1:state`, which results read with `state(name)`, and the resistance and the rate at which the state moves, toward off when positive, in full ranges per second, are the [variables](results.md#devices-own-models) `resistance` and `rate`.
-A window slows the state as it nears the bound it moves toward, by `1 − e^(−d/w)` at a distance `d` from it, `w` the `window`, so it never passes either bound and leaves either at once when driven away.
+A memristor models a state-dependent resistance between `positive` and `negative` with nonvolatile memory.
+Internal state `x` spans from `0` (`on_resistance`) to `1` (`off_resistance`), evolving only when driven and persisting otherwise.
+The `law` parameter selects `"linear"` (`r_on + (r_off - r_on) · x`, modeling a moving boundary) or `"exponential"` (`r_on · (r_off / r_on)^x`, modeling a tunnel barrier).
+State is stored as unknown `M1:state` (readable via `state(name)`), while `resistance` and `rate` (positive toward off, in full ranges per second) are exposed as [device variables](results.md#device-models).
+Near either boundary at distance `d`, window function `1 - e^(-d/w)` (width `w = window`) halts motion toward the boundary while allowing immediate departure when drive reverses.
 
-Only time moves a state.
-At an operating point, and in the DC sweeps, small-signal responses and noise about one, a memristor's state is the one it was made in, its `state`, as SPICE's initial conditions hold a node: the memristor is a resistor there, and its `rate` says how fast a transient would move it.
-A transient starts from that state.
-A [periodic steady state](simulation.md#periodic-steady-state) finds one steady state: when the drive returns a memristor's state each period, as a symmetric one does, any state it starts from repeats, and the one found need not be the state it was made in.
+Memristor state evolves only over time.
+During operating points, DC sweeps, AC, and noise analyses, state remains fixed at initial `state` (behaving as a fixed resistor), while `rate` reports the instantaneous transient drift rate.
+Transients begin from initial `state`.
+In [periodic steady state](simulation.md#periodic-steady-state), a symmetrically driven memristor can repeat from any initial state, so shooting preserves the starting state along neutral directions.
 
-`voltage_controlled_memristor(...)` is VTEAM's memristor (Kvatinsky, Ramadan, Friedman and Kolodny, 2015), whose state a voltage moves only past a threshold, as a memory's cell holds under the voltage that reads it.
-A voltage `v` of `positive` over `negative` above `off_voltage` moves the state toward off at `off_rate · (v/v_off − 1)^α_off`, and one below `on_voltage`, a negative voltage, toward on at `on_rate · (v/v_on − 1)^α_on`; between them, the state holds.
-Each rate is the state's speed at twice its threshold, in full ranges per second: VTEAM's `k_off`, or `−k_on`, over the range of its state variable, `w_off − w_on`.
+`voltage_controlled_memristor(...)` implements the VTEAM model (Kvatinsky, Ramadan, Friedman, and Kolodny, 2015), where state moves only when voltage exceeds switching thresholds.
+Voltage `v = v(positive) - v(negative)` above `off_voltage` drives state toward off at `off_rate · (v/v_off - 1)^α_off`, voltage below negative `on_voltage` drives state toward on at `on_rate · (v/v_on - 1)^α_on`, and voltages between thresholds hold state constant.
+Rates specify state velocity at twice threshold voltage in full ranges per second (`k_off / (w_off - w_on)` and `-k_on / (w_off - w_on)`).
 
 | Parameter | VTEAM | Unit | Default |
 | --- | --- | --- | --- |
 | `on_resistance`, `off_resistance` | `R_ON`, `R_OFF` | Ω | none |
 | `on_voltage`, `off_voltage` | `v_on`, `v_off` | V | none |
-| `on_rate`, `off_rate` | `−k_on`, `k_off` over `w_off − w_on` | 1/s | none |
+| `on_rate`, `off_rate` | `-k_on`, `k_off` over `w_off - w_on` | 1/s | none |
 | `on_exponent`, `off_exponent` | `α_on`, `α_off` | a number, at least 1 | 1 |
 | `law` | linear or exponential | | `"linear"` |
-| `state` | `(w − w_on) / (w_off − w_on)` | from 0 to 1 | 1, off |
+| `state` | `(w - w_on) / (w_off - w_on)` | from 0 to 1 | 1, off |
 | `window` | | a fraction of the state's range | 0.01 |
 
-`current_controlled_memristor(...)` is the linear ion drift memristor of HP's titanium dioxide cell (Strukov, Snider, Stewart and Williams, 2008), whose state the charge through it moves, as its dopants drift.
-A charge `q` from `positive` to `negative` moves the state toward off by `q/Q`, where `Q`, its `charge`, carries it across its whole range; with a linear law, it is Chua's ideal memristor, whose flux is a function of its charge alone.
-Its `on_resistance`, `off_resistance`, `law`, `state` and `window` are as above.
+`current_controlled_memristor(...)` implements the HP linear ion-drift model (Strukov, Snider, Stewart, and Williams, 2008), where state shifts proportionally to transported charge.
+Charge `q` flowing from `positive` to `negative` shifts state toward off by `q / Q` (full-range `charge` `Q`), recovering Chua's ideal memristor under `"linear"` law.
+Parameters `on_resistance`, `off_resistance`, `law`, `state`, and `window` follow the same definitions as VTEAM.
 
-Written for ngspice, a memristor is a behavioral current whose state is the voltage of a node of its own.
-In a transient's netlist, a behavioral current charges that node at the state's rate, from an initial condition at the state it was made in.
-The node's capacitance is the ratio of ngspice's current and voltage tolerances, 10 µF, so that ngspice holds the state's rate to its voltage tolerance, as jolty does.
-In any other analysis's netlist, a source holds the node at that state, as jolty holds it at an operating point and in the analyses about one.
+SPICE export represents each memristor as a behavioral current source paired with a dedicated state node.
+In transient netlists, a behavioral current charges that state node from initial `state` across a 10 µF capacitor (matching ngspice's current-to-voltage tolerance ratio so state rates satisfy voltage tolerance).
+In DC, AC, and noise netlists, an ideal voltage source holds the state node at initial `state`.
 
 ## Thermal networks
 
-A thermal network carries heat as a circuit carries current: its nets are temperatures above the ambient, in kelvins, its flows heat, in watts, and the ground is the ambient itself.
-Its devices have thermal terminals, which join thermal nets or the ground, and never a net an electrical terminal or a logic pin joins.
+Thermal networks obey the electrical analogy: thermal nets carry temperature rise above ambient (K), flows represent heat power (W), and ground represents ambient temperature.
+Thermal terminals connect exclusively to thermal nets or ground and cannot mix with electrical or logic nets.
 
 | Function | Terminals | Parameter |
 | --- | --- | --- |
-| `thermal_resistance(resistance)` | `a`, `b` | K/W: heat flows from the hotter terminal to the colder at their difference over it |
-| `thermal_capacitance(capacitance)` | `a`, `b` | J/K: heat it stores, in proportion to their difference |
-| `heat_source(power)` | `a`, `b` | W: a constant flow from `a` into `b` |
+| `thermal_resistance(resistance)` | `a`, `b` | K/W: heat flows from hotter to colder terminal proportional to temperature difference |
+| `thermal_capacitance(capacitance)` | `a`, `b` | J/K: stored thermal energy proportional to temperature difference |
+| `heat_source(power)` | `a`, `b` | W: constant heat flow from `a` into `b` |
 
 ```python
 heat = c.place(devices.heat_source(1 * W), name="P1")
@@ -265,14 +268,14 @@ c.connect(heat.b, sink.a, name="hot")
 c.connect(heat.a, sink.b, ground)
 ```
 
-A thermal net's unknown is its temperature above the ambient, which results read with `rise(net)`: 50 K here.
-Results read the heat flowing into a thermal terminal as its current, `current(instance, terminal)`, in watts.
+Thermal net unknowns represent temperature rise above ambient, readable via `rise(net)` (50 K in the example above).
+Heat entering a thermal terminal is readable via `current(instance, terminal)` in watts.
 
 ### Self-heating
 
-`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor, a MOSFET, a BSIM3 or a VDMOS by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
-The device runs at the simulation's temperature raised by that net's, every parameter scaled to it as the sections below say, and the power its electrical terminals take, each one's voltage times the current into it, flows into the net as heat.
-So a transistor whose junction a thermal resistance holds to the ambient settles where the heat it makes flows away, and a thermal capacitance beside it sets how fast it gets there:
+Calling `device.heated()` enables electrothermal coupling on resistors, diodes, JFETs, BJTs, MOSFETs, BSIM3, and VDMOS by adding a `thermal` terminal.
+The device evaluates all temperature-dependent parameters at simulation temperature plus thermal-net rise and injects electrical dissipation (`Σ v_i i_i`) into the thermal net as heat.
+Connecting a thermal resistance to ambient determines steady-state junction temperature, while an added thermal capacitance governs thermal transient dynamics:
 
 ```python
 transistor = c.place(devices.bipolar_transistor().heated(), name="Q1")
@@ -281,13 +284,13 @@ c.connect(transistor.thermal, mount.a, name="junction")
 c.connect(mount.b, ground)
 ```
 
-Every analysis sees the heating: an operating point balances it, a transient follows it, and a small-signal response carries its thermal poles, below which a resistor with a temperature coefficient takes a resistance of its own.
-A heated device keeps the form its value took at the simulation's temperature: a resistor below 1 Ω there carries its current as an unknown however hot it runs.
-ngspice heats no device on a thermal network, and its VDMOS only on a network of its own, whose nodes are in degrees Celsius, so a circuit that holds a heated device is not written as a SPICE netlist.
+Every analysis accounts for self-heating: operating points balance electrical and thermal equilibrium, transients track heating over time, and AC responses capture thermal poles (yielding distinct low-frequency incremental resistances).
+Matrix structure stays fixed to ambient resistance thresholds: a resistor below 1 Ω at ambient keeps its branch-current unknown regardless of heated resistance.
+ngspice lacks general thermal-network heating (supporting only a separate Celsius-unit VDMOS network), so circuits with heated devices cannot export to SPICE.
 
 ## Diode
 
-`diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model as ngspice 47 implements it.
+`diode(...)` models a junction diode from `anode` to `cathode` following ngspice 47 (SPICE levels 1 and 3).
 Every parameter is optional:
 
 | Parameter | SPICE | Unit | Default |
@@ -305,7 +308,7 @@ Every parameter is optional:
 | `recombination_emission_coefficient` | `NR` | none | 2 |
 | `sidewall_saturation_current` | `JSW`, `ISW` | A | 0 |
 | `sidewall_emission_coefficient` | `NS` | none | the emission coefficient |
-| `sidewall_series_resistance` | `RSW` | Ω | none: the sidewall beside the junction |
+| `sidewall_series_resistance` | `RSW` | Ω | none: sidewall in parallel with bottom junction |
 | `sidewall_junction_capacitance` | `CJP`, `CJSW` | F | 0 |
 | `sidewall_junction_potential` | `PHP`, `VJSW` | V | 1 V |
 | `sidewall_grading_coefficient` | `MJSW` | none | 0.33 |
@@ -332,30 +335,31 @@ Every parameter is optional:
 | `nominal_temperature` | `TNOM`, `TREF` | K | 27 °C |
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
-A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`; below 1 Ω, the resistance adds its current too, as `D1:junction_current`, as a small resistor does.
-A sidewall series resistance does the same for the sidewall junction, as `D1:sidewall` and `D1:sidewall_current`.
+A non-zero series resistance adds internal unknown `D1:junction` (plus `D1:junction_current` when below 1 Ω).
+A sidewall series resistance similarly adds `D1:sidewall` and, below 1 Ω, `D1:sidewall_current`.
 
-The bottom junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
-Given a recombination saturation current `Isr`, it adds `Isr · (e^(v/(NR·Vt)) − 1) · ((1 − v/VJ)² + 0.005)^(M/2)`, held below three of its slopes of reverse bias at its value there; given a tunneling saturation current `Itun`, its current loses `Itun · (e^(−v/(NTUN·Vt)) − 1)`.
-A knee current `Ik` softens the current `I` beyond it to `I / (1 + √(|I|/Ik))`: forward by the forward knee current, reverse by the reverse one, as ngspice does for a current beyond 1e-18 A.
-The sidewall junction carries a junction's current of its own saturation current and emission coefficient, its own tunneling current, and its own forward knee, and holds its own depletion charge; it sits beside the bottom junction, behind the series resistance, or, given a sidewall series resistance, behind that alone from the anode, where it does not break down.
-Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current of the two junctions there is the breakdown current, and jolty does the same.
+The bottom junction matches SPICE, saturating at reverse current `-Is` below `-3 Vt`.
+Recombination adds `Isr · (e^(v/(NR·Vt)) - 1) · ((1 - v/VJ)² + 0.005)^(M/2)` (clamped below `-3 NR Vt`), and tunneling subtracts `Itun · (e^(-v/(NTUN·Vt)) - 1)`.
+High-injection knee currents `Ik` soften current `I` to `I / (1 + √(|I|/Ik))` above `1e-18` A in forward (`IKF`) or reverse (`IKR`) bias.
+The sidewall junction models independent saturation, emission, tunneling, knee, and depletion charge in parallel with the bottom junction behind `RS`, or behind `RSW` directly from the anode (without breakdown).
+When `breakdown_voltage` is specified, reverse current grows exponentially past breakdown, shifting the onset voltage identically to ngspice so combined current matches `IBV` at `BV`.
 
-The SPICE reader multiplies the bottom junction's currents and capacitance, and divides its resistance, by the element's area times its copies `M`, and the sidewall's by its perimeter, `PJ`, times them, as ngspice does; the breakdown current by the copies, and at level 3 by the area too.
-A card of level 3 whose element gives its width and length, `W` and `L`, takes its area and perimeter from them, `(W + XW) · (L + XW)` and `2 · (W + XW) + 2 · (L + XW)`, scaled by the library's `scale`.
-jolty reads no metal or polysilicon over a level 3 diode's bulk, `LM`, `LP`, `WM` and `WP`, which no open kit sizes; nor ngspice's soft reverse recovery, `VP`, or its own self-heating, `RTH0` and `CTH0`, as a diode heats here on a thermal net ([Self-heating](#self-heating)).
+The SPICE reader scales bottom-junction currents, capacitance, and inverse resistance by `AREA · M`, sidewall terms by `PJ · M`, and breakdown current by `M` (plus `AREA` at level 3).
+Level 3 elements specifying width `W` and length `L` compute area `(W + XW) · (L + XW)` and perimeter `2 · (W + XW) + 2 · (L + XW)` scaled by library `scale`.
+Level 3 metal/poly overlap terms (`LM`, `LP`, `WM`, `WP`), soft reverse recovery (`VP`), and ngspice internal self-heating (`RTH0`, `CTH0`) are unsupported (use [self-heating](#self-heating) instead).
 
-Away from the nominal temperature `Tn`, at temperature models 0 and 1 the saturation currents scale by `(T/Tn)^(XTI/n) · exp((T/Tn − 1) · Eg / (n · Vt))`, with `Eg` the energy gap, `XTI` its temperature exponent, `n` each one's emission coefficient and `Vt` the thermal voltage at `T`, the tunneling ones by `XTITUN`, `NTUN` and `KEG · Eg`; at temperature model 2 the energy gap follows Varshni's law, `Eg(T) = EG − GAP1 · T² / (T + GAP2)`, and `(T/Tn − 1) · Eg / Vt` becomes `Eg(Tn) / Vt(Tn) − Eg(T) / Vt`.
-At capacitance temperature model 0, the junction potentials and capacitances follow silicon's band gap, or at temperature model 2 the energy gap's; at 1, they move linearly from the nominal temperature by their own coefficients.
-The breakdown voltage falls by its temperature coefficient, in volts per kelvin at temperature model 0 and relative to itself at 1 and 2; the series resistances, the transit time and the grading coefficient follow their linear and quadratic coefficients, as in ngspice.
-Where ngspice departs from its own model, the sidewall's emission coefficient left out, a sidewall with a resistance of its own, a level 3 diode's copies, the recombination's conductance and `TLEVC` 1, jolty follows the model, as the [departures](departures.md) state.
+For temperature models 0 and 1, saturation currents scale by `(T/Tn)^(XTI/n) · exp((T/Tn - 1) · Eg / (n · Vt))` (and tunneling by `XTITUN`, `NTUN`, `KEG · Eg`).
+Temperature model 2 applies Varshni's band gap `Eg(T) = EG - GAP1 · T² / (T + GAP2)` with exponent `Eg(Tn)/Vt(Tn) - Eg(T)/Vt`.
+Capacitance temperature model 0 scales potentials and capacitances via silicon band gap (or model 2 `Eg`), while model 1 applies linear coefficients from `TNOM`.
+Breakdown voltage shifts linearly (absolute at model 0, relative at models 1 and 2), and series resistances, transit time, and grading coefficients follow linear and quadratic temperature coefficients matching ngspice.
+Where ngspice diverges from diode equations (omitted `NS` scaling, `RSW` sidewall bugs, doubled level 3 multiplicity, inexact recombination conductance, and hardcoded 27 °C `TLEVC = 1`), jolty follows the equations ([departures](departures.md)).
 
-In a [noise analysis](simulation.md#noise), each series resistance makes thermal noise, `4kT/R` A²/Hz, and each junction's current `I`, the bottom's with the sidewall's beside it, shot noise, `2q·|I|`, and flicker noise, `KF·|I|^AF/f`, `KF` the flicker coefficient and `AF` its exponent, as in ngspice.
+In [noise analysis](simulation.md#noise), series resistances add thermal noise `4kT/R`, while junction currents `I` (bottom plus parallel sidewall) add shot noise `2q·|I|` and flicker noise `KF·|I|^AF/f`.
 
 ## JFET
 
-`jfet(...)` is a junction field-effect transistor between `drain`, `gate` and `source`, in the SPICE model with Sydney University's doping tail, as ngspice implements it.
-Two junctions join the gate to the channel, and the drain current follows the square law above the threshold voltage, its drain and source swapping when the drain falls below the source.
+`jfet(...)` models a junction field-effect transistor across `drain`, `gate`, and `source` using the SPICE square-law model with the Sydney University doping tail, matching ngspice.
+Two gate-channel junctions couple the gate, drain current follows the square law above threshold, and drain and source swap symmetrically when `vds < 0`.
 Every parameter is optional:
 
 | Parameter | SPICE | Unit | Default |
@@ -372,25 +376,25 @@ Every parameter is optional:
 | `saturation_current` | `IS` | A | 10 fA |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `doping_tail` | `B` | none | 1, the plain square law |
-| `threshold_voltage_temperature_coefficient` | `VTOTC`, or `−TCV` | V/K | 0 |
+| `threshold_voltage_temperature_coefficient` | `VTOTC`, or `-TCV` | V/K | 0 |
 | `transconductance_parameter_temperature_exponent` | `BEX` | none | 0 |
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent` | `XTI` | none | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
-A drain or source resistance adds an internal node to the unknowns, as `J1:drain` or `J1:source` for a JFET `J1`; one below 1 Ω adds its current too, as `J1:drain_current` or `J1:source_current`, as a small resistor does.
+Drain and source resistances add internal nodes `J1:drain` and `J1:source` (plus `J1:drain_current` and `J1:source_current` below 1 Ω).
 
-Away from the nominal temperature, the gate junctions' saturation current scales with the energy gap as a diode's, and their potential and capacitances follow silicon's band gap; the threshold moves by its temperature coefficient, and the transconductance parameter scales as `(T/Tn)^BEX`.
-ngspice scales a JFET's saturation current by its temperature exponent only when given, so it defaults to 0.
+Away from nominal temperature, gate-junction saturation current, potential, and capacitances scale with band gap like a diode, threshold shifts linearly by `VTOTC`, and transconductance scales as `(T/Tn)^BEX`.
+ngspice scales JFET saturation current by `XTI` only when explicitly provided, so `saturation_current_temperature_exponent` defaults to 0.
 
-In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `KF·|Id|^AF/f`, as in ngspice.
+In [noise analysis](simulation.md#noise), resistances generate thermal noise, the channel generates thermal noise `8kT·gm/3` A²/Hz, and drain current `Id` generates flicker noise `KF·|Id|^AF/f`.
 
 ## Bipolar transistor
 
-`bipolar_transistor(...)` is a bipolar junction transistor between `collector`, `base` and `emitter`, in the Gummel-Poon model of SPICE, as ngspice implements it.
-The transport current falls with the base charge, which models the Early effect and high injection, and the base resistance falls from `base_resistance` towards `min_base_resistance` as the base charge or the base current grows.
-Every parameter is optional; an Early voltage, knee current or transit-time voltage left out is infinite:
+`bipolar_transistor(...)` models a Gummel-Poon BJT across `collector`, `base`, and `emitter`, matching ngspice.
+Transport current scales inversely with base charge (capturing Early effect and high injection), while base resistance decreases from `base_resistance` toward `min_base_resistance` with rising base charge or current.
+Every parameter is optional; omitted Early voltages, knee currents, and transit-time voltages default to infinity:
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
@@ -413,7 +417,7 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `reverse_transit_time` | `TR` | s | 0 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `excess_phase` | `PTF` | degrees | 0 |
-| `substrate` | `SUBS`, 1 or −1 | `"vertical"` or `"lateral"` | none: no substrate |
+| `substrate` | `SUBS`, 1 or -1 | `"vertical"` or `"lateral"` | none: no substrate |
 | `substrate_saturation_current`, `substrate_emission_coefficient` | `ISS`, `NS` | A, none | none: no diode, 1 |
 | `substrate_capacitance`, `substrate_potential`, `substrate_grading` | `CJS`, `VJS`, `MJS` | F, V, none | 0, 0.75 V, 0 |
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
@@ -421,38 +425,37 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `temperature_model`, `capacitance_temperature_model` | `TLEV`, `TLEVC` | 0 or 1 | 0, 0 |
 | `high_injection_exponent` | `NKF` | none | 0.5 |
 | `<parameter>_temperature_coefficient`, `<parameter>_quadratic_temperature_coefficient` | `TBF1`, `TBF2`, `TRC1`, `TRC2` and kin | 1/K, 1/K² | none for the betas, 0 for others |
-| `base_emitter_capacitance_temperature_coefficient` and the collector's and substrate's | `CTE`, `CTC`, `CTS` | 1/K | 0 |
-| `base_emitter_potential_temperature_coefficient` and the collector's and substrate's | `TVJE`, `TVJC`, `TVJS` | V/K | 0 |
+| `base_emitter_capacitance_temperature_coefficient` (plus collector and substrate) | `CTE`, `CTC`, `CTS` | 1/K | 0 |
+| `base_emitter_potential_temperature_coefficient` (plus collector and substrate) | `TVJE`, `TVJC`, `TVJS` | V/K | 0 |
 | `nominal_temperature` | `TNOM`, `TREF` | K | 27 °C |
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
-A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`; one below 1 Ω, the base's at its minimum, adds its current too, as `Q1:base_current`, `Q1:collector_current` or `Q1:emitter_current`, as a small resistor does.
+Base, collector, and emitter resistances add internal nodes `Q1:base`, `Q1:collector`, and `Q1:emitter`, plus corresponding `*_current` unknowns when resistance (or `min_base_resistance`) is below 1 Ω.
 
-An excess phase delays the forward transport current, `Ibe / qb`, by `td = PTF · π / 180 · TF` through the second-order Bessel filter `3 / (s² td² + 3 s td + 3)`, the filter ngspice integrates in a transient, so its phase at `1 / (2π · TF)` is nearly `PTF`.
-The filter adds two unknowns, `Q1:delayed_transport` and `Q1:delayed_transport_slope`, and holds in every analysis, so a pole-zero analysis finds its two poles.
-ngspice's AC analysis delays the transconductance by a pure `exp(−jω·td)` instead, so at `1 / (2π · TF)` the two engines' gains differ by the filter's magnitude there, 5 % at a `PTF` of 30°.
+Excess phase delays forward transport current `Ibe / qb` by `td = PTF · π / 180 · TF` via the second-order Bessel filter `3 / (s² td² + 3 s td + 3)`, matching ngspice transient integration with phase near `PTF` at `1 / (2π · TF)`.
+The Bessel filter adds unknowns `Q1:delayed_transport` and `Q1:delayed_transport_slope` across all analyses, exposing both poles in pole-zero analysis.
+ngspice AC instead applies a pure delay `exp(-jω·td)`, causing AC gain at `1 / (2π · TF)` to differ by the Bessel filter magnitude (5% at `PTF = 30°`).
 
-A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate`, joined by a junction to its internal collector if vertical or to its internal base if lateral.
-The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.
-The substrate parameters need a substrate.
+Setting `substrate` to `"vertical"` or `"lateral"` adds a fourth `substrate` terminal connected via a junction to the internal collector (vertical) or internal base (lateral).
+The substrate junction conducts `gmin` plus diode current when `substrate_saturation_current` is set, with linear forward depletion capacitance; substrate parameters require an active substrate.
 
-Away from the nominal temperature, the saturation currents scale with the energy gap as a diode's, the leakage currents with their own emission coefficients; the betas scale as `(T/Tn)^XTB` where `temperature_model` is 0, and as `1 + XTB·ΔT` where it is 1, dividing the leakage currents too; and the junctions' potentials and capacitances follow silicon's band gap where `capacitance_temperature_model` is 0, and where it is 1 their own coefficients, each capacitance by `1 + CTE·ΔT` and each potential falling by `TVJE·ΔT`, as ngspice 47's `bjttemp.c` scales them.
-HSPICE's coefficients scale each other parameter by `1 + c1·ΔT + c2·ΔT²`: the Early voltages, `TVAF1` and `TVAF2`, `TVAR1` and `TVAR2`; the knee currents, `TIKF1`, `TIKR1` and their second; the resistances, `TRB1`, `TRM1`, `TRC1` and `TRE1`, and the base resistance's current, `TIRB1`; the emission coefficients, `TNF1`, `TNR1`, `TNE1`, `TNC1` and `TNS1`, the leakage currents scaled by their nominal ones; the transit times and the transit time's current, `TTF1`, `TTR1` and `TITF1`; and the grading coefficients, `TMJE1`, `TMJC1` and `TMJS1`, at most 0.999, where ngspice limits them.
-A beta given `TBF1` or `TBF2`, `TBR1` or `TBR2`, scales by them alone, `XTB` still dividing the leakage currents; the excess phase's delay keeps the nominal transit time, as ngspice's does.
-`TLEV` 3, which raises each saturation current to a power of the temperature that does not commute with an element's area, is refused by name, as is 2, for which ngspice computes no saturation current; the reader reads past 3's coefficients, `TIS1` to `TISS2`, which change nothing at 0 or 1.
-`high_injection_exponent`, `NKF`, sets the base charge's high injection, `qb = q1·(1 + (1 + 4·q2)^NKF)/2`, a square root by default; a card's beyond 1 is read as 1, as ngspice limits it.
-The SPICE reader reads past what ngspice's BJT does not define, HSPICE's `DCAP`, `GAP1`, `GAP2`, `CBCP`, `CBEP` and `CCSP`, and a lone `IBE` or `IBC`, which ngspice reads only together; both together are refused by name.
+Temperature scaling matches ngspice 47 `bjttemp.c`: saturation and leakage currents scale with band gap, betas scale as `(T/Tn)^XTB` (`TLEV = 0`) or `1 + XTB·ΔT` (`TLEV = 1`, also dividing leakage currents), and junctions use band-gap (`TLEVC = 0`) or linear (`TLEVC = 1`) scaling.
+HSPICE quadratic polynomials `1 + c1·ΔT + c2·ΔT²` scale Early voltages (`TVAF*`, `TVAR*`), knee currents (`TIKF*`, `TIKR*`), resistances (`TRB*`, `TRM*`, `TRC*`, `TRE*`, `TIRB*`), emission coefficients (`TN*`), transit times (`TTF*`, `TTR*`, `TITF*`), and grading coefficients (`TMJ*`, capped at 0.999).
+Explicit `TBF1`/`TBF2` or `TBR1`/`TBR2` coefficients override `XTB` on beta while leaving `XTB` active on leakage currents; excess phase always uses nominal `TF`.
+`TLEV = 2` and `TLEV = 3` are rejected by name (while unused `TIS1` to `TISS2` coefficients are ignored at `TLEV` 0 or 1).
+`high_injection_exponent` (`NKF`, clamped at 1) sets `qb = q1 · (1 + (1 + 4·q2)^NKF) / 2`.
+The SPICE reader skips undefined HSPICE parameters (`DCAP`, `GAP1`, `GAP2`, `CBCP`, `CBEP`, `CCSP`, and solitary `IBE` or `IBC`) and rejects paired `IBE`/`IBC` by name.
 
-In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the base resistance at its bias, the collector current shot noise, and the base current `Ib` shot noise and flicker noise of `KF·|Ib|^AF/f`, as in ngspice.
+In [noise analysis](simulation.md#noise), terminal resistances (with bias-dependent base resistance) add thermal noise, collector current adds shot noise, and base current `Ib` adds shot noise plus flicker noise `KF·|Ib|^AF/f`.
 
-ngspice leaves out of its small-signal model and its Newton steps how a falling base resistance depends on the junction voltages; jolty keeps every derivative, so its frequency response is the exact slope of its DC model, and its Newton steps converge faster to the same operating point.
+ngspice omits bias-dependent base-resistance derivatives from Newton steps and AC models, whereas jolty differentiates all terms exactly for consistent small-signal slopes and faster Newton convergence.
 
 ## MOSFET
 
-`mosfet(...)` is a metal-oxide-semiconductor field-effect transistor between `drain`, `gate`, `source` and `bulk`, in SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate capacitances, or with `level=3` in SPICE's semi-empirical level 3 model, as ngspice implements them.
-Above the threshold, the drain current follows the square law, which the body effect raises as the source rises above the bulk; the drain and the source swap when the drain falls below the source.
-Two junctions join the bulk to the drain and the source, and the gate holds overlap charges and, given an oxide thickness, Meyer's capacitances.
-With an oxide thickness and a substrate doping, the threshold, the body effect and the surface potential left out derive from the process, as in SPICE.
+`mosfet(...)` models a four-terminal MOSFET (`drain`, `gate`, `source`, `bulk`) using SPICE level 1 (Shichman-Hodges square law with Meyer capacitances) or level 3 (`level=3`, semi-empirical short-channel model), matching ngspice.
+Above threshold, drain current follows the channel model with body-effect threshold modulation, swapping drain and source symmetrically when `vds < 0`.
+Bulk-drain and bulk-source junctions couple the substrate, and the gate holds overlap charges plus Meyer capacitances when `oxide_thickness` is given.
+When `oxide_thickness` and `substrate_doping` are set, omitted `threshold_voltage`, `body_effect`, and `surface_potential` derive automatically from process physics as in SPICE.
 Every parameter is optional:
 
 | Parameter | SPICE | Unit | Default |
@@ -461,23 +464,23 @@ Every parameter is optional:
 | `width`, `length` | `W`, `L` | m | 100 µm, 100 µm |
 | `multiplier` | `M` | none | 1 |
 | `threshold_voltage` | `VTO` | V | 0, or derived |
-| `transconductance_parameter` | `KP` | A/V² | 20 µA/V², or the surface mobility times the oxide capacitance per area |
+| `transconductance_parameter` | `KP` | A/V² | 20 µA/V², or surface mobility times oxide capacitance per area |
 | `body_effect` | `GAMMA` | √V, as a number | 0, or derived |
 | `surface_potential` | `PHI` | V | 0.6 V, or derived |
 | `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0, at level 1 only |
 | `lateral_diffusion` | `LD` | m | 0 |
-| `oxide_thickness` | `TOX` | m | none: no Meyer's capacitances |
+| `oxide_thickness` | `TOX` | m | none: no Meyer capacitances |
 | `surface_mobility` | `UO` | m²/(V·s) | 0.06 m²/(V·s), SPICE's 600 cm²/(V·s) |
 | `substrate_doping` | `NSUB` | m⁻³ | none |
 | `surface_state_density` | `NSS` | m⁻² | 0 |
 | `gate_material` | `TPG` | `"opposite_doping"`, `"same_doping"` or `"aluminum"` | `"opposite_doping"` |
-| `drain_resistance`, `source_resistance` | `RD`, `RS` | Ω | the sheet resistance's |
+| `drain_resistance`, `source_resistance` | `RD`, `RS` | Ω | from sheet resistance |
 | `sheet_resistance`, `drain_squares`, `source_squares` | `RSH`, `NRD`, `NRS` | Ω, none, none | 0, 1, 1 |
 | `saturation_current`, `saturation_current_density` | `IS`, `JS` | A, A/m² | 10 fA, 0 |
 | `drain_area`, `source_area` | `AD`, `AS` | m² | 0 |
 | `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | 0 |
 | `junction_potential` | `PB` | V | 0.8 V |
-| `bulk_drain_capacitance`, `bulk_source_capacitance` | `CBD`, `CBS` | F | the bottom capacitance's |
+| `bulk_drain_capacitance`, `bulk_source_capacitance` | `CBD`, `CBS` | F | from bottom capacitance |
 | `bottom_capacitance`, `bottom_grading` | `CJ`, `MJ` | F/m², none | 0, 0.5 |
 | `sidewall_capacitance`, `sidewall_grading` | `CJSW`, `MJSW` | F/m, none | 0, 0.5 at level 1 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
@@ -486,7 +489,7 @@ Every parameter is optional:
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 | `level` | `LEVEL` | 1 or 3 | 1 |
 
-Level 3 replaces the square law with a law of short channels, takes no channel-length modulation, gives the oxide a thickness of 0.1 µm and the sidewall a grading coefficient of 0.33 unless given, and adds parameters of its own:
+Level 3 replaces the square law with short-channel physics, disables `channel_length_modulation`, defaults `oxide_thickness` to 0.1 µm and `sidewall_grading` to 0.33, and adds these parameters:
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
@@ -501,35 +504,35 @@ Level 3 replaces the square law with a law of short channels, takes no channel-l
 | `length_adjustment`, `width_adjustment` | `XL`, `XW` | m | 0 |
 | `threshold_adjustment` | `DELVTO` | V | 0 |
 
-The channel shortens beyond saturation only given a substrate doping.
+Channel shortening past saturation activates only when `substrate_doping` is provided.
 
-SPICE writes the surface mobility, the substrate doping and the surface state density in centimeters; jolty takes SI units, as everywhere.
-The saturation current density replaces the saturation current when it and both areas are nonzero.
+SPICE expresses mobility, doping, and surface-state density in centimeters, whereas jolty uses SI units throughout.
+Non-zero `saturation_current_density` overrides `saturation_current` whenever both drain and source areas are positive.
 
-Away from the nominal temperature, the transconductance parameter and the surface mobility fall as `(T/Tn)^−1.5`, the surface potential follows silicon's band gap and intrinsic concentration, and the threshold moves with them; the junctions' saturation currents, potential and capacitances follow the band gap too, as in ngspice.
-A process derived from the substrate doping is derived at the nominal temperature.
+Away from nominal temperature, `KP` and mobility scale as `(T/Tn)^(-1.5)`, surface potential and threshold follow silicon band gap and intrinsic concentration, and bulk junctions scale via band gap as in ngspice.
+Derived process parameters evaluate at nominal temperature.
 
-A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
-Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
-The sparse solver eliminates the three before it factors the rest, each by its own pivot, 1, which none of Meyer's capacitances outweighs, as none exceeds the oxide's, and recovers them after each solve: the matrix it factors holds the transistor's nodes alone, as ngspice's does, and the displacements are still solved for, judged and recorded.
-It eliminates the current through a drain or source resistance below 1 Ω too, by its internal node's equation, whose entry −1 its resistance's never outweighs, so that the internal node's place takes the current's own equation and the resistance's conductance stands on no diagonal; a buck converter of two such transistors factors 13 of its 23 unknowns, ngspice's 13.
-The frequency response holds Meyer's capacitances exactly, as ngspice's does.
-In a transient, ngspice accumulates each Meyer charge as the last one plus the average capacitance times the voltage's change, and integrates it with that capacitance alone as its derivative (`mos1load.c`, lines 821 to 827 and 863 to 868), where jolty's displacement currents carry `C(v) · dv/dt` with exact derivatives; neither conserves charge, as no charge yields the capacitances.
-A transient judges the error of the charge at each of its nodes, the junctions' charges included, where ngspice's levels 1 to 3 judge their gate charges alone (`mos1trun.c`, lines 24 to 26).
-With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.
+Drain and source resistances add internal nodes `M1:drain` and `M1:source` (plus `M1:drain_current` and `M1:source_current` below 1 Ω).
+Meyer capacitances derive from no scalar charge function, so jolty stamps `C(v) · dv/dt` using displacement-current unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement`, and `M1:gate_bulk_displacement`.
+The sparse solver statically condenses all three displacements using unit pivots before factoring and recovers them afterward, matching ngspice's matrix dimension while still solving, error-checking, and recording displacements.
+Drain and source branch currents below 1 Ω condense similarly via their internal node equations (pivot `-1`), reducing a two-switch buck converter from 23 to 13 factored unknowns (matching ngspice).
+AC analyses evaluate Meyer capacitances identically to ngspice.
+In transients, ngspice integrates `q₁ + C̄ · Δv` using derivative `C̄` alone (`mos1load.c`, lines 821 to 827, 863 to 868), whereas jolty solves `C(v) · dv/dt` with exact derivatives; neither conserves charge.
+Transients control truncation error across all node charges including bulk junctions, whereas ngspice levels 1 to 3 check only gate charges (`mos1trun.c`, lines 24 to 26).
+Under forward bulk bias, jolty evaluates exact threshold derivatives instead of ngspice's reverse-bias slope formula.
 
-In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `m·KF·(|Id|/m)^AF/(f·W·Leff·Cox²)`: each of the `m` parallel copies carries its share of the current over its own effective gate, and their noises add, with an oxide 0.1 µm thick unless given, as in SPICE.
-A netlist written for ngspice gives it as ngspice's `nlev=1`, `KF/Cox` its coefficient, which ngspice 43 and later read.
+In [noise analysis](simulation.md#noise), resistances generate thermal noise, the channel generates `8kT·gm/3` A²/Hz, and `m` parallel copies generate summed flicker noise `m·KF·(|Id|/m)^AF/(f·W·Leff·Cox²)` (using 0.1 µm default oxide thickness).
+SPICE export writes flicker noise using `nlev=1` and coefficient `KF/Cox`, supported by ngspice 43 and later.
 
 ## BSIM3
 
-`bsim3(...)` is a MOSFET between `drain`, `gate`, `source` and `bulk` in BSIM3v3.3, the Berkeley short-channel model of the CMOS processes from 0.8 µm to 0.13 µm, SPICE's level 8 and 49, as ngspice 47 implements it after the BSIM3v3.3 manual of Weidong Liu, Xuemei Xi and others (UC Berkeley, 2005).
-The drain current folds in the threshold's short-channel, narrow-width and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field of `mobility_model` 1 to 3, the carriers' velocity saturation, the channel-length modulation, the barrier lowering's and the substrate current's effects on the output resistance, and the source and drain resistance `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
-The charges under the gate follow `capacitance_model` 0 to 3, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges, and two diodes join the bulk to the drain and the source, each with its depletion charge.
-The transistor is symmetric: with the drain below the source, the two swap.
-jolty's BSIM3 is derived from BSIM3v3.3.0, developed by the UC Berkeley BSIM Research Group, Copyright 2004 Regents of the University of California, and used under the BSIM terms of use, which `NOTICE` reproduces.
+`bsim3(...)` models a four-terminal short-channel CMOS transistor (0.8 µm to 0.13 µm, SPICE levels 8 and 49) implementing ngspice 47 BSIM3v3.3 per Liu, Xi, et al. (UC Berkeley, 2005).
+Drain current includes short-channel, narrow-width, and DIBL thresholds, poly depletion, `mobility_model` 1 to 3, velocity saturation, channel-length modulation, output resistance, `rdsw`, and drain-bulk impact ionization.
+Gate charges implement `capacitance_model` 0 to 3 with `charge_partition` and overlap charges, alongside bulk-drain and bulk-source diodes with depletion charges.
+The transistor is symmetric, swapping drain and source when `vds < 0`.
+jolty's BSIM3 derives from BSIM3v3.3.0 (UC Berkeley BSIM Research Group, Copyright 2004 Regents of the University of California), governed by BSIM terms reproduced in `NOTICE`.
 
-Its instance takes a MOSFET's geometry, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "tox": 7.6 * nm, ...}`:
+Instances specify MOSFET geometry plus a `card` dictionary of manual parameter names in SI units (`card={"vth0": 0.5 * V, "tox": 7.6 * nm, ...}`):
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
@@ -546,42 +549,44 @@ Its instance takes a MOSFET's geometry, and a card of the manual's parameters by
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 | `card` | each by its name | SI | ngspice's |
 
-Each parameter of the card takes a quantity of its dimension in SI units, which `devices.bsim3_dimension(name)` gives, or a plain number where it has none, and a parameter whose default derives from others, such as `vth0` from `vfb`, `k1` from `gamma1` and `gamma2`, or `cgso` from `dlc`, derives as ngspice derives it.
-Each binnable parameter has its length, width and area dependences, named after it with `l`, `w` and `p` before, each a coefficient of the reciprocal of the effective length, width or their product in meters: jolty's `lvth0` is a SPICE card's in volt-micrometers times 1e-6, its `BINUNIT = 1`.
-SPICE writes `NCH`, `NGATE` and `NSUB` per cubic centimeter, `NCH` above 1e20 and `NGATE` above 1e24 per cubic meter, and a `U0` above 1 in cm²/(V·s); jolty takes SI units, and `rdsw` and `prt` in ohms, the resistance of a channel 1 µm wide, as a card gives them.
-`ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` and their charges' counterparts are plain numbers, of meters to the powers their exponents `lln`, `lwn`, `wln` and `wwn` set, and `noia`, `noib` and `noic` are in the manual's units.
+Each card parameter expects a quantity matching `devices.bsim3_dimension(name)` (or a plain float when dimensionless), deriving dependent defaults (such as `vth0`, `k1`, `cgso`) identically to ngspice.
+Binnable parameters accept `l`, `w`, and `p` prefixes multiplying reciprocal effective length, width, and area in meters (`lvth0` equals a `BINUNIT = 1` SPICE value times `1e-6`).
+While SPICE mixes centimeter and meter conventions for `NCH`, `NGATE`, `NSUB`, and `U0`, jolty uses strict SI units while keeping `rdsw` and `prt` in ohms for a 1 µm channel as on SPICE cards.
+Parameters `ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` (and charge counterparts) are plain numbers scaled by exponents `lln`, `lwn`, `wln`, `wwn`, and `noia`/`noib`/`noic` use manual units.
 
-Away from the nominal temperature, the mobility scales as `(T/Tn)^ute`, `ua`, `ub`, `uc`, `vsat` and `rdsw` by their coefficients, the threshold by `kt1`, `kt1l` and `kt2`, and the junctions' saturation currents by `xti`, their capacitances and potentials by `tcj`, `tpb` and the sidewalls' counterparts, as in ngspice.
-BSIM3 computes with constants of its own, Boltzmann's over the electron's charge among them, so a netlist written for ngspice gives its nominal temperature in the same kelvins, and ngspice's BSIM3 agrees with jolty's at the same temperature, not where ngspice's thermal voltage is jolty's as for its other devices.
-A heated BSIM3 runs at its thermal net's temperature, as any device that [heats](#self-heating) does.
+Temperature scaling follows ngspice: mobility scales as `(T/Tn)^ute`, `ua`/`ub`/`uc`/`vsat`/`rdsw` scale via linear coefficients, threshold via `kt1`/`kt1l`/`kt2`, and junctions via `xti`, `tcj`, and `tpb`.
+BSIM3 uses fixed internal physical constants, so SPICE export keeps the exact kelvin nominal temperature and both engines agree without thermal-voltage offsetting.
+Heated BSIM3 instances evaluate at their thermal-net temperature ([Self-heating](#self-heating)).
 
-The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pb`, `pbsw` and `pbswg` below 0.1 V rise to it, and with `check_parameters`, `a2` outside 0.01 to 1, a negative `rdsw` and negative overlaps.
-A sheet resistance `rsh` adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
-A Newton iteration in which the transistor limited its gate's, its drain's or a junction's voltage has not converged, as for the other MOSFETs, where ngspice's BSIM3 holds an iteration back only for its junction limiter (`b3ld.c`, lines 187, 359 to 366 and 2437 to 2438).
-A transient judges the error of the charge at each of its nodes, as for any device, where ngspice's judges its bulk, gate and drain charges, the junctions' folded into the first and the last (`b3ld.c`, lines 2797 to 2802).
-jolty keeps every derivative exact, the derivative of the current and charge it computes: ngspice's derivative of the effective bulk voltage drops the slope of its clamp in forward bias, and its capacitances of `capacitance_model` 0 count the poly depletion's slope of the gate voltage twice, so there its frequency response differs from jolty's while their operating points and transients agree.
+Fatal ngspice parameter errors fail elaboration, while clamped values (`pb`, `pbsw`, `pbswg` floored at 0.1 V; `a2`, `rdsw`, and overlaps under `check_parameters`) match ngspice clamping.
+Sheet resistance `rsh` adds internal nodes `M1:drain` and `M1:source` (plus branch currents below 1 Ω).
+Any active gate, drain, or junction limiter prevents Newton convergence, whereas ngspice BSIM3 blocks convergence only on the junction limiter (`b3ld.c`, lines 187, 359 to 366, 2437 to 2438).
+Transients check truncation error on every node charge, whereas ngspice checks bulk, gate, and drain charges with junctions folded in (`b3ld.c`, lines 2797 to 2802).
+jolty computes exact derivatives everywhere, whereas ngspice drops forward-bias bulk-clamp slope and double-counts poly-depletion slope in `capmod = 0` AC responses.
 
-In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noise_model`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noise_model` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noise_model` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
+In [noise analysis](simulation.md#noise), sheet resistances add thermal noise while channel thermal noise uses SPICE2 (`8kT·|gm + gds + gmbs|/3` at `noise_model` 1, 3, 5, 6) or BSIM3 inversion charge (2, 4).
+Channel flicker noise uses SPICE2 (`kf·|Id|^af/(f^ef·Leff²·Cox)` at `noise_model` 1, 4, 5) or oxide traps (`noia`, `noib`, `noic` at 2, 3, 6), summed across all `m` parallel copies.
 
 ## BSIM4
 
-`bsim4(...)` is a MOSFET between `drain`, `gate`, `source` and `bulk` in BSIM4.5, the Berkeley short-channel model of the CMOS processes from 130 nm down, SPICE's level 14 and 54 of version 4.5, as ngspice 47 runs it in its `bsim4v5` model after the BSIM4.5.0 manual of Xuemei Xi, Mohan Dunga and others (UC Berkeley, 2005).
-It models the modes the version 4.5 cards of SKY130 and GF180MCU select: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0, `geomod` 0, `rgeomod` 0, `igcmod` 0, `igbmod` 0, `trnqsmod` 0, `acnqsmod` 0 and `wpemod` 0, which are ngspice's defaults too, `rgatemod` 0 to 3, and `rbodymod`, `rdsmod`, `permod`, `fnoimod` and `tnoimod` 0 or 1; a card that selects another is refused, its choice named.
-The drain current folds in the threshold's short-channel, narrow-width, pocket implant and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field, Coulomb scattering and the channel's length, the carriers' velocity saturation and overshoot, the source end's velocity limit, the output resistance's channel-length modulation, barrier lowering, threshold shift and substrate current, and the source and drain resistance `rdsw`; the impact ionization's substrate current and the gate-induced drain and source leakages flow into the body.
-The charges under the gate follow `capmod` 2 with the charge's thickness, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges with their bias dependence, and two diodes, with their trap-assisted tunneling, join the body to the drain and the source, each with its depletion charge.
-The stress of the length of diffusion, from `diffusion_edge_a` and `diffusion_edge_b`, `SA` and `SB`, moves the threshold, `k2`, `eta0` and the saturation velocity; ngspice 47's `b4v5temp.c` scales the mobility too, then takes the unstressed one with `MULU0` (lines 1359 and 1420), so jolty's mobility is unstressed as ngspice's is.
-The transistor is symmetric: with the drain below the source, the two swap.
-jolty's BSIM4 is derived from BSIM4.5.0, developed by the UC Berkeley BSIM Research Group, Copyright 2005 Regents of the University of California, and used under the BSIM4 terms of use, which `NOTICE` reproduces.
+`bsim4(...)` models a sub-130 nm CMOS MOSFET (`drain`, `gate`, `source`, `bulk`, SPICE levels 14 and 54, version 4.5) matching ngspice 47 `bsim4v5` per Xi, Dunga, et al. (UC Berkeley, 2005).
+Supported modes cover all SKY130 and GF180MCU version 4.5 cards: ngspice defaults (`mobmod=0`, `capmod=2`, `diomod=1`, `tempmod=0`, `geomod=0`, `rgeomod=0`, `igcmod=0`, `igbmod=0`, `trnqsmod=0`, `acnqsmod=0`, `wpemod=0`), `rgatemod` 0 to 3, and 0 or 1 for `rbodymod`, `rdsmod`, `permod`, `fnoimod`, and `tnoimod`.
+Cards selecting any other mode fail elaboration by name.
+Drain current models short-channel, narrow-width, pocket, and DIBL thresholds, poly depletion, gate-field/Coulomb/length mobility degradation, velocity saturation and overshoot, source velocity limit, output resistance, `rdsw`, substrate impact ionization, and GIDL/GISL currents.
+Gate charges implement `capmod = 2` with charge thickness, `charge_partition`, and bias-dependent overlaps alongside body-drain and body-source diodes with trap-assisted tunneling.
+Length-of-diffusion stress (`SA`, `SB`) modulates threshold, `k2`, `eta0`, and saturation velocity while leaving mobility unstressed under `MULU0` to match ngspice 47 (`b4v5temp.c`, lines 1359 and 1420).
+The transistor is symmetric, swapping drain and source when `vds < 0`.
+jolty's BSIM4 derives from BSIM4.5.0 (UC Berkeley BSIM Research Group, Copyright 2005 Regents of the University of California), governed by BSIM4 terms reproduced in `NOTICE`.
 
-Its instance takes a MOSFET's geometry and fingers, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "toxe": 4.1 * nm, ...}`:
+Instances specify MOSFET geometry, fingers, and a `card` dictionary using manual names in SI units (`card={"vth0": 0.5 * V, "toxe": 4.1 * nm, ...}`):
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
 | `channel` | `NMOS`, `PMOS` | `"n"` or `"p"` | `"n"` |
 | `width`, `length` | `W`, `L` | m | 5 µm, 5 µm |
 | `multiplier`, `fingers` | `M`, `NF` | none | 1, 1 |
-| `drain_area`, `source_area` | `AD`, `AS` | m² | from the fingers and `dmcg` |
-| `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | from the fingers and `dmcg` |
+| `drain_area`, `source_area` | `AD`, `AS` | m² | from fingers and `dmcg` |
+| `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | from fingers and `dmcg` |
 | `drain_squares`, `source_squares` | `NRD`, `NRS` | none | none |
 | `diffusion_edge_a`, `diffusion_edge_b`, `finger_spacing` | `SA`, `SB`, `SD` | m | 0, 0, `2·dmcg` |
 | `threshold_adjustment`, `mobility_multiplier` | `DELVTO`, `MULU0` | V, none | 0, 1 |
@@ -592,64 +597,68 @@ Its instance takes a MOSFET's geometry and fingers, and a card of the manual's p
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 | `card` | each by its name | SI | ngspice's |
 
-Each parameter of the card takes a quantity of its dimension in SI units, which `devices.bsim4_dimension(name)` gives, or a plain number where it has none, and a parameter whose default derives from others, such as `vth0` from `vfb`, `k1` from `gamma1` and `gamma2`, `toxp` from `toxe` and `dtox`, or a drain's junction parameter from the source's, derives as ngspice derives it.
-Each binnable parameter has its length, width and area dependences, named after it with `l`, `w` and `p` before, each a coefficient of the reciprocal of the effective length, width or their product in meters: jolty's `lvth0` is a SPICE card's in volt-micrometers times 1e-6 at `BINUNIT = 1`, ngspice's default, and as it is at `BINUNIT = 2`.
-SPICE writes `NDEP`, `NSD`, `NGATE` and `NSUB` per cubic centimeter, `NDEP` above 1e20 and `NSD` and `NGATE` above 1e24 per cubic meter, and a `U0` above 1 in cm²/(V·s); jolty takes SI units, and `rdsw` and `prt` in ohms, the resistance of a channel 1 µm wide, as a card gives them.
-`ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` and their charges' counterparts are plain numbers, of meters to the powers their exponents `lln`, `lwn`, `wln` and `wwn` set, and the gate tunneling currents' and the flicker noise's coefficients are in the manual's units.
-A sheet resistance `rsh` adds an internal node behind a diffusion whose `drain_squares` or `source_squares` is given and positive, as ngspice does at `rdsmod` 0 and `rgeomod` 0; at `drain_source_resistance_model` 1, `RDSMOD` 1, the drain and the source always have a node behind them, through the bias-dependent resistances of `rdw` and `rsw` in series with `rsh`'s, 1 mΩ where `nrd` or `nrs` sets none, as ngspice resets it, and `rdsw` leaves the drain current; as `M1:drain` or `M1:source` for a transistor `M1`; `body_resistance_model` 1 adds three under the channel and the junctions, `M1:body`, `M1:drain_body` and `M1:source_body`, joined to the bulk and each other by `rbpb`, `rbpd`, `rbps`, `rbdb` and `rbsb`.
-`gate_resistance_model`, `RGATEMOD`, puts the gate's resistances before the channel's gate, an internal node `M1:gate`, as `b4v5ld.c` and `b4v5temp.c` compute them: at 1, the gate electrode's resistance `rshg·(xgw + Weffcj/(3·ngcon))/(ngcon·nf·(l + xl − xgl))`, of the sheet resistance `rshg` over the gate's width from its contacts, `ngcon` of them, through `nf` fingers, 1 mΩ where it is not positive; at 2, that resistance in series with the channel's bias-dependent intrinsic-input resistance, a conductance of `xrcrg1·(xrcrg2·kT/q·β + Ids/Vdseff)·nf` of the channel's `β` and current; at 3, the electrode's resistance to a node in the middle of the gate, `M1:middle_gate`, which the overlaps' charges lie on, and the intrinsic-input resistance from it to the channel's gate.
-An instance's `XGW` and `NGCON` stand for its card's, as in ngspice; ngspice stops on an `ngcon` below 1 and an `xgl` at or above the drawn length plus `xl`, and so does jolty.
+Each card parameter expects a quantity matching `devices.bsim4_dimension(name)` (or a plain float when dimensionless), deriving dependent defaults (`vth0`, `k1`, `toxp`, drain junctions from source) identically to ngspice.
+Binnable parameters accept `l`, `w`, and `p` prefixes in reciprocal meters (`lvth0` scales by `1e-6` at `BINUNIT = 1` and directly at `BINUNIT = 2`).
+`NDEP`, `NSD`, `NGATE`, `NSUB`, and `U0` take strict SI units (unlike SPICE centimeter conventions), while `rdsw` and `prt` stay in ohms per 1 µm channel width.
+Geometry terms `ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` (and charge counterparts) are plain numbers scaled by exponents, and tunneling/flicker coefficients follow manual units.
+Sheet resistance `rsh` creates internal drain/source nodes (`M1:drain`, `M1:source`) when `NRD`/`NRS` is positive (`rdsmod = 0`), whereas `rdsmod = 1` always adds bias-dependent external `rdw`/`rsw` plus `rsh` (flooring missing `nrd`/`nrs` at 1 mΩ) and removes `rdsw` from channel current.
+Setting `body_resistance_model = 1` adds three substrate nodes (`M1:body`, `M1:drain_body`, `M1:source_body`) linked via `rbpb`, `rbpd`, `rbps`, `rbdb`, and `rbsb`.
+`gate_resistance_model` (`RGATEMOD`) inserts internal node `M1:gate` using electrode resistance `rshg·(xgw + Weffcj/(3·ngcon))/(ngcon·nf·(l + xl - xgl))` (floored at 1 mΩ) at mode 1, series intrinsic-input conductance `xrcrg1·(xrcrg2·kT/q·β + Ids/Vdseff)·nf` at mode 2, and split overlap node `M1:middle_gate` at mode 3.
+Instance `XGW` and `NGCON` override card defaults; `ngcon < 1` and `xgl >= l + xl` fail elaboration identically to ngspice.
 
-Away from the nominal temperature, the parameters scale as `tempmod` 0 scales them in ngspice: the mobility as `(T/Tn)^ute`, `ua`, `ub`, `uc`, `ud`, `vsat` and `rdsw` by their coefficients, the threshold by `kt1`, `kt1l` and `kt2`, `voff` by `tvoff`, and the junctions' saturation currents by `xtis` and `xtid`, their tunneling by `xtss` and its kin, their capacitances and potentials by `tcj`, `tpb` and the sidewalls' counterparts.
-BSIM4 computes with constants of its own, Boltzmann's over the electron's charge among them, so a netlist written for ngspice gives its nominal temperature in the same kelvins, as for BSIM3.
-The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pbs`, `pbsws` and `pbswgs` and the drain's below 0.1 V rise to it, `ckappas` and `ckappad` below 0.02 V too, and with `check_parameters`, `a2` outside 0.01 to 1, a negative `prwg`, `rdsw` or `rdswmin`.
-A Newton iteration in which the transistor limited its gate's, its drain's, its body's or a junction's voltage has not converged, as for the other MOSFETs.
-jolty keeps every derivative exact, the derivative of the current and charge it computes, where ngspice's capacitances of `capmod` 2 with respect to the body are not the derivatives of its own charges: for SKY130's `nfet_01v8`, 1 µm wide and 0.15 µm long at `tt`, its gate and drain at 0.9 V, ngspice's `cgb` lies 1.2e-4 from the central difference of its own gate charge with its body 0.2 V forward, and 3.4e-5 with it 0.3 V reverse, as far as jolty's lies from it, while driven at its gate or its drain the two engines agree within 1e-8, and in their body's conductances within 4e-9.
+Temperature scaling follows `tempmod = 0`: mobility as `(T/Tn)^ute`, `ua`/`ub`/`uc`/`ud`/`vsat`/`rdsw`/`voff` linearly, threshold via `kt1`/`kt1l`/`kt2`, and junctions via `xtis`/`xtid`, `xtss*`, `tcj`, and `tpb`.
+BSIM4 uses internal physical constants like BSIM3, so SPICE export preserves exact kelvin temperatures.
+Fatal ngspice checks fail elaboration and warnings clamp identically (`pbs*`/`pbd*` at 0.1 V, `ckappas`/`ckappad` at 0.02 V, plus `check_parameters` bounds on `a2`, `prwg`, `rdsw`, and `rdswmin`).
+Active gate, drain, body, or junction limiters prevent Newton convergence.
+jolty differentiates all charges and currents exactly, whereas ngspice `capmod = 2` body capacitances diverge from charge derivatives.
+On SKY130 `nfet_01v8` (1 µm × 0.15 µm, `tt`, `Vgs = Vds = 0.9` V), ngspice `cgb` misses finite differences by `1.2e-4` at +0.2 V and `3.4e-5` at -0.3 V bulk bias.
+Under the same bias, jolty matches gate/drain drives within `1e-8` and body conductances within `4e-9`.
 
-The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or 49 of version 3.3, or of none, which ngspice reads as 3.3; ngspice runs a card of version 3.0, 3.1 or 3.2 with other models, which jolty does not have, so it refuses one.
-An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.
-The reader reads past what changes nothing ngspice computes: the bins' ranges, the safe operating area's `VGS_MAX` and the rest, and the parameters of the non-quasi-static models and HSPICE's area calculation, `ELM`, `ACM`'s and `GEO`, which it refuses on, as jolty models neither: a card or instance with `NQSMOD`, `ACNQSMOD` or `ACM` other than 0 is refused.
+The SPICE reader loads level 8 and 49 version 3.3 cards for BSIM3 (rejecting versions 3.0 to 3.2) and selects binned cards (`name.k`) using `LMIN`/`LMAX`/`WMIN`/`WMAX` with ngspice's 1 nm tolerance.
+Unused metadata (bin bounds, SOA limits like `VGS_MAX`) is ignored, while unsupported non-quasi-static or HSPICE area modes (`NQSMOD`, `ACNQSMOD`, `ACM != 0`) are rejected by name.
 
-In a [noise analysis](simulation.md#noise), the drain, source and body resistances and the gate electrode's make thermal noise, the electrode's alone at `RGATEMOD` 2 too, as `b4v5noi.c` takes it, and the channel the thermal noise of `thermal_noise_model`, `TNOIMOD`, and the flicker noise of `flicker_noise_model`, `FNOIMOD`, as ngspice's `b4v5noi.c` computes them: at `TNOIMOD` 0, the charge-based noise of the inversion charge, `4kT·NTNOI·µeff·|Qinv|/(Leff² + µeff·|Qinv|·Rds)`; at 1, the holistic noise of the conductances, which moves the share `RNOIB` and `TNOIB` set to the resistance on the source side, as a resistance of `θ²·Vdseff/Ids` added to it; at `FNOIMOD` 0, SPICE2's flicker noise `KF·|Id|^AF/(f^EF·Leff²·Coxe)`, and at 1, BSIM4's of the oxide traps `NOIA`, `NOIB` and `NOIC`, its strong and weak inversion's densities combined in parallel.
-ngspice 47 gives a BSIM4 at `TNOIMOD` 1 a resistance of 1 mΩ behind its drain and its source in a deck that runs a noise analysis, where it has none in any other (`b4v5set.c`, lines 1823 and 1870; `b4v5temp.c`, lines 1638 and 1669); jolty adds none: SKY130's `nfet_01v8` in a stage makes ngspice's output noise within 4.2e-7 of itself there, and within 1.4e-7 where its drain and source have resistances of their own.
+In [noise analysis](simulation.md#noise), drain, source, body, and gate-electrode resistances generate thermal noise (electrode only at `RGATEMOD = 2`, matching `b4v5noi.c`).
+Channel thermal noise implements charge-based `TNOIMOD = 0` (`4kT·NTNOI·µeff·|Qinv|/(Leff² + µeff·|Qinv|·Rds)`) and holistic `TNOIMOD = 1` (partitioning `RNOIB`/`TNOIB` onto the source side).
+Channel flicker noise implements SPICE2 (`FNOIMOD = 0`: `KF·|Id|^AF/(f^EF·Leff²·Coxe)`) and oxide-trap (`FNOIMOD = 1`: `NOIA`, `NOIB`, `NOIC` combining strong and weak inversion in parallel).
+ngspice 47 injects 1 mΩ drain/source resistances in noise-only decks at `TNOIMOD = 1` (`b4v5set.c`, lines 1823 and 1870; `b4v5temp.c`, lines 1638 and 1669), while jolty leaves the circuit unchanged.
+On a SKY130 `nfet_01v8` stage, output noise agrees within `4.2e-7` without series resistances and `1.4e-7` with explicit resistances.
 
-ngspice 47's `b4v5temp.c` computes the gate electrode's resistance from `Lnew`, the drawn length plus `xl` of the last size it prepared (line 1562), which an instance whose length, width and fingers an earlier instance of the same card shares does not compute again (line 382): of three instances of one card at lengths `L1`, `L2` and `L1`, the third's electrode takes `L2`; and it resets an `ngcon` other than 1 or 2 to 1 only after it has computed the resistance of the first temperature it prepares (`b4v5check.c`, line 262; `b4v5temp.c`, line 1825).
-jolty takes each instance's own length, and the `ngcon` given, as ngspice's first preparation does.
-ngspice 47's output conductance of SKY130's RF p-channel `rf_pfet_01v8_bM04W3p00L0p18` at `tt`, its gate and drain at −0.9 V, lies 2.1e-4 from the central difference of its own drain current, 0.1 mV each way, while jolty's lies within 1.4e-9 of that difference; with `eta0` or `drout` 0 the two agree, and the RF n-channels' within 2.2e-7.
+ngspice 47 computes gate-electrode resistance from the last prepared bin's `Lnew` (`b4v5temp.c`, lines 382 and 1562) and clamps non-1/2 `ngcon` only after first preparation (`b4v5check.c`, line 262; `b4v5temp.c`, line 1825).
+jolty always uses each instance's true drawn length and specified `ngcon`.
+On SKY130 RF PMOS `rf_pfet_01v8_bM04W3p00L0p18` at `tt` (`Vgs = Vds = -0.9` V), ngspice output conductance misses central differences by `2.1e-4` whereas jolty matches within `1.4e-9`; setting `eta0 = 0` or `drout = 0` restores agreement, and RF NMOS matches within `2.2e-7`.
 
 ## VBIC
 
-`vbic(...)` is a bipolar transistor of integrated circuits between `collector`, `base`, `emitter` and `substrate`, in VBIC 1.2, the vertical bipolar inter-company model, as ngspice 47 implements it (McAndrew et al., "VBIC95, the vertical bipolar inter-company model", IEEE Journal of Solid-State Circuits, 1996, as the VBIC 1.2 definition extends it).
-Beside the Gummel-Poon transistor's transport current, Early effect, high injection and junction charges, it models the parasitic substrate transistor from the extrinsic base to the substrate, the weak avalanche of the base-collector junction, the quasi-saturation of the intrinsic collector by Kull's model, the base-emitter breakdown, the reach-through of the base-collector junction, and junction capacitances smoothed at their potentials.
-Its parameters take the names of a VBIC card's meaning, such as `extrinsic_collector_resistance` for `RCX`, in SI units, and those left out take ngspice's defaults; the [models reference](../reference/models.md#vbic) lists them all, each with its card name.
+`vbic(...)` models an integrated-circuit bipolar transistor (`collector`, `base`, `emitter`, `substrate`) implementing ngspice 47 VBIC 1.2 (McAndrew et al., *IEEE JSSC*, 1996, extended to 1.2).
+In addition to Gummel-Poon physics, VBIC models the parasitic substrate transistor, weak base-collector avalanche, Kull quasi-saturation, base-emitter breakdown, base-collector reach-through, and smoothed junction capacitances.
+Parameters use descriptive SI names (such as `extrinsic_collector_resistance` for `RCX`) with ngspice defaults, listed completely in the [models reference](../reference/models.md#vbic).
 
-The extrinsic collector, extrinsic base, emitter and substrate resistances add internal unknowns, as `Q1:collector`, `Q1:base`, `Q1:emitter` and `Q1:substrate`; the intrinsic collector, the intrinsic base and the parasitic base are internal unknowns always, and an excess-phase delay adds `Q1:transport_filter` and `Q1:delayed_transport`, the network that delays the forward transport current.
-A pnp's excess phase is its npn's mirror, where ngspice 47 reads the network's nodes without the polarity (`vbicload.c`, lines 449 and 485 to 486) and multiplies the delayed current by it (line 1139): with `TD` alone set, its pnp's collector current at DC is 3.01 mA where the npn's mirror is 56.7 µA.
-The intrinsic collector, intrinsic base and parasitic base resistances must be positive, as ngspice's are once it raises any to 10 mΩ; the SPICE reader raises them as ngspice does, and the exporter refuses one below 10 mΩ.
+Extrinsic collector, base, emitter, and substrate resistances add internal nodes `Q1:collector`, `Q1:base`, `Q1:emitter`, and `Q1:substrate`; intrinsic collector, intrinsic base, and parasitic base are always internal, and excess phase adds `Q1:transport_filter` and `Q1:delayed_transport`.
+PNP excess phase mirrors NPN exactly, whereas ngspice 47 omits polarity on excess-phase nodes (`vbicload.c`, lines 449, 485 to 486, 1139), giving 3.01 mA DC collector current instead of the 56.7 µA mirror value.
+Intrinsic collector, intrinsic base, and parasitic base resistances must be positive (floored at 10 mΩ on SPICE import, matching ngspice, and rejected below 10 mΩ on export).
 
-VBIC computes its thermal voltage with constants of its own, Boltzmann's 1.380662e-23 J/K and the electron's charge 1.602189e-19 C, in jolty as in ngspice, so the two agree at the same kelvins.
-Away from the nominal temperature, its saturation currents scale by their activation energies and temperature exponents, its resistances, forward knee current and epi saturation voltage by their exponents, its potentials and capacitances with the intrinsic carrier concentration, and its emission coefficients, avalanche and breakdown by their coefficients, as ngspice's VBIC scales them.
-A heated transistor runs at its thermal net's temperature, as the other semiconductors do, its power the sum of its terminals' voltages times their currents; ngspice's own self-heating network becomes a thermal resistance and capacitance on that net.
+VBIC uses fixed physical constants (`k = 1.380662e-23` J/K, `q = 1.602189e-19` C) in both jolty and ngspice, so the engines agree at identical kelvins.
+Temperature scaling follows ngspice VBIC across activation energies, resistance/knee/epi exponents, intrinsic-carrier potentials/capacitances, and linear emission/avalanche/breakdown coefficients.
+Heated VBIC instances evaluate at thermal-net temperature with power equal to total terminal power, translating ngspice self-heating elements onto the thermal net.
 
-In a [noise analysis](simulation.md#noise), each resistance makes thermal noise, the transport, base and parasitic currents shot noise, and the base currents flicker noise of `KFN·I^AFN/f^BFN`.
-The parasitic base resistance's thermal noise lies across that resistance, where ngspice 47 places it across the emitter resistance (`vbicnoise.c`), so the two engines' noise differs by that source alone.
+In [noise analysis](simulation.md#noise), every resistance adds thermal noise, transport/base/parasitic currents add shot noise, and base currents add flicker noise `KFN·I^AFN/f^BFN`.
+Parasitic base-resistance thermal noise stamps across the parasitic base resistance rather than the emitter resistance as in ngspice 47 (`vbicnoise.c`).
 
-The SPICE reader reads level 4 and level 9 cards of NPN and PNP models, and Q elements of three to five nodes: a five-node Q whose card heats becomes a heated transistor and thermal elements, and one whose card does not leaves its fifth node unjoined.
-It reads past `VERS`, `VREF`, `EBBE` and the safe operating area's limits, which change nothing ngspice computes, and a card's `DTEMP` becomes the transistor's temperature offset.
-A Gummel-Poon card is of level 1, and a card of another level is refused, naming it.
+The SPICE reader imports level 4 and level 9 NPN/PNP cards and three- to five-node `Q` elements, converting five-node heated devices to heated VBIC plus thermal elements while leaving unheated fifth nodes unconnected.
+Unused fields (`VERS`, `VREF`, `EBBE`, SOA bounds) are ignored, `DTEMP` maps to temperature offset, and model levels outside 1, 4, and 9 are rejected by name.
 
 ## Power MOSFET
 
-`vdmos(...)` is a vertical double-diffused power MOSFET between `drain`, `gate` and `source`, in ngspice's VDMOS model, as ngspice 47 implements it and its manual's section "Power MOSFET model (VDMOS)" describes it, which reads the cards of LTspice's power MOSFETs.
-The channel follows the square law without a body effect, its overdrive softened below the threshold, so the current falls exponentially there; the gate holds a constant charge against the source and one against the drain whose capacitance runs from its minimum, far below the drain, to its maximum, far above it; and a body diode, whose breakdown is the transistor's, joins the source to the drain.
+`vdmos(...)` models a three-terminal vertical double-diffused power MOSFET (`drain`, `gate`, `source`) matching ngspice 47 VDMOS and LTspice power-MOSFET cards.
+Channel conduction uses a body-effect-free square law with softened subthreshold overdrive, gate-source capacitance is constant, gate-drain capacitance transitions smoothly between `CGDMIN` and `CGDMAX`, and a source-to-drain body diode provides reverse conduction and breakdown.
 Every parameter is optional:
 
 | Parameter | SPICE | Unit | Default |
 | --- | --- | --- | --- |
 | `channel` | `VDMOS`, `VDMOS pchan` | `"n"` or `"p"` | `"n"` |
 | `multiplier` | `M` | none | 1 |
-| `threshold_voltage` | `VTO` | V | 3 V, or −3 V for a p-channel |
-| `transconductance_parameter` | `KP` | A/V² | 20 A/V², or 10 A/V² for a p-channel |
+| `threshold_voltage` | `VTO` | V | 3 V, or -3 V for p-channel |
+| `transconductance_parameter` | `KP` | A/V² | 20 A/V², or 10 A/V² for p-channel |
 | `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0 |
 | `mobility_modulation` | `THETA` | V⁻¹ | 0 |
 | `triode_conductance_multiplier` | `MTRIODE` | none | 1 |
@@ -670,9 +679,9 @@ Every parameter is optional:
 | `energy_gap`, `saturation_current_temperature_exponent` | `EG`, `XTI` | V, none | 1.11 V, 3 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 | `threshold_voltage_temperature_coefficient` | `TCVTH`, `VTOTC` | V/K | 0 |
-| `transconductance_parameter_temperature_exponent` | `MU`, `BEX` | none | −1.5 |
+| `transconductance_parameter_temperature_exponent` | `MU`, `BEX` | none | -1.5 |
 | `subthreshold_slope_temperature_coefficient`, `subthreshold_slope_quadratic_temperature_coefficient` | `TKSUBTHRES1`, `TKSUBTHRES2` | K⁻¹, K⁻² | 0 |
-| `drain_resistance_temperature_exponent` | `TEXP0` | none | none: the drain's coefficients |
+| `drain_resistance_temperature_exponent` | `TEXP0` | none | none: use drain coefficients |
 | `drain_resistance_temperature_coefficient`, `drain_resistance_quadratic_temperature_coefficient` | `TRD1`, `TRD2` | K⁻¹, K⁻² | 0 |
 | `quasi_saturation_resistance_temperature_exponent` | `TEXP1` | none | 0.3 |
 | `source_resistance_temperature_coefficient`, `source_resistance_quadratic_temperature_coefficient` | `TRS1`, `TRS2` | K⁻¹, K⁻² | 0 |
@@ -680,23 +689,25 @@ Every parameter is optional:
 | `body_resistance_temperature_coefficient`, `body_resistance_quadratic_temperature_coefficient` | `TRB1`, `TRB2` | K⁻¹, K⁻² | 0 |
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
-The defaults of the threshold, the transconductance parameter and the gate's and the body diode's capacitances are ngspice's, an IRF540's and an IRF9540's.
-With `vgst = vgs − vto` and `k` the subthreshold slope, the overdrive is `vgst' = k · ln(1 + exp((vgst − SUBSHIFT) / k))`; with `β' = KP · M · (1 + λ · vds) / (1 + θ · max(vgst, 0))`, the drain current is `β' · vgst'² / 2` in saturation, where `vgst' ≤ vdss`, and `β' · vdss · (vgst' − vdss / 2)` below it, `vdss` the drain-source voltage times `MTRIODE`.
-With the drain below the source, the drain acts as the source, and the channel-length modulation reads the drain-source voltage with its sign, `1 + λ · vds`, as ngspice's does.
-Given both `RQ` and `VQ`, which need a drain resistance, the drain resistance grows with the voltage `vds` from the drain terminal to the source terminal while the drain is at or above the source, to `RD + RQ · vds / (vds + VQ)`, as ngspice's quasi-saturation does; either alone changes nothing, as in ngspice.
+Default threshold, transconductance, and capacitance values match ngspice (IRF540 and IRF9540).
+With `vgst = vgs - vto` and subthreshold slope `k`, softened overdrive is `vgst' = k · ln(1 + exp((vgst - SUBSHIFT) / k))` and `β' = KP · M · (1 + λ · vds) / (1 + θ · max(vgst, 0))`.
+Drain current equals `β' · vgst'² / 2` in saturation (`vgst' ≤ vdss`) and `β' · vdss · (vgst' - vdss / 2)` in triode, where `vdss = vds · MTRIODE`.
+When `vds < 0`, drain and source swap while channel-length modulation retains signed `1 + λ · vds` as in ngspice.
+When both `RQ` and `VQ` are set alongside `RD`, forward drain resistance increases to `RD + RQ · vds / (vds + VQ)` for quasi-saturation; setting only one has no effect.
 
-The gate-drain capacitance is `s · atan(A · vgd) + y` with the gate below the drain and `s · tanh(A · vgd) + y` above it, with `s = (CGDMAX − CGDMIN) / (1 + π/2)` and `y = CGDMAX − s`.
-jolty holds its charge, the capacitance's integral, where ngspice integrates the capacitance by the trapezoidal rule from one time point to the next, so jolty's gate charge is conserved and the two agree as their steps shrink.
-The body diode is a diode from the source, behind `RB`, to the drain terminal, with the diode's junction and breakdown; its saturation current, junction capacitance and the gate's capacitances scale with the multiplier, and its breakdown current does not, as in ngspice.
-A depletion threshold `FC · VJ` above 2.5 V at the transistor's temperature, where ngspice replaces the junction potential and its depletion charge jumps, is refused.
+Gate-drain capacitance follows `s · atan(A · vgd) + y` for `vgd < 0` and `s · tanh(A · vgd) + y` for `vgd ≥ 0`, with `s = (CGDMAX - CGDMIN) / (1 + π/2)` and `y = CGDMAX - s`.
+jolty integrates this capacitance analytically into a conserved gate charge, whereas ngspice applies step-by-step trapezoidal integration; both converge as time steps shrink.
+The body diode connects source (behind `RB`) to drain, scaling saturation current and capacitances by multiplier `M` while keeping breakdown current unscaled as in ngspice.
+Depletion thresholds `FC · VJ > 2.5` V at operating temperature are rejected to prevent ngspice's discontinuous charge jump.
 
-Away from the nominal temperature, the transconductance parameter scales as `(T/Tn)^MU`, the threshold moves by `TCVTH`, the subthreshold slope by its coefficients, the drain resistance as `(T/Tn)^TEXP0` given that exponent and by `TRD1` and `TRD2` otherwise, the quasi-saturation resistance as `(T/Tn)^TEXP1`, the other resistances by their coefficients, and the body diode as a diode, as in ngspice.
-A heated VDMOS runs at its thermal net's temperature, as any device that [heats](#self-heating) does; ngspice's own thermal network, `RTHJC`, `RTHCA` and `CTHJ`, heats only an element that says `thermal`, which the SPICE reader does not read.
+Temperature scaling follows ngspice: `KP` scales as `(T/Tn)^MU`, threshold by `TCVTH`, subthreshold slope by `TKSUBTHRES*`, drain resistance by `(T/Tn)^TEXP0` or `TRD*`, quasi-saturation by `(T/Tn)^TEXP1`, remaining resistances quadratically, and the body diode like a standard diode.
+Heated VDMOS instances use [self-heating](#self-heating) on a thermal net; ngspice's optional internal thermal keywords (`RTHJC`, `RTHCA`, `CTHJ`) are not imported.
 
-A drain, source, gate or body resistance adds an internal node to the unknowns, as `M1:drain`, `M1:source`, `M1:gate` or `M1:body_diode` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current`, `M1:source_current`, `M1:gate_current` or `M1:body_diode_current`, as a small resistor does.
-jolty keeps every derivative exact: ngspice's Newton steps and small-signal model leave out the quasi-saturating resistance's slope and the mobility degradation's below the threshold, and give the reverse channel-length modulation's the opposite sign, so there its frequency response differs from jolty's, the exact slope of the DC model, while their operating points agree.
+Drain, source, gate, and body resistances add internal nodes `M1:drain`, `M1:source`, `M1:gate`, and `M1:body_diode` (plus `*_current` unknowns below 1 Ω).
+jolty differentiates all terms exactly, whereas ngspice omits quasi-saturation and subthreshold mobility-modulation derivatives and flips reverse channel-length modulation slope in AC responses.
 
-In a [noise analysis](simulation.md#noise), the drain and source resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `KF·|Id|^AF/(f·Cox²)`, with `Cox` an oxide's of 0.1 µm per area, 0.35 mF/m², as in ngspice, whose VDMOS gives its gate and body resistances and its body diode no noise.
+In [noise analysis](simulation.md#noise), drain and source resistances generate thermal noise, the channel generates `8kT·gm/3` A²/Hz, and drain current generates flicker noise `KF·|Id|^AF/(f·Cox²)` (`Cox = 0.35` mF/m²).
+Gate resistance, body resistance, and the body diode remain noiseless as in ngspice.
 
-The SPICE reader reads a `.model` card of type `VDMOS`, a p-channel's with `pchan` in it, and reads past what ngspice reads past: the annotations `MFG`, `VDS`, `RON` and `QG` of LTspice's cards; `PHI`, which only ngspice's distortion analysis reads; and the thermal network.
-Its `M` element joins three nodes, drain, gate and source, before its model, as vendors write it, or four or five, the last two ngspice's thermal nodes, which join nothing.
+The SPICE reader imports `VDMOS` cards (with `pchan` for p-channel) while skipping LTspice metadata (`MFG`, `VDS`, `RON`, `QG`), distortion-only `PHI`, and ngspice internal thermal parameters.
+`M` elements accept three nodes (drain, gate, source) or four/five nodes (ignoring ngspice's trailing thermal pins).

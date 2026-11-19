@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""The range of pulse amplitudes over which each gate computes NOR, and what bounds it.
+"""Amplitude-window sweep script for MAGIC memristive NOR gate configurations.
 
-Each amplitude writes all four inputs at once on the bench; a gate works when every
-output ends within 0.1 of its NOR and no input has moved by more than 0.05. The range
-is scanned in steps of 10 mV, and what fails a step beyond each end is named. Beside it
-stands the range the thresholds alone allow, before any state moves: the output of a
-gate with one input on must see more than 0.5 V, the output of a gate with both off
-less, and the inputs of that gate less than 1 V.
+Each pulse amplitude writes all four input pairs simultaneously, passing when every
+output finishes within 0.1 of its NOR value and every input moves by at most 0.05.
+Sweeps run in 10 mV steps and report the boundary failures one step past each edge.
+Static threshold bounds are computed alongside the transient sweep from initial
+resistances: one-on outputs must exceed 0.5 V, both-off outputs must stay below
+0.5 V, and both-off inputs must stay below 1 V.
 """
 
 import candidates
@@ -16,13 +16,13 @@ from jolty import Simulation, Transient
 from jolty.units import ns
 
 ON, OFF = 1e3, 100e3
-"""The memristors' on and off resistances, in ohms."""
+"""Memristor on and off resistances in ohms."""
 TURNS_OFF, TURNS_ON = 0.5, 1.0
-"""Their off threshold, and their on threshold's magnitude, in volts."""
+"""Memristor off-switching threshold and on-switching threshold magnitude in volts."""
 
 
 def failures(amplitude: float, shunt: float | None, width: float) -> list[str]:
-    """What fails when one pulse of `amplitude` and `width` writes the four gates."""
+    """Returns failure strings for a single write pulse of `amplitude` and `width`."""
     bench = candidates.bench(float(amplitude), shunt, width)
     stop = (width + 3) * ns
     waveforms = Simulation(bench).run(Transient(stop, max_step=width / 400 * ns))
@@ -40,14 +40,14 @@ def failures(amplitude: float, shunt: float | None, width: float) -> list[str]:
 
 
 def parallel(*resistances: float | None) -> float:
-    """The resistances given in parallel."""
+    """Computes the parallel equivalent of all non-`None` resistances."""
     return 1 / sum(
         1 / resistance for resistance in resistances if resistance is not None
     )
 
 
 def thresholds(shunt: float | None) -> tuple[float, float]:
-    """The amplitudes between which the thresholds alone let the gate work."""
+    """Computes the static threshold-only lower and upper pulse amplitude limits."""
     one_on, both_off = parallel(ON, OFF, shunt), parallel(OFF / 2, shunt)
     lowest = TURNS_OFF * (1 + one_on / ON)
     highest = min(TURNS_OFF * (1 + both_off / ON), TURNS_ON * (1 + ON / both_off))
@@ -55,7 +55,7 @@ def thresholds(shunt: float | None) -> tuple[float, float]:
 
 
 def study(name: str, shunt: float | None, width: float = candidates.WIDTH) -> None:
-    """Prints the range of amplitudes the gate works over, and what bounds it."""
+    """Prints the passing pulse-amplitude window and boundary failures for one gate."""
     amplitudes = np.round(np.arange(0.8, 2.6, 0.01), 3)
     working = [
         float(level) for level in amplitudes if not failures(level, shunt, width)

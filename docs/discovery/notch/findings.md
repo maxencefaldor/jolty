@@ -1,12 +1,13 @@
 # Findings: a notch that survives its tolerances
 
-The prompt asks for a notch at least 50 dB deep somewhere between 45 Hz and 55 Hz, a passband within 3 dB at 25 Hz and 100 Hz, from 1 % resistors and 5 % capacitors, on 95 % of the circuits built.
-A notch whose depth is set by phase rather than by a balance of values met it on every one of 200 samples, at least 65 dB deep; the twin-T, the textbook notch, met it on none.
+The prompt requires a notch at least 50 dB deep between 45 Hz and 55 Hz with passband gain within 3 dB at 25 Hz and 100 Hz on at least 95% of builds using 1% resistors and 5% capacitors.
+A phase-cancellation notch achieved 100% yield across 200 Monte Carlo samples (worst-case depth 65.5 dB), whereas the textbook twin-T achieved 0% yield.
 
 ## Method
 
-`candidates.py` writes each notch with its parts' tolerances, and `explore.py` draws 200 Monte Carlo samples of them with `jolty.variation`, the same sampling `jolty simulate` uses, runs each sample's frequency response at 401 frequencies from 45 Hz to 55 Hz and at 25 Hz and 100 Hz, and reads the notch's depth as the response's lowest point there.
-No spec of jolty measures a response's minimum over a band, so the agent's own code does.
+`candidates.py` defines each notch topology with part tolerances, and `explore.py` draws 200 Monte Carlo samples via `jolty.variation` matching `jolty simulate`.
+For each sample, `explore.py` evaluates AC responses at 401 points between 45 Hz and 55 Hz plus 25 Hz and 100 Hz, measuring notch depth as the minimum band gain.
+No built-in spec measures a minimum over a frequency band, so the exploration script computes band depth directly.
 
 ## Results
 
@@ -19,23 +20,23 @@ No spec of jolty measures a response's minimum over a band, so the agent's own c
 
 ## What the experiments showed
 
-1. **A twin-T's depth is a balance.**
-    It is infinite only when its two arms' values match exactly; 1 % and 5 % parts leave the median sample at 50 dB, and the passive network's Q of 1/4 takes 9 dB off the passband an octave away.
-1. **Raising the twin-T's Q makes it worse.**
-    Bootstrapping its ground leg narrows the notch to pass 25 Hz and 100 Hz, but magnifies the same imbalance: the median falls to 37 dB.
-1. **Summing two outputs 90° apart makes the depth a matter of phase.**
-    An integrator's output lags its input by exactly 90° whatever its values, so a band-pass output through a capacitor and the inverted low-pass output through a resistor always cancel at some frequency; the tolerances only move it, by up to 5 %.
-    What limits the depth is the op-amps' finite gain, 100 dB: 75.8 dB nominal, 65.5 dB at worst.
-1. **The Q sets the passband, not the depth.**
-    At Q = 0.5 the notch is wide enough to cut 4.4 dB at 25 Hz and 100 Hz; at Q = 1 it cuts 1.6 dB.
+1. **Twin-T notch depth relies on exact component cancellation.**
+    Infinite attenuation occurs only when both arms balance exactly; 1% resistors and 5% capacitors reduce median depth to 50 dB, while the passive Q of 1/4 attenuates the passband by 9 dB an octave away.
+1. **Raising twin-T Q degrades notch depth further.**
+    Bootstrapping the ground leg sharpens the passband to meet 25 Hz and 100 Hz bounds, yet amplifies arm imbalance and drops median depth to 37 dB.
+1. **Summing quadrature outputs makes depth insensitive to tolerances.**
+    An integrator lags by 90° regardless of component values, so summing a capacitive band-pass path with a resistive inverted low-pass path always cancels at some frequency within ±5%.
+    Finite 100 dB op-amp open-loop gain sets the remaining floor: 75.8 dB nominal and 65.5 dB worst case.
+1. **Filter Q governs passband width independently of notch depth.**
+    Setting Q = 0.5 attenuates 25 Hz and 100 Hz by 4.4 dB, while Q = 1 keeps attenuation at 1.6 dB.
 
 ## Conclusion
 
-`design.py` is the notch: four op-amps, eight resistors and three capacitors, 100 % yield over 200 samples, and at least 65 dB at its worst.
-The twin-T has fewer parts, but no twin-T of 1 % and 5 % parts meets the depth on 95 % of samples; holding a balance takes matched parts, or a trimmer.
+`design.py` builds the phase-cancellation notch with four op-amps, eight resistors, and three capacitors, achieving 100% yield over 200 samples with at least 65.5 dB depth.
+Although a twin-T uses fewer parts, achieving 95% yield at 50 dB depth with 1%/5% parts requires matched components or trimming.
 
 ## Limits
 
-The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
-Summing a biquad's band-pass and low-pass outputs is the textbook state-variable notch; what is new here is only the yield measured against the twin-T's.
-The Monte Carlo varies the resistors and capacitors; the op-amp macromodel has no offset, noise or spread, which a built notch would add.
+The agent that wrote the prompt also designed the circuit using textbook knowledge and judged the output, making this a capability showcase rather than a blind benchmark.
+Summing biquad band-pass and low-pass outputs is the textbook state-variable notch; the contribution here is quantifying yield against the twin-T.
+Monte Carlo samples vary only resistors and capacitors; the op-amp macromodel omits offset, noise, and parameter spread present in hardware.

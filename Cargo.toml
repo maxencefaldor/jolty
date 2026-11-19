@@ -65,11 +65,11 @@ unreachable = "warn"
 unwrap_used = "warn"
 
 # Optimize jolty-numerics in dev and test builds while keeping debug assertions and
-# overflow checks enabled: sparse LU proptests drop 11.1x under load (225.2 s -> 20.3 s,
-# 163.7 s -> 10.1 s isolated, 16.2x), cutting full workspace nextest from 302.4 s to
-# 107.2 s (2.82x; sharding alone 228.5 s) on a 64-core AMD EPYC 9B14 without rebuilding
-# on jolty-models edits. Tradeoff: inlining inside jolty-numerics reduces debugger
-# variable visibility and can shift LLVM source-based coverage branch counts slightly.
+# overflow checks enabled. On a 64-core AMD EPYC 9B14, sparse LU proptests drop 11.1x
+# under load (225.2 s -> 20.3 s; 163.7 s -> 10.1 s isolated, 16.2x). Full workspace
+# nextest drops from 302.4 s to 107.2 s (2.82x; sharding alone 228.5 s) without
+# rebuilding on jolty-models edits. Tradeoff: inlining inside jolty-numerics reduces
+# debugger variable visibility and slightly shifts LLVM coverage branch counts.
 [profile.dev.package.jolty-numerics]
 opt-level = 2
 

@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""Measure each oscillator: frequency, amplitude, distortion, settling and drift.
+"""Script measuring sine oscillator frequency, amplitude, THD, and drift.
 
-The distortion comes from the output's spectrum over its last 40 periods, resampled
-evenly; each harmonic is the spectrum's magnitude at its multiple of the fundamental.
+Distortion is computed from an evenly resampled FFT over the last 40 cycles by
+summing harmonic magnitudes at multiples of the fundamental frequency.
 """
 
 from itertools import pairwise
@@ -19,7 +19,7 @@ STOP = 0.15
 def run(
     oscillator: Component, temperature: float = 27.0
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The output over 150 ms."""
+    """Simulates `oscillator` for 150 ms at `temperature` °C and returns waveforms."""
     simulation = Simulation(
         circuit(candidates.bench(oscillator)), temperature=celsius(temperature)
     )
@@ -28,9 +28,10 @@ def run(
 
 
 def measure(times: np.ndarray, values: np.ndarray) -> dict[str, float]:
-    """Frequency, peak amplitude and THD over the last 40 ms, and the settling time.
+    """Computes frequency, peak amplitude, THD over the last 40 ms, and settling time.
 
-    The oscillator has settled once its envelope stays within 5 % of its final value.
+    Settling time is the point after which the waveform envelope stays within 5% of
+    the final steady-state amplitude.
     """
     window = times > STOP - 0.04
     rises = np.flatnonzero((values[:-1] < 0) & (values[1:] >= 0) & window[1:])
@@ -67,7 +68,7 @@ def measure(times: np.ndarray, values: np.ndarray) -> dict[str, float]:
 def report(
     name: str, oscillator: Component, *, temperatures: bool = False
 ) -> dict[str, float]:
-    """Measures the oscillator, at -40 °C and 85 °C too when `temperatures`."""
+    """Measures and prints metrics at 27 °C, plus -40 °C and 85 °C when requested."""
     found = measure(*run(oscillator))
     line = (
         f"{name:34s} f={found['frequency']:8.2f} Hz  A={found['amplitude']:.4f} V  "

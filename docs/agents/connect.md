@@ -1,6 +1,6 @@
 # Connect an agent
 
-The page shows how an agent reaches jolty through each of its two front ends.
+Agents connect to jolty through either the command line or the MCP server.
 
 The command line and the MCP server derive from the same request models, so their arguments always match, and they print the same text.
 
@@ -42,7 +42,7 @@ With Claude Code, one command does the same:
 claude mcp add jolty -- uv run --project /path/to/jolty jolty-mcp
 ```
 
-The option `--project` runs the server with the clone's environment while the harness's working directory stays the agent's, so relative script paths resolve where the agent works.
+The option `--project` runs the server in the clone's environment while keeping the agent's working directory intact so relative script paths resolve where the agent works.
 
 The server offers one tool per command:
 
@@ -64,5 +64,6 @@ The server offers one tool per command:
 Each tool answers with the text the command prints, with the result itself as structured content, and with the schematics and plots it drew as images.
 The server also exposes the guide pages (`jolty://docs/guide/<slug>`) and example scripts (`jolty://docs/examples/<slug>`) offline as MCP resources, with matching URI templates (`jolty://docs/guide/{slug}` and `jolty://docs/examples/{+slug}`), backed by the same loader as `jolty read-docs` and `read_docs`.
 The server's instructions derive programmatically from the code, naming every device constructor, real part, analysis, measure and offline resource URI.
-Scripts run in a process of their own, with the configured time limit, so nothing a script prints can reach the protocol stream.
-The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the measure, check, explain, read-docs and price tools only read, and the plot, draw, viewer and KiCad tools only add files beside the files they read.
+Scripts run in a separate process with the configured time limit so script stdout cannot reach the protocol stream.
+The build and simulate tools execute arbitrary Python in the script with the user's permissions, so a harness should ask before calling them.
+The measure, check, explain, read-docs, and cost tools are read-only, while the plot, draw, view, and KiCad tools write files next to the inputs they read.

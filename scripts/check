@@ -10,11 +10,11 @@
 #   scripts/check free-threaded   the Python tests on free-threaded Python, without the GIL
 #   scripts/check docs       the generated reference pages and the documentation site
 #
-# CI runs each group in a job of its own, the Rust and Python groups on Linux and on
-# macOS, after installing what the group needs, so a change that passes here passes
-# there. The Python group's differential tests run when ngspice is installed; without
-# it they skip, or fail where JOLTY_REQUIRE_NGSPICE=1, as CI sets. The advisories are
-# fetched from the network.
+# CI runs each group in a separate job (Rust and Python on Linux and macOS; docs on
+# Linux) after installing group prerequisites, so local runs match CI directly.
+# Differential Python tests run when ngspice is installed, skip otherwise, and fail
+# when JOLTY_REQUIRE_NGSPICE=1 is set (as in CI).
+# Advisory databases are fetched over the network.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,20 +25,20 @@ check_rust() {
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-    # The crates of Cargo.lock against RustSec's advisories, fetched afresh: a known
-    # vulnerability fails; an unmaintained, unsound or yanked crate is printed.
+    # Audit Cargo.lock crates against fresh RustSec advisories: known vulnerabilities
+    # fail, while unmaintained, unsound, or yanked crates are printed.
     cargo audit
-    # Each test in a process of its own, every crate's at once; nextest runs no doctests,
-    # which cargo's own runner does.
+    # Run unit and integration tests across all crates in separate processes via
+    # nextest, then run doctests via cargo test.
     cargo nextest run --workspace --locked
     cargo test --workspace --doc --locked
 }
 
 check_python() {
     uv sync --locked
-    # Every package of uv.lock, of every group, against OSV's advisories and PyPI's
-    # project statuses, such as a quarantine: a known vulnerability fails. The command
-    # is in preview, which the flag acknowledges.
+    # Audit all uv.lock packages across every dependency group against OSV advisories
+    # and PyPI statuses; known vulnerabilities fail. The flag opts into the preview
+    # audit command.
     uv audit --locked --preview-features audit-command
     uv run --locked ruff format --check
     uv run --locked ruff check
@@ -46,11 +46,11 @@ check_python() {
     uv run --locked rumdl check .
     uv run --locked pytest
     uv run --locked python benchmarks/deterministic/bench.py
-    # Every example script, each defining build(); the modules they share define none.
-    # They run at once, one per processor, and xargs fails when any of them fails.
-    # Use --no-sync after the upfront `uv sync --locked` so concurrent workers do not
-    # contend on the environment lock. Sharded cluster examples declare millions of
-    # Monte Carlo samples for multi-node runs, so run a 2-sample shard in a temp dir.
+    # Execute every standalone example script defining build() in parallel, skipping
+    # shared helper modules and cluster scripts. Pass --no-sync after upfront
+    # `uv sync --locked` so concurrent workers avoid contending on the environment
+    # lock. Sharded cluster examples declare millions of Monte Carlo samples, so run
+    # a 2-sample shard in a temporary directory instead.
     grep -rl --include='*.py' '^def build' examples/ |
         grep -v '^examples/cluster/' |
         sort |
@@ -69,9 +69,9 @@ check_python() {
     )
 }
 
-# In an environment of its own, so the project's stays as it was. The extension declares
-# it needs no GIL; were it to turn the GIL back on as it loads, Python would warn, which
-# the tests make an error.
+# Run Python tests in a separate free-threaded environment to leave the main
+# environment untouched. The extension declares free-threaded support; re-enabling
+# the GIL during import triggers a warning that pytest treats as an error.
 check_free_threaded() (
     export UV_PYTHON=3.15t UV_PROJECT_ENVIRONMENT=.venv-free-threaded
     uv sync --locked
@@ -93,8 +93,8 @@ case "${1:-all}" in
     rust | python | docs) "check_$1" ;;
     free-threaded) check_free_threaded ;;
     all)
-        # One after another, never joined by `&&`: bash ignores `set -e` inside a
-        # function called on the left of `&&`, so a failing check would pass unseen.
+        # Run groups sequentially rather than with `&&` because bash ignores `set -e`
+        # inside functions called on the left of `&&`.
         check_rust
         check_python
         check_free_threaded

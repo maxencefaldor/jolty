@@ -1,15 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The best NOR gate of three memristors found: MAGIC's, its inputs shunted by 2.2 kΩ.
+"""Shunted MAGIC three-memristor NOR gate with ±25% pulse-amplitude margin.
 
-MAGIC's gate puts the two inputs in parallel, in series with the output, and turns the
-output off unless both inputs are off. With these memristors, whose on threshold is
-twice their off one, it works only between 1.30 V and 1.32 V: a gate with one input on
-needs the pulse above twice the output's threshold, and a gate with both inputs off
-turns them on just above their own. A resistor across the inputs takes the voltage off
-both-off inputs while barely changing a gate with one input on, and 2.2 kΩ balances
-the inputs' turning on against the output's turning off: every input computes NOR from
-1.14 V to 1.91 V, ±25 % about 1.525 V. Simulate it with
-``jolty simulate docs/discovery/memristive_nor/design.py``.
+A MAGIC gate wires two input memristors in parallel, in series with the output
+memristor, turning the output off unless both inputs are off.
+With an on-threshold magnitude twice the off-threshold, an unshunted gate works only
+from 1.30 V to 1.32 V.
+A 2.2 kΩ shunt resistor across the inputs diverts voltage from both-off inputs while
+barely perturbing gates with an active input.
+All four input combinations compute NOR from 1.14 V to 1.91 V (±25% around 1.525 V).
+Simulate via ``jolty simulate docs/discovery/memristive_nor/design.py``.
 """
 
 import candidates
@@ -19,18 +18,18 @@ from jolty.specs import value
 from jolty.units import Quantity, V, ns
 
 AMPLITUDE = 1.525
-"""The pulse's nominal amplitude, in volts: the middle of the gate's working range."""
+"""Nominal write pulse amplitude in volts, centered in the operating window."""
 SHUNT = 2.2e3
-"""The resistance across the inputs, in ohms."""
+"""Input shunt resistance in ohms."""
 
 
 def build(amplitude: Quantity = AMPLITUDE * V) -> Component:
-    """The four gates on their bench, written by one pulse of `amplitude`."""
+    """Builds the four-gate test bench driven by a write pulse of `amplitude`."""
     return candidates.bench(amplitude.value, SHUNT)
 
 
 def plan() -> Plan:
-    """The write, at the nominal amplitude and 10 % above and below it."""
+    """Returns the transient write plan at nominal amplitude plus ±10% corners."""
     return Plan(
         {"write": Transient(13 * ns, max_step=0.025 * ns)},
         corners={
@@ -41,7 +40,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Each output within 0.1 of its NOR, and each input within 0.05 of its bit."""
+    """Returns specs checking output states within 0.1 and inputs within 0.05."""
     end = 12.5 * ns
     requirements = []
     for index, (a, b) in enumerate(candidates.CASES, start=1):

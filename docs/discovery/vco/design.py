@@ -1,14 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The best VCO found: an integrator and a Schmitt trigger, their delays cancelled.
+"""Delay-compensated MOSFET-switched integrator and Schmitt trigger VCO.
 
-A MOSFET reverses the integrator's current, so its channel, a resistance, only scales
-the current. A 2.2 nF capacitor across the Schmitt trigger's 10 kΩ feedback hurries
-its regeneration, which cuts its delay from 6-9 µs to about 2 µs, and 2 kΩ in series
-with the 1 nF integrating capacitor steps the triangle towards the next threshold by
-twice its current times 2 kΩ at each reversal, the voltage it would have travelled in
-2 µs: a time advance that cancels the delay at every frequency. Every frequency from
-0.5 V to 5 V lies within 0.1 % of 996 Hz/V. Simulate it with
-``jolty simulate docs/discovery/vco/design.py``.
+An n-channel MOSFET reverses integrator current with purely resistive channel drop
+rather than a bipolar saturation offset.
+A 2.2 nF speed-up capacitor across the Schmitt trigger 10 kΩ feedback accelerates
+regeneration, cutting switching delay from 6 to 9 µs down to roughly 2 µs.
+A 2 kΩ resistor in series with the 1 nF integrating capacitor steps the triangle at
+each reversal by 2 µs worth of ramp voltage, canceling delay across frequency.
+Every frequency from 0.5 V to 5 V falls within 0.1% of 996 Hz/V.
+Simulate via ``jolty simulate docs/discovery/vco/design.py``.
 """
 
 import candidates
@@ -20,14 +20,14 @@ from jolty.units import Hz, V, s, us
 from jolty.waveforms import Piecewise
 
 LEVELS = [0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
-"""The control's levels, in volts, each held for eight periods of 1 kHz/V."""
+"""Control voltage levels in volts, each held for eight cycles at 1 kHz/V."""
 
 SLOPE = 996.07
-"""The slope of the line through the origin that fits the frequencies, in Hz/V."""
+"""Fitted origin-constrained tuning slope in Hz/V."""
 
 
 def windows() -> list[tuple[float, float]]:
-    """When the control steps to each level and steps away from it, in seconds."""
+    """Returns start and end times in seconds for each stepped control level."""
     edges: list[tuple[float, float]] = []
     start = 0.0
     for volts in LEVELS:
@@ -38,7 +38,7 @@ def windows() -> list[tuple[float, float]]:
 
 @component
 def stepped(c: Builder) -> None:
-    """The VCO, its control stepping through LEVELS with 1 µs edges."""
+    """Builds the compensated VCO driven by a piecewise-linear ramp across `LEVELS`."""
     ground = c.port("ground", Role.GROUND)
     points = []
     for (begin, _), volts in zip(windows(), LEVELS, strict=True):
@@ -54,17 +54,17 @@ def stepped(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The VCO, its control stepping from 0.5 V to 5 V."""
+    """Builds the stepped-control VCO sweeping from 0.5 V to 5 V."""
     return stepped()
 
 
 def plan() -> Plan:
-    """The six levels, 0.1 µs steps at most: 2000 a period at 5 V."""
+    """Returns the transient plan spanning all six levels at 0.1 µs maximum step."""
     return Plan({"run": Transient(stop=windows()[-1][1] * s, max_step=0.1 * us)})
 
 
 def specs() -> Specs:
-    """Each level's frequency, after two periods, within 1 % of the fitted line."""
+    """Returns specs verifying each level's frequency within 1% of the fitted line."""
     requirements = []
     for (begin, end), volts in zip(windows(), LEVELS, strict=True):
         start = begin + 2e-3 / volts

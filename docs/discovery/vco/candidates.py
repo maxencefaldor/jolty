@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Voltage-controlled oscillators, each of ports control, output and ground."""
+"""VCO candidates exposing ``control``, ``output``, and ``ground`` ports."""
 
 import sys
 from pathlib import Path
@@ -30,7 +30,7 @@ def _integrator_schmitt_core(
     r3 = c.place(devices.resistor(50e3 * ohm), name="R3")
     r4 = c.place(devices.resistor(timing / 2 * ohm), name="R4")
     cap = c.place(devices.capacitor(capacitance * F), name="C1")
-    # R5 from the Schmitt trigger's non-inverting input to ground, R6 from its output.
+    # R5 connects the Schmitt non-inverting input to ground; R6 feeds back from output.
     rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), name="R5")
     rf = c.place(devices.resistor(10e3 * ohm), name="R6")
     kick = Pulse(
@@ -56,14 +56,14 @@ def integrator_schmitt(
     capacitance: float = 1e-9,
     threshold: float = 0.1,
 ) -> None:
-    """An integrator whose input current a transistor reverses, and a Schmitt trigger.
+    """Builds a BJT-switched integrator and Schmitt trigger VCO.
 
-    The integrator's non-inverting input sits at half the control voltage, so its
-    capacitor charges at Vc/2R through R from the control; when the Schmitt trigger's
-    output turns Q1 on, R/2 to ground draws Vc/R from the inverting input, and the
-    current reverses. An inverting Schmitt trigger turns Q1 on at the triangle's low
-    threshold and off at its high one, `threshold` of its ±13 V output, so the
-    frequency is Vc/(8·R·C·Vth).
+    The integrator non-inverting input sits at half the control voltage so C1 charges
+    at Vc/(2R) through R1.
+    When the Schmitt output turns Q1 on, R4 (R/2) to ground sinks Vc/R from the
+    summing node and reverses integration current.
+    An inverting Schmitt trigger toggles Q1 at ±`threshold` of its ±13 V output,
+    giving nominal frequency Vc/(8·R·C·Vth).
     """
     output, ground, integrator, schmitt, r4, cap, rin, rf = _integrator_schmitt_core(
         c, timing, capacitance, threshold
@@ -81,7 +81,7 @@ def integrator_schmitt(
 
 @component
 def bench(c: Builder, oscillator: Component, volts: float = 1.0) -> None:
-    """The oscillator with a control of `volts`."""
+    """Builds a test bench driving `oscillator` with a `volts` DC control voltage."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(volts * V), name="VC")
     placed = c.place(oscillator, name="X1")
@@ -91,7 +91,7 @@ def bench(c: Builder, oscillator: Component, volts: float = 1.0) -> None:
 
 
 @component
-def mosfet_switched(  # noqa: PLR0913 - the timing, the threshold and two remedies
+def mosfet_switched(  # noqa: PLR0913 - timing, threshold, and two compensation terms
     c: Builder,
     *,
     timing: float = 96.2e3,
@@ -100,13 +100,13 @@ def mosfet_switched(  # noqa: PLR0913 - the timing, the threshold and two remedi
     compensation: float = 0.0,
     speedup: float = 0.0,
 ) -> None:
-    """The integrator and Schmitt trigger, its current reversed by an n-channel MOSFET.
+    """Builds an integrator and Schmitt trigger VCO switched by an n-channel MOSFET.
 
-    A MOSFET's channel is a resistance, which only scales the reversed current, where a
-    transistor's saturation voltage offsets it. `compensation` ohms in series with the
-    capacitor step the triangle towards the next threshold at each reversal, and
-    `speedup` farads across the trigger's feedback resistor hasten its switching; there
-    are neither by default.
+    Unlike BJT saturation offset, the MOSFET channel behaves as a pure resistance that
+    only scales reversed current.
+    Optional `compensation` ohms in series with C1 step the triangle toward the next
+    threshold on each reversal, and `speedup` farads across feedback accelerate
+    trigger regeneration.
     """
     output, ground, integrator, schmitt, r4, cap, rin, rf = _integrator_schmitt_core(
         c, timing, capacitance, threshold

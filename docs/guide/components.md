@@ -27,9 +27,9 @@ def divider(c: Builder, upper: Quantity, lower: Quantity) -> None:
 
 The builder offers three methods:
 
-- `c.port(name, role)` declares a port: the net of that name inside the component, seen from outside.
-  Its role is `Role.SIGNAL` by default, `Role.INPUT` or `Role.OUTPUT` for a signal in one direction, `Role.SUPPLY` for a supply rail, or `Role.GROUND` for the ground.
-  A schematic draws inputs on a box's left and outputs on its right, and a component of inputs, outputs, one supply and one ground can be [characterized](fidelity.md) as a logic cell.
+- `c.port(name, role)` declares a port: the net of that name inside the component, exposed outside.
+  The default role is `Role.SIGNAL`; other roles are `Role.INPUT` or `Role.OUTPUT` for directional signals, `Role.SUPPLY` for supply rails, and `Role.GROUND` for ground.
+  Schematics draw inputs on the left and outputs on the right, and components with inputs, outputs, one supply, and one ground can be [characterized](fidelity.md) as logic cells.
 - `c.place(item, name=...)` places a device or another component as an instance, and returns it.
   The instance's terminals are its attributes, such as `first.a`, or items, such as `first["a"]`.
 - `c.connect(*points, name=None)` joins terminals, ports and nets into one net.
@@ -45,7 +45,7 @@ A net nobody names takes the name of its first terminal, such as `R1.b`.
 
 Calling a component function with its parameters returns a `Component`.
 Each distinct set of arguments builds one component, named after the function and its arguments, such as `divider[upper=10kΩ,lower=10kΩ]`.
-Calling it again with the same arguments returns the same component, so a circuit holds each component once, however often it is placed.
+Calling the factory again with identical arguments returns the same component, so a circuit stores each unique component once regardless of placement count.
 
 ## Hierarchy
 
@@ -64,7 +64,7 @@ def bench(c: Builder) -> None:
 ```
 
 The engine flattens the hierarchy and names everything by path: the resistor `R1` inside `X1` is `X1/R1`, and a net `mid` inside `X1` is `X1/mid`.
-A port has no node of its own: it is the net it connects to outside.
+A port does not create a separate node; every port aliases the external net connected to it.
 
 ## The top and the ground
 

@@ -1,7 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""Each VCO's frequency against its control, and its Schmitt trigger's delay.
+"""Linearity and switching-delay characterization script for VCO candidates.
 
-Each frequency is compared with the line through the origin that fits them all.
+Compares measured oscillation frequencies against the best-fit line through the
+origin across control voltages.
 """
 
 import candidates
@@ -17,7 +18,7 @@ FINE = [float(v) for v in np.round(np.arange(0.5, 5.01, 0.25), 2)]
 
 
 def run(oscillator: Component, volts: float, periods: int) -> TransientResult:
-    """`periods` periods of 1 kHz/V at a control of `volts`, 4000 steps a period."""
+    """Simulates `oscillator` for `periods` cycles at `volts` (4,000 steps/cycle)."""
     period = 1e-3 / volts
     simulation = Simulation(circuit(candidates.bench(oscillator, volts)))
     return simulation.run(
@@ -26,9 +27,9 @@ def run(oscillator: Component, volts: float, periods: int) -> TransientResult:
 
 
 def oscillate(oscillator: Component, volts: float, periods: int = 16) -> float:
-    """The frequency at a control of `volts`, or NaN when the triangle has stalled.
+    """Measures oscillation frequency at `volts` control, returning NaN if stalled.
 
-    It is read over all but the first four periods.
+    Frequency is evaluated over all simulated cycles after discarding the first four.
     """
     waveforms = run(oscillator, volts, periods)
     start = 4e-3 / volts
@@ -39,10 +40,10 @@ def oscillate(oscillator: Component, volts: float, periods: int = 16) -> float:
 
 
 def delay(oscillator: Component, volts: float) -> float:
-    """The Schmitt trigger's mean delay at a control of `volts`.
+    """Measures mean Schmitt trigger switching delay at `volts` control.
 
-    It is the time from the triangle crossing the trigger's threshold to the trigger's
-    output crossing zero, after the first four periods.
+    Delay spans from each triangle threshold crossing to the subsequent trigger output
+    zero crossing after the first four cycles.
     """
     waveforms = run(oscillator, volts, 8)
     late = waveforms.times >= 4e-3 / volts
@@ -56,7 +57,7 @@ def delay(oscillator: Component, volts: float) -> float:
 
 
 def study(name: str, oscillator: Component, controls: list[float] = CONTROLS) -> None:
-    """Prints the oscillator's slope and its worst deviation from the line."""
+    """Prints fitted tuning slope and worst linearity error across `controls`."""
     found = np.array([oscillate(oscillator, v) for v in controls])
     volts = np.array(controls)
     if np.isnan(found).any():

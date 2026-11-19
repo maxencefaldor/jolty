@@ -1,7 +1,7 @@
 # Copyright 2026 Maxence Faldor
-"""The candidates for a two-terminal current source, each a component of ports a and b.
+"""Two-terminal current source candidates exposing ports ``a`` and ``b``.
 
-Each candidate takes its resistors as arguments, so the experiments can tune them.
+Each candidate accepts resistor values as parameters for tuning experiments.
 """
 
 from jolty import Builder, Component, Role, component, devices
@@ -11,7 +11,7 @@ from jolty.units import V, kohm, ohm
 
 @component
 def resistor_only(c: Builder, resistance: float = 12e3) -> None:
-    """A resistor: the baseline, its current Ohm's law."""
+    """Builds a single-resistor baseline whose current follows Ohm's law."""
     a, b = c.port("a"), c.port("b")
     load = c.place(devices.resistor(resistance * ohm), name="R1")
     c.connect(a, load.a)
@@ -20,7 +20,7 @@ def resistor_only(c: Builder, resistance: float = 12e3) -> None:
 
 @component
 def limiter(c: Builder, sense: float = 650.0, bias: float = 100e3) -> None:
-    """The two-transistor limiter: Q2 steals Q1's base drive once Rs holds a Vbe."""
+    """Builds a two-transistor limiter where Q2 shunts Q1 base drive at one Vbe."""
     a, b = c.port("a"), c.port("b")
     first, second = c.place(q2n3904(), name="Q1"), c.place(q2n3904(), name="Q2")
     feed = c.place(devices.resistor(bias * ohm), name="RB")
@@ -33,10 +33,10 @@ def limiter(c: Builder, sense: float = 650.0, bias: float = 100e3) -> None:
 
 @component
 def ptat(c: Builder, resistance: float = 1.9e3, ratio: int = 4) -> None:
-    """A self-biased ΔVbe reference, its current proportional to absolute temperature.
+    """Builds a self-biased ΔVbe current source proportional to absolute temperature.
 
-    A PNP mirror forces equal currents into one NPN and `ratio` in parallel over R, so
-    the current is Vt·ln(ratio)/R. A megohm starts it.
+    A PNP mirror equalizes currents between one NPN and `ratio` parallel NPNs over R,
+    producing Vt·ln(ratio)/R with a 1 MΩ startup resistor.
     """
     a, b = c.port("a"), c.port("b")
     left, right = c.place(q2n3906(), name="QP1"), c.place(q2n3906(), name="QP2")
@@ -66,7 +66,7 @@ def ptat(c: Builder, resistance: float = 1.9e3, ratio: int = 4) -> None:
 
 @component
 def bench(c: Builder, candidate: Component, volts: float = 12.0) -> None:
-    """The candidate across a source of `volts`, a to its positive end."""
+    """Builds a test bench placing `candidate` across a `volts` DC source."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(volts * V), name="V1")
     placed = c.place(candidate, name="X1")
@@ -78,12 +78,12 @@ def bench(c: Builder, candidate: Component, volts: float = 12.0) -> None:
 def mirrored_limiter(
     c: Builder, sense: float = 650.0, share: float = 10.0, top: float = 100.0
 ) -> None:
-    """The limiter, its drive fed by a PNP mirror of its own current, not a resistor.
+    """Builds a limiter driven by a PNP current mirror instead of a bias resistor.
 
-    A diode-connected PNP carries the whole current from a; a second PNP, its emitter
-    resistor `share` times larger, mirrors a fixed fraction of it into Q1's base and
-    Q2's collector, so Q2's current, and so its Vbe, no longer follows the line. A
-    megohm starts it.
+    A diode-connected PNP carries total current while a second PNP with a `share`-times
+    larger emitter resistor mirrors a fixed fraction into Q1 base and Q2 collector.
+    Decoupling Q2 bias from the supply stabilizes Vbe across supply voltage, aided by a
+    1 MΩ startup resistor.
     """
     a, b = c.port("a"), c.port("b")
     main, tap = c.place(q2n3906(), name="QP1"), c.place(q2n3906(), name="QP2")
@@ -105,9 +105,9 @@ def mirrored_limiter(
 def compensated(
     c: Builder, sense: float = 1300.0, bias: float = 1e6, resistance: float = 260.0
 ) -> None:
-    """A limiter and a ΔVbe cell in parallel, their drifts cancelling.
+    """Builds a limiter and a ΔVbe cell in parallel to cancel temperature drift.
 
-    About half the current falls with temperature and half rises.
+    Roughly half of the output current has negative drift and half has positive drift.
     """
     a, b = c.port("a"), c.port("b")
     falling = c.place(limiter(sense, bias), name="XCTAT")
