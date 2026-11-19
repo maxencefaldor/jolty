@@ -312,12 +312,10 @@ impl Simulator {
     }
 
     /// The index of the device of the independent source at `path`.
-    pub(crate) fn source_index(&mut self, path: &str) -> Result<usize, SimulationError> {
+    pub(crate) fn source_index(&self, path: &str) -> Result<usize, SimulationError> {
         let index = self
             .elaborated
-            .devices
-            .iter()
-            .position(|placed| placed.path() == path)
+            .device(path)
             .ok_or_else(|| SimulationError::UnknownSource(path.to_owned()))?;
         if self
             .state

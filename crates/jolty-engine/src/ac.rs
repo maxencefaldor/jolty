@@ -45,8 +45,9 @@ impl Simulator {
     ///
     /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotASource`] when the
     /// excited instance is not an independent source, [`SimulationError::InvalidAnalysis`]
-    /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
-    /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
+    /// for no frequency or a negative or non-finite one, [`SimulationError::Singular`] when
+    /// the linearized circuit is singular at a frequency, and the errors of
+    /// [`Simulator::operating_point`].
     pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<AcResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
@@ -99,9 +100,12 @@ impl Simulator {
                 "a small-signal analysis needs at least one frequency".to_owned(),
             ));
         }
-        if let Some(frequency) = frequencies.iter().find(|&&frequency| frequency < 0.0) {
+        if let Some(frequency) = frequencies
+            .iter()
+            .find(|&&frequency| !(frequency >= 0.0 && frequency.is_finite()))
+        {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "frequencies must be at least 0, not {frequency:?}"
+                "frequencies must be at least 0 and finite, not {frequency:?}"
             )));
         }
         self.linearized(options)
@@ -423,5 +427,58 @@ impl Linearization {
         }
         self.solver
             .factor_refined(&self.matrix, &mut self.refinement)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+
+    use crate::{Ac, Conditions, Options, SimulationError, Simulator};
+
+    #[test]
+    fn ac_rejects_non_finite_and_negative_frequencies() {
+        let circuit = Circuit::from_json(
+            r#"{
+                "format": "jolty-circuit", "version": 4, "top": "test",
+                "components": {"test": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"dc": 1.0}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "in", "b": "0"}}
+                    ]
+                }}
+            }"#,
+        )
+        .expect("a valid circuit");
+        let mut simulator =
+            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                .expect("the circuit elaborates");
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let result = simulator.ac(
+                &Ac {
+                    source: "V1".to_owned(),
+                    frequencies: vec![1e3, bad],
+                },
+                &Options::default(),
+            );
+            assert!(
+                matches!(result, Err(SimulationError::InvalidAnalysis(_))),
+                "expected InvalidAnalysis for frequency={bad:?}, got {result:?}"
+            );
+        }
+        let ok = simulator.ac(
+            &Ac {
+                source: "V1".to_owned(),
+                frequencies: vec![0.0, 1e3],
+            },
+            &Options::default(),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
     }
 }

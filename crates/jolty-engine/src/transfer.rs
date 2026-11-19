@@ -67,8 +67,9 @@ impl Simulator {
     /// the input or a current output's device is not an independent source,
     /// [`SimulationError::UnknownOutput`] for an output or a reference that is no unknown,
     /// [`SimulationError::InvalidAnalysis`] for a current output that is no voltage
-    /// source's or that has a reference, [`SimulationError::Singular`] when the linearized
-    /// circuit is, and the errors of [`Simulator::operating_point`].
+    /// source's, for an output taken over itself, or for an output over a reference that is
+    /// not a voltage, [`SimulationError::Singular`] when the linearized circuit is, and the
+    /// errors of [`Simulator::operating_point`].
     pub fn transfer_function(
         &mut self,
         analysis: &TransferFunction,
@@ -97,7 +98,9 @@ impl Simulator {
             let mut probe = match output {
                 Output::Voltage { node, reference } => {
                     let mut injected = vec![0.0; size];
-                    injected[node] += 1.0;
+                    if let Some(node) = node {
+                        injected[node] += 1.0;
+                    }
                     if let Some(reference) = reference {
                         injected[reference] -= 1.0;
                     }
@@ -138,28 +141,16 @@ impl Simulator {
     }
 
     /// The output `analysis` names, checked.
-    fn output_of(&mut self, analysis: &TransferFunction) -> Result<Output, SimulationError> {
-        let found = |name: &str| {
-            self.unknown(name)
-                .map(jolty_models::UnknownIndex::index)
-                .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
-        };
-        let index = found(&analysis.output)?;
-        match self.elaborated.unknowns[index].nature {
-            Nature::Voltage => {
-                let reference = analysis.reference.as_deref().map(found).transpose()?;
-                Ok(Output::Voltage {
-                    node: index,
-                    reference,
-                })
-            }
-            Nature::Current => {
-                if analysis.reference.is_some() {
-                    return Err(SimulationError::InvalidAnalysis(format!(
-                        "a transfer function's current output, {}, has no reference",
-                        analysis.output
-                    )));
-                }
+    fn output_of(&self, analysis: &TransferFunction) -> Result<Output, SimulationError> {
+        let (node, reference, nature) =
+            self.measured(&analysis.output, analysis.reference.as_deref())?;
+        match (nature, node) {
+            (Nature::Voltage, node) => Ok(Output::Voltage {
+                node: node.map(jolty_models::UnknownIndex::index),
+                reference: reference.map(jolty_models::UnknownIndex::index),
+            }),
+            (Nature::Current, Some(unknown)) => {
+                let index = unknown.index();
                 // A device that adds no unknown of its own counts the same unknowns before
                 // it as the next device does, so the source is sought among sources alone.
                 let device = (0..self.elaborated.devices.len())
@@ -184,7 +175,8 @@ impl Simulator {
                     branch: index,
                 })
             }
-            Nature::Displacement | Nature::Temperature | Nature::State => {
+            (Nature::Current, None)
+            | (Nature::Displacement | Nature::Temperature | Nature::State, _) => {
                 Err(SimulationError::InvalidAnalysis(format!(
                     "a transfer function's output is a node voltage or a voltage source's \
                      current, not {}",
@@ -251,7 +243,7 @@ impl Input {
 enum Output {
     /// A node voltage, over another node or the reference.
     Voltage {
-        node: usize,
+        node: Option<usize>,
         reference: Option<usize>,
     },
     /// The current through an independent voltage source, its branch unknown.
@@ -262,7 +254,9 @@ impl Output {
     /// The output's value in a solution `x`.
     fn read(self, x: &[f64]) -> f64 {
         match self {
-            Self::Voltage { node, reference } => x[node] - reference.map_or(0.0, |at| x[at]),
+            Self::Voltage { node, reference } => {
+                node.map_or(0.0, |at| x[at]) - reference.map_or(0.0, |at| x[at])
+            }
             Self::Current { branch, .. } => x[branch],
         }
     }

@@ -796,9 +796,12 @@ impl Simulator {
         } else {
             transient.max_step.unwrap_or(transient.stop / STEPS_PER_RUN)
         };
-        if transient.stop <= 0.0 || longest <= 0.0 {
+        if !(transient.stop > 0.0 && transient.stop.is_finite())
+            || !(longest > 0.0 && longest.is_finite())
+        {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "the stop time and longest step must be positive, not {:?} and {longest:?}",
+                "the stop time and longest step must be positive and finite, not {:?} and \
+                 {longest:?}",
                 transient.stop
             )));
         }
@@ -865,6 +868,20 @@ impl Simulator {
     /// operating point it came from was found, or else from its own initial state,
     /// carrying `carried` along its accepted steps.
     pub(crate) fn transient_with(
+        &mut self,
+        transient: &Transient,
+        options: &Options,
+        start: Option<(Vec<f64>, Option<Strategy>)>,
+        carried: Carried<'_>,
+    ) -> Result<TransientResult, SimulationError> {
+        let result = self.run_transient(transient, options, start, carried);
+        self.state.past = None;
+        result
+    }
+
+    /// Executes the transient integration for [`Simulator::transient_with`]; the caller
+    /// clears `self.state.past` on both success and early error returns.
+    fn run_transient(
         &mut self,
         transient: &Transient,
         options: &Options,
@@ -946,7 +963,6 @@ impl Simulator {
                 Step::Land(time) => breakpoints.insert(time),
             }
         }
-        self.state.past = None;
         let mut statistics = stepper.statistics;
         statistics.charge_leak = stepper.leak.finish();
         (statistics.work, statistics.profile) = self.metered_since(&reading);
@@ -1763,12 +1779,17 @@ fn least(a: (f64, ErrorBound), b: (f64, ErrorBound)) -> (f64, ErrorBound) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
     use jolty_numerics::integration::{Formula, Method};
     use jolty_numerics::reduce;
     use rayon::ThreadPoolBuilder;
 
     use super::{Breakpoints, LeakAccumulator, neumaier_add};
-    use crate::options::Inside;
+    use crate::options::{Inside, NUMBERS_PER_GIB};
+    use crate::{Conditions, Options, SimulationError, Simulator, Transient};
 
     /// The bits of a breakpoint and of the gap after it, to compare them exactly.
     fn bits((next, gap): (f64, f64)) -> (u64, u64) {
@@ -1849,5 +1870,117 @@ mod tests {
         let parallel = pool.install(|| run(Some(Inside { chunks: 1 })));
         assert_eq!(slice_bits(&parallel.signed), slice_bits(&serial.signed));
         assert_eq!(slice_bits(&parallel.absolute), slice_bits(&serial.absolute));
+    }
+
+    #[test]
+    fn transient_rejects_non_finite_stop_and_max_step() {
+        let circuit = Circuit::from_json(
+            r#"{
+                "format": "jolty-circuit", "version": 4, "top": "test",
+                "components": {"test": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"dc": 1.0}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "in", "b": "0"}}
+                    ]
+                }}
+            }"#,
+        )
+        .expect("a valid circuit");
+        let mut simulator =
+            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                .expect("the circuit elaborates");
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1e-6] {
+            let stop_result = simulator.transient(
+                &Transient {
+                    stop: bad,
+                    max_step: None,
+                    method: Method::Trapezoidal,
+                    breakpoints: Vec::new(),
+                    initial_conditions: BTreeMap::new(),
+                    operating_point: true,
+                },
+                &Options::default(),
+            );
+            assert!(
+                matches!(stop_result, Err(SimulationError::InvalidAnalysis(_))),
+                "expected InvalidAnalysis for stop={bad:?}, got {stop_result:?}"
+            );
+            let step_result = simulator.transient(
+                &Transient {
+                    stop: 1e-6,
+                    max_step: Some(bad),
+                    method: Method::Trapezoidal,
+                    breakpoints: Vec::new(),
+                    initial_conditions: BTreeMap::new(),
+                    operating_point: true,
+                },
+                &Options::default(),
+            );
+            assert!(
+                matches!(step_result, Err(SimulationError::InvalidAnalysis(_))),
+                "expected InvalidAnalysis for max_step={bad:?}, got {step_result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_clears_past_after_early_error() {
+        let circuit = Circuit::from_json(
+            r#"{
+                "format": "jolty-circuit", "version": 4, "top": "test",
+                "components": {"test": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"pulse": {
+                             "initial": 0.0, "pulsed": 1.0, "delay": 0.5e-9,
+                             "rise": 0.2e-9, "fall": 0.2e-9, "width": 1.0}}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 50.0},
+                         "terminals": {"a": "in", "b": "a"}},
+                        {"name": "T1", "of": {"model": "transmission_line"},
+                         "parameters": {"characteristic_impedance": 50.0, "delay": 1e-9},
+                         "terminals": {"positive1": "a", "negative1": "0",
+                                       "positive2": "b", "negative2": "0"}},
+                        {"name": "R2", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 50.0},
+                         "terminals": {"a": "b", "b": "0"}}
+                    ]
+                }}
+            }"#,
+        )
+        .expect("a valid circuit");
+        let mut simulator =
+            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                .expect("the circuit elaborates");
+        let width = simulator.point_width();
+        let options = Options {
+            // Allow the pre-check (`stop / longest * width == width`) to pass so `start_past`
+            // installs `state.past`, then fail inside the loop on the first accepted point.
+            max_memory: 1.5 * width / NUMBERS_PER_GIB,
+            ..Options::default()
+        };
+        let result = simulator.transient(
+            &Transient {
+                stop: 3e-9,
+                max_step: Some(3e-9),
+                method: Method::Trapezoidal,
+                breakpoints: Vec::new(),
+                initial_conditions: BTreeMap::new(),
+                operating_point: true,
+            },
+            &options,
+        );
+        assert!(
+            matches!(result, Err(SimulationError::TooManyPoints { .. })),
+            "expected TooManyPoints, got {result:?}"
+        );
+        assert!(simulator.state.past.is_none());
     }
 }

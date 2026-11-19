@@ -561,7 +561,7 @@ impl Options {
         Ok(())
     }
 
-    /// Checks that every tolerance is positive and every limit allows an iteration.
+    /// Checks that every tolerance is positive and finite and every limit allows an iteration.
     ///
     /// # Errors
     ///
@@ -575,14 +575,17 @@ impl Options {
             ("truncation_tolerance", self.truncation_tolerance),
             ("max_memory", self.max_memory),
         ];
-        if let Some((name, value)) = tolerances.into_iter().find(|&(_, value)| value <= 0.0) {
+        if let Some((name, value)) = tolerances
+            .into_iter()
+            .find(|&(_, value)| !(value > 0.0 && value.is_finite()))
+        {
             return Err(SimulationError::InvalidOptions(format!(
-                "{name} must be positive, not {value:?}"
+                "{name} must be positive and finite, not {value:?}"
             )));
         }
-        if self.gmin < 0.0 {
+        if !(self.gmin >= 0.0 && self.gmin.is_finite()) {
             return Err(SimulationError::InvalidOptions(format!(
-                "gmin must be at least 0, not {:?}",
+                "gmin must be at least 0 and finite, not {:?}",
                 self.gmin
             )));
         }
@@ -608,5 +611,66 @@ impl Options {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Options;
+    use crate::SimulationError;
+
+    #[test]
+    fn check_rejects_non_finite_tolerances_and_gmin() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+            let cases: [(&str, fn(&mut Options, f64)); 6] = [
+                ("relative_tolerance", |options, value| {
+                    options.relative_tolerance = value;
+                }),
+                ("voltage_tolerance", |options, value| {
+                    options.voltage_tolerance = value;
+                }),
+                ("current_tolerance", |options, value| {
+                    options.current_tolerance = value;
+                }),
+                ("charge_tolerance", |options, value| {
+                    options.charge_tolerance = value;
+                }),
+                ("truncation_tolerance", |options, value| {
+                    options.truncation_tolerance = value;
+                }),
+                ("max_memory", |options, value| options.max_memory = value),
+            ];
+            for (name, setter) in cases {
+                let mut options = Options::default();
+                setter(&mut options, bad);
+                let result = options.check();
+                assert!(
+                    matches!(
+                        &result,
+                        Err(SimulationError::InvalidOptions(message)) if message.contains(name)
+                    ),
+                    "expected InvalidOptions for {name}={bad:?}, got {result:?}"
+                );
+            }
+        }
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-12] {
+            let options = Options {
+                gmin: bad,
+                ..Options::default()
+            };
+            let result = options.check();
+            assert!(
+                matches!(
+                    &result,
+                    Err(SimulationError::InvalidOptions(message)) if message.contains("gmin")
+                ),
+                "expected InvalidOptions for gmin={bad:?}, got {result:?}"
+            );
+        }
+        let zero_gmin = Options {
+            gmin: 0.0,
+            ..Options::default()
+        };
+        assert!(zero_gmin.check().is_ok());
     }
 }

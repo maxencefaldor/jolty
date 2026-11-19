@@ -12,7 +12,9 @@
 //! parameter's. So sample `i` drawn alone is sample `i` of any batch, however many threads
 //! run it, and a part added to the circuit leaves every other part's draws as they were.
 
-use jolty_ir::{Circuit, Distribution, Of, Tolerance};
+use std::collections::HashSet;
+
+use jolty_ir::{Circuit, Component, Distribution, Of, Tolerance};
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rand_distr::StandardNormal;
@@ -417,7 +419,7 @@ pub enum TolerancedError {
 
 /// One active frame of the iterative hierarchy walk in [`walk`].
 struct Frame<'a> {
-    component: &'a str,
+    placed: &'a Component,
     prefix: String,
     next_instance: usize,
 }
@@ -426,24 +428,22 @@ struct Frame<'a> {
 /// iterative depth-first walk with cycle detection.
 fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), TolerancedError> {
     let top = circuit.top.as_str();
-    if !circuit.components.contains_key(top) {
+    let Some(root) = circuit.components.get(top) else {
         return Ok(());
-    }
+    };
     let mut active = vec![top];
+    let mut active_set = HashSet::from([top]);
     let mut stack = vec![Frame {
-        component: top,
+        placed: root,
         prefix: String::new(),
         next_instance: 0,
     }];
     while let Some(frame) = stack.last_mut() {
-        let Some(placed) = circuit.components.get(frame.component) else {
+        let Some(instance) = frame.placed.instances.get(frame.next_instance) else {
             stack.pop();
-            active.pop();
-            continue;
-        };
-        let Some(instance) = placed.instances.get(frame.next_instance) else {
-            stack.pop();
-            active.pop();
+            if let Some(popped) = active.pop() {
+                active_set.remove(popped);
+            }
             continue;
         };
         frame.next_instance += 1;
@@ -451,7 +451,9 @@ fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), Toleranced
         match &instance.of {
             Of::Component(inner) => {
                 let child = inner.as_str();
-                if let Some(start) = active.iter().position(|&seen| seen == child) {
+                if active_set.contains(child)
+                    && let Some(start) = active.iter().position(|&seen| seen == child)
+                {
                     let cycle = active[start..]
                         .iter()
                         .copied()
@@ -463,10 +465,11 @@ fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), Toleranced
                         cycle,
                     });
                 }
-                if circuit.components.contains_key(child) {
+                if let Some(definition) = circuit.components.get(child) {
                     active.push(child);
+                    active_set.insert(child);
                     stack.push(Frame {
-                        component: child,
+                        placed: definition,
                         prefix: format!("{path}/"),
                         next_instance: 0,
                     });

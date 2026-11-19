@@ -1,5 +1,6 @@
 //! An objective's derivatives by the adjoint method against finite differences of the whole
-//! circuit; `src/objective.rs` checks them against the direct method's on the corpus.
+//! circuit; `crates/jolty-engine/src/objective.rs` checks them against the direct method's on
+//! the corpus.
 #![cfg(test)]
 
 use std::collections::BTreeMap;

@@ -208,3 +208,85 @@ fn a_source_that_drives_nothing_sees_an_infinite_resistance() {
     assert_eq!(found.input_resistance, f64::INFINITY, "{found:?}");
     assert_eq!(found.output_resistance, 0.0, "{found:?}");
 }
+
+#[test]
+fn ground_node_and_reference_validation_match_other_small_signal_analyses() {
+    let divider = [
+        (
+            "V1",
+            "voltage_source",
+            dc(1.0),
+            &[("positive", "in"), ("negative", "0")][..],
+        ),
+        resistor("R1", 1e3, "in", "out"),
+        resistor("R2", 3e3, "out", "0"),
+    ];
+    let over_ground = transfer(&divider, "V1", "out", Some("0")).unwrap();
+    assert!(close(over_ground.gain, 0.75), "{over_ground:?}");
+    assert!(close(over_ground.input_resistance, 4e3), "{over_ground:?}");
+    assert!(
+        close(over_ground.output_resistance, 750.0),
+        "{over_ground:?}"
+    );
+
+    let from_ground = transfer(&divider, "V1", "0", Some("out")).unwrap();
+    assert!(close(from_ground.gain, -0.75), "{from_ground:?}");
+    assert!(close(from_ground.input_resistance, 4e3), "{from_ground:?}");
+    assert!(
+        close(from_ground.output_resistance, 750.0),
+        "{from_ground:?}"
+    );
+
+    // Output taken over itself, whether named node or reference node.
+    assert!(matches!(
+        transfer(&divider, "V1", "out", Some("out")),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+    assert!(matches!(
+        transfer(&divider, "V1", "0", None),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+    assert!(matches!(
+        transfer(&divider, "V1", "0", Some("0")),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+
+    // Non-voltage reference and current output over the ground node.
+    assert!(matches!(
+        transfer(&divider, "V1", "out", Some("V1:current")),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+    assert!(matches!(
+        transfer(&divider, "V1", "V1:current", Some("0")),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+
+    let heated = [
+        (
+            "V1",
+            "voltage_source",
+            dc(10.0),
+            &[("positive", "top"), ("negative", "0")][..],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 100.0, "temperature_coefficient": 4e-3, "thermal": true}),
+            &[("a", "top"), ("b", "0"), ("thermal", "junction")][..],
+        ),
+        (
+            "RTH",
+            "thermal_resistance",
+            json!({"resistance": 50.0}),
+            &[("a", "junction"), ("b", "0")][..],
+        ),
+    ];
+    assert!(matches!(
+        transfer(&heated, "V1", "top", Some("junction")),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+    assert!(matches!(
+        transfer(&heated, "V1", "junction", None),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+}

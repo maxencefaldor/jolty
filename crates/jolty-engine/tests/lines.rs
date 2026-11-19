@@ -304,8 +304,11 @@ fn a_pole_zero_analysis_and_a_periodic_steady_state_refuse_a_line() {
         },
         &Options::default(),
     );
+    let Err(SimulationError::Delayed { reason, .. }) = periodic else {
+        panic!("{periodic:?}");
+    };
     assert!(
-        matches!(periodic, Err(SimulationError::Delayed { .. })),
-        "{periodic:?}"
+        reason.contains("which shooting does not carry"),
+        "{reason:?}"
     );
 }

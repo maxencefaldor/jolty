@@ -277,14 +277,44 @@ fn unlimited(x: &[f64], time: Option<f64>, gmin: f64) -> Input<'_> {
     input
 }
 
+/// One of the two unboxed iterators over a [`Twin`]'s residuals or charges.
+enum ContributionIterator<R, C> {
+    /// Residual contributions.
+    Residual(R),
+    /// Charge contributions.
+    Charge(C),
+}
+
+impl<R, C, T> Iterator for ContributionIterator<R, C>
+where
+    R: Iterator<Item = T>,
+    C: Iterator<Item = T>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match self {
+            Self::Residual(iterator) => iterator.next(),
+            Self::Charge(iterator) => iterator.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Residual(iterator) => iterator.size_hint(),
+            Self::Charge(iterator) => iterator.size_hint(),
+        }
+    }
+}
+
 /// The residuals or charges, `part`, `twin` adds, as last evaluated.
 fn contributions(
     twin: &Twin,
     part: Part,
-) -> Box<dyn Iterator<Item = (usize, jolty_models::TwinNumber<'_>)> + '_> {
+) -> impl Iterator<Item = (usize, jolty_models::TwinNumber<'_>)> + '_ {
     match part {
-        Part::Residual => Box::new(twin.residual()),
-        Part::Charge => Box::new(twin.charge()),
+        Part::Residual => ContributionIterator::Residual(twin.residual()),
+        Part::Charge => ContributionIterator::Charge(twin.charge()),
     }
 }
 

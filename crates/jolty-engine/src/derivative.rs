@@ -1072,6 +1072,9 @@ impl Simulator {
         cotangents: &[Cotangent<Complex64>],
         options: &Options,
     ) -> Result<Vec<Vec<Complex64>>, SimulationError> {
+        if cotangents.is_empty() {
+            return Ok(Vec::new());
+        }
         if twins.len() == 0 {
             return Ok(vec![Vec::new(); cotangents.len()]);
         }
@@ -1556,13 +1559,16 @@ impl Simulator {
             .collect();
         for (point, &(formula, restarted)) in steps.iter().enumerate().rev() {
             let point = point + 1;
+            let active: Vec<usize> = (0..adjoints.len())
+                .filter(|&index| adjoints[index].last.is_some_and(|last| last >= point))
+                .collect();
+            if active.is_empty() {
+                continue;
+            }
             let (time, x) = (result.times[point], &result.values[point]);
             self.evaluate(x, Some(time), (1.0, gmin), false);
             let workspace = &mut self.state.workspace;
             let capacitance = &workspace.contributions.capacitance;
-            let active: Vec<usize> = (0..adjoints.len())
-                .filter(|&index| adjoints[index].last.is_some_and(|last| last >= point))
-                .collect();
             let mut solved = Vec::with_capacity(active.len());
             for &index in &active {
                 let adjoint = &mut adjoints[index];
@@ -1677,11 +1683,17 @@ impl Simulator {
             return Ok(solutions.into_iter().zip(periods).collect());
         };
         self.evaluate(x, None, (1.0, gmin), false);
-        let mut matrix = self.state.workspace.contributions.conductance.clone();
-        for unknown in forced {
-            force_row(&self.elaborated, &mut matrix, unknown.index());
-        }
-        let mut factors = self.state.solver.factor(&matrix)?;
+        let mut factors = if forced.is_empty() {
+            self.state
+                .solver
+                .factor(&self.state.workspace.contributions.conductance)?
+        } else {
+            let mut matrix = self.state.workspace.contributions.conductance.clone();
+            for unknown in forced {
+                force_row(&self.elaborated, &mut matrix, unknown.index());
+            }
+            self.state.solver.factor(&matrix)?
+        };
         for solution in &mut solutions {
             factors.solve_transpose(solution)?;
             for unknown in forced {
@@ -1727,4 +1739,138 @@ pub(crate) fn named_of(parameters: &[Parameter]) -> Vec<(String, String)> {
         .iter()
         .map(|parameter| (parameter.instance.clone(), parameter.name.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use jolty_numerics::integration::Method;
+
+    use super::{Cotangent, Cotangents, ParameterCotangents};
+    use crate::{Ac, AnalysisResult, Conditions, Differentiated, Options, Simulator, Transient};
+
+    fn divider_simulator() -> Simulator {
+        let circuit = Circuit::from_json(
+            r#"{
+                "format": "jolty-circuit", "version": 4, "top": "test",
+                "components": {"test": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"dc": 2.0}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "in", "b": "out"}},
+                        {"name": "R2", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "out", "b": "0"}},
+                        {"name": "C1", "of": {"model": "capacitor"},
+                         "parameters": {"capacitance": 1e-9},
+                         "terminals": {"a": "out", "b": "0"}}
+                    ]
+                }}
+            }"#,
+        )
+        .expect("a valid circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates")
+    }
+
+    fn factor_calls(simulator: &Simulator) -> usize {
+        let work = simulator.state.solver.statistics();
+        work.factorizations + work.refactorizations + work.fallbacks + work.reuses
+    }
+
+    #[test]
+    fn pull_frequencies_early_returns_when_cotangents_is_empty() {
+        let mut simulator = divider_simulator();
+        let parameters = vec![("R1".to_owned(), "resistance".to_owned())];
+        let pullback = simulator
+            .vjp(
+                &Differentiated::Ac(Ac {
+                    source: "V1".to_owned(),
+                    frequencies: vec![1e3, 1e4, 1e5],
+                }),
+                &parameters,
+                &Options::default(),
+            )
+            .expect("AC pullback succeeds");
+        let pulled = simulator
+            .pull_back(
+                &pullback,
+                &Cotangents::Complex(Vec::new()),
+                &Options::default(),
+            )
+            .expect("empty AC pull_back succeeds");
+        assert_eq!(pulled, ParameterCotangents::Complex(Vec::new()));
+    }
+
+    #[test]
+    fn backward_skips_inactive_trailing_steps_and_avoids_forced_clone() {
+        let mut simulator = divider_simulator();
+        let parameters = vec![("R1".to_owned(), "resistance".to_owned())];
+        let pullback = simulator
+            .vjp(
+                &Differentiated::Transient(Transient {
+                    stop: 5e-6,
+                    max_step: Some(1e-6),
+                    method: Method::Trapezoidal,
+                    breakpoints: Vec::new(),
+                    initial_conditions: BTreeMap::new(),
+                    operating_point: true,
+                }),
+                &parameters,
+                &Options::default(),
+            )
+            .expect("transient pullback succeeds");
+        let AnalysisResult::Transient(waveforms) = &pullback.result else {
+            panic!("expected transient result");
+        };
+        assert!(waveforms.values.len() >= 6);
+        let unknowns = simulator.elaborated.unknowns.len();
+        let out = simulator.unknown("out").expect("out node").index();
+        let mut unit = vec![0.0; unknowns];
+        unit[out] = 1.0;
+
+        // Seed only at point 0: all backward steps are skipped, leaving only the single
+        // DC factorization in `backward_start` (with `forced` empty).
+        let before_zero = factor_calls(&simulator);
+        let at_zero = simulator
+            .pull_back(
+                &pullback,
+                &Cotangents::Real(vec![Cotangent {
+                    points: BTreeMap::from([(0, unit.clone())]),
+                    period: 0.0,
+                }]),
+                &Options::default(),
+            )
+            .expect("pull_back at point 0 succeeds");
+        assert_eq!(factor_calls(&simulator) - before_zero, 1);
+        let ParameterCotangents::Real(rows_zero) = at_zero else {
+            panic!("expected real cotangents");
+        };
+        assert!((rows_zero[0][0] + 5e-4).abs() < 1e-12);
+
+        // Seed only at point 1: trailing steps past point 1 are skipped (1 step + 1 DC start).
+        let before_one = factor_calls(&simulator);
+        let at_one = simulator
+            .pull_back(
+                &pullback,
+                &Cotangents::Real(vec![Cotangent {
+                    points: BTreeMap::from([(1, unit)]),
+                    period: 0.0,
+                }]),
+                &Options::default(),
+            )
+            .expect("pull_back at point 1 succeeds");
+        assert_eq!(factor_calls(&simulator) - before_one, 2);
+        let ParameterCotangents::Real(rows_one) = at_one else {
+            panic!("expected real cotangents");
+        };
+        assert!((rows_one[0][0] + 5e-4).abs() < 1e-12);
+    }
 }

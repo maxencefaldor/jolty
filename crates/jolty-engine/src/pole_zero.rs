@@ -204,44 +204,45 @@ impl Simulator {
             let operating_point = self.linearized(options)?;
             let n = self.elaborated.unknowns.len();
             let (conductance, capacitance) = self.dense_pencil();
-            let poles =
-                roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
-            let zeros = match transfer {
-                Some((index, output, reference)) => {
-                    let mut level = vec![0.0; n];
-                    self.state
-                        .runs
-                        .excite(&self.elaborated.groups, index, &mut level);
-                    let mut read = vec![0.0; n];
-                    for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                        if let Some(unknown) = node {
-                            read[unknown.index()] += sign;
-                        }
+            let (poles, zeros) = if let Some((index, output, reference)) = transfer {
+                let poles =
+                    roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
+                let mut level = vec![0.0; n];
+                self.state
+                    .runs
+                    .excite(&self.elaborated.groups, index, &mut level);
+                let mut read = vec![0.0; n];
+                for (node, sign) in [(output, 1.0), (reference, -1.0)] {
+                    if let Some(unknown) = node {
+                        read[unknown.index()] += sign;
                     }
-                    let (g, c) = bordered(n, &conductance, &capacitance, &level, &read);
-                    let zeros = roots(n + 1, g, c)?.ok_or_else(|| {
-                        SimulationError::InvalidAnalysis(
-                            "the transfer function from the source to the output is zero at every \
-                             frequency, so it has no zeros"
-                                .to_owned(),
-                        )
-                    })?;
-                    let largest = poles.iter().chain(&zeros).map(|root| root.norm());
-                    let origin = ORIGIN * largest.fold(0.0, f64::max);
-                    Some(
-                        zeros
-                            .into_iter()
-                            .map(|zero| {
-                                if zero.norm() <= origin {
-                                    Complex64::default()
-                                } else {
-                                    zero
-                                }
-                            })
-                            .collect(),
-                    )
                 }
-                None => None,
+                let (g, c) = bordered(n, &conductance, &capacitance, &level, &read);
+                drop(conductance);
+                drop(capacitance);
+                let zeros = roots(n + 1, g, c)?.ok_or_else(|| {
+                    SimulationError::InvalidAnalysis(
+                        "the transfer function from the source to the output is zero at every \
+                         frequency, so it has no zeros"
+                            .to_owned(),
+                    )
+                })?;
+                let largest = poles.iter().chain(&zeros).map(|root| root.norm());
+                let origin = ORIGIN * largest.fold(0.0, f64::max);
+                let zeros = zeros
+                    .into_iter()
+                    .map(|zero| {
+                        if zero.norm() <= origin {
+                            Complex64::default()
+                        } else {
+                            zero
+                        }
+                    })
+                    .collect();
+                (poles, Some(zeros))
+            } else {
+                let poles = roots(n, conductance, capacitance)?.ok_or_else(everywhere)?;
+                (poles, None)
             };
             Ok(PoleZeroResult {
                 source: analysis.source.clone(),
@@ -446,17 +447,23 @@ fn equilibrate(n: usize, g: &mut [f64], c: &mut [f64]) {
             1.0
         }
     };
+    let mut rows = vec![0.0_f64; n];
+    let mut columns = vec![0.0_f64; n];
     for _ in 0..PASSES {
-        let mut rows = vec![0.0_f64; n];
-        let mut columns = vec![0.0_f64; n];
+        rows.fill(0.0);
+        columns.fill(0.0);
         for (index, (x, y)) in g.iter().zip(c.iter()).enumerate() {
             let size = x.abs().max(y.abs());
             let (row, column) = (index % n, index / n);
             rows[row] = rows[row].max(size);
             columns[column] = columns[column].max(size);
         }
-        let rows: Vec<f64> = rows.into_iter().map(scale).collect();
-        let columns: Vec<f64> = columns.into_iter().map(scale).collect();
+        for value in &mut rows {
+            *value = scale(*value);
+        }
+        for value in &mut columns {
+            *value = scale(*value);
+        }
         for (index, (x, y)) in g.iter_mut().zip(c.iter_mut()).enumerate() {
             let factor = rows[index % n] * columns[index / n];
             *x *= factor;

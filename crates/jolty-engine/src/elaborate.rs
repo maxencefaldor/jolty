@@ -359,11 +359,7 @@ pub(crate) fn elaborate(
         logic: Vec::new(),
         problems,
     };
-    let scope = Scope {
-        prefix: "",
-        number: 0,
-    };
-    walk.component(top, scope, &reference);
+    walk.component(top, reference);
     let Walk {
         nets,
         ports,
@@ -956,17 +952,37 @@ enum Member {
     Logic { device: usize, pin: usize },
 }
 
+/// One active component instance on the explicit hierarchy stack of [`Walk::component`].
+struct Frame<'a> {
+    component: &'a Component,
+    prefix: String,
+    number: usize,
+    ports: BTreeMap<&'a Name, Joined>,
+    next_instance: usize,
+}
+
 impl<'a> Walk<'a> {
-    /// Walks `component`, in the component instance `scope`, whose ports connect to the
-    /// nets in `ports`. The circuit has been validated, so every referenced component
-    /// exists and every port of a component instance is connected.
-    fn component(
-        &mut self,
-        component: &'a Component,
-        scope: Scope<'_>,
-        ports: &BTreeMap<&'a Name, Joined>,
-    ) {
-        for instance in &component.instances {
+    /// Walks `top` and its descendant component instances iteratively with an explicit stack,
+    /// starting from the top component's ground `ports`. The circuit has been validated, so
+    /// every referenced component exists and every port of a component instance is connected.
+    fn component(&mut self, top: &'a Component, ports: BTreeMap<&'a Name, Joined>) {
+        let mut stack = vec![Frame {
+            component: top,
+            prefix: String::new(),
+            number: 0,
+            ports,
+            next_instance: 0,
+        }];
+        while let Some(frame) = stack.last_mut() {
+            let Some(instance) = frame.component.instances.get(frame.next_instance) else {
+                stack.pop();
+                continue;
+            };
+            frame.next_instance += 1;
+            let scope = Scope {
+                prefix: &frame.prefix,
+                number: frame.number,
+            };
             let at = Location {
                 path: format!("{}{}", scope.prefix, instance.name),
                 source_location: instance.source_location.clone(),
@@ -996,7 +1012,7 @@ impl<'a> Walk<'a> {
                         at,
                         model,
                     };
-                    self.device(placement, scope, ports);
+                    self.device(placement, scope, &frame.ports);
                 }
                 Of::Component(_) if self.substitutes.contains_key(&at.path) => {
                     let substitute = &self.substitutes[&at.path];
@@ -1007,36 +1023,38 @@ impl<'a> Walk<'a> {
                         at,
                         model: &substitute.model,
                     };
-                    self.device(placement, scope, ports);
+                    self.device(placement, scope, &frame.ports);
                 }
                 Of::Component(target) => {
                     let definition = &self.circuit.components[target];
-                    let inner: BTreeMap<&Name, Joined> = definition
-                        .ports
-                        .iter()
-                        .map(|port| {
-                            let outside = self.net(scope, ports, &instance.terminals[&port.name]);
-                            self.ports.push(PortRecord {
-                                name: format!("{}.{}", at.path, port.name),
-                                owner: at.path.clone(),
-                                net: outside.net,
-                                parent: outside.port,
-                                members: Vec::new(),
-                            });
-                            let record = Some(self.ports.len() - 1);
-                            let joined = Joined {
-                                net: outside.net,
-                                port: record,
-                            };
-                            (&port.name, joined)
-                        })
-                        .collect();
-                    let inside = Scope {
-                        prefix: &format!("{}/", at.path),
-                        number: self.entered,
-                    };
+                    let mut inner = BTreeMap::new();
+                    for port in &definition.ports {
+                        let outside =
+                            self.net(scope, &frame.ports, &instance.terminals[&port.name]);
+                        self.ports.push(PortRecord {
+                            name: format!("{}.{}", at.path, port.name),
+                            owner: at.path.clone(),
+                            net: outside.net,
+                            parent: outside.port,
+                            members: Vec::new(),
+                        });
+                        let record = Some(self.ports.len() - 1);
+                        let joined = Joined {
+                            net: outside.net,
+                            port: record,
+                        };
+                        inner.insert(&port.name, joined);
+                    }
+                    let number = self.entered;
                     self.entered += 1;
-                    self.component(definition, inside, &inner);
+                    let prefix = format!("{}/", at.path);
+                    stack.push(Frame {
+                        component: definition,
+                        prefix,
+                        number,
+                        ports: inner,
+                        next_instance: 0,
+                    });
                 }
             }
         }
@@ -1443,6 +1461,94 @@ mod tests {
             error.to_string(),
             "the top component `top` has no ground port to be the reference node\n\
              instance `R1`: resistance must be positive, not -1.0"
+        );
+    }
+
+    #[test]
+    fn elaborates_deep_hierarchy_without_stack_overflow() {
+        let depth = 1500;
+        let mut components = serde_json::Map::new();
+        // Name components bottom-up (`c0000` leaf -> `c1499` top) so `BTreeMap` iteration in
+        // `jolty_ir::validate`'s cycle check finishes each component at depth 1 while
+        // `Walk::component` descends all 1500 levels.
+        components.insert(
+            "c0000".to_owned(),
+            serde_json::json!({
+                "ports": [
+                    {"name": "a", "role": "signal"},
+                    {"name": "b", "role": "signal"}
+                ],
+                "instances": [{
+                    "name": "R1",
+                    "of": {"model": "resistor"},
+                    "parameters": {"resistance": 1000.0},
+                    "terminals": {"a": "a", "b": "b"}
+                }]
+            }),
+        );
+        for level in 1..(depth - 1) {
+            components.insert(
+                format!("c{level:04}"),
+                serde_json::json!({
+                    "ports": [
+                        {"name": "a", "role": "signal"},
+                        {"name": "b", "role": "signal"}
+                    ],
+                    "instances": [{
+                        "name": "X",
+                        "of": {"component": format!("c{:04}", level - 1)},
+                        "terminals": {"a": "a", "b": "b"}
+                    }]
+                }),
+            );
+        }
+        let top_name = format!("c{:04}", depth - 1);
+        components.insert(
+            top_name.clone(),
+            serde_json::json!({
+                "ports": [{"name": "gnd", "role": "ground"}],
+                "instances": [
+                    {
+                        "name": "V1",
+                        "of": {"model": "voltage_source"},
+                        "parameters": {"waveform": {"dc": 1.0}},
+                        "terminals": {"positive": "in", "negative": "gnd"}
+                    },
+                    {
+                        "name": "X",
+                        "of": {"component": format!("c{:04}", depth - 2)},
+                        "terminals": {"a": "in", "b": "gnd"}
+                    }
+                ]
+            }),
+        );
+        let document = serde_json::json!({
+            "format": "jolty-circuit",
+            "version": 4,
+            "top": top_name,
+            "components": components,
+        });
+        let circuit = Circuit::from_json(&document.to_string()).expect("valid circuit");
+        let handle = std::thread::Builder::new()
+            .name("deep-elaborate".to_owned())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let none = (&BTreeMap::new(), &BTreeMap::new());
+                elaborate(&circuit, &Library::standard(), none, REFERENCE_TEMPERATURE)
+                    .map(|(elaborated, _)| elaborated)
+            })
+            .expect("spawn thread");
+        let elaborated = handle
+            .join()
+            .expect("thread did not overflow")
+            .expect("deep hierarchy elaborates");
+        let expected_path = format!("{}R1", "X/".repeat(depth - 1));
+        assert_eq!(elaborated.devices.len(), 2);
+        assert_eq!(elaborated.devices[0].path(), "V1");
+        assert_eq!(elaborated.devices[1].path(), expected_path);
+        assert_eq!(
+            elaborated.devices[1].nodes(),
+            [Some(UnknownIndex::new(0)), None].as_slice()
         );
     }
 }

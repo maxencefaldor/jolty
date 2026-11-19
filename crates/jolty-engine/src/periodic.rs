@@ -281,7 +281,8 @@ impl Simulator {
         }
         self.undelayed(
             "periodic steady state",
-            "the state a period starts from would hold the waves on its lines, which              shooting does not carry",
+            "the state a period starts from would hold the waves on its lines, which \
+             shooting does not carry",
         )?;
         if analysis.period.is_none() {
             if !analysis.breakpoints.is_empty() {

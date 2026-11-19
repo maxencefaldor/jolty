@@ -265,14 +265,20 @@ impl Simulator {
         parameters: usize,
         points: usize,
     ) -> bool {
-        let rows = outputs * points;
+        let outputs_u128 = outputs as u128;
+        let parameters_u128 = parameters as u128;
+        let points_u128 = points as u128;
         match of {
             Differentiated::Transient(_) => {
-                outputs * points * (points + 1) / 2 < parameters * points
+                points > 0 && outputs_u128.saturating_mul(points_u128 + 1) < 2 * parameters_u128
             }
             Differentiated::PeriodicSteadyState(analysis) => {
-                let cotangents = rows + usize::from(analysis.period.is_none());
-                outputs * points * (points + 1) / 2 + cotangents * points < 2 * parameters * points
+                let free = u128::from(analysis.period.is_none());
+                points > 0
+                    && outputs_u128
+                        .saturating_mul(3 * points_u128 + 1)
+                        .saturating_add(2 * free)
+                        < 4 * parameters_u128
             }
             _ => outputs <= parameters,
         }
@@ -298,7 +304,7 @@ impl Simulator {
             let pulled = self.pull_frequencies(&mut twins, response, &cotangents, options)?;
             return Ok(Differentiation {
                 twins,
-                derivatives: Derivatives::Complex(by_point(pulled, kept.len())),
+                derivatives: Derivatives::Complex(by_point(pulled, points, kept.len())),
                 period_derivatives: None,
                 result,
             });
@@ -346,7 +352,7 @@ impl Simulator {
         let period_derivatives = if oscillator { pulled.pop() } else { None };
         Ok(Differentiation {
             twins,
-            derivatives: Derivatives::Real(by_point(pulled, kept.len())),
+            derivatives: Derivatives::Real(by_point(pulled, points, kept.len())),
             period_derivatives,
             result,
         })
@@ -460,15 +466,125 @@ fn unit_rows<T: Copy + Default>(
     cotangents
 }
 
-/// The rows `pulled`, by point then output, `outputs` a point, grouped by point.
-fn by_point<T>(pulled: Vec<Vec<T>>, outputs: usize) -> Vec<Vec<Vec<T>>> {
+/// The rows `pulled`, by point then output, `outputs` a point across `points` points, grouped
+/// by point.
+fn by_point<T>(pulled: Vec<Vec<T>>, points: usize, outputs: usize) -> Vec<Vec<Vec<T>>> {
     let mut rows = pulled.into_iter();
-    let mut found = Vec::new();
-    loop {
-        let point: Vec<Vec<T>> = rows.by_ref().take(outputs).collect();
-        if point.is_empty() {
-            return found;
-        }
-        found.push(point);
+    (0..points)
+        .map(|_| rows.by_ref().take(outputs).collect())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use jolty_numerics::integration::Method;
+
+    use super::{Derivatives, Differentiated, Sensitivity, by_point};
+    use crate::{Ac, Conditions, Options, PeriodicSteadyState, Simulator, Transient};
+
+    #[test]
+    fn by_point_preserves_point_count_when_outputs_is_empty() {
+        let empty: Vec<Vec<f64>> = Vec::new();
+        let grouped = by_point(empty, 3, 0);
+        assert_eq!(grouped.len(), 3);
+        assert!(grouped.iter().all(Vec::is_empty));
+
+        let non_empty = vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0]];
+        assert_eq!(
+            by_point(non_empty, 2, 2),
+            vec![vec![vec![1.0], vec![2.0]], vec![vec![3.0], vec![4.0]]]
+        );
+
+        let zero_points: Vec<Vec<f64>> = Vec::new();
+        assert!(by_point(zero_points, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn empty_outputs_ac_sensitivity_retains_one_empty_entry_per_frequency() {
+        let circuit = Circuit::from_json(
+            r#"{
+                "format": "jolty-circuit", "version": 4, "top": "test",
+                "components": {"test": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"dc": 1.0}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "in", "b": "0"}}
+                    ]
+                }}
+            }"#,
+        )
+        .expect("a valid circuit");
+        let mut simulator =
+            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                .expect("the circuit elaborates");
+        let result = simulator
+            .sensitivity(
+                &Sensitivity {
+                    outputs: Vec::new(),
+                    of: Differentiated::Ac(Ac {
+                        source: "V1".to_owned(),
+                        frequencies: vec![10.0, 100.0, 1000.0],
+                    }),
+                },
+                &Options::default(),
+            )
+            .expect("empty-output AC sensitivity succeeds");
+        let Derivatives::Complex(points) = result.derivatives else {
+            panic!("expected complex derivatives, got {:?}", result.derivatives);
+        };
+        assert_eq!(points.len(), 3);
+        assert!(points.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn cheaper_backward_does_not_overflow_usize_on_large_counts() {
+        let transient = Differentiated::Transient(Transient {
+            stop: 1.0,
+            max_step: None,
+            method: Method::Trapezoidal,
+            breakpoints: Vec::new(),
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
+        });
+        let driven = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
+            period: Some(1e-3),
+            ..PeriodicSteadyState::default()
+        });
+        let autonomous = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
+            period: None,
+            ..PeriodicSteadyState::default()
+        });
+
+        // Values large enough that `points * (points + 1)` would overflow `usize`.
+        let cheaper = Simulator::cheaper_backward;
+        let big = 1_usize << (usize::BITS / 2);
+        let max = usize::MAX;
+        assert!(!cheaper(&transient, big, 100, big));
+        assert!(!cheaper(&transient, max, max, max));
+        assert!(!cheaper(&driven, max, max, max));
+        assert!(!cheaper(&autonomous, max, max, max));
+        // Zero outputs with positive points and parameters chooses backward without overflowing.
+        assert!(cheaper(&transient, 0, 1, max));
+        assert!(cheaper(&driven, 0, 1, max));
+        assert!(cheaper(&autonomous, 0, 1, max));
+        // Zero points never chooses backward.
+        assert!(!cheaper(&transient, 0, 10, 0));
+        assert!(!cheaper(&driven, 0, 10, 0));
+        assert!(!cheaper(&autonomous, 0, 10, 0));
+        // Exact boundary checks matching small-integer formula.
+        assert!(cheaper(&transient, 1, 2, 2));
+        assert!(!cheaper(&transient, 1, 2, 3));
+        assert!(cheaper(&driven, 1, 2, 1));
+        assert!(!cheaper(&driven, 1, 1, 1));
+        assert!(cheaper(&autonomous, 1, 2, 1));
+        assert!(!cheaper(&autonomous, 1, 1, 1));
     }
 }

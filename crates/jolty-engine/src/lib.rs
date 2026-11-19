@@ -10,11 +10,13 @@
 //! buffer, and runs as one made afresh would, bit for bit.
 //!
 //! A simulator runs any number of analyses: an [operating
-//! point](Simulator::operating_point), a [DC sweep](Simulator::dc_sweep), a [small-signal
-//! frequency response](Simulator::ac), a [transient](Simulator::transient),
-//! [sensitivities](Simulator::sensitivity), the [loop gain](Simulator::stability) through a
-//! probe, the [noise](Simulator::noise) at an output, and the [poles and
-//! zeros](Simulator::pole_zero).
+//! point](Simulator::operating_point), [operating points](Simulator::operating_points), a
+//! [DC sweep](Simulator::dc_sweep), a [small-signal frequency response](Simulator::ac), a
+//! [transient](Simulator::transient), a [periodic steady
+//! state](Simulator::periodic_steady_state), [sensitivities](Simulator::sensitivity),
+//! [mismatch](Simulator::mismatch), the [loop gain](Simulator::stability) through a probe,
+//! the [noise](Simulator::noise) at an output, the [poles and zeros](Simulator::pole_zero),
+//! and the [transfer function](Simulator::transfer_function).
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
 //! iteration with one sparse LU solver, whose ordering all of them share, real and complex,
 //! and which refactors each new Jacobian with the pivots of the last; every analysis about
