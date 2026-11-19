@@ -1,24 +1,20 @@
 # Copyright 2026 Maxence Faldor
-"""The cells of the simulators that cannot run here, from their documents alone.
+"""Documentation-sourced coverage cells for commercial simulators unavailable locally.
 
-Each cell is ``documented`` where the simulator's document lists the row, by the
-statement it names, ``unsupported`` where the document's list of its analyses holds
-none that asks it, and ``unknown`` where no document read says either way. None is a
-fixture: these simulators are not installed, or cannot be run here, and their cells
-follow their documents.
+Each cell is marked ``documented`` when the reference manual lists the corresponding
+statement, ``unsupported`` when the manual's analysis list omits the capability, and
+``unknown`` when no consulted manual addresses the row. Commercial simulators are not
+executed locally, so all entries rely solely on vendor manuals.
 
-The documents, as read for ``research/benchmarks.md`` §3.1 of the lead's notes on 15
-November 2026:
+Reference manuals consulted on 15 November 2026:
 
-- LTspice: Analog Devices' list of its simulator directives, in its help, "Dot
-  Commands" (``.op``, ``.dc``, ``.ac``, ``.tran``, ``.noise``, ``.tf``, ``.four``,
-  ``.meas``, ``.step``, ``.fra``);
-- Spectre 23.1: Cadence's *Spectre Circuit Simulator Reference*, version 23.1,
-  September 2023, its analyses by statement;
-- HSPICE: Synopsys's *HSPICE Quick Reference Guide*, June 2015, the text that could be
-  extracted from it;
-- AFS: Siemens's Analog FastSPICE fact sheet and white paper, which list a transient,
-  transient noise and harmonic balance, and no other analysis.
+- LTspice: Analog Devices help topic "Dot Commands" (``.op``, ``.dc``, ``.ac``,
+  ``.tran``, ``.noise``, ``.tf``, ``.four``, ``.meas``, ``.step``, ``.fra``).
+- Spectre 23.1: Cadence *Spectre Circuit Simulator Reference*, version 23.1,
+  September 2023.
+- HSPICE: Synopsys *HSPICE Quick Reference Guide*, June 2015.
+- AFS: Siemens Analog FastSPICE fact sheet and white paper (transient, transient
+  noise, and harmonic balance).
 """
 
 from typing import Final
@@ -29,7 +25,7 @@ TITLES: Final = {
     "hspice": "HSPICE 2015",
     "afs": "AFS",
 }
-"""The documented simulators, by name, and the title of each one's column."""
+"""Mapping from documented simulator identifier to matrix column heading."""
 
 LTSPICE: Final = "LTspice's help, Dot Commands"
 SPECTRE: Final = "Spectre Circuit Simulator Reference 23.1"
@@ -123,11 +119,11 @@ CELLS: Final[dict[str, dict[str, tuple[str, str]]]] = {
         "ltspice": (_D, f"{LTSPICE}: .four"),
     },
 }
-"""The documented cells, by row then simulator: each status and its source."""
+"""Documentation-sourced cell statuses and citations keyed by row and simulator."""
 
 
 def cells(row: str) -> dict[str, tuple[str, str]]:
-    """Each documented simulator's cell of `row`: its status and its source."""
+    """Returns documentation status and citation pairs for `row` across manuals."""
     given = CELLS.get(row, {})
     return {
         name: given.get(name, ("unknown", "no document read says")) for name in TITLES

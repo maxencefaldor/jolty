@@ -1,34 +1,30 @@
 # Copyright 2026 Maxence Faldor
-r"""Run a plan's Monte Carlo samples in shards over a pool of processes, then merge.
+r"""Sharded Monte Carlo launcher running sample ranges in parallel and merging outputs.
 
-Run it from the repository's root, such as::
+Invoke the script from the repository root::
 
     uv run python examples/cluster/launch.py examples/cluster/amplifier.py \\
         --samples 10000000 --shard 1000000 --workers 4
 
-It splits the plan's samples into shards of ``--shard`` samples, the last one shorter,
-and runs each as ``jolty simulate SCRIPT --samples START:STOP --shards DIRECTORY``,
-``--workers`` at a time, each on its share of the processors through ``JOLTY_THREADS``.
-A shard is a command with no state of its own, whose file appears whole or not at all,
-so the launcher runs again each shard that fails, up to ``--attempts`` times, and runs
-none whose file the directory holds already: run it again after it stops, and it goes
-on where it stopped. Once every shard is there, it merges them with ``jolty merge
-DIRECTORY``, which writes the samples' batch and plots beside the directory, and exits
-with the merge's status.
+The launcher partitions the plan into shards of ``--shard`` samples (with a shorter
+final shard) and invokes ``jolty simulate SCRIPT --samples START:STOP --shards
+DIRECTORY`` for each shard. Up to ``--workers`` shards run concurrently, each using an
+equal processor share via ``JOLTY_THREADS``. Each shard command is stateless and writes
+its output file atomically. Failed shards retry up to ``--attempts`` times, and
+completed shard files are skipped automatically on restart. Once all shards finish,
+``jolty merge DIRECTORY`` combines the batch, writes plots next to the shard directory,
+and determines the launcher exit status.
 
-A cluster's scheduler does the same with an array of jobs, each the command of one
-shard, and the merge once every one has ended; the shards' directory is then one that
-every node writes to, such as a shared file system's.
+A cluster scheduler follows the same pattern with a job array for shards and a merge job
+after completion, using a shared filesystem for the shard directory.
 
-Sizing the shards: each shard pays its start-up once, two interpreters importing jolty,
-the script and the circuit's elaboration, 0.9 s for this amplifier on an Apple M2 Max,
-and runs its samples at the throughput of its worker's threads, 80 µs a sample on its
-twelve cores and 320 µs on three. Make a shard take 50 times its start-up or more, so
-that the start-up costs it 2 % of its time or less: 45 s or more, some 560,000 samples
-of the amplifier on a worker of twelve threads, or 140,000 on a worker of three. More
-shards than workers let a worker that runs faster take more of them, where a worker's
-cores are slower or busier than another's; shards much larger only make a failed one
-cost more to run again, and leave workers idle longer while the last ones end.
+Each shard pays start-up overhead once for interpreter import, script execution, and
+circuit elaboration (about 0.9 s for this amplifier on an Apple M2 Max). Steady-state
+throughput scales with worker threads, averaging 80 µs per sample on 12 cores and
+320 µs on 3 cores. Sizing each shard to at least 50 times start-up keeps overhead at or
+below 2 % (at least 45 s, or roughly 560,000 samples on 12 threads and 140,000 on 3
+threads). Creating more shards than workers lets faster workers absorb extra shards on
+heterogeneous nodes. Excessively large shards increase retry cost and tail idle time.
 """
 
 import os
@@ -50,7 +46,7 @@ from pydantic_settings import (
 
 
 def ranges(samples: int, size: int) -> list[tuple[int, int]]:
-    """The shards of `samples` samples, `size` each, the last one what remains."""
+    """Returns `(start, stop)` shard index ranges of at most `size` for `samples`."""
     return [(start, min(start + size, samples)) for start in range(0, samples, size)]
 
 
@@ -74,7 +70,7 @@ def run(
 
 
 class Launch(BaseSettings):
-    """Run the samples of a plan's Monte Carlo analysis in shards, and merge them."""
+    """CLI configuration for running and merging sharded Monte Carlo samples."""
 
     model_config = SettingsConfigDict(
         cli_prog_name="launch.py",
@@ -97,7 +93,7 @@ class Launch(BaseSettings):
     )
     shards: Path | None = Field(
         default=None,
-        description="The shards' directory; by default <script>.shards beside the "
+        description="The shards' directory; by default <script>.shards next to the "
         "script.",
     )
     attempts: int = Field(

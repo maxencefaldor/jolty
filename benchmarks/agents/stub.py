@@ -1,33 +1,26 @@
 # Copyright 2026 Maxence Faldor
-"""A stand-in agent, which writes a known good design: it proves the harness for free.
+"""Zero-cost stand-in agent that writes known passing designs to test the harness.
 
-Usage: ``stub.py TASK ARM PROMPT``, run in the agent's working directory, as the runner
-runs an agent, with the task's directory and the arm before the prompt, which it reads
-no further. For the tasks whose good designs the repository holds, it writes one as the
-arm writes its designs. In the jolty arm it then simulates its first design through
-each of jolty's front ends, one analysis each, so that the runner counts them all: it
-writes ``plan.py``, a plan of the design's operating point which run as a script
-simulates the design's transient through jolty's Python package, then runs the
-operating point through jolty's command line and through its MCP server, which it
-starts as Claude Code starts the servers of its configuration, with its environment,
-and runs ``plan.py``. In the ngspice arm, or without a design, it runs the arm's
-simulator once instead, ``--version``. It finds each program on the path the runner
-gave it. It prints a transcript as Claude Code prints its session with
-``--output-format stream-json --verbose``, with a turn for each file it writes and
-each program it runs.
+Usage: ``stub.py TASK ARM PROMPT``, invoked inside the agent working directory. The
+stub ignores ``PROMPT`` and writes known passing designs for tasks with repository
+references. On the jolty arm, the stub writes ``plan.py`` (an operating-point plan
+that also runs a transient via the Python API when executed directly). The stub then
+exercises every jolty frontend so all logging paths run: the CLI, the stdio MCP
+server, and direct Python execution of ``plan.py``. On the ngspice arm, or for tasks
+without a stored reference, the stub runs ``--version`` on the arm simulator.
+Executables are resolved from ``PATH``, and stdout emits a Claude Code ``stream-json``
+transcript with one turn per file write or command.
 
-The designs:
+Supported tasks:
 
-- ``cost_down``: the original bias of 1 % resistors, from the E96 series, where the
-  original's are 0.1 %: for the ngspice arm, the given ``stage.cir``, with each
-  resistor's tolerance in ``tolerances.json``.
-- ``analogcoder``: the scorer's reference designs, ``reference.py``: for the ngspice
-  arm, each written as a SPICE subcircuit by jolty's own writer of netlists for ngspice,
-  with the inputs' levels in ``levels.json``.
+- ``cost_down``: uses the original bias circuit with 1 % E96 resistors instead of
+  0.1 % parts (for ngspice, writes ``stage.cir`` and ``tolerances.json``).
+- ``analogcoder``: writes the reference circuits from ``reference.py`` (for ngspice,
+  exports each circuit as a SPICE subcircuit alongside ``levels.json``).
 
-It writes no design for any other task. The patented cubic generator, ``patent.py``,
-meets its task at a score of exactly 1, its own: written as a netlist and read back,
-it scores 1 only within rounding, and above it in some corners.
+No designs are written for other tasks. The patented cubic generator in ``patent.py``
+scores exactly 1.0 in native Python, whereas SPICE netlist round-tripping introduces
+rounding drift above 1.0 in some corners.
 """
 
 import asyncio
@@ -50,11 +43,11 @@ from jolty import Component, Role, circuit
 from jolty.spice import export
 
 TOLERANCE: Final = 0.01
-"""The tolerance of the cost-down design's resistors: E96 parts."""
+"""Resistor tolerance (1 % E96) written for the cost-down stub design."""
 SIMULATORS: Final = {Arm.JOLTY: "jolty", Arm.NGSPICE: "ngspice"}
-"""The simulator each arm has, which the stub runs once where it simulates nothing."""
+"""Simulator executable name per arm used for version-check fallback runs."""
 PLAN: Final = "plan.py"
-"""The plan the stub simulates its first design with, in the jolty arm."""
+"""Filename of the generated simulation plan used on the jolty arm."""
 PLANNED: Final = '''\
 """The operating point of {design}, and run as a script, its transient."""
 
@@ -74,13 +67,14 @@ if __name__ == "__main__":
     build = runpy.run_path({design!r})["build"]
     Simulation(build()).run(Transient(1 * ns))
 '''
-"""The text of `PLAN`, for the design named `design`."""
+"""Template source text for `PLAN`, parameterized by the target design filename."""
 
 
 def subcircuit(made: Component, name: str) -> str:
-    """`made` as a SPICE library whose subcircuit `name` it is.
+    """Exports `made` as a SPICE ``.subckt`` block named `name`.
 
-    Its pins are `made`'s ports but its ground, which is SPICE's node ``0``.
+    Excludes the ground port from the pin list because SPICE binds ground to node
+    ``0``.
     """
     pins = [port.name for port in made.definition.ports if port.role is not Role.GROUND]
     lines = export.netlist(circuit(made))
@@ -123,11 +117,11 @@ def _analogcoder(task: Path, arm: Arm) -> dict[str, str]:
 
 
 DESIGNS: Final = {"cost_down": _cost_down, "analogcoder": _analogcoder}
-"""How the stub writes each task's known good design, by the task's name."""
+"""Mapping from task name to generator function producing known passing files."""
 
 
 def _turns(task: Path, arm: Arm) -> Iterator[dict[str, object]]:
-    """The events of the stub's session, each after what it records is done."""
+    """Yields synthetic Claude Code transcript events as each stub action completes."""
     started = time.perf_counter()
     yield {
         "type": "system",
@@ -174,27 +168,26 @@ def _turns(task: Path, arm: Arm) -> Iterator[dict[str, object]]:
 
 
 def _written(id: str, name: str, text: str) -> Iterator[dict[str, object]]:
-    """The events of the turn `id` that writes `text` to the file `name`."""
+    """Writes `text` to `name` and yields the assistant and result events for `id`."""
     Path(name).write_text(text, encoding="utf-8")
     yield _message(id, "Write", {"file_path": name})
     yield _result(id, f"wrote {name}")
 
 
 def _ran(id: str, command: list[str]) -> Iterator[dict[str, object]]:
-    """The events of the turn `id` that runs `command`, found on the path."""
+    """Executes `command` from ``PATH`` and yields the corresponding events for `id`."""
     yield _message(id, "Bash", {"command": " ".join(command)})
-    ran = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603 - the arm's programs, on the path the runner gave
+    ran = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603 - arm executables on prepared PATH
     yield _result(id, ran.stdout + ran.stderr)
 
 
 def _called(
     id: str, tool: str, arguments: dict[str, object]
 ) -> Iterator[dict[str, object]]:
-    """The events of the turn `id` that calls `tool` of jolty's MCP server.
+    """Invokes `tool` on ``jolty-mcp`` and yields the corresponding events for `id`.
 
-    The server is ``jolty-mcp``, on the path, started in the working directory with
-    the stub's environment, as Claude Code starts the servers of its configuration; its
-    tools are named as Claude Code names them, ``mcp__jolty__`` and the tool's name.
+    Launches ``jolty-mcp`` from ``PATH`` in the current working directory with the
+    active environment, matching Claude Code's ``mcp__jolty__<tool>`` naming.
     """
     server = StdioServerParameters(
         command="jolty-mcp", env=dict(os.environ), cwd=str(Path.cwd())
@@ -212,7 +205,7 @@ def _called(
 
 
 def _message(id: str, tool: str, arguments: dict[str, object]) -> dict[str, object]:
-    """An event of the model's message `id` calling `tool` with `arguments`."""
+    """Builds an assistant transcript event for message `id` calling `tool`."""
     return {
         "type": "assistant",
         "message": {
@@ -231,7 +224,7 @@ def _message(id: str, tool: str, arguments: dict[str, object]) -> dict[str, obje
 
 
 def _result(id: str, output: str) -> dict[str, object]:
-    """An event of the tool's result for the call of the model's message `id`."""
+    """Builds a user transcript event carrying `output` for tool call `id`."""
     return {
         "type": "user",
         "message": {
@@ -244,7 +237,7 @@ def _result(id: str, output: str) -> dict[str, object]:
 
 
 def main() -> None:
-    """Writes the known good design of the task given, as the arm given writes it."""
+    """Writes known passing files for the task and arm arguments and prints events."""
     task, arm = Path(sys.argv[1]), Arm(sys.argv[2])
     for event in _turns(task, arm):
         print(json.dumps(event), flush=True)

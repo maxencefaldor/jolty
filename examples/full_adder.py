@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """A full adder of nine CMOS NAND gates, each gate four transistors.
 
-The ladder from transistors to a full adder: the plan characterizes the NAND gate from
-its transistors into a logic cell, the adder runs on nine of those cells at event speed,
-and a spot check runs one gate again at transistor level to hold the cell to its
-contract. Simulate it with ``jolty simulate examples/full_adder.py``.
+The plan characterizes the transistor-level NAND gate into an event-driven logic cell.
+Nine characterized cells simulate the full adder at event speed, while spot checks
+re-simulate individual gates at transistor level against the contract. Simulate with
+``jolty simulate examples/full_adder.py``.
 """
 
 from jolty import Builder, Component, Plan, Role, component, devices
@@ -16,7 +16,7 @@ SUPPLY = 3.3 * V
 
 
 def transistor(channel: str) -> devices.Device:
-    """A level 1 MOSFET of a 1 µm process, the p-channel twice as wide."""
+    """Returns a 1 µm level 1 MOSFET with double width for the p-channel."""
     p = channel == "p"
     return devices.mosfet(
         channel="p" if p else "n",
@@ -31,7 +31,7 @@ def transistor(channel: str) -> devices.Device:
 
 @component
 def nand(c: Builder) -> None:
-    """A two-input NAND: p-channel transistors in parallel, n-channel ones in series."""
+    """Builds a two-input CMOS NAND with parallel p-channel and series n-channel."""
     a, b = c.port("a", Role.INPUT), c.port("b", Role.INPUT)
     y = c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
@@ -53,7 +53,7 @@ def nand(c: Builder) -> None:
 
 @component
 def full_adder(c: Builder) -> None:
-    """The sum and the carry of three bits, of nine NAND gates."""
+    """Builds a three-bit full adder from nine two-input NAND gates."""
     a, b, carry_in = (c.port(name, Role.INPUT) for name in ("a", "b", "carry_in"))
     total, carry_out = c.port("sum", Role.OUTPUT), c.port("carry_out", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
@@ -82,12 +82,12 @@ def full_adder(c: Builder) -> None:
 
 
 STEP = 2 * ns
-"""How long the inputs hold each combination."""
+"""Duration for which the inputs hold each Gray-code combination."""
 
 
 @component
 def bench(c: Builder) -> None:
-    """The adder, its inputs stepping through all eight combinations in Gray code.
+    """Builds the adder with inputs stepping through all eight Gray-code combinations.
 
     One input changes every 2 ns.
     """
@@ -122,17 +122,16 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The adder on its bench."""
+    """Returns the full adder test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Eight combinations of the inputs, the gates characterized logic cells.
+    """Returns a 16 ns transient plan using characterized logic cells for the gates.
 
-    A cell's arcs each measure one input changing alone. Inside the adder's XOR, a
-    gate's two inputs change within its delay of each other, and its output turns back
-    before it reaches its rail, which the arcs do not measure: there the gates follow
-    their cells within half a mean delay, the tolerance the spot checks allow.
+    Each characterized arc measures a single switching input. Inside the adder XOR, two
+    inputs can switch within one gate delay so the output reverses before reaching a
+    rail. Spot checks allow half a mean delay tolerance for those partial glitches.
     """
     return Plan(
         {"count": Transient(stop=16 * ns)},

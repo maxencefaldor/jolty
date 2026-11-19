@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""What the examples share beyond `jolty.parts`: zeners, an op-amp, a JFET and CMOS.
+"""Shared example subcircuits beyond `jolty.parts`: zeners, an op-amp, a JFET, and CMOS.
 
-The op-amp is a macromodel of three behavioral elements, written so ngspice reads it as
-jolty does: its input stage's current saturates, which sets its slew rate, and its
-output clamps at its rails. The CMOS transistors are level 1 MOSFETs of a 1 µm process.
+The op-amp is a three-element behavioral macromodel compatible with ngspice. The input
+stage saturates in current to set the slew rate, and the output clamps at the supply
+rails. CMOS devices are level 1 MOSFETs from a 1 µm process.
 """
 
 from jolty import Builder, Role, component, devices
@@ -13,7 +13,7 @@ from jolty.units import A, K, V, fF, nm, ohm, pF, um
 
 
 def zener(voltage: float) -> devices.Device:
-    """A zener diode that breaks down at `voltage` volts, 5 mA at its knee."""
+    """Returns a zener diode that breaks down at `voltage` volts with a 5 mA knee."""
     return devices.diode(
         saturation_current=1e-14 * A,
         series_resistance=2 * ohm,
@@ -31,13 +31,13 @@ SWING = 13.0
 
 @component
 def opamp(c: Builder) -> None:
-    """A macromodel of an op-amp: 100 dB of gain, 1 MHz of bandwidth, 13 V/µs, ±13 V.
+    """Builds an op-amp macromodel with 100 dB gain, 1 MHz bandwidth, 13 V/µs, ±13 V.
 
-    The input stage is a current of 130 µA times the hyperbolic tangent of the input
-    over 2.07 V, so its transconductance is 62.8 µS, into a pole of 1.59 GΩ and 10 pF:
-    a gain of 10⁵ that falls from 10 Hz, crossing one at 1 MHz, and a slew rate of the
-    current over the capacitance. A conductance of 1 mS clamps the pole within the
-    rails, and a buffer drives the output from it.
+    The input stage drives 130 µA * tanh(v(p, n) / 2.07 V), giving 62.8 µS
+    transconductance into a 1.59 GΩ and 10 pF dominant pole. The stage yields a DC gain
+    of 10⁵ rolling off from 10 Hz to unity at 1 MHz, with slew rate set by tail current
+    over capacitance. A 1 mS clamp limits the pole voltage to the rails, and a unity
+    buffer drives the output.
     """
     noninverting = c.port("inp", Role.INPUT)
     inverting = c.port("inn", Role.INPUT)
@@ -85,7 +85,7 @@ SUPPLY = 3.3
 
 
 def mos(channel: str, width: float = 1.0) -> devices.Device:
-    """A level 1 MOSFET of a 1 µm process, `width` µm wide, its p-channel's twice."""
+    """Returns a 1 µm level 1 MOSFET of `width` µm, doubled for p-channel devices."""
     p = channel == "p"
     return devices.mosfet(
         channel="p" if p else "n",
@@ -101,7 +101,7 @@ def mos(channel: str, width: float = 1.0) -> devices.Device:
 
 @component
 def inverter(c: Builder) -> None:
-    """A CMOS inverter: a p-channel transistor up to the supply, an n-channel down."""
+    """Builds a CMOS inverter with a p-channel pull-up and an n-channel pull-down."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     up = c.place(mos("p"), name="P1")
@@ -113,7 +113,7 @@ def inverter(c: Builder) -> None:
 
 
 def comparator(supply: float = SUPPLY) -> devices.Device:
-    """A comparator, its output `supply` or ground as `in` is above `ref` or not."""
+    """Returns a behavioral comparator switching between `supply` and ground."""
     half = supply / 2
     return devices.behavioral_voltage_source(
         f"{half} + {half} * tanh(v(in, ref) / 1e-3)"
@@ -121,7 +121,7 @@ def comparator(supply: float = SUPPLY) -> devices.Device:
 
 
 def j2n5457() -> devices.Device:
-    """A 2N5457 JFET, with the SPICE parameters its maker publishes."""
+    """Returns a 2N5457 JFET configured with manufacturer SPICE parameters."""
     return devices.jfet(
         threshold_voltage=-1.372 * V,
         transconductance_parameter=1.125e-3 * A / V**2,

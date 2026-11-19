@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""The discrete small-signal transistors shared by agent tasks: 2N3904 and 2N3906."""
+"""Discrete small-signal transistors (2N3904 and 2N3906) shared across agent tasks."""
 
 from jolty import devices
 from jolty.units import A, V, ns, ohm, pF, ps
 
 
 def npn() -> devices.Device:
-    """A 2N3904, the small-signal NPN transistor, with its maker's SPICE parameters."""
+    """Returns a 2N3904 small-signal NPN transistor with datasheet SPICE parameters."""
     return devices.bipolar_transistor(
         saturation_current=6.734e-15 * A,
         forward_beta=416.4,
@@ -33,7 +33,7 @@ def npn() -> devices.Device:
 
 
 def pnp() -> devices.Device:
-    """A 2N3906, the small-signal PNP transistor, with its maker's SPICE parameters."""
+    """Returns a 2N3906 small-signal PNP transistor with datasheet SPICE parameters."""
     return devices.bipolar_transistor(
         polarity="pnp",
         saturation_current=1.41e-15 * A,

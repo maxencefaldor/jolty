@@ -1,18 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""The precision suite: each simulator's error against exact answers, against its cost.
+"""Work-precision benchmark runner, scorer, and plotting suite.
 
-``scripts/bench --precision`` runs it through ``benchmarks/speed/bench.py``. Each
-fixture of ``fixtures.py`` runs in each simulator installed, jolty, ngspice 47 with
-Sparse 1.3 and with KLU, and Xyce 7.10, each by its runner of
-``benchmarks/simulators.py``, at its defaults and along two sweeps: the relative
-tolerance alone, from 1e-2 to 1e-8 in quarter decades, the other tolerances at their
-defaults, and every tolerance scaled together from the defaults by the same factor.
-At each point a run produced, the exact answer there scores it: the significant
-correct digits of its worst point, ``-log₁₀ max |found - exact| / |exact|``, and their
-mixed form, with the quantity's scale added to ``|exact|``, for a quantity that passes
-through or near zero; no score claims more digits than the exact answer's own rounding
-allows. Beside each score, the run's engine time, the median of its repeats, and its
-steps, rejections and Newton iterations.
+``scripts/bench --precision`` invokes this module via ``benchmarks/speed/bench.py``.
+Every fixture from ``fixtures.py`` runs on all installed simulators (jolty, ngspice 47
+with Sparse 1.3 or KLU, and Xyce 7.10) through ``benchmarks/simulators.py``. Runs cover
+default tolerances plus two quarter-decade sweeps from 1e-2 to 1e-8: varying `reltol`
+alone, and scaling every tolerance together.
+
+Each simulator output is scored against independent exact answers at the simulator's
+chosen sample points. Scores report worst-point significant correct digits
+(``-log₁₀ max |found - exact| / |exact|``) and a mixed form adding an output scale near
+zero, capped by reference rounding. Each record also stores median engine time, step
+counts, rejections, and Newton iterations.
 
 Usage::
 
@@ -21,11 +20,10 @@ Usage::
     scripts/bench --precision --sweeps reltol        one sweep, or both
     scripts/bench --precision --plot RESULTS         the diagrams and table of a file
 
-The results go to ``benchmarks/precision/results/<commit>.json``, ``-dirty`` for a
-changed tree, a run adding its fixtures to what an earlier one on the same commit
-wrote; the diagrams, one per fixture, the table at defaults and the table at equal
-error go to the directory of the same name. ``benchmarks/precision/README.md`` says
-what each fixture measures, and what the first diagrams found.
+Results are saved to ``benchmarks/precision/results/<commit>.json`` (with ``-dirty``
+when tracked files differ), merging newly measured fixtures into existing commit files.
+Per-fixture plots and Markdown tables (defaults and equal-error) are written to a
+sibling directory. See ``benchmarks/precision/README.md`` for fixture descriptions.
 """
 
 import math
@@ -108,14 +106,13 @@ XYCE_DEFAULTS: Final = {
     "nonlin-tran": {"reltol": 1e-2, "abstol": 1e-6, "rhstol": 1e-2},
     "timeint": {"reltol": 1e-3, "abstol": 1e-6},
 }
-"""Xyce 7.10.0's tolerances, by the group of its options: its Newton iteration's at an
-operating point and a DC sweep, ``NONLIN``'s (``N_NLS_NLParams.C``, lines 444, 445 and
-448), and in a transient, ``NONLIN-TRAN``'s (lines 109 to 111), and its time steps'
-error, ``TIMEINT``'s (``N_TIA_TIAParams.C``, lines 102 and 104)."""
+"""Default Xyce 7.10.0 tolerances by option block: ``NONLIN`` and ``NONLIN-TRAN``
+(``N_NLS_NLParams.C``, lines 444-448 and 109-111) plus ``TIMEINT``
+(``N_TIA_TIAParams.C``, lines 102 and 104)."""
 
 
 class Sweep(StrEnum):
-    """How a sweep sets the tolerances: the relative alone, or all of them scaled."""
+    """Tolerance sweep mode: varying reltol alone or scaling all tolerances."""
 
     RELTOL = "reltol"
     SCALED = "scaled"
@@ -123,13 +120,13 @@ class Sweep(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Setting:
-    """The tolerances of one run: the defaults, or a sweep's at a relative tolerance."""
+    """Tolerance configuration: defaults or a sweep point at `relative_tolerance`."""
 
     sweep: str
     relative_tolerance: float
 
     def options(self) -> Options:
-        """The options jolty runs with, the others at their defaults."""
+        """Returns jolty `Options` configured for this tolerance setting."""
         given = self.tolerances()
         return Options(
             relative_tolerance=given.get("relative_tolerance"),
@@ -139,11 +136,10 @@ class Setting:
         )
 
     def xyce_options(self) -> tuple[str, ...]:
-        """Xyce's options lines: none at defaults, else each group of its tolerances.
+        """Builds Xyce ``.options`` directives for this setting, empty at defaults.
 
-        Along either sweep, each of its relative tolerances is the setting's, and each
-        absolute one its default, or scaled from it by the factor the setting scales
-        SPICE's tolerances by.
+        Sets every group's `reltol` to `relative_tolerance`, scaling absolute tolerances
+        by the same factor in `Sweep.SCALED`.
         """
         if self.sweep == "defaults":
             return ()
@@ -163,7 +159,7 @@ class Setting:
         )
 
     def tolerances(self) -> dict[str, float]:
-        """The tolerances the run sets, by jolty's option names; none at defaults."""
+        """Returns jolty tolerance overrides for this setting, empty at defaults."""
         if self.sweep == "defaults":
             return {}
         if self.sweep == Sweep.RELTOL:
@@ -174,7 +170,7 @@ class Setting:
 
 @dataclass(frozen=True, slots=True)
 class Measured:
-    """What one run found, how long each of its repeats took, and what it counted."""
+    """Raw simulation output, per-repeat engine times, and solver counters."""
 
     found: Found
     seconds: list[float]
@@ -183,7 +179,7 @@ class Measured:
 
 @dataclass(frozen=True, slots=True)
 class Prepared:
-    """A fixture with its circuit elaborated once, and its unknowns by name."""
+    """Pre-elaborated fixture pairing an `Elaborated` circuit with indexed unknowns."""
 
     fixture: Fixture
     elaborated: Elaborated
@@ -191,14 +187,14 @@ class Prepared:
 
     @classmethod
     def from_fixture(cls, fixture: Fixture) -> Prepared:
-        """`fixture`, its circuit elaborated."""
+        """Elaborates `fixture.top` once and indexes its unknowns by name."""
         elaborated = Elaborated(fixture.top)
         unknowns = Simulation.from_elaborated(elaborated).unknowns
         return cls(fixture, elaborated, {unknown.name: unknown for unknown in unknowns})
 
 
 def settings(sweeps: Iterable[Sweep]) -> list[Setting]:
-    """The defaults, then each sweep's relative tolerances in turn."""
+    """Returns the default setting followed by every tolerance point in `sweeps`."""
     swept = [
         Setting(sweep, tolerance)
         for sweep in sweeps
@@ -208,16 +204,15 @@ def settings(sweeps: Iterable[Sweep]) -> list[Setting]:
 
 
 def run_jolty(prepared: Prepared, setting: Setting, repeats: int) -> Measured:
-    """The fixture's analysis in jolty, `repeats` times, each on a fresh simulation.
+    """Runs `prepared.fixture` in jolty `repeats` times, each on a fresh `Simulation`.
 
-    Each simulation of the circuit elaborated once starts with nothing remembered, so
-    every repeat solves its operating point again; the time is that of
-    ``Simulation.run``, the engine's work and its results made in Python, after one
-    run to warm up.
+    Creates a fresh `Simulation` per repeat so operating points solve from scratch.
+    Discards one warm-up run and times ``Simulation.run`` (engine work plus Python
+    result construction).
     """
     options = setting.options()
     seconds: list[float] = []
-    # One run to warm up first, as the speed suite's timing does, its time left out.
+    # Discard one warm-up run, matching the speed suite timing protocol.
     Simulation.from_elaborated(prepared.elaborated).run(
         prepared.fixture.analysis, options
     )
@@ -234,7 +229,7 @@ def run_jolty(prepared: Prepared, setting: Setting, repeats: int) -> Measured:
 
 
 def _found(result: results.AnalysisResult, reads: Sequence[str]) -> Found:
-    """What a jolty result holds of the unknowns `reads`, at its points."""
+    """Extracts requested unknowns `reads` and coordinates from a jolty result."""
     match result:
         case (
             results.TransientResult(times=points)
@@ -255,9 +250,9 @@ def _found(result: results.AnalysisResult, reads: Sequence[str]) -> Found:
 
 
 def _counted(result: results.AnalysisResult) -> dict[str, int]:
-    """A transient's steps, rejections and Newton iterations.
+    """Extracts transient step counts, rejections, and Newton iterations from `result`.
 
-    The other analyses count none yet.
+    Returns an empty dictionary for non-transient analyses.
     """
     if not isinstance(result, results.TransientResult):
         return {}
@@ -275,13 +270,11 @@ def _counted(result: results.AnalysisResult) -> dict[str, int]:
 def run_ngspice(
     prepared: Prepared, setting: Setting, repeats: int, runner: Ngspice
 ) -> Measured:
-    """The fixture's analysis in ngspice, by `runner`, `repeats` times in one process.
+    """Runs `prepared.fixture` `repeats` times in one ngspice process via `runner`.
 
-    The deck is the circuit's netlist as ``jolty.spice.export`` writes it, saving the
-    vectors the fixture reads, with the setting's tolerances and the runner's solver;
-    ngspice runs at the temperature where its thermal voltage is jolty's, as
-    ``jolty.spice.ngspice`` runs it. Each repeat's time is the growth of ngspice's own
-    analysis time; the counts are the last repeat's.
+    Exports the netlist via ``jolty.spice.export``, saves requested vectors, and applies
+    setting tolerances and solver options at jolty's thermal temperature. Records
+    incremental ``rusage`` analysis times per repeat and counts from the final repeat.
 
     Raises:
         Unsupported: When the simulator cannot run the analysis.
@@ -350,12 +343,11 @@ def run_ngspice(
 def run_xyce(
     prepared: Prepared, setting: Setting, repeats: int, runner: Xyce
 ) -> Measured:
-    """The fixture's analysis in Xyce, by `runner`, `repeats` times, a process each.
+    """Runs `prepared.fixture` `repeats` times in separate Xyce processes via `runner`.
 
-    The deck is the circuit's netlist in Xyce's dialect, printing the vectors the
-    fixture reads, with the setting's tolerances; Xyce runs at the temperature where
-    its thermal voltage is jolty's, as ``jolty.spice.xyce`` runs it. Each repeat's time
-    is Xyce's own time for its analysis; the counts are the last repeat's.
+    Exports the netlist in Xyce dialect, prints requested vectors, and applies setting
+    tolerances at jolty's thermal-voltage temperature. Records Xyce's reported analysis
+    time per repeat and step counts from the final repeat.
 
     Raises:
         Unsupported: When Xyce cannot run the analysis, or write the circuit.
@@ -402,10 +394,10 @@ def run_xyce(
 def _xyce_found(
     found: xyce.Result, analysis: object, vectors: Mapping[str, str]
 ) -> Found:
-    """What Xyce printed of the vectors a fixture reads, at its points.
+    """Extracts fixture reads and sample coordinates from a Xyce result.
 
-    Xyce prints no levels of a DC sweep, which steps through the plan's own, and its
-    noise densities themselves; else it reads as ngspice's plot does.
+    Reconstructs DC sweep coordinates from the plan and reads Xyce's ``onoise`` column
+    directly; delegates other analyses to `_spice_found`.
     """
     match analysis:
         case plan.DcSweep(values=levels):
@@ -421,7 +413,7 @@ def _xyce_found(
 def _spice_found(
     raw: ngspice.Result | xyce.Result, analysis: object, vectors: Mapping[str, str]
 ) -> Found:
-    """What ngspice's plot holds of the vectors a fixture reads, at its points."""
+    """Extracts fixture reads and sample coordinates from an ngspice or Xyce result."""
     match analysis:
         case Transient():
             points = raw.real("time")
@@ -446,10 +438,7 @@ def _spice_found(
 
 
 class Scored(BaseModel):
-    """A score: the correct digits it claims, and those its exact answer allows.
-
-    Beside them, the point where its error was worst.
-    """
+    """Accuracy score holding achieved digits, reference ceiling, and worst point."""
 
     digits: float
     limit: float
@@ -457,40 +446,40 @@ class Scored(BaseModel):
 
 
 class FixtureRun(BaseModel):
-    """One run of a fixture in one simulator at one setting, scored."""
+    """Scored outcome of one fixture in one simulator at one tolerance setting."""
 
     simulator: Simulator
     sweep: str
     relative_tolerance: float
     load: float
-    """The load average over the last minute as the run began."""
+    """Host one-minute load average recorded when the run started."""
     status: Literal["scored", "failed", "unsupported"]
     message: str = ""
     seconds: float = 0.0
-    """The median of its repeats' engine times."""
+    """Median engine runtime across repeats in seconds."""
     repeats: list[float] = Field(default_factory=list)
     points: int = 0
     counts: dict[str, int] = Field(default_factory=dict)
     scores: dict[str, dict[str, Scored]] = Field(default_factory=dict)
 
     def scored(self, output: ScoredOutput) -> Scored | None:
-        """The score its diagram draws of `output`, if the run has one."""
+        """Returns the plotted `Scored` entry for `output`, or None when absent."""
         return self.scores.get(output.name, {}).get(output.score)
 
 
 class FixtureResults(BaseModel):
-    """A fixture's runs, with what it is and how its exact answer is computed."""
+    """Aggregated runs, metadata, and exact-reference description for one fixture."""
 
     describes: str
     reference: str
     outputs: list[ScoredOutput]
     seconds: float
-    """How long its runs, its exact answer and its scoring took."""
+    """Total wall time in seconds spent running, computing references, and scoring."""
     runs: list[FixtureRun]
 
 
 class SuiteResults(Provenance):
-    """A results file: its provenance, the versions, and each fixture's results."""
+    """Root precision results schema holding provenance, versions, and fixtures."""
 
     versions: dict[str, str]
     repeats: int
@@ -498,16 +487,15 @@ class SuiteResults(Provenance):
 
 
 def score(compared: Compared, output: ScoredOutput) -> dict[str, Scored]:
-    """The correct digits of the worst point, relative and mixed, and their limits.
+    """Computes relative and mixed significant digits and ceilings for `compared`.
 
-    Each score is ``-log₁₀`` of the largest ratio of a point's error to its exact
-    value's magnitude, plus the output's scale for the mixed score, which a scale of
-    zero leaves out; its limit is the same of the exact value's bound, or of half the
-    double's epsilon, its rounding, where that is larger; the digits it claims are
-    the fewer of the two. A score is left out where an exact value is zero.
+    Computes ``-log₁₀`` of the worst-point error divided by ``|exact|`` (adding
+    `output.scale` for the mixed score, omitted when `output.scale` is zero). Caps
+    reported digits at the tighter of the exact reference rounding bound and half
+    `EPSILON`, and omits any score whose denominator reaches zero.
 
     Raises:
-        ValueError: When the simulator found other points, or values not finite.
+        ValueError: When simulated values differ in shape or contain non-finite entries.
     """
     simulated = np.asarray(compared.simulated)
     expected = np.asarray(compared.exact)
@@ -593,9 +581,9 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
 
 
 def _versions() -> dict[str, str]:
-    """The versions of jolty, of ngspice and Xyce, and of the exact answers' arithmetic.
+    """Collects installed version strings for mpmath, jolty, ngspice, and Xyce.
 
-    Each other simulator's, where it is installed.
+    Includes external simulators only when installed locally.
     """
     others = {"ngspice": Ngspice().version(), "xyce": Xyce().version()}
     return {"mpmath": metadata.version("mpmath"), "jolty": Jolty().version()} | {
@@ -609,10 +597,9 @@ def run(
     sweeps: Sequence[Sweep],
     repeats: int,
 ) -> FixtureResults:
-    """Every run of a fixture, each setting in each simulator in turn, scored.
+    """Runs and scores every setting of `prepared` across `simulators`.
 
-    The simulators take each setting one after another, so that each runs under the
-    load the others do.
+    Interleaves simulators per setting so all configurations share comparable host load.
     """
     fixture = prepared.fixture
     print(f"\n{fixture.name}: {fixture.describes}", flush=True)
@@ -638,7 +625,7 @@ def run(
 def _run(
     prepared: Prepared, setting: Setting, repeats: int, simulator: Simulator
 ) -> FixtureRun:
-    """One run of a fixture in `simulator` at `setting`, scored."""
+    """Executes and scores one fixture run in `simulator` at `setting`."""
     fixture = prepared.fixture
     begun = FixtureRun(
         simulator=simulator,
@@ -683,7 +670,7 @@ def _run(
 
 
 def _cell(fixture: Fixture, ran: FixtureRun) -> str:
-    """A run's digits and time, as the progress prints them."""
+    """Formats scored digits and duration of a fixture run for console progress."""
     if ran.status != "scored":
         return f"{ran.simulator} {ran.status}"
     digits = []
@@ -723,12 +710,11 @@ def draw(document: SuiteResults, directory: Path, digits: float | None) -> None:
 
 
 def diagram(name: str, measured: FixtureResults, document: SuiteResults) -> Figure:
-    """A fixture's work-precision diagram: correct digits against engine time.
+    """Renders a work-precision plot of correct digits against median engine time.
 
-    A panel per output draws its score's digits against the median engine time, on
-    a log axis: a line per simulator configuration and sweep, in the order of their
-    tolerances, the defaults ringed, and the digits the exact answer's rounding
-    allows dotted.
+    Creates one panel per output on a logarithmic time axis, plotting each simulator and
+    sweep in tolerance order. Rings default settings and marks the reference rounding
+    ceiling with a dotted line.
     """
     figure = Figure(
         figsize=(4.2 * len(measured.outputs) + 1.8, 4.2),
@@ -843,13 +829,13 @@ crowd: 2 and 5 times each power of ten."""
 
 
 def _minor(value: float, _: int | None) -> str:
-    """A minor tick's label: its time with an SI prefix, at 2 and 5 times a decade."""
+    """Formats minor logarithmic time-axis tick labels at 2 and 5 times each decade."""
     leading = round(value / 10 ** math.floor(math.log10(value)))
     return EngFormatter(unit="s", sep=" ")(value) if leading in LABELED else ""
 
 
 def simulators_in(document: SuiteResults) -> list[Simulator]:
-    """The simulators of `SIMULATORS` that ran the fixtures of `document`, in order."""
+    """Returns simulators present in `document`, preserving `SIMULATORS` order."""
     found = {
         each.simulator
         for fixture in document.fixtures.values()
@@ -859,7 +845,7 @@ def simulators_in(document: SuiteResults) -> list[Simulator]:
 
 
 def defaults_table(document: SuiteResults) -> str:
-    """Each simulator's digits and time at its defaults, by fixture and output."""
+    """Formats a Markdown table of default-setting digits and times per output."""
     simulators = simulators_in(document)
     heads = ["fixture", "output", *(str(simulator) for simulator in simulators)]
     rows = [
@@ -877,7 +863,7 @@ def defaults_table(document: SuiteResults) -> str:
 def _default(
     measured: FixtureResults, output: ScoredOutput, simulator: Simulator
 ) -> str:
-    """A simulator's digits and time at its defaults, as the table writes them."""
+    """Formats one simulator's default-setting digits and runtime as a table cell."""
     found = next(
         (
             each
@@ -896,14 +882,12 @@ def _default(
 
 
 def equal_error_table(document: SuiteResults, digits: float | None) -> str:
-    """Each simulator's least engine time to the same correct digits, by output.
+    """Formats a Markdown table of minimum engine time at equal accuracy per output.
 
-    On each fixture's output, the target is `digits`, or the most that every
-    simulator that runs the fixture reached, at its defaults or along a sweep; each
-    simulator's time is that of its fastest run, of every setting, that reached the
-    target, beside the setting and the digits it reached. A simulator that reached it
-    in no run is marked with the most it reached, one whose runs all failed with what
-    its first failure said, and each with the runs that failed.
+    Uses `digits` as the accuracy target, or the highest digit count achieved by every
+    simulator running the fixture. Reports each simulator's fastest qualifying run
+    alongside its setting and achieved digits. Annotates simulators that missed the
+    target with their maximum digits and notes any failed runs.
     """
     simulators = simulators_in(document)
     heads = ["fixture", "output", "target", *(str(each) for each in simulators)]
@@ -939,7 +923,7 @@ def _equal_error(
     scored: Sequence[tuple[FixtureRun, Scored]],
     target: float,
 ) -> str:
-    """A simulator's fastest run to `target` digits of its `scored` runs, as a cell."""
+    """Formats a simulator's fastest run reaching `target` digits as a table cell."""
     own = [each for each in runs if each.simulator == simulator]
     failed = [each for each in own if each.status == "failed"]
     if not own or all(each.status == "unsupported" for each in own):

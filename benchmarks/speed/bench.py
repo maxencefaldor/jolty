@@ -1,98 +1,68 @@
 # Copyright 2026 Maxence Faldor
-"""Time jolty on the speed suite's fixtures, and compare the times with a baseline's.
+"""Unified CLI runner for speed, scaling, comparison, robustness, coverage, precision.
 
-``scripts/bench`` runs this script from the repository root, the command line of every
-suite of ``benchmarks/``. It first checks that every fixture's files are what its
-script in ``benchmarks/speed/circuits`` writes, then times the suite's fixtures twice:
-in Rust, by the criterion benchmarks of ``crates/jolty-engine/benches/fixtures.rs``,
-and end to end in Python, each fixture's circuit read from its file and its plan's
-analyses run through ``Simulation.run``. A Monte Carlo fixture runs its first samples
-as the runner does, as one batch of the circuit elaborated once, on one thread and on a
-thread per core. It writes the times to ``benchmarks/speed/results/<commit>.json``,
-adding to what an earlier run on the same commit wrote, each time with its runs, and
-prints them against a baseline's, each median with its 95 % interval, naming a change
-only where the two intervals separate.
+``scripts/bench`` invokes this entry point from the repository root. Default mode first
+verifies that generated JSON files match ``benchmarks/speed/circuits`` scripts. Timing
+then runs both Rust Criterion benchmarks (``crates/jolty-engine/benches/fixtures.rs``)
+and end-to-end Python runs through ``Simulation.run``. Monte Carlo fixtures run one
+elaborated batch on one core and on all cores.
 
-Usage::
+Results merge into ``benchmarks/speed/results/<commit>.json`` and print alongside a
+baseline with 95 % confidence intervals. Changes are flagged only when intervals
+separate.
 
-    scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
-    scripts/bench --compare A,B       the builds of revisions A and B, their runs of
-                                      the suite alternating round after round
-    scripts/bench --nightly DIR       the checked-out commit's build against the
-                                      previous night's, kept in DIR
-    scripts/bench --scale             the large fixtures, serially and spread, in rounds
-    scripts/bench --scale --largest   and the 50,000 inverters' chain on each too
-    scripts/bench --view matched      every simulator on the fixtures, options matched
-    scripts/bench --view defaults     every simulator on them, each at its defaults
-    scripts/bench --view equal-error  every simulator's least time to equal error, on
-                                      the precision suite's fixtures
-    scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
-    scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
-    scripts/bench --robustness        the hard circuits' corpus, in every simulator
-    scripts/bench --coverage          the coverage matrix, each row's fixture in each
-                                      simulator
-    scripts/bench --precision         each simulator's error against exact answers,
-                                      against its cost
+Usage:
 
-Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
-whose results ``benchmarks/speed/results`` holds. A working tree with changes to
-tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline. The
-baseline was measured at another time, under another load, so a change is decided by
-``--compare`` instead: each revision built once in a worktree of its own, in
-``--builds``, and each of its runs made `afresh` by a process of its build's
-interpreter, ``benchmarks/speed/timing.py``, the two builds' runs of each time
-`alternated` round after round until each comparison is decided, and printed and
-written beside its results file as a table, wall and processor times apart.
-``--nightly`` does the same for the checked-out commit against the previous night's,
-in a directory of its own.
+```text
+scripts/bench [FIXTURE ...]       default speed fixtures, or named fixtures
+scripts/bench --compare A,B       alternating build comparison of revisions A and B
+scripts/bench --nightly DIR       HEAD compared against the previous night in DIR
+scripts/bench --scale             large fixtures serially and across thread counts
+scripts/bench --scale --largest   include the 50,000-inverter chain across thread counts
+scripts/bench --view matched      all simulators at matched tight tolerances
+scripts/bench --view defaults     all simulators at default tolerances
+scripts/bench --view equal-error  minimum simulator time at equal precision accuracy
+scripts/bench --baseline COMMIT   compare against COMMIT or a results file
+scripts/bench --break-even NAME   measure Parallelism break-even for threshold NAME
+scripts/bench --robustness        hard-circuit robustness corpus across simulators
+scripts/bench --coverage          capability coverage matrix across simulators
+scripts/bench --precision         work-precision sweeps against exact references
+```
 
-``--scale`` runs each large fixture serially, on one thread with no block of its matrix
-dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
-every threshold at its break-even, in `alternated` rounds, and prints the speed-ups,
-attainable throughput against N independent single-thread copies run concurrently,
-peak resident memory of an isolated process for each row, and its results' digest,
-which must be the same on every number of threads; it runs the 50,000 inverters' chain
-so only with ``--largest``, and else once with the defaults. Pass
-``--no-concurrent-copies`` or ``--no-peak-memory`` to skip either probe.
+Without ``--baseline``, the suite selects the newest ancestor commit under
+``benchmarks/speed/results``. Dirty working trees write ``<commit>-dirty.json``, which
+is never selected as a baseline. For controlled A/B decisions, ``--compare`` builds each
+revision in a dedicated worktree under ``--builds`` and executes `afresh` worker
+processes (`benchmarks/speed/timing.py`) in `alternated` rounds. Comparison tables
+report wall and CPU times separately alongside JSON results. ``--nightly`` runs the same
+comparison against the previous night in a dedicated directory.
 
-``--view`` times every simulator instead, the owner's three views of them: jolty,
-ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or those ``--simulator``
-names. ``matched`` runs each at options as tight as jolty's tightest,
-``jolty.plan.TIGHT``, ``jolty.spice.ngspice.OPTIONS`` and ``jolty.spice.xyce.OPTIONS``,
-and ``defaults`` each at its own; each records its time end to end and in its analyses,
-as it reports them, and how far the voltages it found lie from jolty's at the matched
-options, or what stopped it, and prints the view's table, a row per fixture.
-With ``--scale``, Xyce's parallel build, ``--xyce-mpi``, runs each large fixture on 1,
-2, 4, 8 and 16 MPI ranks too. ``equal-error`` runs the precision suite, as
-``--precision`` does, and prints each simulator's least time to the same correct
-digits of each fixture's exact answer.
+``--scale`` benchmarks large fixtures serially (one thread, no matrix dissection) and
+across 1, 2, 4, 8, and all cores under default ``Parallelism`` in `alternated` rounds.
+Output reports speed-ups, attainable throughput against N concurrent single-thread
+copies, isolated peak resident memory, and result digests. The 50,000-inverter chain
+sweeps thread counts only with ``--largest``. Pass ``--no-concurrent-copies`` or
+``--no-peak-memory`` to skip either probe.
 
-``--break-even`` measures instead from which size of circuit setting one threshold of
-``Parallelism`` makes one run faster than running it serially, on 2, 4, 8 threads and
-every core: on circuits of the fixtures' scripts at several sizes, each run serially and
-with the threshold set and the others spreading nothing, in `alternated` rounds, and
-that size's value of the threshold, its break-even, from which every spread run's
-interval lay below the serial run's.
-``benchmarks/speed/README.md`` says how it sets each threshold, and what it found.
+``--view`` benchmarks installed simulators (jolty, ngspice Sparse 1.3, ngspice KLU, and
+Xyce, or ``--simulator`` choices) across three views. ``matched`` aligns tight options
+(`jolty.plan.TIGHT`, `jolty.spice.ngspice.OPTIONS`, `jolty.spice.xyce.OPTIONS`), while
+``defaults`` uses simulator defaults. Both report end-to-end time, analysis time, and
+maximum voltage deviation from matched jolty. Combining ``--scale`` with ``--xyce-mpi``
+adds Xyce parallel MPI ranks (1, 2, 4, 8, 16). ``equal-error`` delegates to the
+precision suite and prints minimum times at equal digit accuracy.
 
-``--robustness`` runs instead the corpus of hard circuits of ``benchmarks/robustness``,
-each fixture in every simulator installed, or those ``--simulator`` names, and prints
-each outcome, classified, and each simulator's failure rates;
-``benchmarks/robustness/README.md`` says what it holds and how it judges.
+``--break-even`` sweeps circuit sizes across 2, 4, 8, and all cores to find where
+enabling one ``Parallelism`` threshold beats serial execution. Each size runs serially
+and with only the selected threshold active in `alternated` rounds until intervals
+settle. See ``benchmarks/speed/README.md`` for threshold methodology and findings.
 
-``--coverage`` runs instead the fixtures of ``benchmarks/coverage``, each row's in jolty
-and ngspice, or the simulators ``--simulator`` names, judges each cell against the row's
-known answer, and renders the matrix; ``benchmarks/coverage/README.md`` says how.
-
-``--precision`` runs instead the fixtures of ``benchmarks/precision``, each in jolty,
-ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or the simulators
-``--simulator`` names, at their defaults and along the ``--sweeps`` of their
-tolerances, scores each run against its exact answer, and draws a work-precision
-diagram per fixture; ``benchmarks/precision/README.md`` says what each fixture
-measures.
-
-Each suite runs every simulator by its runner of ``benchmarks/simulators.py``, and
-writes its results headed by their provenance, ``benchmarks/measuring.py``'s.
+Sub-suite flags dispatch directly to sibling suites: ``--robustness`` runs the hard
+circuit corpus (``benchmarks/robustness/README.md``), ``--coverage`` builds the
+capability matrix (``benchmarks/coverage/README.md``), and ``--precision`` runs
+work-precision sweeps and plots (``benchmarks/precision/README.md``). All suites share
+runners from ``benchmarks/simulators.py`` and provenance from
+``benchmarks/measuring.py``.
 """
 
 import concurrent.futures
@@ -120,7 +90,7 @@ from typing import IO, Any, Final
 import numpy as np
 import numpy.typing as npt
 
-# The suites' measuring helpers and runners lie beside the suites' directories.
+# Shared benchmark helper modules live in the parent benchmarks directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from measuring import (
     BENCHMARKS,
@@ -232,8 +202,8 @@ SAMPLES: Final = 1000
 """The samples of a Monte Carlo fixture the suite times: a few seconds on one thread."""
 
 FLAGGED: Final = 0.05
-"""The relative change in a time a comparison must resolve, as AGENTS.md says: the
-change at which the two medians' intervals would separate (`Median.resolution`)."""
+"""Target relative timing change that alternating comparisons must resolve via
+`Median.resolution`, matching AGENTS.md."""
 
 MIN_RUNS: Final = 10
 """The fewest times the Python timing repeats a fixture: criterion's fewest samples."""
@@ -249,10 +219,9 @@ MIN_ROUNDS: Final = next(
 at `CONFIDENCE`, 6 at 95%, as `measuring.rank` derives."""
 
 MAX_ROUNDS: Final = 4 * MIN_ROUNDS
-"""The most rounds of compared works, once they have run for `MIN_SECONDS` each,
-unless ``--most-rounds`` says otherwise: four times the fewest, which about halves
-their medians' intervals, as an interval narrows with the square root of the runs. A
-comparison stopped there undecided says so."""
+"""Default maximum alternating rounds once each work meets `MIN_SECONDS`, overridable
+via ``--most-rounds``. Running four times `MIN_ROUNDS` roughly halves interval width
+before reporting any unresolved comparison as undecided."""
 
 COPY_ROUNDS: Final = 3
 """The default synchronized rounds of concurrent single-thread copies.
@@ -307,22 +276,17 @@ SWEPT: Final[Mapping[Threshold, Mapping[str, tuple[int, ...]]]] = {
         "rc_mesh": (10, 20, 50, 70, 100, 300),
     },
 }
-"""The circuits each threshold's break-even is measured on: those of the scripts of
-``benchmarks/speed/circuits`` it applies to, at the sizes each script's circuits take, a
-chain's inverters, a mesh's nodes along a side, or the amplifier's frequencies a decade;
-the fixtures' own among them, and others around the break-even."""
+"""Default circuit scripts and sizes swept per `Threshold` in ``--break-even``. Sizes
+count inverters, mesh side length, or AC points per decade near break-evens."""
 
 
 @dataclass(frozen=True, slots=True)
 class Timing:
-    """A time measured: the median of its runs' wall seconds, and their number.
+    """Aggregated benchmark timing storing median wall seconds and sample count.
 
-    Beside them, the machine's load average over the last minute as the runs began and
-    as they ended, when measured; each run's seconds by the wall clock and of the
-    processor, when kept, from which the medians' intervals are read; and the peak
-    resident memory in bytes of an isolated child process running this fixture alone,
-    when measured. A results file of an earlier version holds none of these optional
-    fields.
+    Optional fields store starting and ending host load averages, per-run wall and CPU
+    timings used for confidence intervals, and isolated child-process peak resident
+    memory in bytes. Earlier committed results files may omit optional fields.
     """
 
     seconds: float
@@ -341,10 +305,10 @@ class Timing:
         load_after: float,
         peak_memory_bytes: int | None = None,
     ) -> Timing:
-        """The timing of `runs`, which began at `load` and ended at `load_after`.
+        """Builds a `Timing` from `runs` recorded between `load` and `load_after`.
 
-        When `peak_memory_bytes` is omitted, takes the maximum peak resident memory
-        recorded across `runs`, or None when none carried a measurement.
+        Takes the maximum peak resident memory observed across `runs` when
+        `peak_memory_bytes` is None.
         """
         wall = tuple(each.wall for each in runs)
         cpu = tuple(each.cpu for each in runs)
@@ -367,7 +331,7 @@ class Timing:
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> Timing:
-        """The timing a results file holds, as `to_json` wrote it."""
+        """Deserializes a `Timing` from a results dictionary created by `to_json`."""
         return cls(
             value["seconds"],
             value["runs"],
@@ -379,7 +343,7 @@ class Timing:
         )
 
     def to_json(self) -> dict[str, object]:
-        """The timing as its results file holds it, without what was not measured."""
+        """Serializes this `Timing` to a dict, omitting unmeasured optional fields."""
         written = dataclasses.asdict(self)
         return {
             key: value
@@ -388,16 +352,16 @@ class Timing:
         }
 
     def wall_median(self) -> Median:
-        """The median of the wall seconds, with its interval if the runs are kept."""
+        """Returns the median wall time with confidence bounds when samples exist."""
         return median(self.wall) if self.wall else Median(self.seconds)
 
     def cpu_median(self) -> Median | None:
-        """The median of the processor's seconds, with its interval, if kept."""
+        """Returns the median CPU time with confidence bounds when CPU samples exist."""
         return median(self.cpu) if self.cpu else None
 
 
 class TimingRecord(BaseModel):
-    """A serialized timing entry in a speed suite results file."""
+    """Serialized timing entry in a speed suite results file."""
 
     seconds: float
     runs: int
@@ -421,14 +385,13 @@ class TimingRecord(BaseModel):
 
 
 class ConcurrentCopies(BaseModel):
-    """`copies` independent single-thread copies of a fixture run concurrently.
+    """Throughput record for `copies` independent single-thread copies run concurrently.
 
-    Each copy runs in its own isolated `timing.py` worker process with
-    `max_threads=1` and no matrix dissection. `wall_seconds` is the median makespan
-    across `rounds` synchronized rounds (from barrier release until the last copy
-    completes). `copy_seconds` records each copy's individual wall seconds from the
-    representative median round, sorted ascending. When `copies` would exceed the
-    machine memory budget, `wall_seconds` is None and `skipped_reason` explains why.
+    Each copy executes in an isolated `timing.py` worker process with `max_threads=1`
+    and no matrix dissection. `wall_seconds` holds the median makespan across `rounds`
+    synchronized rounds, while `copy_seconds` holds sorted per-copy wall times from the
+    representative median round. Sets `wall_seconds` to None with `skipped_reason` when
+    estimated memory exceeds the host budget.
     """
 
     copies: int = Field(ge=1)
@@ -442,7 +405,7 @@ class ConcurrentCopies(BaseModel):
     skipped_reason: str | None = None
 
     def wall_median(self) -> Median | None:
-        """The median makespan with its confidence interval, if measured."""
+        """Returns the median makespan with confidence bounds when measured, or None."""
         if self.round_seconds:
             return median(self.round_seconds)
         if self.wall_seconds is not None:
@@ -551,10 +514,10 @@ def throughput_efficiency(
 
 
 def fixtures() -> dict[str, Fixture]:
-    """Every fixture, by name, as its script defines it.
+    """Validates generated circuit and plan files and returns speed fixtures by name.
 
     Raises:
-        SystemExit: When a fixture's files are not what its script writes.
+        SystemExit: When any committed JSON file differs from its generator script.
     """
     stale: list[str] = []
     for script in scripts():
@@ -576,10 +539,10 @@ def fixtures() -> dict[str, Fixture]:
 
 
 def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, float]:
-    """What each run of `work` returned, and the load average as they began and ended.
+    """Runs `work` once or repeatedly and returns outputs plus start and end loads.
 
-    `work` runs once if `once`; else once to warm up, and then again until it has run
-    `MIN_RUNS` times and for `MIN_SECONDS`, as criterion measures a benchmark.
+    When `once` is False, discards one warm-up run and repeats until reaching at least
+    `MIN_RUNS` samples and `MIN_SECONDS` wall time, matching Criterion.
     """
     load = load_average()
     if once:
@@ -593,40 +556,37 @@ def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, f
 
 
 def timed(work: Callable[[], Run], *, once: bool = False) -> Timing:
-    """The timing of the runs of `work`, `repeated`."""
+    """Times repeated executions of `work` and returns an aggregated `Timing`."""
     found, load, load_after = repeated(work, once=once)
     return Timing.from_samples(found, load, load_after)
 
 
 @dataclass(frozen=True, slots=True)
 class Rounds:
-    """Works timed in alternating rounds: each one's timing, and each round's load.
+    """Alternating-round results pairing per-work `Timing` records with round loads.
 
-    The load average over the last minute as each round began and as it ended.
+    Each entry in `loads` stores the one-minute load average before and after one round.
     """
 
     timings: list[Timing]
     loads: list[tuple[float, float]]
 
     def summary(self) -> str:
-        """How many rounds ran, and the least and most load average around them."""
+        """Formats the round count and observed host load range as a summary string."""
         seen = [each for pair in self.loads for each in pair]
         return f"{len(self.loads)} rounds, load {min(seen):.2f} to {max(seen):.2f}"
 
 
 def alternated(works: Sequence[Callable[[], Run]], max_rounds: int) -> Rounds:
-    """Each of `works` run once a round, each round in the reverse order of the last.
+    """Times `works` in alternating forward and reverse rounds until comparisons settle.
 
-    The rounds alternate their order so that no work always follows the same one: on
-    `cedar`, the median of a serial run of a quarter of a second was 261 ms when it
-    always followed one on 64 threads, and 225 ms when it followed one on 2. Every work
-    is compared with the first. A first round warms them up and is discarded, so that
-    no cold run widens an interval; then the rounds go on until there are
-    `MIN_ROUNDS` of them and they have taken `MIN_SECONDS` for each work, and
-    then until each comparison is decided, each work's median wall time `separated`
-    from the first's or resolving a change of `FLAGGED` (`Median.resolution`), or there
-    are `max_rounds` rounds, where a comparison may stop undecided. A rule on the
-    intervals, never on the change, stops them, so stopping favours no verdict.
+    Alternating order prevents carry-over bias between adjacent runs (on `cedar`, a
+    serial run averaged 261 ms after a 64-thread run versus 225 ms after a 2-thread
+    run). Every work is compared against `works[0]` after discarding one warm-up round.
+
+    Rounds continue until reaching at least `MIN_ROUNDS` and `MIN_SECONDS` per work,
+    stopping once every comparison is `separated` or resolves `FLAGGED`, or at
+    `max_rounds`. Stopping depends only on interval width, avoiding verdict bias.
     """
     for each in works:
         each()
@@ -661,7 +621,7 @@ def alternated(works: Sequence[Callable[[], Run]], max_rounds: int) -> Rounds:
 
 
 def settled(before: Median, now: Median) -> bool:
-    """Whether a comparison of `now` with `before` is decided, as `alternated` asks."""
+    """Returns whether the comparison between `before` and `now` has settled."""
     if before.separated(now):
         return True
     resolution = before.resolution(now)
@@ -669,11 +629,10 @@ def settled(before: Median, now: Median) -> bool:
 
 
 def decided(before: Median, now: Median) -> str:
-    """The verdict on `now` against `before`: "slower", "faster", or none.
+    """Returns the verdict ("slower", "faster", "undecided", "no interval", or "").
 
-    A change is named only when the two intervals separate; "no interval" when either
-    has none, and "undecided" when they neither separate nor resolve a change of
-    `FLAGGED`.
+    Reports a change only when intervals separate; returns "no interval" when bounds
+    are absent and "undecided" when intervals neither separate nor resolve `FLAGGED`.
     """
     if before.resolution(now) is None:
         return "no interval"
@@ -683,7 +642,7 @@ def decided(before: Median, now: Median) -> str:
 
 
 def interval(found: Median) -> str:
-    """A median with its interval, as the tables print it."""
+    """Formats `found` as a median duration with optional confidence brackets."""
     if found.lower is None or found.upper is None:
         return f"{duration(found.value)} (no interval)"
     return f"{duration(found.value)} [{duration(found.lower)}, {duration(found.upper)}]"
@@ -692,11 +651,10 @@ def interval(found: Median) -> str:
 def requests(
     names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool = False
 ) -> dict[str, Request]:
-    """The runs that time the fixtures `names`, by the name of each time.
+    """Builds timed `Request` entries for `names` keyed by result label.
 
-    A fixture's own runs, named after it; a Monte Carlo fixture's first samples on one
-    thread and on a thread per core, or every sample on a thread per core at `scale`,
-    named by the number of samples run.
+    Maps standard fixtures directly and expands Monte Carlo fixtures across one core and
+    all cores (or all samples on all cores when `scale` is True).
     """
     cores = usable_cores()
     asked: dict[str, Request] = {}
@@ -725,12 +683,11 @@ def python(
     scale: bool,
     measure_memory: bool = True,
 ) -> dict[str, Timing]:
-    """The Python timings of the fixtures `names`' `requests`, each run once at `scale`.
+    """Times Python execution for `names`, running once each when `scale` is True.
 
-    A Monte Carlo fixture's times are per sample. When `measure_memory` is True, each
-    timing records `peak_memory_bytes` from a fresh child process so an earlier
-    fixture's high-water mark cannot pollute it; at `scale` (once each), that single
-    run executes directly inside the child process so no extra simulation runs.
+    Monte Carlo timings are normalized per sample. When `measure_memory` is True,
+    probes `peak_memory_bytes` in a fresh child process (reusing that single child run
+    directly when `scale` is True).
     """
     timings: dict[str, Timing] = {}
     for key, request in requests(names, found, scale=scale).items():
@@ -813,12 +770,12 @@ class TimingWorker:
 
     @classmethod
     def for_build(cls, built: Build, padding: int) -> TimingWorker:
-        """Starts the worker of `built` after verifying it imported `built`'s jolty.
+        """Starts a worker for `built` after verifying it imported `built`'s jolty.
 
-        Its environment holds a variable of `padding` bytes besides this process's.
+        Adds a `padding`-byte environment variable to randomize process stack alignment.
 
         Raises:
-            SystemExit: When it imported another jolty, or could not start.
+            SystemExit: When the worker imported another jolty or failed to start.
         """
         interpreter = built.path / ".venv" / "bin" / "python"
         environment = outside() | {"JOLTY_BENCH_PADDING": "x" * padding}
@@ -864,10 +821,10 @@ class TimingWorker:
         return Run(**json.loads(answer))
 
     def time(self, request: Request) -> Run:
-        """One run of `request` in the worker, and its seconds.
+        """Sends `request` to the worker and returns its timed `Run`.
 
         Raises:
-            SystemExit: When a build worker exits instead of answering.
+            SystemExit: When a build worker exits instead of returning a result.
         """
         try:
             return self.run_line(json.dumps(dataclasses.asdict(request)) + "\n")
@@ -933,11 +890,10 @@ def concurrent_copies(
 ) -> ConcurrentCopies:
     """Runs `copies` independent single-thread copies of `fixture_name` concurrently.
 
-    Each copy runs in its own fresh `timing.py` worker process with `serial=True`
-    (`max_threads=1`, no matrix dissection) to measure the machine's attainable
-    multi-copy throughput without GIL or allocator coupling. Every worker prepares
-    the fixture before a synchronized barrier release, so interpreter startup and
-    circuit JSON parsing do not contaminate the measured makespan.
+    Each copy runs in an isolated fresh `timing.py` worker process with `serial=True`
+    (`max_threads=1`, no matrix dissection) to measure attainable multi-copy throughput
+    without GIL or allocator coupling. Every worker prepares the fixture before a
+    synchronized barrier release, keeping startup and JSON parsing out of makespan.
 
     When `copies > 1` and the estimated memory (`copies * single_copy_memory_bytes`)
     exceeds the memory budget, returns a skipped `ConcurrentCopies` record instead
@@ -1172,20 +1128,16 @@ def scaling(
     max_rounds: int,
     options: ScalingOptions | None = None,
 ) -> ScalingResult:
-    """The fixture `name` serially and spread on each of `counts`, `interleaved`.
+    """Benchmarks `name` serially and across thread `counts` in interleaved rounds.
 
-    The serial run runs on one thread with no block of its matrix dissected, `serially`;
-    each spread run takes the fixture's options, which leave every setting of its
-    parallelism to its default, on a pool of so many threads; each is compared with the
-    serial run, in at most `max_rounds` rounds. When enabled in `options`, probes peak
-    resident memory in fresh child processes and runs `N` independent single-thread
-    copies concurrently for each `N` in `counts` to report attainable speed-up and
-    throughput efficiency. Prints the table and returns a `ScalingResult`.
+    Compares a serial run (`serially`, one thread, no dissection) against default
+    parallel runs on each thread count for at most `max_rounds` rounds. When enabled in
+    `options`, probes isolated peak memory and concurrent single-thread copies for
+    throughput efficiency, prints the table, and returns a `ScalingResult`.
 
     Raises:
-        SystemExit: When, but for a circuit large enough for a block to be dissected,
-            whose default interiors depend on the threads, a spread run finds other
-            bits than the serial run.
+        SystemExit: When a non-dissected parallel run produces a different result
+            digest than the serial run.
     """
     chosen = ScalingOptions() if options is None else options
     print(f"timing {name} in Python, serially and spread, in rounds", flush=True)
@@ -1265,7 +1217,7 @@ def scaling(
 
 @dataclass(frozen=True, slots=True)
 class Profiled:
-    """What a transient did in a run with its options' ``profile`` on."""
+    """Solver work counters and phase timing profile recorded with ``profile=True``."""
 
     work: results.Work
     profile: results.Profile
@@ -1274,10 +1226,10 @@ class Profiled:
 def profiles(
     names: Iterable[str], found: Mapping[str, Fixture]
 ) -> dict[str, dict[str, Profiled]]:
-    """The work and the profile of each transient of the fixtures `names`, by analysis.
+    """Collects transient solver counters and phase profiles for `names` by analysis.
 
-    Each fixture runs once more for them, with its options' ``profile`` on, which costs
-    a little time of its own; a Monte Carlo fixture is not profiled.
+    Executes each non-Monte-Carlo fixture once with ``profile=True`` so profiling
+    overhead stays separate from main benchmark timings.
     """
     found_profiles: dict[str, dict[str, Profiled]] = {}
     for name in names:
@@ -1316,13 +1268,12 @@ def shares(found_profiles: Mapping[str, Mapping[str, Profiled]]) -> None:
 
 
 def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing]:
-    """The criterion timings of the fixtures `names`.
+    """Runs Rust Criterion benchmarks for `names` and returns parsed `Timing` records.
 
-    A Monte Carlo fixture's time is per sample of its first samples, run as one batch,
-    named by the number of samples and of threads.
+    Monte Carlo timings are normalized per sample and keyed by sample count and threads.
 
     Raises:
-        SystemExit: When the benchmarks fail.
+        SystemExit: When ``cargo bench`` exits with a non-zero status.
     """
     chosen = list(names)
     if not chosen:
@@ -1373,11 +1324,10 @@ def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing
 
 
 def _criterion(new: Path, runs: int) -> Timing:
-    """Criterion's median in `new`, per run of the `runs` each iteration makes.
+    """Parses Criterion `sample.json` in `new` into a per-run `Timing`.
 
-    The directory holds criterion's latest estimates and samples of one benchmark; each
-    sample's time per iteration is kept as a run's, the median of which is criterion's
-    own.
+    Divides each sample's nanoseconds by iteration count and `runs`, returning the
+    median and full wall sample tuple.
     """
     sample = json.loads((new / "sample.json").read_text("utf-8"))
     wall = tuple(
@@ -1388,10 +1338,10 @@ def _criterion(new: Path, runs: int) -> Timing:
 
 
 def commands(loaded: Loaded) -> list[str]:
-    """Each analysis of the fixture's plan as ngspice's command, in order.
+    """Translates every analysis in `loaded.plan` into an ngspice command in order.
 
     Raises:
-        TypeError: When the plan runs an analysis no suite runs in another simulator.
+        TypeError: When the plan contains an unsupported external-simulator analysis.
     """
     return [
         command(analysis, loaded.circuit) for analysis in loaded.plan.analyses.values()
@@ -1399,11 +1349,10 @@ def commands(loaded: Loaded) -> list[str]:
 
 
 class View(StrEnum):
-    """A view of every simulator's times, the owner's three, which ``--view`` gives.
+    """Cross-simulator comparison view selected by ``--view``.
 
-    Every simulator at matched options, each as tight as jolty's tightest; each at its
-    own defaults; and each at equal measured error, its least time to the same correct
-    digits of the precision suite's exact answers.
+    Supports matched tight tolerances, simulator default tolerances, and minimum time
+    to reach equal accuracy on the precision suite.
     """
 
     MATCHED = "matched"
@@ -1417,20 +1366,18 @@ VIEWED: Final = (
     Simulator.NGSPICE_KLU,
     Simulator.XYCE_SERIAL,
 )
-"""The simulators a view of the fixtures' times runs, each that is installed."""
+"""Installed simulator configurations eligible for cross-simulator views."""
 
 RANKS: Final = (1, 2, 4, 8, 16)
-"""The MPI ranks a view with ``--scale`` runs Xyce's parallel build on: as far as the
-16 cores of `dogwood`, the machine Xyce is built on, which the lab shares."""
+"""Default MPI ranks for parallel Xyce under ``--view --scale`` (up to 16 cores)."""
 
 PRINTED: Final = 2
-"""The nets at each end of a fixture's top that ngspice saves and Xyce prints, so that
-what they write costs little beside what they solve, as other simulators' comparisons
-turn output off: the first two and the last two."""
+"""Number of leading and trailing top-level nets saved in ngspice and printed in Xyce
+so output I/O stays negligible relative to solver work."""
 
 
 def printed(loaded: Loaded) -> list[str]:
-    """The nets of the fixture's top the views read: `PRINTED` at each end, in order."""
+    """Selects up to `PRINTED` non-ground top-level nets from each circuit end."""
     top = loaded.circuit.components[loaded.circuit.top]
     ground = {port.name for port in top.ports if port.role is ir.Role.GROUND}
     nets = list(
@@ -1445,18 +1392,17 @@ def printed(loaded: Loaded) -> list[str]:
 
 
 def tightened(options: Options) -> Options:
-    """`options` as tight as `jolty.plan.TIGHT`, as the matched view runs jolty."""
+    """Returns `options` with all tolerance fields tightened to `jolty.plan.TIGHT`."""
     return dataclasses.replace(
         options, **{name: getattr(plan.TIGHT, name) for name in plan.TIGHT.to_json()}
     )
 
 
 def stated(view: View, runner: Jolty | Ngspice | Xyce) -> str:
-    """The options `runner`'s simulator runs the fixtures at in `view`, as stated.
+    """Formats the simulator options active for `runner` under `view`.
 
-    At matched options, jolty's are `jolty.plan.TIGHT`'s, ngspice's
-    `jolty.spice.ngspice.OPTIONS` and Xyce's `jolty.spice.xyce.OPTIONS`; ngspice with
-    KLU adds its solver's line in either view.
+    Matched mode reports `jolty.plan.TIGHT`, `jolty.spice.ngspice.OPTIONS`, or
+    `jolty.spice.xyce.OPTIONS`; ngspice KLU appends its solver directive in both views.
     """
     matched = view is View.MATCHED
     match runner:
@@ -1483,11 +1429,10 @@ class Voltages:
 
 
 def jolty_voltages(found: results.AnalysisResult, nets: Sequence[str]) -> Voltages:
-    """The voltages of `nets` jolty `found`.
+    """Extracts voltages of `nets` and sample coordinates from a jolty result.
 
     Raises:
-        TypeError: When the result is of an analysis other than an operating point, a
-            small-signal response or a transient.
+        TypeError: When `found` is not an operating-point, AC, or transient result.
     """
     match found:
         case results.TransientResult():
@@ -1510,7 +1455,7 @@ def spice_voltages(
     analysis: Analysis,
     vectors: Mapping[str, str],
 ) -> Voltages:
-    """The voltages ngspice or Xyce `found` of `analysis`, each net by its vector."""
+    """Extracts voltages and coordinates for `analysis` from ngspice or Xyce."""
     match analysis:
         case Transient():
             points = found.real("time")
@@ -1535,7 +1480,7 @@ _MAX_EXTREMUM_STEP_RATIO: Final = 4.0
 
 
 def _minmod(first: np.ndarray, second: np.ndarray) -> np.ndarray:
-    """Component-wise minmod: smaller magnitude when signs agree, else zero."""
+    """Computes component-wise minmod (smaller magnitude when signs match, else 0)."""
     return np.where(
         first * second > 0.0,
         np.sign(first) * np.minimum(np.abs(first), np.abs(second)),
@@ -1546,7 +1491,7 @@ def _minmod(first: np.ndarray, second: np.ndarray) -> np.ndarray:
 def _median_of_three(
     first: np.ndarray, second: np.ndarray, third: np.ndarray
 ) -> np.ndarray:
-    """Component-wise median of three arrays."""
+    """Computes the component-wise median of three arrays."""
     return np.maximum(
         np.minimum(first, second), np.minimum(np.maximum(first, second), third)
     )
@@ -1557,7 +1502,7 @@ def _cubic_slopes(
     secants: np.ndarray,
     curvatures: np.ndarray,
 ) -> np.ndarray:
-    """Fourth-order non-uniform divided-difference slopes (exact on degree-3 curves)."""
+    """Computes fourth-order non-uniform divided-difference slopes (exact cubic)."""
     count = len(steps) + 1
     parabolic = np.empty(count, dtype=np.float64)
     parabolic[1:-1] = (steps[1:] * secants[:-1] + steps[:-1] * secants[1:]) / (
@@ -1698,13 +1643,11 @@ def deviations(
     reference: Mapping[str, Voltages],
     found: Mapping[str, Voltages],
 ) -> dict[str, float]:
-    """How far each analysis `found` lies from the `reference`, as a fraction of it.
+    """Computes maximum normalized voltage deviation between `found` and `reference`.
 
-    For each analysis, the largest difference over the nets, each over the largest
-    magnitude of the reference's voltage or, in a transient, its swing. Transient
-    references are evaluated at the points found with Huynh (1993) cubic Hermite
-    interpolation so coarse chords across smooth extrema do not inject linear chord
-    sag while sharp switch corners remain free of overshoot.
+    Normalizes each net's peak error by reference voltage magnitude (or peak-to-peak
+    swing for transients). Evaluates transient references with Huynh (1993) cubic
+    Hermite interpolation to avoid chord sag across extrema and overshoot at corners.
     """
     worst: dict[str, float] = {}
     for name, voltages in found.items():
@@ -1734,16 +1677,14 @@ def deviations(
 
 @dataclass(frozen=True, slots=True)
 class TrialResult:
-    """One run of a fixture's analyses in one simulator, and the voltages it found."""
+    """Single-run timing and voltage results for a fixture in one simulator."""
 
     seconds: float
-    """Its time end to end: jolty's elaboration and analyses, their results made in
-    Python, or each process of another simulator from its start to its exit, summed."""
+    """End-to-end wall seconds including elaboration or child startup and exit."""
     analysis_seconds: float
-    """Its analyses' own time: jolty's ``Simulation.run``, or what the other simulator
-    reports of them, summed."""
+    """Summed solver analysis seconds from ``Simulation.run`` or simulator reports."""
     voltages: dict[str, Voltages]
-    """By analysis."""
+    """Extracted node voltages keyed by analysis name."""
 
 
 def ran(
@@ -1753,15 +1694,14 @@ def ran(
     nets: Sequence[str],
     timeout: float,
 ) -> TrialResult:
-    """One run of the fixture's analyses by `runner`, at `view`'s options.
+    """Executes all analyses of `loaded` once via `runner` under `view` options.
 
-    jolty runs in this process; ngspice runs every analysis in one process, saving the
-    `nets` alone, and Xyce each in a process of its own, printing them; each for at most
-    `timeout` seconds.
+    Runs jolty in-process, ngspice in a single process saving only `nets`, and Xyce in
+    separate processes per analysis printing `nets`, each bounded by `timeout` seconds.
 
     Raises:
-        JoltyError: When the run fails, runs out of time, or another simulator cannot
-            read the fixture's netlist.
+        JoltyError: When execution fails, times out, or an external simulator rejects
+            the exported netlist.
     """
     matched = view is View.MATCHED
     analyses = loaded.plan.analyses
@@ -1828,23 +1768,23 @@ def ran(
 
 @dataclass(frozen=True, slots=True)
 class Cell:
-    """A fixture's runs in one simulator in one view, as its table shows them.
+    """Summary cell for one fixture in one simulator under a comparison view.
 
-    Their median times end to end and in their analyses, and how far each analysis
-    lay from the reference, jolty at the matched options; or what stopped them.
+    Stores median end-to-end and analysis timings plus maximum voltage deviations from
+    matched jolty, or records the failure reason.
     """
 
     options: str
-    """The options the simulator ran at, as `stated`."""
+    """Formatted simulator options string from `stated`."""
     load: float
-    """The load average over the last minute as the runs began."""
+    """One-minute host load average recorded before execution."""
     load_after: float
-    """The same as they ended."""
+    """One-minute host load average recorded after execution."""
     seconds: Timing | None = None
     analysis_seconds: Timing | None = None
     deviations: dict[str, float] = dataclasses.field(default_factory=dict)
     failed: str | None = None
-    """What stopped the runs, if anything did."""
+    """Failure summary string when execution failed, otherwise None."""
 
 
 def cell(
@@ -1855,11 +1795,10 @@ def cell(
     *,
     once: bool,
 ) -> Cell:
-    """The runs of `work` at the `options` stated, `repeated` or `once`, as a `Cell`.
+    """Executes `work` once or repeatedly under `options` and builds a summary `Cell`.
 
-    The first run that fails stops them, and the cell says what stopped it; else each
-    of the `analyses` the first run found is compared with the `reference`, if there
-    is one.
+    Stops on the first `JoltyError` and records the failure summary; otherwise compares
+    the first run's voltages against `reference` when available.
     """
     load = load_average()
     try:
@@ -1889,16 +1828,15 @@ def view_timings(  # noqa: PLR0913 - the view, its fixtures, and how they run
     scale: bool,
     timeout: float,
 ) -> dict[str, dict[str, Cell]]:
-    """Each fixture of `names` in each of `simulators` in `view`, by configuration.
+    """Benchmarks `names` across `simulators` under `view`, returning per-config cells.
 
-    Each simulator named or, without names, each of `VIEWED` installed, and given
-    Xyce's `parallel` build at `scale`, it on each of `ranks` MPI ranks; each runs a
-    fixture `repeated`, or once at `scale`, for at most `timeout` seconds a run; a
-    Monte Carlo fixture is not viewed. Each fixture runs first in jolty at the matched
-    options, the reference every run's voltages are compared with, unless it fails.
+    Selects named simulators (or all installed `VIEWED` entries) plus parallel Xyce
+    across `ranks` when `parallel` and `scale` are set, skipping Monte Carlo fixtures.
+    Runs each fixture repeatedly (or once at `scale`) under `timeout` seconds and
+    compares voltages against matched jolty.
 
     Raises:
-        SystemExit: When a simulator named is not installed or not one a view runs.
+        SystemExit: When a requested simulator is unsupported or not installed.
     """
     chosen = simulators or [
         each for each in VIEWED if runner(each).version() is not None
@@ -1954,7 +1892,7 @@ def view_timings(  # noqa: PLR0913 - the view, its fixtures, and how they run
 
 
 def entry(measured: Cell) -> str:
-    """A cell as the view's table writes it."""
+    """Formats a `Cell` timing and deviation summary for a view table."""
     if measured.failed is not None:
         return f"failed: {measured.failed}"
     if measured.seconds is None or measured.analysis_seconds is None:
@@ -1969,9 +1907,9 @@ def entry(measured: Cell) -> str:
 
 
 def view_table(cells: Mapping[str, Mapping[str, Cell]]) -> str:
-    """A view's table of `cells`: a row per fixture, a column per configuration.
+    """Formats a Markdown view table with fixture rows and configuration columns.
 
-    Its first row states each configuration's options.
+    Prepends an options row stating each configuration's settings.
     """
     configurations = list(dict.fromkeys(c for row in cells.values() for c in row))
     options = {c: row[c].options for row in cells.values() for c in row}
@@ -1986,13 +1924,12 @@ def view_table(cells: Mapping[str, Mapping[str, Cell]]) -> str:
 
 
 def baseline(given: str | None) -> Path | None:
-    """The results to compare with: `given`'s, a commit's or a file, if given.
+    """Resolves a baseline path from `given` or the newest ancestor with results.
 
-    Otherwise they are those of the newest ancestor of the checked-out commit that has
-    results, if any.
+    Returns None when `given` is None and no ancestor commit has saved speed results.
 
     Raises:
-        SystemExit: When `given` names no results.
+        SystemExit: When `given` matches neither a file nor saved commit results.
     """
     if given is not None:
         path = Path(given)
@@ -2101,10 +2038,10 @@ def against(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) 
 
 
 def digest(found: Mapping[str, results.AnalysisResult]) -> str:
-    """The first 16 hexadecimal digits of the SHA-256 of `found`'s arrays.
+    """Computes a 16-hex-char SHA-256 digest over all NumPy result arrays in `found`.
 
-    The arrays of each analysis's result, by name, in order: the same digits for the
-    same bits.
+    Hashes each analysis name and array payload in order so identical bits yield
+    identical digests.
     """
     hasher = hashlib.sha256()
     for name, result in found.items():
@@ -2118,21 +2055,20 @@ def digest(found: Mapping[str, results.AnalysisResult]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Sized:
-    """A circuit of a fixture's script at one size, and what the thresholds count."""
+    """Circuit built at one parameter size together with parallelism workload counts."""
 
     size: int
     loaded: Loaded
     devices: int
-    """The devices of its hierarchy, flattened, which tasks of instances split."""
+    """Flattened device count split by instance-parallel tasks."""
     unknowns: int
-    """Its unknowns, which the work inside and a dissection count."""
+    """Total circuit unknown count governed by unknown tasks and matrix dissection."""
     solves: int
-    """The frequencies of its responses but each one's first, which tasks of solves
-    split."""
+    """Parallelizable AC frequency count (all points excluding the first per sweep)."""
 
 
 def devices(built: ir.Circuit) -> int:
-    """The devices of `built`, each component's counted as often as it is placed."""
+    """Counts total flattened device instances across the hierarchy of `built`."""
 
     @functools.cache
     def within(name: str) -> int:
@@ -2147,14 +2083,13 @@ def devices(built: ir.Circuit) -> int:
 
 
 def sized(script: str, size: int) -> Sized:
-    """The circuit of `script` at `size`, and the plan its fixtures run on it.
+    """Constructs the circuit, plan, and workload counts for `script` at `size`.
 
-    A chain of `size` inverters and a mesh of `size` nodes a side run their fixtures'
-    transients, and the amplifier the response of ``ac_wide`` at `size` frequencies a
-    decade.
+    Uses transient plans for ``inverter_chain`` and ``rc_mesh``, and the ``ac_wide``
+    plan at `size` points per decade for ``bjt_amp``.
 
     Raises:
-        ValueError: When `script` is none of the three.
+        ValueError: When `script` is not one of the supported break-even scripts.
     """
     match script:
         case "inverter_chain":
@@ -2176,7 +2111,7 @@ def sized(script: str, size: int) -> Sized:
 
 
 def counted(threshold: Threshold, at: Sized) -> int:
-    """What `threshold` counts of `at`: its solves, devices or unknowns."""
+    """Returns the workload count of `at` controlled by `threshold`."""
     match threshold:
         case Threshold.MIN_SOLVES_PER_TASK:
             return at.solves
@@ -2187,10 +2122,9 @@ def counted(threshold: Threshold, at: Sized) -> int:
 
 
 def setting(threshold: Threshold, at: Sized, count: int) -> int:
-    """The value of `threshold` that spreads `at`'s work over `count` threads.
+    """Computes the `threshold` value splitting `at`'s work across `count` threads.
 
-    Tasks of at least a `count`-th of its solves, devices or unknowns, rounded down, or
-    interiors of at most a `count`-th of its unknowns, rounded up.
+    Rounds minimum task sizes down and maximum dissection interior sizes up.
     """
     if threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR:
         return -(-at.unknowns // count)
@@ -2198,18 +2132,14 @@ def setting(threshold: Threshold, at: Sized, count: int) -> int:
 
 
 def spreading_none(at: Sized) -> dict[str, int]:
-    """Each threshold set to spread none of `at`'s work.
-
-    Tasks of all of its solves, devices or unknowns, and interiors as large as the
-    circuit.
-    """
+    """Returns `Parallelism` overrides keeping all work for `at` in one task."""
     return {each.value: max(1, counted(each, at)) for each in Threshold}
 
 
 def on(
     count: int, work: Callable[[], dict[str, results.AnalysisResult]]
 ) -> Callable[[], dict[str, results.AnalysisResult]]:
-    """`work`, run on the engine's pool of `count` threads."""
+    """Wraps `work` to execute inside a `simulate.threads` pool of `count` threads."""
 
     def within() -> dict[str, results.AnalysisResult]:
         with simulate.threads(count):
@@ -2221,10 +2151,7 @@ def on(
 def interleaved(
     works: Sequence[Callable[[], dict[str, results.AnalysisResult]]], max_rounds: int
 ) -> tuple[Rounds, list[str]]:
-    """Each of `works` timed in `alternated` rounds, and what each first found.
-
-    What each work found in its first run, which warms it up, is digested.
-    """
+    """Times `works` in `alternated` rounds and returns `Rounds` and warm-up digests."""
     digests: list[str | None] = [None for _ in works]
 
     def remembered(index: int) -> Callable[[], Run]:
@@ -2242,11 +2169,11 @@ def interleaved(
 
 
 SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a decade"}
-"""What a size counts of each script's circuits."""
+"""Column label describing the size parameter of each break-even script."""
 
 
 def table(cells: Sequence[str], widths: Sequence[int]) -> str:
-    """A row of `cells`, each right-aligned to its width, two spaces apart."""
+    """Formats `cells` as a right-aligned row with two spaces between columns."""
     return aligned_row(cells, widths)
 
 
@@ -2257,11 +2184,11 @@ MARKS: Final = {
     "no interval": "?",
     "": "",
 }
-"""How a break-even's table marks each spread run's verdict against the serial run."""
+"""Single-character verdict symbols used in break-even sweep tables."""
 
 
 def pays_from(gains: Sequence[bool]) -> int | None:
-    """The index of the first of `gains` from which each is one, if any."""
+    """Returns the first index in `gains` where every later entry is True, or None."""
     first: int | None = None
     for index, gain in enumerate(gains):
         if not gain:
@@ -2278,20 +2205,15 @@ def sweep(
     counts: Sequence[int],
     max_rounds: int,
 ) -> dict[str, Timing]:
-    """The times of `script`'s circuits at `sizes`, serially and `threshold` set.
+    """Sweeps `threshold` across `sizes` and `counts` for `script` to find break-evens.
 
-    Each circuit runs serially, on one thread with no threshold spreading its work, and
-    with `threshold` set to spread it over each of `counts` threads, on so many, the
-    others `spreading_none`, `interleaved` in at most `max_rounds` rounds. The times are
-    printed as they are measured, each spread run's change against the serial run's
-    marked by its verdict, and then the smallest size from which setting it pays on
-    each count, and its break-even there: from which every spread run was `decided`
-    faster, its interval below the serial run's.
+    Runs each size serially and with only `threshold` active across `counts` threads in
+    `interleaved` rounds up to `max_rounds`. Prints per-size verdicts and reports the
+    smallest size and threshold value from which every larger size stays faster.
 
     Raises:
-        SystemExit: When a run with `threshold` set finds other bits than the serial
-            run, but for a dissection, whose interiors, a size for each number of
-            threads, order the factorization otherwise.
+        SystemExit: When a non-dissection threshold changes numerical bits relative to
+            the serial run.
     """
     labels = [f"{count} thread{'s' if count > 1 else ''}" for count in counts]
     heads = [SIZE[script], "devices", "unknowns", "solves", "serially"]
@@ -2366,157 +2288,154 @@ def sweep(
 
 
 class Bench(cli.CommandLine):
-    """Time the fixtures, write the times, and compare them with a baseline's."""
+    """CLI for speed, scaling, comparison, robustness, coverage, and precision."""
 
     model_config = SettingsConfigDict(cli_prog_name="scripts/bench")
 
     fixtures: CliPositionalArg[list[str]] = Field(
         default_factory=list,
         description=(
-            "The fixtures to time, the suite's by default; with --break-even, the "
-            "scripts whose circuits it sweeps, every one it applies to by default; "
-            "with --robustness, --coverage or --precision, the fixtures, or the "
-            "coverage matrix's rows, it runs, every one by default."
+            "Fixtures, break-even scripts, or coverage rows to run. Defaults to the "
+            "active suite's full set."
         ),
     )
     scale: bool = Field(
-        default=False, description="Time the large fixtures, once each."
+        default=False, description="Benchmark the large scale fixtures once each."
     )
     break_even: Threshold | None = Field(
         default=None,
         description=(
-            "Measure this threshold's break-even instead: the circuits of the "
-            "fixtures' scripts it applies to, serially and set, from which size on "
-            "setting it pays."
+            "Measure the break-even size for this Parallelism threshold across "
+            "applicable circuit scripts."
         ),
     )
     largest: bool = Field(
         default=False,
         description=(
-            "With --scale, run the 50,000 inverters' chain serially and on each "
-            "number of threads too, in rounds: once each took 17 minutes on 12 "
-            "cores."
+            "With --scale, also sweep the 50,000-inverter chain across thread counts "
+            "in rounds (about 17 minutes per sweep on 12 cores)."
         ),
     )
     sizes: list[int] = Field(
         default_factory=list,
-        description="The sizes --break-even sweeps; the README's by default.",
+        description=(
+            "Circuit sizes swept by --break-even (defaults to sizes in README.md)."
+        ),
     )
     threads: list[int] = Field(
         default_factory=list,
         description=(
-            "The threads --break-even sets the threshold on, 2, 4, 8 and every core "
-            "by default, or --scale spreads a run on, 1, 2, 4, 8 and every core."
+            "Thread counts for --break-even (default 2, 4, 8, all cores) or --scale "
+            "(default 1, 2, 4, 8, all cores)."
         ),
     )
     view: View | None = Field(
         default=None,
         description=(
-            "Time every simulator instead, in one view: at matched options, at its "
-            "own defaults, or at equal error on the precision suite's fixtures."
+            "Compare simulators under one view: matched options, simulator defaults, "
+            "or equal accuracy on the precision suite."
         ),
     )
     digits: float | None = Field(
         default=None,
         gt=0,
         description=(
-            "The correct digits --precision and --view equal-error time each "
-            "simulator to; on each output, the most every simulator reached by "
-            "default."
+            "Target significant correct digits for --precision and --view equal-error "
+            "(defaults to the highest accuracy reached by every simulator per output)."
         ),
     )
     robustness: bool = Field(
         default=False,
         description=(
-            "Run the corpus of hard circuits instead: each fixture in each "
-            "simulator, its outcome classified, and each simulator's failure rates."
+            "Run the hard-circuit robustness corpus across simulators and report "
+            "classified outcomes and failure rates."
         ),
     )
     coverage: bool = Field(
         default=False,
         description=(
-            "Run the coverage matrix's fixtures instead: each row in each simulator, "
-            "each cell judged against the row's known answer, the matrix rendered."
+            "Run coverage matrix fixtures across simulators, score against known "
+            "answers, and render matrix.md."
         ),
     )
     precision: bool = Field(
         default=False,
         description=(
-            "Run the precision suite instead: each fixture in each simulator, at its "
-            "defaults and along the sweeps of its tolerances, scored against its "
-            "exact answer, and a work-precision diagram per fixture."
+            "Run precision tolerance sweeps across simulators, score against exact "
+            "references, and generate work-precision diagrams."
         ),
     )
     simulator: list[Simulator] = Field(
         default_factory=list,
         description=(
-            "The simulators --view, --robustness, --coverage or --precision runs, "
-            "such as jolty, ngspice-sparse or xyce-serial; by default every one "
-            "installed for --view, --robustness and --precision, and jolty and "
-            "ngspice with Sparse and with KLU for --coverage."
+            "Simulators for --view, --robustness, --coverage, or --precision (such as "
+            "jolty, ngspice-sparse, or xyce-serial). Defaults to installed simulators "
+            "(or jolty and ngspice Sparse/KLU for --coverage)."
         ),
     )
     timeout: float = Field(
         default=TIMEOUT,
         gt=0,
-        description=(
-            "The seconds --view or --robustness lets a run take before it stops it."
-        ),
+        description="Per-run timeout in seconds for --view and --robustness.",
     )
     sweeps: list[suite.Sweep] = Field(
         default_factory=lambda: list(suite.Sweep),
-        description="The sweeps of the tolerances --precision runs, both by default.",
+        description=(
+            "Tolerance sweeps executed by --precision (both sweeps by default)."
+        ),
     )
     repeats: int = Field(
         default=5,
         ge=1,
-        description="The runs of each setting --precision takes the median time of.",
+        description=(
+            "Number of repeats per tolerance setting for median timing in --precision."
+        ),
     )
     plot: Path | None = Field(
         default=None,
         description=(
-            "With --precision or --view equal-error, draw the diagrams and tables "
-            "of this results file of the precision suite instead."
+            "Precision results file to re-plot with --precision or --view equal-error "
+            "without rerunning simulations."
         ),
     )
     xyce_mpi: Path | None = Field(
         default=None,
         description=(
-            "Xyce's parallel build, which --view with --scale runs on 1, 2, 4, 8 and "
-            "16 MPI ranks too, or the --threads given."
+            "Path to parallel Xyce binary run with --view --scale across 1, 2, 4, 8, "
+            "and 16 MPI ranks (or --threads)."
         ),
     )
     baseline: str | None = Field(
-        default=None, description="The commit or results file to compare with."
+        default=None,
+        description="Baseline commit hash or results JSON file to compare against.",
     )
     compare: list[str] = Field(
         default_factory=list,
         description=(
-            "Two revisions, such as main and HEAD, whose builds to time against each "
-            "other instead: each built once in a worktree of its own, their runs of "
-            "each fixture alternating round after round, each median with its 95% "
-            "interval, by the wall clock and of the processor, and a change named "
-            "only where the intervals separate."
+            "Two revisions (such as main and HEAD) to build in isolated worktrees and "
+            "benchmark in alternating rounds. Reports wall and CPU medians with 95% "
+            "intervals, flagging changes only when intervals separate."
         ),
     )
     nightly: Path | None = Field(
         default=None,
         description=(
-            "Time the checked-out commit's build against the previous night's "
-            "instead, as --compare does, writing what it found to a directory of "
-            "today's date in this one, beside the earlier nights'."
+            "Directory for nightly build comparisons. Benchmarks HEAD against the "
+            "previous night and saves outputs under today's date."
         ),
     )
     builds: Path = Field(
         default=ROOT / "target" / "builds",
-        description="Where --compare and --nightly keep each build's worktree.",
+        description=(
+            "Directory holding isolated git worktrees built by --compare and --nightly."
+        ),
     )
     most_rounds: int = Field(
         default=MAX_ROUNDS,
         ge=MIN_ROUNDS,
         description=(
-            "The most rounds --compare, --nightly, --scale and --break-even run a "
-            "comparison in before stopping it undecided."
+            "Maximum alternating rounds for --compare, --nightly, --scale, and "
+            "--break-even before stopping undecided."
         ),
     )
     peak_memory: bool = Field(
@@ -2537,11 +2456,13 @@ class Bench(cli.CommandLine):
         default=COPY_ROUNDS,
         ge=1,
         description=(
-            "The synchronized rounds of concurrent single-thread copies --scale "
-            "takes the median makespan of."
+            "Number of synchronized concurrent-copy rounds used for the median "
+            "makespan in --scale."
         ),
     )
-    output: Path | None = Field(default=None, description="The results file to write.")
+    output: Path | None = Field(
+        default=None, description="Destination path for the results JSON file."
+    )
 
     def cli_cmd(self) -> None:
         """Runs the benchmarks."""
@@ -2554,7 +2475,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def every(counts: Iterable[int]) -> list[int]:
-    """Each of `counts` that is fewer than the cores, and then every core."""
+    """Returns counts below `usable_cores()` followed by `usable_cores()`."""
     cores = usable_cores()
     return [count for count in counts if count < cores] + [cores]
 
@@ -2568,12 +2489,10 @@ def merged(  # noqa: PLR0913 - each section of a speed suite results file
     *,
     copies: Mapping[str, Mapping[str, ConcurrentCopies]] | None = None,
 ) -> dict[str, object]:
-    """The results file `output`, with what this run measured added.
+    """Merges new timings, profiles, digests, views, and copies into `output`.
 
-    `timings`, `profiles`, `digests`, `views` and `copies` each add to what the
-    file holds of its kind, if anything: `views`, each cell of a view's table, by its
-    view, its configuration and its fixture; `copies`, each fixture's concurrent-copy
-    measurements by copy count.
+    Preserves previously recorded entries in each section while updating newly measured
+    keys.
     """
     earlier = load(output) if output.is_file() and output.stat().st_size > 0 else {}
     written = {**earlier.get("timings", {})}
@@ -2624,28 +2543,29 @@ def break_evens(arguments: Bench, threshold: Threshold) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Build:
-    """A build of jolty at one commit, in a worktree of its own."""
+    """Jolty build checked out at one commit in a dedicated git worktree."""
 
     revision: str
-    """The revision it was asked as, such as ``main``."""
+    """User-supplied revision specification such as ``main``."""
     commit: str
     path: Path
 
 
 def outside() -> dict[str, str]:
-    """This process's environment, but for the environment ``uv run`` gave it.
+    """Returns the current process environment excluding `VIRTUAL_ENV`.
 
-    So that a build's ``uv`` and interpreter take the build's own.
+    Strips the active ``uv run`` virtual environment so child builds resolve isolated
+    interpreters.
     """
     return {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
 
 
 def build(revision: str, directory: Path, taken: Iterable[Path]) -> Build:
-    """`revision` built in its own worktree in `directory`, made there if missing.
+    """Checks out and builds `revision` in a dedicated worktree under `directory`.
 
-    The worktree is named by its commit, or by its commit and ``-2`` if `taken` holds
-    that path, for a second build of the same commit; its engine is built by
-    ``uv sync`` into its own target directory, so no build overwrites another's.
+    Names the worktree after the commit hash (appending ``-2`` if `taken` already
+    includes that path) and builds via ``uv sync`` into an isolated Cargo target
+    directory.
     """
     found = git("rev-parse", "--verify", f"{revision}^{{commit}}")
     path = directory / found
@@ -2668,19 +2588,13 @@ def build(revision: str, directory: Path, taken: Iterable[Path]) -> Build:
 
 
 def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
-    """One run of `request` in a process of `built` of its own, after one to warm up.
+    """Runs `request` in a fresh padded worker for `built` after one warm-up run.
 
-    A program's time can move by several percent with where its stack begins, which
-    the size of its environment sets (Mytkowicz, Diwan, Hauswirth and Sweeney,
-    "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and
-    with where the system places its memory and its threads, as two builds' processes
-    differ even for the same code: on `dogwood`, one commit's two builds, each timed by
-    one process for every round, were named apart in four of the suite's times, the
-    buck +3.0% and ``rc_mesh_100`` -6.3% among them, and in none once each run took a
-    process of its own, as the speed suite's page shows. So each run takes a process of
-    its own, its environment padded by `padding` bytes, drawn below a page, as every
-    offset of the stack within a page then occurs, and these effects widen each
-    build's interval rather than move its median.
+    Environment size shifts stack alignment and can bias runtime by several percent
+    (Mytkowicz et al., ASPLOS 2009). Memory and thread placement also differ across
+    processes: on `dogwood`, reusing one worker process flagged four spurious changes on
+    identical commits (+3.0% on buck, -6.3% on ``rc_mesh_100``). Launching a fresh
+    worker with sub-page `padding` turns layout bias into unbiased interval variance.
     """
     worker = TimingWorker.for_build(built, padding())
     try:
@@ -2716,15 +2630,12 @@ def compared(
     arguments: Bench,
     output: Path,
 ) -> list[str]:
-    """Times the builds of `revisions` against each other on the fixtures `names`.
+    """Benchmarks `revisions` against each other on `names` in alternating rounds.
 
-    Each revision is built once in its own worktree, in ``--builds``, and each run of a
-    build takes place `afresh`, in a process of its own, a `Worker`, its environment's
-    padding drawn from a generator seeded alike for every comparison. Each time of the
-    fixtures' `requests` runs in `alternated` rounds, the first build's runs compared
-    with the second's, in at most ``--most-rounds`` once they are enough. Prints
-    the `comparison`, and writes it to `output`, as JSON, and beside it as Markdown.
-    Returns each change named, its intervals apart.
+    Builds each revision in a dedicated worktree under ``--builds`` and executes every
+    sample `afresh` in an isolated `Worker` with deterministically seeded environment
+    padding. Runs each fixture request for up to ``--most-rounds`` rounds, prints and
+    writes JSON plus sibling Markdown reports, and returns flagged changes.
     """
     first = build(revisions[0], arguments.builds, ())
     second = build(revisions[1], arguments.builds, (first.path,))
@@ -2771,12 +2682,10 @@ def compared(
 def comparison(
     pair: tuple[Build, Build], measured: Mapping[str, Rounds]
 ) -> tuple[str, list[str]]:
-    """The table of two builds' times, and each change it names.
+    """Formats a Markdown comparison table for `pair` and returns flagged changes.
 
-    A row per time and clock, the wall clock's and the processor's: each build's median
-    with its interval, the change from the first build's to the second's, the least
-    change their intervals would separate at, the verdict, `decided`, and the rounds and
-    their load.
+    Emits one row per fixture and clock (wall and CPU), showing medians with intervals,
+    relative change, minimum resolvable shift, verdict, and round load summary.
     """
     first, second = pair
     headers = [
@@ -2855,16 +2764,14 @@ def comparison(
 
 
 def nightly(arguments: Bench, directory: Path) -> None:
-    """Times the checked-out commit's build against the previous night's, `compared`.
+    """Benchmarks HEAD against the previous night's build recorded under `directory`.
 
-    The previous night's is the second build of the newest comparison in `directory`
-    but today's, or, on the first night, the same commit built twice, which must name
-    no change. Writes the comparison to ``<directory>/<today>/compare.json`` and its
-    table beside it, then removes every build in ``--builds`` but tonight's, the next
-    night's first.
+    Selects the second build of the newest prior comparison (or compares HEAD against
+    itself on the first night). Saves JSON and Markdown outputs under
+    ``<directory>/<today>/``, then prunes older worktrees in ``--builds``.
 
     Raises:
-        SystemExit: When the working tree has changes to tracked files.
+        SystemExit: When tracked files in the working tree have uncommitted changes.
     """
     tonight = commit()
     if tonight.endswith(DIRTY):
@@ -2912,19 +2819,19 @@ def precision(arguments: Bench) -> suite.SuiteResults:
 
 
 def equal_error(arguments: Bench) -> None:
-    """Prints each simulator's least time to equal error, from the precision suite.
+    """Prints each simulator's minimum time to equal accuracy from the precision suite.
 
-    The suite runs as ``--precision`` runs it, or its results file `--plot` names is
-    read, and draws the table beside its diagrams.
+    Runs ``--precision`` (or loads ``--plot``) and writes the equal-error table
+    alongside the work-precision diagrams.
     """
     print(f"\n{suite.equal_error_table(precision(arguments), arguments.digits)}")
 
 
 def instead(arguments: Bench) -> bool:
-    """Runs the suite `arguments` name instead of the timing, if they name one.
+    """Dispatches non-default benchmark sub-modes selected in `arguments`.
 
-    Returns whether they did: ``--robustness``, ``--coverage``, ``--precision``,
-    ``--view equal-error``, ``--break-even``, ``--compare`` or ``--nightly``.
+    Returns True when ``--robustness``, ``--coverage``, ``--precision``,
+    ``--view equal-error``, ``--break-even``, ``--compare``, or ``--nightly`` ran.
     """
     if arguments.robustness:
         robustness(arguments)
@@ -2952,10 +2859,10 @@ def viewed(
     found: Mapping[str, Fixture],
     output: Path,
 ) -> tuple[dict[str, Timing], dict[str, object]]:
-    """Times the fixtures `names` in `view`, and writes its table beside `output`.
+    """Benchmarks `names` under `view` and writes the Markdown table alongside `output`.
 
-    Returns each configuration's times end to end and in its analyses, and each cell,
-    by view, configuration and fixture.
+    Returns end-to-end and analysis timings together with serialized cells keyed by
+    view, configuration, and fixture.
     """
     cells = view_timings(
         view,

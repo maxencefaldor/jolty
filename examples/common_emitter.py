@@ -3,8 +3,8 @@
 
 The divider sets the base near 1.8 V, so about 1.1 mA flows through the emitter's
 100 Ω and 1 kΩ; the 1 kΩ is bypassed above a few hertz. The midband gain is the
-collector's 4.7 kΩ over the emitter's 100 Ω and the transistor's own 1/gm, some 32 dB,
-inverted. Coupling capacitors pass the band from tens of hertz up. Simulate it with
+collector's 4.7 kΩ over the emitter's 100 Ω and the transistor's intrinsic 1/gm, some
+32 dB, inverted. Coupling capacitors pass the band from tens of hertz up. Simulate with
 ``jolty simulate examples/common_emitter.py``.
 """
 
@@ -18,7 +18,7 @@ from jolty.waveforms import Sine
 
 @component
 def amplifier(c: Builder) -> None:
-    """The transistor, its bias divider, its loads, and its coupling capacitors."""
+    """Builds the transistor, bias divider, load resistors, and coupling capacitors."""
     source, output = c.port("input"), c.port("output")
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     transistor = c.place(q2n3904(), name="Q1")
@@ -43,7 +43,7 @@ def amplifier(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The amplifier on 12 V, fed 10 mV at 1 kHz."""
+    """Builds the amplifier on 12 V driven by a 10 mV, 1 kHz sine wave."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), name="VCC")
     tone = Sine(offset=0 * V, amplitude=10 * mV, frequency=1 * kHz)
@@ -56,12 +56,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The amplifier on its bench."""
+    """Returns the common-emitter amplifier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The bias point, the frequency response, and the amplified tone."""
+    """Returns operating-point, AC frequency-response, and transient tone analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -72,7 +72,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The collector biased mid-supply, and some 31.5 dB in the midband."""
+    """Returns specifications for mid-supply collector bias and roughly 31.5 dB gain."""
     return Specs(
         [
             value("op", "X1/collector").between(5 * V, 8 * V),

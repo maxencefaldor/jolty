@@ -1,13 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""Log one run of a program an agent ran, then run the program in this one's place.
+"""Wrapper script that logs a simulator invocation and replaces itself via exec.
 
-Usage: ``counted.py LOG PROGRAM [ARGUMENT ...]``. The runner puts a wrapper on the
-agent's path in place of each simulator it counts, ``ngspice`` or ``jolty``, a shell
-script that runs this one with the real program. It appends one line to ``LOG``, a JSON
-object of the program's name, the arguments it was given and the time it started, in
-seconds since the epoch, then replaces its own process with ``PROGRAM`` and those
-arguments, so the program's output, exit code and signals are its own. It runs isolated,
-``python -I``, so nothing of the agent's environment changes what it does.
+Usage: ``counted.py LOG PROGRAM [ARGUMENT ...]``. The benchmark runner places a shell
+wrapper on ``PATH`` for each tracked simulator (``ngspice`` or ``jolty``) that invokes
+``counted.py`` with the real executable. The script appends a single JSON line to
+``LOG`` containing the program name, argument list, and start timestamp in Unix
+seconds. The process then replaces itself with ``PROGRAM`` and the forwarded arguments
+so stdout, stderr, exit status, and signals pass through directly. Running under
+``python -I`` isolates the wrapper from the agent environment.
 """
 
 import json
@@ -18,10 +18,10 @@ from pathlib import Path
 
 
 def log(record: Path, program: str, arguments: list[str]) -> None:
-    """Appends to `record` the run of `program` with `arguments`, as one JSON line.
+    """Appends one JSON line to `record` logging `program` and `arguments`.
 
-    The line is one write to a file opened to append, so runs that end at once leave
-    whole lines.
+    Opening the log in append mode writes each entry in a single call so concurrent
+    invocations do not interleave partial lines.
     """
     line = json.dumps(
         {"program": Path(program).name, "arguments": arguments, "time": time.time()}
@@ -31,7 +31,7 @@ def log(record: Path, program: str, arguments: list[str]) -> None:
 
 
 def main() -> None:
-    """Logs the run the arguments describe, then runs its program in this process."""
+    """Logs the invocation from CLI arguments and executes the target program."""
     record, program, *arguments = sys.argv[1:]
     log(Path(record), program, arguments)
     os.execv(program, [program, *arguments])  # noqa: S606 - the counted program runs as the agent asked

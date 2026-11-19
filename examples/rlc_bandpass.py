@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
 """A series RLC band-pass filter, its output across the resistor.
 
-With 10 mH, 100 nF and 100 Ω, it resonates at f₀ = 1/(2π√(LC)) = 5.033 kHz with a
-quality factor Q = √(L/C)/R = 3.162, so its half-power band spans f₀/Q = 1.592 kHz,
-between f₀(√(1 + 1/4Q²) ∓ 1/2Q). Simulate it with
+With 10 mH, 100 nF, and 100 Ω, the circuit resonates at f₀ = 1/(2π√(LC)) = 5.033 kHz
+with quality factor Q = √(L/C)/R = 3.162. The half-power passband spans f₀/Q =
+1.592 kHz between f₀(√(1 + 1/4Q²) ∓ 1/2Q). Simulate with
 ``jolty simulate examples/rlc_bandpass.py``.
 """
 
@@ -26,7 +26,7 @@ EDGES = tuple(
 
 @component
 def bench(c: Builder) -> None:
-    """The inductor, the capacitor and the resistor in series across a source."""
+    """Builds the series inductor, capacitor, and resistor driven by a resonant sine."""
     ground = c.port("ground", Role.GROUND)
     tone = Sine(offset=0 * V, amplitude=1 * V, frequency=RESONANCE * Hz)
     source = c.place(devices.voltage_source(tone), name="V1")
@@ -40,12 +40,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The filter on its bench."""
+    """Returns the RLC band-pass filter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The frequency response, and ten periods at resonance."""
+    """Returns operating-point, AC frequency-response, and resonant transient plans."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -65,7 +65,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Unity gain at resonance, half the power at each edge of the band."""
+    """Returns specifications for unity gain at resonance and -3 dB band edges."""
     return Specs(
         [
             gain("bode", "out", at=RESONANCE * Hz).within(0, 1e-9),

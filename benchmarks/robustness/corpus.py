@@ -1,31 +1,26 @@
 # Copyright 2026 Maxence Faldor
-"""The corpus of hard circuits, each simulator's outcome on each, and its failure rates.
+"""Robustness corpus definitions, outcome classification, and failure-rate reporting.
 
-``scripts/bench --robustness`` runs this module from the repository root. Each
-fixture is one analysis of one circuit: an operating point, a DC sweep or a transient,
-of a circuit jolty builds (``own.py``) or of a SPICE deck fetched at a pinned commit
-and never copied (``decks.py``, whose manifest is ``external.json``). Every simulator
-installed runs every fixture, by its runner of ``benchmarks/simulators.py``, each run in
-a process of its own that a timeout stops (``runs.py``), and each run's outcome is
-classified alike:
+``scripts/bench --robustness`` runs this module from the repository root. Each fixture
+pairs a single analysis (operating point, DC sweep, or transient) with a circuit built
+in ``own.py`` or fetched at a pinned commit via ``decks.py`` (``external.json``).
+Every installed simulator executes each fixture in a separate timed child process
+(``runs.py``) through ``benchmarks/simulators.py`` and receives a uniform outcome:
 
-- ``agreed``: solved, and it agrees with the reference, every DC solution jolty finds
-  for an operating point or a sweep, the DC solutions a transient must settle into, or
-  the closed form a transient must stop at;
-- ``disagreed``: solved, and it agrees with no reference solution;
-- ``solved``: solved, where the fixture has no reference to judge it against;
-- ``failed``: the simulator gave up, with its message;
-- ``timed out``: it ran past the timeout;
-- ``unsupported``: it cannot read or simulate what the fixture holds, with the reason,
-  which never counts as a failure.
+- ``agreed``: solved and matches a reference DC solution, expected settling state, or
+  closed-form impasse time.
+- ``disagreed``: solved, but matches no reference solution.
+- ``solved``: completed on a fixture without a reference solution.
+- ``failed``: solver terminated with an error message.
+- ``timed out``: exceeded the per-fixture timeout.
+- ``unsupported``: simulator cannot read or execute the fixture (excluded from failure
+  rates).
 
-Two results agree, as the differential tests judge them, when each voltage is within
-the fixture's relative tolerance of the largest voltage of the reference, plus twice its
-absolute tolerance on voltages: the tolerances Newton iteration is asked to meet.
-
-Each simulator's failure rate is its failed and timed out runs over the runs it
-supports, DC and transient apart, with the 95 % Wilson interval a yield states.
-``benchmarks/robustness/README.md`` says what each fixture holds and what makes it hard.
+Two solutions agree when every node voltage differs by at most the relative tolerance
+times the largest reference voltage plus twice the voltage tolerance. Failure rates
+aggregate failed and timed-out runs over supported runs separately for DC and transient
+fixtures with 95 % Wilson intervals. See ``benchmarks/robustness/README.md`` for fixture
+descriptions.
 """
 
 import dataclasses
@@ -48,7 +43,7 @@ ROBUSTNESS: Final = Path(__file__).resolve().parent
 
 
 class Kind(StrEnum):
-    """Which failure rate a fixture counts toward."""
+    """Failure-rate bucket assigned to a robustness fixture (DC or transient)."""
 
     DC = "dc"
     TRANSIENT = "transient"
@@ -121,31 +116,31 @@ class Solutions:
 
 @dataclass(frozen=True, slots=True)
 class Settles:
-    """A transient whose sources end constant, and whose end is a DC solution there.
+    """Expectation for a transient ending at a DC solution of the final sources.
 
-    The reference is every DC solution of the circuit with each source at its last
-    level, that `into` accepts, as `expected` says; any, without `into`.
+    Matches every DC solution of the final-level circuit accepted by `into` (or any DC
+    solution when `into` is None), described by `expected`.
     """
 
     expected: str
     into: Callable[[Solution, Sequence[Solution]], bool] | None = None
-    """Whether one of the solutions, beside them all, is the one expected."""
+    """Optional predicate selecting expected DC solutions among all found solutions."""
 
 
 @dataclass(frozen=True, slots=True)
 class Oscillates:
-    """A transient whose end is at none of the DC solutions of its sources' last levels.
+    """Expectation for a transient that avoids all unstable final-level DC solutions.
 
-    Each of them is unstable, so the solution from rest leaves them and oscillates.
+    All DC equilibria are unstable, so a start from rest departs them and oscillates.
     """
 
 
 @dataclass(frozen=True, slots=True)
 class Impasse:
-    """A transient whose solution ends at `time`, where no solution goes on.
+    """Expectation for a transient terminating at a fold impasse point at `time`.
 
-    A run is right when it stops within its relative tolerance of `time`, and agrees
-    with no solution when it goes on past it.
+    Agrees when the simulator halts within relative tolerance of `time`, and disagrees
+    when integration continues past `time`.
     """
 
     time: float
@@ -153,87 +148,85 @@ class Impasse:
 
 @dataclass(frozen=True, slots=True)
 class Completes:
-    """A transient with no reference to judge it against: it is solved if it ends."""
+    """Expectation for a transient without a reference, passing on completion."""
 
 
 type Expectation = Solutions | Settles | Oscillates | Impasse | Completes
-"""How a fixture's outcome is judged."""
+"""Verification criterion applied to a robustness fixture run."""
 
 
 @dataclass(frozen=True, slots=True)
 class Built:
-    """A fixture's circuit as jolty simulates it: at a temperature, with options."""
+    """Jolty circuit representation with temperature, options, and probed nets."""
 
     circuit: ir.Circuit
     temperature: float
-    """In kelvins."""
+    """Simulation temperature in kelvins."""
     options: Options
     nets: tuple[str, ...]
-    """The nets whose voltages are compared, by jolty's names."""
+    """Jolty net names whose voltages are compared across simulators."""
     initial_conditions: Mapping[str, float] = field(default_factory=dict)
-    """The voltage, in volts, each net named starts a transient from, as SPICE's
-    ``.ic`` sets it."""
+    """Initial transient node voltages in volts corresponding to SPICE ``.ic`` cards."""
 
 
 @dataclass(frozen=True, slots=True)
 class Spiced:
-    """A fixture's circuit as a SPICE deck, without analyses: its lines, title first."""
+    """SPICE netlist representation of a fixture circuit without analysis cards."""
 
     lines: tuple[str, ...]
     vectors: Mapping[str, str]
-    """The vector of each net compared, by jolty's name of the net."""
+    """Mapping from jolty net name to SPICE vector expression."""
 
 
 class FixtureCircuit(Protocol):
-    """A circuit, as each simulator reads it."""
+    """Protocol providing jolty and SPICE representations of a robustness circuit."""
 
     def jolty(self) -> Built:
-        """The circuit as jolty simulates it.
+        """Builds the jolty representation of the circuit.
 
         Raises:
-            Unsupported: When jolty cannot read it.
+            Unsupported: When jolty cannot read or elaborate the circuit.
         """
         ...
 
     def spice(self) -> Spiced:
-        """The circuit as a SPICE deck.
+        """Builds the SPICE netlist representation of the circuit.
 
         Raises:
-            Unsupported: When it cannot be written as one.
+            Unsupported: When the circuit cannot be exported as SPICE.
         """
         ...
 
     def settled(self) -> Built | None:
-        """The circuit with every source at its last level, if expected of it."""
+        """Returns the circuit at final source levels for a settling reference."""
         ...
 
     def temperature(self) -> float:
-        """The temperature every simulator runs the circuit at, in kelvins."""
+        """Returns the simulation temperature in kelvins shared by all simulators."""
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class Fixture:
-    """One analysis of one circuit, and how its outcome is judged."""
+    """Robustness benchmark fixture pairing one circuit, analysis, and expectation."""
 
     name: str
     kind: Kind
     origin: str
-    """Where the circuit comes from: ``jolty``, or the manifest's suite."""
+    """Source suite identifier: ``jolty`` or the manifest suite name."""
     hard: str
-    """What makes it hard."""
+    """Summary of the numerical or modeling difficulty tested by the fixture."""
     circuit: FixtureCircuit = field(repr=False)
     analysis: Analysis
     expectation: Expectation
     options: Options = field(default_factory=Options)
-    """The options every simulator runs it with, their defaults unless the deck sets
-    them."""
+    """Simulation options applied uniformly across simulators."""
     rules: tuple[str, ...] = ()
-    """The recorded rules that fixed the deck's defects, alike for every simulator."""
+    """Recorded deck-normalization rules applied identically for every simulator."""
 
 
 class Status(StrEnum):
-    """What a run of a fixture came to."""
+    """Outcome classification for a robustness fixture run."""
 
     AGREED = "agreed"
     DISAGREED = "disagreed"
@@ -244,37 +237,35 @@ class Status(StrEnum):
 
 
 FAILURES: Final = frozenset({Status.FAILED, Status.TIMED_OUT})
-"""The outcomes a failure rate counts."""
+"""Run statuses counted in simulator failure rates."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FixtureRun:
-    """What a simulator returned for a fixture, before it is judged."""
+    """Unjudged execution record returned by a simulator runner for one fixture."""
 
     completed: bool
     message: str = ""
-    """Why it failed or does not support the fixture, in its own words."""
+    """Verbatim simulator diagnostic explaining a failure or unsupported result."""
     unsupported: bool = False
     timed_out: bool = False
     seconds: float | None = None
-    """The wall time of its process, from its start to its exit."""
+    """Total child-process wall time in seconds from launch to exit."""
     analysis_seconds: float | None = None
-    """The time of the analysis alone, as the simulator measured it."""
+    """Simulator-reported analysis time in seconds."""
     iterations: int | None = None
-    """Its Newton iterations, where it counts them."""
+    """Total Newton iteration count when reported by the simulator."""
     strategy: str | None = None
-    """How it found the operating point, where it says: for a sweep, each strategy it
-    found a level's by, in the order it first did."""
+    """Operating-point strategy reported by the simulator, ordered for sweeps."""
     values: tuple[Solution, ...] = ()
-    """The voltages compared: at the operating point, at each level of a sweep, or at
-    a transient's end."""
+    """Compared voltages at the operating point, sweep points, or transient end."""
     reached: float | None = None
-    """The last time a transient reached, where it says."""
+    """Final simulated timestamp in seconds reached by a transient run."""
     diagnostics: tuple[str, ...] = ()
-    """What jolty's checks found in the circuit before it ran, each a fact."""
+    """Pre-simulation circuit check facts reported by jolty."""
 
     def to_json(self) -> dict[str, object]:
-        """The run as JSON."""
+        """Serializes this `FixtureRun` into a JSON-compatible dictionary."""
         return {
             key: list(value) if isinstance(value, tuple) else value
             for key, value in dataclasses.asdict(self).items()
@@ -282,7 +273,7 @@ class FixtureRun:
 
     @classmethod
     def from_document(cls, document: Mapping[str, Any]) -> FixtureRun:
-        """The run a document of `to_json` holds."""
+        """Deserializes a `FixtureRun` from a dictionary created by `to_json`."""
         return cls(
             completed=bool(document["completed"]),
             message=str(document.get("message", "")),
@@ -300,11 +291,10 @@ class FixtureRun:
 
 @dataclass(frozen=True, slots=True)
 class Reference:
-    """What a fixture's runs are judged against: the DC solutions at each point.
+    """Reference DC solutions used to score a fixture run at each evaluation point.
 
-    For an operating point, one point; for a sweep, a point per level; for a transient
-    that settles or oscillates, its end. None where jolty found no solution there, with
-    its message.
+    Contains one solution set for an operating point or settled transient, or one per
+    level for a sweep. Leaves `points` empty with an error `message` when unavailable.
     """
 
     points: tuple[tuple[Solution, ...], ...] = ()
@@ -313,7 +303,7 @@ class Reference:
 
 @dataclass(frozen=True, slots=True)
 class FixtureStatus:
-    """A run of a fixture, judged."""
+    """Judged robustness outcome pairing status, detail text, and raw `FixtureRun`."""
 
     status: Status
     detail: str
@@ -321,13 +311,11 @@ class FixtureStatus:
 
 
 def agrees(found: Solution, reference: Solution, options: Options) -> bool:
-    """Whether `found` agrees with `reference`, as the differential tests judge it.
+    """Returns whether `found` agrees with `reference` under Newton voltage tolerances.
 
-    Each voltage is within the relative tolerance of the largest voltage of the
-    reference, plus twice the absolute tolerance on voltages, both the options' or
-    SPICE's defaults: the tolerances Newton iteration is asked to meet, at the scale of
-    the whole solution, as ``tests/differential.py`` judges two engines at its tight
-    options.
+    Checks that every voltage in `reference` matches within the relative tolerance times
+    the largest reference magnitude plus twice the voltage tolerance (using `options` or
+    SPICE defaults), matching ``tests/differential.py``.
 
     Examples:
         >>> agrees({"a": 1.0004}, {"a": 1.0}, Options())
@@ -356,7 +344,7 @@ ngspice's."""
 def which(
     found: Solution, solutions: Sequence[Solution], options: Options
 ) -> int | None:
-    """The index of the first of `solutions` that `found` agrees with, if any."""
+    """Returns the first index in `solutions` agreeing with `found`, or None."""
     return next(
         (
             index
@@ -370,7 +358,7 @@ def which(
 def judge(
     fixture: Fixture, run: FixtureRun, reference: Reference, options: Options
 ) -> FixtureStatus:
-    """The outcome of `run` of `fixture`, against its `reference`, at its `options`."""
+    """Classifies `run` of `fixture` against `reference` under `options`."""
     expectation = fixture.expectation
     unfinished = _unfinished(expectation, run, options)
     if unfinished is not None:
@@ -395,7 +383,7 @@ def judge(
 def _unfinished(
     expectation: Expectation, run: FixtureRun, options: Options
 ) -> FixtureStatus | None:
-    """The outcome of a run that did not finish, or of an impasse's; None otherwise."""
+    """Classifies incomplete, unsupported, timed-out, or impasse runs, else None."""
     if run.unsupported:
         return FixtureStatus(Status.UNSUPPORTED, run.message, run)
     if run.timed_out:
@@ -408,7 +396,7 @@ def _unfinished(
 
 
 def _oscillates(index: int | None) -> tuple[Status, str]:
-    """A ring's outcome, whose end agrees with the DC solution `index`, if any."""
+    """Classifies an oscillator transient by whether its end matches a DC state."""
     if index is None:
         return Status.AGREED, "oscillates"
     return Status.DISAGREED, f"rests at DC solution {index + 1}"
@@ -417,7 +405,7 @@ def _oscillates(index: int | None) -> tuple[Status, str]:
 def _settles(
     expectation: Settles, index: int | None, solutions: Sequence[Solution]
 ) -> tuple[Status, str]:
-    """A transient's outcome, whose end agrees with the DC solution `index`, if any."""
+    """Classifies a settling transient using matched DC `index` and `expectation`."""
     if index is None:
         return Status.DISAGREED, "ends at no DC solution"
     if expectation.into is not None and not expectation.into(
@@ -433,7 +421,7 @@ def _settles(
 def _solutions(
     run: FixtureRun, reference: Reference, options: Options
 ) -> FixtureStatus:
-    """An operating point or a sweep, against every DC solution jolty finds."""
+    """Scores an operating-point or sweep run against `reference` DC solutions."""
     found: list[int] = []
     for level, (values, solutions) in enumerate(
         zip(run.values, reference.points, strict=True)
@@ -455,7 +443,7 @@ def _solutions(
 
 
 def _impasse(expectation: Impasse, run: FixtureRun, options: Options) -> FixtureStatus:
-    """A transient that must stop at its impasse point."""
+    """Scores a transient expected to halt at fold impasse `expectation.time`."""
     if run.completed:
         return FixtureStatus(
             Status.DISAGREED,
@@ -471,14 +459,14 @@ def _impasse(expectation: Impasse, run: FixtureRun, options: Options) -> Fixture
 
 
 type Runs = Callable[[Fixture, float], FixtureRun]
-"""How the corpus runs a fixture in one simulator, stopped after a timeout in seconds.
+"""Callable signature for executing one robustness fixture under a timeout in seconds.
 
-A simulator joins the corpus by one of these, listed in `runs.RUNS`.
+Each simulator registered in `runs.RUNS` implements this callable interface.
 """
 
 
 def fixtures() -> dict[str, Fixture]:
-    """Every fixture of the corpus, by name: jolty's own circuits, then the decks'."""
+    """Returns all robustness fixtures keyed by name (built-in circuits, then decks)."""
     import decks  # noqa: PLC0415 - the decks import the corpus's types
     import own  # noqa: PLC0415 - jolty's own circuits import the corpus's types
 
@@ -487,9 +475,9 @@ def fixtures() -> dict[str, Fixture]:
 
 
 def wilsons(counts: Mapping[Status, int]) -> tuple[int, int, float, float] | None:
-    """The failures among the supported runs, and the 95 % Wilson interval of the rate.
+    """Computes supported failure counts and the 95 % Wilson confidence interval.
 
-    None when no run is supported.
+    Returns None when zero runs are supported.
     """
     supported = sum(
         count for status, count in counts.items() if status is not Status.UNSUPPORTED
@@ -502,11 +490,10 @@ def wilsons(counts: Mapping[Status, int]) -> tuple[int, int, float, float] | Non
 
 
 def cell(outcome: FixtureStatus) -> str:
-    """A table's cell for `outcome`: the status, its analysis's time, its iterations.
+    """Formats a table cell for `outcome` showing status, analysis time, and iterations.
 
-    The time is the analyses' alone, as each simulator measured it: jolty's around
-    its analysis, ngspice's own ``Total analysis time``; the results keep each
-    process's time from its start to its exit beside it.
+    Displays simulator-reported analysis time (excluding process startup); total
+    process wall time is recorded separately in the JSON results file.
     """
     run = outcome.run
     parts = [outcome.status.value]
@@ -522,7 +509,7 @@ def table(
     names: Sequence[str],
     outcomes: Mapping[tuple[str, str], FixtureStatus],
 ) -> list[str]:
-    """The Markdown table of `chosen` fixtures by simulator, and each one's rates."""
+    """Formats Markdown tables of fixture outcomes and per-simulator failure rates."""
     fixture_rows = [
         [
             f"`{fixture.name}`",
@@ -569,7 +556,7 @@ def details(
     names: Sequence[str],
     outcomes: Mapping[tuple[str, str], FixtureStatus],
 ) -> list[str]:
-    """Each outcome's detail: which solution, or the message, and jolty's checks."""
+    """Formats detailed per-fixture outcome lines and jolty pre-check diagnostics."""
     lines: list[str] = []
     for fixture in chosen:
         lines.append(f"{fixture.name}:")
@@ -592,7 +579,7 @@ def details(
 
 
 def _rules(diagnostics: Sequence[str]) -> list[str]:
-    """Each rule that `diagnostics` raise, how often, and the first one's fact."""
+    """Summarizes `diagnostics` by rule name, count, and first example fact."""
     by_rule: dict[str, list[str]] = {}
     for diagnostic in diagnostics:
         rule, _, fact = diagnostic.partition(": ")

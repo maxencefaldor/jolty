@@ -1,49 +1,64 @@
 # Plans
 
-Where jolty is going, why, what is measured, and what is next.
-`AGENTS.md` holds the rules every contributor follows; these documents hold the strategy and the state, and never restate a rule.
-A rule not yet adopted is proposed in a theme's "Open principles", and moves to `AGENTS.md` when the owner adopts it.
+Planning documents covering jolty's direction, rationale, measurements, and upcoming work.
+`AGENTS.md` defines the rules every contributor follows; these documents track strategy and current status without restating those rules.
+A rule not yet adopted is proposed in a theme's "Open principles" section and moves to `AGENTS.md` once the owner adopts it.
 
-| Document | What it holds |
+| Document | Scope |
 | --- | --- |
-| `vision.md` | The goal, what leading means on each pillar and how it is measured, and the principles |
+| `vision.md` | The goal, what leading means on each pillar, how progress is measured, and core principles |
 | `speed.md` | Fastest: one small run, one huge run, many runs |
-| `accuracy.md` | Most accurate and most reliable, and every departure from ngspice |
-| `models.md` | Most complete: devices, analyses, process kits, Verilog-A |
+| `accuracy.md` | Most accurate and most reliable, plus every departure from ngspice |
+| `models.md` | Most complete: devices, analyses, process kits, and Verilog-A |
 | `agentic.md` | Most agentic: what jolty gives an agent |
-| `quality.md` | Cleanest and most elegant: code, API and guide against `AGENTS.md` |
-| `benchmarks.md` | The evidence: coverage, precision and speed suites, their protocol and results |
-| `naming.md` | The names chosen, and the ones still open |
-| `gpu.md` | What a GPU could do for jolty, and what it cannot |
-| `research/` | Archival read-only research reports written on 15 November 2026, kept whole and pinned to their commits; a plan item's "Source: row N" is a row of its theme's report |
-| `device-derivatives.md` | The implementation plan for each device's own derivatives: every kernel composed on dual numbers, every parameter derivative of a device in one evaluation, and the two deferred steps |
+| `quality.md` | Cleanest and most elegant: code, API, and guide against `AGENTS.md` |
+| `benchmarks.md` | The evidence: coverage, precision, and speed suites, protocols, and results |
+| `naming.md` | The names chosen and the names still open |
+| `gpu.md` | What a GPU could do for jolty, and what a GPU cannot |
+| `research/` | Archival read-only research reports written on 15 November 2026, kept whole and pinned to their commits; a plan item's "Source: row N" references a row in the matching report |
+| `device-derivatives.md` | Implementation plan for per-device derivatives: every kernel composed on dual numbers, all parameter derivatives of a device computed in one evaluation, and two deferred steps |
 
-Every theme document has the same sections: goal and metric, where we stand, gaps, plan, decided, open principles.
-Each plan item is a section of its own, `### <status> <number>. <title>`, saying what it is, why it matters, what "done" means, and its source.
-Its status: ✅ done, 🚧 in progress, 📋 planned, ⏳ waiting on something outside jolty, ⏸️ parked; each document's tally stays current.
+Every theme document follows the same sections: goal and metric, where we stand, gaps, plan, decided, and open principles.
+Each plan item occupies a dedicated section (`### <status> <number>. <title>`) stating its scope, motivation, completion criteria, and source.
+Status markers denote ✅ done, 🚧 in progress, 📋 planned, ⏳ waiting on an external dependency, and ⏸️ parked, and each document maintains a current tally.
 
 ## The machines
 
-Measurements name the machine they ran on, with its load, since every one is shared:
+Every measurement names the host machine and its load because all benchmark machines are shared:
 
-- **This Mac:** Apple M2 Max, 8 performance and 4 efficiency cores.
+- **Local Mac:** Apple M2 Max, 8 performance and 4 efficiency cores.
 - **Machine A:** AMD Threadripper 3970X, 32 cores and 64 threads, 125 GB, Linux x86_64.
-    Its clock source (HPET) costs 1.375 µs a read, 25 times machine B's, so ngspice's and Xyce's timings and any profile are taken elsewhere; jolty's wall-clock scaling is timed here.
+    Machine A's HPET clock source costs 1.375 µs per read, 25 times slower than machine B's clock.
+    Timings for ngspice and Xyce, as well as profiles, run elsewhere due to that clock overhead, while jolty wall-clock scaling runs on machine A.
 - **Machines B and C:** 32 threads each, 125 GB, Linux x86_64.
     Xyce is installed on machine B.
-- **Machine D:** AMD EPYC 9B14 (Zen 4), 24 cores of a shared 96-core server, 64 GB, Linux x86_64 with glibc 2.27; the fixed machine of the benchmarks' baselines since 18 November, ngspice 47 built on it.
-    Two such servers differ by up to 14% in single-threaded time, so times are compared on one server only.
+- **Machine D:** AMD EPYC 9B14 (Zen 4), 24 cores of a shared 96-core server, 64 GB, Linux x86_64 with glibc 2.27.
+    Machine D serves as the fixed baseline host since 18 November, with ngspice 47 built locally.
+    Two servers of this model differ by up to 14% in single-threaded time, so timings are compared on a single server only.
 - **Machine E:** AMD EPYC 7B13 (Zen 3), one pinned core of a shared 128-core server, Linux x86_64.
 
-Raw measurement logs are not kept in the repository: each document states the numbers it relies on, with the machine, its load and the commit.
+Raw measurement logs are not kept in the repository; each document states the numbers it relies on alongside the host machine, load, and commit.
 
-**Building on macOS 27.2:** the Command Line Tools 27.2's `strip` breaks the Python extension, which macOS 27.2's dyld then refuses ("mis-aligned LINKEDIT string pool"), so release builds there set `CARGO_PROFILE_RELEASE_STRIP=none`.
+**Building on macOS 27.2:** `strip` from Command Line Tools 27.2 breaks the Python extension, which macOS 27.2 `dyld` rejects with "mis-aligned LINKEDIT string pool".
+Release builds on macOS 27.2 therefore set `CARGO_PROFILE_RELEASE_STRIP=none`.
 
 ## State and next
 
-`main` holds, as of 18 November 2026: the diode of ngspice 47 in full, the process kits' capacitors of a charge or a voltage-dependent value, the timing protocol that can decide a 5% change, the transient's discrete adjoint, one JVP and one VJP for every analysis (`agentic.md` 12b), with `jolty.function`, `jolty.jvp` and `jolty.vjp` in Python, every device's own derivatives on dual numbers and in chunks of up to eight parameters, AC's exact (`device-derivatives.md` steps 1, 2 and 2b), batches of a function's runs and their pullbacks, the JAX bridge (`agentic.md` 19), Verilog-A `localparam` and static-scaled `ddt` support compiling both IHP SG13G2 MOM capacitors, peak-memory and concurrent-copy throughput efficiency (`benchmarks.md` 6), deterministic CI counts/fingerprints (`benchmarks.md` 5b), coverage matrix v2 (80 rows, exact VBIC closed form, `benchmarks.md` 9b), charge leak reporting (format v20, `accuracy.md` 12), two-stage lossless oscillation vs numerical ringing detection (`accuracy.md` 16), subcircuit `.lib`/`.include`/`.func`/`.ic`/`.nodeset` + `load_raw` + `--raw` CLI/MCP, programmatic MCP instructions and offline docs bundle (`agentic.md` 5), `jolty measure` / `measure_results` session queries (`agentic.md` 15), `.pss` SPICE reader + autonomous time-varying detection + PSS `max_memory` enforcement (`agentic.md` 22), upfront multi-error plan/spec validation (`quality.md` 8, 9), audited engine constants and test tolerances with AST guard (`quality.md` 10, 11), and Hypothesis parser fuzzing with iterative Rust expression parser/compiler/drop (`quality.md` 18).
+As of 18 November 2026, `main` includes the following completed capabilities:
 
-**The order of the work** (the owner, 16 November):
+- **Device models and Verilog-A:** the full ngspice 47 diode model, process-kit capacitors with charge or voltage-dependent values, and Verilog-A `localparam` and static-scaled `ddt` support compiling both IHP SG13G2 MOM capacitors.
+- **Differentiation engine:** per-device dual-number derivatives in chunks of up to eight parameters, transient discrete adjoints, and exact AC VJP (`device-derivatives.md` steps 1, 2, and 2b).
+- **Differentiation API and ML bridges:** unified JVP and VJP for every analysis (`agentic.md` 12b), Python `jolty.function`, `jolty.jvp`, and `jolty.vjp`, batched runs and pullbacks, and the JAX bridge (`agentic.md` 19).
+- **Benchmarks and determinism:** the alternating timing protocol for deciding a 5% change, peak-memory and concurrent-copy throughput efficiency (`benchmarks.md` 6), and deterministic CI counts and fingerprints (`benchmarks.md` 5b).
+    Coverage matrix v2 adds 80 rows and an exact VBIC closed form (`benchmarks.md` 9b).
+- **Accuracy and periodic steady state:** per-node charge leak reporting in format v20 (`accuracy.md` 12) and two-stage lossless oscillation versus numerical ringing detection (`accuracy.md` 16).
+    Periodic steady state adds `.pss` SPICE reader support, autonomous time-varying detection, and `max_memory` enforcement (`agentic.md` 22).
+- **SPICE, CLI, and MCP tooling:** subcircuit `.lib`, `.include`, `.func`, `.ic`, and `.nodeset` support, `load_raw`, and `--raw` CLI/MCP support.
+    Agent tooling adds programmatic MCP instructions with an offline docs bundle (`agentic.md` 5) and `jolty measure` / `measure_results` session queries (`agentic.md` 15).
+- **Quality and robustness:** upfront multi-error plan and spec validation (`quality.md` 8, 9) and audited engine constants and test tolerances with an AST guard (`quality.md` 10, 11).
+    Parser safety adds Hypothesis fuzzing alongside an iterative Rust expression parser, compiler, and drop implementation (`quality.md` 18).
+
+**The order of the work** (owner, 16 November):
 
 1. CI green and kept green: checked after every push; a red run stops all landing.
 1. The benchmarks that decide (`benchmarks.md` 2, 3, 5).
@@ -53,14 +68,20 @@ Raw measurement logs are not kept in the repository: each document states the nu
 
 ## Open decisions
 
-Each waits on the owner:
+Each open decision awaits owner approval:
 
-- **The PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is done; `torch.autograd.Function` around the same batch pullback waits on approval of `torch` as an optional dependency.
-- **Device derivatives** (`device-derivatives.md`): whether Gummel-Poon's and the JFET's derivatives, exact by construction, are worth their 2 to 8% more instructions an evaluation (1.3); whether the largest chunk stays 8, as recommended, or becomes 16, which evaluates 5 to 24% faster than two twins of 8 but builds `jolty-models` 23% slower (2.3); and the measurement of BSIM4's evaluation against ngspice's, planned there and held.
-- **Two names** (`models.md` 17): the analysis `Mismatch`, kind `mismatch` (Spectre and HSPICE say `dcmatch` and `acmatch`), and `random_variables` (landed on `main`, open for the owner's sign-off).
-- **Newton's two cuts** (`accuracy.md` 6): measured to misjudge (91% of the buck's iterations they would cut converged within ten anyway); the recommendation is to leave them out.
-- **`ln1p` and `expm1` in jolty's Verilog-A:** outside the Verilog-AMS standard; reversible.
-- **The generated kernels' parameters:** whether they may declare their parameters by a table rather than derived serialization, which would cut a third of PSP's 1.54 MB and its 122 s release build, but give generated and hand-written kernels two forms.
-- **`measure::Signal`:** both an output and the denominator a gain is read over, so the glossary's `Output` would be wrong; it needs a name.
-- **The CMC's QA files:** R3_CMC 1.1.2's QA tests are handed out only through Si2's form, which asks for the owner's name and email; the compiler's QA harness waits for them (`models.md` 12, 15).
-- **Item 8's paid run** (`agentic.md` 14): not yet.
+- **PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is complete.
+    Wrapping `torch.autograd.Function` around the same batch pullback awaits approval of `torch` as an optional dependency.
+- **Device derivatives** (`device-derivatives.md`): three items await decision.
+    First, whether exact-by-construction Gummel-Poon and JFET derivatives justify 2 to 8% more instructions per evaluation (step 1.3).
+    Second, whether the largest chunk stays at 8 (recommended) or grows to 16, which runs 5 to 24% faster than two 8-wide twins while building `jolty-models` 23% slower (step 2.3).
+    Third, whether to run the held BSIM4 evaluation measurement against ngspice.
+- **Two names** (`models.md` 17): the `Mismatch` analysis (kind `mismatch`, compared with Spectre and HSPICE `dcmatch` and `acmatch`) and `random_variables` have landed on `main` pending owner sign-off.
+- **Newton's two cuts** (`accuracy.md` 6): measurements showed misjudgment because 91% of the buck iterations that would have been cut still converged within ten iterations.
+    The recommendation is to omit both cuts.
+- **`ln1p` and `expm1` in jolty's Verilog-A:** both extensions sit outside the Verilog-AMS standard and remain reversible.
+- **Generated kernel parameters:** whether generated kernels may declare parameters via a table rather than derived serialization.
+    A table cuts a third of PSP's 1.54 MB footprint and 122 s release build time, while giving generated and hand-written kernels two different forms.
+- **`measure::Signal`:** the type serves as both an output and the denominator of a gain, so the glossary term `Output` does not fit and a replacement name is needed.
+- **CMC QA files:** R3_CMC 1.1.2 QA tests are distributed only through an Si2 form requiring the owner's name and email, blocking the compiler QA harness (`models.md` 12, 15).
+- **Item 8 paid run** (`agentic.md` 14): deferred pending owner go-ahead.

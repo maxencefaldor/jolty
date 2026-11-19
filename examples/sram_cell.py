@@ -20,7 +20,7 @@ from jolty.waveforms import Piecewise
 
 @component
 def cell(c: Builder) -> None:
-    """The storing inverters, and an access transistor from each to its bit line."""
+    """Builds two cross-coupled inverters and two bit-line access transistors."""
     word = c.port("word", Role.INPUT)
     bit, bit_bar = c.port("bit"), c.port("bit_bar")
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
@@ -37,7 +37,7 @@ def cell(c: Builder) -> None:
 
 
 def steps(*levels: tuple[float, float]) -> Piecewise:
-    """A waveform at each `(time in ns, level in volts)`, with 100 ps edges between."""
+    """Returns a piecewise waveform from `(time_ns, volts)` steps with 100 ps edges."""
     points = []
     for time, level in levels:
         if points:
@@ -48,7 +48,7 @@ def steps(*levels: tuple[float, float]) -> Piecewise:
 
 @component
 def bench(c: Builder) -> None:
-    """The cell, written 0 at the start, 1 at 2 ns and 0 at 12 ns."""
+    """Builds the SRAM cell initialized to 0, written 1 at 2 ns, and 0 at 12 ns."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     word = c.place(
@@ -79,17 +79,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The cell on its bench."""
+    """Returns the SRAM cell test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Twenty nanoseconds: write a 1, hold it, write a 0, hold it."""
+    """Returns a 20 ns transient plan covering write-1, hold, write-0, and hold."""
     return Plan({"write": Transient(stop=20 * ns, max_step=10 * ps)})
 
 
 def specs() -> Specs:
-    """The cell holds a 1 after the first write and a 0 after the second."""
+    """Returns specifications verifying retention of 1 and 0 after each write."""
     return Specs(
         [
             value("write", "X1/q", at=9 * ns).within(SUPPLY * V, 10 * mV),

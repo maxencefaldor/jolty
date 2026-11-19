@@ -20,7 +20,7 @@ DUTY = 0.5
 
 @component
 def buck(c: Builder) -> None:
-    """The switch from the input, the diode to ground, and the LC filter."""
+    """Builds the buck stage with input switch, catch diode, and LC output filter."""
     source, output, gate = c.port("input"), c.port("output"), c.port("gate", Role.INPUT)
     ground = c.port("ground", Role.GROUND)
     switch = c.place(
@@ -51,7 +51,7 @@ def buck(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The converter, switched at 100 kHz and 50 %, into 10 Ω."""
+    """Builds the buck converter switched at 100 kHz and 50 % duty into 10 Ω."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), name="VIN")
     width = DUTY * PERIOD - 20e-9
@@ -74,17 +74,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The converter on its bench."""
+    """Returns the buck converter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Six milliseconds from rest: the LC filter's settling, then a steady output."""
+    """Returns a 6 ms transient plan covering LC settling and steady-state ripple."""
     return Plan({"start": Transient(stop=6 * ms, max_step=0.2 * us)})
 
 
 def specs() -> Specs:
-    """About 5.8 V at the output, its ripple a few millivolts."""
+    """Returns specifications for steady output near 5.8 V, low ripple, and current."""
     return Specs(
         [
             mean("start", "out", start=5 * ms).between(5.5 * V, 6 * V),

@@ -1,96 +1,105 @@
 # Precision
 
-The precision suite measures each simulator's error against exact answers, and what it costs: a work-precision diagram per fixture, the correct digits of a run against its engine time.
-Every exact answer is computed independently of every simulator, as a closed form or as the circuit's own equations solved in higher precision; no simulator's run, however tight, is ever a reference.
-The suite stays out of `scripts/check`, as the speed suite does: it times its runs.
+The precision suite measures each simulator's error against exact answers versus runtime, generating a work-precision diagram per fixture that plots significant correct digits against engine time.
+Every reference answer is computed independently of all simulators from closed-form formulas or high-precision solutions of the circuit equations; no simulator run ever acts as a reference.
+The precision suite stays outside `scripts/check`, like the speed suite, because execution measures wall-clock timings.
 
 ## Running
 
 ```sh
-scripts/bench --precision                       # every fixture, in jolty, ngspice and Xyce, each installed
-scripts/bench --precision rc_step lc_tank       # only these fixtures
-scripts/bench --precision --simulator jolty     # one simulator, or several
-scripts/bench --precision --sweeps reltol       # one sweep of the tolerances, or both
-scripts/bench --precision --repeats 9           # the runs each setting's time is the median of
-scripts/bench --precision --plot RESULTS        # the diagrams and table of a results file
-scripts/bench --view equal-error                # each simulator's least time to the same digits
+scripts/bench --precision                       # every fixture, in jolty, ngspice, and Xyce (when installed)
+scripts/bench --precision rc_step lc_tank       # selected fixtures only
+scripts/bench --precision --simulator jolty     # one or more specific simulators
+scripts/bench --precision --sweeps reltol       # one tolerance sweep, or both
+scripts/bench --precision --repeats 9           # repeat count used for median timing per setting
+scripts/bench --precision --plot RESULTS        # regenerate diagrams and tables from a results file
+scripts/bench --view equal-error                # fastest runtime per simulator reaching equal digits
 ```
 
-The results go to `results/<commit>.json`, `-dirty` for a working tree with changes to tracked files, and a later run on the same commit adds its fixtures to the file, so that the suite can run in pieces.
-The diagrams, one per fixture, the table of each simulator at its defaults and the table at equal error go to the directory of the same name beside it, which `--plot` draws again from the file.
-The exact answers of the networks of 1,000 nodes take about a minute each on the machine below, and the whole suite took 6 min 18 s there, in three runs of its fixtures.
+Results are written to `results/<commit>.json` (with `-dirty` for modified working trees), and later runs on the same commit merge new fixtures into that file so the suite can run incrementally.
+Per-fixture diagrams, the default-settings table, and the equal-error table go to a sibling directory of the same name, which `--plot` can regenerate from the JSON file.
+Computing exact reference answers for 1,000-node networks takes about a minute each on the test host below, and the full suite took 6 min 18 s across three runs.
 
 ## Fixtures
 
 | Fixture | Circuit and analysis | Exact answer | Scored |
 | --- | --- | --- | --- |
-| `rc_step` | 1 kΩ into 1 nF under a 1 V step rising in 1 ns, for 5 µs | its mode's response to each straight piece of the source | `v(out)` at every point, mixed |
-| `rc_ramp` | the same under a ramp of 1 V over 2 µs, for 6 µs | the same | the same |
-| `rc_femto` | 1 MΩ into 1 fF, at most 1 fC, under a step rising in 1 ps, for 5 ns | the same | the same |
-| `rlc_step` | a series RLC of 10 Ω, 1 µH and 1 nF, damped at 0.16 of critical, under the step, for 2 µs | its two complex modes, by mpmath's eigenvectors | the same |
-| `lc_tank` | an undamped tank of 1 µH and 1 nF set ringing by a current source of 1 mA turned off in 1 ns, for 4 µs, 20 periods | its two imaginary modes | its energy at every point, relative, and its frequency over the run, from the phase its state turned through |
-| `diode` | a diode of 10 fA of saturation current fed through 1 kΩ, swept from 0.1 V to 5 V in 50 steps | Lambert's W, with the 1 pS of gmin across the junction | `v(anode)` at every level, relative |
-| `rlc_ac` | the small-signal response of a series RLC low-pass of quality factor 31.6, at 20 frequencies a decade from 1 Hz to 1 GHz | `1/(1 - ω²LC + jωRC)` | `v(out)` at every frequency, relative |
-| `rc_noise` | the thermal noise of 1 kΩ at the 1 nF it feeds, at 10 frequencies a decade from 1 Hz to 1 GHz | `4kTR/(1 + (ωRC)²)`, with the SI's exact `k` | the density at every frequency, relative |
-| `butterworth_poles` | the poles of a fifth-order Butterworth LC ladder between 50 Ω, cut off at 1 MHz | the eigenvalues of its state equations | every pole, relative |
-| `rc_periodic` | the periodic steady state of 1 kΩ into 10 µF driven at 1 kHz, its time constant ten periods | the phasor's steady state | `v(out)` over the period, mixed |
-| `ladder_10`, `_100`, `_1000` | ladders of so many nodes, their resistances log-uniform from 10 Ω to 10 kΩ and their capacitances from 1 pF to 1 nF, under the step, for five of their slowest time constants | the eigenpairs of their symmetric pencils | 50 of their nodes at every point, mixed |
-| `tree_10`, `_100`, `_1000` | random trees of so many nodes, each node's parent drawn among the nodes before it, their values as the ladders' | the same | the same |
+| `rc_step` | 1 kΩ into 1 nF under a 1 V step rising in 1 ns, for 5 µs | Exact single-mode response to each linear segment of the source | `v(out)` at every point, mixed |
+| `rc_ramp` | Same RC network under a 1 V ramp over 2 µs, for 6 µs | Same as `rc_step` | Same as `rc_step` |
+| `rc_femto` | 1 MΩ into 1 fF (at most 1 fC) under a step rising in 1 ps, for 5 ns | Same as `rc_step` | Same as `rc_step` |
+| `rlc_step` | Series RLC (10 Ω, 1 µH, 1 nF), damped at 0.16 of critical, under the step for 2 µs | Two complex modes via mpmath eigenvectors | Same as `rc_step` |
+| `lc_tank` | Undamped LC tank (1 µH, 1 nF) excited by a 1 mA current source turned off in 1 ns, for 4 µs (20 periods) | Two imaginary modes | Relative energy at every point, plus frequency from total state phase advance |
+| `diode` | Diode (10 fA saturation current) fed through 1 kΩ, swept from 0.1 V to 5 V in 50 steps | Lambert W function including 1 pS junction gmin | `v(anode)` at every level, relative |
+| `rlc_ac` | Small-signal response of a series RLC low-pass filter (Q = 31.6) at 20 frequencies per decade from 1 Hz to 1 GHz | `1/(1 - ω²LC + jωRC)` | `v(out)` at every frequency, relative |
+| `rc_noise` | Thermal noise of 1 kΩ into 1 nF at 10 frequencies per decade from 1 Hz to 1 GHz | `4kTR/(1 + (ωRC)²)` with exact SI `k` | Noise density at every frequency, relative |
+| `butterworth_poles` | Poles of a fifth-order Butterworth LC ladder between 50 Ω terminations, cut off at 1 MHz | Eigenvalues of the state equations | Every pole, relative |
+| `rc_periodic` | Periodic steady state of 1 kΩ into 10 µF driven at 1 kHz (time constant equal to ten periods) | Phasor steady-state solution | `v(out)` over the period, mixed |
+| `ladder_10`, `_100`, `_1000` | RC ladders of 10, 100, and 1,000 nodes (log-uniform 10 Ω to 10 kΩ, 1 pF to 1 nF) under a step for five slowest time constants | Eigenpairs of the symmetric pencil | 50 nodes at every point, mixed |
+| `tree_10`, `_100`, `_1000` | Random RC trees of 10, 100, and 1,000 nodes with each parent drawn among earlier nodes and the same value ranges | Same as `ladder_*` | Same as `ladder_*` |
 
-Every circuit is built with jolty's builder, and its element values are the doubles the circuit holds, which the exact answers read as they are, so that they answer the circuit every simulator reads.
-The networks' values come from NumPy's generator seeded with 1,000 plus a ladder's size and 2,000 plus a tree's, so the same fixtures come back on every machine; their modes' rates spread over 4.5 decades for `tree_10` to 10.1 for `ladder_1000`.
-Their transients cover five of their slowest time constants, rounded up to a digit: from 30 µs for `tree_10` to 0.4 s for `ladder_1000`.
+Every circuit is constructed with jolty's builder, and the reference solver reads the exact floating-point element values stored in the circuit so every simulator solves the identical network.
+Network element values come from NumPy's RNG seeded with 1,000 plus ladder size or 2,000 plus tree size, guaranteeing identical fixtures across machines.
+Eigenvalue rates span 4.5 decades for `tree_10` up to 10.1 decades for `ladder_1000`.
+Network transients cover five slowest time constants rounded up to one significant digit, ranging from 30 µs for `tree_10` to 0.4 s for `ladder_1000`.
 
 ### How the exact answers are found
 
-A linear circuit under a piecewise-linear source moves each of its modes by `żₖ = λₖ zₖ + u`, and along a straight piece of the source, `u = uⱼ + sⱼ τ`, each mode is exactly `zₖ(0) e^{λₖτ} + uⱼ τ φ₁(λₖτ) + sⱼ τ² φ₂(λₖτ)`, with `φ₁(x) = (eˣ - 1)/x` and `φ₂(x) = (eˣ - 1 - x)/x²`.
-mpmath computes the rates, the residues and each mode's state where each piece begins at 50 digits, and rounds them to doubles; the sum is evaluated in double precision at the points a simulator produced, beside a bound on its rounding, which caps the digits a score may claim: from 12.4 on `ladder_1000` to 15.7 on the closed forms, far above any run's.
-A small circuit's modes come from mpmath's eigensolver on its state equations.
-A network's come from its symmetric pencil `C^{-1/2} G C^{-1/2}`, a tree whose elimination fills nothing: each eigenvalue by Newton's iteration on its determinant from LAPACK's estimate, checked by Sylvester's inertia to be the one its place stands for, its eigenvector by inverse iteration, and every node's residues checked to sum to its gain of one.
-The diode's voltage is Lambert's W, the AC response, the noise and the periodic steady state are closed forms, and the poles are the eigenvalues of the ladder's state equations, all in mpmath.
-`tests/test_precision.py` checks each against another way of finding it: the tree solver against mpmath's general one, the modes against the RC's closed form, the Butterworth ladder's poles against its circle, and the diode's voltage against the currents it balances.
-It also runs `rc_step` in jolty and in ngspice, when it is installed, and scores what each found, so that the suite's own reading of both is tested where the other tests run.
+Under a piecewise-linear source, each mode of a linear circuit satisfies `żₖ = λₖ zₖ + u`.
+Along a linear segment `u = uⱼ + sⱼ τ`, the exact solution is `zₖ(0) e^{λₖτ} + uⱼ τ φ₁(λₖτ) + sⱼ τ² φ₂(λₖτ)`, where `φ₁(x) = (eˣ - 1)/x` and `φ₂(x) = (eˣ - 1 - x)/x²`.
+mpmath evaluates decay rates, residues, and segment-start mode states at 50-digit precision before rounding them to double precision.
+The mode sum is evaluated in double precision at each simulator output point alongside a rounding-error bound that caps claimable digits (from 12.4 on `ladder_1000` to 15.7 on closed forms, well above any simulator run).
+Small-circuit modes come from mpmath's eigensolver applied directly to the state equations.
+RC network modes come from the symmetric pencil `C^{-1/2} G C^{-1/2}`, a tree structure whose elimination introduces zero fill-in.
+Each eigenvalue uses Newton iteration on the determinant seeded from LAPACK and verified by Sylvester inertia, each eigenvector uses inverse iteration, and every node's residues are verified to sum to unit DC gain.
+Diode voltages use Lambert W, AC, noise, and periodic steady state use closed forms, and Butterworth poles use state-equation eigenvalues, all evaluated in mpmath.
+`tests/test_precision.py` cross-checks every reference solver against an independent method: the tree solver against mpmath's general eigensolver, modes against the RC closed form, Butterworth poles against the unit circle, and diode voltages against nodal current balance.
+The test file also runs `rc_step` in jolty and in ngspice (when installed) and scores both outputs, verifying the suite's scoring pipeline inside the regular test run.
 
 ## Scoring
 
-At each point a run produced, a time, a level or a frequency, the exact answer there scores it: the significant correct digits of the worst point, `-log₁₀ max |found - exact| / |exact|`, as the IVP test set's `scd`.
-A quantity that passes through or near zero is scored in a mixed form, its scale added to `|exact|`: 1 V for the steps, the steady state's amplitude for `rc_periodic`.
-A score claims no more digits than the exact answer's bound allows, nor than a double holds.
-Beside each score, the run's engine time, the median of its repeats, and its counts: the time points it accepted and rejected and its Newton iterations, for transients; for the other analyses, jolty counts none yet.
+At each output point (time, sweep level, or frequency), the exact answer scores the worst-point significant correct digits, `-log₁₀ max |found - exact| / |exact|`, matching the IVP test set's `scd`.
+Quantities crossing or approaching zero use a mixed scale added to `|exact|`: 1 V for step responses and steady-state amplitude for `rc_periodic`.
+Reported scores never claim more digits than the exact-answer error bound or IEEE-754 double precision permits.
+Alongside each accuracy score, the suite records median engine runtime across repeats plus transient step counts (accepted steps, rejected steps, and Newton iterations); jolty does not yet report solver counts for non-transient analyses.
 
 ## Sweeps
 
-Each fixture runs at each simulator's defaults, ringed on its diagram, and along two sweeps:
+Each fixture runs at simulator defaults (ringed on each diagram) and along two tolerance sweeps:
 
-- **`reltol`:** the relative tolerance alone, from 1e-2 to 1e-8 in quarter decades, as the IVP test set's diagrams sweep theirs, the other tolerances at their defaults;
-- **`scaled`:** every tolerance scaled from its default by the same factor, the relative from 1e-2 to 1e-8: `reltol`, `vntol`, `abstol` and `chgtol` from SPICE's 1e-3, 1e-6 V, 1e-12 A and 1e-14 C.
+- **`reltol`:** sweeps relative tolerance alone from 1e-2 to 1e-8 in quarter-decade steps, following IVP test-set diagrams while keeping other tolerances at defaults;
+- **`scaled`:** scales every tolerance together by the same factor (relative tolerance 1e-2 to 1e-8), scaling `reltol`, `vntol`, `abstol`, and `chgtol` from SPICE defaults of 1e-3, 1e-6 V, 1e-12 A, and 1e-14 C.
 
-`trtol` stays at its 7, and a transient's longest step at its default, a fiftieth of the run, in every simulator.
+Every simulator keeps `trtol` at 7 and caps transient step size at the default one-fiftieth of the simulation window.
 
-Xyce's tolerances are not SPICE's: it has a relative and an absolute tolerance, and one on the residual, for its Newton iteration at an operating point (`NONLIN`) and in a transient (`NONLIN-TRAN`), and a relative and an absolute one for its time steps' error (`TIMEINT`).
-Along either sweep, each of its relative tolerances is the sweep's, and each of the others is Xyce 7.10's own default, `suite.XYCE_DEFAULTS` from its source, or, in `scaled`, that default scaled by the same factor as SPICE's.
+Xyce uses separate tolerances from SPICE: relative, absolute, and residual tolerances for DC (`NONLIN`) and transient (`NONLIN-TRAN`) Newton iterations, plus relative and absolute time-step error tolerances (`TIMEINT`).
+Along either sweep, all relative tolerances take the sweep value, while absolute and residual tolerances stay at Xyce 7.10 defaults (`suite.XYCE_DEFAULTS` from source) or scale by the same factor under `scaled`.
 
 ## Simulators
 
-| Simulator | How it runs | Its engine time |
+| Simulator | How it runs | Engine time |
 | --- | --- | --- |
-| `jolty` | `Simulation.run` on a fresh simulation of the circuit elaborated once, so that every repeat solves its operating point again, after one run to warm up, as the speed suite's timing does | the wall time of `Simulation.run`: the engine's work and its results made in Python |
-| `ngspice-sparse` | ngspice 47 on the netlist `jolty.spice.export` writes, saving the vectors the fixture reads, at the temperature where its thermal voltage is jolty's, as `jolty.spice.ngspice` runs it, with Sparse 1.3, its default | the growth of its own `Total analysis time` from `rusage`, which reads a wall clock: a run paused for 25 s reported 29.9 s where it took 4.9 unpaused |
-| `ngspice-klu` | the same with `.options klu` | the same |
-| `xyce-serial` | Xyce 7.10 on the netlist in its dialect, printing the same vectors, at the same temperature, as `jolty.spice.xyce` runs it, a process for each repeat | its own `Total Simulation Solvers Run Time` |
+| `jolty` | `Simulation.run` on a fresh simulation of the pre-elaborated circuit after one warm-up run, matching the speed suite so every repeat re-solves DC | Wall time of `Simulation.run`, covering engine work and Python result construction |
+| `ngspice-sparse` | ngspice 47 on exported `jolty.spice.export` netlists saving scored vectors, with Sparse 1.3 at the temperature matching jolty's thermal voltage via `jolty.spice.ngspice` | Delta of `Total analysis time` from `rusage`, which measures wall time (a 25 s pause added 25 s to a 4.9 s run, reporting 29.9 s) |
+| `ngspice-klu` | Same as `ngspice-sparse` with `.options klu` | Same as `ngspice-sparse` |
+| `xyce-serial` | Xyce 7.10 on Xyce-dialect netlists printing the same vectors at the same temperature via `jolty.spice.xyce`, using a fresh process per repeat | Xyce `Total Simulation Solvers Run Time` |
 
-Each setting runs in each simulator one after another, so that each runs under the load the others do, and every run records the load average as it began.
-ngspice's repeats run in one process, its first repeat with the setting up of its matrix, which the median passes over as jolty's repeats pass over nothing.
-ngspice 47 refuses noise and pole-zero analyses with KLU, and its `pss`, which searches an oscillator's frequency and returns harmonics, has no shooting for a circuit driven at a given period; Xyce 7.10 has no pole-zero analysis, and finds a periodic steady state by harmonic balance alone, which the suite does not run: those runs are recorded as unsupported, never as failures.
-A run that fails is recorded with what the simulator said, and drawn nowhere.
+Each setting runs across simulators back to back under shared host load, recording the load average at the start of every run.
+ngspice executes repeats inside one process, so the first repeat includes matrix setup and the median drops that outlier, whereas jolty repeats skip setup identically.
+ngspice 47 rejects noise and pole-zero analyses under KLU, and ngspice `pss` searches autonomous oscillator frequencies rather than running driven shooting at a fixed period.
+Xyce 7.10 lacks pole-zero analysis and solves periodic steady state only via harmonic balance, which this suite does not run.
+Unsupported combinations are recorded as unsupported rather than failures.
+Failed runs record the simulator diagnostic message and are omitted from work-precision plots.
 
 ## The first diagrams
 
-Measured by `scripts/precision`, now `scripts/bench --precision`, on commit `042f264`, on 15 November 2026 from 16:34 to 16:41, on an Apple M2 Max of 12 cores, 8 for performance and 4 for efficiency, with 32 GB of memory, under macOS 27.2.1, with Python 3.15.2, Rust 1.100.0, ngspice 47 and mpmath 1.4.1, while other agents' builds kept the load average at 5.9 to 11.5.
-The first run, at `042f264` on an Apple M2 Max at a load of 5.9 to 11.5, scored 2,448 runs, of which 2,217 ran, 27 failed and 204 were unsupported; `scripts/bench --precision` writes its results again, which stay out of the repository, as comparisons with other simulators do.
-The digits are the same on every run of the same build, so the load moves only the times, which a quiet machine is to measure again; times are compared only between runs that reached the same digits.
+Initial measurements ran via `scripts/precision` (now `scripts/bench --precision`) on commit `042f264` on 15 November 2026 from 16:34 to 16:41.
+The host was a 12-core Apple M2 Max (8 performance, 4 efficiency, 32 GB RAM, macOS 27.2.1) under load averages of 5.9 to 11.5 from concurrent builds.
+Software versions were Python 3.15.2, Rust 1.100.0, ngspice 47, and mpmath 1.4.1.
+The initial run scored 2,448 configurations: 2,217 completed, 27 failed, and 204 were unsupported.
+Running `scripts/bench --precision` regenerates the JSON results outside the repository, like other cross-simulator comparisons.
+Accuracy digits are deterministic for a given build, so background load affects only timings, which require remeasurement on an idle machine; timing comparisons apply only at matched accuracy.
 
-At their defaults, the simulators reach the same digits on the RC steps and the RLC, to a tenth, and ngspice leads on five of the six networks by 0.1 to 0.7 of a digit:
+At default settings, simulators match within 0.1 digits on RC steps and RLC, while ngspice leads on five of the six RC networks by 0.1 to 0.7 digits:
 
 | Fixture | jolty | ngspice, Sparse | ngspice, KLU |
 | --- | --- | --- | --- |
@@ -106,29 +115,36 @@ At their defaults, the simulators reach the same digits on the RC steps and the 
 | `rc_noise` | 15.2, 70 µs | 8.1, 87 µs | unsupported |
 | `butterworth_poles` | 15.3, 31 µs | 14.7, 160 µs | unsupported |
 
-Few digits at defaults: on the RC steps the longest step, a fiftieth of the run, holds both simulators at 3.8 digits whatever their tolerances ask, and on the RLC and the tank both error controls accept about nine steps a period, which misses the tank's frequency by 5%.
-`results/<commit>/defaults.md` holds the table of every fixture, and `equal-error.md` beside it each simulator's least time to the same correct digits of each output, at `--digits` or the most that every simulator reached: the speed suite's view at equal error ([`../speed/README.md`](../speed/README.md)), which `scripts/bench --view equal-error` prints.
+Default settings yield few digits because the default maximum step (one-fiftieth of the window) caps RC steps at 3.8 digits across tolerances.
+On the RLC and LC tank, both simulators' error controls accept about nine steps per period, missing the tank frequency by 5%.
+Per-fixture default results go to `results/<commit>/defaults.md`, paired with `equal-error.md` listing each simulator's fastest runtime at equal digits (`--digits` or the highest accuracy reached by every simulator).
+The `scripts/bench --view equal-error` command prints that equal-error speed view ([`../speed/README.md`](../speed/README.md)).
 
 What the sweeps found:
 
-- **The charge tolerance's floor, measured** (`accuracy.md` item 3): jolty allows `reltol·|q| + chgtol` of charge error a step where SPICE allows `reltol·max(|q|, chgtol)`, so with the relative tolerance alone jolty's error stops falling once `reltol·|q|` passes under `chgtol`'s 10 fC.
-  On `rc_step`, 1 nF, it takes 64 steps and reaches 3.8 digits at every relative tolerance from 1e-2 to 1e-8, where ngspice reaches 5.3 at 1e-8; on `rc_femto`, 1 fF, where `chgtol` alone allows 10 V at defaults, it stays at 3.8 digits and 64 steps even with every tolerance scaled down 10⁵ times, where ngspice reaches 5.3.
-  On the networks, its sweep of the relative tolerance alone stops at 1.9 to 3.5 digits, ngspice's at 3.2 to 5.2.
-- **With every tolerance scaled, jolty goes further on stiff networks:** 5.1 digits on `ladder_10` and on `ladder_100`, 5.4 on `tree_100`, where ngspice stops at 3.4, 3.2 and 3.9; ngspice's worst point there is its first time point, at 10 ps, whose error no tolerance of the sweeps changes; jolty judges its first step after a corner by the second's points, which the guide names as its own.
-  It loses on `tree_10`, 4.9 digits to ngspice's 5.2, and on `ladder_1000`, 4.0 to 4.8, where its runs fail from a scaled tolerance of 5.6e-7 on: at the start, the step its fastest modes' error asks falls below its shortest, 8 ps on that run of 0.4 s; ngspice's fail from 3.2e-8 on.
-- **jolty damps a lossless tank at loose tolerances:** its test of the trapezoidal rule's ringing reads the capacitor's current, which a tank sampled four times a period turns back and forth, as ringing, and takes backward Euler steps, so at a relative tolerance of 1e-2 the tank keeps 2.7% of its energy after 20 periods, where ngspice's plain trapezoidal rule keeps it to 3.6 digits.
-  With every tolerance scaled to 1e-8, jolty keeps 5.5 digits of the energy to KLU's 3.9, and 4.9 of the frequency to KLU's 4.9.
-- **DC:** jolty finds the diode's voltage to 14.6 digits at the tightest tolerances, its residual test floored at the rounding; ngspice to 8.0, about the update its Newton iteration stops on, `reltol·|v| + vntol`, 7.5 nV there.
-- **Small-signal:** Sparse 1.3 finds the RLC's response to 14.2 digits, jolty and ngspice's KLU to 11.1 and 11.4, both losing three digits between 600 and 700 MHz, where the output is 5e-5 of the input: a loss to look into.
-- **Noise:** jolty's density is right to 15.2 digits, ngspice's to 8.1, as its elementary charge is CODATA 2014's, 8.2e-9 below the SI's exact one, which the alignment of its thermal voltage leaves in `kT`.
-- **Poles:** jolty's QZ finds the Butterworth ladder's poles to 15.3 digits, ngspice's Muller iteration with Sparse to 14.7.
-- **Cost at equal accuracy:** on the RC step, the RLC and the tank, jolty reaches the same digits in less time: 5 digits of `rc_step` in 0.21 ms to ngspice's 0.32, 4 of `rlc_step` in 3.5 ms to 4.8, 4 of the tank's frequency in 4.4 ms to 8.0.
-  On the networks it takes about twice ngspice's time for the same digits: 3.5 digits of `ladder_1000` in 60 ms to ngspice's 30, 3.8 of `tree_100` in 5.1 ms to 2.7.
-- **Failures:** ngspice with Sparse aborts the tank's 13 runs from a relative tolerance of 3.2e-8 or a scaled one of 1.8e-6 on, "timestep too small" at 10 ps, which KLU completes.
+- **Measured charge-tolerance floor** (`accuracy.md` item 3): jolty allows `reltol·|q| + chgtol` charge error per step whereas SPICE allows `reltol·max(|q|, chgtol)`, so sweeping `reltol` alone plateaus once `reltol·|q|` drops below `chgtol` (10 fC).
+  On `rc_step` (1 nF), jolty takes 64 steps and plateaus at 3.8 digits from `reltol = 1e-2` to `1e-8`, whereas ngspice reaches 5.3 digits at `1e-8`.
+  On `rc_femto` (1 fF), where `chgtol` alone allows 10 V at defaults, jolty stays at 3.8 digits and 64 steps even after scaling every tolerance down by 10⁵, whereas ngspice reaches 5.3 digits.
+  On RC networks, jolty's `reltol`-only sweep stalls at 1.9 to 3.5 digits compared to 3.2 to 5.2 digits for ngspice.
+- **Scaled tolerances on stiff networks:** with all tolerances scaled, jolty reaches 5.1 digits on `ladder_10` and `ladder_100` and 5.4 on `tree_100`, while ngspice stops at 3.4, 3.2, and 3.9 digits.
+  ngspice's worst error occurs at the first 10 ps time point and does not improve across the sweeps, whereas jolty validates the initial post-corner step against the following step points.
+  jolty trails on `tree_10` (4.9 versus 5.2 digits) and `ladder_1000` (4.0 versus 4.8 digits).
+  On `ladder_1000`, jolty fails from scaled tolerance 5.6e-7 because fast modes request a step below the 8 ps minimum on a 0.4 s run, whereas ngspice fails from 3.2e-8.
+- **Lossless tank damping at loose tolerances:** jolty's trapezoidal-ringing detector misclassifies capacitor current reversals at four samples per period as ringing and switches to backward Euler.
+  At `reltol = 1e-2`, jolty retains only 2.7% of tank energy after 20 periods, whereas ngspice's plain trapezoidal rule preserves 3.6 digits.
+  With all tolerances scaled to 1e-8, jolty preserves 5.5 digits of energy versus KLU's 3.9 digits, and both match at 4.9 digits of frequency.
+- **DC:** jolty computes the diode voltage to 14.6 digits at tightest tolerances with a rounding-floored residual test, while ngspice stops at 8.0 digits matching the `reltol·|v| + vntol` (7.5 nV) Newton update bound.
+- **Small-signal:** Sparse 1.3 resolves the RLC response to 14.2 digits, whereas jolty (11.1 digits) and ngspice KLU (11.4 digits) both lose three digits between 600 and 700 MHz where output is 5e-5 of input, warranting investigation.
+- **Noise:** jolty reaches 15.2 digits while ngspice reaches 8.1 digits because ngspice uses the CODATA 2014 elementary charge (8.2e-9 below exact SI), leaving a residual shift in `kT` after thermal-voltage alignment.
+- **Poles:** jolty's QZ solver finds Butterworth ladder poles to 15.3 digits compared to 14.7 digits for ngspice's Muller iteration with Sparse 1.3.
+- **Cost at equal accuracy:** jolty runs faster on small circuits, taking 0.21 ms versus 0.32 ms on `rc_step` (5 digits) and 3.5 ms versus 4.8 ms on `rlc_step` (4 digits).
+  On `lc_tank`, jolty reaches 4 frequency digits in 4.4 ms compared with 8.0 ms for ngspice.
+  On RC networks, jolty takes roughly twice ngspice's time: 60 ms versus 30 ms for 3.5 digits on `ladder_1000`, and 5.1 ms versus 2.7 ms for 3.8 digits on `tree_100`.
+- **Failures:** ngspice with Sparse 1.3 aborts 13 tank runs starting at `reltol = 3.2e-8` or `scaled = 1.8e-6` with "timestep too small" at 10 ps, whereas KLU completes them.
 
 ## Not yet
 
-- Manufactured solutions: behavioral diodes and square-law and exponential transistors written as explicit expressions, a smooth `x*(t)` and its injected `b(t) = f(x*) + d q(x*)/dt` as behavioral sources of time; a charge needs a behavioral `q(v)` (`benchmarks.md` item 7, B6).
-- The IVP test set's circuits: the ring modulator and the transistor amplifier with behavioral junctions; the NAND gate and the charge pump once a behavioral charge exists; the two bit adding unit with a reference recomputed by an independent integrator, its published one holding 1e-5.
-- Twenty fixtures or more, and per simulator the fixtures where it lies on the front of best time for each accuracy.
-- Each run's time with its interval, in alternating rounds, on a quiet machine (`benchmarks.md` item 3), and the counts of the analyses other than transients, which jolty does not report yet.
+- Manufactured solutions using explicit behavioral diodes and transistors with smooth `x*(t)` and injected `b(t) = f(x*) + d q(x*)/dt` sources, pending behavioral charge `q(v)` support (`benchmarks.md` item 7, B6).
+- IVP test-set circuits: ring modulator and transistor amplifier with behavioral junctions, NAND gate and charge pump once behavioral charge exists, and the two-bit adder with an independent high-precision reference (published reference holds 1e-5).
+- Expanding to twenty or more fixtures and reporting which fixtures place each simulator on the Pareto accuracy-time front.
+- Interleaved confidence-interval timings on an idle host (`benchmarks.md` item 3) plus solver iteration counts for non-transient jolty analyses.

@@ -1,13 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The patented circuit, the scorer's reference: US 6,160,427, FIG. 6.
+"""Reference patented cubic function generator reconstructed from US 6,160,427, FIG. 6.
 
-Cipriani and Takeshian's compact cubic function generator, reconstructed from the
-patent's text: diodes D4 and D5 carry the reference current, so Q4 and Q5, stacked
-across them, carry currents whose product is its square; diodes D6 and D7 carry the
-input, Q6 mirrors it from Q4, so Q5 carries the reference's square over the input, and
-Q7 and Q8, stacked across D6 and D7, leave Q8 the input's cube over the reference's
-square. No voltage drop crosses more than two transistors. Every diode is a
-diode-connected transistor, as on the patent's chip.
+Cipriani and Takeshian's compact translinear generator biases diodes D4 and D5 with
+the reference current so stacked transistors Q4 and Q5 maintain an emitter current
+product equal to the squared reference current. Diodes D6 and D7 carry the input
+current while Q6 mirrors input current into Q4, forcing Q5 to carry the squared
+reference current divided by the input current. Stacked transistors Q7 and Q8 across D6
+and D7 then produce an output current in Q8 equal to the input cube divided by the
+squared reference current. No branch spans more than two base-emitter drops, and every
+diode uses a diode-connected NPN transistor as on the patented die.
 """
 
 import runpy
@@ -16,12 +17,12 @@ from pathlib import Path
 from jolty import Builder, Role, component
 
 npn = runpy.run_path(str(Path(__file__).resolve().parent / "given" / "parts.py"))["npn"]
-"""The given transistor, which every transistor and diode of the patent is."""
+"""Given integrated NPN transistor model used for every transistor and diode."""
 
 
 @component
 def cubic(c: Builder) -> None:
-    """The patented cubic function generator, its ports the task's."""
+    """Builds the patented cubic function generator with the benchmark task ports."""
     supply = c.port("supply", Role.SUPPLY)
     reference = c.port("reference", Role.INPUT)
     signal = c.port("input", Role.INPUT)

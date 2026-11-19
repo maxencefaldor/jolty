@@ -12,10 +12,10 @@ Records what is independent of machine load and wall-clock time at default optio
   `rc_periodic`, `ladder_10`, `ladder_100`, `tree_10`, `tree_100`): solver counts
   and exact significant correct digits against mpmath/closed-form references.
 
-Because `libm` (`exp`, `ln`, `pow`) rounds differently across `glibc` versions and
-operating systems (`plans/accuracy.md` item 13), records are keyed by
-`platform_key()` (e.g. `linux-x86_64-glibc2.39`, `linux-x86_64-glibc2.27`,
-`darwin-arm64`). When the active platform has an exact recorded entry, every count,
+Records are keyed by `platform_key()` (such as `linux-x86_64-glibc2.39`,
+`linux-x86_64-glibc2.27`, or `darwin-arm64`) because `libm` (`exp`, `ln`, `pow`)
+rounds differently across `glibc` versions and operating systems (`plans/accuracy.md`
+item 13). When the active platform has an exact recorded entry, every count,
 digest and rounded digit must match exactly. On an unrecorded platform, linear
 and analytic fixtures are checked tightly while chaotic multi-step nonlinear fixtures
 (`buck`, `inverter_chain_500`) are checked within a bounded relative margin unless
@@ -108,7 +108,7 @@ derived from the 3.3% iteration shift observed between glibc 2.27 and glibc 2.43
 
 
 def platform_key() -> str:
-    """Stable identifier for the OS, architecture and C library (`libm`).
+    """Returns a stable identifier for the OS, architecture, and C library (`libm`).
 
     Examples: `linux-x86_64-glibc2.39`, `linux-x86_64-glibc2.27`, `darwin-arm64`.
     """
@@ -122,7 +122,7 @@ def platform_key() -> str:
 
 
 def _result_digest(result: results.AnalysisResult) -> str:
-    """Short SHA-256 digest of an analysis result's numerical arrays."""
+    """Computes a short SHA-256 digest of an analysis result's numerical arrays."""
     hasher = hashlib.sha256()
     hasher.update(type(result).__name__.encode("utf-8"))
     match result:
@@ -499,7 +499,7 @@ def select_reference(
 
 
 class Deterministic(cli.CommandLine):
-    """Checks or records deterministic solver counts, digits and digests."""
+    """CLI checking or recording deterministic solver counts, digits, and digests."""
 
     record: bool = Field(
         default=False,
@@ -565,7 +565,7 @@ class Deterministic(cli.CommandLine):
 
 
 def main() -> None:
-    """CLI entry point."""
+    """Runs the deterministic benchmark CLI."""
     cli.run(Deterministic)
 
 

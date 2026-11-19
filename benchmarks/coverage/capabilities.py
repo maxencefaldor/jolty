@@ -1,17 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""The coverage matrix's rows, each with the fixture that exercises it and its answer.
+"""Coverage matrix row definitions, executable fixtures, and reference answers.
 
-A row is a capability a user can ask a simulator for: an analysis, a device model at
-its level, a feature of SPICE's syntax, or an output. Its fixture is the smallest
-circuit and plan that exercise it: what jolty runs, through its builder or through its
-SPICE reader, and the deck the SPICE simulators run, with each one's commands and the
-vectors it reads. Each fixture reads a few numbers, named alike in every simulator, and
-its known answer gives them: a closed form, or, for a model that another implementation
-defines, that implementation's run (`Known.reference`).
+Each row specifies a single simulator capability: an analysis, a device model at a
+specific level, a SPICE syntax feature, or an output format. Every fixture defines the
+minimal circuit and plan exercised in jolty (via the builder or SPICE reader) along
+with the SPICE deck, commands, and vector reads for external simulators. Fixtures
+extract a small set of identically named values compared against a closed-form answer
+or a defining simulator implementation (`Known.reference`).
 
-A simulator that has no statement asking for a row has no fixture for it: its
-`simulators.Unsupported` names where its documentation, or jolty's code, says what it
-offers instead.
+When a simulator has no statement requesting a capability, `simulators.Unsupported`
+cites the manual section or jolty module documenting available alternatives.
 """
 
 import cmath
@@ -81,46 +79,42 @@ from jolty.units import (
 from jolty.waveforms import Piecewise, Pulse, Sine, Waveform
 
 type Values = dict[str, complex]
-"""What a fixture reads, by name: a voltage such as ``v(out)``, a current such as
-``i(v1)``, either at a point such as ``v(out)@2``, or another number an analysis
-gives."""
+"""Named complex values read by a fixture (e.g. ``v(out)``, ``i(v1)``, ``v(out)@2``)."""
 
 
 SOLVED: Final = 1e-6
-"""The relative tolerance a solved value agrees within, of the largest value of its
-kind in the row: the relative tolerance every simulator runs with, within which the
-differential tests compare operating points, sweeps and responses."""
+"""Relative tolerance for DC, sweep, and AC agreement, scaled by the largest value of
+each quantity kind in the row."""
 
 INTEGRATED: Final = 1e-3
-"""The relative tolerance a value of a transient agrees within: the differential tests'
-on transients, a thousandth of the largest value, which interpolation between two
-simulators' steps and their truncation errors stay within."""
+"""Relative tolerance for transient waveform agreement, accommodating step-grid
+interpolation and local truncation differences across simulators."""
 
 ROOM: Final = 300.15
-"""The temperature every fixture runs at, 27 °C in kelvins, SPICE's nominal one."""
+"""Nominal SPICE simulation temperature in kelvins (27 °C)."""
 
 BOLTZMANN: Final = 1.380649e-23
-"""Boltzmann's constant, exact in the SI since 2019, in joules per kelvin."""
+"""Exact 2019 SI Boltzmann constant in joules per kelvin."""
 
 CHARGE: Final = 1.602176634e-19
-"""The elementary charge, exact in the SI since 2019, in coulombs."""
+"""Exact 2019 SI elementary charge in coulombs."""
 
 THERMAL_VOLTAGE: Final = BOLTZMANN * ROOM / CHARGE
-"""The thermal voltage at `ROOM`, which every simulator runs at once its temperature
-is set where its own constants give this one."""
+"""Thermal voltage at `ROOM`, matched across simulators by adjusting each simulator's
+temperature to compensate for constant differences."""
 
 VBIC_BOLTZMANN: Final = 1.380662e-23
-"""VBIC 1.2's Boltzmann constant, in joules per kelvin, fixed by its reference code."""
+"""VBIC 1.2 reference Boltzmann constant in joules per kelvin."""
 
 VBIC_CHARGE: Final = 1.602189e-19
-"""VBIC 1.2's elementary charge, in coulombs, paired with `VBIC_BOLTZMANN`."""
+"""VBIC 1.2 reference elementary charge in coulombs, paired with `VBIC_BOLTZMANN`."""
 
 VBIC_INTRINSIC_RESISTANCE: Final = 0.1
-"""VBIC 1.2's default intrinsic resistances (`RCI`, `RBI`, `RBP`), in ohms."""
+"""Default VBIC 1.2 intrinsic resistances (`RCI`, `RBI`, `RBP`) in ohms."""
 
 
 class Category(StrEnum):
-    """What a row is: an analysis, a device model, a feature of syntax, an output."""
+    """Coverage matrix row category: analysis, device model, SPICE syntax, or output."""
 
     ANALYSIS = "analysis"
     DEVICE = "device"
@@ -129,15 +123,15 @@ class Category(StrEnum):
 
 
 class Documented(Exception):  # noqa: N818 - a finding, not a failure
-    """A simulator offers what a row asks, by its manual, but no fixture runs it."""
+    """Exception for a manual-documented capability lacking an active local fixture."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class Known:
-    """A fixture's known answer: its values, where they come from, and the tolerance.
+    """Reference answer for a coverage fixture with provenance and tolerance.
 
-    Without `values`, the answer is the run of the simulator `reference` names, the
-    implementation that defines the model, such as ngspice for SPICE3's models.
+    When `values` is None, the expected answer comes from executing the defining
+    simulator specified in `reference` (such as ngspice for SPICE3 models).
     """
 
     values: Values | None = None
@@ -148,13 +142,12 @@ class Known:
 
 @dataclass(frozen=True, kw_only=True)
 class Read:
-    """A number a SPICE simulator's results hold, by its name in each.
+    """Extraction descriptor mapping one named row value to ngspice and Xyce outputs.
 
-    `ngspice` names a vector of the plot the `plot`-th command wrote, and `xyce` a
-    column of what Xyce prints; `index` picks a point of a sweep or a response, and
-    `time` a time a transient's values are interpolated at. Xyce prints a complex
-    value's real and imaginary parts apart, and its noise as a root density, which
-    `power` raises.
+    The `ngspice` field names a vector in plot `plot`, and `xyce` names a printed CSV
+    column. Use `index` for sweep or frequency points and `time` for transient
+    interpolation. Set `complex=True` for Xyce split real/imaginary columns and `power`
+    to square root-density noise columns.
     """
 
     ngspice: str
@@ -165,20 +158,18 @@ class Read:
     complex: bool = False
     power: int = 1
     printed: bool = True
-    """Whether Xyce prints the column because the ``.print`` names it, rather than
-    of its own, as it prints sensitivities."""
+    """Flag indicating whether Xyce requires the column in ``.print`` instead of
+    emitting it automatically (as Xyce does for sensitivities)."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class Spice:
-    """A fixture's deck for the SPICE simulators, and what each runs and reads of it.
+    """SPICE simulator deck, analysis commands, and output reads for a coverage fixture.
 
-    `deck` holds the circuit's lines, its title first, without analyses, options or
-    an end. `ngspice` holds the commands ngspice runs on it, one per plot, and `xyce`
-    the statements Xyce runs it with and the kind of its ``.print``; either is a
-    `Unsupported` when that simulator has no statement for the row. `temperature` is
-    the kelvins every simulator runs at, each where its constants give jolty's
-    thermal voltage there.
+    `deck` holds circuit lines starting with the title, omitting analyses, options, and
+    ``.end``. `ngspice` lists control commands (one per plot), and `xyce` pairs netlist
+    analysis statements with a ``.print`` type; either may be `Unsupported` or
+    `Documented`. `temperature` gives the simulation temperature in kelvins.
     """
 
     deck: tuple[str, ...]
@@ -188,21 +179,21 @@ class Spice:
     options: str = ""
     temperature: float = ROOM
     derive: Callable[[Values], Values] | None = None
-    """What the row's numbers are, from what the reads found, when they differ."""
+    """Optional post-processing callback deriving row values from raw reads."""
     thermal: bool = True
-    """Whether Xyce runs where its thermal voltage is jolty's, rather than at the
-    temperature itself, for a fixture whose answer is a law of the temperature alone."""
+    """Flag selecting thermal-voltage temperature matching in Xyce instead of matching
+    raw temperature (set False for laws depending directly on temperature)."""
     compatibility: ngspice.Compatibility | None = None
-    """ngspice compatibility mode (``ps`` or ``hsa``), when a fixture needs it."""
+    """Optional ngspice compatibility mode (``ps`` or ``hsa``) required by the deck."""
     libraries: tuple[Path, ...] = ()
-    """Files ngspice includes via ``.include`` before the deck's body."""
+    """Files included via ``.include`` before the deck body in ngspice."""
     sections: tuple[tuple[Path, str], ...] = ()
-    """Library sections ngspice reads via ``.lib`` before the deck's body."""
+    """Library sections included via ``.lib`` before the deck body in ngspice."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class Fixture:
-    """A capability, the fixture that exercises it, and its known answer."""
+    """Coverage matrix row pairing metadata with jolty and SPICE fixtures."""
 
     key: str
     category: Category
@@ -212,7 +203,7 @@ class Fixture:
     spice: Spice | Unsupported
 
 
-# Where each simulator says what it offers, for the rows it has no statement for.
+# Manual citations for capabilities not supported by a given simulator.
 
 NGSPICE_GUIDE: Final = "ngspice 47 manual"
 """Citation prefix for ngspice 47 manual entries."""
@@ -221,12 +212,12 @@ NGSPICE_ANALYSES: Final = (
     f"{NGSPICE_GUIDE}, §11.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, "
     ".SENS, .SP, .TF, .TRAN, transient noise and .PSS"
 )
-"""The ngspice manual's list of its analyses."""
+"""Summary of analysis commands listed in the ngspice manual."""
 
 NGSPICE_SENSITIVITY: Final = (
     f"{NGSPICE_GUIDE}, §11.3.7 .SENS: DC or Small-Signal AC Sensitivity Analysis"
 )
-"""Where ngspice's manual says which sensitivities it computes."""
+"""Manual citation specifying the sensitivity analyses supported by ngspice."""
 
 XYCE_GUIDE: Final = "Xyce Reference Guide 7.10"
 """Citation prefix for Xyce Reference Guide entries."""
@@ -236,7 +227,7 @@ XYCE_COMMANDS: Final = (
     ".NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; "
     "no .PZ, .TF, .DISTO, loop gain or worst case"
 )
-"""The Xyce Reference Guide's list of its analysis commands."""
+"""Summary of analysis commands listed in the Xyce Reference Guide."""
 
 _PENDING: Final = "; no fixture runs it here yet"
 
@@ -280,11 +271,11 @@ UNNOISY_TEMPERATURE: Final = "jolty.plan.Analysis has no analysis of noise over 
 
 
 def _rejected(error: JoltyError) -> Unsupported:
-    """Jolty's refusal of a row, its message on one line."""
+    """Converts a `JoltyError` into a single-line `Unsupported` refusal."""
     return Unsupported(" ".join(str(error).split()))
 
 
-# jolty's side.
+# jolty fixture helpers.
 
 
 def deck_with_state(
@@ -292,12 +283,12 @@ def deck_with_state(
 ) -> tuple[ir.Circuit, dict[str, float], dict[str, float]]:
     """Reads `lines` into a circuit plus its top-level ``.ic`` and ``.nodeset`` maps.
 
-    The deck's title is left out, its subcircuits and the statements a library reads
-    outside them, its functions, initial conditions and nodesets, stay outside, and its
-    other lines become a subcircuit's body.
+    Drops the deck title line, keeps subcircuit definitions and top-level library
+    statements (functions, initial conditions, and nodesets) outside the wrapper, and
+    places remaining element lines inside a top-level subcircuit.
 
     Raises:
-        Unsupported: When the reader refuses a line, with its message.
+        Unsupported: When the SPICE reader rejects a line.
     """
     definitions: list[str] = []
     elements: list[str] = []
@@ -322,22 +313,22 @@ def deck_with_state(
 
 
 def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
-    """A deck's elements read by jolty's SPICE reader, as the top of a circuit.
+    """Parses SPICE deck `lines` with jolty's reader and returns the top-level circuit.
 
     Raises:
-        Unsupported: When the reader refuses a line, with its message.
+        Unsupported: When the SPICE reader rejects a line.
     """
     built, _, _ = deck_with_state(lines)
     return built
 
 
 def simulation(built: ir.Circuit, temperature: float = ROOM) -> Simulation:
-    """A simulation of `built` at `temperature`, in kelvins."""
+    """Creates a `Simulation` for `built` at `temperature` in kelvins."""
     return Simulation(built, temperature * K)
 
 
 def read(found: object, name: str) -> object:
-    """The unknown `name` of a result, ``v(net)`` or ``i(source)``, in jolty."""
+    """Extracts voltage ``v(net)`` or current ``i(source)`` from a jolty result."""
     if not isinstance(
         found,
         results.OperatingPointResult
@@ -354,9 +345,9 @@ def read(found: object, name: str) -> object:
 
 
 def solved(built: ir.Circuit, analysis: Analysis, names: Sequence[str]) -> Values:
-    """Each unknown `names` gives of `built` at its operating point, or each point.
+    """Runs `analysis` on `built` and extracts each requested value in `names`.
 
-    A name ``v(out)@2`` reads the third point of a sweep or a response.
+    A suffix such as ``v(out)@2`` selects the third point of a sweep or AC response.
     """
     found = simulation(built).run(analysis, TIGHT)
     values: Values = {}
@@ -368,7 +359,7 @@ def solved(built: ir.Circuit, analysis: Analysis, names: Sequence[str]) -> Value
 
 
 def sampled(waveforms: results.TransientResult, names: Sequence[str]) -> Values:
-    """Each ``v(net)@time`` of `waveforms`, interpolated at its time."""
+    """Interpolates each ``v(net)@time`` specification in `names` from `waveforms`."""
     values: Values = {}
     for name in names:
         unknown, _, at = name.partition("@")
@@ -378,7 +369,7 @@ def sampled(waveforms: results.TransientResult, names: Sequence[str]) -> Values:
 
 
 def exported(built: ir.Circuit, excited: str | None = None) -> tuple[str, ...]:
-    """Jolty's netlist of `built` for ngspice, the deck both SPICE simulators run."""
+    """Exports `built` as an ngspice netlist shared by both SPICE simulators."""
     transient = excited == "transient"
     lines = export.netlist(
         built, excited=None if transient else excited, transient=transient
@@ -387,7 +378,7 @@ def exported(built: ir.Circuit, excited: str | None = None) -> tuple[str, ...]:
 
 
 def _reads(names: Sequence[str], **given: object) -> dict[str, Read]:
-    """The reads of `names`, each ``v(net)`` or ``i(source)`` and maybe ``@index``."""
+    """Builds `Read` descriptors for ``v(net)``/``i(source)`` names with ``@index``."""
     found: dict[str, Read] = {}
     for name in names:
         unknown, _, at = name.partition("@")
@@ -400,11 +391,11 @@ def _reads(names: Sequence[str], **given: object) -> dict[str, Read]:
     return found
 
 
-# The circuits.
+# Shared circuit builders and decks.
 
 
 def divider_deck(supply: float = 5.0) -> tuple[str, ...]:
-    """A divider: 1 kΩ over 3 kΩ from a source, its output 3/4 of it."""
+    """Builds a 1 kΩ over 3 kΩ resistive divider deck with an output ratio of 3/4."""
     return (
         "* divider",
         f"V1 in 0 {supply!r} AC 1",
@@ -414,23 +405,23 @@ def divider_deck(supply: float = 5.0) -> tuple[str, ...]:
 
 
 def divider_out(supply: float = 5.0, upper: float = 1e3, lower: float = 3e3) -> float:
-    """The divider's output, exactly."""
+    """Computes the exact output voltage of a two-resistor divider."""
     return supply * lower / (upper + lower)
 
 
 @dataclass(frozen=True)
 class Op:
-    """The same fixture in every simulator: a deck's operating point, read alike."""
+    """Operating-point fixture sharing one deck and value list across all simulators."""
 
     deck: tuple[str, ...]
     names: tuple[str, ...]
 
     def jolty(self) -> Values:
-        """The fixture in jolty, its deck read by the SPICE reader."""
+        """Runs the operating-point deck in jolty through the SPICE reader."""
         return solved(deck_circuit(self.deck), OperatingPoint(), self.names)
 
     def spice(self, **given: object) -> Spice:
-        """The fixture in the SPICE simulators."""
+        """Builds the `Spice` configuration executing the deck in ngspice and Xyce."""
         return Spice(
             deck=self.deck,
             ngspice=("op",),
@@ -452,9 +443,10 @@ def op_fixture(  # noqa: PLR0913, PLR0917 - a row's names, its fixture and its a
     xyce: Unsupported | Documented | None = None,
     temperature: float = ROOM,
 ) -> Fixture:
-    """A row whose fixture is a deck's operating point, in every simulator.
+    """Builds a coverage row executing a deck operating point across all simulators.
 
-    `xyce` replaces Xyce's run of the deck, where Xyce reads its card otherwise.
+    Overrides the Xyce execution specification when `xyce` is provided for syntax or
+    model cards that Xyce parses differently.
     """
     fixture = Op(deck, tuple(known or {}) if reference is None else ())
     spice = fixture.spice(temperature=temperature)
@@ -471,13 +463,13 @@ def op_fixture(  # noqa: PLR0913, PLR0917 - a row's names, its fixture and its a
 
 
 def _builder(name: str) -> tuple[Builder, Net]:
-    """A builder of a component `name`, and its ground."""
+    """Creates a component `Builder` named `name` with a ground reference port."""
     c = Builder(name)
     return c, c.port("ground", Role.GROUND)
 
 
 def _rc_circuit(name: str, waveform: Waveform) -> Component:
-    """A source driven by `waveform` into 1 kΩ and 1 nF."""
+    """Builds a 1 kΩ, 1 nF RC low-pass circuit driven by `waveform`."""
     c, ground = _builder(name)
     source = c.place(devices.voltage_source(waveform), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
@@ -489,24 +481,24 @@ def _rc_circuit(name: str, waveform: Waveform) -> Component:
 
 
 def rc_step() -> Component:
-    """A source stepped from 0 V to 1 V in 10 ns at 1 µs, into 1 kΩ and 1 nF."""
+    """Builds a 1 kΩ, 1 nF RC circuit driven by a 0 V to 1 V, 10 ns ramp at 1 µs."""
     return _rc_circuit(
         "rc_step", Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
     )
 
 
 RC_TAU: Final = 1e3 * 1e-9
-"""The RC circuits' time constant, 1 kΩ times 1 nF, in seconds."""
+"""Time constant of the RC fixtures (1 kΩ times 1 nF) in seconds."""
 
 RAMP: Final = (1e-6, 10e-9)
-"""When `rc_step`'s step starts, and how long it rises, in seconds."""
+"""Start time and rise duration of the `rc_step` ramp in seconds."""
 
 
 def ramped(t: float, tau: float = RC_TAU) -> float:
-    """`rc_step`'s output at `t`: an RC's exact response to a linear ramp of 1 V.
+    """Evaluates the exact RC output of `rc_step` at time `t` for a 1 V linear ramp.
 
-    Before the ramp it rests at 0; during it, ``(t' - τ(1 - e^(-t'/τ)))/tr``; after
-    it, ``1 - τ(e^(tr/τ) - 1) e^(-t'/τ)/tr``, with ``t'`` the time since it began.
+    Returns 0 before the ramp, ``(t' - τ(1 - e^(-t'/τ)))/tr`` during the ramp, and
+    ``1 - τ(e^(tr/τ) - 1) e^(-t'/τ)/tr`` after the ramp, where ``t'`` is elapsed time.
     """
     start, rise = RAMP
     since = t - start
@@ -518,11 +510,11 @@ def ramped(t: float, tau: float = RC_TAU) -> float:
 
 
 STEP_TIMES: Final = (1.5e-6, 2e-6, 3e-6, 5e-6)
-"""The times the transients read `rc_step`'s output at, in seconds."""
+"""Sampling timestamps in seconds for transient fixtures on `rc_step`."""
 
 
 def transient_fixture(key: str, name: str, method: Method) -> Fixture:
-    """A row of a transient integrated by `method`, on `rc_step`."""
+    """Builds a transient benchmark row on `rc_step` using integration `method`."""
     built = circuit(rc_step())
     names = tuple(f"v(out)@{time!r}" for time in STEP_TIMES)
     known = {
@@ -581,7 +573,7 @@ def transient_fixture(key: str, name: str, method: Method) -> Fixture:
 
 
 def analyses() -> list[Fixture]:
-    """The analyses' rows."""
+    """Builds the core analysis rows for the coverage matrix."""
     deck = divider_deck()
     # Every DC solution: a behavioral current of 1 mA·(v³ - v) out of a node, whose
     # solutions are -1, 0 and 1 V.
@@ -686,7 +678,7 @@ def _batch_out(deck: tuple[str, ...], grid: Grid, names: tuple[str, ...]) -> Val
 
 
 def sweeps() -> list[Fixture]:
-    """The rows of sweeps over the temperature and over two sources."""
+    """Builds the temperature-sweep and nested two-source DC sweep rows."""
     # A resistor of 1 kΩ drifting 1 %/K over a fixed 3 kΩ, at -40, 25 and 90 °C.
     # A resistor's drift is a law of its temperature, not of a thermal voltage: Xyce,
     # whose constants are furthest from jolty's, sweeps the temperatures themselves.
@@ -760,22 +752,22 @@ def sweeps() -> list[Fixture]:
 
 
 RC_DECK: Final = ("* low pass", "V1 in 0 0 AC 1", "R1 in out 1k", "C1 out 0 1n")
-"""A low pass of 1 kΩ and 1 nF, its corner at 159 kHz, excited by `V1`."""
+"""Low-pass RC deck (1 kΩ, 1 nF, 159 kHz corner) driven by AC source `V1`."""
 
 CORNER: Final = 1 / (2 * math.pi * RC_TAU)
-"""`RC_DECK`'s corner frequency, in hertz."""
+"""Corner frequency of `RC_DECK` in hertz."""
 
 FREQUENCIES: Final = (1e4, 1e5, 1e6)
-"""The frequencies the small-signal fixtures read, a decade apart."""
+"""Decade-spaced evaluation frequencies for small-signal fixtures in hertz."""
 
 
 def low_pass(frequency: float) -> complex:
-    """`RC_DECK`'s response at `frequency`: 1/(1 + jωRC)."""
+    """Evaluates closed-form RC transfer ``1 / (1 + jωRC)`` at `frequency`."""
     return 1 / (1 + 1j * 2 * math.pi * frequency * RC_TAU)
 
 
 def small_signal() -> list[Fixture]:
-    """The small-signal analyses' rows."""
+    """Builds the small-signal analysis rows for the coverage matrix."""
     names = tuple(f"v(out)@{index}" for index in range(len(FREQUENCIES)))
     frequencies = decade(1e4 * Hz, 1e6 * Hz, 1)
     noise_names = tuple(f"onoise@{index}" for index in range(len(FREQUENCIES)))
@@ -940,7 +932,7 @@ def small_signal() -> list[Fixture]:
 
 
 def sensitivities() -> list[Fixture]:
-    """The rows of sensitivities: at DC, over frequency and over time."""
+    """Builds the DC, AC, and transient sensitivity rows."""
     deck = divider_deck()
 
     def at_dc() -> Values:
@@ -1073,7 +1065,7 @@ def sensitivities() -> list[Fixture]:
 
 
 def transients() -> list[Fixture]:
-    """The rows of transients, and of the analyses built on them."""
+    """Builds the transient and periodic steady-state rows."""
 
     # A low pass driven by a 1 MHz sine of 1 V: its periodic steady state's amplitude
     # at the output is |H(f)|, and its phase H's.
@@ -1133,21 +1125,21 @@ def transients() -> list[Fixture]:
 
 
 THREE: Final = 3
-"""The node voltages a forced device's fixture reads its currents at: its terminals'."""
+"""Number of terminal voltage sources in forced three-terminal device fixtures."""
 
 DECKS: Final = Path(__file__).resolve().parent / "decks"
-"""The files the syntax fixtures' decks read."""
+"""Directory containing external SPICE deck files used by syntax fixtures."""
 
 
 def thermal(volts: float) -> float:
-    """`e^(v/Vt) - 1` at `ROOM`."""
+    """Evaluates ``exp(volts / Vt) - 1`` at `ROOM`."""
     return math.expm1(volts / THERMAL_VOLTAGE)
 
 
 def bjt_currents(
     vbe: float, vbc: float, saturation: float, forward: float, reverse: float
 ) -> tuple[float, float]:
-    """The Ebers and Moll transport currents into the collector and the base."""
+    """Computes Ebers-Moll collector and base transport currents."""
     collector = saturation * (
         thermal(vbe) - thermal(vbc)
     ) - saturation / reverse * thermal(vbc)
@@ -1169,12 +1161,12 @@ def vbic_currents(  # noqa: PLR0913 - VBIC bias, saturation currents, temperatur
     parasitic_base_resistance: float = VBIC_INTRINSIC_RESISTANCE,
     minimum_conductance: float = 0.0,
 ) -> tuple[float, float]:
-    """Exact VBIC 1.2 operating-point collector and base currents (emitter/substrate 0).
+    """Computes exact VBIC 1.2 operating-point collector and base currents.
 
-    Accounts for the exact model details that caused naive Ebers-Moll with VBIC's
+    Accounts for the exact model details that caused naive Ebers-Moll with VBIC
     physical constants to miss the `vbic` fixture by +2.114e-6:
 
-    1. VBIC 1.2 uses its own physical constants (`k = 1.380662e-23 J/K`,
+    1. VBIC 1.2 uses dedicated physical constants (`k = 1.380662e-23 J/K`,
        `q = 1.602189e-19 C`) rather than 2019 SI values.
     2. VBIC 1.2 mandates positive intrinsic resistances whose defaults are non-zero:
        `RBI = RCI = RBP = 0.1 ohm` (ngspice `vbicsetup.c`, `vbic.rs`). At `V_c = 2 V`,
@@ -1191,7 +1183,7 @@ def vbic_currents(  # noqa: PLR0913 - VBIC bias, saturation currents, temperatur
 
     The coupled KCL equations are solved in voltage-drop coordinates (`base_drop =
     V_bx - V_bi`, `collector_drop = V_cx - V_ci`, `parasitic_drop = V_bp - V_cx`) so
-    there is no floating-point cancellation when dividing small drops by `0.1 ohm`.
+    no floating-point cancellation occurs when dividing small drops by `0.1 ohm`.
     """
     ratio = temperature / nominal_temperature
     thermal_voltage = temperature * VBIC_BOLTZMANN / VBIC_CHARGE
@@ -1270,7 +1262,7 @@ def vbic_currents(  # noqa: PLR0913 - VBIC bias, saturation currents, temperatur
 
 
 def coupled_secondary(frequency: float) -> complex:
-    """The coupled inductors' open secondary's voltage, solved exactly."""
+    """Computes exact open-circuit secondary voltage for the coupled-inductor row."""
     jw = 2j * math.pi * frequency
     r1, l1, l2, r2 = 1.0, 1e-6, 4e-6, 1e9
     mutual = 0.5 * math.sqrt(l1 * l2)
@@ -1310,7 +1302,7 @@ class _BuiltSpec:
 
 
 def device_fixtures() -> list[Fixture]:
-    """The device models' rows."""
+    """Builds the device-model rows for the coverage matrix."""
     at = 1e6
     jw = 2j * math.pi * at
     rows: list[Fixture] = [
@@ -1436,9 +1428,8 @@ def device_fixtures() -> list[Fixture]:
                 "high injection"
             ),
         ),
-        # VBIC computes its thermal voltage with constants of its own in both engines:
-        # ngspice must run at 27.0 C (300.15 K) itself so Arrhenius scaling from
-        # TNOM=27 does not shift currents by +6.53e-6.
+        # VBIC uses dedicated physical constants in both engines, so ngspice runs at
+        # 27.0 C (300.15 K) to avoid a +6.53e-6 Arrhenius shift from TNOM=27.
         _OpSpec(
             "vbic",
             "Bipolar transistor, VBIC 1.2",
@@ -1532,7 +1523,7 @@ def device_fixtures() -> list[Fixture]:
 def ac_fixture(
     key: str, name: str, deck: tuple[str, ...], known: Values, source: str
 ) -> Fixture:
-    """A device's row whose fixture is its response at 1 MHz."""
+    """Builds a device row evaluated via a 1 MHz AC response."""
     names = tuple(known)
     return Fixture(
         key=key,
@@ -1550,7 +1541,7 @@ def ac_fixture(
 
 
 def forced(name: str, device: object, terminals: Mapping[str, float]) -> Component:
-    """`device` with each terminal held by a source, ``V<terminal>``, at its level."""
+    """Builds a bench forcing each terminal of `device` via ``V<terminal>``."""
     c, ground = _builder(name)
     placed = c.place(device, name="X1")  # ty: ignore[invalid-argument-type] - a device
     for terminal, level in terminals.items():
@@ -1571,7 +1562,7 @@ def built_fixture(  # noqa: PLR0913 - a row's names, its circuit and what reads 
     xyce: Unsupported | Documented,
     temperature: float = ROOM,
 ) -> Fixture:
-    """A row of a device jolty's builder places, its deck jolty's export of it."""
+    """Builds a device row constructed via the Python builder and exported to SPICE."""
     flat = circuit(built)
     try:
         deck = exported(flat)
@@ -1596,7 +1587,7 @@ def built_fixture(  # noqa: PLR0913 - a row's names, its circuit and what reads 
 
 
 def built_devices() -> list[Fixture]:
-    """The rows of the devices jolty's SPICE reader does not read, built instead."""
+    """Builds device rows constructed with the builder instead of the SPICE reader."""
     on, off = 100.0, 16e3
     memristor_known = Known(
         values={"i(vpositive)": -0.5 / (on + 0.25 * (off - on))},
@@ -1648,8 +1639,8 @@ def built_devices() -> list[Fixture]:
                 ", MOSFET level 9 (BSIM3v3.2.2); no fixture runs it: another version "
                 "than jolty's 3.3"
             ),
-            # BSIM3 computes with constants of its own: ngspice runs at the kelvins
-            # themselves, as the differential tests run it.
+            # BSIM3 uses dedicated physical constants, so ngspice runs at exact kelvin
+            # temperatures matching the differential tests.
             temperature=ngspice.same_kelvins(ROOM),
         ),
         _BuiltSpec(
@@ -1775,7 +1766,7 @@ def _switch_fixture(
     levels: Sequence[float],
     xyce: Documented,
 ) -> Fixture:
-    """A PSpice-model switch row sweeping through OFF, midpoint, and ON."""
+    """Builds a PSpice switch row sweeping across OFF, midpoint, and ON states."""
     library_path = DECKS / "switches.lib"
     deck = (
         f"* {key}",
@@ -1822,7 +1813,7 @@ def _switch_fixture(
 
 
 def switch_and_logic_devices() -> list[Fixture]:
-    """The rows for voltage- and current-controlled switches and logic devices."""
+    """Builds rows for voltage- and current-controlled switches and logic devices."""
 
     def run_logic() -> Values:
         builder, ground = _builder("logic")
@@ -1940,7 +1931,7 @@ def switch_and_logic_devices() -> list[Fixture]:
 
 
 def kit_devices() -> list[Fixture]:
-    """The rows for the pinned open foundry process design kits.
+    """Builds documented rows for the pinned open foundry process design kits.
 
     Real PDK archives are tens of megabytes fetched from GitHub and are verified by
     `tests/test_kits.py`; these rows stay `Documented` so the coverage matrix and its
@@ -2010,7 +2001,7 @@ def _line_fixture(
     element: str,
     extra: tuple[str, ...] = (),
 ) -> Fixture:
-    """A matched 50 ohm, 5 ns line driven by a pulse: half the pulse, 5 ns late."""
+    """Builds a matched 50 ohm, 5 ns transmission-line row driven by a pulse."""
 
     def pulse(t: float) -> float:
         return (
@@ -2065,7 +2056,7 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
     category: Category = Category.DEVICE,
     tolerance: float = SOLVED,
 ) -> Fixture:
-    """A row jolty's reader is given the deck of, as ngspice and Xyce are."""
+    """Builds a row whose SPICE deck is passed directly to jolty, ngspice, and Xyce."""
     names = tuple(reads)
     return Fixture(
         key=key,
@@ -2082,12 +2073,12 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
 def _forced_deck(
     title: str, element: str, card: str, drain: str = "d"
 ) -> tuple[str, ...]:
-    """A transistor's deck, `element` first for a reader to name, at 3 V and 2 V."""
+    """Builds a 3 V drain, 2 V gate transistor bias deck with `element` placed first."""
     return (f"* {title}", element, card, f"VD {drain} 0 3", "VG g 0 2")
 
 
 def missing_devices() -> list[Fixture]:
-    """The device rows of ngspice's that jolty lacks, its reader given their decks."""
+    """Builds ngspice device rows not yet implemented in jolty."""
     unjudged = "none yet: the model's QA reference results are to come"
     current = {"i(vd)": Read(ngspice="i(vd)", xyce="I(VD)")}
     mos_2u = "M1 d g 0 0 mm W=10u L=2u"
@@ -2245,7 +2236,7 @@ def missing_devices() -> list[Fixture]:
 
 
 def syntax() -> list[Fixture]:
-    """The rows of SPICE's syntax, each a deck every simulator reads."""
+    """Builds the SPICE syntax rows executed across all simulators."""
     out: Values = {"v(out)": 2.0}
     divider = "closed form: a divider"
     specs: tuple[tuple[str, str, tuple[str, ...], Values, str], ...] = (
@@ -2378,7 +2369,7 @@ def syntax() -> list[Fixture]:
 
 
 def _state_and_kit_syntax() -> list[Fixture]:
-    """The rows for ``.ic``, ``.nodeset``, and offline process-kit library syntax."""
+    """Builds rows for ``.ic``, ``.nodeset``, and offline process-kit library syntax."""
     initial_condition_deck = ("* ic", "R1 out 0 1k", "C1 out 0 1n", ".ic v(out)=1")
     decay_times = (0.0, 0.5e-6, 1e-6, 2e-6, 3e-6)
     decay_names = tuple(f"v(out)@{time!r}" for time in decay_times)
@@ -2536,7 +2527,7 @@ def _state_and_kit_syntax() -> list[Fixture]:
 
 
 def raw_divider() -> Values:
-    """The divider's output, written by jolty as SPICE's binary raw file, read back."""
+    """Writes a divider operating point to a binary SPICE raw file and reads it back."""
     point = simulation(deck_circuit(divider_deck())).run(OperatingPoint(), TIGHT)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "divider.raw"
@@ -2546,7 +2537,7 @@ def raw_divider() -> Values:
 
 
 def outputs() -> list[Fixture]:
-    """The rows of outputs: SPICE's raw file, and a measurement of a waveform."""
+    """Builds the output-format and waveform-measurement rows."""
     # When `rc_step`'s output first rises through 0.5 V: the root of its closed form.
     low, high = RAMP[0], RAMP[0] + 10 * RC_TAU
     for _ in range(200):
@@ -2649,7 +2640,7 @@ def outputs() -> list[Fixture]:
 
 
 def monte_carlo() -> Fixture:
-    """The row of Monte Carlo samples: each one's divider, at its own resistances."""
+    """Builds the Monte Carlo divider row with per-sample resistor tolerances."""
     c, ground = _builder("toleranced")
     source = c.place(devices.voltage_source(5 * V), name="V1")
     upper = c.place(devices.resistor(1 * kohm, tolerance=0.1), name="R1")
@@ -2794,7 +2785,7 @@ def _run_plan_script(filename: str, source: str, label: str) -> Built:
 
 
 def extended_analyses() -> list[Fixture]:
-    """The v2 analysis rows: corners, worst case, .disto, .sp, and transient noise."""
+    """Builds extended rows: corners, worst case, ``.disto``, ``.sp``, ``trnoise``."""
 
     def run_corners() -> Values:
         outcome = _run_plan_script("corners.py", _CORNERS_SCRIPT, "corners")
@@ -2920,7 +2911,7 @@ def extended_analyses() -> list[Fixture]:
                 deck=distortion_deck,
                 # ngspice 47 crashes with an integer-underflow malloc on single-point
                 # `disto lin 1 1k 1k`; `lin 2 1k 2k` runs and evaluates `1k` at index 0.
-                # Its `disto2` (HD3) carries a known SPICE3f5 global sign inversion
+                # The `disto2` (HD3) plot carries a known SPICE3f5 global sign inversion
                 # (-Vt/12 instead of the exact Volterra/Fourier coefficient +Vt/12).
                 ngspice=("disto lin 2 1k 2k\nsetplot disto1", "setplot disto2"),
                 temperature=ngspice.same_kelvins(ROOM),
@@ -2982,5 +2973,5 @@ def extended_analyses() -> list[Fixture]:
 
 
 def fixtures() -> list[Fixture]:
-    """Every row of the matrix, in its order."""
+    """Returns every coverage matrix row in canonical order."""
     return [*analyses(), *device_fixtures(), *syntax(), *outputs()]

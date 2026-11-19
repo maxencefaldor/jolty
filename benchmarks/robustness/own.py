@@ -1,10 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""jolty's own hard circuits, each written with jolty's builder.
+"""Built-in hard circuits for the robustness corpus constructed with jolty's builder.
 
-Each circuit gives a fixture for its operating point, judged against every DC solution
-jolty finds, and most a transient, judged by the DC solutions its sources' last levels
-leave, by the time its solution ends, or by its completion alone. ngspice runs each on
-the netlist jolty's exporter writes.
+Each circuit defines an operating-point fixture scored against all jolty DC solutions,
+and most also define a transient fixture judged by final settling equilibria, fold
+impasse timing, or completion. ngspice executes each circuit on the exported netlist.
 """
 
 import importlib
@@ -64,20 +63,20 @@ FOLDED: Final = (
 
 @dataclass(frozen=True)
 class WrittenCircuit:
-    """A circuit jolty's builder writes, as each simulator reads it."""
+    """Builder-authored robustness circuit providing jolty and SPICE netlists."""
 
     build: Callable[[], Component | ir.Circuit]
     transient: bool = False
-    """Whether ngspice runs a transient of it, in whose netlist a memristor moves."""
+    """Flag enabling transient memristor dynamics in exported ngspice netlists."""
     settle: Callable[[], Component | ir.Circuit] | None = None
-    """The circuit with every source at its last level."""
+    """Optional builder creating the circuit with sources held at final levels."""
 
     def jolty(self) -> Built:
-        """The circuit at 27 °C and jolty's default options."""
+        """Builds the circuit at 27 °C with jolty's default options."""
         return _built(self.build())
 
     def spice(self) -> Spiced:
-        """The netlist jolty's exporter writes of the circuit, and its nets' vectors."""
+        """Exports the circuit as a SPICE netlist paired with voltage vector names."""
         built = self.jolty()
         lines = export.netlist(built.circuit, transient=self.transient)
         vectors = {
@@ -87,16 +86,16 @@ class WrittenCircuit:
         return Spiced(tuple(lines), vectors)
 
     def settled(self) -> Built | None:
-        """The circuit with every source at its last level, if given."""
+        """Builds the final-level settling circuit when `settle` is set, else None."""
         return None if self.settle is None else _built(self.settle())
 
     def temperature(self) -> float:
-        """27 °C, in kelvins."""
+        """Returns nominal reference temperature (27 °C) in kelvins."""
         return _core.REFERENCE_TEMPERATURE
 
 
 def _built(made: Component | ir.Circuit) -> Built:
-    """`made` as jolty simulates it, every net's voltage compared."""
+    """Wraps `made` in a `Built` record collecting all comparable node voltages."""
     written = made if isinstance(made, ir.Circuit) else circuit(made)
     unknowns = Simulation(written).unknowns
     nets = tuple(
@@ -110,18 +109,18 @@ def _built(made: Component | ir.Circuit) -> Built:
 
 
 def _level(drive: Waveform | float) -> Waveform | Quantity:
-    """A source's level: a waveform, or a constant in volts."""
+    """Converts `drive` into a `Waveform` or constant voltage `Quantity`."""
     return drive if not isinstance(drive, float | int) else float(drive) * V
 
 
 # Schmitt triggers.
 
 SCHMITT_SUPPLY: Final = 5.0
-"""The bipolar Schmitt trigger's supply, in volts."""
+"""Supply voltage of the bipolar Schmitt trigger in volts."""
 
 
 def npn() -> devices.Device:
-    """An npn transistor of Gummel and Poon's model: 10 fA and a gain of 100."""
+    """Creates an NPN Gummel-Poon BJT (10 fA saturation current, beta 100)."""
     return devices.bipolar_transistor(
         polarity="npn", saturation_current=1e-14 * A, forward_beta=100
     )
@@ -129,11 +128,10 @@ def npn() -> devices.Device:
 
 @component
 def emitter_coupled(c: Builder) -> None:
-    """A Schmitt trigger of two npn transistors sharing an emitter resistor.
+    """Builds an emitter-coupled bipolar Schmitt trigger using two NPN transistors.
 
-    The first's collector drives the second's base through a divider, so the second
-    conducts until the input lifts the shared emitter past it: the input's rising
-    threshold lies above its falling one.
+    Couples the first collector to the second base through a divider so the shared
+    emitter produces hysteresis with a rising threshold above the falling threshold.
     """
     vcc, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     source, output = c.port("input", Role.INPUT), c.port("output", Role.OUTPUT)
@@ -156,7 +154,7 @@ def emitter_coupled(c: Builder) -> None:
 
 
 def schmitt_bjt(drive: Waveform | float) -> Component:
-    """The bipolar Schmitt trigger on its supply, its input at `drive`."""
+    """Builds the bipolar Schmitt trigger test bench driven at `drive`."""
     level = _level(drive)
 
     @component
@@ -175,11 +173,10 @@ def schmitt_bjt(drive: Waveform | float) -> Component:
 
 @component
 def cmos_schmitt(c: Builder) -> None:
-    """A Schmitt trigger of six level 1 MOSFETs: two stacks, each with a feedback.
+    """Builds a six-transistor level-1 CMOS Schmitt trigger with dual feedback stacks.
 
-    The input drives two n-channel transistors in series down to the ground and two
-    p-channel ones up to the supply; the output's feedback transistors hold each
-    stack's middle node, so the output switches late in either direction.
+    Connects two stacked NMOS devices to ground and two stacked PMOS devices to supply,
+    with output-driven feedback devices biasing each stack midpoint for hysteresis.
     """
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
     source, output = c.port("input", Role.INPUT), c.port("output", Role.OUTPUT)
@@ -195,7 +192,7 @@ def cmos_schmitt(c: Builder) -> None:
 
 
 def schmitt_cmos(drive: Waveform | float) -> Component:
-    """The CMOS Schmitt trigger on 3.3 V, its input at `drive`."""
+    """Builds the 3.3 V CMOS Schmitt trigger test bench driven at `drive`."""
     level = _level(drive)
 
     @component
@@ -213,15 +210,14 @@ def schmitt_cmos(drive: Waveform | float) -> Component:
 
 
 BJT_BAND: Final = 2.75
-"""A level of the bipolar Schmitt trigger's input between its two thresholds, in
-volts, where it has three DC solutions."""
+"""Bipolar Schmitt input inside the hysteresis band with three DC solutions."""
 
 CMOS_BAND: Final = 1.65
-"""A level of the CMOS Schmitt trigger's input between its thresholds, in volts."""
+"""Input voltage inside the CMOS Schmitt trigger hysteresis band in volts."""
 
 
 def triangle(low: float, high: float, middle: float, edge: float) -> Piecewise:
-    """From `low` up to `high` and down to `middle`, each ramp `edge` microseconds."""
+    """Builds a piecewise-linear ramp `low` -> `high` -> `middle` (`edge` us)."""
     return Piecewise(
         [
             (0 * us, low * V),
@@ -233,7 +229,7 @@ def triangle(low: float, high: float, middle: float, edge: float) -> Piecewise:
 
 
 def highest(net: str) -> Callable[[Solution, Sequence[Solution]], bool]:
-    """Whether a solution holds `net` the highest of every solution."""
+    """Creates a predicate matching the DC solution with maximum `net` voltage."""
 
     def chosen(solution: Solution, every: Sequence[Solution]) -> bool:
         return solution[net] == max(each[net] for each in every)
@@ -242,7 +238,7 @@ def highest(net: str) -> Callable[[Solution, Sequence[Solution]], bool]:
 
 
 def lowest(net: str) -> Callable[[Solution, Sequence[Solution]], bool]:
-    """Whether a solution holds `net` the lowest of every solution."""
+    """Creates a predicate matching the DC solution with minimum `net` voltage."""
 
     def chosen(solution: Solution, every: Sequence[Solution]) -> bool:
         return solution[net] == min(each[net] for each in every)
@@ -250,12 +246,12 @@ def lowest(net: str) -> Callable[[Solution, Sequence[Solution]], bool]:
     return chosen
 
 
-# A latch, an SRAM cell and a ring.
+# Cross-coupled latch, SRAM cell, and ring oscillator.
 
 
 @component
 def latch(c: Builder) -> None:
-    """Two CMOS inverters, each the other's input, `q` loaded twice as much as `qb`."""
+    """Builds cross-coupled CMOS inverters with asymmetric load (`q` twice `qb`)."""
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
     left, right = c.place(inverter(), name="X1"), c.place(inverter(), name="X2")
     heavy = c.place(devices.capacitor(20 * fF), name="CQ")
@@ -267,7 +263,7 @@ def latch(c: Builder) -> None:
 
 
 def powered(supply: Waveform | float, part: Callable[[], Component]) -> Component:
-    """`part` on a supply of `supply`, a level in volts or a waveform."""
+    """Wraps `part` in a test bench powered by voltage level or waveform `supply`."""
     level = _level(supply)
 
     @component
@@ -282,20 +278,20 @@ def powered(supply: Waveform | float, part: Callable[[], Component]) -> Componen
 
 
 RAMP: Final = Piecewise([(0 * ns, 0 * V), (1 * ns, SUPPLY * V)])
-"""A supply ramped from rest to 3.3 V in a nanosecond."""
+"""Supply waveform ramping linearly from 0 V to 3.3 V over 1 ns."""
 
 
 def stored(solution: Solution, _: Sequence[Solution]) -> bool:
-    """Whether a latch's solution stores a bit: `q` and `qb` on either side of half."""
+    """Returns whether a latch solution stores a valid logic bit across `q` and `qb`."""
     return (solution["X1/q"] - 0.5 * SUPPLY) * (solution["X1/qb"] - 0.5 * SUPPLY) < 0
 
 
 @component
 def ring(c: Builder) -> None:
-    """Five CMOS inverters in a ring, the first stage loaded twice as much as the rest.
+    """Builds a five-stage CMOS ring oscillator with doubled load on stage 1.
 
-    The unequal load breaks the ring's symmetry, so that its solution from rest leaves
-    the balanced state, where every stage sits at its threshold, which is unstable.
+    Uses unequal stage loading to break symmetry so a ramp from rest departs the
+    unstable midpoint equilibrium and starts oscillating.
     """
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
     gates = [c.place(inverter(), name=f"X{index}") for index in range(1, 6)]
@@ -312,7 +308,7 @@ def ring(c: Builder) -> None:
 
 @component
 def sram(c: Builder) -> None:
-    """The example's SRAM cell, its word line low and its bit lines at rest."""
+    """Builds the example SRAM cell bench with word line low and resting bit lines."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     word = c.place(devices.voltage_source(0 * V), name="VWL")
@@ -334,15 +330,15 @@ def sram(c: Builder) -> None:
 
 
 def holds_zero(solution: Solution, _: Sequence[Solution]) -> bool:
-    """Whether the SRAM cell's solution holds a 0: `q` low, `q_bar` high."""
+    """Returns whether an SRAM solution stores logic 0 (`q` low and `q_bar` high)."""
     return solution["X1/q"] < 0.5 * SUPPLY < solution["X1/q_bar"]
 
 
-# Nets with no capacitance.
+# Zero-capacitance algebraic MOSFET chain.
 
 
 def bare(channel: str) -> devices.Device:
-    """A level 1 MOSFET of the examples' process with no capacitance at all."""
+    """Creates a level-1 MOSFET with zero intrinsic or parasitic capacitance."""
     p = channel == "p"
     return devices.mosfet(
         channel="p" if p else "n",
@@ -354,7 +350,7 @@ def bare(channel: str) -> devices.Device:
 
 
 def chain(drive: Waveform | float) -> Component:
-    """Three CMOS inverters of MOSFETs with no capacitance, driven by `drive`."""
+    """Builds three zero-capacitance CMOS inverters driven by `drive`."""
     level = _level(drive)
 
     @component
@@ -402,11 +398,10 @@ IMPASSE_RISE: Final = 1e-9
 
 @component
 def impasse_circuit(c: Builder) -> None:
-    """A capacitor charged across a resistor in series with an N-shaped conductance.
+    """Builds a capacitor charged across a series resistor and N-shaped conductance.
 
-    The capacitor's voltage `v` is the resistor's drop plus the conductance's voltage
-    `u`, so `v = u + R·g(u)`, which folds where `1 + R·g'(u) = 0`: charged past the
-    fold, the circuit's equations have no solution near the one they had.
+    Satisfies `v = u + R·g(u)`, which folds where `1 + R·g'(u) = 0` so no nearby
+    solution exists once charging crosses the fold.
     """
     ground = c.port("ground", Role.GROUND)
     charge = Pulse(
@@ -427,13 +422,11 @@ def impasse_circuit(c: Builder) -> None:
 
 
 def impasse_time() -> float:
-    """When the impasse circuit's solution ends, in seconds, from its closed form.
+    """Computes the exact fold impasse time in seconds via Gauss-Legendre quadrature.
 
-    Along the lower branch `C·dv/dt = I - g(u)` and `dv = (1 + R·g'(u))·du`, so the
-    time to the fold `u₁`, the smaller root of `1 + R·g'(u) = 0`, is the integral of
-    `C·(1 + R·g'(u)) / (I - g(u))` from 0 to `u₁`, by 64-point Gauss-Legendre
-    quadrature of its smooth integrand, plus half the current's rise, during which it
-    charges the capacitor as half its level would.
+    Along the lower branch, `C·dv/dt = I - g(u)` and `dv = (1 + R·g'(u))·du`.
+    Integrates `C·(1 + R·g'(u)) / (I - g(u))` from 0 to the smaller root `u₁` of
+    `1 + R·g'(u) = 0`, then adds half the current rise time.
     """
     k, r = IMPASSE_SCALE, IMPASSE_RESISTANCE
     # g'(u) = k·(3u² - 6u + 2), so 1 + R·g'(u) = 0 at u = 1 ± sqrt(1/3 - 1/(3kR)).
@@ -490,11 +483,11 @@ HARD: Final = {
     "memristive_nor/tran": "The memristive NOR at 10 % above its design's pulse, "
     "whose states race to their bounds",
 }
-"""What makes each fixture hard, by its name."""
+"""Summaries of the numerical or modeling difficulty of each built-in fixture."""
 
 
 def _pulse() -> Pulse:
-    """A pulse from 0 to 3.3 V of 100 ps edges, from 1 ns to 6.1 ns."""
+    """Creates a 0 V to 3.3 V pulse with 100 ps edges from 1 ns to 6.1 ns."""
     return Pulse(
         initial=0 * V,
         pulsed=SUPPLY * V,
@@ -506,19 +499,18 @@ def _pulse() -> Pulse:
 
 
 def _folded() -> ir.Circuit:
-    """The random circuit whose operating point source stepping folds short of."""
+    """Loads the 47-device circuit whose operating point folds on source stepping."""
     return ir.Circuit.model_validate_json(FOLDED.read_text(encoding="utf-8"))
 
 
 NOR: Final = ROOT / "docs" / "discovery" / "memristive_nor"
-"""The memristive NOR discovery, whose candidates' module writes its bench."""
+"""Directory of the memristive NOR discovery supplying the `candidates` module."""
 
 
 def _nor() -> Component:
-    """The memristive NOR's four gates, written by a pulse at its high corner.
+    """Builds the four-gate memristive NOR bench driven at its high-amplitude corner.
 
-    The discovery's ``candidates`` module is imported from its directory, as its design
-    imports it; every discovery has a module of that name.
+    Imports the discovery's local ``candidates`` module dynamically from `NOR`.
     """
     if str(NOR) not in sys.path:
         sys.path.insert(0, str(NOR))
@@ -531,7 +523,7 @@ def _nor() -> Component:
 
 
 def fixtures() -> list[Fixture]:
-    """The fixtures of jolty's own hard circuits."""
+    """Returns all built-in hard circuit fixtures for the robustness corpus."""
     points = {
         "schmitt_bjt/op": WrittenCircuit(lambda: schmitt_bjt(BJT_BAND)),
         "schmitt_cmos/op": WrittenCircuit(lambda: schmitt_cmos(CMOS_BAND)),

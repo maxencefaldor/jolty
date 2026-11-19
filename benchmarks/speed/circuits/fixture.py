@@ -1,15 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""What the fixtures' scripts share: a fixture, and the files it is written to.
+"""Shared fixture schema and serializer for speed benchmark circuit scripts.
 
-A fixture is a circuit and a plan of analyses to run on it. Its script writes the
-circuit in the circuit format to ``benchmarks/speed/circuits/<circuit>.json``, and the
-plan in the engine's format to ``benchmarks/speed/plans/<fixture>.json``: the analyses
-in order, each by name, the options, and a Monte Carlo analysis's samples and seed. The
-Rust benchmarks read both files; the Python timing reads the circuit and takes the plan
-from the script.
+A fixture pairs a circuit name with a simulation plan. Each circuit script writes the
+serialized circuit to ``benchmarks/speed/circuits/<circuit>.json`` and the engine plan
+to ``benchmarks/speed/plans/<fixture>.json`` (ordered analyses, options, and optional
+Monte Carlo settings). Rust Criterion benchmarks read both files, while Python timings
+load the circuit JSON and obtain the plan directly from the script.
 
-Run a fixture's script from the repository root, so the instances' script lines are
-written relative to it, such as ``uv run python benchmarks/speed/circuits/bjt_amp.py``.
+Run fixture scripts from the repository root so recorded source paths stay relative, for
+example ``uv run python benchmarks/speed/circuits/bjt_amp.py``.
 """
 
 import sys
@@ -18,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-# The suites' measuring helpers lie beside the suites' directories.
+# Shared benchmark helper modules live in the parent benchmarks directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from measuring import format_json
 
@@ -26,29 +25,29 @@ from jolty import Component, Plan, circuit
 from jolty.plan import Ac, OperatingPoint, Transient
 
 SPEED: Final = Path(__file__).resolve().parent.parent
-"""The speed suite's directory, ``benchmarks/speed``."""
+"""Root directory of the speed benchmark suite (``benchmarks/speed``)."""
 
 CIRCUITS: Final = SPEED / "circuits"
-"""Where the circuits are written."""
+"""Directory storing serialized circuit JSON files."""
 
 PLANS: Final = SPEED / "plans"
-"""Where the plans are written."""
+"""Directory storing serialized engine plan JSON files."""
 
 
 @dataclass(frozen=True, slots=True)
 class Fixture:
-    """A circuit, by the name of its file, and the plan run on it."""
+    """Speed benchmark fixture pairing a circuit file stem with its simulation plan."""
 
     circuit: str
     plan: Plan
 
 
 def engine_plan(fixture: Fixture) -> dict[str, object]:
-    """The fixture's plan in the engine's format, as its plan file holds it.
+    """Serializes `fixture.plan` into the JSON structure read by the Rust engine.
 
     Raises:
-        TypeError: When the plan runs an analysis other than an operating point, a
-            small-signal response or a transient, which no fixture needs.
+        TypeError: When the plan includes an analysis other than operating point, AC,
+            or transient.
     """
     analyses: list[object] = []
     for name, analysis in fixture.plan.analyses.items():

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""The two transistors of AnalogCoder's problems: SPICE level 1 MOSFETs.
+"""SPICE level 1 MOSFET models used across the AnalogCoder benchmark problems.
 
-They are AnalogCoder's own models: an NMOS with a transconductance parameter of
-100 µA/V² and a threshold of 0.5 V, and a PMOS with 50 µA/V² and -0.5 V. Neither has
-channel-length modulation, body effect or capacitance; only the width and the length
-are the designer's.
+The AnalogCoder benchmark defines an NMOS with transconductance parameter 100 µA/V²
+and threshold voltage 0.5 V, and a PMOS with 50 µA/V² and -0.5 V. Both models omit
+channel-length modulation, body effect, and parasitic capacitance, leaving channel
+width and length as design parameters.
 """
 
 from jolty import devices
@@ -12,7 +12,7 @@ from jolty.units import Quantity, V, uA
 
 
 def nmos(width: Quantity, length: Quantity) -> devices.Device:
-    """An N-channel MOSFET of `width` and `length`."""
+    """Returns an N-channel level 1 MOSFET with the given `width` and `length`."""
     return devices.mosfet(
         level=1,
         channel="n",
@@ -24,7 +24,7 @@ def nmos(width: Quantity, length: Quantity) -> devices.Device:
 
 
 def pmos(width: Quantity, length: Quantity) -> devices.Device:
-    """A P-channel MOSFET of `width` and `length`."""
+    """Returns a P-channel level 1 MOSFET with the given `width` and `length`."""
     return devices.mosfet(
         level=1,
         channel="p",

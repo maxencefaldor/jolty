@@ -1,12 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""The ngspice arm's cost-down design as a script: bias.py's bench with its stage read.
+"""Adapter wrapping an ngspice cost-down netlist onto the ``bias.py`` test bench.
 
-The scorer copies this script, as ``design.py``, beside a copy of the given ``bias.py``
-and of the agent's ``design.cir`` and ``tolerances.json``, and simulates it as it
-simulates the jolty arm's ``design.py``. Its bench is bias.py's, with ``X1`` the
-subcircuit ``stage`` that jolty's SPICE reader reads of ``design.cir``. Each resistor of
-the stage strays, uniformly, within the tolerance ``tolerances.json`` gives it by its
-name, matched without case, as SPICE matches names.
+The scorer copies this module as ``design.py`` alongside ``bias.py``, ``design.cir``,
+and ``tolerances.json``, then simulates the adapted design with the standard pipeline.
+Instance ``X1`` on the ``bias.py`` bench is replaced by the ``stage`` subcircuit parsed
+from ``design.cir``. Each resistor receives a uniform relative tolerance from
+``tolerances.json`` matched case-insensitively to follow SPICE naming rules.
 """
 
 import json
@@ -18,15 +17,15 @@ from jolty import Component, ir, spice
 
 HERE: Final = Path(__file__)
 PORTS: Final = ("supply", "output", "ground")
-"""The stage's ports, which the bench joins."""
+"""Required port names of the ``stage`` subcircuit expected by the test bench."""
 
 
 def toleranced(stage: Component, tolerances: object) -> Component:
-    """`stage`, each resistor that `tolerances` names given the tolerance it gives.
+    """Applies uniform resistor tolerances from `tolerances` to resistors in `stage`.
 
     Raises:
-        TypeError: When `tolerances` is no object of numbers.
-        ValueError: When `tolerances` names no resistor of the stage.
+        TypeError: When `tolerances` is not a mapping of resistor names to numbers.
+        ValueError: When `tolerances` names a resistor absent from `stage`.
     """
     if not isinstance(tolerances, dict):
         message = "tolerances.json holds no tolerances by resistor"
@@ -59,14 +58,14 @@ def toleranced(stage: Component, tolerances: object) -> Component:
 
 
 def build() -> Component:
-    """bias.py's bench, its stage ``X1`` the one ``design.cir`` defines.
+    """Builds the ``bias.py`` bench with ``X1`` replaced from ``design.cir``.
 
     Raises:
-        ValueError: When the stage's ports are not those the bench joins.
+        ValueError: When the parsed ``stage`` ports do not match `PORTS`.
     """
     stage = spice.load(HERE.with_name("design.cir")).component("stage")
     if all(port.name != spice.GROUND for port in stage.definition.ports):
-        # The stage's ground is node 0, whether or not anything joins it.
+        # Treat SPICE node 0 as ground even when no element inside stage connects to it.
         port = ir.Port(name=spice.GROUND, role=ir.Role.GROUND)
         ports = (*stage.definition.ports, port)
         stage = Component(

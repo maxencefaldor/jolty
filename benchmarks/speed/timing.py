@@ -1,23 +1,19 @@
 # Copyright 2026 Maxence Faldor
-"""One run of a fixture, timed by the wall clock and by the processor.
+"""Single-fixture execution and child-process timing worker for the speed suite.
 
-The speed suite's timings run each fixture as this module does: its circuit read from
-its file, elaborated, and its plan's analyses run in turn (`run`), or the first samples
-of its Monte Carlo analysis run as one batch (`sampled`), each run timed by the wall
-clock and by the processor time of every thread of the process (`clocked`).
+Speed benchmarks load a circuit from JSON, elaborate the netlist, and run either every
+plan analysis sequentially (`run`) or a Monte Carlo sample batch (`sampled`). Timing
+wrappers record wall-clock time and total process CPU time across threads (`clocked`).
 
-``scripts/bench --compare`` times two builds of jolty, each in a worktree of its own,
-so each build's runs take place in a process of its own: the build's interpreter runs
-this module, which imports the build's jolty and reads requests from its standard
-input, one JSON object a line, each a fixture and how to run it (`Request`); it runs the
-fixture once and writes its wall and processor seconds and peak resident memory (`Run`)
-as a line of JSON. Its first line says which jolty it imported, so the caller can check
-that it is the build's. A request with ``"prepare": true`` loads the fixture without
-running it and replies ``{"ready": true}``, so concurrent copies can start together at a
-barrier. `probe` runs one request in a fresh child process to read an isolated fixture's
-peak resident memory without inheriting another fixture's high-water mark. What jolty
-or a simulation prints goes to the standard error, so that only the answers reach the
-standard output.
+``scripts/bench --compare`` evaluates two jolty revisions in separate worktrees using
+isolated worker processes running this module. Each worker prints the imported jolty
+path on line 1 for verification, reads one JSON `Request` per stdin line, and emits a
+JSON `Run` containing wall seconds, CPU seconds, and peak resident memory.
+
+Requests carrying ``"prepare": true`` preload fixtures and emit ``{"ready": true}`` so
+concurrent copies release together at a barrier. `probe` runs one request in a fresh
+child process to measure clean peak resident memory. Simulation output is redirected to
+stderr so stdout carries only protocol JSON.
 """
 
 import dataclasses
@@ -33,8 +29,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import ModuleType
 
-# The suites' runners lie beside the suites' directories, and the fixtures' scripts in
-# the speed suite's circuits.
+# Add shared benchmark helpers and speed circuit scripts to the module search path.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "circuits"))
 from fixture import CIRCUITS, Fixture
@@ -56,7 +51,7 @@ class Loaded:
 
 
 def scripts() -> list[ModuleType]:
-    """The fixtures' scripts of ``benchmarks/speed/circuits``, by their names."""
+    """Imports and returns all fixture scripts in ``benchmarks/speed/circuits``."""
     return [
         importlib.import_module(path.stem)
         for path in sorted(CIRCUITS.glob("*.py"))
@@ -65,16 +60,16 @@ def scripts() -> list[ModuleType]:
 
 
 def load_fixture(fixture: Fixture) -> Loaded:
-    """The fixture's circuit, read from its file, and its plan."""
+    """Loads the circuit JSON for `fixture` and pairs it with `fixture.plan`."""
     text = (CIRCUITS / f"{fixture.circuit}.json").read_text(encoding="utf-8")
     return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
 
 
 def serially(loaded: Loaded) -> Options:
-    """The fixture's options for a serial run.
+    """Returns serial execution options for `loaded` with matrix dissection disabled.
 
-    Its run takes one thread, and no block of its matrix is dissected, its interiors as
-    large as its circuit.
+    Restricts execution to a single thread and sets `max_unknowns_per_interior` to the
+    full circuit unknown count so no matrix block is dissected.
     """
     unknowns = len(Simulation(loaded.circuit).unknowns)
     spread = dataclasses.replace(
@@ -88,21 +83,19 @@ def serially(loaded: Loaded) -> Options:
 def run(
     loaded: Loaded, options: Options | None = None
 ) -> dict[str, results.AnalysisResult]:
-    """Runs the fixture in jolty: its circuit elaborated, its analyses with `options`.
+    """Elaborates `loaded.circuit` and runs all plan analyses in jolty.
 
-    The options are the plan's unless given. Returns each analysis's result, by name.
+    Uses `loaded.plan.options` when `options` is None, returning results keyed by name.
     """
     chosen = loaded.plan.options if options is None else options
     return Jolty().run(loaded.circuit, loaded.plan.analyses, chosen).found
 
 
 def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
-    """The first `samples` of the fixture's Monte Carlo analysis, run on `threads`.
+    """Builds a callable executing `samples` Monte Carlo draws of `loaded` on `threads`.
 
-    The samples run as the runner runs them: one batch of the plan's analyses on the
-    circuit elaborated once, each sample drawn by the engine from its index, on a pool
-    of `threads` threads, the engine releasing the interpreter while it runs; the one
-    elaboration counts in the time.
+    Elaborates the circuit once per invocation and executes one parallel engine batch
+    across `threads` worker threads, matching runner behavior and including elaboration.
     """
     monte_carlo = loaded.plan.monte_carlo
     seed = 0 if monte_carlo is None else monte_carlo.seed
@@ -119,12 +112,11 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
 
 @dataclass(frozen=True, slots=True)
 class Run:
-    """One run's seconds, by the wall clock and of the processor, and peak memory.
+    """Measured wall time, multi-thread process CPU time, and optional peak memory.
 
-    The processor's are those of every thread of the process, so a run spread over
-    threads takes more of them than of the wall clock. `peak_memory_bytes` is the
-    resident high-water mark of an isolated child process that ran this fixture alone,
-    or None when measured in a shared process.
+    CPU time sums across all worker threads and can exceed wall time on parallel runs.
+    `peak_memory_bytes` holds the high-water mark of an isolated child process, or None
+    when shared across distinct fixtures.
     """
 
     wall: float
@@ -133,7 +125,7 @@ class Run:
 
 
 def clocked(work: Callable[[], object]) -> Callable[[], Run]:
-    """`work`, returning its `Run`'s seconds."""
+    """Wraps `work` in a callable measuring wall and process CPU seconds as a `Run`."""
 
     def measured() -> Run:
         wall, cpu = time.perf_counter(), time.process_time()
@@ -145,12 +137,11 @@ def clocked(work: Callable[[], object]) -> Callable[[], Run]:
 
 @dataclass(frozen=True, slots=True)
 class Request:
-    """A run of a fixture asked of a build: the fixture's, or its first `samples`.
+    """Timing request sent to a worker process for a named speed fixture.
 
-    A Monte Carlo fixture runs its first `samples` on a pool of `threads` threads, as
-    `sampled` runs them, and its seconds are per sample; any other runs its analyses
-    once, as `run` runs them, optionally restricted to `threads` threads or run
-    `serial` (on one thread with no block of its matrix dissected).
+    Monte Carlo requests execute the first `samples` draws across `threads` threads via
+    `sampled` and report per-sample seconds. Non-Monte-Carlo requests run all analyses
+    once via `run`, optionally constraining `threads` or forcing `serial` execution.
     """
 
     fixture: str
@@ -160,7 +151,7 @@ class Request:
 
 
 def planned() -> dict[str, Fixture]:
-    """Every fixture, by name, as its script defines it."""
+    """Collects all defined speed fixtures across circuit scripts keyed by name."""
     return {
         name: fixture
         for script in scripts()
@@ -169,7 +160,7 @@ def planned() -> dict[str, Fixture]:
 
 
 def work(request: Request, fixtures: dict[str, Fixture]) -> Callable[[], Run]:
-    """The run `request` asks, clocked; per sample for a Monte Carlo fixture's."""
+    """Builds a timed callable for `request`, normalizing Monte Carlo per sample."""
     loaded = load_fixture(fixtures[request.fixture])
     if request.samples is None:
         if request.serial:

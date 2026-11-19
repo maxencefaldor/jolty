@@ -1,20 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""The simulators the suites run their fixtures in, and one runner for each.
+"""Simulator configurations, runners, and output parsers shared by benchmark suites.
 
-A simulator is one program in one configuration (`Simulator`): jolty; ngspice with
-its default direct solver, Sparse 1.3, or with KLU; and Xyce, serially or its parallel
-build on MPI ranks. Each has one runner, `Jolty`, `Ngspice` or `Xyce`, built on
-`jolty.simulate`, `jolty.spice.ngspice` and `jolty.spice.xyce`, which names its
-simulator, states its version (`Runner`), and runs a deck in it the one way every
-suite does; each suite reads of the run what it measures: the speed suite its times,
-the corpus its outcome, the matrix its cell, the precision suite its points.
+Each `Simulator` identifies one program and solver configuration: jolty, ngspice with
+Sparse 1.3 or KLU, and Xyce in serial or parallel MPI mode. Runners (`Jolty`, `Ngspice`,
+and `Xyce`) wrap `jolty.simulate`, `jolty.spice.ngspice`, and `jolty.spice.xyce`, expose
+`Runner` metadata, and execute decks uniformly across suites.
 
-Beside them, what the suites write of a plan's analyses for another simulator, the
-netlist they need (`netlist`) and each analysis as ngspice's command (`command`); what
-they read of what ngspice printed, its ``rusage`` statistics (`RUSAGE`) and the lines
-that say what went wrong (`trouble`), and of what Xyce printed, its transient's steps
-(`XYCE_STEPS`) and how far it came (`XYCE_PROGRESS`); and what stopped a run that
-failed (`stopped`).
+Additional helpers export circuit netlists (`netlist`) and SPICE analysis commands
+(`command`). Output parsers extract ngspice ``rusage`` statistics (`RUSAGE`),
+deduplicated diagnostics (`trouble`), Xyce transient step counts (`XYCE_STEPS`),
+progress
+(`XYCE_PROGRESS`), and failure summaries (`stopped`).
 """
 
 import math
@@ -45,7 +41,7 @@ from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity
 
 
 class Simulator(StrEnum):
-    """A simulator: one program in one configuration, as every suite names it."""
+    """Simulator identifier pairing a program with a solver or execution mode."""
 
     JOLTY = "jolty"
     NGSPICE_SPARSE = "ngspice-sparse"
@@ -55,42 +51,42 @@ class Simulator(StrEnum):
 
 
 class Unsupported(Exception):  # noqa: N818 - a finding, not a failure of the suite
-    """A simulator does not offer what a fixture asks, for the reason given."""
+    """Exception raised when a simulator lacks a feature requested by a fixture."""
 
 
 class Runner(Protocol):
-    """What runs fixtures in one simulator: it names it, and states its version."""
+    """Protocol for simulator runners exposing simulator identity and version."""
 
     @property
     def simulator(self) -> Simulator:
-        """The simulator it runs."""
+        """Simulator configuration executed by the runner."""
         ...
 
     def version(self) -> str | None:
-        """The version and build of the program, or None when it is not installed."""
+        """Returns the installed simulator version string, or None when unavailable."""
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class Jolty:
-    """jolty's engine, in this process."""
+    """In-process runner for the jolty simulation engine."""
 
     @property
     def simulator(self) -> Simulator:
-        """The simulator it runs, jolty."""
+        """Simulator identifier for jolty."""
         return Simulator.JOLTY
 
     def version(self) -> str:
-        """The engine's version."""
+        """Returns the installed jolty package version string."""
         return f"jolty {metadata.version('jolty')}"
 
     def run(
         self, circuit: ir.Circuit, analyses: Mapping[str, Analysis], options: Options
     ) -> Analyzed:
-        """Elaborates `circuit`, and runs the `analyses` on it in turn, by name.
+        """Elaborates `circuit` and runs `analyses` sequentially by name.
 
         Raises:
-            JoltyError: When the circuit does not elaborate, or an analysis fails.
+            JoltyError: When the circuit fails to elaborate or an analysis fails.
         """
         simulation = Simulation(circuit)
         found: dict[str, results.AnalysisResult] = {}
@@ -104,45 +100,44 @@ class Jolty:
 
 @dataclass(frozen=True, slots=True)
 class Analyzed:
-    """What jolty found of a circuit's analyses, by name, and how long they took."""
+    """Named jolty analysis results paired with total analysis wall time."""
 
     found: dict[str, results.AnalysisResult]
     analysis_seconds: float
-    """The wall time of the analyses alone, each ``Simulation.run``: the engine's work
-    and its results made in Python, the circuit's elaboration left out."""
+    """Wall time inside ``Simulation.run`` calls, including Python result marshaling
+    and excluding circuit elaboration."""
 
 
 KLU: Final = ".options klu"
-"""The options line that makes ngspice solve by KLU rather than by Sparse 1.3."""
+"""SPICE options directive selecting the KLU direct linear solver in ngspice."""
 
 SOLVERS: Final = {
     Simulator.NGSPICE_SPARSE: "Using SPARSE 1.3 as Direct Linear Solver",
     Simulator.NGSPICE_KLU: "Using KLU as Direct Linear Solver",
 }
-"""What ngspice prints of the direct solver each of its configurations runs, once an
-analysis."""
+"""Expected ngspice stdout lines confirming the active direct linear solver."""
 
 
 @dataclass(frozen=True, slots=True)
 class Ngspice:
-    """ngspice in batch mode, with Sparse 1.3, its default direct solver, or KLU."""
+    """Batch-mode ngspice runner using either Sparse 1.3 (default) or KLU."""
 
     simulator: Literal[Simulator.NGSPICE_SPARSE, Simulator.NGSPICE_KLU] = (
         Simulator.NGSPICE_SPARSE
     )
 
     def version(self) -> str | None:
-        """The version and build of ngspice, or None when it is not installed."""
+        """Returns the ngspice version string, or None when not installed."""
         return ngspice.version()
 
     @property
     def options(self) -> tuple[str, ...]:
-        """The options lines that choose its solver: none for Sparse 1.3."""
+        """SPICE option lines selecting the configured solver (empty for Sparse 1.3)."""
         return (KLU,) if self.simulator is Simulator.NGSPICE_KLU else ()
 
     @property
     def solver(self) -> str:
-        """What ngspice prints of the solver it runs, once an analysis."""
+        """Expected ngspice stdout line identifying the active direct linear solver."""
         return SOLVERS[self.simulator]
 
     def execute(
@@ -152,11 +147,11 @@ class Ngspice:
         *,
         timeout: float | None = ngspice.TIMEOUT,
     ) -> ngspice.Executed:
-        """Runs the `control` commands on the netlist `deck`, in one ngspice.
+        """Runs `control` commands on netlist `deck` in one ngspice invocation.
 
-        The full deck is the netlist, then its solver's options, then a control section
-        of the commands; it runs by `jolty.spice.ngspice.execute`, for at most `timeout`
-        seconds, or as long as it takes if None.
+        Appends solver options and wraps `control` in ``.control`` before calling
+        `jolty.spice.ngspice.execute`. Enforces `timeout` in seconds when provided, or
+        waits without a timeout when None.
 
         Raises:
             JoltyError: As `jolty.spice.ngspice.execute` does.
@@ -170,10 +165,10 @@ class Ngspice:
         analyses: Sequence[str],
         **running: Unpack[ngspice.Running],
     ) -> tuple[ngspice.Result, ...]:
-        """The plot of each of `analyses`, run in turn in one ngspice.
+        """Runs `analyses` sequentially in one ngspice process and returns their plots.
 
-        They run by `jolty.spice.ngspice.runs`, its solver's options after the options
-        `running` gives, or the tight ones.
+        Delegates to `jolty.spice.ngspice.runs`, appending solver options after
+        any options provided in `running` (or `ngspice.OPTIONS` by default).
 
         Raises:
             JoltyError: As `jolty.spice.ngspice.runs` does.
@@ -184,21 +179,21 @@ class Ngspice:
 
 @dataclass(frozen=True, slots=True)
 class Xyce:
-    """Xyce, serially, the program on the path, or its parallel build on MPI ranks."""
+    """Xyce runner for either the serial binary on PATH or an MPI parallel build."""
 
     simulator: Literal[Simulator.XYCE_SERIAL, Simulator.XYCE_MPI] = (
         Simulator.XYCE_SERIAL
     )
     launch: tuple[str, ...] | None = None
-    """The command that starts it, the serial Xyce on the path unless given."""
+    """Command prefix launching Xyce, defaulting to serial Xyce on PATH when None."""
 
     @classmethod
     def from_parallel_build(cls, build: Path, ranks: int) -> Self:
-        """The parallel build at `build`, on `ranks` MPI ranks."""
+        """Constructs an MPI Xyce runner for `build` across `ranks` MPI ranks."""
         return cls(Simulator.XYCE_MPI, ("mpirun", "-np", str(ranks), str(build)))
 
     def version(self) -> str | None:
-        """Xyce's version, as the serial Xyce on the path states it, or None."""
+        """Returns the serial Xyce version string from PATH, or None when absent."""
         return xyce.version()
 
     def run(
@@ -210,7 +205,7 @@ class Xyce:
         options: Sequence[str] = xyce.OPTIONS,
         timeout: float | None = xyce.TIMEOUT,
     ) -> xyce.Result:
-        """Runs one analysis of `deck` by `jolty.spice.xyce.run`.
+        """Runs a single analysis of `deck` via `jolty.spice.xyce.run`.
 
         Raises:
             JoltyError: As `jolty.spice.xyce.run` does.
@@ -227,7 +222,7 @@ class Xyce:
     def execute(
         self, deck: Sequence[str], *, timeout: float | None = xyce.TIMEOUT
     ) -> xyce.Executed:
-        """Runs the lines `deck` by `jolty.spice.xyce.execute`.
+        """Executes netlist lines `deck` via `jolty.spice.xyce.execute`.
 
         Raises:
             JoltyError: As `jolty.spice.xyce.execute` does.
@@ -236,12 +231,13 @@ class Xyce:
 
 
 def runner(simulator: Simulator) -> Jolty | Ngspice | Xyce:
-    """The runner of `simulator`, but Xyce's parallel build's.
+    """Returns a runner instance for `simulator`, excluding `Simulator.XYCE_MPI`.
 
-    `Xyce.from_parallel_build` makes that one, from its path and its ranks.
+    Call `Xyce.from_parallel_build` instead for MPI Xyce, which requires an explicit
+    binary path and rank count.
 
     Raises:
-        ValueError: For Xyce's parallel build, whose path and ranks it needs.
+        ValueError: When `simulator` is `Simulator.XYCE_MPI`.
     """
     match simulator:
         case Simulator.JOLTY:
@@ -261,11 +257,11 @@ def netlist(
     *,
     dialect: export.Dialect = export.NGSPICE,
 ) -> list[str]:
-    """The netlist of `circuit` that another simulator runs the `analyses` on.
+    """Exports `circuit` as a SPICE netlist configured for `analyses` in `dialect`.
 
-    The source a small-signal response or a noise analysis excites carries its
-    small-signal level, and a transient's netlist moves its memristors' states, in the
-    `dialect` of the simulator, ngspice's unless given.
+    Applies the small-signal excitation level when `analyses` includes an AC or noise
+    run, and enables dynamic memristor updates when `analyses` includes a transient
+    run. Defaults to the ngspice dialect.
     """
     chosen = list(analyses)
     excited = next(
@@ -289,10 +285,10 @@ def tran_command(step: float, stop: float, max_step: float | None = None) -> str
 
 
 def ngspice_element(flat: ir.Circuit, path: str) -> str:
-    """The SPICE element name for the instance at `path` in flattened circuit `flat`.
+    """Returns the SPICE element name for instance `path` in flattened `flat`.
 
     Raises:
-        KeyError: When `flat` holds no instance at `path`.
+        KeyError: When `flat` contains no instance at `path`.
     """
     top = flat.components[flat.top]
     return export.element(_instance(top, path.replace("/", "_")))
@@ -313,15 +309,14 @@ def ngspice_options_line(flags: Sequence[str], *, fallback: str = "") -> str:
 
 
 def command(analysis: Analysis, flat: ir.Circuit) -> str:
-    """`analysis` as ngspice's command in a control section.
+    """Translates `analysis` into an ngspice control command (add a dot for Xyce).
 
-    Xyce's statement is the same after a dot. `flat` is the circuit flattened, whose
-    instances a sweep, a noise analysis or a pole-zero analysis names. A transient's
-    longest step is its plan's, or a fiftieth of it, SPICE's default, and its output's
-    interval the same; a response runs at its frequencies a decade.
+    Resolves swept, noise, and pole-zero names against flattened circuit `flat`.
+    Uses `max_step` (or one fiftieth of `stop`, matching SPICE's default) for transient
+    step and output intervals, and formats AC or noise grids in points per decade.
 
     Raises:
-        TypeError: When the analysis is none that the suites run in another simulator.
+        TypeError: When `analysis` is not supported by external-simulator suites.
     """
     top = flat.components[flat.top]
     match analysis:
@@ -352,7 +347,7 @@ def command(analysis: Analysis, flat: ir.Circuit) -> str:
 
 
 def _decades(frequencies: Sequence[Quantity]) -> str:
-    """Frequencies spaced evenly by decade as SPICE gives them: ``dec N first last``."""
+    """Formats logarithmic `frequencies` as a SPICE grid (``dec N first last``)."""
     first = frequencies[0].to(FREQUENCY, "a frequency")
     last = frequencies[-1].to(FREQUENCY, "a frequency")
     per_decade = round((len(frequencies) - 1) / math.log10(last / first))
@@ -360,10 +355,10 @@ def _decades(frequencies: Sequence[Quantity]) -> str:
 
 
 def _instance(top: ir.Component, id: str) -> ir.Instance:
-    """The instance `id` of the flattened circuit's `top`.
+    """Returns instance `id` from top component `top` of a flattened circuit.
 
     Raises:
-        KeyError: When it has none.
+        KeyError: When `top` contains no instance matching `id`.
     """
     found = top.instance(id)
     if found is None:
@@ -381,26 +376,24 @@ RUSAGE: Final = {
     "accepted": re.compile(r"^Accepted timepoints = (\d+)", re.MULTILINE),
     "rejected": re.compile(r"^Rejected timepoints = (\d+)", re.MULTILINE),
 }
-"""What ngspice's ``rusage all`` prints, summed over the analyses it has run: its
-analysis time, which its clock measures as wall time, its Newton iterations, those of
-its transients, and the time points it accepted and rejected."""
+"""Patterns parsing cumulative ngspice ``rusage all`` metrics (analysis time, total and
+transient Newton iterations, and accepted or rejected time points)."""
 
 TROUBLE: Final = re.compile(
     r"error|warning|abort|too small|singular|converge|fail|trouble", re.IGNORECASE
 )
-"""What marks the lines of a simulator's output that say what went wrong."""
+"""Pattern matching simulator diagnostic lines for errors or convergence issues."""
 
 
 NUMBER: Final = re.compile(r"\b\d[\d.]*(?:e[-+]?\d+)?\b", re.IGNORECASE)
-"""A number in a line of what a simulator printed, such as a line of its netlist or a
-time, but not a digit within a name."""
+"""Pattern matching numeric literals in simulator output outside identifier names."""
 
 
 def trouble(printed: str) -> str:
-    """The lines of what a simulator `printed` that say what went wrong, once each.
+    """Extracts unique diagnostic lines from simulator output `printed`.
 
-    Lines that differ only in their numbers, such as a warning at each of many lines of
-    the netlist, are one, and the first stands for them.
+    Deduplicates lines differing only in numbers (such as repeated netlist warnings)
+    by keeping the first occurrence of each pattern.
     """
     once: dict[str, str] = {}
     for line in printed.splitlines():
@@ -413,18 +406,17 @@ XYCE_STEPS: Final = {
     "accepted": re.compile(r"^\s*Successful Step\s+(\d+)", re.MULTILINE),
     "rejected": re.compile(r"^\s*Failed Steps\s+(\d+)", re.MULTILINE),
 }
-"""What the table of Xyce's timings states of a transient's steps, accepted and
-rejected."""
+"""Patterns extracting accepted and rejected transient step counts from Xyce."""
 
 XYCE_PROGRESS: Final = re.compile(r"Percent complete: (\S+) %")
-"""What Xyce prints of how far its transient has come."""
+"""Regular expression extracting transient completion percentages reported by Xyce."""
 
 
 def stopped(message: str) -> str:
-    """What stopped a run, from the `message` of its error: what went wrong, how far.
+    """Summarizes the failure cause and last Xyce progress from error `message`.
 
-    The first line of the message, then each line after it that says what went wrong,
-    and the last of Xyce's reports of how far its transient came.
+    Combines the first line of `message`, unique diagnostic lines from subsequent lines,
+    and the final Xyce transient completion percentage when present.
     """
     first, *rest = message.splitlines() or [""]
     said = [first.removesuffix(":"), *filter(None, [trouble("\n".join(rest))])]

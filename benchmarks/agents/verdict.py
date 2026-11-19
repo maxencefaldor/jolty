@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""What a task's scorer finds of an agent's work: the verdict every scorer returns.
+"""Scoring verdict returned by every agent benchmark task scorer.
 
-A verdict says why the work falls short, if it does, as shortfalls, each of a kind the
-scorer knows from where it found it, never read from its words: the work holds no
-design, its design does not build, the engine cannot elaborate it, a rule finds an
-error in it, an analysis of it fails, it falls short of a requirement of the task,
-which the shortfall names, or the scorer itself could not judge it.
+A verdict records whether the submitted work meets the task requirements, the measured
+metrics, and any structured shortfalls. Each shortfall carries a `Kind` category
+assigned directly by the scorer based on the failure stage: missing deliverable, build
+failure, elaboration failure, circuit-check rule error, analysis failure, unmet task
+specification, or internal scorer error.
 """
 
 from enum import StrEnum
@@ -14,66 +14,71 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Kind(StrEnum):
-    """What kind of shortfall a scorer found, by where it found it."""
+    """Failure category assigned to a shortfall by the scoring stage where it arose."""
 
     MISSING = "missing"
-    """The work holds no deliverable: no design, or none of what it must declare."""
+    """Deliverable is absent: no design file or required declaration exists."""
     UNBUILT = "unbuilt"
-    """The design does not build: its script fails or builds no component, jolty
-    cannot read its netlist or what it declares, or it does not fit its bench."""
+    """Design fails to build: the script errors or yields no component, jolty cannot
+    parse the netlist or declaration, or the design does not fit the test bench."""
     UNELABORATED = "unelaborated"
-    """The engine cannot elaborate the design's circuit, as jolty's problems say."""
+    """Engine cannot elaborate the circuit, as reported by jolty elaboration issues."""
     RULE = "rule"
-    """A rule of jolty's checks finds an error in the circuit."""
+    """A jolty circuit-check rule reports an error in the circuit."""
     ANALYSIS = "analysis"
-    """An analysis of the design fails, such as an operating point no strategy finds."""
+    """A circuit analysis fails, such as an operating point that fails to converge."""
     SPEC = "spec"
-    """The design falls short of a requirement of the task, which its shortfall
-    names."""
+    """Design fails to meet a task requirement named by the shortfall spec field."""
     SCORER = "scorer"
-    """The scorer could not judge the work: it crashed, or what it compares against
-    falls short itself."""
+    """Scorer could not judge the submission because the scorer crashed or the
+    reference baseline failed."""
 
 
 class Shortfall(BaseModel):
-    """One way the work falls short of its task, and its kind."""
+    """Single task requirement or scoring-stage failure with its category."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Kind
-    reason: str = Field(description="Why, in words.")
+    reason: str = Field(description="Human-readable explanation of the shortfall.")
     spec: str | None = Field(
         default=None,
-        description="The requirement the design falls short of, for a shortfall of "
-        "the kind spec, such as a measure's name, 'parts' or 'yield'.",
+        description="Task requirement name for a spec shortfall, such as a measure "
+        "name, 'parts', or 'yield'.",
     )
     design: str | None = Field(
         default=None,
-        description="Which of the work's designs falls short, for a task of many, "
-        "such as AnalogCoder's p3; null for a task of one.",
+        description="Design identifier for multi-design tasks such as AnalogCoder's "
+        "p3, or null for single-design tasks.",
     )
 
     def describe(self) -> str:
-        """The shortfall in words, after the design it is of, if the task has many."""
+        """Formats the shortfall reason, prefixed with the design name if present."""
         return self.reason if self.design is None else f"{self.design}: {self.reason}"
 
 
 class Verdict(BaseModel):
-    """What scoring the work found."""
+    """Structured outcome produced by scoring an agent submission."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    met: bool = Field(description="Whether the work meets the task.")
+    met: bool = Field(
+        description="Boolean indicating whether the submission meets all requirements."
+    )
     measures: dict[str, float] = Field(
         default_factory=dict,
-        description="What the scorer measured, by name, such as a cost or an error.",
+        description="Named scalar measurements collected by the scorer, such as cost "
+        "or error.",
     )
     shortfalls: tuple[Shortfall, ...] = Field(
-        default=(), description="Why the work falls short, if it does."
+        default=(),
+        description="Structured shortfalls explaining every unmet requirement.",
     )
-    report: str = Field(default="", description="What jolty simulate reported.")
+    report: str = Field(
+        default="", description="Simulation report text emitted by jolty simulate."
+    )
 
     @property
     def reasons(self) -> tuple[str, ...]:
-        """Why the work falls short, in words, one a shortfall."""
+        """Formatted shortfall descriptions, one entry per shortfall."""
         return tuple(shortfall.describe() for shortfall in self.shortfalls)

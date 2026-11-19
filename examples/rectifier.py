@@ -13,7 +13,7 @@ from jolty.waveforms import Sine
 
 @component
 def rectifier(c: Builder, capacitance: Quantity, load: Quantity) -> None:
-    """A diode into a smoothing capacitor and a load in parallel."""
+    """Builds a series diode feeding a parallel smoothing capacitor and load."""
     source = c.port("input")
     output = c.port("output")
     ground = c.port("ground", Role.GROUND)
@@ -37,7 +37,7 @@ def rectifier(c: Builder, capacitance: Quantity, load: Quantity) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The rectifier, fed a 10 V sine at 50 Hz."""
+    """Builds the rectifier driven by a 10 V, 50 Hz sine wave."""
     ground = c.port("ground", Role.GROUND)
     mains = Sine(offset=0 * V, amplitude=10 * V, frequency=50 * Hz)
     source = c.place(devices.voltage_source(mains), name="V1")
@@ -48,12 +48,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The rectifier on its bench."""
+    """Returns the half-wave rectifier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Three periods of the mains, and the DC transfer curve through the diode."""
+    """Returns a three-cycle transient ripple plan and a DC diode transfer sweep."""
     return Plan(
         {
             "ripple": Transient(stop=60 * ms, max_step=50 * us),

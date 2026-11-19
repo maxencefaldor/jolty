@@ -18,7 +18,7 @@ from jolty.waveforms import Sine
 
 @component
 def regulator(c: Builder) -> None:
-    """The series resistor, and the zener across the output."""
+    """Builds the series dropping resistor and shunt 5.1 V zener diode."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     series = c.place(devices.resistor(220 * ohm), name="R1")
@@ -30,7 +30,7 @@ def regulator(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The regulator loaded by 1 kΩ, fed 12 V with 1 V of ripple at 100 Hz."""
+    """Builds the zener regulator loaded by 1 kΩ on a 12 V supply with 1 V ripple."""
     ground = c.port("ground", Role.GROUND)
     rippled = Sine(offset=12 * V, amplitude=1 * V, frequency=100 * Hz)
     source = c.place(devices.voltage_source(rippled), name="V1")
@@ -42,12 +42,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The regulator on its bench."""
+    """Returns the zener shunt regulator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, the input swept from 0 to 20 V, and the ripple."""
+    """Returns operating-point, 0 V to 20 V line-sweep, and ripple analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -58,7 +58,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The output within 0.2 V of 5.1 V from a 9 V input to 20 V."""
+    """Returns output specs within 0.2 V of 5.1 V from a 9 V to 20 V input."""
     return Specs(
         [
             value("line", "out", at=level * V).within(5.1 * V, 200 * mV)

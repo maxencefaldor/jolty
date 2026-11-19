@@ -24,7 +24,7 @@ RATIO = 10.7
 
 @component
 def bandgap(c: Builder) -> None:
-    """The op-amp, its two branches of resistors and transistors, and the start-up."""
+    """Builds the op-amp, dual transistor-resistor branches, and start-up resistor."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     amplifier = c.place(opamp(), name="U1")
@@ -44,7 +44,7 @@ def bandgap(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The reference on a 5 V supply."""
+    """Builds the bandgap reference powered by a 5 V supply."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="VCC")
     reference = c.place(bandgap(), name="X1")
@@ -54,12 +54,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The reference on its bench."""
+    """Returns the bandgap reference test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point at 27 °C, and at -40 °C, 85 °C and 125 °C."""
+    """Returns an operating-point plan across 27 °C, -40 °C, 85 °C, and 125 °C."""
     return Plan(
         {"op": OperatingPoint()},
         corners={
@@ -71,5 +71,5 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Within 1.168 V ± 3 mV at every corner, from -40 °C to 125 °C."""
+    """Returns specifications keeping `vref` within 1.168 V ± 3 mV across corners."""
     return Specs([value("op", "vref").within(1.168 * V, 3 * mV)])

@@ -1,17 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""A two-stage bipolar amplifier, the cost of one small run and of many.
+"""Two-stage bipolar amplifier fixtures measuring single-run and batch throughput.
 
-A differential pair of 2N3904s on a 1 mA tail, loaded by a mirror of 2N3906s, drives a
-2N3904 follower, and 9.1 kΩ over 1 kΩ feed the output back to the pair, for a gain of
-about 10 from ±12 V. Its resistors are within 5 %, which only a Monte Carlo analysis
-reads. Three fixtures run it:
+A 2N3904 differential pair on a 1 mA tail with a 2N3906 current-mirror load drives a
+2N3904 emitter follower under 9.1 kΩ / 1 kΩ feedback (gain near 10 from ±12 V). All
+resistors carry 5 % tolerances exercised during Monte Carlo sampling. Three fixtures
+share the circuit:
 
-- ``bjt_amp``: the operating point, the response at 71 frequencies from 10 Hz to
-  100 MHz, and 200 µs of a 10 kHz sine, the cost of one small run;
-- ``ac_wide``: the response at 10,000 frequencies from 1 Hz to 1 GHz, for running
-  frequencies in parallel;
-- ``monte_carlo``: ``bjt_amp``'s analyses on 100,000 samples of the resistors, the
-  throughput of many runs.
+- ``bjt_amp``: operating point, 71-point AC sweep (10 Hz to 100 MHz), and 200 µs
+  transient at 10 kHz.
+- ``ac_wide``: 10,000-point AC sweep (1 Hz to 1 GHz) measuring frequency-parallel speed.
+- ``monte_carlo``: 100,000-sample Monte Carlo batch of ``bjt_amp`` measuring throughput.
 """
 
 import sys
@@ -40,7 +38,7 @@ __all__ = [
 
 
 def plan() -> Plan:
-    """The operating point, 71 frequencies and two periods of the sine."""
+    """Builds the default amplifier plan: OP, 71-point AC, and two sine periods."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -51,21 +49,21 @@ def plan() -> Plan:
 
 
 def wide(per_decade: int = 1111) -> Plan:
-    """The response at `per_decade` frequencies a decade from 1 Hz to 1 GHz.
+    """Builds an AC plan with `per_decade` points per decade from 1 Hz to 1 GHz.
 
-    ``ac_wide`` takes 1,111, which make 10,000 frequencies; ``scripts/bench
-    --break-even min_solves_per_task`` takes fewer.
+    Defaults to 1,111 points per decade (10,000 frequencies total) for ``ac_wide``;
+    ``scripts/bench --break-even min_solves_per_task`` passes smaller counts.
     """
     return Plan({"ac": Ac("V1", decade(1 * Hz, 1 * GHz, per_decade))})
 
 
 def circuits() -> dict[str, Component]:
-    """The amplifier's one circuit, by the name of its file."""
+    """Returns the amplifier circuit keyed by output file stem."""
     return {"bjt_amp": build()}
 
 
 def fixtures() -> dict[str, Fixture]:
-    """The three fixtures of the amplifier."""
+    """Returns the ``bjt_amp``, ``ac_wide``, and ``monte_carlo`` speed fixtures."""
     one = plan()
     return {
         "bjt_amp": Fixture("bjt_amp", one),

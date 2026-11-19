@@ -6,8 +6,8 @@ Design each of the twenty-four circuits below from two transistors, resistors an
 
 Write `p1.py` to `p24.py`, one script per circuit.
 Each script's `build()` returns its circuit as a component whose ports are `vdd`, `ground`, and the circuit's inputs and outputs, named as the table names them.
-A dictionary `LEVELS` beside it gives the level of each input whose check below holds it or speaks of its level: in volts, or in amperes for `iref`.
-A script may import modules of your own from beside it.
+A module-level `LEVELS` dictionary specifies the bias level of each input held or referenced by the check below, in volts (or amperes for `iref`).
+A script may import helper modules placed in the same directory.
 
 The bench that checks a circuit holds `vdd` at 5 V over `ground`, holds each input with a voltage source from `ground`, or `iref` with a current from `vdd` into it, and reads each output's voltage.
 
@@ -69,30 +69,34 @@ A MOSFET is on and forward when its gate is beyond its threshold, and its drain 
   Circuit 13 holds a resistor.
 - **Oscillators, 16 and 17.**
   The bench switches `vdd` on, from 0 to 5 V over 1 µs, and runs 10 ms: nothing else starts the oscillator, as a simulation has no noise.
-  Over the second half, `vout` oscillates steadily: it swings at least 1 mV, rises at least four times through the middle of its swing, each time from 10% of the swing below it to 10% above, its period between rises varies by less than 20% of its mean, and its last period swings at least half as far as it does over the whole half.
+  Over the second half, `vout` must oscillate steadily with at least 1 mV peak-to-peak swing, crossing the midpoint upward at least four times from 10% below to 10% above the midpoint.
+  The period between consecutive upward crossings must vary by less than 20% of the mean period, and the final period must retain at least half the full second-half swing.
 - **Integrator, 18.**
   R1 is 10 kΩ and Cf 3 µF.
   The input `vin` is held at its level until 1 µs, then steps 0.5 V above it, and every 10 ms 0.5 V below it and back, each step over 1 µs, until 200 ms have passed.
-  Over each of the last two halves of a period, but their first and last tenths, `vout` ramps against `vin` at 0.5 V / (10 kΩ · 3 µF), within 30%: falling while `vin` is above its level, rising while it is below, along a line that fits with R² of at least 0.9.
+  Over the middle 80% of each of the last two half-periods, `vout` must ramp linearly with slope magnitude `0.5 V / (10 kΩ · 3 µF)` within 30% and linear fit R² of at least 0.9.
+  The output must fall while `vin` stays above the bias level and rise while `vin` stays below the bias level.
 - **Differentiator, 19.**
   C1 is 3 µF and Rf 10 kΩ.
   The input `vin` ramps from 0.5 V below its level to 0.5 V above it over 50 ms, and back over 50 ms, twice.
   Over the second period, but each ramp's first tenth, `vout` sits 0.6 V below `vin`'s level while `vin` rises and 0.6 V above it while `vin` falls, within 20%, and varies by less than 60 mV rms.
 - **Adder, 20.**
-  Its inputs and output are measured from `vin1`'s level, `b`: `vin2` is held at `b` + 0.125 V, and `vin1` swept from `b` to `b` + 0.5 V in 10 mV steps.
+  Inputs and outputs are referenced to `vin1`'s bias level `b`: `vin2` is held at `b + 0.125 V`, and `vin1` sweeps from `b` to `b + 0.5 V` in 10 mV steps.
   `vout` is `b - (vin1 - b) - (vin2 - b)`, within 20% of `(vin1 - b) + (vin2 - b)`.
 - **Subtractor, 21.**
   `vin2` is held at its level, and `vin1` swept from 2.25 V below it to 1.75 V below it in 50 mV steps.
   `vout` is `vin2 - vin1`, within 20%.
 - **Schmitt trigger, 22.**
   `vin` sweeps from 0 to 5 V and from 5 to 0 V in 100 mV steps, each operating point continued from the last.
-  Either way, `vout` rises by at least 2.5 V from `vin` at 0 V to `vin` at 5 V and never falls by more than 1 µV as `vin` rises, and the levels of `vin` at which it first exceeds 2.5 V, counting from 0 V, differ between the two sweeps by more than 50 mV.
+  In both sweep directions, `vout` must rise by at least 2.5 V between `vin = 0 V` and `vin = 5 V` without dropping by more than 1 µV as `vin` increases.
+  The `vin` threshold where `vout` first crosses 2.5 V (measured upward from 0 V) must differ by more than 50 mV between the rising and falling sweeps.
 - **Voltage-controlled oscillator, 23.**
   The bench switches `vdd` on as for 16 and holds `vin` at 3.25, 3.5 and 4 V in turn, each for 100 µs.
   Over the second half of each, `vout` oscillates steadily as for 16, and its mean period changes by more than 1% from each level to the next, all in the same direction.
 - **Phase-locked loop, 24.**
   `clk_ref` is a clock from 0 to 5 V at 10 MHz, then at 12 MHz: its edges take 2% of its period and its pulse 48%, from 30 ns.
-  The bench switches `vdd` on as for 16 and runs 10 µs; over the last 2 µs, the mean period between `clk_p`'s rises through 2.5 V, each from 2.25 V to 2.75 V, is the clock's, within 5%.
+  The bench ramps `vdd` on as in circuit 16 and simulates for 10 µs.
+  Over the final 2 µs, the mean period between rising crossings of `clk_p` through 2.5 V (from 2.25 V to 2.75 V) must match the reference clock period within 5%.
 
 Every circuit must pass its check.
 

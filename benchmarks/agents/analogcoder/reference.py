@@ -1,10 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""A design for each of AnalogCoder's problems, which the scorer must pass.
+"""Reference circuit designs for all twenty-four AnalogCoder benchmark problems.
 
-The first fifteen are the textbook circuits of the samples of AnalogCoder
-(github.com/laiyao1/AnalogCoder, MIT License), sized and biased anew; the rest are this
-file's own, around one two-stage op-amp of the same transistors. ``LEVELS`` gives each
-design's input levels, by problem.
+Problems 1 through 15 adapt the textbook topologies from AnalogCoder
+(github.com/laiyao1/AnalogCoder, MIT License) with updated sizing and biasing.
+Problems 16 through 24 are custom reference designs built around a shared two-stage
+op-amp using the same MOSFET models. The `LEVELS` mapping records the DC input bias
+levels for each problem.
 """
 
 import runpy
@@ -18,7 +19,7 @@ _parts = runpy.run_path(str(Path(__file__).parent / "given" / "parts.py"))
 
 
 def nmos(width: float, length: float = 1.0) -> devices.Device:
-    """The given NMOS, `width` by `length` micrometers."""
+    """Returns the given NMOS sized `width` by `length` micrometers."""
     made = _parts["nmos"](width * um, length * um)
     if not isinstance(made, devices.Device):
         raise TypeError(made)
@@ -26,7 +27,7 @@ def nmos(width: float, length: float = 1.0) -> devices.Device:
 
 
 def pmos(width: float, length: float = 1.0) -> devices.Device:
-    """The given PMOS, `width` by `length` micrometers."""
+    """Returns the given PMOS sized `width` by `length` micrometers."""
     made = _parts["pmos"](width * um, length * um)
     if not isinstance(made, devices.Device):
         raise TypeError(made)
@@ -34,7 +35,7 @@ def pmos(width: float, length: float = 1.0) -> devices.Device:
 
 
 def ports(c: Builder, *names: str) -> dict[str, Net]:
-    """The supply's ports, ``vdd`` and ``ground``, then `names`."""
+    """Declares supply ports ``vdd`` and ``ground`` plus each port in `names`."""
     found = {"vdd": c.port("vdd", Role.SUPPLY), "ground": c.port("ground", Role.GROUND)}
     return found | {name: c.port(name) for name in names}
 
@@ -59,31 +60,31 @@ def two_terminal(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> N
 
 
 def resistor(c: Builder, id: str, kilohms: float, a: Net, b: Net) -> None:
-    """A resistor of `kilohms` from `a` to `b`."""
+    """Places a resistor of `kilohms` kΩ named `id` between `a` and `b`."""
     two_terminal(c, id, devices.resistor(kilohms * kohm), a, b)
 
 
 def capacitor(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> None:
-    """The capacitor `made` from `a` to `b`."""
+    """Places capacitor `made` named `id` between `a` and `b`."""
     two_terminal(c, id, made, a, b)
 
 
 def dc_source(
     circuit_builder: Builder, name: str, volts: float, net: Net, ground: Net
 ) -> None:
-    """A constant source holding `net` at `volts` over `ground`."""
+    """Places a DC voltage source holding `net` at `volts` above `ground`."""
     two_terminal(circuit_builder, name, devices.voltage_source(volts * V), net, ground)
 
 
 def common_source(c: Builder) -> None:
-    """Problem 1: a common-source amplifier with a 1 kΩ load."""
+    """Builds problem 1: a common-source amplifier with a 1 kΩ load."""
     p = ports(c, "vin", "vout")
     mosfet(c, "M1", (p["vout"], p["vin"], p["ground"]), nmos(50))
     resistor(c, "R1", 1, p["vout"], p["vdd"])
 
 
 def three_stages(c: Builder) -> None:
-    """Problem 2: three common-source stages, each with a 1 kΩ load."""
+    """Builds problem 2: three cascaded common-source stages with 1 kΩ loads."""
     p = ports(c, "vin", "vout")
     drains = [c.net("drain1"), c.net("drain2"), p["vout"]]
     gates = [p["vin"], *drains[:2]]
@@ -93,21 +94,21 @@ def three_stages(c: Builder) -> None:
 
 
 def source_follower(c: Builder) -> None:
-    """Problem 3: a source follower into 1 kΩ."""
+    """Builds problem 3: a source follower driving a 1 kΩ load."""
     p = ports(c, "vin", "vout")
     mosfet(c, "M1", (p["vdd"], p["vin"], p["vout"]), nmos(50))
     resistor(c, "R1", 1, p["vout"], p["ground"])
 
 
 def common_gate(c: Builder) -> None:
-    """Problem 4: a common-gate amplifier, its input at its source."""
+    """Builds problem 4: a common-gate amplifier driven at the source."""
     p = ports(c, "vin", "vbias", "vout")
     mosfet(c, "M1", (p["vout"], p["vbias"], p["vin"]), nmos(50))
     resistor(c, "R1", 1, p["vout"], p["vdd"])
 
 
 def cascode(c: Builder) -> None:
-    """Problem 5: a cascode of two NMOS into 1 kΩ."""
+    """Builds problem 5: a two-NMOS cascode amplifier with a 1 kΩ load."""
     p = ports(c, "vin", "vbias", "vout")
     middle = c.net("middle")
     mosfet(c, "M1", (middle, p["vin"], p["ground"]), nmos(50))
@@ -116,25 +117,25 @@ def cascode(c: Builder) -> None:
 
 
 def resistive_inverter(c: Builder) -> None:
-    """Problem 6: an NMOS inverter with a 1 kΩ load."""
+    """Builds problem 6: an NMOS inverter with a 1 kΩ resistive load."""
     common_source(c)
 
 
 def cmos_inverter(c: Builder) -> None:
-    """Problem 7: a CMOS inverter."""
+    """Builds problem 7: a complementary CMOS inverter."""
     p = ports(c, "vin", "vout")
     mosfet(c, "M1", (p["vout"], p["vin"], p["ground"]), nmos(50))
     mosfet(c, "M2", (p["vout"], p["vin"], p["vdd"]), pmos(100))
 
 
 def current_sink(c: Builder) -> None:
-    """Problem 8: an NMOS current source, its load the bench's."""
+    """Builds problem 8: an NMOS current sink loaded by the test bench."""
     p = ports(c, "vbias", "vout")
     mosfet(c, "M1", (p["vout"], p["vbias"], p["ground"]), nmos(50))
 
 
 def miller(c: Builder) -> None:
-    """Problem 9: two common-source stages, a Miller capacitor across the second."""
+    """Builds problem 9: two common-source stages with a Miller capacitor."""
     p = ports(c, "vin", "vout")
     first = c.net("first")
     mosfet(c, "M1", (first, p["vin"], p["ground"]), nmos(50))
@@ -145,14 +146,14 @@ def miller(c: Builder) -> None:
 
 
 def diode_load(c: Builder) -> None:
-    """Problem 10: a common-source amplifier with a diode-connected PMOS load."""
+    """Builds problem 10: a common-source amplifier with a diode-connected PMOS load."""
     p = ports(c, "vin", "vout")
     mosfet(c, "M1", (p["vout"], p["vin"], p["ground"]), nmos(50))
     mosfet(c, "M2", (p["vout"], p["vout"], p["vdd"]), pmos(100))
 
 
 def active_load_pair(c: Builder) -> None:
-    """Problem 11: a differential pair, its load a PMOS mirror, and two outputs."""
+    """Builds problem 11: a PMOS-mirror-loaded differential pair with dual outputs."""
     p = ports(c, "vinp", "vinn", "vbias", "voutp", "vout")
     tail = c.net("tail")
     mosfet(c, "M1", (p["voutp"], p["vinp"], tail), nmos(50))
@@ -163,7 +164,7 @@ def active_load_pair(c: Builder) -> None:
 
 
 def cascode_mirror(c: Builder) -> None:
-    """Problem 12: a cascode current mirror of four NMOS."""
+    """Builds problem 12: a four-NMOS cascode current mirror."""
     p = ports(c, "iref", "iout")
     reference, output = c.net("reference"), c.net("output")
     mosfet(c, "M1", (p["iref"], p["iref"], reference), nmos(50))
@@ -173,7 +174,7 @@ def cascode_mirror(c: Builder) -> None:
 
 
 def resistive_pair(c: Builder) -> None:
-    """Problem 13: a differential pair with resistive loads and one output."""
+    """Builds problem 13: a differential pair with resistive loads and one output."""
     p = ports(c, "vinp", "vinn", "vout")
     tail, bias, other = c.net("tail"), c.net("bias"), c.net("other")
     dc_source(c, "VB", 1.0, bias, p["ground"])
@@ -185,7 +186,7 @@ def resistive_pair(c: Builder) -> None:
 
 
 def two_stage(c: Builder) -> None:
-    """Problem 14: a mirror-loaded pair, then PMOS stages with NMOS loads."""
+    """Builds problem 14: a mirror-loaded pair driving PMOS stages with NMOS loads."""
     p = ports(c, "vinp", "vinn", "vbias1", "vbias2", "vbias3", "voutp", "vout")
     tail, near, far = c.net("tail"), c.net("near"), c.net("far")
     mosfet(c, "M1", (near, p["vinn"], tail), nmos(50))
@@ -200,7 +201,7 @@ def two_stage(c: Builder) -> None:
 
 
 def telescopic(c: Builder) -> None:
-    """Problem 15: a telescopic cascode pair with two outputs."""
+    """Builds problem 15: a telescopic cascode differential pair with dual outputs."""
     names = ("vinp", "vinn", "vbias1", "vbias2", "vbias3", "vbias4", "voutp", "vout")
     p = ports(c, *names)
     tail = c.net("tail")
@@ -218,12 +219,12 @@ def telescopic(c: Builder) -> None:
 
 @component
 def opamp(c: Builder) -> None:
-    """A two-stage op-amp: a mirror-loaded NMOS pair, then a PMOS stage.
+    """Builds a two-stage op-amp with a mirror-loaded NMOS pair and a PMOS output stage.
 
-    Its stages carry 200 µA each, biased by 0.7 V on its NMOS sources, its output
-    swings from 0.2 V to 4.7 V, and a Miller capacitor of 1 pF sets its bandwidth. Its
-    output holds 1 pF, as a real one would: without it, nothing holds the output
-    and its stage's input together as they swing, and no time step converges.
+    Each stage carries 200 µA biased at 0.7 V on the NMOS tail sources, achieving an
+    output swing from 0.2 V to 4.7 V with a 1 pF Miller compensation capacitor. A 1 pF
+    output load capacitor models real parasitic capacitance so transient time steps
+    converge reliably during rapid output transitions.
     """
     p = ports(c, "inp", "inn", "out")
     tail, near, far, bias = c.net("tail"), c.net("near"), c.net("far"), c.net("bias")
@@ -250,7 +251,7 @@ def amplified(c: Builder, p: dict[str, Net], inp: Net, inn: Net, out: Net) -> No
 
 
 def phase_shift(c: Builder) -> None:
-    """Problem 16: an inverting amplifier of gain 33 behind three RC sections."""
+    """Builds problem 16: an inverting gain-33 stage behind three RC phase sections."""
     p = ports(c, "vout")
     reference, inn = c.net("reference"), c.net("inn")
     dc_source(c, "VR", 2.5, reference, p["ground"])
@@ -266,7 +267,7 @@ def phase_shift(c: Builder) -> None:
 
 
 def wien(c: Builder) -> None:
-    """Problem 17: a Wien bridge around a non-inverting amplifier of gain 3.3."""
+    """Builds problem 17: a Wien-bridge oscillator with a gain-3.3 amplifier."""
     p = ports(c, "vout")
     reference, inp, inn, series = (
         c.net("reference"),
@@ -285,7 +286,7 @@ def wien(c: Builder) -> None:
 
 
 def integrator(c: Builder) -> None:
-    """Problem 18: R1 of 10 kΩ into Cf of 3 µF, 10 MΩ across Cf for its bias."""
+    """Builds problem 18: an inverting integrator (10 kΩ, 3 µF, 10 MΩ DC feedback)."""
     p = ports(c, "vin", "vout")
     reference, inn = c.net("reference"), c.net("inn")
     dc_source(c, "VR", 2.5, reference, p["ground"])
@@ -296,10 +297,10 @@ def integrator(c: Builder) -> None:
 
 
 def differentiator(c: Builder) -> None:
-    """Problem 19: C1 of 3 µF into Rf of 10 kΩ, through 100 Ω.
+    """Builds problem 19: a differentiator with 3 µF, 100 Ω damping, and 10 kΩ feedback.
 
-    Without the 100 Ω, the op-amp's own pole and C1's into Rf would leave its loop no
-    phase margin, and it would ring.
+    Adding the 100 Ω series resistor preserves loop phase margin against the op-amp
+    pole and prevents ringing.
     """
     p = ports(c, "vin", "vout")
     reference, inn, series = c.net("reference"), c.net("inn"), c.net("series")
@@ -311,7 +312,7 @@ def differentiator(c: Builder) -> None:
 
 
 def adder(c: Builder) -> None:
-    """Problem 20: an inverting adder of two 10 kΩ inputs around 2.5 V."""
+    """Builds problem 20: an inverting two-input 10 kΩ summer biased around 2.5 V."""
     p = ports(c, "vin1", "vin2", "vout")
     reference, inn = c.net("reference"), c.net("inn")
     dc_source(c, "VR", 2.5, reference, p["ground"])
@@ -322,7 +323,7 @@ def adder(c: Builder) -> None:
 
 
 def subtractor(c: Builder) -> None:
-    """Problem 21: a difference amplifier of four 10 kΩ resistors."""
+    """Builds problem 21: a four-resistor 10 kΩ difference amplifier."""
     p = ports(c, "vin1", "vin2", "vout")
     inp, inn = c.net("inp"), c.net("inn")
     amplified(c, p, inp, inn, p["vout"])
@@ -333,7 +334,7 @@ def subtractor(c: Builder) -> None:
 
 
 def schmitt(c: Builder) -> None:
-    """Problem 22: positive feedback from 20 kΩ against a 10 kΩ input, around 2.5 V."""
+    """Builds problem 22: a non-inverting Schmitt trigger (20 kΩ over 10 kΩ input)."""
     p = ports(c, "vin", "vout")
     inp, inn = c.net("inp"), c.net("inn")
     amplified(c, p, inp, inn, p["vout"])
@@ -344,10 +345,10 @@ def schmitt(c: Builder) -> None:
 
 
 def inverter(c: Builder, p: dict[str, Net], id: str, gate: Net, drain: Net) -> None:
-    """A CMOS inverter of strong transistors, from `gate` to `drain`, which holds 50 fF.
+    """Places a CMOS inverter from `gate` to `drain` with a 50 fF output load capacitor.
 
-    The transistors' own capacitance would hold the output; without any, the output
-    would jump as the input crossed the middle, and no time step would converge.
+    The 50 fF load replaces missing intrinsic MOSFET capacitances so transient time
+    steps remain smooth across switching transitions.
     """
     mosfet(c, f"{id}N", (drain, gate, p["ground"]), nmos(10))
     mosfet(c, f"{id}P", (drain, gate, p["vdd"]), pmos(20))
@@ -356,15 +357,13 @@ def inverter(c: Builder, p: dict[str, Net], id: str, gate: Net, drain: Net) -> N
 
 @component
 def ring(c: Builder, capacitance: float) -> None:
-    """A ring of three inverters, each starved by a current `control` sets.
+    """Builds a three-stage current-starved ring oscillator controlled by `control`.
 
-    `control` drives an NMOS of 2 µm by 5 µm under each inverter, and a mirror of the
-    same current a PMOS above it; each inverter's output holds `capacitance`, in farads,
-    and ``out`` buffers the third's. The first holds 20% more: a ring of three equal
-    stages would rest at its balance as its supply switches on, with no noise to start
-    it. The nodes between the transistors of each stage hold 10 fF, as the
-    transistors' own capacitance would: with the current starved, nothing else would
-    hold them.
+    The `control` voltage sets current through a 2 µm by 5 µm NMOS under each stage
+    and a mirrored PMOS above. Each stage drives `capacitance` farads (with 20 % extra
+    on stage one to break startup symmetry without noise), buffered to ``out``.
+    Internal starved stage nodes carry 10 fF to ground in place of omitted intrinsic
+    transistor capacitances.
     """
     p = ports(c, "control", "out")
     mirror = c.net("mirror")
@@ -401,16 +400,16 @@ def placed_ring(
 
 
 def vco(c: Builder) -> None:
-    """Problem 23: a current-starved ring oscillator, near 2 MHz."""
+    """Builds problem 23: a current-starved ring VCO operating near 2 MHz."""
     p = ports(c, "vin", "vout")
     placed_ring(c, p, 10e-12, p["vin"], p["vout"])
 
 
 def pll(c: Builder) -> None:
-    """Problem 24: an XOR phase detector, a lag-lead filter and a ring oscillator.
+    """Builds problem 24: an XOR phase detector, lag-lead filter, and ring VCO.
 
-    The ring runs near 11 MHz with its control at mid-supply, where the detector's
-    average rests while the loop is unlocked.
+    The ring oscillator runs near 11 MHz at mid-supply control voltage, matching the
+    average phase-detector output while unlocked.
     """
     p = ports(c, "clk_ref", "clk_p")
     names = ("ref_bar", "out_bar", "detected", "pulled", "control", "middle")
@@ -460,7 +459,7 @@ BUILDERS = {
     23: vco,
     24: pll,
 }
-"""Each problem's design, by number."""
+"""Mapping from AnalogCoder problem number to circuit builder function."""
 
 LEVELS = {
     1: {"vin": 1.5},
@@ -488,10 +487,10 @@ LEVELS = {
     20: {"vin1": 2.5, "vin2": 2.5},
     21: {"vin1": 2.0, "vin2": 4.0},
 }
-"""Each design's input levels, by problem."""
+"""Mapping from problem number to required DC input bias levels."""
 
 
 def build(number: int) -> Component:
-    """The design of problem `number`."""
+    """Constructs and returns the reference `Component` for problem `number`."""
     function = BUILDERS[number]
     return component(function)()

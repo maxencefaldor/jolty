@@ -3,8 +3,8 @@
 
 An odd ring of inverters has no stable state: each edge runs round the ring and comes
 back inverted, so the ring oscillates with a period of twice the five stages' delays.
-Here each stage drives the next one's gate and 10 fF, and the ring runs near 930 MHz.
-A pulse on the first stage's input sets it going. Simulate it with
+Each inverter stage drives the next stage's gate plus 10 fF, oscillating near 930 MHz.
+A pulse on the first stage's input sets oscillation going. Simulate with
 ``jolty simulate examples/ring_oscillator.py``.
 """
 
@@ -21,7 +21,7 @@ STAGES = 5
 
 @component
 def ring(c: Builder) -> None:
-    """Five inverters, each output the next one's input, the last the first's."""
+    """Builds five CMOS inverters chained in a closed ring with 10 fF stage loads."""
     output = c.port("output", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     gates = [c.place(inverter(), name=f"X{index}") for index in range(1, STAGES + 1)]
@@ -36,7 +36,7 @@ def ring(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The ring on 3.3 V, kicked by a short current pulse."""
+    """Builds the ring oscillator on 3.3 V kicked by a short current pulse."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     kick = Pulse(
@@ -55,17 +55,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The ring on its bench."""
+    """Returns the ring oscillator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Twenty nanoseconds, a dozen periods."""
+    """Returns a 20 ns transient plan covering roughly a dozen oscillation periods."""
     return Plan({"run": Transient(stop=20 * ns, max_step=5 * ps)})
 
 
 def specs() -> Specs:
-    """Oscillating rail to rail, between 400 MHz and 1 GHz."""
+    """Returns specifications for rail-to-rail oscillation between 400 MHz and 1 GHz."""
     return Specs(
         [
             frequency("run", "out", start=5 * ns).between(400 * MHz, 1 * GHz),

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """A Widlar current source: a small output current from a large reference.
 
-The reference transistor carries about 1 mA, set by 11.3 kΩ from 12 V; an emitter
-resistor of 1.55 kΩ under the output transistor takes the difference of their
-base-emitter voltages, Vt·ln(Iref/Iout) = Iout·Re, so the output settles near 50 µA
-and stays there as its collector's voltage moves. Simulate it with
+The reference transistor carries about 1 mA through an 11.3 kΩ resistor from 12 V. A
+1.55 kΩ emitter resistor under the output transistor absorbs the base-emitter voltage
+difference Vt·ln(Iref/Iout) = Iout·Re, setting a stable output current near 50 µA
+across collector voltage variations. Simulate with
 ``jolty simulate examples/widlar_source.py``.
 """
 
@@ -17,7 +17,7 @@ from jolty.units import V, kohm, uA
 
 @component
 def widlar(c: Builder) -> None:
-    """The diode-connected reference, and the output transistor over its resistor."""
+    """Builds the diode-connected reference transistor and degenerated output stage."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     reference = c.place(q2n3904(), name="Q1")
@@ -33,7 +33,7 @@ def widlar(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The source on 12 V, its output held by a swept voltage."""
+    """Builds the Widlar source on 12 V with a swept output compliance voltage."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), name="VCC")
     compliance = c.place(devices.voltage_source(5 * V), name="VOUT")
@@ -44,12 +44,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The source on its bench."""
+    """Returns the Widlar current source test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, and the output's voltage swept from 0 to 12 V."""
+    """Returns an operating-point analysis and a 0 V to 12 V output compliance sweep."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -59,7 +59,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """About 50 µA into the output, nearly flat from 1 V up."""
+    """Returns specifications for ~50 µA output current flat from 1 V to 12 V."""
     return Specs(
         [
             value("op", "VOUT:current").within(-50 * uA, 5 * uA),

@@ -1,13 +1,13 @@
 # Copyright 2026 Maxence Faldor
 """Ten million Monte Carlo samples of a two-stage bipolar amplifier, to run in shards.
 
-This is the circuit and the analyses of the benchmarks' ``monte_carlo`` fixture,
-``benchmarks/speed/circuits/bjt_amp.py``: a differential pair of 2N3904s on a 1 mA tail,
-loaded by a mirror of 2N3906s, drives a 2N3904 follower, and 9.1 kΩ over 1 kΩ feed the
-output back for a gain of about 10 from ±12 V. Each sample draws its resistors within
-5 %, and runs the operating point, the response at 71 frequencies and 200 µs of a 10 kHz
-sine. Its specs hold the gain and the output's offset. ``launch.py`` beside it runs the
-samples in shards over a pool of processes and merges them.
+The circuit and analyses match the ``monte_carlo`` speed benchmark fixture
+(``benchmarks/speed/circuits/bjt_amp.py``). A differential pair of 2N3904s on a 1 mA
+tail, loaded by a 2N3906 mirror, drives a 2N3904 follower with 9.1 kΩ over 1 kΩ
+feedback for a gain near 10 from ±12 V. Each sample varies resistor values within 5 %
+and runs the operating point, 71 AC frequencies, and 200 µs of a 10 kHz sine. The
+specifications verify the 1 kHz gain and output DC offset. The companion ``launch.py``
+script runs shards across a process pool and merges the results.
 """
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
@@ -25,13 +25,13 @@ TOLERANCE = 0.05
 
 
 def resistor(resistance: float) -> devices.Device:
-    """A resistor of `resistance` kilohms, within the tolerance."""
+    """Returns a resistor of `resistance` kilohms with the module tolerance."""
     return devices.resistor(resistance * kohm, tolerance=TOLERANCE)
 
 
 @component
 def amplifier(c: Builder) -> None:
-    """The pair, its mirror and the follower, fed back for a gain of about 10."""
+    """Builds the differential pair, active mirror, and follower with gain near 10."""
     plus, out = c.port("plus", Role.INPUT), c.port("out", Role.OUTPUT)
     vcc, vee = c.port("vcc", Role.SUPPLY), c.port("vee", Role.SUPPLY)
     ground = c.port("ground", Role.GROUND)
@@ -57,7 +57,7 @@ def amplifier(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The amplifier on ±12 V, driven through 1 kΩ by a 100 mV sine at 10 kHz."""
+    """Builds the amplifier on ±12 V, driven through 1 kΩ by a 100 mV, 10 kHz sine."""
     ground = c.port("ground", Role.GROUND)
     positive = c.place(devices.voltage_source(12 * V), name="VCC")
     negative = c.place(devices.voltage_source(12 * V), name="VEE")
@@ -76,12 +76,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The amplifier on its bench."""
+    """Returns the amplifier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, 71 frequencies and two periods of the sine, on samples."""
+    """Returns the Monte Carlo plan covering DC, 71 AC points, and 200 µs transient."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -93,7 +93,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The gain at 1 kHz, and the output's offset."""
+    """Returns specifications for the 1 kHz gain and output DC offset."""
     return Specs(
         [
             gain("ac", "out", at=1 * kHz).between(19.25, 20.75),

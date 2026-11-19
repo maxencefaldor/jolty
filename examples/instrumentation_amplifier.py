@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """A three-op-amp instrumentation amplifier: a gain of 10.09 that rejects common mode.
 
-Two followers with 10 kΩ feedback resistors share a 2.2 kΩ gain resistor, a gain of
-1 + 2·10/2.2 = 10.09 to the difference of their inputs and of one to what the inputs
-share; a difference amplifier of four matched 10 kΩ resistors then keeps the difference
-alone. A 10 mV difference riding on 2 V comes out as 100.9 mV. Simulate it with
+Two input followers with 10 kΩ feedback resistors share a 2.2 kΩ gain resistor, giving
+differential gain 1 + 2·10/2.2 = 10.09 and unity common-mode gain. A matched 10 kΩ
+difference stage then rejects the common-mode signal. A 10 mV difference riding on 2 V
+comes out as 100.9 mV. Simulate with
 ``jolty simulate examples/instrumentation_amplifier.py``.
 """
 
@@ -20,7 +20,7 @@ GAIN = 1 + 2 * 10 / 2.2
 
 @component
 def instrumentation(c: Builder) -> None:
-    """Two input followers sharing a gain resistor, then a difference amplifier."""
+    """Builds two input followers sharing a gain resistor into a difference stage."""
     plus, minus = c.port("plus", Role.INPUT), c.port("minus", Role.INPUT)
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
@@ -45,7 +45,7 @@ def instrumentation(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The amplifier reading a 10 mV difference on 2 V of common mode."""
+    """Builds the amplifier sensing a 10 mV difference on 2 V of common mode."""
     ground = c.port("ground", Role.GROUND)
     common = c.place(devices.voltage_source(2 * V), name="VCM")
     difference = c.place(devices.voltage_source(10 * mV), name="VD")
@@ -57,12 +57,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The amplifier on its bench."""
+    """Returns the instrumentation amplifier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, the difference swept, and the common mode swept."""
+    """Returns operating-point, differential sweep, and common-mode sweep analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -73,7 +73,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The difference times 10.09, and the common mode rejected."""
+    """Returns specifications for 10.09x differential gain and common-mode rejection."""
     return Specs(
         [
             value("op", "out").within(GAIN * 10 * mV, 0.05 * mV),

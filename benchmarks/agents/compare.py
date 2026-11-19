@@ -1,45 +1,41 @@
 # Copyright 2026 Maxence Faldor
-"""Compare agents that have jolty with agents that have ngspice alone, task by task.
+"""Benchmark comparison harness evaluating jolty agents against ngspice-only agents.
 
 Usage: ``uv run python benchmarks/agents/compare.py [--agent AGENT] [--model MODEL]
 [--repetitions N] [--tasks TASK,...] [--arms ARM,...] [--results DIRECTORY]
 [--work DIRECTORY] [--timeout SECONDS] [--turns N] [--budget USD]``.
 
-It runs ``N`` sessions of the agent per arm per task, 5 by default, each as run.py runs
-one: in a fresh working directory, made in ``--work`` or the system's temporary
-directory and never in the repository, with the arm's prompt, files and tools, and
-scored by the task's own scorer. Each session has a configuration of its own, which
-holds nothing of the user's, and runs in the platform's sandbox, ``sandbox.py``: Claude
-Code runs only in one, and only once it is found to start there and to hold
-credentials, which costs nothing. The runner stops a session after ``--timeout``
-seconds, and Claude Code stops itself after ``--turns`` turns or once it has spent
-``--budget`` US dollars, when given. The sessions run one at a time, so none slows
-another, the arms and tasks taking turns in each round of repetitions, so a change in
-the agent's service over the hours affects both arms alike. It writes
-``DIRECTORY/DATE-AGENT.json``, ``benchmarks/agents/results`` by default, and keeps each
-session's transcript, log of simulator runs, log of jolty's analyses in the jolty arm
-and verdict beside it, in ``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The report
-holds every session, and for each task and arm:
+The harness runs ``N`` sessions per arm per task (5 by default) via ``run.py``. Each
+session executes in a fresh working directory under ``--work`` or the system temporary
+directory, never inside the repository, using the arm's prompt, files, tools, and
+hidden task scorer. Every session uses an isolated configuration without host user
+settings and runs under the platform sandbox in ``sandbox.py``. Claude Code requires an
+active sandbox and passes zero-cost startup and credential checks before any session
+launches. Sessions enforce optional ``--timeout``, ``--turns``, and ``--budget`` limits.
+Execution proceeds sequentially, interleaving arms and tasks across repetition rounds
+so time-varying API behavior affects both arms equally.
 
-- the success rate, with its 95 % Wilson interval, as jolty states a yield's;
-- the median and the range of the iterations, the model's turns and tool calls, and
-  the simulations, and of the session's wall time and cost: in the jolty arm, every
-  analysis jolty ran, whatever ran it, its command line, its MCP server or a script
-  through its Python package, a batch's analysis once however many runs it ran on, and
-  in the ngspice arm every run of ngspice, which may run several analyses;
-- the failure kinds: how the sessions ended, finished, out of time, turns or budget,
-  or in an error, as the runner saw and the agent reports, and how many fell short in
-  each kind the scorer found, and of each spec, each session with its verdict's
-  shortfalls and the agent's last report beside them;
-- the difference between the arms on the task, jolty's less ngspice's: of the success
-  rates, with the 95 % interval of Newcombe's hybrid score method built from the arms'
-  Wilson intervals, and of the medians.
+Results are written to ``DIRECTORY/DATE-AGENT.json`` (defaulting to
+``benchmarks/agents/results``). Per-session transcripts, simulator logs, jolty analysis
+logs, and verdicts are copied into ``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The
+JSON report stores every session plus per-task, per-arm summaries:
 
-AnalogCoder's twenty-four problems are one task, met when all are; each of its sessions
-keeps the scorer's measure of every problem.
+- Success rate with a 95 % Wilson confidence interval matching jolty's yield method.
+- Median and min-max range for model turns, tool calls, simulations, wall-clock time,
+  and cost. Simulation counts track every logged jolty analysis on the jolty arm
+  (counting each batch analysis once regardless of batch size) and every ngspice CLI
+  invocation on the ngspice arm.
+- Session ending counts (finished, timed out, out of turns, out of budget, or errored)
+  and shortfall counts grouped by `verdict.Kind` and spec name, with full shortfalls
+  and final agent reports preserved per session.
+- Arm differences (jolty minus ngspice) for success rates with a 95 % Newcombe hybrid
+  score confidence interval and for median resource metrics.
 
-The agents are ``claude``, Claude Code as run.py runs it, on the model ``--model``
-names, if any, and ``stub``, stub.py, which writes a known good design for nothing.
+AnalogCoder's twenty-four circuits form a single task passed only when all twenty-four
+pass, while retaining per-problem measures on every session.
+
+Supported agents are ``claude`` (Claude Code via ``run.py`` with optional ``--model``)
+and ``stub`` (zero-cost ``stub.py`` emitting known passing designs).
 """
 
 import datetime as dt
@@ -84,51 +80,52 @@ from jolty.specs import wilson
 from jolty.spice import ngspice
 
 BENCHMARKS: Final = Path(__file__).parent
-"""The benchmarks, a task's directory each."""
+"""Root directory containing one subdirectory per agent benchmark task."""
 TASKS: Final = tuple(sorted(path.parent.name for path in BENCHMARKS.glob("*/task.md")))
-"""Every task, by its directory's name."""
+"""Sorted tuple of available benchmark task names discovered via ``task.md``."""
 STUB: Final = BENCHMARKS / "stub.py"
-"""The stand-in agent."""
+"""Path to the zero-cost stand-in agent script."""
 
 
 class Agent(StrEnum):
-    """The agents a comparison runs: Claude Code, or the stub in its place."""
+    """Agent implementation executed by the comparison harness: Claude Code or stub."""
 
     CLAUDE = "claude"
     STUB = "stub"
 
 
 class Limits(BaseModel):
-    """How long a session may run: in seconds, in the agent's turns, in US dollars."""
+    """Per-session resource caps for wall-clock seconds, model turns, and USD budget."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     timeout: float | None = Field(
         default=None,
         gt=0,
-        description="The seconds after which the runner stops a session; null for "
-        "none.",
+        description="Maximum wall-clock duration in seconds before runner termination, "
+        "or null if unlimited.",
     )
     turns: int | None = Field(
         default=None,
         ge=1,
-        description="The turns after which Claude Code stops; null for none.",
+        description="Maximum Claude Code turn count before termination, or null if "
+        "unlimited.",
     )
     budget: float | None = Field(
         default=None,
         gt=0,
-        description="The US dollars after which Claude Code stops; null for none.",
+        description="Maximum Claude Code spend in US dollars before termination, or "
+        "null if unlimited.",
     )
 
 
 def command(
     agent: Agent, task: Path, arm: Arm, model: str | None, limits: Limits
 ) -> Program:
-    """The program that runs `agent` of `arm` on `task`, but its prompt.
+    """Builds the `Program` command for running `agent` of `arm` on `task`.
 
-    The stub reads itself and its known good designs, in the benchmarks' directory,
-    and the jolty it writes them with; it runs outside a sandbox only where there is
-    none. Claude Code runs only in one.
+    The stub grants read access to the benchmark directory and Python runtime and runs
+    unsandboxed if no sandbox backend exists. Claude Code strictly requires a sandbox.
     """
     if agent is Agent.STUB:
         python = Path(sys.executable)
@@ -141,49 +138,51 @@ def command(
 
 
 class Simulations(BaseModel):
-    """The simulations of a session: its simulator's runs and, with jolty, its analyses.
+    """Simulation activity recorded for one session: CLI runs and logged analyses.
 
-    A run of the arm's simulator is a run of its command line, ``jolty`` or ``ngspice``,
-    as its wrapper logs it. An analysis is one that jolty ran, whatever ran it, as jolty
-    logs it: its command line, its MCP server, which no wrapper sees, or a script
-    through its Python package.
+    CLI runs count wrapper-logged ``jolty`` or ``ngspice`` invocations. Logged
+    analyses count every analysis executed by jolty through the CLI, MCP server, or
+    Python API.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    runs: int = Field(description="Every run of the simulator's command line.")
+    runs: int = Field(
+        description="Total wrapper-logged invocations of the arm simulator CLI."
+    )
     commands: dict[str, int] = Field(
-        description="The runs by the program and its first argument, such as "
-        "'jolty simulate' or 'ngspice -b'."
+        description="Simulator CLI invocation counts keyed by program and first "
+        "argument, such as 'jolty simulate' or 'ngspice -b'."
     )
     analyses: int | None = Field(
-        description="Every analysis jolty ran, a batch's analysis once however many "
-        "runs it ran on; null in the ngspice arm, whose ngspice logs none."
+        description="Total analyses executed by jolty (counting each batch analysis "
+        "once regardless of run count), or null on the ngspice arm."
     )
     analysis_runs: int | None = Field(
-        description="The runs of those analyses: one of an analysis run alone, and "
-        "each of a batch's runs of its analyses; null in the ngspice arm."
+        description="Total individual simulation runs across logged jolty analyses "
+        "(counting every run in a batch), or null on the ngspice arm."
     )
     kinds: dict[str, int] = Field(
-        description="The analyses by kind, such as 'Transient'; none in the ngspice "
-        "arm."
+        description="Logged jolty analysis counts keyed by analysis kind such as "
+        "'Transient', or empty on the ngspice arm."
     )
 
     @property
     def count(self) -> int:
-        """The session's simulations, as its arm counts them.
+        """Primary simulation count for the arm: jolty analyses or ngspice CLI runs.
 
-        They are jolty's analyses, whatever ran them, and the runs of ngspice, each of
-        which may run several analyses that its wrapper cannot see.
+        Uses logged analysis counts on the jolty arm and wrapper-logged CLI
+        invocations on the ngspice arm, where individual analyses inside a netlist are
+        invisible to the wrapper.
         """
         return self.runs if self.analyses is None else self.analyses
 
 
 def simulations(work: Path) -> Simulations:
-    """The simulations of the session that worked in `work`, as its logs hold them.
+    """Reads simulator and analysis logs from `work` into a `Simulations` summary.
 
-    The log of the simulator's runs holds a JSON object a run, and the log of jolty's
-    analyses, which a session of the jolty arm alone keeps, a `Logged` an analysis.
+    Parses one JSON object per line from the simulator log and, when present on the
+    jolty arm, one `Logged` record per line from the analysis log.
     """
     log, analyses = work / SIMULATIONS, work / ANALYSES
     lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
@@ -217,25 +216,25 @@ def simulations(work: Path) -> Simulations:
 
 
 class Ending(StrEnum):
-    """How an agent's session ended, as the runner saw it and the agent reports it."""
+    """Session termination category derived from runner status and transcript data."""
 
     FINISHED = "finished"
-    """It reported its session a success, and exited with 0."""
+    """Agent reported a successful outcome and exited with status 0."""
     OUT_OF_TIME = "out of time"
-    """The runner stopped it, at its timeout."""
+    """Runner terminated the session after the wall-clock timeout expired."""
     OUT_OF_TURNS = "out of turns"
-    """It stopped at its limit of turns, as it reports."""
+    """Agent reported termination upon reaching the turn limit."""
     OUT_OF_BUDGET = "out of budget"
-    """It stopped at its budget, as it reports."""
+    """Agent reported termination upon reaching the spending budget."""
     ERRORED = "errored"
-    """It reported an error, exited with other than 0, or left no report."""
+    """Agent reported an error, exited non-zero, or produced no final result."""
 
 
 def ending(exit_code: int, session: Session | None, *, timed_out: bool) -> Ending:
-    """How a session ended, by the runner's facts and the agent's own report.
+    """Determines the `Ending` classification from exit status, transcript, and timeout.
 
-    An agent that prints no events, as one other than Claude Code may not, ended as its
-    exit code says.
+    Falls back to the process exit code when `session` is null, as with agents that do
+    not emit structured JSON events.
     """
     if timed_out:
         return Ending.OUT_OF_TIME
@@ -252,53 +251,63 @@ def ending(exit_code: int, session: Session | None, *, timed_out: bool) -> Endin
 
 
 class Run(BaseModel):
-    """One session of the agent on a task, and its verdict."""
+    """Complete record of one agent session on a task with verdict and telemetry."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     task: str
     arm: Arm
-    repetition: int = Field(description="The round of repetitions, from 1.")
-    work: str = Field(description="The working directory, kept until it is cleared.")
-    exit_code: int = Field(description="The agent's exit code.")
-    seconds: float = Field(description="The session's wall time, as the runner saw it.")
+    repetition: int = Field(description="One-based repetition round index.")
+    work: str = Field(
+        description="Path to the session working directory until external cleanup."
+    )
+    exit_code: int = Field(description="Process exit code returned by the agent.")
+    seconds: float = Field(
+        description="Wall-clock session duration in seconds measured by the runner."
+    )
     ending: Ending
-    met: bool = Field(description="Whether the work meets the task.")
-    measures: dict[str, float] = Field(description="What the scorer measured.")
+    met: bool = Field(
+        description="Boolean indicating whether the submission passed the task scorer."
+    )
+    measures: dict[str, float] = Field(
+        description="Named scalar measurements returned by the task scorer."
+    )
     shortfalls: tuple[Shortfall, ...] = Field(
-        description="Why the work falls short, if it does, each of its kind."
+        description="Categorized shortfalls explaining every failure or unmet "
+        "requirement."
     )
     report: str | None = Field(
-        description="The agent's last report, kept beside its verdict; null when it "
-        "wrote none."
+        description="Final report text written by the agent, or null if absent."
     )
     session: Session | None = Field(
-        description="What the transcript says of the session; null without events."
+        description="Parsed session transcript summary, or null if no JSON events "
+        "were emitted."
     )
     simulations: Simulations
     configuration: Configuration
     packages: dict[str, str] = Field(
-        description="The ngspice arm's Python's packages, by name; none for jolty's."
+        description="Python packages installed in the ngspice arm virtual "
+        "environment, keyed by name, or empty for jolty."
     )
 
     @property
     def turns(self) -> int | None:
-        """The model's turns, if the transcript says."""
+        """Distinct model turn count from the transcript, or null if unavailable."""
         return None if self.session is None else self.session.turns
 
     @property
     def calls(self) -> int | None:
-        """The model's tool calls, if the transcript says."""
+        """Total tool call count from the transcript, or null if unavailable."""
         return None if self.session is None else self.session.calls
 
     @property
     def cost(self) -> float | None:
-        """The session's cost, if the agent reports it."""
+        """Reported session cost in US dollars, or null if unavailable."""
         return None if self.session is None else self.session.cost
 
 
 class Rate(BaseModel):
-    """How many sessions met the task, with the 95 % Wilson interval of the rate."""
+    """Pass rate across sessions paired with a 95 % Wilson confidence interval."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -310,10 +319,10 @@ class Rate(BaseModel):
 
     @classmethod
     def from_counts(cls, runs: Sequence[Run]) -> Rate:
-        """The rate of `runs` that met their task.
+        """Computes the pass `Rate` and 95 % Wilson interval for non-empty `runs`.
 
         Raises:
-            ValueError: When there is no run.
+            ValueError: When `runs` is empty.
         """
         if not runs:
             message = "a rate is of one run or more"
@@ -326,18 +335,18 @@ class Rate(BaseModel):
 
 
 class Spread(BaseModel):
-    """The median and the range of a quantity over the sessions that state it."""
+    """Median and min-max range of a metric across sessions reporting a value."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     median: float
     minimum: float
     maximum: float
-    runs: int = Field(description="The sessions that state the quantity.")
+    runs: int = Field(description="Number of sessions that reported a non-null value.")
 
     @classmethod
     def from_values(cls, values: Sequence[float | None]) -> Spread | None:
-        """The spread of the `values` stated, or null when none is."""
+        """Computes a `Spread` over non-null entries in `values`, or returns null."""
         stated = [value for value in values if value is not None]
         if not stated:
             return None
@@ -350,7 +359,7 @@ class Spread(BaseModel):
 
 
 class Summary(BaseModel):
-    """What an arm's sessions on a task found."""
+    """Aggregated metrics, endings, and shortfall counts for one arm on one task."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -360,18 +369,20 @@ class Summary(BaseModel):
     simulations: Spread | None
     seconds: Spread | None
     cost: Spread | None
-    endings: dict[Ending, int] = Field(description="The sessions by how they ended.")
+    endings: dict[Ending, int] = Field(
+        description="Session counts grouped by termination classification."
+    )
     shortfalls: dict[Kind, int] = Field(
-        description="The sessions that fell short in each kind, each counted once in "
-        "every kind its verdict shows."
+        description="Session counts per shortfall kind, counting each session at most "
+        "once per kind."
     )
     specs: dict[str, int] = Field(
-        description="The sessions that fell short of each spec, by the spec's name."
+        description="Session counts per unmet specification name."
     )
 
     @classmethod
     def from_runs(cls, runs: Sequence[Run]) -> Summary:
-        """The summary of `runs`, one or more."""
+        """Aggregates a non-empty sequence of `runs` into a `Summary`."""
         return cls(
             success=Rate.from_counts(runs),
             turns=Spread.from_values([run.turns for run in runs]),
@@ -395,18 +406,17 @@ class Summary(BaseModel):
 
 
 def _tally[T: str](found: Iterable[set[T]]) -> dict[T, int]:
-    """How many of the sets `found` hold each of their members, by member."""
+    """Counts how many sets in `found` contain each distinct member."""
     return dict(sorted(Counter(member for each in found for member in each).items()))
 
 
 class Difference(BaseModel):
-    """The jolty arm's results on a task less the ngspice arm's.
+    """Metric differences on a task defined as jolty minus ngspice.
 
-    The success rates' difference has the 95 % interval of Newcombe's hybrid score
-    method, his tenth, from the arms' Wilson intervals (R. G. Newcombe, "Interval
-    estimation for the difference between independent proportions: comparison of eleven
-    methods", Statistics in Medicine 17, 1998). The others are differences of medians,
-    null where either arm states none.
+    The success-rate difference carries a 95 % Newcombe hybrid score interval (method
+    10) derived from the per-arm Wilson intervals (R. G. Newcombe, Statistics in
+    Medicine 17, 1998). Other fields hold median differences and are null if either arm
+    lacks data.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -422,7 +432,7 @@ class Difference(BaseModel):
 
     @classmethod
     def from_rates(cls, jolty: Summary, ngspice: Summary) -> Difference:
-        """`jolty`'s summary less `ngspice`'s."""
+        """Computes the `Difference` between `jolty` and `ngspice` task summaries."""
         first, second = jolty.success, ngspice.success
         difference = first.rate - second.rate
         below = math.hypot(first.rate - first.lower, second.upper - second.rate)
@@ -441,52 +451,57 @@ class Difference(BaseModel):
 
 
 def _less(mine: Spread | None, theirs: Spread | None) -> float | None:
-    """`mine`'s median less `theirs`', or null when either is none."""
+    """Returns the median difference between `mine` and `theirs`, or null if absent."""
     if mine is None or theirs is None:
         return None
     return mine.median - theirs.median
 
 
 class Task(BaseModel):
-    """What the sessions on a task found, by arm, and the arms' difference."""
+    """Per-arm summaries and optional arm comparison difference for a single task."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     arms: dict[Arm, Summary]
     difference: Difference | None = Field(
-        description="jolty's results less ngspice's; null unless both arms ran."
+        description="Metric difference (jolty minus ngspice), or null unless both "
+        "arms ran."
     )
 
 
 class Report(BaseModel):
-    """A comparison: its conditions, its sessions and what they found."""
+    """Top-level comparison report with environment, config, summaries, and runs."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     date: str
     agent: Agent
-    model: str | None = Field(description="The model asked for; null for the agent's.")
+    model: str | None = Field(
+        description="Requested model override, or null to use the agent default."
+    )
     repetitions: int
     limits: Limits
     versions: dict[str, str] = Field(
-        description="jolty's, ngspice's, Python's, the platform's, and the agent's, "
-        "as it states it in its sandbox."
+        description="Version strings for jolty, ngspice, Python, the host platform, "
+        "and the sandboxed agent."
     )
     authentication: dict[str, str] = Field(
-        description="How Claude Code authenticates in its sessions' configuration, as "
-        "it states it there, such as authMethod api_key; none for the stub."
+        description="Authentication metadata reported by Claude Code in the sandboxed "
+        "configuration, or empty for the stub."
     )
     commands: dict[Arm, list[str]] = Field(
-        description="The command that ran each arm's agent on the first task, but "
-        "its prompt."
+        description="Representative agent command tokens per arm on the first task, "
+        "excluding the prompt."
     )
     tasks: dict[str, Task]
-    arms: dict[Arm, Rate] = Field(description="Each arm's rate over every session.")
+    arms: dict[Arm, Rate] = Field(
+        description="Overall pass rate for each arm aggregated across all sessions."
+    )
     runs: list[Run]
 
 
 def versions() -> dict[str, str]:
-    """The versions of jolty, ngspice, Python and the platform the comparison ran on."""
+    """Collects version strings for jolty, ngspice, Python, and the host platform."""
     found = {
         "jolty": importlib.metadata.version("jolty"),
         "python": sys.version,
@@ -499,7 +514,7 @@ def versions() -> dict[str, str]:
 
 
 def kept(run: Path, work: Path) -> None:
-    """Keeps in `run` the transcript, logs and verdict of `work`'s session."""
+    """Copies transcript, simulator logs, analysis logs, and verdict into `run`."""
     run.mkdir(parents=True)
     for name in (TRANSCRIPT, SIMULATIONS, ANALYSES, VERDICT):
         if (work / name).is_file():
@@ -507,13 +522,12 @@ def kept(run: Path, work: Path) -> None:
 
 
 def preflight(agent: Agent, arms: Sequence[Arm]) -> None:
-    """Checks, before any session, that every program the sessions need is there.
+    """Verifies required executables and sandbox availability before launching sessions.
 
     Raises:
-        FileNotFoundError: When Claude Code, for it, or ngspice or uv, for the ngspice
-            arm, is not on the path.
-        RuntimeError: When Claude Code, for it, would run without a sandbox, on a
-            platform that has none.
+        FileNotFoundError: When ``claude``, ``ngspice``, or ``uv`` is missing from
+            ``PATH``.
+        RuntimeError: When `agent` is Claude Code and no platform sandbox is available.
     """
     needed = ["claude"] if agent is Agent.CLAUDE else []
     if Arm.NGSPICE in arms:
@@ -531,14 +545,13 @@ def preflight(agent: Agent, arms: Sequence[Arm]) -> None:
 
 
 def started(program: Program) -> tuple[str, dict[str, str]]:
-    """Claude Code's version and authentication, as it states them in its sandbox.
+    """Queries Claude Code version and authentication status inside the sandbox.
 
-    Both cost nothing: ``claude --version``, and ``claude auth status --json``, which
-    reads its configuration and credentials and calls no model.
+    Runs ``claude --version`` and ``claude auth status --json`` locally without
+    invoking a model.
 
     Raises:
-        RuntimeError: When Claude Code holds no credentials there, so that every
-            session would fail.
+        RuntimeError: When Claude Code reports no active credentials in the sandbox.
     """
     version = probe(program, ["--version"]).strip()
     try:
@@ -555,7 +568,7 @@ def started(program: Program) -> tuple[str, dict[str, str]]:
     return version, {key: str(status[key]) for key in kept if key in status}
 
 
-def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
+def compare(  # noqa: PLR0913 - agent, task/arm selection, and output configuration
     agent: Agent,
     *,
     tasks: Sequence[str],
@@ -566,18 +579,17 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
     work: Path | None = None,
     limits: Limits | None = None,
 ) -> Path:
-    """Runs the comparison, writes its report in `results`, and returns its path.
+    """Runs the comparison, writes the report in `results`, and returns its path.
 
-    Each session works in a fresh directory in `work`, the system's temporary directory
-    by default, within `limits`, none by default.
+    Creates fresh per-session working directories under `work` (defaulting to the
+    system temporary directory) and applies optional resource `limits`.
 
     Raises:
-        FileExistsError: When the report of the day's comparison of `agent` exists.
-        FileNotFoundError: When a program the sessions need is not on the path.
-        RuntimeError: When Claude Code would run without a sandbox, or holds no
-            credentials in its sessions' configuration.
-        ValueError: When `work` lies in the repository, where an agent would find its
-            instructions and the scorers.
+        FileExistsError: When the dated report file or artifact directory exists.
+        FileNotFoundError: When a required executable is missing from ``PATH``.
+        RuntimeError: When Claude Code lacks a platform sandbox or valid credentials.
+        ValueError: When `work` resides inside the repository, exposing scorers and
+            prompts.
     """
     limits = limits or Limits()
     preflight(agent, arms)
@@ -652,7 +664,7 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
 
 
 def _task(runs: Sequence[Run]) -> Task:
-    """What `runs`, the sessions on one task, found."""
+    """Aggregates session `runs` for one task into per-arm summaries and difference."""
     summaries = {
         arm: Summary.from_runs([run for run in runs if run.arm == arm])
         for arm in Arm
@@ -668,10 +680,10 @@ def _task(runs: Sequence[Run]) -> Task:
 
 
 def _task_named(name: str) -> str:
-    """`name`, a task's.
+    """Validates and returns `name` as a known benchmark task identifier.
 
     Raises:
-        ValueError: When no task is named `name`.
+        ValueError: When `name` is not listed in `TASKS`.
     """
     if name not in TASKS:
         message = f"no task is named {name}; there are {', '.join(TASKS)}"
@@ -680,44 +692,51 @@ def _task_named(name: str) -> str:
 
 
 class Comparison(cli.CommandLine):
-    """Compare agents that have jolty with agents that have ngspice, task by task."""
+    """CLI command for running a head-to-head jolty versus ngspice agent comparison."""
 
     model_config = SettingsConfigDict(cli_prog_name="benchmarks/agents/compare.py")
 
     agent: Agent = Field(
-        default=Agent.CLAUDE, description="The agent the sessions run."
+        default=Agent.CLAUDE, description="Agent implementation executed across runs."
     )
-    model: str | None = Field(default=None, description="The model Claude Code runs.")
+    model: str | None = Field(
+        default=None, description="Optional model identifier passed to Claude Code."
+    )
     repetitions: int = Field(
-        default=5, ge=1, description="The sessions per arm per task."
+        default=5, ge=1, description="Number of repetition rounds per arm per task."
     )
     tasks: list[Annotated[str, AfterValidator(_task_named)]] = Field(
         default_factory=lambda: list(TASKS),
-        description="The tasks, every one by default.",
+        description="Benchmark tasks to run, defaulting to all available tasks.",
     )
     arms: list[Arm] = Field(
-        default_factory=lambda: list(Arm), description="The arms, both by default."
+        default_factory=lambda: list(Arm),
+        description="Benchmark arms to run, defaulting to both jolty and ngspice.",
     )
     results: Path = Field(
-        default=BENCHMARKS / "results", description="Where the report is written."
+        default=BENCHMARKS / "results",
+        description="Output directory for the JSON report and copied session files.",
     )
     work: Path | None = Field(
-        default=None, description="Where each session's directory is made."
+        default=None,
+        description="Parent directory for fresh session working directories.",
     )
     timeout: float | None = Field(
-        default=None, gt=0, description="The seconds after which a session stops."
+        default=None,
+        gt=0,
+        description="Maximum wall-clock duration in seconds per session.",
     )
     turns: int | None = Field(
-        default=None, ge=1, description="The turns after which Claude Code stops."
+        default=None, ge=1, description="Maximum turn limit passed to Claude Code."
     )
     budget: float | None = Field(
         default=None,
         gt=0,
-        description="The US dollars a session of Claude Code may spend.",
+        description="Maximum spending budget in US dollars passed to Claude Code.",
     )
 
     def cli_cmd(self) -> None:
-        """Runs the comparison, and prints where its report is."""
+        """Executes the configured comparison and prints the written report path."""
         self.results.mkdir(parents=True, exist_ok=True)
         print(
             compare(
@@ -736,7 +755,7 @@ class Comparison(cli.CommandLine):
 
 
 def main(arguments: list[str] | None = None) -> None:
-    """Runs the command line, `arguments` or the process's own."""
+    """Executes the comparison CLI using `arguments` or ``sys.argv``."""
     cli.run(Comparison, arguments)
 
 

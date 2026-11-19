@@ -2,8 +2,8 @@
 """A boost converter: an inductor charged by a switch and dumped through a diode.
 
 The switch shorts the inductor to ground for 60 % of each 10 µs period, storing energy
-it then delivers through the diode on top of the input: the output settles near
-Vin/(1 - D) = 12.5 V from 5 V, less the losses. Simulate it with
+that discharges through the diode onto the output. From a 5 V input, the output settles
+near Vin/(1 - D) = 12.5 V minus diode and switch losses. Simulate with
 ``jolty simulate examples/boost_converter.py``.
 """
 
@@ -19,7 +19,7 @@ DUTY = 0.6
 
 @component
 def boost(c: Builder) -> None:
-    """The inductor from the input, the switch to ground, the diode to the output."""
+    """Builds the boost stage with input inductor, ground switch, and output diode."""
     source, output, gate = c.port("input"), c.port("output"), c.port("gate", Role.INPUT)
     ground = c.port("ground", Role.GROUND)
     inductor = c.place(devices.inductor(100 * uH), name="L1")
@@ -46,7 +46,7 @@ def boost(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The converter, switched at 100 kHz and 60 %, into 100 Ω."""
+    """Builds the boost converter switched at 100 kHz and 60 % duty into 100 Ω."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="VIN")
     drive = Pulse(
@@ -68,15 +68,15 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The converter on its bench."""
+    """Returns the boost converter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Ten milliseconds from rest."""
+    """Returns a 10 ms start-up transient plan from rest."""
     return Plan({"start": Transient(stop=10 * ms, max_step=0.2 * us)})
 
 
 def specs() -> Specs:
-    """Near Vin/(1 - D), less the diode's drop and the switch's loss."""
+    """Returns output voltage specifications near Vin/(1 - D) minus stage losses."""
     return Specs([mean("start", "out", start=9 * ms).between(11 * V, 12.5 * V)])

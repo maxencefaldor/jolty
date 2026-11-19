@@ -1,20 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""What the scorers share: designs read and simulated, parts checked, designs judged.
+"""Shared benchmark scoring helpers for loading designs, checking parts, and simulating.
 
-A design is the jolty arm's script or the ngspice arm's netlist, and the given parts are
-the functions of a task's ``parts.py``, or the models of its ``parts.lib``, as the arm's
-agent got them; from them on, a scorer judges both arms by the same code. A scorer
-measures a design with its parts exact, in each corner of the conditions it
-must work in: at 0 °C and at 70 °C, the commercial range, with its supplies 5 % low and
-5 % high, besides 27 °C and its supplies exact. If it meets its task in every corner, it
-is measured again on boards built of real parts, whose values stray within their
-tolerances, each board in every corner: it meets the task only when enough of those
-boards meet it in all of them.
+A design is either a Python script (jolty arm) or a SPICE netlist (ngspice arm), and
+given parts come from ``parts.py`` or ``parts.lib`` respectively. After loading, both
+arms are evaluated by the same scoring pipeline. Each scorer first measures the exact
+nominal design across operating corners: 27 °C nominal supplies plus the four
+commercial extremes (0 °C and 70 °C at +/-5 % supply voltage). Designs that pass every
+corner are re-evaluated on Monte Carlo boards with part tolerances across all corners
+and pass only when yield meets the task threshold.
 
-Each way a design falls short is a `verdict.Shortfall` of the kind its source makes it:
-a missing file, a script or netlist that does not build or read, an error jolty raises
-of its own kind, a part the task forbids, a measure beyond its bound, a yield too
-low.
+Each failure is recorded as a `verdict.Shortfall` categorized by origin: missing file,
+build or parse error, jolty runtime error, disallowed part, out-of-spec measurement,
+or insufficient yield.
 """
 
 import asyncio
@@ -57,37 +54,38 @@ from jolty.units import celsius
 
 
 def missing(reason: str) -> Shortfall:
-    """The shortfall of work that lacks what the task asks for, for `reason`."""
+    """Creates a `Kind.MISSING` shortfall for a missing deliverable with `reason`."""
     return Shortfall(kind=Kind.MISSING, reason=reason)
 
 
 def unbuilt(reason: str) -> Shortfall:
-    """The shortfall of a design that does not build or read, for `reason`."""
+    """Creates a `Kind.UNBUILT` shortfall for a build or parse failure with `reason`."""
     return Shortfall(kind=Kind.UNBUILT, reason=reason)
 
 
 def unelaborated(problem: str, where: str = "") -> Shortfall:
-    """The shortfall of a design the engine cannot elaborate, for `problem`.
+    """Creates a `Kind.UNELABORATED` shortfall for an elaboration `problem`.
 
-    `where` says where, such as at a corner, before it.
+    An optional `where` prefix identifies the failing context, such as a corner name.
     """
     reason = f"{where}the engine cannot elaborate it: {problem}"
     return Shortfall(kind=Kind.UNELABORATED, reason=reason)
 
 
 def unmet(spec: str, reason: str) -> Shortfall:
-    """The shortfall of a design that falls short of the requirement `spec`."""
+    """Creates a `Kind.SPEC` shortfall for an unmet requirement `spec` with `reason`."""
     return Shortfall(kind=Kind.SPEC, spec=spec, reason=reason)
 
 
 def failed(error: JoltyError) -> Shortfall:
-    """The shortfall of a design on which jolty raised `error`, of the error's kind.
+    """Converts a `JoltyError` into a categorized `Shortfall`.
 
-    An analysis that fails, a circuit the engine cannot elaborate, and a circuit that
-    cannot be built or read, as jolty's errors of each say.
+    Maps simulation failures to `Kind.ANALYSIS`, elaboration errors to
+    `Kind.UNELABORATED`, and build, dimension, script, or SPICE errors to
+    `Kind.UNBUILT`.
 
     Raises:
-        JoltyError: `error` itself, when it is of no kind a design's shortfall is.
+        JoltyError: Re-raises `error` when no shortfall category applies.
     """
     match error:
         case SimulationError():
@@ -101,10 +99,10 @@ def failed(error: JoltyError) -> Shortfall:
 
 
 def script(work: Path, stem: str) -> dict[str, object] | Shortfall:
-    """What the script `stem`, such as ``design``, of `work` defines, or why it fails.
+    """Executes ``{stem}.py`` in `work` and returns its namespace or a `Shortfall`.
 
-    It runs as a script whose directory is importable, so it may import modules of its
-    own from beside it.
+    Adds `work` to ``sys.path`` so the script can import sibling modules from the same
+    directory.
     """
     path = work / f"{stem}.py"
     if not path.is_file():
@@ -119,10 +117,10 @@ def script(work: Path, stem: str) -> dict[str, object] | Shortfall:
 
 
 def built(namespace: Mapping[str, object], stem: str) -> Component | Shortfall:
-    """The component the ``build()`` of `namespace`, script `stem`'s, returns.
+    """Calls ``build()`` in `namespace` for ``{stem}.py`` and returns the `Component`.
 
-    Returns why there is none, when it has no ``build()``, or it fails or returns no
-    component.
+    Returns an `unbuilt` shortfall when ``build()`` is missing, raises an exception, or
+    returns a non-`Component` value.
     """
     build = namespace.get("build")
     if not callable(build):
@@ -137,10 +135,10 @@ def built(namespace: Mapping[str, object], stem: str) -> Component | Shortfall:
 
 
 def grounded(made: Component) -> Component:
-    """`made`, a subcircuit read, with SPICE's ground, node ``0``, as a port.
+    """Ensures `made` exposes SPICE ground node ``0`` as a component port.
 
-    jolty's reader gives a subcircuit a ground port only when an element joins node
-    ``0``; a design's ground is node ``0`` whether or not anything joins it.
+    The SPICE reader creates a ground port only when an element connects to node ``0``,
+    whereas benchmark subcircuits treat node ``0`` as ground regardless.
     """
     ports = made.definition.ports
     if any(port.name == spice.GROUND for port in ports):
@@ -151,12 +149,11 @@ def grounded(made: Component) -> Component:
 
 
 def netlist(task: Path, work: Path, stem: str) -> Component | Shortfall:
-    """The subcircuit `stem` of the netlist `stem`, such as ``design.cir``, of `work`.
+    """Loads subcircuit `stem` from ``{stem}.cir`` in `work`, or returns a `Shortfall`.
 
-    jolty's SPICE reader reads the netlist after the libraries of `task`'s ngspice arm,
-    whose models it may name, and the subcircuit's ground is SPICE's node ``0``.
-    Returns why there is none, when the netlist is missing, jolty cannot read it, or it
-    defines no subcircuit `stem`.
+    Loads the ngspice arm libraries for `task` before reading the netlist and attaches
+    SPICE node ``0`` as ground. Returns a shortfall when the file is missing, fails to
+    parse, or defines no subcircuit named `stem`.
     """
     path = work / f"{stem}.cir"
     if not path.is_file():
@@ -168,10 +165,10 @@ def netlist(task: Path, work: Path, stem: str) -> Component | Shortfall:
 
 
 def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | Shortfall:
-    """The component the design `stem` of `work` is, as `arm` writes it, or why none.
+    """Loads the component `stem` from `work` for `arm`, or returns a `Shortfall`.
 
-    It is the component the script ``stem.py`` builds, or the subcircuit ``stem`` of
-    the netlist ``stem.cir``.
+    Executes ``{stem}.py`` for the jolty arm and parses subcircuit `stem` from
+    ``{stem}.cir`` for the ngspice arm.
     """
     if arm is Arm.NGSPICE:
         return netlist(task, work, stem)
@@ -182,9 +179,9 @@ def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | Shortfall
 def benched(
     made: Component, ports: Iterable[str], bench: Callable[[], Component]
 ) -> ir.Circuit | Shortfall:
-    """The circuit of `made` on its bench, which `bench` places it on, or why none.
+    """Places `made` onto the test `bench` and returns an `ir.Circuit` or a `Shortfall`.
 
-    The design's ports must be `ports`, those the bench joins.
+    Verifies that the ports of `made` match `ports` exactly before calling `bench`.
     """
     found = sorted(port.name for port in made.definition.ports)
     wanted = sorted(ports)
@@ -202,17 +199,17 @@ _ELEMENTS: Final = {
     "nmos": "M1 drain gate source bulk",
     "pmos": "M1 drain gate source bulk",
 }
-"""An element of a model of each SPICE type the given parts are, but its model."""
+"""Minimal SPICE element templates per device kind, omitting the model name."""
 
 
 def modeled(task: Path, model: str) -> devices.Device:
-    """The device jolty reads of an element of `model`, a model of `task`'s libraries.
+    """Loads a default `devices.Device` for SPICE `model` from the libraries of `task`.
 
-    The element gives the model nothing of its own, such as a MOSFET's size.
+    Instantiates the model with no instance-level overrides such as MOSFET geometry.
 
     Raises:
-        KeyError: When no model of the libraries is named `model`, or it is of a type
-            no given part is.
+        KeyError: When `model` is absent from the libraries or uses an unsupported
+            device kind.
     """
     library = spice.load(*libraries(task))
     card = library.model(model, {})
@@ -228,13 +225,13 @@ def modeled(task: Path, model: str) -> devices.Device:
 
 
 def given(task: Path, arm: Arm, *names: str) -> list[devices.Device]:
-    """The given parts `names` of `task`, as `arm`'s agent got them.
+    """Loads the given `devices.Device` models named in `names` for `task` and `arm`.
 
-    Each is the device the function of that name in ``parts.py`` makes, or the one
-    jolty reads of an element of the model of that name in ``parts.lib``.
+    Calls each named factory in ``given/parts.py`` for jolty, or reads the
+    corresponding model from ``parts.lib`` for ngspice.
 
     Raises:
-        TypeError: When a function of ``parts.py`` makes no device.
+        TypeError: When a factory in ``parts.py`` does not return a `devices.Device`.
     """
     if arm is Arm.NGSPICE:
         return [modeled(task, name) for name in names]
@@ -251,15 +248,15 @@ def given(task: Path, arm: Arm, *names: str) -> list[devices.Device]:
 
 @dataclass(frozen=True, slots=True)
 class Corner:
-    """Conditions a design must work in: its temperature and its supplies' level."""
+    """Operating corner defined by ambient temperature and supply voltage scale."""
 
     temperature: float = 27.0
-    """The temperature, in degrees Celsius."""
+    """Ambient temperature in degrees Celsius."""
     supply: float = 1.0
-    """Each supply's level, relative to its nominal one."""
+    """Supply voltage multiplier relative to nominal."""
 
     def describe(self) -> str:
-        """The corner in words, such as ``at 0 °C with the supplies 5 % low``."""
+        """Formats the corner as text, such as ``at 0 °C with the supplies 5 % low``."""
         if self.supply == 1:
             return f"at {self.temperature:g} °C"
         side = "low" if self.supply < 1 else "high"
@@ -270,7 +267,7 @@ class Corner:
 
 
 NOMINAL: Final = Corner()
-"""The nominal conditions: 27 °C, every supply at its level."""
+"""Nominal operating corner at 27 °C and 100 % supply voltage."""
 CORNERS: Final = (
     NOMINAL,
     *(
@@ -279,30 +276,28 @@ CORNERS: Final = (
         for supply in (0.95, 1.05)
     ),
 )
-"""The nominal conditions, then the four that bound those a design must work in: from
-0 °C to 70 °C, and each supply within 5 % of its level."""
+"""Nominal corner plus the four commercial extremes (0 °C/70 °C, +/-5 % supply)."""
 
 
 @dataclass(frozen=True, slots=True)
 class Board:
-    """A board of the design, in a corner.
+    """Single Monte Carlo board realization evaluated at an operating corner.
 
-    Its parts are the values that stray from the design's, by instance path then by
-    parameter path, as a Monte Carlo sample holds them; a board without any is the
-    design, its parts exact.
+    Parameter overrides in `parts` map instance path to parameter path and sampled
+    value. An empty `parts` mapping represents the exact nominal design.
     """
 
     parts: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     corner: Corner = NOMINAL
 
     def simulation(self, built: ir.Circuit, supplies: Iterable[str]) -> Simulation:
-        """`built` on the board: of its parts, at its corner's temperature.
+        """Builds a `Simulation` of `built` with board tolerances and corner conditions.
 
-        Each of `supplies`, the ids of DC voltage sources at the top of `built`, takes
-        its level in the corner.
+        Scales each top-level DC voltage source in `supplies` by the corner supply
+        factor.
 
         Raises:
-            KeyError: When a supply is no DC source at the top.
+            KeyError: When an identifier in `supplies` is not a top-level DC source.
         """
         top = built.components[built.top]
         levels: dict[str, Mapping[str, float]] = {}
@@ -326,21 +321,19 @@ class Board:
 
 
 type Measure = Callable[[Board], dict[str, float]]
-"""What a scorer measures on a board of the design, by name."""
+"""Callable returning named scalar measurements for a single `Board`."""
 type Shortfalls = Callable[[dict[str, float]], list[Shortfall]]
-"""Why what a scorer measured on a board falls short of the task, if it does."""
+"""Callable checking measured values and returning any task shortfalls."""
 type Spread = Callable[[ir.Instance], dict[str, ir.Tolerance]]
-"""How far each parameter of a device instance of the design strays on its boards, by
-parameter path."""
+"""Callable mapping a device instance to parameter tolerances for Monte Carlo boards."""
 
 PARTS: Final[Mapping[str, tuple[str, ir.Tolerance]]] = {
     "resistor": ("resistance", ir.Tolerance(relative=0.01)),
     "capacitor": ("capacitance", ir.Tolerance(relative=0.05)),
 }
-"""Each part a design may add, by model: the parameter that strays, and how far."""
+"""Default tolerance specification for design-added passives, keyed by device model."""
 THERMAL_VOLTAGE: Final = 0.025852
-"""kT/q at 27 °C, in volts: the base-emitter voltage a factor of e in saturation current
-moves."""
+"""Thermal voltage kT/q at 27 °C in volts."""
 REELS: Final[Mapping[str, Mapping[str, ir.Tolerance]]] = {
     polarity: {
         "forward_beta": ir.Tolerance(
@@ -357,37 +350,35 @@ REELS: Final[Mapping[str, Mapping[str, ir.Tolerance]]] = {
         ("pnp", "2N3906", 0.37, 8.5),
     )
 }
-"""How the given transistors stray, by polarity: the 2N3904, an NPN, and the 2N3906, a
-PNP.
+"""Discrete BJT reel and intra-reel tolerances by polarity for 2N3904 and 2N3906.
 
-A board's transistors of one type come from one reel, which may lie anywhere its
-datasheet allows: a current gain at 10 mA from 100 to 300, 160 and 163 in the models,
-and a base-emitter saturation voltage at 10 mA from 0.65 V to 0.85 V, 0.743 V and
-0.791 V in the models. The reel's spread is the widest about the model that keeps each
-transistor on it within both. On a reel, each strays from the others as little as a
-matched pair cut from adjacent die (Diodes' DMMT3904W): its current gain within 2 % and
-its base-emitter voltage within 2 mV of any other's."""
+All transistors of a polarity on one board share a reel spanning the 10 mA datasheet
+limits. Current gain ranges from 100 to 300 (models: 160 and 163), and base-emitter
+saturation voltage ranges from 0.65 V to 0.85 V (models: 0.743 V and 0.791 V). Reel
+spread uses the widest range around the model that keeps every device within both
+limits. Intra-reel mismatch mirrors adjacent-die matched pairs (Diodes DMMT3904W):
+current gain within 2 % and base-emitter voltage within 2 mV.
+"""
 DIE: Final = ir.Lot(name="die", relative=0.2)
-"""The lot of an integrated circuit's resistors: within 20 % of their values together,
-the middle of the 15 % to 25 % monolithic resistors keep (US 6,819,093)."""
+"""Lot tolerance of +/-20 % for monolithic resistors on a single die (US 6,819,093)."""
 MATCHED: Final = ir.Tolerance(relative=0.001, distribution="normal", lot=DIE)
-"""An integrated resistor: within 0.1 % of the others on its die, three standard
-deviations, the moderate matching of Hastings's *The Art of Analog Layout*."""
+"""Integrated resistor tolerance: +/-0.1 % 3-sigma die matching (Hastings)."""
 
 BOARDS: Final = 100
-"""The boards built of a design that meets its task with exact parts."""
+"""Number of Monte Carlo boards simulated after a design passes all nominal corners."""
 YIELD: Final = 0.95
-"""The share of those boards that must meet the task too."""
+"""Minimum fraction of Monte Carlo boards required to pass all corners."""
 SEED: Final = 0
-"""The seed the boards are drawn from, the same for every design."""
+"""Deterministic random seed used to draw Monte Carlo boards for every design."""
 
 
 def simulate(
     script: Path, plan: Path | None = None
 ) -> tuple[service.SimulateResult, ir.Circuit]:
-    """What ``jolty simulate`` finds of `script`, and the circuit it built.
+    """Runs ``jolty simulate`` on `script` and returns the result and built circuit.
 
-    The script's own plan and specs apply, or `plan`'s when given.
+    Uses the embedded plan and specs in `script`, or overrides them with `plan` if
+    given.
     """
     with tempfile.TemporaryDirectory() as directory:
         saved = Path(directory) / "circuit.jolty.json"
@@ -404,18 +395,15 @@ def simulate(
 
 
 PASSING: Final = frozenset({"passed", "marginal"})
-"""The statuses of a requirement that passes, if marginally."""
+"""Specification verdict statuses counted as passing, including marginal passes."""
 
 
 def planned(result: service.SimulateResult) -> list[Shortfall]:
-    """Why `result`, what ``jolty simulate`` found of a design, falls short of its plan.
+    """Extracts all `Shortfall` entries from a ``jolty simulate`` `result`.
 
-    They are jolty's own reasons for a result that is not ok, each of its kind: the
-    circuit does not elaborate, at the plan's conditions or a corner; a rule finds an
-    error; an analysis fails, there or at a corner; a requirement fails or goes
-    unmeasured, or fails at its worst-case extremes; the yield of the plan's Monte
-    Carlo analysis, or of its variants, falls below the specs' target; or a model the
-    plan's fidelity chose disagrees with its circuit.
+    Collects elaboration problems, error-level rule diagnostics, failed analyses across
+    nominal and corner runs, unmet or unmeasured specs including worst-case checks,
+    yield failures on Monte Carlo or variant batches, and fidelity mismatches.
     """
     found = [unelaborated(each) for each in result.circuit.problems]
     if result.report is not None:
@@ -461,7 +449,7 @@ def planned(result: service.SimulateResult) -> list[Shortfall]:
 
 
 def count_devices(circuit: ir.Circuit, path: str) -> int:
-    """How many devices the component instance at `path` holds, at any depth."""
+    """Counts leaf device instances recursively inside the component at `path`."""
     component = circuit.components[circuit.top]
     for id in path.split("/"):
         instance = component.instance(id)
@@ -485,11 +473,11 @@ def _count(circuit: ir.Circuit, component: ir.Component) -> int:
 def disallowed(
     built: ir.Circuit, given: Iterable[devices.Device], allowed: Iterable[str]
 ) -> list[Shortfall]:
-    """Why each device below the top of `built` is neither `given` nor `allowed`.
+    """Checks all non-top-level devices in `built` against `given` and `allowed` parts.
 
-    A device of a given part's model must take that part's parameters; any other device
-    must be of an allowed model, such as ``resistor``. Each falls short of the spec
-    ``parts``.
+    Devices matching a given model must carry exact given parameters; all other devices
+    must use an allowed model such as ``resistor``. Violations produce ``parts``
+    shortfalls.
     """
     parts = [(part.model, part.parameters) for part in given]
     models = {model for model, _ in parts}
@@ -512,9 +500,9 @@ def disallowed(
 
 
 def parts(instance: ir.Instance) -> dict[str, ir.Tolerance]:
-    """How far a part a design adds strays: a resistor within 1 %, a capacitor 5 %.
+    """Returns default passive tolerances for `instance`: 1 % resistors, 5 % capacitors.
 
-    Any other device stays exact.
+    Non-passive devices receive no tolerance overrides.
     """
     match instance.of:
         case ir.DeviceOf(model=model) if model in PARTS:
@@ -525,10 +513,10 @@ def parts(instance: ir.Instance) -> dict[str, ir.Tolerance]:
 
 
 def discrete(instance: ir.Instance) -> dict[str, ir.Tolerance]:
-    """How far a part of a discrete design strays.
+    """Returns discrete-board tolerances for `instance`.
 
-    A resistor and a capacitor stray as [`parts`][] has them, and a 2N3904 or a 2N3906
-    with its reel, as [`REELS`][] has it.
+    Applies [`parts`][] tolerances to passives and [`REELS`][] lot and matching
+    tolerances to 2N3904 and 2N3906 bipolar transistors.
     """
     match instance.of:
         case ir.DeviceOf(model="bipolar_transistor"):
@@ -539,11 +527,11 @@ def discrete(instance: ir.Instance) -> dict[str, ir.Tolerance]:
 
 
 def integrated(instance: ir.Instance) -> dict[str, ir.Tolerance]:
-    """How far a part of an integrated design strays.
+    """Returns integrated-circuit tolerances for `instance`.
 
-    A resistor strays with its die, and within its matching of the others, and a
-    capacitor as [`parts`][] has it. Transistors stay exact, as the patent's do in the
-    errors a design's are judged against.
+    Applies die-matched resistor tolerances (`MATCHED`) and default [`parts`][]
+    capacitor tolerances. Transistors remain exact to match the patent reference
+    comparison.
     """
     match instance.of:
         case ir.DeviceOf(model="resistor"):
@@ -553,11 +541,10 @@ def integrated(instance: ir.Instance) -> dict[str, ir.Tolerance]:
 
 
 def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
-    """The boards built of the design below the top of `built`, in the nominal corner.
+    """Generates Monte Carlo `Board` samples for non-top-level devices in `built`.
 
-    Each part's values are drawn as `spread` has them, whatever tolerance the design
-    gives them; the bench's parts stay exact. A design that strays nowhere has one
-    board, the exact one.
+    Overrides design tolerances using `spread` while keeping test-bench devices exact.
+    Returns a single exact nominal `Board` when no devices carry tolerances.
     """
     components = {
         name: component
@@ -581,11 +568,9 @@ def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
 def judge(
     measure: Measure, shortfalls: Shortfalls, board: Board | None = None
 ) -> tuple[dict[str, float], list[Shortfall]]:
-    """What `measure` finds on `board`, and why it falls short of the task.
+    """Runs `measure` on `board` and evaluates `shortfalls`, defaulting to exact parts.
 
-    The board is the exact design by default. It falls short where `shortfalls` finds
-    it does, or as `failed` has it when jolty raises an error, such as a simulation
-    that fails.
+    Converts any raised `JoltyError` into a categorized `Shortfall` via `failed`.
     """
     try:
         found = measure(board or Board())
@@ -597,11 +582,10 @@ def judge(
 def cornered(
     measure: Measure, shortfalls: Shortfalls
 ) -> tuple[dict[str, float], list[Shortfall]]:
-    """What `measure` finds on the exact design in every corner, and why it falls short.
+    """Measures the exact design across all `CORNERS` and collects any shortfalls.
 
-    It falls short in any corner where it falls short of the task. The measures
-    are those in the nominal corner, then those in each other, named after it, such as
-    ``at 0 °C with the supplies 5 % low: fitness``.
+    Nominal measurements keep plain keys; non-nominal corner measurements are prefixed
+    with the corner description, such as ``at 0 °C with the supplies 5 % low: fitness``.
     """
     measures: dict[str, float] = {}
     reasons: list[Shortfall] = []
@@ -617,7 +601,7 @@ def cornered(
 
 
 def _at(corner: Corner, shortfall: Shortfall) -> Shortfall:
-    """`shortfall`, found in `corner`, which its reason names."""
+    """Prefixes the reason of `shortfall` with the description of `corner`."""
     reason = f"{corner.describe()}, {shortfall.reason}"
     return shortfall.model_copy(update={"reason": reason})
 
@@ -625,12 +609,11 @@ def _at(corner: Corner, shortfall: Shortfall) -> Shortfall:
 def tolerate(
     built: ir.Circuit, measure: Measure, shortfalls: Shortfalls, spread: Spread
 ) -> tuple[dict[str, float], list[Shortfall]]:
-    """What `measure` finds on the boards of `built`, and why too few meet the task.
+    """Evaluates Monte Carlo boards across all corners and checks yield against `YIELD`.
 
-    A board meets the task when it meets it in every corner. The measures are the
-    share of boards that do, ``yield``, and the median over the boards of each of
-    `measure`'s in the nominal corner. Too few falls short of the spec ``yield``, with
-    the first shortfall of the first board that falls short.
+    A board passes only if every corner passes. Returns ``yield`` plus median nominal
+    measurements, and reports a ``yield`` shortfall citing the first failing board when
+    yield falls below `YIELD`.
     """
     drawn = boards(built, spread)
     nominal: list[dict[str, float]] = []
@@ -677,7 +660,7 @@ class DesignSpec:
 
 
 def score_design(task: Path, work: Path, arm: Arm, spec: DesignSpec) -> Verdict:
-    """Loads, benches, checks, simulates across corners and boards, and scores."""
+    """Evaluates a design by loading, benching, checking parts, and simulating."""
     made = design(task, work, spec.stem, arm)
     if isinstance(made, Shortfall):
         return Verdict(met=False, shortfalls=(made,))

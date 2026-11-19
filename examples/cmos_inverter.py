@@ -1,11 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""The CMOS inverter: its transfer curve, its switching threshold, its edges.
+"""The CMOS inverter: transfer curve, switching threshold, and transient edges.
 
-A p-channel transistor twice as wide as its n-channel partner, which offsets the holes'
-lower mobility only partly here, as both share one transconductance parameter: the
-p-channel is the stronger, so the switching threshold, where both saturate,
-Vm = (VDD - |Vtp| + Vtn·√(βn/βp))/(1 + √(βn/βp)), sits at 1.81 V of 3.3 V. Simulate it
-with ``jolty simulate examples/cmos_inverter.py``.
+The p-channel transistor is twice as wide as the n-channel transistor while sharing the
+same transconductance parameter, making the pull-up stronger. Both transistors saturate
+at the switching threshold Vm = (VDD - |Vtp| + Vtn·√(βn/βp))/(1 + √(βn/βp)), which sits
+at 1.81 V on a 3.3 V supply. Simulate with ``jolty simulate examples/cmos_inverter.py``.
 """
 
 import math
@@ -24,7 +23,7 @@ THRESHOLD = (SUPPLY - 0.7 + 0.7 * RATIO) / (1 + RATIO)
 
 @component
 def bench(c: Builder) -> None:
-    """The inverter on 3.3 V, driven by a pulse, loading 20 fF."""
+    """Builds the inverter on 3.3 V driven by a pulse into a 20 fF load."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     edges = Pulse(
@@ -46,12 +45,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The inverter on its bench."""
+    """Returns the CMOS inverter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The transfer curve, and two periods of edges."""
+    """Returns DC transfer-sweep and two-period transient edge analyses."""
     return Plan(
         {
             "transfer": DcSweep("VIN", linear(0 * V, SUPPLY * V, 331)),
@@ -61,7 +60,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Rail to rail, and the output at half the supply near the switching threshold."""
+    """Returns specs for rail-to-rail outputs and the mid-supply switching threshold."""
     return Specs(
         [
             value("transfer", "out", at=0 * V).within(SUPPLY * V, 1 * mV),

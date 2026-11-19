@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""The one transistor of the cubic function generator, of a fast bipolar process.
+"""Fast integrated bipolar transistor model provided for the cubic generator task.
 
-Every transistor of an integrated circuit made in one process matches every other, so a
-diode is an NPN transistor whose base joins its collector.
+All transistors fabricated on the same integrated die match each other, so a diode is
+implemented as a diode-connected NPN transistor with base tied to collector.
 """
 
 from jolty import devices
@@ -10,7 +10,7 @@ from jolty.units import A, V, fF, ohm, ps
 
 
 def npn() -> devices.Device:
-    """An integrated NPN transistor, its transit frequency gigahertz near 1 mA."""
+    """Returns an integrated NPN transistor with GHz transit frequency near 1 mA."""
     return devices.bipolar_transistor(
         saturation_current=1e-16 * A,
         forward_beta=100.0,

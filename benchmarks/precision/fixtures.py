@@ -1,15 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""The precision suite's fixtures: circuits whose exact answers are known.
+"""Precision benchmark fixtures pairing circuits with exact analytical references.
 
-Each fixture is a circuit, built with jolty's builder, one analysis, and the
-outputs scored against its exact answer, which `exact` computes independently of
-any simulator: closed forms, Lambert's W, and the circuits' own equations solved in
-higher precision. A simulator's run gives what it found at the points it chose, its
-times, levels or frequencies; the fixture compares each output there with the exact
-answer at the same points, beside a bound on the exact answer's own rounding.
+Each fixture defines a circuit built via jolty's builder, a single analysis, and scored
+outputs compared against independent references from `exact` (closed forms, Lambert's W,
+and high-precision modal solutions). Comparison callbacks evaluate exact answers at the
+sample points selected by each simulator alongside double-precision rounding bounds.
 
-The element values are the circuits' own doubles, which the exact answers read as
-they are, so that they answer the circuit every simulator reads, digit for digit.
+Reference equations consume the exact IEEE 754 doubles stored in each circuit so every
+simulator is evaluated against identical parameters.
 """
 
 import functools
@@ -49,19 +47,18 @@ from jolty.units import (
 from jolty.waveforms import Piecewise, Sine
 
 type Score = Literal["relative", "mixed"]
-"""How a quantity's error is judged: against its exact value, or against its exact
-value plus its scale, for a quantity that passes through or near zero."""
+"""Error metric mode: relative to exact magnitude, or mixed with a floor near zero."""
 
 type Analysis = Transient | PeriodicSteadyState | DcSweep | Ac | Noise | PoleZero
-"""An analysis a fixture runs."""
+"""Union of analysis types supported by precision fixtures."""
 
 
 @dataclass(frozen=True, slots=True)
 class Found:
-    """What a simulator found: the points it chose, and the values a fixture reads.
+    """Simulator outputs collected at the simulator's chosen sample coordinates.
 
-    The points are times, levels or frequencies, and none for poles; the values are
-    by the name of the unknown, or ``noise`` for a noise density and ``poles``.
+    `points` stores timestamps, sweep levels, or frequencies (empty for pole-zero),
+    while `values` maps unknown names (or ``noise`` and ``poles``) to arrays.
     """
 
     points: Real
@@ -70,11 +67,7 @@ class Found:
 
 @dataclass(frozen=True, slots=True)
 class ScoredOutput:
-    """An output a fixture scores.
-
-    It has a name, the score its diagram draws, and the scale the mixed score adds to
-    its exact value, in its unit.
-    """
+    """Specification of one scored fixture output: metric mode, scale, and unit."""
 
     name: str
     score: Score
@@ -84,11 +77,10 @@ class ScoredOutput:
 
 @dataclass(frozen=True, slots=True)
 class Compared:
-    """An output as a simulator found it, its exact value, and a bound on that.
+    """Paired simulated output, exact reference values, rounding bounds, and points.
 
-    The bound is on the exact value's absolute error, its rounding to doubles; each
-    array has a value per point, or a row per output and a value per point, and
-    `points` the point each value is at.
+    `bound` records the absolute double-precision rounding error of `exact`. Each array
+    holds one entry per point (or one row per output across points) matching `points`.
     """
 
     simulated: Real | Complex
@@ -99,27 +91,27 @@ class Compared:
 
 @dataclass(frozen=True, slots=True)
 class Fixture:
-    """A circuit, its analysis, and its scored outputs with their exact answers."""
+    """Precision fixture combining a circuit, analysis, and exact scoring callback."""
 
     name: str
     describes: str
     reference: str
-    """How the exact answer is computed."""
+    """Description of how the exact reference answer is computed."""
     top: Component
     analysis: Analysis
     reads: tuple[str, ...]
-    """The unknowns the comparison reads, by name."""
+    """Unknown names extracted from simulator results for comparison."""
     outputs: tuple[ScoredOutput, ...]
     compare: Callable[[Found], dict[str, Compared]]
     unsupported: Mapping[Simulator, str]
-    """Why a simulator cannot run the analysis, by the simulator's name."""
+    """Mapping from simulator identifier to why it cannot execute the analysis."""
 
 
 NGSPICE_PSS: Final = (
     "ngspice 47's pss searches an autonomous oscillator's frequency and returns its "
     "harmonics; it has no shooting for a circuit driven at a given period"
 )
-"""Why ngspice runs no periodic steady state of a driven circuit."""
+"""Explanation of why ngspice cannot run driven periodic steady-state analysis."""
 
 PROBES: Final = 50
 """The most nodes of a network a fixture scores, spread evenly along its node
@@ -140,7 +132,7 @@ SETTLED: Final = 5
 
 
 def _level(points: Sequence[tuple[float, float]]) -> Piecewise | units.Quantity:
-    """A source's level through `points`, or held at the only one."""
+    """Converts piecewise-linear `points` into a `Piecewise` or constant voltage."""
     if len(points) == 1:
         return points[0][1] * V
     return Piecewise([(time * s, value * V) for time, value in points])
@@ -153,7 +145,7 @@ def rc(
     capacitance: float,
     points: Sequence[tuple[float, float]],
 ) -> None:
-    """A source of a piecewise-linear level through a resistor into a capacitor."""
+    """Builds a series RC circuit driven by a piecewise-linear voltage source."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(_level(points)), name="V1")
     resistor = c.place(devices.resistor(resistance * ohm), name="R1")
@@ -171,7 +163,7 @@ def rlc(
     capacitance: float,
     points: Sequence[tuple[float, float]],
 ) -> None:
-    """A source through a resistor and an inductor in series into a capacitor."""
+    """Builds a series RLC low-pass circuit with a piecewise-linear voltage source."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(_level(points)), name="V1")
     resistor = c.place(devices.resistor(resistance * ohm), name="R1")
@@ -190,7 +182,7 @@ def tank(
     capacitance: float,
     points: Sequence[tuple[float, float]],
 ) -> None:
-    """A current source of a piecewise-linear level into an inductor and a capacitor."""
+    """Builds an undamped parallel LC tank with a piecewise-linear current source."""
     ground = c.port("ground", Role.GROUND)
     level = Piecewise([(time * s, value * A) for time, value in points])
     source = c.place(devices.current_source(level), name="I1")
@@ -202,7 +194,7 @@ def tank(
 
 @component
 def diode_load(c: Builder, resistance: float, saturation: float) -> None:
-    """A source through a resistor into a diode, its saturation current given."""
+    """Builds a DC voltage source driving a diode through a series resistor."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     resistor = c.place(devices.resistor(resistance * ohm), name="R1")
@@ -219,7 +211,7 @@ def diode_load(c: Builder, resistance: float, saturation: float) -> None:
 def driven_rc(
     c: Builder, resistance: float, capacitance: float, frequency: float
 ) -> None:
-    """A sine of 1 V at `frequency` through a resistor into a capacitor."""
+    """Builds a series RC circuit driven by a 1 V sinusoidal source at `frequency`."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 1 * V, frequency * Hz)
     source = c.place(devices.voltage_source(sine), name="V1")
@@ -232,9 +224,9 @@ def driven_rc(
 
 @component
 def ladder_filter(c: Builder, terminations: float, values: Sequence[float]) -> None:
-    """A doubly terminated LC ladder: shunt capacitors and series inductors in turn.
+    """Builds a doubly terminated LC ladder of shunt capacitors and series inductors.
 
-    Its first capacitor is at ``n1``, its last at ``out``.
+    Connects the first shunt capacitor to ``n1`` and the final one to ``out``.
     """
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
@@ -262,9 +254,9 @@ def ladder_filter(c: Builder, terminations: float, values: Sequence[float]) -> N
 def network(
     c: Builder, shape: exact.Tree, points: Sequence[tuple[float, float]]
 ) -> None:
-    """A tree of resistors, a capacitor from each node to the ground, under a source.
+    """Builds an RC tree network with grounded capacitors driven by a voltage source.
 
-    The source's level is piecewise-linear, and the nodes are ``n0`` onward.
+    Uses a piecewise-linear source waveform and names tree nodes ``n0`` onward.
     """
     ground = c.port("ground", Role.GROUND)
     level = Piecewise([(time * s, value * V) for time, value in points])
@@ -290,10 +282,7 @@ def network(
 def _transient(
     modal: Callable[[], exact.Modal], reads: Sequence[str], name: str
 ) -> Callable[[Found], dict[str, Compared]]:
-    """The comparison of the outputs `reads` of a transient with `modal`'s.
-
-    It compares them as the output `name`.
-    """
+    """Builds a callback scoring transient `reads` against `modal` under `name`."""
 
     def compare(found: Found) -> dict[str, Compared]:
         solved = modal()
@@ -312,10 +301,7 @@ def _steps(
     points: tuple[tuple[float, float], ...],
     stop: float,
 ) -> Fixture:
-    """A fixture of an RC under a piecewise-linear level, scored at its output.
-
-    `values` are the resistance and the capacitance.
-    """
+    """Builds a piecewise-linear RC transient fixture with `(R, C)` `values`."""
     resistance, capacitance = values
 
     @functools.cache
@@ -337,7 +323,7 @@ def _steps(
 
 
 def rlc_step() -> Fixture:
-    """An under-damped series RLC under a step of 1 V that rises in a nanosecond."""
+    """Builds an under-damped series RLC fixture driven by a 1 V, 1 ns step."""
     resistance, inductance, capacitance = 10.0, 1e-6, 1e-9
     points = ((0.0, 0.0), (1e-9, 1.0))
 
@@ -364,7 +350,7 @@ def rlc_step() -> Fixture:
 
 
 def lc_tank() -> Fixture:
-    """An undamped LC tank set ringing by a current source turned off in 1 ns."""
+    """Builds an undamped LC tank fixture excited by a 1 ns current turn-off."""
     inductance, capacitance = 1e-6, 1e-9
     points = ((0.0, 1e-3), (1e-9, 0.0))
 
@@ -429,7 +415,7 @@ def lc_tank() -> Fixture:
 
 
 def diode() -> Fixture:
-    """A diode fed through 1 kΩ from a source swept from 0.1 V to 5 V."""
+    """Builds a DC-swept resistor-diode fixture from 0.1 V to 5 V."""
     resistance, saturation = 1e3, 1e-14
     thermal = (
         mpf(_core.BOLTZMANN)
@@ -464,7 +450,7 @@ def diode() -> Fixture:
 
 
 def rlc_ac() -> Fixture:
-    """A series RLC low-pass of quality factor 31.6, from 1 Hz to 1 GHz."""
+    """Builds a series RLC AC fixture (Q = 31.6) swept from 1 Hz to 1 GHz."""
     resistance, inductance, capacitance = 1.0, 1e-6, 1e-9
 
     def form(frequency: _mpf) -> object:
@@ -498,7 +484,7 @@ def rlc_ac() -> Fixture:
 
 
 def rc_noise() -> Fixture:
-    """The noise of 1 kΩ, filtered by 1 nF, from 1 Hz to 1 GHz."""
+    """Builds a thermal-noise fixture (1 kΩ into 1 nF) from 1 Hz to 1 GHz."""
     resistance, capacitance = 1e3, 1e-9
 
     def form(frequency: _mpf) -> object:
@@ -538,10 +524,10 @@ per second."""
 
 
 def butterworth_values() -> tuple[float, ...]:
-    """The ladder's capacitances and inductances, in turn from the source's end.
+    """Computes alternating Butterworth ladder C and L values from source to load.
 
-    They are the normalized ``gₖ = 2 sin((2k - 1)π/2n)`` scaled to the terminations
-    and the cutoff, each rounded to a double, as the circuit holds them.
+    Scales normalized values ``gₖ = 2 sin((2k - 1)π/2n)`` by termination resistance
+    and cutoff frequency, rounded to IEEE 754 doubles matching the circuit.
     """
     order, terminations, cutoff = BUTTERWORTH
     normalized = [
@@ -554,9 +540,9 @@ def butterworth_values() -> tuple[float, ...]:
 
 
 def butterworth_states(values: Sequence[float]) -> list[list[_mpf]]:
-    """The ladder's state equations, ``ẋ = A x``, in mpmath.
+    """Builds the Butterworth ladder state matrix ``A`` (``ẋ = A x``) in mpmath.
 
-    The states are the capacitors' voltages and the inductors' currents in turn.
+    Orders state variables as alternating capacitor voltages and inductor currents.
     """
     r = mpf(BUTTERWORTH[1])
     c1, l2, c3, l4, c5 = (mpf(value) for value in values)
@@ -571,7 +557,7 @@ def butterworth_states(values: Sequence[float]) -> list[list[_mpf]]:
 
 
 def butterworth_poles() -> Fixture:
-    """A fifth-order Butterworth LC ladder between 50 Ω, cut off at 1 MHz."""
+    """Builds a fifth-order Butterworth LC ladder pole-zero fixture (50 Ω)."""
     terminations = BUTTERWORTH[1]
     values = butterworth_values()
 
@@ -618,7 +604,7 @@ def butterworth_poles() -> Fixture:
 
 
 def rc_periodic() -> Fixture:
-    """The periodic steady state of an RC driven at a tenth of its corner."""
+    """Builds a driven RC periodic steady-state fixture (tau = 10 periods)."""
     resistance, capacitance, frequency = 1e3, 10e-6, 1e3
     omega = 2 * mpmath.pi * mpf(frequency)
     gain = 1 / (1 + 1j * omega * mpf(resistance) * mpf(capacitance))
@@ -652,7 +638,7 @@ def rc_periodic() -> Fixture:
 
 
 def networked(kind: Literal["ladder", "tree"], size: int) -> Fixture:
-    """A ladder or a random tree of `size` nodes, its values random, under a step."""
+    """Builds a random-valued `size`-node RC ladder or tree step-response fixture."""
     generator = np.random.default_rng(
         (LADDER_SEED if kind == "ladder" else TREE_SEED) + size
     )
@@ -711,9 +697,9 @@ def networked(kind: Literal["ladder", "tree"], size: int) -> Fixture:
 
 
 def _estimated_rates(shape: exact.Tree) -> Real:
-    """The rates of `shape`'s modes, by LAPACK in double precision.
+    """Estimates modal decay rates of `shape` via double-precision LAPACK eigenvalues.
 
-    They set the run's length alone.
+    Used solely to determine the transient simulation stop time.
     """
     count = len(shape.capacitances)
     conductances = np.zeros((count, count))
@@ -729,7 +715,7 @@ def _estimated_rates(shape: exact.Tree) -> Real:
 
 
 def fixtures() -> dict[str, Fixture]:
-    """Every fixture, by name."""
+    """Returns all precision benchmark fixtures keyed by name."""
     made = [
         _steps(
             "rc_step",

@@ -19,12 +19,12 @@ from jolty.waveforms import Piecewise
 BITS = 3
 TAPS = 2**BITS - 1
 RAMP = 8e-6
-"""How long the input takes to rise from 0 V to the reference, in seconds."""
+"""Duration for the input ramp to rise from 0 V to the reference, in seconds."""
 
 
 @component
 def flash(c: Builder) -> None:
-    """The ladder, the comparators, and the encoder of the thermometer code."""
+    """Builds the resistor ladder, comparators, and thermometer-code encoder."""
     source = c.port("input", Role.INPUT)
     outputs = [c.port(f"b{bit}", Role.OUTPUT) for bit in range(BITS)]
     reference, ground = c.port("vref", Role.SUPPLY), c.port("ground", Role.GROUND)
@@ -62,7 +62,7 @@ def flash(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The converter, its reference 3.3 V, its input a ramp, its outputs loaded."""
+    """Builds the converter with a 3.3 V reference, input ramp, and capacitive loads."""
     ground = c.port("ground", Role.GROUND)
     reference = c.place(devices.voltage_source(SUPPLY * V), name="VREF")
     ramp = Piecewise([(0 * us, 0 * V), (RAMP * 1e6 * us, SUPPLY * V)])
@@ -78,17 +78,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The converter on its bench."""
+    """Returns the flash ADC test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The ramp, from 0 V to the reference."""
+    """Returns a transient plan sweeping the input ramp from 0 V to the reference."""
     return Plan({"ramp": Transient(stop=RAMP * 1e6 * us, max_step=10 * ns)})
 
 
 def specs() -> Specs:
-    """Each code's bits, read where the ramp is mid-way through its step."""
+    """Returns bit-level specifications sampled at the midpoint of each code step."""
     requirements = []
     for code in range(2**BITS):
         at = (code + 0.5) / 2**BITS * RAMP * 1e6 * us

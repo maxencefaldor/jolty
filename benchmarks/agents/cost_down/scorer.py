@@ -1,21 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""The cost-down task's scorer, which the agent never sees.
+"""Hidden benchmark scorer for the resistor cost-down optimization task.
 
-It builds the agent's ``design.py``, simulates it with the plan and specs of the given
-``bias.py``, checks that the bench outside ``X1`` is the original's, and prices ``X1``
-with the given catalog. The work meets the task when the simulation meets its plan and
-the design costs less than the original. Each way it falls short of the plan is jolty's
-own reason, of its kind, such as a requirement that fails or a yield below its target;
-the bench, the catalog and the cost are the specs ``bench``, ``catalog`` and ``cost``.
-The ngspice arm's ``design.cir`` and ``tolerances.json`` are built as ``netlist.py``
-builds them: the original bench, with the stage they define in place of the original's.
+The scorer builds ``design.py``, runs ``jolty simulate`` using the plan and specs from
+``bias.py``, verifies that the test bench outside ``X1`` matches the baseline, and
+prices ``X1`` against ``catalog.json``. A submission passes when the simulation meets
+the plan, all bench and catalog checks pass, and total cost is strictly lower than
+baseline. Plan failures keep jolty's shortfall categories, while bench, catalog, and
+cost violations map to specs ``bench``, ``catalog``, and ``cost``. For the ngspice arm,
+``netlist.py`` mounts ``design.cir`` and ``tolerances.json`` onto the baseline bench.
 
-A bill leaves out the parts no part of the catalog prices, such as the given
-transistor, so the design's total compares with the original's only when it leaves out
-no more than the original does. Each part the original leaves out excuses one of the
-design's that is the same part, as the arm's agent got it, whatever its name and
-wherever it sits: of the same model, with the same parameters, tolerances, ratings and
-part number.
+Catalog bills omit unpriced components such as the given transistor, so cost
+comparisons remain valid only when no extra unpriced parts are introduced. Each
+unpriced baseline device excuses one identical device in the submission regardless of
+name or hierarchy, matching model, parameters, tolerances, ratings, and part number.
 """
 
 import runpy
@@ -32,11 +29,11 @@ from jolty import Component, catalog, circuit, ir
 from jolty.errors import JoltyError
 
 INSTANCE = "X1"
-"""The instance whose parts the cost-down task prices."""
+"""Hierarchical instance path of the amplifier stage priced against the catalog."""
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the cost-down `work` against `task`, as `arm` writes it."""
+    """Scores the cost-down submission in `work` against `task` for `arm`."""
     given = task / "given"
     parts = catalog.Catalog.load(given / "catalog.json")
     reference, reference_circuit = simulate(given / "bias.py", given / "bias.py")
@@ -53,8 +50,8 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         try:
             result, built = simulate(design, given / "bias.py")
         except JoltyError as error:
-            # jolty simulate reports what it finds of a circuit, and raises only when
-            # the script makes none: it fails, runs out of time or its process ends.
+            # jolty simulate returns analysis failures in the result and raises only
+            # when the script fails to build, times out, or exits abnormally.
             return Verdict(
                 met=False,
                 measures={"baseline": baseline},
@@ -85,15 +82,14 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
 
 
 NETLIST = ("design.cir", "tolerances.json")
-"""The ngspice arm's design: its stage, and its resistors' tolerances."""
+"""Submission filenames expected for the ngspice arm: stage netlist and tolerances."""
 
 
 def _script(task: Path, work: Path, arm: Arm, directory: Path) -> Path:
-    """The build script of the design `arm` writes in `work`, which may be missing.
+    """Returns the build script for `arm` in `work`, staging ``netlist.py`` if needed.
 
-    The jolty arm's is its own ``design.py``. The ngspice arm's is ``netlist.py`` in
-    `directory`, as `_netlist` writes it of the agent's ``design.cir`` and
-    ``tolerances.json``, or none without a ``design.cir``.
+    Returns ``design.py`` directly for jolty, or stages ``design.cir`` and optional
+    ``tolerances.json`` through `_netlist` into `directory` for ngspice.
     """
     if arm is Arm.JOLTY:
         return work / "design.py"
@@ -106,10 +102,10 @@ def _script(task: Path, work: Path, arm: Arm, directory: Path) -> Path:
 def _netlist(
     task: Path, netlist: Path, tolerances: Path | None, directory: Path
 ) -> Path:
-    """``netlist.py``, copied into `directory` as ``design.py`` to build `netlist`.
+    """Stages ``netlist.py`` as ``design.py`` in `directory` to wrap `netlist`.
 
-    Beside it go the given ``bias.py``, `netlist` as ``design.cir``, and `tolerances`,
-    when it is a file, as ``tolerances.json``.
+    Copies ``bias.py``, `netlist` as ``design.cir``, and optional `tolerances` as
+    ``tolerances.json`` into `directory` alongside the adapter script.
     """
     named_netlist, named_tolerances = NETLIST
     shutil.copy(task / "netlist.py", directory / "design.py")
@@ -123,10 +119,10 @@ def _netlist(
 def _given(
     task: Path, arm: Arm, reference: ir.Circuit, original: catalog.Bill
 ) -> list[ir.Instance]:
-    """The parts `original`, the bill of `reference`, leaves out, as `arm` got them.
+    """Collects unpriced baseline `ir.Instance` objects excused by `original` for `arm`.
 
-    They are the original's own, for the jolty arm, and those of the given stage
-    netlist read by jolty, for the ngspice arm, at the paths the bill names.
+    Uses instances from `reference` for jolty and parsed instances from the given
+    ``stage.cir`` netlist for ngspice.
     """
     if arm is Arm.JOLTY:
         stage = reference
@@ -146,10 +142,10 @@ def _given(
 def _unpriced(
     priced: catalog.Bill, built: ir.Circuit, excused: Iterable[ir.Instance]
 ) -> list[Shortfall]:
-    """Why each part `priced`, the bill of `built`, leaves out is not excused.
+    """Checks unpriced parts in `priced` against `excused` baseline parts.
 
-    Each of `excused` excuses one part that is the same part, whatever its name and
-    wherever it sits. A part not excused falls short of the spec ``catalog``.
+    Each entry in `excused` excuses one matching device regardless of instance name or
+    location; remaining unpriced parts yield ``catalog`` shortfalls.
     """
     placed = dict(catalog.built(built, built.top))
     left = [_part(each) for each in excused]
@@ -166,10 +162,10 @@ def _unpriced(
 
 
 def _part(instance: ir.Instance) -> ir.Instance:
-    """What `instance` is, whatever its name and wherever it sits.
+    """Normalizes `instance` for location-independent part equality comparison.
 
-    It is `instance` without its id, the nets of its terminals and the script line that
-    placed it: its model, parameters, tolerances, ratings and part number.
+    Clears name, terminal connections, and source location while preserving model,
+    parameters, tolerances, ratings, and part number.
     """
     return instance.model_copy(
         update={"name": "", "terminals": {}, "source_location": None}
@@ -177,7 +173,7 @@ def _part(instance: ir.Instance) -> ir.Instance:
 
 
 def _bench_changes(reference: ir.Circuit, built: ir.Circuit) -> list[str]:
-    """How the bench of `built`, its top component but the stage's parts, differs."""
+    """Returns descriptions of modifications to the top-level bench outside ``X1``."""
 
     def bench(circuit: ir.Circuit) -> dict[str, ir.Instance]:
         return {

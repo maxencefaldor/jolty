@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""A Colpitts oscillator: a 2N3904 in common base, its tank a coil and two capacitors.
+"""A Colpitts oscillator: a common-base 2N3904 with an LC tank and capacitive divider.
 
-The tank's 100 µH resonates with its capacitors in series, 1 nF and 10 nF making
-0.909 nF, at 1/(2π√(LC)) = 528 kHz; their divider feeds the emitter a tenth of the
-collector's swing in phase, closing the loop. The supply's rise starts it. Simulate it
-with ``jolty simulate examples/colpitts_oscillator.py``.
+The 100 µH inductor resonates with the 1 nF and 10 nF series capacitors (0.909 nF
+equivalent) at 1/(2π√(LC)) = 528 kHz. The capacitive divider feeds one tenth of the
+collector swing back to the emitter in phase, and the supply ramp initiates oscillation.
+Simulate with ``jolty simulate examples/colpitts_oscillator.py``.
 """
 
 import math
@@ -21,7 +21,7 @@ TANK = 1 / (2 * math.pi * math.sqrt(100e-6 * 1e-9 * 10e-9 / 11e-9))
 
 @component
 def colpitts(c: Builder) -> None:
-    """The transistor, its bias, and the tank between collector, emitter and ground."""
+    """Builds the common-base transistor, bias network, and capacitive LC tank."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     transistor = c.place(q2n3904(), name="Q1")
@@ -41,7 +41,7 @@ def colpitts(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The oscillator on 9 V, rising in 1 µs."""
+    """Builds the oscillator powered by a 9 V supply ramping over 1 µs."""
     ground = c.port("ground", Role.GROUND)
     ramp = Pulse(
         initial=0 * V,
@@ -59,17 +59,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The oscillator on its bench."""
+    """Returns the Colpitts oscillator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """A hundred microseconds: the start and some forty cycles."""
+    """Returns a 100 µs transient plan covering start-up and roughly 40 cycles."""
     return Plan({"run": Transient(stop=100 * us, max_step=10 * ns)})
 
 
 def specs() -> Specs:
-    """Oscillation within 3 % of the tank's resonance, with a few volts of swing."""
+    """Returns specifications for oscillation within 3 % of tank resonance and swing."""
     return Specs(
         [
             frequency("run", "out", start=80 * us).within(TANK * Hz, 0.03 * TANK * Hz),

@@ -1,10 +1,9 @@
 # Copyright 2026 Maxence Faldor
 """A long-tailed pair: two 2N3904s sharing a 1 mA tail, steering it between them.
 
-The difference of the bases splits the tail as a hyperbolic tangent: the collector
-currents' difference is I·tanh(Vd/2Vt), so the outputs' difference swings ±I·Rc =
-±10 V and its small-signal gain is gm·Rc = (I/2)/Vt·Rc, some 193. Simulate it with
-``jolty simulate examples/differential_pair.py``.
+The base voltage difference splits the tail current as I·tanh(Vd/2Vt). The differential
+output swings ±I·Rc = ±10 V with a small-signal gain of gm·Rc = (I/2)/Vt·Rc (about 193).
+Simulate with ``jolty simulate examples/differential_pair.py``.
 """
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
@@ -16,7 +15,7 @@ from jolty.units import V, kohm, mA, mV
 
 @component
 def pair(c: Builder) -> None:
-    """Two transistors with collector loads, their emitters on one tail."""
+    """Builds two transistors with collector loads sharing a common emitter tail."""
     plus, minus = c.port("plus", Role.INPUT), c.port("minus", Role.INPUT)
     left, right = c.port("left", Role.OUTPUT), c.port("right", Role.OUTPUT)
     supply, tail = c.port("vcc", Role.SUPPLY), c.port("tail")
@@ -33,7 +32,7 @@ def pair(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The pair on ±12 V, its tail a 1 mA source, one base swept against the other."""
+    """Builds the pair on ±12 V with a 1 mA tail and a swept differential input."""
     ground = c.port("ground", Role.GROUND)
     positive = c.place(devices.voltage_source(12 * V), name="VCC")
     negative = c.place(devices.voltage_source(12 * V), name="VEE")
@@ -52,12 +51,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The pair on its bench."""
+    """Returns the differential pair test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The balanced operating point, and the difference swept across ±200 mV."""
+    """Returns balanced operating-point and ±200 mV differential DC sweep analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -67,7 +66,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Balanced at zero, the tail all on one side 200 mV away."""
+    """Returns specifications for zero offset at balance and full tail steering."""
     return Specs(
         [
             value("op", "left", reference="right").within(0 * V, 1 * mV),

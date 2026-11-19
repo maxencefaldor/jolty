@@ -14,7 +14,7 @@ from jolty.waveforms import Piecewise
 
 @component
 def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
-    """A series resistor, then a capacitor to ground."""
+    """Builds a series resistor followed by a shunt capacitor to ground."""
     source = c.port("input")
     output = c.port("output")
     ground = c.port("ground", Role.GROUND)
@@ -27,7 +27,7 @@ def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The filter, driven by a 1 V step at 1 µs."""
+    """Builds the RC filter driven by a 1 V step at 1 µs."""
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0 * V), (1 * us + 1 * ns, 1 * V)])
     source = c.place(devices.voltage_source(step), name="V1")
@@ -38,12 +38,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The filter on its bench."""
+    """Returns the RC filter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, the step response and the frequency response."""
+    """Returns operating-point, transient step-response, and AC Bode analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -54,7 +54,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """A flat passband to 150 kHz, and a step that rises within 2.5 µs, cleanly."""
+    """Returns specifications for passband flatness, 159 kHz cutoff, and clean rise."""
     return Specs(
         [
             gain("bode", "out", at=1 * kHz).within(0, 0.1),

@@ -1,17 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""What every suite records of where it measured, and its results files.
+"""Shared provenance, I/O, formatting, and statistics helpers for benchmark suites.
 
-Each suite of ``benchmarks/`` measures on one machine, at one commit, under the load
-other programs put on it, and writes what it found to a results file headed by its
-provenance: the commit, marked ``-dirty`` when tracked files have changes, and the
-machine. This module is the one definition of each, which every suite imports: the
-suites themselves (`Suite`), `load_average`, `commit`, `machine`, `provenance`,
-`results_path` in each suite's `results_directory`, and `format_json`, `save` and
-`load` for the results files; `duration`, how the suites print a time; `memory`, how
-they print a byte count; `ru_maxrss_to_bytes`, `peak_memory_bytes` and
-`available_memory_bytes` for resident memory; `markdown_table`, `aligned_row` and
-`aligned_table` for reporting tables; and `median`, the median of a time's runs
-with the interval that holds the true median at `CONFIDENCE`.
+Every suite under ``benchmarks/`` runs on one host at one commit and writes a results
+file headed by its `Provenance` (commit hash with optional ``-dirty`` suffix plus host
+metadata). Core helpers cover suite identifiers (`Suite`), host metrics (`load_average`,
+`usable_cores`, `commit`, `machine`, `provenance`), and JSON storage (`results_path`,
+`results_directory`, `format_json`, `save`, `load`). Additional utilities format times
+(`duration`), memory (`memory`, `ru_maxrss_to_bytes`, `peak_memory_bytes`,
+`available_memory_bytes`), tables (`markdown_table`, `aligned_row`, `aligned_table`),
+and distribution-free median intervals (`median`, `rank`, `CONFIDENCE`).
 """
 
 import json
@@ -34,14 +31,14 @@ from pydantic import BaseModel, JsonValue
 from jolty.simulate import pool
 
 BENCHMARKS: Final = Path(__file__).resolve().parent
-"""The ``benchmarks`` directory, which holds a directory for each suite."""
+"""Root directory of the ``benchmarks/`` tree, containing one subdirectory per suite."""
 
 ROOT: Final = BENCHMARKS.parent
-"""The repository's root."""
+"""Root directory of the repository."""
 
 
 class Suite(StrEnum):
-    """A suite of fixtures run and scored one way, named as its directory is."""
+    """Benchmark suite identifier, matching its directory name under ``benchmarks/``."""
 
     SPEED = "speed"
     PRECISION = "precision"
@@ -51,10 +48,10 @@ class Suite(StrEnum):
 
 
 DIRTY: Final = "-dirty"
-"""What marks a commit whose working tree has changes to tracked files."""
+"""Suffix appended to a commit hash when tracked files have uncommitted changes."""
 
 KIBIBYTE: Final = 1024
-"""Bytes per kibibyte, the unit Linux ``getrusage(2)`` and ``/proc`` report."""
+"""Bytes per kibibyte, matching Linux ``getrusage(2)`` and ``/proc`` units."""
 
 _MEMORY_UNITS: Final = (
     (1 << 40, "TiB"),
@@ -62,38 +59,37 @@ _MEMORY_UNITS: Final = (
     (1 << 20, "MiB"),
     (1 << 10, "KiB"),
 )
-"""IEC binary prefixes for `memory`, largest first."""
+"""IEC binary prefixes for `memory`, ordered from largest to smallest."""
 
 _DARWIN: Final = "darwin"
-"""`sys.platform` value on macOS, where ``getrusage(2)`` reports bytes."""
+"""macOS `sys.platform` string, where ``getrusage(2)`` reports raw bytes."""
 
 _PROC_STATUS: Final = Path("/proc/self/status")
-"""Linux process status file holding `VmHWM` (`proc_pid_status(5)`)."""
+"""Linux process status file containing `VmHWM` (`proc_pid_status(5)`)."""
 
 _PROC_MEMINFO: Final = Path("/proc/meminfo")
 """Linux memory summary file (`proc_meminfo(5)`)."""
 
 _PROC_FIELDS: Final = 2
-"""Minimum whitespace-separated tokens on a Linux ``/proc`` key-value line."""
+"""Minimum number of whitespace-separated tokens on a Linux ``/proc`` key-value line."""
 
 
 def load_average() -> float:
-    """The machine's load average over the last minute."""
+    """Returns the machine's one-minute load average."""
     return os.getloadavg()[0]
 
 
 def usable_cores() -> int:
-    """The threads the engine runs on by default, a thread per processor it may use.
+    """Returns the default thread count used by the engine, one per usable processor.
 
-    The engine's own count, as Rust's `available_parallelism` reads it: the processors
-    the process's affinity allows, within its container's CPU quota, so that "every
-    core" is the same number in the Python timings as in the engine's batches.
+    Matches Rust's `available_parallelism` count (respecting CPU affinity and
+    container CPU quotas) so Python benchmarks and engine batches agree on cores.
     """
     return pool().threads
 
 
 def git(*arguments: str) -> str:
-    """What git prints for `arguments`, in the repository."""
+    """Runs git with `arguments` in the repository root and returns stripped stdout."""
     done = subprocess.run(  # noqa: S603 - git reads the repository
         ["git", *arguments],  # noqa: S607 - git is on the path
         capture_output=True,
@@ -105,13 +101,13 @@ def git(*arguments: str) -> str:
 
 
 def commit() -> str:
-    """The checked-out commit, marked `DIRTY` when tracked files have changes."""
+    """Returns the checked-out commit hash, adding `DIRTY` if tracked files differ."""
     dirty = git("status", "--porcelain", "--untracked-files=no") != ""
     return git("rev-parse", "HEAD") + (DIRTY if dirty else "")
 
 
 def _sysctl(name: str) -> str | None:
-    """The value of the macOS kernel setting `name`, or None elsewhere."""
+    """Returns the macOS kernel setting `name`, or None when unavailable."""
     try:
         done = subprocess.run(  # noqa: S603 - sysctl reads the machine's settings
             ["sysctl", "-n", name],  # noqa: S607 - sysctl is on the path on macOS
@@ -125,7 +121,7 @@ def _sysctl(name: str) -> str | None:
 
 
 def machine() -> dict[str, JsonValue]:
-    """The machine the suites measure on: its processor, memory and system."""
+    """Collects host CPU, memory, OS, Python, and Rust metadata."""
     cpu = _sysctl("machdep.cpu.brand_string")
     sockets = _sysctl("hw.packages")
     total_memory = _sysctl("hw.memsize")
@@ -174,9 +170,9 @@ def machine() -> dict[str, JsonValue]:
 
 
 class Provenance(BaseModel):
-    """Where a suite measured: the commit, with its `DIRTY` mark, and the machine.
+    """Measurement provenance: commit hash (with optional `DIRTY`) and host metadata.
 
-    It heads every suite's results file.
+    Every benchmark suite records a `Provenance` header in its results file.
     """
 
     commit: str
@@ -184,26 +180,26 @@ class Provenance(BaseModel):
 
 
 def provenance() -> Provenance:
-    """The provenance of a measurement made now, here."""
+    """Builds a `Provenance` record for the current commit and host machine."""
     return Provenance(commit=commit(), machine=machine())
 
 
 def results_directory(suite: Suite) -> Path:
-    """The directory of the results files of `suite`."""
+    """Returns the results directory for `suite`."""
     return BENCHMARKS / suite / "results"
 
 
 def results_path(suite: Suite) -> Path:
-    """Where the checked-out commit's results of `suite` go: ``<commit>.json``.
+    """Returns the ``<commit>.json`` results path for `suite` at HEAD.
 
-    The commit carries its `DIRTY` mark, and the file lies in the suite's
-    `results_directory`.
+    Includes the `DIRTY` suffix when tracked files have changes, placed inside
+    `results_directory(suite)`.
     """
     return results_directory(suite) / f"{commit()}.json"
 
 
 def shown(path: Path) -> Path:
-    """`path` from the repository's root, if it lies within it, as messages give it."""
+    """Returns `path` relative to `ROOT` when inside the repo, else unchanged."""
     return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
 
 
@@ -220,26 +216,26 @@ class _JsonStyle:
 
 
 def _is_json_scalar(value: object) -> bool:
-    """Return whether `value` is a JSON scalar: null, boolean, number, or string."""
+    """Returns whether `value` is a JSON scalar: null, boolean, number, or string."""
     return value is None or isinstance(value, bool | int | float | str)
 
 
 def _is_flat_json_object(value: object) -> bool:
-    """Return whether `value` is a mapping of string keys to JSON scalars."""
+    """Returns whether `value` is a mapping of string keys to JSON scalars."""
     return isinstance(value, Mapping) and all(
         isinstance(key, str) and _is_json_scalar(item) for key, item in value.items()
     )
 
 
 def _entry_key[V](entry: tuple[str, V]) -> str:
-    """Return the key of a `(key, value)` entry for sorting."""
+    """Returns the key of a `(key, value)` entry for sorting."""
     return entry[0]
 
 
 def _mapping_entries[K, V](
     mapping: Mapping[K, V], *, sort_keys: bool
 ) -> list[tuple[str, V]]:
-    """Return `(key, value)` pairs from `mapping`, verifying string keys.
+    """Returns `(key, value)` pairs from `mapping`, verifying that all keys are strings.
 
     Raises:
         TypeError: When any key in `mapping` is not a string.
@@ -256,13 +252,13 @@ def _mapping_entries[K, V](
 
 
 def _format_flat_object[K, V](mapping: Mapping[K, V], style: _JsonStyle) -> str:
-    """Serialize a flat mapping of string keys to JSON scalars onto one line."""
+    """Serializes a flat mapping of string keys to JSON scalars onto one line."""
     entries = _mapping_entries(mapping, sort_keys=style.sort_keys)
     return json.dumps(dict(entries), allow_nan=False)
 
 
 def _format_sequence(items: Sequence[object], style: _JsonStyle, level: int) -> str:
-    """Format a JSON array, keeping scalar lists and flat object items on one line."""
+    """Formats a JSON array, keeping scalar lists and flat object items on one line."""
     if not items:
         return "[]"
     if all(_is_json_scalar(item) for item in items):
@@ -285,7 +281,7 @@ def _format_sequence(items: Sequence[object], style: _JsonStyle, level: int) -> 
 
 
 def _format_mapping[K, V](mapping: Mapping[K, V], style: _JsonStyle, level: int) -> str:
-    """Format a JSON object with one key per line at indentation depth `level`."""
+    """Formats a JSON object with one key per line at indentation depth `level`."""
     entries = _mapping_entries(mapping, sort_keys=style.sort_keys)
     if not entries:
         return "{}"
@@ -301,7 +297,7 @@ def _format_mapping[K, V](mapping: Mapping[K, V], style: _JsonStyle, level: int)
 
 
 def _format_json_node(value: object, style: _JsonStyle, level: int) -> str:
-    """Recursively format a JSON value at indentation depth `level`.
+    """Formats a JSON value recursively at indentation depth `level`.
 
     Raises:
         TypeError: When `value` or any nested element is not JSON-serializable.
@@ -322,7 +318,7 @@ def format_json(
     indent: int = _DEFAULT_JSON_INDENT,
     sort_keys: bool = False,
 ) -> str:
-    """Format `value` as diffable compact JSON without a trailing newline.
+    """Formats `value` as diffable compact JSON without a trailing newline.
 
     Nested objects and mixed arrays are indented by `indent` spaces for readable
     diffs. Arrays of JSON scalars (such as numeric samples or `[real, imaginary]`
@@ -342,7 +338,7 @@ def format_json(
 
 
 def save(path: Path, results: BaseModel | Mapping[str, object]) -> None:
-    """Writes the results file `path`, as diffable compact JSON, and says so."""
+    """Writes `results` to `path` as compact JSON and prints the destination path."""
     document = (
         results.model_dump(mode="json") if isinstance(results, BaseModel) else results
     )
@@ -353,25 +349,24 @@ def save(path: Path, results: BaseModel | Mapping[str, object]) -> None:
 
 
 def load(path: Path) -> dict[str, Any]:
-    """What the results file `path` holds, as `save` wrote it."""
+    """Reads and parses a JSON results file written by `save`."""
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 CONFIDENCE: Final = 0.95
-"""The confidence of every interval the suites state."""
+"""Confidence level used for all median confidence intervals across benchmark suites."""
 
 
 def rank(count: int, confidence: float = CONFIDENCE) -> int | None:
-    """The rank, from 1, of the order statistics that bound the median of `count` runs.
+    """Computes the 1-based order-statistic rank bounding the median of `count` runs.
 
-    Of `count` runs of any continuous distribution, each falls below its median with
-    probability one half, independently, so the number below is binomial, of `count`
-    trials and one half; the `k`-th smallest and the `k`-th largest run then hold the
-    median between them unless `k` or more fall on one side of it, with probability
-    `1 - 2 P(B < k)`. The rank is the largest `k` whose interval holds the median with
-    at least `confidence`, from the binomial's exact sums; None when even the smallest
-    and the largest run do not, as with fewer than 6 runs at 95%: `1 - 2 / 2**5` is
-    93.75%.
+    For `count` independent samples from any continuous distribution, each sample
+    falls below the true median with probability 0.5. The count below the median
+    follows a binomial distribution, so the `k`-th smallest and `k`-th largest
+    samples bracket the median with probability `1 - 2 P(B < k)`. Selects the
+    largest `k` whose exact binomial coverage reaches `confidence`, or returns None
+    when even the full range falls short (as with fewer than 6 runs at 95%, where
+    `1 - 2 / 2**5` is 93.75%).
 
     Examples:
         >>> rank(5), rank(6), rank(10), rank(100)
@@ -390,11 +385,11 @@ def rank(count: int, confidence: float = CONFIDENCE) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class Median:
-    """The median of a time's runs, and the interval that holds its true median.
+    """Sample median of benchmark runs with a distribution-free confidence interval.
 
-    The interval holds the median of the distribution the runs are drawn from with
-    `CONFIDENCE` at least, whatever the distribution, as `rank` sets its ends: None when
-    there are too few runs for one.
+    Interval bounds cover the true distribution median with probability at least
+    `CONFIDENCE`, using order-statistic endpoints from `rank` (None when too few
+    runs exist).
     """
 
     value: float
@@ -402,9 +397,9 @@ class Median:
     upper: float | None = None
 
     def separated(self, other: Median) -> bool:
-        """Whether the two intervals do not meet, the medians then different.
+        """Returns whether two confidence intervals are disjoint (distinct medians).
 
-        Never when either has no interval.
+        Returns False when either median lacks confidence interval bounds.
         """
         if self.lower is None or self.upper is None:
             return False
@@ -413,11 +408,11 @@ class Median:
         return self.upper < other.lower or other.upper < self.lower
 
     def resolution(self, other: Median) -> float | None:
-        """The least change from this median to `other` their intervals would separate.
+        """Computes the minimum relative shift separating `self` and `other` intervals.
 
-        As a fraction of this median: the change at which `other`'s interval, moved as
-        its median moves, would clear this one's, on whichever side is wider; None when
-        either has no interval.
+        Expressed as a fraction of `self.value`, taking the wider of the upward and
+        downward shifts required for `other`'s interval to clear `self`'s interval.
+        Returns None when either median lacks interval bounds.
         """
         if self.lower is None or self.upper is None:
             return None
@@ -429,7 +424,7 @@ class Median:
 
 
 def median(runs: Sequence[float], confidence: float = CONFIDENCE) -> Median:
-    """The median of `runs`, with the interval of `rank`, if they are enough for one."""
+    """Computes the median of `runs` with a `rank`-based interval when available."""
     value = statistics.median(runs)
     k = rank(len(runs), confidence)
     if k is None:
@@ -439,7 +434,7 @@ def median(runs: Sequence[float], confidence: float = CONFIDENCE) -> Median:
 
 
 def duration(seconds: float) -> str:
-    """`seconds` with an SI prefix, to four figures.
+    """Formats `seconds` with an SI prefix to four significant figures.
 
     Examples:
         >>> duration(0.0123456)
@@ -495,7 +490,7 @@ def _linux_vm_hwm_bytes(status_path: Path = _PROC_STATUS) -> int | None:
 
 
 def peak_memory_bytes() -> int:
-    """The current process's peak resident set size, in bytes.
+    """Returns the current process's peak resident set size in bytes.
 
     On Linux, reads `VmHWM` from ``/proc/self/status`` (`proc_pid_status(5)`) so a
     child spawned via ``fork(2)`` or ``vfork(2)`` and ``execve(2)`` is not polluted
@@ -511,11 +506,11 @@ def peak_memory_bytes() -> int:
 
 
 def available_memory_bytes(meminfo_path: Path = _PROC_MEMINFO) -> int | None:
-    """Available machine memory in bytes, for budgeting concurrent runs.
+    """Returns available machine memory in bytes for budgeting concurrent runs.
 
     On Linux, reads `MemAvailable` (falling back to `MemTotal`) from
     ``/proc/meminfo`` (`proc_meminfo(5)`). On macOS, reads `hw.memsize` via
-    ``sysctl``. Returns None if neither is available.
+    ``sysctl``. Returns None when neither source is available.
     """
     if meminfo_path.is_file():
         values: dict[str, int] = {}
@@ -537,7 +532,7 @@ def available_memory_bytes(meminfo_path: Path = _PROC_MEMINFO) -> int | None:
 
 
 def memory(byte_count: int) -> str:
-    """`byte_count` with an IEC binary prefix, to four figures.
+    """Formats `byte_count` with an IEC binary prefix to four significant figures.
 
     Uses binary prefixes (`TiB`, `GiB`, `MiB`, `KiB`, `B`) matching the convention
     in `benchmarks/speed/README.md` (1 KiB = 1,024 bytes).

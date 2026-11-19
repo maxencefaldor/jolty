@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
 """A Wien bridge oscillator, its amplitude held by two diodes.
 
-The bridge's series and parallel RC arms, 10 kΩ and 10 nF each, pass a third of the
-output with no phase shift at f₀ = 1/(2πRC) = 1.592 kHz, so the loop oscillates there
-when the op-amp's non-inverting gain is three. Its gain is 1 + 22 kΩ/10 kΩ = 3.2, enough
-to start; as the swing grows, two 1N4148 diodes across part of the feedback resistor
-conduct and bring the gain to three, holding the amplitude. A 1 µA pulse at the start
-sets it going. Simulate it with ``jolty simulate examples/wien_bridge.py``.
+The series and parallel 10 kΩ, 10 nF RC arms pass one third of the output with zero
+phase shift at f₀ = 1/(2πRC) = 1.592 kHz, sustaining oscillation at a non-inverting
+gain of 3. Start-up gain is 1 + 22 kΩ/10 kΩ = 3.2; as amplitude grows, two 1N4148
+diodes across part of the feedback resistor reduce gain toward 3 to stabilize the
+swing. A 1 µA start-up pulse initiates oscillation. Simulate with
+``jolty simulate examples/wien_bridge.py``.
 """
 
 import math
@@ -25,9 +25,9 @@ OSCILLATION = 1 / (2 * math.pi * 10e3 * 10e-9)
 
 @component
 def oscillator(c: Builder) -> None:
-    """The op-amp, the RC bridge to its non-inverting input, and its feedback.
+    """Builds the op-amp, Wien RC bridge, and diode-limited feedback network.
 
-    A short current pulse into the bridge sets it going.
+    A short current pulse into the bridge initiates oscillation.
     """
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
@@ -63,7 +63,7 @@ def oscillator(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The oscillator alone."""
+    """Builds the standalone Wien bridge oscillator test bench."""
     ground = c.port("ground", Role.GROUND)
     stage = c.place(oscillator(), name="X1")
     c.connect(stage.output, name="out")
@@ -71,17 +71,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The oscillator on its bench."""
+    """Returns the Wien bridge oscillator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Forty milliseconds: the start, the growth, and a steady swing."""
+    """Returns a 40 ms transient plan covering start-up, growth, and steady swing."""
     return Plan({"start": Transient(stop=40 * ms, max_step=5 * us)})
 
 
 def specs() -> Specs:
-    """Oscillation at f₀ within 2 %, at a steady swing."""
+    """Returns specifications for steady oscillation within 2 % of f₀."""
     return Specs(
         [
             frequency("start", "out", start=30 * ms).within(

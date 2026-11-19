@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""The two transistors of the balun: a 2N3904 and a 2N3906."""
+"""Discrete 2N3904 and 2N3906 transistors provided for the balun benchmark task."""
 
 import sys
 from pathlib import Path

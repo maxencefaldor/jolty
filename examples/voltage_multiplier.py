@@ -19,7 +19,7 @@ STAGES = 3
 
 @component
 def multiplier(c: Builder) -> None:
-    """Two columns of capacitors, a diode zigzag between them."""
+    """Builds two capacitor columns coupled by an alternating diode ladder."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     pushed = source
@@ -41,7 +41,7 @@ def multiplier(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The multiplier, fed a 10 V sine at 1 kHz, loaded by 10 MΩ."""
+    """Builds the multiplier driven by a 10 V, 1 kHz sine into a 10 MΩ load."""
     ground = c.port("ground", Role.GROUND)
     tone = Sine(offset=0 * V, amplitude=10 * V, frequency=1 * kHz)
     source = c.place(devices.voltage_source(tone), name="V1")
@@ -53,15 +53,15 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The multiplier on its bench."""
+    """Returns the Cockcroft-Walton multiplier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Two hundred cycles of the input."""
+    """Returns a 200 ms transient charging plan spanning 200 input cycles."""
     return Plan({"charge": Transient(stop=200 * ms, max_step=20 * us)})
 
 
 def specs() -> Specs:
-    """The output near six times the peak, less the diodes' drops."""
+    """Returns output voltage specifications near six times peak minus diode drops."""
     return Specs([value("charge", "out", at=200 * ms).between(50 * V, 60 * V)])

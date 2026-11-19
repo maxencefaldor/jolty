@@ -1,20 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Third-party decks, fetched at a pinned commit and never copied, read as each reads.
+"""External SPICE deck loader, normalizer, and robustness fixture generator.
 
-The manifest, ``benchmarks/robustness/external.json``, names each deck by its address at
-a commit, its SHA-256 digest and its licence; `jolty.spice.fetch` downloads it once into
-jolty's cache, outside the repository, and checks its digest. Each deck gives a fixture
-for its operating point and one for each analysis it asks for, a DC sweep or a
-transient.
+The manifest ``benchmarks/robustness/external.json`` pins each third-party deck by URL,
+commit, SHA-256 digest, and license. `jolty.spice.fetch` caches each file outside the
+repository and verifies its digest. Every deck produces an operating-point fixture plus
+one fixture for each DC sweep or transient card it contains.
 
-ngspice runs the deck itself; jolty reads it through its SPICE reader, its elements
-wrapped in a subcircuit of their own beside the deck's definitions, every line kept at
-its place so that each instance records the deck's own line, and its initial conditions
-and nodesets into the plan. A deck that the reader cannot read is unsupported in jolty,
-with the reason.
+ngspice executes the normalized deck directly. jolty loads the deck through its SPICE
+reader by wrapping top-level elements in a dedicated subcircuit alongside model and
+parameter definitions while preserving line numbers and extracting ``.ic`` and
+``.nodeset`` directives. Unreadable decks are marked unsupported with the reader error.
 
-A deck's defects are fixed by recorded rules, alike for every simulator (`RULES`); each
-fixture lists those its deck needed.
+Known deck syntax defects are normalized identically across simulators by `RULES`, and
+each fixture records the applied rules.
 """
 
 import json
@@ -125,35 +123,35 @@ class Entry:
 
 
 def manifest() -> list[Entry]:
-    """The manifest's decks, in its order."""
+    """Loads all external deck entries from `MANIFEST` in manifest order."""
     document = json.loads(MANIFEST.read_text(encoding="utf-8"))
     return [Entry(**entry) for entry in document["decks"]]
 
 
 @dataclass(frozen=True, slots=True)
 class _Card:
-    """A statement of a deck, the raw lines it spans, and what it is."""
+    """Parsed SPICE statement with its raw source line span and classification."""
 
     statement: Statement
     first: int
-    """Its first line, from 1."""
+    """First 1-based line number occupied by the statement."""
     last: int
-    """Its last line, its continuations, comments and blank lines after it included."""
+    """Final 1-based line including continuations, trailing comments, and blanks."""
     kind: str
-    """``definition``, ``element``, ``analysis``, ``option``, ``output``,
-    ``condition``, ``temperature`` or ``disagreed``."""
+    """Card classification: ``definition``, ``element``, ``analysis``, ``option``,
+    ``output``, ``condition``, ``temperature``, or ``other``."""
 
     @property
     def keyword(self) -> str:
-        """Its first word, in lowercase."""
+        """Lowercase leading keyword of the statement."""
         return self.statement.text.split()[0].casefold()
 
 
 def _cards(text: str, file: str) -> list[_Card]:
-    """The statements of a deck, after its title and up to its ``.end``.
+    """Parses SPICE statements in `text` after the title line and up to ``.end``.
 
     Raises:
-        Unsupported: When a statement cannot be split.
+        Unsupported: When a statement cannot be tokenized.
     """
     lines = text.splitlines()
     body = "\n".join(["", *lines[1:]])
@@ -189,7 +187,7 @@ _KINDS: Final = (
 
 
 def _kind(keyword: str) -> str:
-    """The kind of a statement outside a subcircuit that starts with `keyword`."""
+    """Classifies a top-level SPICE statement starting with `keyword`."""
     found = next((kind for keywords, kind in _KINDS if keyword in keywords), None)
     if found is not None:
         return found
@@ -197,10 +195,10 @@ def _kind(keyword: str) -> str:
 
 
 def _value(word: str, card: _Card) -> float:
-    """The number `word` writes, in `card`.
+    """Parses numeric SPICE token `word` from `card`.
 
     Raises:
-        Unsupported: When it is not a number.
+        Unsupported: When `word` is not a valid SPICE number.
     """
     found = number(word)
     if found is None:
@@ -210,7 +208,7 @@ def _value(word: str, card: _Card) -> float:
 
 
 def _assignments(card: _Card) -> dict[str, str]:
-    """The ``name=value`` pairs of an options statement, by lowercase name."""
+    """Extracts ``name=value`` pairs from an options card keyed by lowercase name."""
     words = tokens(card.statement.text)[1:]
     return {
         words[index - 1].casefold(): words[index + 1]
@@ -220,10 +218,10 @@ def _assignments(card: _Card) -> dict[str, str]:
 
 
 def _analysis(card: _Card) -> Analysis:
-    """The analysis an analysis card asks for.
+    """Parses a SPICE analysis card into a robustness `Analysis` object.
 
     Raises:
-        Unsupported: When the card asks for what the corpus does not run.
+        Unsupported: When the card requests an analysis not run by the corpus.
     """
     words = tokens(card.statement.text)
     match card.keyword:
@@ -255,22 +253,19 @@ class Deck:
 
     @classmethod
     def from_entry(cls, entry: Entry) -> Deck:
-        """The deck `entry` names, fetched and checked against its digest."""
+        """Fetches, verifies, and parses the deck described by `entry`."""
         path = fetch(entry.url, entry.digest)
         return cls.read(entry, path.read_text(encoding="utf-8", errors="replace"))
 
     @classmethod
     def read(cls, entry: Entry, text: str) -> Deck:
-        """The deck `entry` names, whose text is `text`."""
+        """Parses deck `text` for manifest `entry`."""
         file = Path(entry.url).name
         return cls(entry, text, file, _cards(text, file))
 
     @cached_property
     def analyses(self) -> list[Analysis]:
-        """The analyses its cards ask for, in order.
-
-        Those the corpus does not run are left out.
-        """
+        """Supported corpus analyses in source order, omitting unsupported cards."""
         found: list[Analysis] = []
         for card in self.cards:
             if card.kind == "analysis":
@@ -282,7 +277,7 @@ class Deck:
 
     @cached_property
     def assignments(self) -> dict[str, str]:
-        """Every option it sets, by lowercase name, Xyce's packages' among them."""
+        """Lowercase option assignments from all ``.options`` cards (including Xyce)."""
         found: dict[str, str] = {}
         for card in self.cards:
             if card.kind == "option":
@@ -291,12 +286,11 @@ class Deck:
 
     @cached_property
     def fixed(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Its lines with the rules that rewrite its elements applied, and those rules.
+        """Normalized deck lines and applied element-rewrite rule names.
 
-        A statement rewritten is written on its first line, its continuations blank:
-        an `EXP` that takes a time from the transient's step with that time, and an
-        element whose name holds a `/` with each written as `_`, unless another element
-        is named so.
+        Writes each rewritten statement on its first line with blank continuation slots:
+        fills omitted `EXP` timings from the transient step and replaces `/` with `_` in
+        element names when no collision occurs.
         """
         lines = self.text.splitlines()
         step = next(
@@ -328,12 +322,12 @@ class Deck:
 
     @property
     def lines(self) -> tuple[str, ...]:
-        """Its lines, with the rules that rewrite its elements applied."""
+        """Deck lines after element-level normalization rules are applied."""
         return self.fixed[0]
 
     @cached_property
     def rules(self) -> tuple[str, ...]:
-        """The rules its defects need."""
+        """Unique normalization rule names required by defects in this deck."""
         needed: list[str] = list(self.fixed[1])
         for card in self.cards:
             words = card.statement.text.split()
@@ -348,7 +342,7 @@ class Deck:
         return tuple(dict.fromkeys(needed))
 
     def options(self) -> Options:
-        """The options it sets that jolty's have, by SPICE's names."""
+        """Maps recognized deck SPICE option assignments into jolty `Options`."""
         given = self.assignments
 
         def read(name: str) -> float | None:
@@ -372,12 +366,12 @@ class Deck:
         )
 
     def method(self) -> Method:
-        """The integration method it asks for, the trapezoidal rule by default."""
+        """Returns the deck's transient integration method, defaulting to trap."""
         written = self.assignments.get("method", "trap").casefold()
         return _METHODS.get(written, "trapezoidal")
 
     def temperature(self) -> float:
-        """The temperature it runs at, in kelvins: 27 °C unless it says otherwise."""
+        """Returns the deck's simulation temperature in kelvins, defaulting to 27 °C."""
         written: float | None = None
         for card in self.cards:
             if card.kind == "temperature":
@@ -391,10 +385,10 @@ class Deck:
         return written + 273.15
 
     def library(self) -> tuple[Library, str]:
-        """The deck as a library of jolty's, and the name of its elements' subcircuit.
+        """Loads the deck into a `Library` and returns the wrapper subcircuit name.
 
         Raises:
-            Unsupported: When the SPICE reader cannot read the deck.
+            Unsupported: When the SPICE reader rejects the deck or a directive.
         """
         others = [card for card in self.cards if card.kind == "other"]
         if others:
@@ -439,12 +433,12 @@ class DeckCircuit:
     deck: Deck
 
     def jolty(self) -> Built:
-        """The deck as jolty's reader reads it, with its conditions and nodesets.
+        """Builds the jolty circuit for the deck with initial conditions and nodesets.
 
-        Its elements are a subcircuit's, beside its definitions.
+        Wraps top-level elements in a subcircuit alongside deck definitions.
 
         Raises:
-            Unsupported: When the reader cannot read it.
+            Unsupported: When jolty's SPICE reader cannot parse or elaborate the deck.
         """
         library, name = self.deck.library()
         try:
@@ -472,9 +466,9 @@ class DeckCircuit:
         )
 
     def spice(self) -> Spiced:
-        """The deck as ngspice reads it, its rules applied and its analyses taken out.
+        """Returns the normalized ngspice deck without analysis or output cards.
 
-        Its nodes are those jolty reads, when jolty reads it.
+        Populates compared voltage vectors from the nets jolty parses when supported.
         """
         lines = self.deck.lines
         kept = [lines[0]]
@@ -495,20 +489,19 @@ class DeckCircuit:
         return Spiced(tuple(kept), vectors)
 
     def settled(self) -> Built | None:
-        """None: a deck's transient has no reference."""
+        """Returns None because external deck transients have no settling reference."""
         return None
 
     def temperature(self) -> float:
-        """The deck's temperature, in kelvins."""
+        """Returns the deck simulation temperature in kelvins."""
         return self.deck.temperature()
 
 
 def _exp_defaults(text: str, step: float) -> str | None:
-    """The statement `text` with its `EXP`'s times of 0 or left out made explicit.
+    """Rewrites omitted or zero `EXP` waveform timings in `text` using transient `step`.
 
-    They are written as SPICE3 and ngspice 47 take them from the transient's `step`;
-    None when the statement has no such `EXP`, or one whose arguments are not all
-    numbers.
+    Applies SPICE3 and ngspice 47 defaults derived from `step`. Returns None when
+    `text` contains no qualifying `EXP` source or has non-numeric arguments.
     """
     found = _EXP.search(text)
     if found is None:
@@ -536,10 +529,10 @@ def _exp_defaults(text: str, step: float) -> str | None:
 
 
 def _spice_options(card: _Card) -> str:
-    """An options statement as SPICE's, without Xyce's package name.
+    """Formats an options card as SPICE ``.options``, stripping Xyce package names.
 
-    The temperature is set apart, as both simulators run at the deck's, and the
-    method, which each fixture states.
+    Excludes `temp` and `method` because each fixture specifies simulation temperature
+    and integration method separately.
     """
     given = {
         key: value
@@ -552,10 +545,10 @@ def _spice_options(card: _Card) -> str:
 
 
 def fixtures() -> list[Fixture]:
-    """A fixture for each deck's operating point, and one for each analysis it runs.
+    """Builds operating-point and per-analysis fixtures for every manifest deck.
 
     Raises:
-        SystemExit: When a deck cannot be fetched, or is not what its digest says.
+        SystemExit: When a deck cannot be fetched or fails SHA-256 digest verification.
     """
     found: list[Fixture] = []
     for entry in manifest():

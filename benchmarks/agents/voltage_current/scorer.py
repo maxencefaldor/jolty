@@ -1,27 +1,24 @@
 # Copyright 2026 Maxence Faldor
-"""The voltage-current converter task's scorer, which the agent never sees.
+"""Hidden benchmark scorer for the voltage-to-current converter design task.
 
-It places the agent's component on Koza's test fixture for the voltage-current converter
-of US patent 6,166,529 (Genetic Programming IV, sections 15.3.1.4 and 15.3.5.4) and runs
-his four fitness cases: one second each, the output current read at 31 times, 1/30 s
-apart. Each case's mean absolute error against 1 mA/V times the inputs' difference is
-divided by the patented circuit's on that case, as Koza measured it: 41, 36, 26 and 44
-µA, which he gives in microvolts, as many across the 1 Ω load. The fitness is the four
-ratios' mean, as Koza weighted it, so the patent's is 1, and the circuit genetic
-programming evolved reached 0.619. The work meets the task when it builds from the
-allowed parts alone, its fitness is at most 1, and its output current settles within 40
-µs after ``VS`` steps by 10 mV at three points of its range, to within 44 µA, the
-patent's largest mean error, of 1 mA/V times the inputs' difference: a check Koza's
-fitness lacks, since its steps of 1/30 s cannot see an oscillation, and its 31 readings
-may miss the output's extremes. All of it must hold from 0 °C to
-70 °C with the supply within 5 % of -15 V, and on 95 % of boards of the design too,
-built of resistors within 1 %, capacitors within 5 % and transistors from reels anywhere
-in their datasheets' ranges, each board over the same range: margins Koza's circuits,
-simulated with exact parts at 27 °C, need not keep.
+The scorer mounts the agent's component on Koza's test fixture for the voltage-current
+converter of US patent 6,166,529 (Genetic Programming IV, sections 15.3.1.4 and
+15.3.5.4). Evaluation runs Koza's four 1 s fitness cases, sampling output current at 31
+points spaced 1/30 s apart. Each case's mean absolute error against ``1 mA/V * (V_plus
+- V_minus)`` is normalized by Koza's patented circuit errors (41, 36, 26, and 44 µA
+across the 1 Ω load). Averaging the four ratios gives composite fitness, where the
+patented circuit scores 1.0 and the evolved circuit scores 0.619.
 
-Koza's added input is ``plus`` and his subtracted one ``minus``; his evolved circuit
-sources a current from the first and sinks one into the second, so the output current
-flows out of ``output`` when ``plus`` is the higher.
+A submission passes when using only allowed parts, achieving fitness <= 1.0, and
+settling within 40 µs after a 10 mV step on ``VS`` at three operating points to within
+44 µA of ideal output current. The settling test catches high-frequency oscillation and
+inter-sample spikes invisible to Koza's 1/30 s sampling interval. All requirements must
+hold from 0 °C to 70 °C at +/-5 % supply around -15 V, both nominally and on at least
+95 % of Monte Carlo boards with 1 % resistors, 5 % capacitors, and datasheet
+reel-varied transistors.
+
+Port ``plus`` is the non-inverting input and ``minus`` is the inverting input, so
+output current flows out of ``output`` when ``plus`` exceeds ``minus``.
 """
 
 from pathlib import Path
@@ -37,49 +34,47 @@ from jolty.units import Hz, V, ns, ohm, s, us
 from jolty.waveforms import Piecewise, Pulse, Sine
 
 TRANSCONDUCTANCE = 1e-3
-"""The output current per volt of the inputs' difference, in amperes per volt."""
+"""Target transconductance in amperes per volt of differential input."""
 TIMES = 31
-"""The times each case is read at, 1/30 s apart from 0 s to 1 s."""
+"""Number of evenly spaced sample points per 1 s fitness case (1/30 s spacing)."""
 PATENT = (41e-6, 36e-6, 26e-6, 44e-6)
-"""The patented circuit's mean absolute error in each case, in amperes, per Koza."""
+"""Patented circuit mean absolute output current errors in amperes per Koza."""
 EVOLVED = 0.619
-"""The fitness of the circuit genetic programming evolved, as Koza found."""
+"""Composite fitness score reported by Koza for the genetically evolved circuit."""
 ALLOWED = {"resistor", "capacitor"}
-"""The devices the design may hold besides the given transistors."""
+"""Passive device models permitted in addition to the given discrete transistors."""
 SUPPLIES = ("VEE",)
-"""The bench's supply, which strays within 5 % of its level in the corners."""
+"""Top-level bench supply scaled by +/-5 % across operating corners."""
 PORTS = ("plus", "minus", "output", "vee", "ground")
-"""The design's ports, which the bench joins."""
+"""Required port names exposed by the voltage-current converter component."""
 STEP = 10e-3
-"""The step of ``VS`` the output current must settle after, in volts."""
+"""Load-side ``VS`` voltage step amplitude in volts for settling checks."""
 SETTLING = ((6.0, 4.0, 0.0), (10.0, 2.0, 1.0), (2.0, 10.0, -1.0))
-"""Where it must settle: ``plus``, ``minus`` and ``VS`` before the step, in volts."""
+"""Operating points ``(plus, minus, VS)`` in volts tested for step settling."""
 UNSETTLED = 1e-6
-"""The swing of the output current, in amperes, beyond which it has not settled."""
+"""Maximum peak-to-peak current ripple in amperes tolerated after settling."""
 SETTLED = 40e-6
-"""The time from which the output current must have settled, in seconds."""
+"""Settling deadline in seconds after which output current must stabilize."""
 LOAD = ("RLOAD",)
-"""The load, recorded, whose current the output is."""
+"""Recorded load resistor instance name whose current represents circuit output."""
 SETTLED_ERROR = max(PATENT)
-"""How far, in amperes, the settled output current may lie from 1 mA/V times the inputs'
-difference: the patent's largest mean error over a case, so that a design no worse than
-the patent on average is no worse at these points either."""
+"""Maximum steady-state current error in amperes after settling (worst patent case)."""
 
 
 def ramp(start: float, end: float) -> devices.Device:
-    """A source that moves linearly from `start` to `end` volts over one second."""
+    """Returns a source ramping linearly from `start` to `end` volts over 1 s."""
     return devices.voltage_source(Piecewise([(0 * s, start * V), (1 * s, end * V)]))
 
 
 def sine(middle: float, swing: float, frequency: float) -> devices.Device:
-    """A source that swings `swing` volts about `middle` at `frequency` hertz."""
+    """Returns a sine source with amplitude `swing` around `middle` at `frequency`."""
     return devices.voltage_source(
         Sine(offset=middle * V, amplitude=swing * V, frequency=frequency * Hz)
     )
 
 
 def cases() -> list[tuple[devices.Device, devices.Device]]:
-    """Koza's four fitness cases: the ``plus`` source, then the ``minus`` source."""
+    """Returns Koza's four ``(plus, minus)`` voltage-source stimulus pairs."""
     return [
         (ramp(10, 2), ramp(2, 10)),
         (sine(5.5, 3.5, 4.5), sine(6, 3.5, 6.4)),
@@ -89,14 +84,14 @@ def cases() -> list[tuple[devices.Device, devices.Device]]:
 
 
 def swing() -> devices.Device:
-    """Koza's ``VS``: 1 V about 0 V at 3.2 Hz."""
+    """Returns Koza's ``VS`` load-side source swinging 1 V around 0 V at 3.2 Hz."""
     return devices.voltage_source(
         Sine(offset=0 * V, amplitude=1 * V, frequency=3.2 * Hz)
     )
 
 
 def step(level: float) -> devices.Device:
-    """A ``VS`` that steps from `level` to 10 mV above it at 1 µs, over 1 ns."""
+    """Returns a ``VS`` pulse source stepping up 10 mV from `level` at 1 µs."""
     return devices.voltage_source(
         Pulse(
             initial=level * V,
@@ -116,9 +111,10 @@ def bench(
     inputs: tuple[devices.Device, devices.Device],
     output: devices.Device,
 ) -> None:
-    """`made` on Koza's fixture, driven by `inputs` and `output`.
+    """Builds Koza's converter fixture around `made` with `inputs` and `output`.
 
-    `inputs` drive ``plus`` and ``minus``, and `output` is ``VS``.
+    Connects `inputs` to ``plus`` and ``minus`` through 1 µΩ sense resistors and places
+    `output` as load-side source ``VS``.
     """
     ground = c.port("ground", Role.GROUND)
     placed = c.place(made, name="X1")
@@ -139,13 +135,12 @@ def bench(
 
 
 def measure(made: Component, board: Board) -> dict[str, float]:
-    """Koza's four fitness cases on `board` of `made`, and its three settling steps.
+    """Measures Koza's four fitness cases and three settling steps on `board`.
 
-    Each case gives its mean absolute error of the output current, in amperes, and the
-    fitness weighs them. The fitness cases' steps are milliseconds long, too long to see
-    an oscillation; each settling step gives the swing of the output current over the
-    last 10 µs of 50, read at steps of 10 ns, and its mean's error against 1 mA/V
-    times the inputs' difference.
+    Reports per-case mean absolute current errors and composite fitness. Each settling
+    step also measures output current ripple and mean error over the final 10 µs of a
+    50 µs run at 10 ns max step because millisecond fitness steps cannot expose
+    oscillation.
     """
     times = np.linspace(0.0, 1.0, TIMES)
     errors = []
@@ -185,7 +180,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measures `found` fall short of the task, if they do."""
+    """Checks converter fitness and settling metrics in `found` for shortfalls."""
     reasons = []
     if found["fitness"] > 1:
         reason = f"the fitness is {found['fitness']:.4g}, more than the patent's 1"
@@ -211,7 +206,7 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the voltage-current converter in `work`, as `arm` writes it."""
+    """Scores the voltage-current converter submission in `work` for `arm`."""
     return score_design(
         task,
         work,

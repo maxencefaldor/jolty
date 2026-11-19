@@ -1,94 +1,95 @@
 # Robustness
 
-jolty aims to find the solution of every circuit that has one.
-This corpus measures how far it is from that, and how far ngspice is: hard circuits, each simulator's outcome on each, classified alike, and each simulator's failure rate.
+jolty aims to find the solution of every solvable circuit.
+The robustness corpus tracks progress toward that goal alongside ngspice by running hard circuits, classifying every simulator outcome uniformly, and reporting per-simulator failure rates.
 
 ## Running
 
 ```sh
-scripts/bench --robustness                          # every fixture, in every simulator installed
-scripts/bench --robustness gm1/tran vreg/dc         # only these fixtures
-scripts/bench --robustness --simulator jolty        # only this simulator
-scripts/bench --robustness --timeout 60             # stop each run after 60 s rather than 300 s
+scripts/bench --robustness                          # every fixture, in every installed simulator
+scripts/bench --robustness gm1/tran vreg/dc         # selected fixtures only
+scripts/bench --robustness --simulator jolty        # one simulator only
+scripts/bench --robustness --timeout 60             # stop each run after 60 s instead of 300 s
 ```
 
-Each fixture runs in each simulator in a process of its own, which the timeout stops.
-The command prints each outcome as it comes, then the table of fixtures by simulator, each simulator's failure rates, and each outcome's detail, and writes them to `results/<commit>.json` headed by their provenance, the commit and the machine, with each simulator's version and the timeout, unless `--output` names another file.
-It prints the load average as each fixture began; the corpus measures outcomes, and the times beside them are what one run took on a machine that may be shared.
-The results file stays out of the repository, as `.gitignore` says: jolty's messages quote the lines of the decks they are about, and the GPL's decks are never copied into it.
+Each fixture executes inside a dedicated simulator subprocess enforced by the timeout.
+The command streams each outcome as it finishes, then prints the fixture-by-simulator table, failure rates, and diagnostic details.
+Results are saved to `results/<commit>.json` (or `--output`) with provenance metadata covering commit, host machine, simulator versions, and timeout.
+The runner logs system load average at the start of each fixture; the corpus measures convergence outcomes rather than timing, so reported runtimes reflect single runs on a potentially shared host.
+Results stay outside the repository per `.gitignore`, because jolty diagnostics quote deck lines and GPL decks are never copied into the repository.
 
 ## Fixtures
 
-A fixture is one analysis of one circuit: its operating point, a DC sweep or a transient.
-Each circuit gives a fixture for its operating point, the problem every other analysis starts from, and one for each further analysis it asks for.
+Each fixture tests one analysis of one circuit: an operating point, a DC sweep, or a transient.
+Every circuit provides an operating-point fixture (the starting problem for all other analyses) plus one fixture per additional analysis.
 
-### jolty's own
+### Built-in fixtures
 
-`own.py` writes them with jolty's builder, and ngspice runs the netlist jolty's exporter writes of each.
+`own.py` constructs these circuits with jolty's builder, and ngspice runs the netlists produced by jolty's SPICE exporter.
 
 | Circuit | What makes it hard | Transient, and how it is judged |
 | --- | --- | --- |
-| `schmitt_bjt` | An emitter-coupled Schmitt trigger of two npn transistors, its input between its thresholds: three DC solutions | Driven above its upper threshold and back into its band: it must stay on the branch it came down |
-| `schmitt_cmos` | A Schmitt trigger of six level 1 MOSFETs, its input between its thresholds: three DC solutions | The same |
-| `cmos_latch` | Two cross-coupled CMOS inverters: two stored states and the balance between them | `power_up`: from rest, its supply ramped on in 1 ns, it must fall into a stored state |
-| `sram_cell` | The example's six-transistor cell, its word line low: two stored states and a balance | The example's writes of a 1 then a 0: it must hold the 0 |
-| `ring` | An odd ring of five CMOS inverters, its first stage loaded twice as much: one DC solution, unstable | `from_rest`: its supply ramped on in 1 ns with no kick, only its asymmetry starts it, and it must oscillate |
-| `folded_sources` | A random circuit of 47 devices whose operating point source stepping folds short of (`crates/jolty-engine/tests/data/folded_sources.json`) | |
-| `bare_chain` | Three CMOS inverters of MOSFETs with no capacitance at any net | A pulse of 100 ps edges: it must end at the input's low level, inverted three times |
-| `impasse` | | A capacitor charged until the circuit's equations fold, after Chua and Deng: its solution ends at 5.47 µs, and a run must stop there |
-| `buck` | The benchmarks' synchronous buck converter, its body diodes at rest | Its 2 ms: four gate edges a period, a body diode turning on at each; no reference, so it is judged by its completion |
-| `memristive_nor` | The memristive NOR discovery's four gates at 10 % above its design's pulse | Its 13 ns, whose memristors' states race to their bounds; no reference |
+| `schmitt_bjt` | Emitter-coupled Schmitt trigger of two NPN transistors biased between thresholds (three DC solutions) | Driven above the upper threshold and back into hysteresis; must stay on the descending branch |
+| `schmitt_cmos` | Schmitt trigger of six level-1 MOSFETs biased between thresholds (three DC solutions) | Same as `schmitt_bjt` |
+| `cmos_latch` | Two cross-coupled CMOS inverters with two stored states and one unstable balance | `power_up`: supply ramps on in 1 ns from rest; must settle into a stored state |
+| `sram_cell` | Six-transistor SRAM cell with word line low (two stored states and one balance) | Writes a 1 then a 0; must hold the 0 |
+| `ring` | Odd ring of five CMOS inverters with double load on stage one (one unstable DC solution) | `from_rest`: supply ramps on in 1 ns without a kick; asymmetry must start oscillation |
+| `folded_sources` | Random 47-device circuit whose operating point defeats source stepping (`crates/jolty-engine/tests/data/folded_sources.json`) | |
+| `bare_chain` | Three CMOS inverters of zero-capacitance MOSFETs | Pulse with 100 ps edges; must settle to the triply inverted low input level |
+| `impasse` | | Capacitor charged until circuit equations fold (after Chua and Deng); solution ends at 5.47 µs and simulation must halt there |
+| `buck` | Benchmark synchronous buck converter with body diodes at rest | 2 ms transient with four gate edges per period turning on a body diode; no reference, judged by completion |
+| `memristive_nor` | Four gates from the memristive NOR discovery driven 10 % above the design pulse | 13 ns transient where memristor states race to their bounds; no reference |
 
 ### Third-party decks
 
-`decks.py` reads `../external.json`, a manifest of decks by address, commit, SHA-256 digest and licence, and fetches each into jolty's cache, outside the repository, checking its digest: the decks are never copied into the repository.
-They are CircuitSim90's ten decks of level 3 MOSFETs and its bipolar voltage regulator, and four of its bipolar circuits that Xyce's regression suite keeps apart, all at that suite's commit `7bb7e98`, under the GPL, version 3 or later.
+`decks.py` reads `../external.json` (listing URL, commit, SHA-256 digest, and licence), downloads each deck into jolty's external cache, and verifies every digest without copying decks into the repository.
+The external decks include CircuitSim90's ten level-3 MOSFET decks, the bipolar voltage regulator, and four CircuitSim90 bipolar circuits held separately in Xyce's regression suite (commit `7bb7e98`, GPLv3 or later).
 
-ngspice runs each deck itself; jolty reads it through its SPICE reader, the deck's elements wrapped in a subcircuit of their own beside its definitions, each line kept at its place so that every instance records the deck's own line.
-A deck's initial conditions and nodesets, which the reader reads beside its definitions, start jolty's transient and operating points, as they start ngspice's.
-A deck jolty's reader cannot read is unsupported in jolty, with the reason.
-A deck's transient has no reference yet, so it is judged by its completion.
+ngspice runs each deck directly, while jolty loads each deck through the SPICE reader by wrapping top-level elements in a dedicated subcircuit alongside deck definitions and preserving original line numbers on every instance.
+Initial conditions and nodesets parsed from the deck initialize jolty's transient and operating-point analyses, matching ngspice.
+Decks that jolty's SPICE reader cannot parse are recorded as unsupported with the diagnostic reason.
+Third-party transients have no reference solution yet and are judged by completion.
 
-A deck's defects are fixed by recorded rules, alike for every simulator, and each fixture lists those its deck needed:
+Recorded normalization rules repair deck defects identically for every simulator, and each fixture lists every rule applied:
 
 | Rule | What it does |
 | --- | --- |
-| `xyce-options` | Xyce's `.options` packages, such as `.options device temp=100` and `.options timeint method=gear reltol=1e-3`, are SPICE's `.options` without the package's name. |
-| `output-requests` | Output requests, `.print`, `.plot`, `.probe`, `.save` and `.width`, are taken out: every simulator keeps every node, and Xyce's `.print` writes expressions in braces that SPICE does not read. |
-| `element-names` | An element whose name holds a `/`, as a flattened hierarchy's do, has each written as `_`, as jolty's paths separate their levels with `/`. |
-| `exp-defaults` | An `EXP` waveform's delays and time constants left at 0 or out are written as SPICE3 and ngspice 47 take them, from the transient's step: each time constant and the rise delay the step, the fall delay the rise delay plus it. |
+| `xyce-options` | Converts Xyce `.options` packages (such as `.options device temp=100` and `.options timeint method=gear reltol=1e-3`) to plain SPICE `.options` without the package name. |
+| `output-requests` | Removes `.print`, `.plot`, `.probe`, `.save`, and `.width` lines because every simulator records all nodes and Xyce brace expressions fail SPICE parsing. |
+| `element-names` | Replaces `/` characters in flattened-hierarchy element names with `_`, avoiding collisions with jolty's `/` hierarchy separator. |
+| `exp-defaults` | Fills zero or omitted `EXP` waveform delays and time constants using SPICE3 and ngspice 47 rules: rise delay and both time constants equal the transient step, and fall delay adds one step. |
 
-Every simulator runs a deck at its temperature, with the options it sets that both have, its tolerances, iteration limits and integration method, and with SPICE's defaults for the rest.
-Before it runs, jolty's checks state what they find in each circuit, as facts, and the results keep them.
+Every simulator runs each deck at the deck temperature using shared options (tolerances, iteration limits, and integration method) and SPICE defaults for all remaining settings.
+Before simulation begins, jolty's circuit checks record factual findings in the results.
 
 ## Outcomes
 
-Each run's outcome is one of these:
+Every simulator run receives one of six outcome classifications:
 
 | Outcome | Meaning |
 | --- | --- |
-| `agreed` | Solved, and it agrees with the reference. |
-| `disagreed` | Solved, and it agrees with no solution of the reference. |
-| `solved` | Solved, where the fixture has no reference to judge it against. |
-| `failed` | The simulator gave up, with its message. |
-| `timed out` | It ran past the timeout. |
-| `unsupported` | It cannot read or simulate what the fixture holds, with the reason; never counted as a failure. |
+| `agreed` | Simulation converged and matched the reference solution. |
+| `disagreed` | Simulation converged but matched none of the reference solutions. |
+| `solved` | Simulation converged on a fixture with no reference solution. |
+| `failed` | The simulator aborted with an error message. |
+| `timed out` | Execution exceeded the configured timeout. |
+| `unsupported` | The simulator cannot parse or simulate the fixture (with reason); excluded from failure counts. |
 
-The reference of an operating point is every DC solution jolty finds by deflation (`OperatingPoints`) at the differential tests' tight tolerances, a relative tolerance of 1e-6; of a sweep, every one at each level.
-A transient that settles is judged by the DC solutions of its circuit with each source at its last level: it must end at the one its fixture expects, such as the branch a Schmitt trigger came down, or any stored state of a latch.
-A ring must end at none of them, as each is unstable; the impasse circuit must stop where its closed form says its solution ends, within the relative tolerance of that time.
-Two results agree as the differential tests judge two engines: each voltage within the fixture's relative tolerance of the largest voltage of the reference, plus twice its absolute tolerance on voltages.
+Operating-point references contain every DC solution found by jolty deflation (`OperatingPoints`) at tight differential-test tolerances (`reltol = 1e-6`), and sweep references record all solutions at each sweep level.
+Settling transients are judged against DC solutions with sources held at final levels, requiring convergence to the expected branch (such as a Schmitt trigger state or any stored latch state).
+Ring oscillators must avoid all unstable DC solutions, and the impasse circuit must halt within the relative tolerance of the analytical fold time.
+Voltage agreement follows the differential test criterion: every node voltage must stay within the fixture's relative tolerance of the largest reference voltage plus twice the absolute voltage tolerance.
 
-Each simulator's failure rate is its failed and timed-out runs over the runs it supports, DC and transient apart, with the 95 % Wilson interval that `jolty.specs.wilson` gives a yield.
+Each simulator's failure rate divides failed and timed-out runs by supported runs (separately for DC and transient), reported with a 95 % Wilson interval from `jolty.specs.wilson`.
 
 ## Simulators
 
-A simulator is a named configuration of one program, its version recorded in every results file:
+Each simulator entry defines a named tool configuration whose version is logged in every results file:
 
 | Simulator | What runs |
 | --- | --- |
-| `jolty` | The engine at its defaults, each fixture in a Python process of its own; it counts the Newton iterations of an operating point, of a sweep's every level and of a transient, its operating point's among them. |
-| `ngspice-sparse` | ngspice in batch mode at its defaults, its direct solver Sparse 1.3, at the temperature where its thermal voltage is jolty's, as the differential tests run it; its iterations and analysis time from `rusage all`. |
+| `jolty` | Engine at default settings running each fixture in a dedicated Python subprocess, counting Newton iterations across operating points, DC sweep steps, and transients (including initial operating points). |
+| `ngspice-sparse` | Batch-mode ngspice at defaults with Sparse 1.3 at the temperature matching jolty's thermal voltage, reading iteration counts and analysis time from `rusage all`. |
 
-Each runs by its runner of [`../simulators.py`](../simulators.py), which names it and states its version.
-Another simulator joins the corpus by a function of `runs.py` that runs a fixture in it within a timeout and returns the voltages the fixture compares, listed in `runs.RUNS`.
+Each simulator runs through [`../simulators.py`](../simulators.py), which supplies its canonical name and version.
+Additional simulators integrate by adding a timeout-bounded runner function returning node voltages to `runs.py` and registering it in `runs.RUNS`.

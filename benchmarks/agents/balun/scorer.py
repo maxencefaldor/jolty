@@ -1,33 +1,31 @@
 # Copyright 2026 Maxence Faldor
-"""The balun task's scorer, which the agent never sees.
+"""Hidden benchmark scorer for the low-voltage active balun design task.
 
-It places the agent's component on Koza's test fixture for the low-voltage balun of US
-patent 6,265,908 (Genetic Programming IV, sections 15.3.1.1 and 15.3.5.1): a 1 V supply,
-the source behind 75 Ω, each output loaded with 150 Ω to the supply. It measures his
-seven fitness cases: over 41 frequencies from 1 MHz to 100 MHz, each output's gain
-against half the source's and its phase against 0° or 180°, and the phase of their
-difference against 180°; the DC offset between the outputs; and the difference's total
-harmonic distortion, harmonics 2 to 9 of a 10 MHz sine of 10 mV over 200 ns.
+The scorer mounts the agent's component on Koza's test fixture for the low-voltage
+balun of US patent 6,265,908 (Genetic Programming IV, sections 15.3.1.1 and 15.3.5.1).
+The fixture provides a 1 V supply, a 75 Ω source impedance, and two 150 Ω output loads
+tied to the supply.
+Evaluation covers Koza's seven fitness cases across 41 frequencies from 1 MHz to
+100 MHz: each output's gain relative to 0.5 and phase relative to 0° or 180°, plus
+differential phase relative to 180°. Additional checks measure output DC offset and
+differential total harmonic distortion across harmonics 2 through 9 of a 10 mV, 10 MHz
+sine over 200 ns.
 
-Koza's fitness sums these, but his totals, 1.72 for the patented circuit and 0.429 for
-the one genetic programming evolved, cannot come from the sums his text states: a gain
-error of 0.60 dB, the patent's on the difference, would alone sum to some 25 over 41
-frequencies. The task is met instead on the two figures he gives for both circuits: the
-difference's gain within 0.60 dB of the source's on average, the patent's, where the
-evolved circuit's was 0.47 dB; and a distortion of at most -33.9 dB, the patent's, where
-the evolved circuit's was -65.6 dB. To be a balun at all, each output must also lie
-within his fitness's tolerances at every frequency, 3 dB and 10°, and the DC offset be
-at most 1.72 mV, the most the patent's total of 1.72 leaves room for at his weight of
-1,000 per volt. All of it must hold from 0 °C to 70 °C with the supply within 5 % of 1
-V, and on 95 % of boards of the design too, built of resistors within 1 %, capacitors
-within 5 % and transistors from reels anywhere in their datasheets' ranges, each board
-over the same range: margins Koza's circuits, simulated with exact parts at 27 °C, need
-not keep.
+Koza's published total fitness figures (1.72 patented, 0.429 evolved) cannot be
+reconstructed from the stated weighted sums because the patent's 0.60 dB differential
+gain error alone sums to roughly 25 over 41 points. The scorer instead enforces Koza's
+two summary figures directly: mean differential gain error at most 0.60 dB (evolved:
+0.47 dB) and total harmonic distortion at most -33.9 dB (evolved: -65.6 dB). Each
+output must also remain within Koza's 3 dB and 10° per-frequency tolerances, and output
+DC offset must stay within 1.72 mV (the maximum allowed by a 1.72 total at Koza's
+weight of 1,000 per volt). Every specification must hold from 0 °C to 70 °C at +/-5 %
+supply voltage, both nominally and on at least 95 % of Monte Carlo boards using 1 %
+resistors, 5 % capacitors, and reel-varied datasheet transistors.
 
-Koza does not state the source's DC level; the source reaches the input through 1 µF as
-well as 75 Ω, so a design biases its own input rather than drawing its bias through the
-source. The distortion's sine has the 10 mV amplitude of his frequency sweeps. Phases
-are compared on the circle, so that -179° lies 1° from 180°.
+A 1 µF blocking capacitor isolates the source ahead of the 75 Ω impedance because Koza
+omits the source DC level, requiring the design to self-bias the input. Distortion uses
+the 10 mV amplitude of Koza's sweeps, and phase errors wrap circularly so -179° sits 1°
+from 180°.
 """
 
 from pathlib import Path
@@ -51,32 +49,32 @@ from jolty.units import F, Hz, MHz, V, mV, ohm, s
 from jolty.waveforms import Sine
 
 ALLOWED = {"resistor", "capacitor"}
-"""The devices the design may hold besides the given transistors."""
+"""Passive device models permitted in addition to the given discrete transistors."""
 SUPPLIES = ("VCC",)
-"""The bench's supply, which strays within 5 % of its level in the corners."""
+"""Top-level bench supply scaled by +/-5 % across operating corners."""
 PORTS = ("input", "in_phase", "out_of_phase", "vcc", "ground")
-"""The design's ports, which the bench joins."""
+"""Required port names exposed by the balun component."""
 GAIN = 0.60
-"""The patented circuit's mean absolute error of the difference's gain, in decibels."""
+"""Patented balun mean absolute differential gain error target in decibels."""
 DISTORTION = -33.9
-"""The patented circuit's total harmonic distortion, in decibels."""
+"""Patented balun total harmonic distortion target in decibels."""
 EVOLVED = {"difference gain error": 0.47, "distortion": -65.6}
-"""What the circuit genetic programming evolved reached on both, as Koza found."""
+"""Summary metrics reported by Koza for the genetically evolved balun."""
 TOLERANCE = {"gain": 3.0, "phase": 10.0}
-"""Koza's tolerances on each output's gain, in decibels, and phase, in degrees."""
+"""Per-frequency tolerances on single-ended gain in decibels and phase in degrees."""
 OFFSET = 1.72e-3
-"""The largest DC offset between the outputs, in volts."""
+"""Maximum permitted DC offset between outputs in volts."""
 BLOCKING = 1e-6
-"""The capacitance that keeps the source's DC level from the input, in farads."""
+"""Input AC-coupling capacitance in farads isolating source DC bias."""
 FUNDAMENTAL = 10e6
-"""The distortion's frequency, in hertz."""
+"""Fundamental sine frequency in hertz for the harmonic distortion test."""
 HARMONICS = 9
-"""The highest harmonic the distortion counts."""
+"""Highest harmonic order included in the total harmonic distortion calculation."""
 
 
 @component
 def bench(c: Builder, made: Component, *, distorting: bool = False) -> None:
-    """`made` on Koza's fixture, its source a 10 MHz sine when `distorting`."""
+    """Builds Koza's balun fixture for `made`, using a 10 MHz sine if `distorting`."""
     ground = c.port("ground", Role.GROUND)
     placed = c.place(made, name="X1")
     supply = c.place(devices.voltage_source(1 * V), name="VCC")
@@ -101,17 +99,17 @@ def bench(c: Builder, made: Component, *, distorting: bool = False) -> None:
 
 
 def decibels(gain: np.ndarray) -> np.ndarray:
-    """The magnitude of `gain`, in decibels."""
+    """Converts complex gain magnitudes in `gain` to decibels."""
     return 20 * np.log10(np.maximum(np.abs(gain), 1e-30))
 
 
 def off(gain: np.ndarray, phase: float) -> np.ndarray:
-    """How far `gain`'s phase lies from `phase`, in degrees, on the circle."""
+    """Computes wrapped phase error in degrees between `gain` and target `phase`."""
     return np.abs((np.angle(gain, deg=True) - phase + 180.0) % 360.0 - 180.0)
 
 
 def distortion(made: Component, board: Board) -> float:
-    """The difference's distortion on `board`, over its second period, in decibels."""
+    """Measures differential harmonic distortion in dB on `board` over cycle two."""
     period = 1 / FUNDAMENTAL
     waveforms = board.simulation(circuit(bench(made, distorting=True)), SUPPLIES).run(
         Transient(stop=2 * period * s, max_step=period / 1000 * s)
@@ -127,10 +125,10 @@ def distortion(made: Component, board: Board) -> float:
 
 
 def measure(made: Component, board: Board) -> dict[str, float]:
-    """Koza's seven fitness cases on `board` of `made`.
+    """Measures Koza's seven balun fitness metrics for `made` on `board`.
 
-    The difference's gain error is a mean over the frequencies, as Koza gives it; each
-    other error over the frequencies is its worst.
+    Reports mean differential gain error across frequency and worst-case error across
+    frequency for all other AC metrics.
     """
     simulation = board.simulation(circuit(bench(made)), SUPPLIES)
     response = simulation.run(Ac("VIN", decade(1 * MHz, 100 * MHz, 20)))
@@ -154,7 +152,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measures `found` fall short of the task, if they do."""
+    """Checks balun measurements in `found` and returns any unmet shortfalls."""
     reasons = []
     if found["difference gain error"] > GAIN:
         reason = (
@@ -184,7 +182,7 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the balun in `work`, as `arm` writes it."""
+    """Scores the balun submission in `work` against `task` for `arm`."""
     return score_design(
         task,
         work,

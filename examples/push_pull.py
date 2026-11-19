@@ -17,7 +17,7 @@ from jolty.waveforms import Sine
 
 @component
 def stage(c: Builder) -> None:
-    """The two followers, their bias diodes and resistors, and emitter resistors."""
+    """Builds complementary followers with bias diodes, bias resistors, and emitters."""
     source, output = c.port("input"), c.port("output")
     positive, negative = c.port("vcc", Role.SUPPLY), c.port("vee", Role.SUPPLY)
     upper, lower = c.place(q2n3904(), name="Q1"), c.place(q2n3906(), name="Q2")
@@ -38,7 +38,7 @@ def stage(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The stage on ±12 V, driving 100 Ω with a 4 V sine at 1 kHz."""
+    """Builds the output stage on ±12 V driving 100 Ω with a 4 V, 1 kHz sine wave."""
     ground = c.port("ground", Role.GROUND)
     positive = c.place(devices.voltage_source(12 * V), name="VCC")
     negative = c.place(devices.voltage_source(12 * V), name="VEE")
@@ -54,12 +54,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The stage on its bench."""
+    """Returns the push-pull stage test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The transfer from -6 V to 6 V, and two periods of the sine."""
+    """Returns a ±6 V DC transfer sweep and a two-period transient analysis."""
     return Plan(
         {
             "transfer": DcSweep("V1", linear(-6 * V, 6 * V, 121)),
@@ -69,7 +69,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The output within 100 mV of the input around zero, and some 0.95 of it at 4 V."""
+    """Returns specs for low crossover offset and roughly 0.95 gain at ±4 V."""
     return Specs(
         [
             value("transfer", "out", at=0 * V).within(0 * V, 100 * mV),

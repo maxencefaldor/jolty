@@ -20,7 +20,7 @@ NOTCH = 1 / (2 * math.pi * RESISTANCE * CAPACITANCE)
 
 @component
 def twin_t(c: Builder) -> None:
-    """The resistive T and the capacitive T, side by side."""
+    """Builds the parallel resistive T and capacitive T notch networks."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     r1 = c.place(devices.resistor(10 * kohm), name="R1")
@@ -38,7 +38,7 @@ def twin_t(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The notch, driven by a source and loaded by 10 MΩ."""
+    """Builds the twin-T notch filter driven by a voltage source into a 10 MΩ load."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     notch = c.place(twin_t(), name="X1")
@@ -49,12 +49,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The notch on its bench."""
+    """Returns the twin-T notch filter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The frequency response, finely around the notch."""
+    """Returns an AC sweep sampled densely around the notch frequency."""
     frequencies = sorted(
         [*decade(10 * Hz, 1 * MHz, 60), NOTCH * Hz],
         key=lambda frequency: frequency.value,
@@ -63,7 +63,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """No gain far from the notch, and the notch deep."""
+    """Returns specifications for unity passband gain and deep notch attenuation."""
     return Specs(
         [
             gain("bode", "out", at=10 * Hz).between(-0.03, 0),

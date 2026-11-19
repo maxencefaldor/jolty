@@ -1,26 +1,25 @@
 # Copyright 2026 Maxence Faldor
-"""Confine an agent's session to its own directories, with the platform's sandbox.
+"""Platform sandbox confinement restricting an agent session to assigned directories.
 
-An agent runs with every permission its tools give it, so the sandbox, not the agent,
-decides what it reaches: on macOS, Seatbelt, through ``sandbox-exec``, and on Linux,
-bubblewrap, ``bwrap``, the mechanisms Claude Code's own sandbox uses for the commands it
-runs. The whole session runs inside, the agent and everything it starts: its shell's
-commands, its MCP servers and the scripts they run, and the simulators.
+Agent sessions run with unrestricted tool permissions, so OS sandboxing enforces
+filesystem and process isolation. On macOS, Seatbelt runs through ``sandbox-exec``; on
+Linux, bubblewrap runs through ``bwrap``. Both match the underlying mechanisms used by
+Claude Code for command sandboxing. Confinement covers the full session process tree,
+including shell commands, MCP servers, helper scripts, and simulators.
 
-A session reads nothing in the places that hold people's data, the `PRIVATE` places:
-the home directories, the temporary directories and mounted volumes, but for what it is
-given to read there, its own directories and the programs it runs. It reads the rest of
-the system, its libraries, its configuration and the programs installed outside those
-places, as any program must. It writes nothing but its own directories, and the
-devices every program writes, such as ``/dev/null``.
+Private locations listed in `PRIVATE` (home directories, temporary directories, and
+mounted volumes) are unreadable except for explicitly granted read paths, session
+directories, and required executables. System libraries, configuration files, and
+binaries outside `PRIVATE` remain readable as needed by standard processes. Write
+access is limited to the session directories and standard device files such as
+``/dev/null``.
 
-On macOS it also reaches no local service, neither a Unix socket but the system's DNS
-resolver nor any address of the machine itself, and starts nothing outside the sandbox,
-neither by an Apple Event nor through Launch Services; it may list no other process.
-It reaches the network, as Claude Code must reach its service. On Linux, bubblewrap
-hides the private places and gives the session processes of its own; it can filter no
-Unix socket by its path nor any address, so the machine's other services stay within
-the session's reach there.
+On macOS, Seatbelt also blocks local Unix sockets except the system DNS resolver,
+blocks loopback network addresses, blocks Apple Events and Launch Services, and hides
+other processes while allowing outbound network access for Claude Code. On Linux,
+bubblewrap hides private paths and isolates the PID namespace, while local Unix
+sockets and loopback addresses remain reachable because bubblewrap cannot filter them
+by path or address.
 """
 
 import shutil
@@ -32,44 +31,47 @@ from typing import Final, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 type Mechanism = Literal["sandbox-exec", "bwrap"]
-"""A platform's sandbox: Seatbelt's ``sandbox-exec`` on macOS, bubblewrap on Linux."""
+"""Platform sandbox backend: Seatbelt ``sandbox-exec`` (macOS) or ``bwrap`` (Linux)."""
 
 PRIVATE: Final[dict[str, tuple[str, ...]]] = {
     "darwin": ("/Users", "/Volumes", "/private/tmp", "/private/var/folders"),
     "linux": ("/home", "/root", "/tmp", "/var/tmp", "/mnt", "/media", "/run/user"),  # noqa: S108 - hidden from a session, never written
 }
-"""The places that hold people's data, by platform: the home directories, the
-temporary directories, and mounted volumes. ``/tmp`` and ``/var`` are links into
-``/private`` on macOS, where ``/private/var/folders`` holds each user's temporary
-directory and caches."""
+"""User-data root paths hidden per platform: home, temporary, and volume directories.
+
+On macOS, ``/tmp`` and ``/var`` resolve into ``/private``, where
+``/private/var/folders`` stores per-user temporary directories and caches.
+"""
 DEVICES: Final = ("/dev/null", "/dev/zero", "/dev/tty", "/dev/dtracehelper")
-"""The devices a session writes, as every program may: writes there are discarded,
-or reach the terminal."""
+"""Standard device files writable inside a sandbox to discard output or reach a TTY."""
 RESOLVER: Final = "/private/var/run/mDNSResponder"
-"""The Unix socket of macOS's DNS resolver, the one local service a session reaches."""
+"""macOS DNS resolver Unix socket, the sole local service reachable from a session."""
 
 
 class Sandbox(BaseModel):
-    """How a session is confined: by what mechanism, and what it reads and writes."""
+    """Confinement specification recording the sandbox backend and allowed paths."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mechanism: Mechanism
     private: tuple[str, ...] = Field(
-        description="The places whose files the session reads only where it is given."
+        description="Private root paths hidden from the session unless explicitly "
+        "granted."
     )
     reads: tuple[str, ...] = Field(
-        description="What it reads there, its programs: each a directory or a file."
+        description="Directories and files explicitly readable inside private roots, "
+        "such as executables."
     )
     writes: tuple[str, ...] = Field(
-        description="Its own directories, the only ones it writes, and reads."
+        description="Session directories writable and readable by the confined "
+        "process tree."
     )
 
 
 def mechanism() -> Mechanism | None:
-    """The sandbox of this platform, if it has one installed.
+    """Returns the sandbox backend installed on the current platform, or null if absent.
 
-    It is ``sandbox-exec`` on macOS and ``bwrap`` on Linux, found on the path.
+    Checks ``PATH`` for ``sandbox-exec`` on macOS and ``bwrap`` on Linux.
     """
     match sys.platform:
         case "darwin" if shutil.which("sandbox-exec") is not None:
@@ -80,10 +82,10 @@ def mechanism() -> Mechanism | None:
 
 
 def sandbox(reads: Iterable[Path], writes: Iterable[Path]) -> Sandbox | None:
-    """The sandbox that reads `reads` and writes `writes`; null without a mechanism.
+    """Builds a `Sandbox` permitting `reads` and `writes`, or returns null if absent.
 
-    Each path is taken as it is on the disk, its links resolved, since the sandboxes
-    match the paths of the files themselves.
+    Symlinks are resolved to canonical filesystem paths because sandbox rules match
+    real paths on disk.
     """
     found = mechanism()
     if found is None:
@@ -97,12 +99,12 @@ def sandbox(reads: Iterable[Path], writes: Iterable[Path]) -> Sandbox | None:
 
 
 def _resolved(paths: Iterable[Path]) -> tuple[str, ...]:
-    """`paths` with their links resolved, each once, in order."""
+    """Resolves symlinks in `paths` and returns unique canonical strings in order."""
     return tuple(dict.fromkeys(str(path.resolve()) for path in paths))
 
 
 def confined(command: Sequence[str], within: Sandbox, work: Path) -> list[str]:
-    """`command`, run in the sandbox `within`, from `work`."""
+    """Wraps `command` to execute inside `within` using `work` as working directory."""
     if within.mechanism == "sandbox-exec":
         text, parameters = profile(within)
         return ["sandbox-exec", "-p", text, *parameters, *command]
@@ -110,9 +112,10 @@ def confined(command: Sequence[str], within: Sandbox, work: Path) -> list[str]:
 
 
 def profile(within: Sandbox) -> tuple[str, list[str]]:
-    """The Seatbelt profile of `within`, and the ``-D`` options that give its paths.
+    """Builds the Seatbelt profile text and ``-D`` parameter flags for `within`.
 
-    The profile names each path by a parameter, so no path is ever quoted in it.
+    Paths are passed through Seatbelt parameters rather than embedded literals to
+    avoid string-quoting issues.
     """
     groups = {"PRIVATE": within.private, "READ": within.reads, "WRITE": within.writes}
     parameters = [
@@ -147,11 +150,12 @@ def profile(within: Sandbox) -> tuple[str, list[str]]:
 
 
 def bubblewrap(within: Sandbox, work: Path) -> list[str]:
-    """The options of bubblewrap for `within`, from `work`, but the command.
+    """Builds the ``bwrap`` invocation prefix for `within` starting in `work`.
 
-    The system is read-only, each private place an empty directory but for what the
-    session reads there, read-only, and its own directories, writable; the session has
-    processes of its own, and dies with its runner.
+    Mounts the root filesystem read-only, overlays each private directory with an
+    empty tmpfs, binds granted read paths read-only, and binds session directories
+    read-write. Runs the session in a separate PID namespace that terminates when the
+    parent exits.
     """
     hidden = [place for place in within.private if Path(place).is_dir()]
     return [

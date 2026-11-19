@@ -6,12 +6,12 @@ jolty = '''`bias.py` builds the bias of a common-emitter stage: the component `s
 ngspice = '''`bias.cir` simulates the bias of a common-emitter stage: the subcircuit `stage` of `stage.cir`, placed as `X1` on its bench, and the bench's 5 V supply `V1`.'''
 
 [[replace]]
-jolty = '''Its plan runs the operating point over 200 Monte Carlo samples of the resistors' tolerances, and its specs hold the emitter at 1 V within 100 mV and the collector at 2.5 V within 300 mV, with a yield of at least 99 %.'''
-ngspice = '''Its specs hold the emitter, the stage's node `emitter`, at 1 V within 100 mV and the collector, the bench's node `out`, at 2.5 V within 300 mV at the operating point, on at least 99 % of 200 boards whose resistors each lie anywhere within their tolerance, uniformly.'''
+jolty = '''The plan simulates 200 Monte Carlo operating-point samples over resistor tolerances, requiring the emitter within 100 mV of 1 V and the collector within 300 mV of 2.5 V at 99 % minimum yield.'''
+ngspice = '''Specifications require `emitter` (inside `stage`) within 100 mV of 1 V and `out` (on the bench) within 300 mV of 2.5 V at DC on at least 99 % of 200 boards with uniform resistor tolerances.'''
 
 [[replace]]
-jolty = '''Write `design.py`: a build script whose `build()` returns the same bench with a cheaper stage, which meets the same specs and yield.'''
-ngspice = '''Write `design.cir`: a SPICE library whose subcircuit `stage` is a cheaper stage, which meets the same specs and yield on the same bench.'''
+jolty = '''Write `design.py` with a `build()` function returning the same bench and a cheaper stage that meets the original specifications and yield.'''
+ngspice = '''Write `design.cir`, a SPICE library defining a cheaper `stage` subcircuit that meets the original specifications and yield on the same bench.'''
 
 [[replace]]
 jolty = '''Keep the bench, its supply and its nets as they are, and keep `X1`'s ports; change what you like inside the stage.'''
@@ -19,7 +19,7 @@ ngspice = '''Keep the stage's pins, `supply` then `output`, its ground, SPICE's 
 
 [[replace]]
 jolty = '''Each resistor of the stage must state a tolerance and take a value that a part of the catalog has at that tolerance.'''
-ngspice = '''Write `tolerances.json` beside it, which gives each resistor of the stage its tolerance by the resistor's name, such as `{"R1": 0.01}`; each resistor must take a value that a part of the catalog has at that tolerance.'''
+ngspice = '''Write `tolerances.json` alongside `design.cir`, mapping each stage resistor name to its tolerance (such as `{"R1": 0.01}`); every resistor value must match a catalog part at that tolerance.'''
 
 [[replace]]
 jolty = '''`jolty cost` prices a saved circuit with a catalog.

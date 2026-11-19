@@ -25,10 +25,10 @@ PERIOD = 2 * 10e3 * 10e-9 * math.log(3)
 
 @component
 def astable(c: Builder) -> None:
-    """The op-amp with positive feedback through a divider, negative through an RC.
+    """Builds an op-amp with resistive positive feedback and RC negative feedback.
 
-    At rest all of it sits at zero, balanced; a short current pulse into the divider
-    tips it.
+    At rest all nodes sit balanced at zero; a short current pulse into the divider
+    initiates oscillation.
     """
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
@@ -54,7 +54,7 @@ def astable(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The oscillator alone."""
+    """Builds the standalone relaxation oscillator test bench."""
     ground = c.port("ground", Role.GROUND)
     stage = c.place(astable(), name="X1")
     c.connect(stage.output, name="out")
@@ -62,17 +62,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The oscillator on its bench."""
+    """Returns the relaxation oscillator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Two milliseconds, some nine periods."""
+    """Returns a 2 ms Gear-2 transient plan covering roughly nine cycles."""
     return Plan({"run": Transient(stop=2 * ms, max_step=0.5 * us, method="gear2")})
 
 
 def specs() -> Specs:
-    """The period 2RC·ln 3, within the 2 % slewing takes, swinging rail to rail."""
+    """Returns specifications for period near 2RC·ln 3 and rail-to-rail swing."""
     return Specs(
         [
             frequency("run", "out", start=0.5 * ms).within(

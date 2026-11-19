@@ -1,15 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""How the corpus runs a fixture in each simulator, each run in a process of its own.
+"""Subprocess runners executing robustness fixtures under timeouts across simulators.
 
-Each simulator runs a fixture by its runner of ``benchmarks/simulators.py`` (`RUNS`):
-jolty at its defaults, and ngspice in batch mode at its defaults, whose direct solver
-is Sparse 1.3. Each runs a fixture in a child process that a timeout stops, and returns
-what it found, the voltages the fixture compares, its time and its Newton iterations,
-or its message.
+Registered runners in `RUNS` invoke jolty and batch-mode ngspice (Sparse 1.3) at
+default options through ``benchmarks/simulators.py``. Each run executes in a separate
+timed child process and captures compared voltages, runtime, iteration counts, or error
+diagnostics.
 
-Run as a script, this module is the child that runs jolty: ``runs.py run FIXTURE``
-runs a fixture and ``runs.py reference FIXTURE`` finds its reference, every DC solution
-jolty finds by deflation at tight tolerances; each prints one line of JSON.
+Invoked directly as a script, this module serves as the jolty worker: ``runs.py run
+FIXTURE`` executes a fixture and ``runs.py reference FIXTURE`` enumerates
+DC solutions via deflation. Both commands emit a single JSON line on stdout.
 """
 
 import dataclasses
@@ -60,18 +59,17 @@ from jolty.spice import ngspice
 from jolty.units import CURRENT, VOLTAGE, K, Quantity, V, s
 
 _REACHED: Final = re.compile(r"at t = (\S+) s")
-"""Where jolty's message says a transient stopped: its step fell below the smallest
-``at t = ... s`` (``SimulationError::StepTooSmall``)."""
+"""Pattern extracting the final timestamp from ``SimulationError::StepTooSmall``."""
 
 
 def _child(mode: str, fixture: Fixture, timeout: float) -> tuple[dict[str, Any], float]:
-    """What this module, run as a script in `mode` on `fixture`, printed, and its time.
+    """Runs this module in a child process for `mode` and `fixture`, returning JSON.
 
-    The child imports as this process does, from the same path.
+    Propagates `sys.path` via ``PYTHONPATH`` so the child resolves identical imports.
 
     Raises:
-        subprocess.TimeoutExpired: When it runs past `timeout`.
-        JoltyError: When it prints no result, as when it crashes.
+        subprocess.TimeoutExpired: When the child process exceeds `timeout` seconds.
+        JoltyError: When the child exits non-zero or produces no stdout output.
     """
     path = os.pathsep.join(entry for entry in sys.path if entry)
     started = time.perf_counter()
@@ -108,11 +106,11 @@ def jolty(fixture: Fixture, timeout: float) -> FixtureRun:
 
 
 def reference(fixture: Fixture, timeout: float) -> Reference:
-    """The reference `fixture`'s runs are judged against, found by jolty in a child.
+    """Computes the reference DC solutions for `fixture` in a timed jolty child process.
 
-    Every DC solution jolty finds by deflation at tight tolerances: at the operating
-    point, at each level of a sweep, or of the circuit settled at a transient's end;
-    none for an expectation that needs none.
+    Enumerates all DC solutions via deflation at tight tolerances for operating points,
+    sweep levels, or final-level settling circuits. Returns an empty `Reference` when
+    no reference is needed.
     """
     if isinstance(fixture.expectation, Impasse | Completes):
         return Reference()
@@ -212,10 +210,10 @@ def _analysis(fixture: Fixture, built: Built, simulation: Simulation) -> Fixture
 
 
 def _level(built: Built, source: str) -> Quantity:
-    """The unit of the levels of the source `source`: a volt, or an ampere.
+    """Returns the unit quantity (1 V or 1 A) for independent `source` in `built`.
 
     Raises:
-        Unsupported: When `source` is no independent source of the circuit's top.
+        Unsupported: When `source` is not a top-level independent source.
     """
     top = built.circuit.components[built.circuit.top]
     instance = top.instance(source)
@@ -235,10 +233,10 @@ def _level(built: Built, source: str) -> Quantity:
 def _solutions(
     built: Built, overrides: dict[str, dict[str, float]] | None
 ) -> list[Solution]:
-    """Every DC solution jolty finds of `built`, by deflation, at tight tolerances.
+    """Enumerates all DC solutions of `built` via deflation at tight tolerances.
 
     Raises:
-        JoltyError: When it finds none.
+        JoltyError: When deflation finds no DC solution.
     """
     simulation = Simulation(built.circuit, built.temperature * K, overrides)
     tight = dataclasses.replace(
@@ -253,7 +251,7 @@ def _solutions(
 
 
 def _reference(fixture: Fixture) -> dict[str, object]:
-    """The reference of `fixture`, as the child of `reference` prints it."""
+    """Builds the JSON reference payload printed by the `reference` child worker."""
     try:
         match fixture.expectation:
             case Solutions():
@@ -283,20 +281,18 @@ _NOTES: Final = (
     ("source stepping", "source stepping"),
     ("gmin stepping", "gmin stepping"),
 )
-"""What ngspice prints as it tries each way to an operating point, and its name, the
-last tried first."""
+"""ngspice stdout markers mapped to operating-point strategies (last-tried first)."""
 
 _DIGITS: Final = 1e-12
-"""How near ngspice's last time must be to a transient's stop, relatively, to have
-reached it: an ASCII raw file prints 15 significant digits."""
+"""Relative tolerance verifying ngspice reached transient stop (15-digit ASCII raw)."""
 
 
 def ngspice_sparse(fixture: Fixture, timeout: float) -> FixtureRun:
-    """Runs `fixture` in ngspice at its defaults, Sparse 1.3 and SPICE's tolerances.
+    """Runs `fixture` in batch ngspice with Sparse 1.3 and default SPICE tolerances.
 
-    It runs the fixture's deck with the fixture's options, at the temperature where its
-    thermal voltage is jolty's, as the differential tests run it, the analysis and
-    ``rusage all`` in a control section, stopped after `timeout` seconds.
+    Executes the fixture deck with fixture options at jolty's thermal-voltage equivalent
+    temperature, running the analysis and ``rusage all`` in a ``.control`` block under
+    `timeout`.
     """
     if ngspice.EXECUTABLE is None:
         return FixtureRun(
@@ -332,7 +328,7 @@ RUNS: Final[Mapping[Simulator, Runs]] = {
     Simulator.JOLTY: jolty,
     Simulator.NGSPICE_SPARSE: ngspice_sparse,
 }
-"""How each simulator the corpus runs runs a fixture: another joins it by one more."""
+"""Registry mapping each supported robustness simulator to its execution callable."""
 
 
 def _judged(
@@ -342,7 +338,7 @@ def _judged(
     plots: tuple[ngspice.Result, ...],
     seconds: float,
 ) -> FixtureRun:
-    """What ngspice found of `fixture`, from what it `printed` and its `plots`."""
+    """Builds a `FixtureRun` for `fixture` from ngspice `printed` output and `plots`."""
     iterations = RUSAGE["iterations"].search(printed)
     analysis = RUSAGE["analysis_seconds"].search(printed)
     counted = FixtureRun(
@@ -384,11 +380,10 @@ def _judged(
 
 
 def _options(fixture: Fixture) -> list[str]:
-    """The options line of the fixture's options, and the temperature line.
+    """Builds ngspice ``.options`` lines for tolerances, method, and temperature.
 
-    ngspice runs where its thermal voltage is jolty's at the fixture's temperature, its
-    models' nominal temperature where it is jolty's, as `jolty.spice.ngspice.runs`
-    runs it.
+    Matches jolty's thermal voltage at both simulation and nominal model temperatures,
+    consistent with `jolty.spice.ngspice.runs`.
     """
     options = fixture.options
     given = [
@@ -409,7 +404,7 @@ def _options(fixture: Fixture) -> list[str]:
 
 
 def _command(fixture: Fixture) -> str:
-    """The fixture's analysis as an ngspice command."""
+    """Translates the analysis of `fixture` into an ngspice control command."""
     match fixture.analysis:
         case Point():
             return "op"

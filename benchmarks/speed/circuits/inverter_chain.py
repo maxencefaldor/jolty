@@ -1,15 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""Chains of CMOS inverters, the cost of evaluating devices and of Newton iteration.
+"""CMOS inverter chain fixtures measuring device evaluation and Newton cost.
 
-Each inverter is a pair of level 1 MOSFETs of a 1 µm process on 3.3 V, and drives the
-next one's gates. A pulse of 3.3 V, from 1 ns to 21 ns, starts an edge down the chain at
-each of its corners. The fixtures ``inverter_chain_500``, ``inverter_chain_5000`` and
-``inverter_chain_50000`` run 40 ns of chains of 500, 5,000 and 50,000 inverters, from
+Each inverter pairs level-1 1 µm MOSFETs on a 3.3 V supply driving the next stage.
+A 3.3 V input pulse from 1 ns to 21 ns launches rising and falling edges down the
+chain. The fixtures ``inverter_chain_500``, ``inverter_chain_5000``, and
+``inverter_chain_50000`` simulate 500, 5,000, and 50,000 inverters for 40 ns from
 the operating point.
 
-A chain of ten to the power ``n`` inverters is ten chains of ten to the ``n - 1`` in
-series, so an inverter's path spells its place in the chain in decimal digits, and the
-circuit's file holds each size of chain once.
+Each 10^n-stage chain composes ten 10^(n - 1)-stage subchains in series. Decimal
+instance paths encode stage positions directly, and serialized circuit JSON stores
+each decade block once.
 """
 
 import sys
@@ -26,18 +26,18 @@ from jolty.units import V, ns
 from jolty.waveforms import Pulse
 
 LENGTHS = (500, 5000, 50_000)
-"""The fixtures' numbers of inverters."""
+"""Inverter counts generated as speed benchmark fixtures."""
 
 MEMORY = 16.0
-"""The gibibytes a chain's results may hold: the 350,004 unknowns of 50,000 inverters,
-each of whose transistors has three Meyer displacements of its own, held 2.1 at some 800
-points on 15 November, and more than 4 since SPICE's charge tolerance took more steps;
-on 16 November they fitted in 16 on `cedar`."""
+"""Memory limit in gibibytes for inverter chain transient outputs. The 50,000-stage
+chain has 350,004 unknowns (three Meyer displacements per transistor), using 2.1 GiB
+at 800 points and over 4 GiB under SPICE charge tolerance; 16 GiB covers runs on
+`cedar`."""
 
 
 @component
 def inverter(c: Builder) -> None:
-    """A p-channel transistor up to the supply and an n-channel one down to ground."""
+    """Builds a CMOS inverter with PMOS to supply and NMOS to ground."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     up, down = c.place(mos("p"), name="MP"), c.place(mos("n"), name="MN")
@@ -48,13 +48,13 @@ def inverter(c: Builder) -> None:
 
 
 def stages(decades: int) -> Component:
-    """A chain of ten to the power `decades` inverters."""
+    """Returns a subchain component containing ten to the power `decades` inverters."""
     return inverter() if decades == 0 else chain(decades)
 
 
 @component
 def chain(c: Builder, decades: int) -> None:
-    """Ten chains of ten to the power ``decades - 1`` inverters, in series."""
+    """Builds ten series subchains of ten to the power ``decades - 1`` inverters."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     previous = a
@@ -69,10 +69,10 @@ def chain(c: Builder, decades: int) -> None:
 
 @component
 def bench(c: Builder, length: int) -> None:
-    """A chain of `length` inverters, a digit times a power of ten, under the pulse.
+    """Builds a pulsed bench for `length` inverters (a digit times a power of ten).
 
     Raises:
-        ValueError: When the length is not a digit times a power of ten.
+        ValueError: When `length` is not a single digit times a power of ten.
     """
     decades = len(str(length)) - 1
     count, rest = divmod(length, 10**decades)
@@ -104,22 +104,22 @@ def bench(c: Builder, length: int) -> None:
 
 
 def build(length: int = LENGTHS[0]) -> Component:
-    """A chain of `length` inverters on its bench."""
+    """Returns the pulsed test bench for a chain of `length` inverters."""
     return bench(length)
 
 
 def plan() -> Plan:
-    """Forty nanoseconds from the operating point."""
+    """Returns the 40 ns transient plan with the `MEMORY` ceiling."""
     return Plan({"tran": Transient(stop=40 * ns)}, options=Options(max_memory=MEMORY))
 
 
 def circuits() -> dict[str, Component]:
-    """A chain of each length, by the name of its file."""
+    """Returns inverter chain circuits for all `LENGTHS` keyed by file stem."""
     return {f"inverter_chain_{length}": build(length) for length in LENGTHS}
 
 
 def fixtures() -> dict[str, Fixture]:
-    """A fixture for each length of chain."""
+    """Returns speed benchmark fixtures for all `LENGTHS`."""
     return {
         f"inverter_chain_{length}": Fixture(f"inverter_chain_{length}", plan())
         for length in LENGTHS

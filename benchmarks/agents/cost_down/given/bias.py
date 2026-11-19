@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""A common-emitter stage's bias, its resistors 0.1 % parts.
+"""Baseline common-emitter amplifier bias circuit using 0.1 % resistors.
 
-A divider sets the base, the emitter resistor the current, and the collector resistor
-the collector's voltage. The parts hold the emitter at 1 V within 100 mV and the
-collector at 2.5 V within 300 mV on every sample of their tolerances: the baseline of
-the cost-down task. Simulate it with ``jolty simulate bias.py``.
+A resistive divider sets the base bias, an emitter resistor sets quiescent current, and
+a collector resistor sets collector voltage. The baseline holds the emitter at 1 V
+within 100 mV and the collector at 2.5 V within 300 mV across Monte Carlo samples. Run
+with ``jolty simulate bias.py``.
 """
 
 from jolty import Builder, Component, MonteCarlo, Plan, Role, Specs, component, devices
@@ -13,7 +13,7 @@ from jolty.specs import value
 from jolty.units import A, Quantity, V, kohm, mV
 
 TOLERANCE = 0.001
-"""The tolerance of every resistor."""
+"""Relative resistance tolerance applied to every resistor in the baseline stage."""
 
 
 @component
@@ -24,7 +24,7 @@ def stage(
     emitter: Quantity,
     collector: Quantity,
 ) -> None:
-    """An NPN transistor biased by a divider, with emitter and collector resistors."""
+    """Builds an NPN common-emitter stage with bias divider and load resistors."""
     supply = c.port("supply")
     output = c.port("output")
     ground = c.port("ground", Role.GROUND)
@@ -50,7 +50,7 @@ def stage(
 
 @component
 def bench(c: Builder) -> None:
-    """The stage, from a 5 V supply."""
+    """Places the baseline bias stage onto a 5 V supply test bench."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(5 * V), name="V1")
     biased = c.place(stage(33.2 * kohm, 16.5 * kohm, 1 * kohm, 2.49 * kohm), name="X1")
@@ -60,17 +60,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The stage on its bench."""
+    """Returns the complete common-emitter bias stage on its test bench."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, over 200 samples of the resistors' tolerances."""
+    """Returns the operating-point simulation plan with 200 Monte Carlo samples."""
     return Plan({"op": OperatingPoint()}, monte_carlo=MonteCarlo(200, seed=1))
 
 
 def specs() -> Specs:
-    """The emitter at 1 V within 100 mV, the collector at 2.5 V within 300 mV."""
+    """Returns emitter and collector voltage window specifications at 99 % yield."""
     return Specs(
         [
             value("op", "X1/emitter").within(1 * V, 100 * mV),

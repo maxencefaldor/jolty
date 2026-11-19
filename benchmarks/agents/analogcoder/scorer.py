@@ -1,33 +1,31 @@
 # Copyright 2026 Maxence Faldor
-"""AnalogCoder's twenty-four problems, checked as AnalogCoder checks them.
+"""Benchmark scorer for all twenty-four AnalogCoder circuit design problems.
 
-AnalogCoder (Lai et al., AAAI 2025; github.com/laiyao1/AnalogCoder, MIT License) asks
-for twenty-four circuits built from the same two level 1 MOSFETs on a 5 V supply, and
-checks each by simulation: with its ``problem_check`` scripts, and for the first fifteen
-problems with the operating point its ``check_netlist`` inspects. This scorer runs the
-same checks, with the same stimuli and tolerances, on a bench it builds around each
-design, and the work meets the task when every problem passes.
+AnalogCoder (Lai et al., AAAI 2025; github.com/laiyao1/AnalogCoder, MIT License)
+evaluates twenty-four circuits built from two level 1 MOSFET models on a 5 V supply.
+The original suite verifies each circuit via ``problem_check`` simulation scripts and
+verifies problems 1 through 15 via ``check_netlist`` operating-point checks. The scorer
+reproduces those stimuli and tolerances on a constructed test bench and passes a
+submission only when all twenty-four problems pass.
 
-Where AnalogCoder's checks found the parts they changed by their SPICE names, or let
-through what their problems exclude, this scorer checks what they meant, and the prompt
-says so:
+Several checks are tightened over the original SPICE-name-based scripts to enforce
+intent, as documented in the task prompt:
 
-- A design is a component with named ports, its inputs held at the levels it declares,
-  and its R1 and Cf, or Rf and C1, have the values AnalogCoder's checks gave them.
-- An integrator and a differentiator must invert, which a passive RC network cannot;
-  AnalogCoder removed the op-amp instead, and failed the design if it still worked.
-- The adder's tolerance is 20% of the sum, where AnalogCoder's was 20% of the output
-  voltage, which passes an adder that drops one of its inputs.
-- A current source keeps every step of its current within 1 µA as its load changes,
-  where AnalogCoder's check needed only one step to.
-- An oscillator starts from its supply switched on, not from initial conditions, and
-  must oscillate steadily over the second half of the run, not merely ring.
-- The voltage-controlled oscillator is tested at 3.25, 3.5 and 4 V, AnalogCoder's 0.65,
-  0.7 and 0.8 V of a 1 V supply scaled to 5 V, and its frequency must change
-  monotonically; AnalogCoder's check wanted the middle level's period the extreme one.
-- The phase-locked loop runs from 5 V, and must lock to 12 MHz as well as to 10 MHz,
-  which a free-running oscillator cannot.
-- Only the two transistors, resistors, capacitors and constant sources may appear.
+- Every design is a named-port component with declared DC input levels and R1/Cf or
+  Rf/C1 values matching AnalogCoder's check values.
+- Integrators and differentiators must invert (which passive RC networks cannot),
+  replacing AnalogCoder's op-amp-removal heuristic.
+- Adder error tolerance is 20 % of the input sum rather than 20 % of output voltage,
+  preventing dropped-input solutions from passing.
+- Current sources must keep every load-step current delta within 1 µA rather than
+  checking a single step.
+- Oscillators start from a switched-on supply without initial conditions and must
+  sustain steady oscillation across the second half of the transient.
+- The voltage-controlled oscillator is tested at 3.25 V, 3.5 V, and 4.0 V (scaling
+  AnalogCoder's 0.65/0.7/0.8 V on 1 V to 5 V) and requires monotonic period change.
+- The phase-locked loop operates at 5 V and must lock to both 10 MHz and 12 MHz,
+  ruling out free-running oscillators.
+- Designs may use only the two given MOSFETs, resistors, capacitors, and DC sources.
 """
 
 import json
@@ -78,7 +76,7 @@ type Levels = Mapping[str, float]
 
 @dataclass(frozen=True, slots=True)
 class CircuitTask:
-    """What one of AnalogCoder's problems is, and its ports besides the supply's."""
+    """Specification of one AnalogCoder problem kind and its non-supply ports."""
 
     kind: Kind
     inputs: tuple[str, ...]
@@ -117,108 +115,105 @@ PROBLEMS = {
     23: CircuitTask("vco", ("vin",)),
     24: CircuitTask("pll", ("clk_ref",), ("clk_p",)),
 }
-"""Each problem by AnalogCoder's number; ``task.md`` describes them."""
+"""Mapping from AnalogCoder problem number to `CircuitTask`; see ``task.md``."""
 
 SUPPLY = 5.0
-"""The supply, in volts."""
+"""Nominal supply voltage in volts."""
 SWITCHED_ON = Piecewise(((0 * s, 0 * V), (1 * us, SUPPLY * V)))
-"""The supply of an oscillator, switched on over a microsecond."""
+"""Piecewise supply ramp switching from 0 V to 5 V over 1 µs for oscillators."""
 RESOLUTION = 1e-6
-"""The resolution, in volts, at which AnalogCoder read an operating point."""
+"""Minimum voltage margin in volts used for operating-point saturation checks."""
 MIN_MAGNITUDE = 1e-5
-"""The least drain current of an amplifier's or an op-amp's MOSFET, in amperes, and the
-least current of a current source."""
+"""Minimum drain current for amplifiers, op-amps, and current sources in amperes."""
 GAIN = 1e-5
-"""The least gain at 100 Hz of an amplifier, and of an op-amp's differential mode."""
+"""Minimum 100 Hz gain for amplifiers and differential-mode op-amps."""
 MOVES = 1e-3
-"""How far, in volts, an amplifier's output must move as its input sweeps the supply."""
+"""Minimum output voltage swing in volts across a full-supply DC input sweep."""
 SWING = 1.0
-"""How far apart, in volts, an inverter's two outputs must be."""
+"""Minimum separation in volts between high and low inverter output levels."""
 LOADS = (100.0, 300.0, 500.0, 750.0, 1000.0)
-"""A current source's loads, in ohms; the middle one's operating point is checked."""
+"""Load resistances in ohms for current-source tests; the middle load checks biasing."""
 STEADY = 1e-6
-"""How much, in amperes, a current source's current may change from one load to the
-next, and how much a mirror's must change with its reference."""
+"""Current-source load-step ceiling and mirror tracking floor in amperes."""
 REFERENCE = 1.55e-3
-"""The reference current, in amperes, a mirror must follow."""
+"""Reference current in amperes applied to test current-mirror tracking."""
 STEP = 0.5
-"""How far, in volts, an integrator's, a differentiator's and an adder's input moves
-from its level."""
+"""Input step amplitude in volts for integrator, differentiator, and adder tests."""
 TIME_CONSTANT = 10e3 * 3e-6
-"""The integrator's and the differentiator's 10 kΩ times 3 µF, in seconds."""
+"""Reference RC time constant (10 kΩ * 3 µF) in seconds for problems 18 and 19."""
 HALF = 10e-3
-"""How long, in seconds, an integrator's input stays above or below its level."""
+"""Half-period duration in seconds for the integrator square-wave input."""
 HALVES = 20
-"""How many times an integrator's input steps."""
+"""Total number of input half-periods simulated in the integrator test."""
 EDGE = 1e-6
-"""How long, in seconds, an integrator's input rests, and each of its steps lasts."""
+"""Initial rest time and edge transition duration in seconds for integrator steps."""
 INTEGRATED = STEP / TIME_CONSTANT
-"""The slope, in volts per second, of an integrator's output."""
+"""Expected integrator output ramp slope magnitude in volts per second."""
 RAMP = 50e-3
-"""How long, in seconds, a differentiator's input ramps up, and then down."""
+"""Half-period ramp duration in seconds for the differentiator triangle wave."""
 DIFFERENTIATED = TIME_CONSTANT * 2 * STEP / RAMP
-"""The level, in volts, of a differentiator's output from its input's level."""
+"""Expected differentiator output magnitude relative to input DC level in volts."""
 ADDEND = 0.125
-"""How far above vin1's level, in volts, an adder's vin2 stays."""
+"""Fixed voltage offset in volts holding ``vin2`` above ``vin1`` in the adder test."""
 DIFFERENCES = (2.25, 1.75)
-"""The first and last of the differences, in volts, a subtractor's inputs sweep."""
+"""Start and end ``vin2 - vin1`` voltage differences in volts for subtractor sweep."""
 FIT = 0.9
-"""The least coefficient of determination of an integrator's ramp."""
+"""Minimum coefficient of determination (R^2) required for integrator output ramps."""
 TOLERANCE = 0.2
-"""The relative tolerance of AnalogCoder's differentiator, adder and subtractor."""
+"""Relative error tolerance for differentiator, adder, and subtractor checks."""
 SLOPE_TOLERANCE = 0.3
-"""The relative tolerance of AnalogCoder's integrator."""
+"""Relative slope error tolerance for the integrator check."""
 FLAT = 0.1
-"""How much a differentiator's level may vary, relative to the level."""
+"""Maximum relative RMS ripple permitted on differentiator square-wave plateaus."""
 HYSTERESIS = 0.05
-"""The least hysteresis, in volts, of a Schmitt trigger."""
+"""Minimum threshold separation in volts required for a Schmitt trigger."""
 NOISE = 1e-6
-"""How far, in volts, a Schmitt trigger's output may fall back as its input rises."""
+"""Maximum downward dip in volts tolerated in a rising Schmitt trigger sweep."""
 PERIODS = 3
-"""The fewest periods an oscillation runs over the second half of its run."""
+"""Minimum number of full oscillation cycles required in the second half of a run."""
 SPREAD = 0.2
-"""How much an oscillation's period may vary, relative to its mean."""
+"""Maximum relative standard deviation of cycle periods for steady oscillation."""
 DECAY = 0.5
-"""How small an oscillation's last swing may be, relative to its largest."""
+"""Minimum ratio of final cycle swing to peak swing preventing decaying ringing."""
 QUIET = 1e-3
-"""The least swing, in volts, of an oscillation."""
+"""Minimum peak-to-peak voltage swing in volts required to count as oscillating."""
 BAND = 0.1
-"""The hysteresis of an oscillation's rises, relative to its swing."""
+"""Hysteresis band as a fraction of swing used when detecting rising crossings."""
 CONTROLS = (3.25, 3.5, 4.0)
-"""The levels, in volts, of a voltage-controlled oscillator's control."""
+"""Control voltage levels in volts tested on the voltage-controlled oscillator."""
 TUNED = 0.01
-"""How much a voltage-controlled oscillator's period must change between levels."""
+"""Minimum relative period change required between consecutive VCO control levels."""
 CLOCKS = (10e6, 12e6)
-"""The reference frequencies, in hertz, a phase-locked loop must lock to."""
+"""Reference clock frequencies in hertz that the phase-locked loop must lock onto."""
 LOCKED = 0.05
-"""How close to the reference's a phase-locked loop's period must be, relatively."""
+"""Maximum relative period error permitted between locked PLL output and reference."""
 CLOCK_EDGE = 0.02
-"""How long a reference clock's edges last, relative to its period."""
+"""Reference clock rise and fall time as a fraction of the clock period."""
 CLOCK_WIDTH = 0.48
-"""How long a reference clock's pulse lasts, relative to its period."""
+"""Reference clock high pulse width as a fraction of the clock period."""
 CLOCK_BAND = 0.25
-"""How far past mid-supply, in volts, a clock must swing for its rise to count."""
+"""Hysteresis margin in volts around mid-supply for PLL clock rising-edge detection."""
 LOCK_RUN = 10e-6
-"""How long, in seconds, a phase-locked loop runs."""
+"""Total transient simulation duration in seconds for phase-locked loop locking."""
 LOCK_WINDOW = 2e-6
-"""How long, in seconds, at the end of its run, a phase-locked loop's period is read."""
+"""Final observation window in seconds used to measure locked PLL output period."""
 ALLOWED = {"resistor", "capacitor"}
-"""The devices, besides the two transistors and constant sources, a design may hold."""
+"""Passive device models permitted in addition to the given MOSFETs and DC sources."""
 RESISTIVE = frozenset({1, 2, 3, 4, 5, 13})
-"""The problems whose design must hold a resistor."""
+"""Problem numbers whose topology requires at least one resistor."""
 COMMON_DRAIN = 3
-"""The source follower, whose output joins no gate or drain."""
+"""Problem number for the source follower, whose output connects to no gate or drain."""
 COMMON_GATE = 4
-"""The common-gate amplifier, whose input joins no gate or drain."""
+"""Problem number for the common-gate stage, whose input joins no gate or drain."""
 MILLER = 9
-"""The amplifier with a Miller capacitor, from its first stage's output to its own."""
+"""Problem number for the two-stage amplifier with a Miller capacitor to ``vout``."""
 DIODE_LOAD = 10
-"""The amplifier with a diode-connected load."""
+"""Problem number for the common-source amplifier with a diode-connected load."""
 
 
 @dataclass(frozen=True, slots=True)
 class Part:
-    """A device of a design: its path, its model, its parameters and its nets."""
+    """Flattened device record storing path, model, parameters, and connected nets."""
 
     path: str
     model: str
@@ -229,10 +224,10 @@ class Part:
 def walk(
     built: ir.Circuit, name: str, prefix: str, ports: Mapping[str, str]
 ) -> Iterator[Part]:
-    """The devices of the component `name`, their paths after `prefix`.
+    """Yields flattened `Part` entries for every leaf device inside component `name`.
 
-    A net is named as the engine names it, by its path, but a port's, which is the net
-    `ports` gives.
+    Prefixes internal net names with `prefix` while remapping component ports via
+    `ports` to match engine net naming.
     """
     for instance in built.components[name].instances:
         nets = {
@@ -247,7 +242,7 @@ def walk(
 
 
 def designed(built: ir.Circuit) -> list[Part]:
-    """The devices of the design on the bench `built`."""
+    """Returns all flattened `Part` instances inside the benched design ``X1``."""
     design = built.find("X1")
     if design is None or not isinstance(design.of, ir.ComponentOf):
         message = "the bench places no design"
@@ -264,10 +259,10 @@ def _size_free(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def transistors(task: Path, arm: Arm) -> dict[object, dict[str, object]]:
-    """The given transistors' parameters but their size, by channel, as `arm` got them.
+    """Loads size-independent parameters of the given NMOS and PMOS models for `arm`.
 
-    A function of ``parts.py`` makes a transistor of the size it is given, and a model
-    of ``parts.lib`` one of the size its element gives.
+    Calls ``parts.py`` factories for jolty or reads ``parts.lib`` models for ngspice,
+    stripping channel width and length.
     """
     if arm is Arm.JOLTY:
         parts = runpy.run_path(str(task / "given" / "parts.py"))
@@ -286,7 +281,7 @@ def transistors(task: Path, arm: Arm) -> dict[object, dict[str, object]]:
 def disallowed(
     made: Component, given: Mapping[object, Mapping[str, object]]
 ) -> list[str]:
-    """The devices of `made` that are not the given transistors or allowed."""
+    """Returns violation messages for any device in `made` outside allowed parts."""
     built = circuit(made)
     top = built.components[built.top]
     found: list[str] = []
@@ -306,14 +301,14 @@ def disallowed(
 
 
 def driven(port: str, level: float) -> devices.Device:
-    """The source that holds `port` at `level`: amperes into ``iref``, else volts."""
+    """Creates a DC source for `port` at `level` (amperes for ``iref``, else volts)."""
     if port == "iref":
         return devices.current_source(level * A)
     return devices.voltage_source(level * V)
 
 
 def held(problem: CircuitTask, levels: Levels) -> dict[str, devices.Device]:
-    """The sources that hold each of `problem`'s inputs at its level."""
+    """Builds DC bias sources holding every input of `problem` at `levels`."""
     return {port: driven(port, levels[port]) for port in problem.inputs}
 
 
@@ -325,10 +320,10 @@ def bench(
     drives: Mapping[str, devices.Device],
     load: float | None = None,
 ) -> None:
-    """`made` with its inputs and its supply driven, and `load` from supply to output.
+    """Builds the test bench wrapping `made` with supply, `drives`, and optional `load`.
 
-    ``vdd`` is 5 V unless `drives` drives it. A voltage source drives an input from the
-    ground; a current source, from the supply.
+    Defaults ``vdd`` to 5 V unless overridden in `drives`. Connects voltage input
+    sources relative to ground and current input sources from ``vdd``.
     """
     ground = c.port("ground", Role.GROUND)
     vdd = c.net("vdd")
@@ -355,14 +350,14 @@ def bench(
 
 
 def volts(solution: Solution, net: str) -> float:
-    """The voltage of `net`, the bench's ground being 0 V."""
+    """Returns the node voltage of `net` from `solution`, treating ``ground`` as 0 V."""
     return 0.0 if net == "ground" else solution.voltage(net)
 
 
 def recorded(parts: list[Part], *also: str) -> OperatingPoint:
-    """An operating point that records each MOSFET of `parts`, and the paths `also`.
+    """Builds an `OperatingPoint` recording every MOSFET in `parts` plus `also` paths.
 
-    `misbiased` reads the MOSFETs' bias.
+    Recorded operating-point data is inspected by `misbiased`.
     """
     return OperatingPoint(
         record=[*(part.path for part in parts if part.model == "mosfet"), *also]
@@ -370,10 +365,10 @@ def recorded(parts: list[Part], *also: str) -> OperatingPoint:
 
 
 def misbiased(solution: Solution, parts: list[Part], least: float = 0.0) -> list[str]:
-    """Why each MOSFET of `parts` is not on, forward and carrying `least`.
+    """Checks that every MOSFET in `parts` conducts forward above `least` amperes.
 
-    A MOSFET is on when its gate is beyond its threshold and its drain beyond its
-    source, in its channel's sense, at the microvolt.
+    Requires gate-source voltage above threshold and drain-source voltage positive in
+    the channel sense by at least `RESOLUTION`.
     """
     found: list[str] = []
     for part in parts:
@@ -401,7 +396,7 @@ def misbiased(solution: Solution, parts: list[Part], least: float = 0.0) -> list
 
 
 def kept_off(parts: list[Part], net: str) -> list[str]:
-    """Why `net` joins a gate or a drain of `parts`."""
+    """Returns violations if `net` connects to any MOSFET gate or drain in `parts`."""
     return [
         f"{net} joins {part.path}'s {terminal}"
         for part in parts
@@ -412,7 +407,7 @@ def kept_off(parts: list[Part], net: str) -> list[str]:
 
 
 def structure(number: int, parts: list[Part]) -> list[str]:
-    """Why the design of problem `number` is not the circuit AnalogCoder checks for."""
+    """Checks topology-specific structural requirements for problem `number`."""
     found: list[str] = []
     if number in RESISTIVE and not any(part.model == "resistor" for part in parts):
         found.append("it holds no resistor")
@@ -440,7 +435,7 @@ def structure(number: int, parts: list[Part]) -> list[str]:
 def amplifier(
     number: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
-    """AnalogCoder's checks of an amplifier: its operating point, DC sweep and gain."""
+    """Runs operating-point, DC sweep, and 100 Hz AC gain checks for an amplifier."""
     built = circuit(bench(made, problem, held(problem, levels)))
     simulation = Simulation(built)
     parts = designed(built)
@@ -457,7 +452,7 @@ def amplifier(
 
 
 def inverter(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
-    """AnalogCoder's check of an inverter: its output with its input at 0 and at 5 V."""
+    """Runs high and low DC transfer checks for an inverter at 0 V and 5 V."""
     drives = {"vin": driven("vin", 0.0)}
     swept = Simulation(circuit(bench(made, problem, drives))).run(
         DcSweep("VIN", [0 * V, SUPPLY * V])
@@ -470,7 +465,7 @@ def inverter(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[
 
 
 def mirror(_: int, made: Component, problem: CircuitTask, levels: Levels) -> list[str]:
-    """AnalogCoder's checks of a current source over loads, and of a mirror's input."""
+    """Runs load-regulation and tracking checks for a current source or mirror."""
     found: list[str] = []
     currents = []
     middle = LOADS[len(LOADS) // 2]
@@ -504,10 +499,10 @@ def mirror(_: int, made: Component, problem: CircuitTask, levels: Levels) -> lis
 def opamp(
     number: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
-    """AnalogCoder's checks of an op-amp: its operating point, and its gains at 100 Hz.
+    """Runs operating-point and 100 Hz differential and common-mode gain checks.
 
-    The common-mode gain is the response to both inputs at once, and the differential
-    one to the two in opposition, each found from the responses to each input alone.
+    Derives common-mode and differential gains by combining the individual AC responses
+    to ``VINP`` and ``VINN``.
     """
     found: list[str] = []
     if levels["vinp"] != levels["vinn"]:
@@ -533,10 +528,10 @@ def opamp(
 
 
 def rises(times: Real, values: Real, middle: float, band: float) -> Real:
-    """The times `values` rises through `middle`, each after falling `band` below it.
+    """Detects interpolated rising-crossing times through `middle` with hysteresis.
 
-    A rise counts once `values` passes `band` above `middle`, so noise near the middle
-    counts no rise.
+    Requires `values` to fall `band` below `middle` before arming and rise `band` above
+    `middle` to confirm each crossing, rejecting noise near the threshold.
     """
     found: list[float] = []
     low = False
@@ -557,7 +552,7 @@ def rises(times: Real, values: Real, middle: float, band: float) -> Real:
 
 
 def oscillation(times: Real, values: Real) -> float | str:
-    """The mean period of the steady oscillation of `values`, or why it has none."""
+    """Computes the mean period of steady oscillation, or returns a failure reason."""
     swing = float(np.ptp(values))
     if swing < QUIET:
         return f"it swings {swing:.3g} V"
@@ -582,24 +577,24 @@ def transient(
     drives: Mapping[str, devices.Device],
     analysis: Transient,
 ) -> tuple[Real, dict[str, Real]]:
-    """The times of `analysis` of `made`, and each output's voltage at each."""
+    """Simulates `made` under `drives` with `analysis` and returns times and outputs."""
     waveforms = Simulation(circuit(bench(made, problem, drives))).run(analysis)
     return waveforms.times, {port: waveforms.voltage(port) for port in problem.outputs}
 
 
 def powered(**drives: devices.Device) -> dict[str, devices.Device]:
-    """`drives`, and the supply switched on."""
+    """Prepends the switched-on `SWITCHED_ON` supply source to `drives`."""
     return {"vdd": devices.voltage_source(SWITCHED_ON), **drives}
 
 
 def second_half(times: Real, values: Real) -> tuple[Real, Real]:
-    """`times` and `values` over the second half of the run."""
+    """Slices `times` and `values` to the second half of the simulation interval."""
     late = times >= times[-1] / 2
     return times[late], values[late]
 
 
 def oscillator(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
-    """AnalogCoder's check of an oscillator: a steady oscillation over 10 ms."""
+    """Checks that an oscillator sustains steady oscillation over a 10 ms transient."""
     times, outputs = transient(
         made, problem, powered(), Transient(stop=10e-3 * s, max_step=1 * us)
     )
@@ -608,7 +603,7 @@ def oscillator(_: int, made: Component, problem: CircuitTask, __: Levels) -> lis
 
 
 def ramp(times: Real, values: Real) -> tuple[float, float]:
-    """The slope of the line that fits `values` over `times`, and how well it fits."""
+    """Fits a line to `values` over `times` and returns the slope and R-squared fit."""
     slope, intercept = np.polyfit(times, values, 1)
     residual = values - (slope * times + intercept)
     spread = float(np.sum((values - np.mean(values)) ** 2))
@@ -619,12 +614,11 @@ def ramp(times: Real, values: Real) -> tuple[float, float]:
 def integrator(
     _: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
-    """AnalogCoder's check of an integrator: its ramps as its input steps by 0.5 V.
+    """Checks integrator step-response ramp slopes and linearity for 0.5 V inputs.
 
-    The input rests at its level until 1 µs, then steps 0.5 V above it, and every 10 ms
-    to 0.5 V below and back, each step over 1 µs. Through 10 kΩ into 3 µF the output
-    must ramp against it at 0.5 V / 30 ms, within 30%, and straight, over the last two
-    half periods but their first and last tenths.
+    Steps ``vin`` +/-0.5 V around DC bias every 10 ms with 1 µs edges. Verifies that
+    ``vout`` inverts and ramps near +/-0.5 V / 30 ms within 30 % and R-squared >= 0.9
+    over the middle 80 % of the final two half-periods.
     """
     rest = levels["vin"]
     points = [(0.0, rest)]
@@ -656,19 +650,18 @@ def integrator(
 
 
 def _sense(index: int) -> float:
-    """1 when the integrator's input is above its level at step `index`, else -1."""
+    """Returns +1.0 for even integrator half-period `index` and -1.0 for odd."""
     return 1.0 if index % 2 == 0 else -1.0
 
 
 def differentiator(
     _: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
-    """AnalogCoder's check of a differentiator: a square wave from a triangle.
+    """Checks differentiator square-wave levels and flatness for a triangle input.
 
-    The input ramps from 0.5 V below its level to 0.5 V above it over 50 ms and back
-    over 50 ms. Through 3 µF into 10 kΩ the output must sit 0.6 V below the input's
-    level while it rises, and above it while it falls, within 20% and flat to 10%, over
-    the second period but each ramp's first tenth.
+    Ramps ``vin`` +/-0.5 V around DC bias over 50 ms rise and fall segments. Verifies
+    that ``vout`` sits +/-0.6 V inverted from DC bias within 20 % and stays flat within
+    10 % RMS over the final 90 % of each second-period ramp.
     """
     rest = levels["vin"]
     triangle = Pulse(
@@ -703,10 +696,10 @@ def differentiator(
 
 
 def adder(_: int, made: Component, problem: CircuitTask, levels: Levels) -> list[str]:
-    """AnalogCoder's check of an adder, whose output is the inputs' negated sum.
+    """Checks that an inverting adder tracks the negated sum of ``vin1`` and ``vin2``.
 
-    The inputs and the output are measured from vin1's level: vin2 is held 0.125 V
-    above it, and vin1 swept from it to 0.5 V above it, in 10 mV steps.
+    Holds ``vin2`` 0.125 V above the ``vin1`` DC bias and sweeps ``vin1`` up by 0.5 V
+    in 10 mV steps.
     """
     rest = levels["vin1"]
     drives = {"vin1": driven("vin1", rest), "vin2": driven("vin2", rest + ADDEND)}
@@ -720,10 +713,10 @@ def adder(_: int, made: Component, problem: CircuitTask, levels: Levels) -> list
 def subtractor(
     _: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
-    """AnalogCoder's check of a subtractor, whose output is vin2 less vin1.
+    """Checks that a difference amplifier outputs ``vin2 - vin1`` across a DC sweep.
 
-    vin2 is held at its level, and vin1 swept from 2.25 V below it to 1.75 V below it,
-    in 50 mV steps.
+    Holds ``vin2`` at DC bias and sweeps ``vin1`` from 2.25 V below to 1.75 V below in
+    50 mV steps.
     """
     rest = levels["vin2"]
     drives = {"vin1": driven("vin1", rest), "vin2": driven("vin2", rest)}
@@ -738,7 +731,7 @@ def subtractor(
 def _tracked(
     inputs: Real, output: Real, expected: Real, origin: float, swept: str
 ) -> list[str]:
-    """Why `output` misses `expected` by more than 20% of its distance from `origin`."""
+    """Checks whether `output` stays within 20 % of `expected` relative to `origin`."""
     error = np.abs(output - expected)
     allowed = TOLERANCE * np.abs(expected - origin)
     worst = int(np.argmax(error - allowed))
@@ -753,11 +746,11 @@ def _tracked(
 
 
 def schmitt(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
-    """AnalogCoder's check of a non-inverting Schmitt trigger, swept up and down.
+    """Checks rising and falling DC sweeps of a non-inverting Schmitt trigger.
 
-    Its input sweeps from 0 to 5 V and back in 100 mV steps, each operating point
-    continued from the last. Each way, its output must rise by 2.5 V, never fall, and
-    first pass 2.5 V at an input more than 50 mV from where it does the other way.
+    Sweeps ``vin`` from 0 V to 5 V and back in 100 mV steps with continuation.
+    Requires monotonic output rise of at least 2.5 V in each direction and threshold
+    separation above 50 mV.
     """
     found: list[str] = []
     thresholds = []
@@ -787,11 +780,11 @@ def schmitt(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[s
 
 
 def vco(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
-    """The check of a voltage-controlled oscillator: its period at three controls.
+    """Checks voltage-controlled oscillator tuning monotonicity across control levels.
 
-    At each control level it runs 100 µs from its supply switched on, and must
-    oscillate steadily over the second half; its mean periods must rise or fall by more
-    than 1% from each level to the next.
+    Simulates 100 µs from supply turn-on at each level in `CONTROLS`, verifies steady
+    second-half oscillation, and requires monotonic period shifts exceeding 1 % per
+    step.
     """
     periods = []
     for control in CONTROLS:
@@ -813,11 +806,11 @@ def vco(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
 
 
 def pll(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
-    """The check of a phase-locked loop: its output's period at two references.
+    """Checks phase-locked loop frequency locking at 10 MHz and 12 MHz references.
 
-    clk_ref is a 0 to 5 V clock, its edges 2% of its period and its pulse 48%, from
-    30 ns. The loop runs 10 µs from its supply switched on, and over the last 2 µs its
-    output's mean period between rises through 2.5 V must be the reference's, within 5%.
+    Drives ``clk_ref`` with a 0 V to 5 V clock (2 % edges, 48 % pulse width, 30 ns
+    delay) over 10 µs from supply turn-on. Verifies that the mean ``clk_p`` period over
+    the final 2 µs matches the reference period within 5 %.
     """
     found: list[str] = []
     for frequency in CLOCKS:
@@ -866,11 +859,11 @@ CHECKS: dict[Kind, Check] = {
     "vco": vco,
     "pll": pll,
 }
-"""Each kind of problem's check."""
+"""Mapping from problem kind to simulation verification function."""
 
 
 def needed(problem: CircuitTask) -> tuple[str, ...]:
-    """The inputs of `problem` whose levels its design's ``LEVELS`` must give."""
+    """Returns the input port names of `problem` that must appear in declared levels."""
     match problem.kind:
         case "amplifier" | "mirror" | "opamp":
             return problem.inputs
@@ -885,16 +878,16 @@ def needed(problem: CircuitTask) -> tuple[str, ...]:
 
 
 LEVELS = {Arm.JOLTY: "LEVELS", Arm.NGSPICE: "levels.json"}
-"""Where each arm's designs declare their inputs' levels."""
+"""Filename or variable name declaring input bias levels for each arm."""
 
 
 def loaded(
     task: Path, work: Path, number: int, arm: Arm, declared: Mapping[str, object]
 ) -> tuple[Component, dict[str, float]] | Shortfall:
-    """The design of problem `number` in `work` and its inputs' levels, or why none.
+    """Loads design ``p{number}`` and its input bias levels from `work` for `arm`.
 
-    The jolty arm's script declares the levels as ``LEVELS``; the ngspice arm's
-    netlists are `declared`'s, by the netlist's name.
+    Reads ``LEVELS`` from ``p{number}.py`` on the jolty arm or looks up ``p{number}``
+    inside `declared` from ``levels.json`` on the ngspice arm.
     """
     stem = f"p{number}"
     if arm is Arm.NGSPICE:
@@ -917,9 +910,10 @@ def loaded(
 
 
 def declarations(work: Path, arm: Arm) -> Mapping[str, object] | Shortfall:
-    """The levels the ngspice arm's ``levels.json`` declares, or why it declares none.
+    """Loads ``levels.json`` from `work` for the ngspice arm, returning a dict or error.
 
-    The jolty arm's scripts declare their own; a missing file declares none.
+    Returns an empty mapping on the jolty arm (where scripts declare ``LEVELS``) or
+    when ``levels.json`` is absent.
     """
     path = work / LEVELS[Arm.NGSPICE]
     if arm is Arm.JOLTY or not path.is_file():
@@ -939,11 +933,10 @@ def judge(
     given: Mapping[object, Mapping[str, object]],
     arm: Arm,
 ) -> list[Shortfall]:
-    """Why the design `found` for problem `number` fails it, if it does.
+    """Evaluates a loaded problem `number` design and returns any `Shortfall` entries.
 
-    A part the problem forbids falls short of the spec ``parts``, and a reason
-    AnalogCoder's check gives, of the spec its check is, the problem's kind, such as
-    ``amplifier``.
+    Records disallowed devices under spec ``parts`` and simulation check failures
+    under the problem kind such as ``amplifier``.
     """
     if isinstance(found, Shortfall):
         return [found]
@@ -968,7 +961,7 @@ def judge(
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the designs ``p1`` to ``p24`` in `work`, as `arm` writes them."""
+    """Scores AnalogCoder designs ``p1`` through ``p24`` in `work` for `arm`."""
     given = transistors(task, arm)
     declared = declarations(work, arm)
     if isinstance(declared, Shortfall):

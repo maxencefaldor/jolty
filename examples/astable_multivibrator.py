@@ -25,7 +25,7 @@ IDEAL = 1 / (2 * 47e3 * 10e-9 * math.log(2))
 
 @component
 def multivibrator(c: Builder) -> None:
-    """Two switches, each one's collector holding the other off for a while."""
+    """Builds two cross-coupled transistor switches that alternate conduction."""
     left, right = c.port("left", Role.OUTPUT), c.port("right", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     first, second = c.place(q2n3904(), name="Q1"), c.place(q2n3904(), name="Q2")
@@ -48,7 +48,7 @@ def multivibrator(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The multivibrator on a 9 V supply that rises in 10 µs."""
+    """Builds the multivibrator powered by a 9 V supply ramping over 10 µs."""
     ground = c.port("ground", Role.GROUND)
     ramp = Pulse(
         initial=0 * V,
@@ -67,17 +67,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The multivibrator on its bench."""
+    """Returns the multivibrator test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Eight milliseconds, a dozen periods."""
+    """Returns an 8 ms transient plan spanning roughly a dozen periods."""
     return Plan({"run": Transient(stop=8 * ms, max_step=1 * us)})
 
 
 def specs() -> Specs:
-    """A period within 10 % of 2RC·ln 2, each collector swinging rail to rail."""
+    """Returns specifications for period within 10 % of 2RC·ln 2 and rail swing."""
     return Specs(
         [
             frequency("run", "left", start=2 * ms).within(IDEAL * Hz, 0.1 * IDEAL * Hz),

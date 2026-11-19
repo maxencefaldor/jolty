@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
 """A unity-gain Sallen-Key low-pass filter: the second-order Butterworth response.
 
-Two 10 kΩ resistors, 20 nF from their junction back to the output and 10 nF to ground
-make ω₀ = 1/√(R₁R₂C₁C₂) and Q = √(R₁R₂C₁C₂)/((R₁ + R₂)C₂) = 1/√2: a cutoff of
-1.125 kHz with no peaking, -3.01 dB there and -40 dB a decade beyond. A follower drives
-the output: the op-amp of the shared parts, 100 dB of gain and 1 MHz of bandwidth.
-Simulate it with ``jolty simulate examples/sallen_key.py``.
+Two 10 kΩ resistors, a 20 nF feedback capacitor, and a 10 nF shunt capacitor set
+ω₀ = 1/√(R₁R₂C₁C₂) and Q = √(R₁R₂C₁C₂)/((R₁ + R₂)C₂) = 1/√2. The filter cuts off at
+1.125 kHz with -3.01 dB at cutoff, no peaking, and -40 dB per decade roll-off. A unity
+follower built from the shared 100 dB, 1 MHz op-amp drives the output. Simulate with
+``jolty simulate examples/sallen_key.py``.
 """
 
 import math
@@ -23,7 +23,7 @@ CUTOFF = 1 / (2 * math.pi * math.sqrt(10e3 * 10e3 * 20e-9 * 10e-9))
 
 @component
 def sallen_key(c: Builder) -> None:
-    """The two resistors, the two capacitors and the follower."""
+    """Builds the two resistors, two capacitors, and unity-gain op-amp follower."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     first = c.place(devices.resistor(10 * kohm), name="R1")
@@ -40,7 +40,7 @@ def sallen_key(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The filter, stepped by 1 V at 0.1 ms."""
+    """Builds the Sallen-Key filter driven by a 1 V step at 0.1 ms."""
     ground = c.port("ground", Role.GROUND)
     step = Pulse(
         initial=0 * V,
@@ -58,12 +58,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The filter on its bench."""
+    """Returns the Sallen-Key filter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The frequency response, and the step response."""
+    """Returns AC frequency-response and 3 ms transient step-response analyses."""
     return Plan(
         {
             "bode": Ac("V1", decade(10 * Hz, 1 * MHz, 40)),
@@ -73,7 +73,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """Butterworth's -3.01 dB at the cutoff, -40 dB a decade above, 4.3 % overshoot."""
+    """Returns Butterworth specifications for cutoff, roll-off, and 4.3 % overshoot."""
     return Specs(
         [
             gain("bode", "out", at=10 * Hz).within(0, 0.001),

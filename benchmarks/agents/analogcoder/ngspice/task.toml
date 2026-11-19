@@ -7,15 +7,15 @@ ngspice = '''Write `p1.cir` to `p24.cir`, one SPICE library per circuit.'''
 
 [[replace]]
 jolty = '''Each script's `build()` returns its circuit as a component whose ports are `vdd`, `ground`, and the circuit's inputs and outputs, named as the table names them.'''
-ngspice = '''Each library's subcircuit named as its file, such as `p1`, is its circuit: its pins are `vdd` and the circuit's inputs and outputs, named as the table names them, and its ground is SPICE's node `0`.'''
+ngspice = '''Each library's subcircuit named after its file, such as `p1`, defines the circuit: pins are `vdd` plus the table's inputs and outputs, and ground is SPICE node `0`.'''
 
 [[replace]]
-jolty = '''A dictionary `LEVELS` beside it gives the level of each input whose check below holds it or speaks of its level: in volts, or in amperes for `iref`.'''
-ngspice = '''`levels.json` gives, for each circuit by its file's name, the level of each input whose check below holds it or speaks of its level: in volts, or in amperes for `iref`, such as `{"p1": {"vin": 2.5}}`.'''
+jolty = '''A module-level `LEVELS` dictionary specifies the bias level of each input held or referenced by the check below, in volts (or amperes for `iref`).'''
+ngspice = '''A `levels.json` file maps each circuit file stem (such as `{"p1": {"vin": 2.5}}`) to the bias level of each input held or referenced by the check below, in volts (or amperes for `iref`).'''
 
 [[replace]]
-jolty = '''A script may import modules of your own from beside it.'''
-ngspice = '''A library may define subcircuits of your own beside its circuit's.'''
+jolty = '''A script may import helper modules placed in the same directory.'''
+ngspice = '''A library may define helper subcircuits alongside the circuit subcircuit.'''
 
 [[replace]]
 jolty = '''Build only from `nmos(width, length)` and `pmos(width, length)` of `parts.py`, SPICE level 1 MOSFETs of any size, from resistors and capacitors, and from sources of a constant level.'''

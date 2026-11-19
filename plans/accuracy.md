@@ -1,203 +1,230 @@
 # Accuracy and reliability
 
-Status: rewritten in plain words on 15 November 2026, every item checked against its source and code, and audited on 18 November 2026; the research is `research/accuracy.md`, kept whole.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and audited on 18 November 2026.
+The archival research report lives in `research/accuracy.md`, kept whole.
 
 Plan: ✅ 8 done · 🚧 3 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
-jolty's error against exact answers is the smallest of any simulator's at equal cost, and it finds the solution of every circuit that has one.
-Measured by the precision suite, against answers computed exactly, and by the failure rate on the hard-circuit corpus (`benchmarks.md` items 7 and 8).
+jolty aims for the smallest error against exact answers of any simulator at equal cost and finds a solution for every solvable circuit.
+Progress is measured by the precision suite against exact answers and by the failure rate on the hard-circuit corpus (`benchmarks.md` items 7 and 8).
 
 ## 2. Where we stand
 
-**What jolty does that ngspice does not:**
+**Capabilities jolty provides beyond ngspice:**
 
-- **Exact derivatives** of every device model, by automatic differentiation, checked against finite differences in each model's regions, so the small-signal model is the exact slope of the DC one.
-    ngspice's hand-written derivatives leave terms out or get them wrong in several models (the guide's departures page, `docs/guide/departures.md`); on the VDMOS buck with pulse-driven gates ngspice stalls where its Jacobian misses a slope.
-- **Charge as the state:** every device's charge is a function of its voltages, except Meyer's MOSFET capacitances, which have no charge function and conserve charge in neither engine.
-- **Error control on every node's charge**, the MOSFETs' junction charges included, which ngspice skips; the error filtered through the step's own equations; a judged first step after every corner of a waveform.
-- **A convergence test with a floor at its rounding**, and deflation to find more than one DC solution.
-- **The same bits on any number of threads**, shards or orders of completion.
+- **Exact derivatives** for every device model via automatic differentiation, verified against finite differences in every operating region so small-signal models match the exact DC slope.
+    Hand-written derivatives in ngspice omit or miscompute terms in several models (documented in `docs/guide/departures.md`), causing ngspice to stall on the pulse-driven VDMOS buck where the Jacobian misses a slope.
+- **Charge as the state:** every device's charge is a function of terminal voltages, except Meyer's MOSFET capacitances, which have no charge function and conserve charge in neither engine.
+- **Filtered charge error control:** error control covers every node's charge, including MOSFET junction charges skipped by ngspice, filtered through the step equations with a judged first step after each waveform corner.
+- **Rounding-aware convergence and deflation:** a convergence test floored at numerical rounding, paired with deflation to locate multiple DC solutions.
+- **Bit-identical parallelism:** identical bits across any thread count, shard count, or completion order.
 
-**Measured for the first time on 15 November** (`benchmarks.md` §2):
+**First measurements on 15 November** (`benchmarks.md` §2):
 
-- **Against exact answers** (the precision suite, 16 fixtures): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1), poles (15.3 to 14.7) and stiff networks (5.1 to 5.4 against 3.2 to 3.9); it loses on small RCs, held by the charge tolerance's floor (item 4), on a lossless LC tank its ringing test damps (item 16), on AC near 650 MHz (item 17) and on a 1,000-node ladder whose start needs a step below jolty's shortest (item 18).
-    At the defaults both simulators get only 1.2 to 3.8 digits on transients.
-- **On hard circuits** (the corpus, 48 cases): on 15 November jolty failed none of the 40 runs it then supported, ngspice 1 of 48.
-    Since `models.md` 7b (`.ic`, `.nodeset`, `EXP`), jolty runs all 48 cases (25 DC, 23 transient): on machine D (`5efde61`, 18 November), 0 failed (DC: 25 agreed; transient: 6 agreed, 16 solved, 1 disagreed on `impasse/tran`, the same disagreement as ngspice), while ngspice failed 1 (`folded_sources/op`) and disagreed on `vreg/dc` and `impasse/tran`.
-    jolty still needs gmin stepping on one deck where ngspice's Newton iteration alone succeeds, and pseudo-transient continuation on `folded_sources` (items 8 and 9).
+- **Against exact answers** (precision suite, 16 fixtures): jolty leads on DC (14.6 digits vs ngspice's 8.0), noise (15.2 vs 8.1), and poles (15.3 vs 14.7).
+    On stiff networks, jolty reaches 5.1 to 5.4 digits against ngspice's 3.2 to 3.9.
+    jolty loses on small RCs due to the charge tolerance floor (item 4) and on a lossless LC tank damped by the ringing test (item 16).
+    Further losses occur on AC near 650 MHz (item 17) and on a 1,000-node ladder requiring an initial step shorter than jolty's minimum step (item 18).
+    At default options, both simulators achieve only 1.2 to 3.8 digits on transients.
+- **On hard circuits** (corpus, 48 cases): on 15 November, jolty failed 0 of the 40 supported runs while ngspice failed 1 of 48.
+    Since `models.md` 7b (`.ic`, `.nodeset`, `EXP`), jolty runs all 48 cases (25 DC, 23 transient).
+    On machine D (`5efde61`, 18 November), jolty had 0 failures (25 DC agreed; 6 transient agreed, 16 solved, and 1 disagreed on `impasse/tran`, matching ngspice).
+    On the same suite, ngspice failed 1 case (`folded_sources/op`) and disagreed on `vreg/dc` and `impasse/tran`.
+    jolty still needs gmin stepping on one deck where ngspice's Newton iteration succeeds directly, plus pseudo-transient continuation on `folded_sources` (items 8 and 9).
 
-**What the research found weaker than the documentation said:**
+**Findings weaker than prior documentation claimed:**
 
-1. `charge_tolerance` was not SPICE's `chgtol`: jolty allowed `reltol·|q| + chgtol` of charge error per step, SPICE `reltol·max(|q|, chgtol)`, about a thousand times more on a net holding under 10 fC (item 4).
-1. ngspice 47 gives each time step 100 Newton iterations, not 10: it raises any limit below 100 to 100 (`niiter.c`, lines 37-39).
-    Measured (item 1).
-1. Gear2's error estimate used the equal-step constant after a step change, up to 7.6 times too small (item 2, fixed).
+1. `charge_tolerance` did not match SPICE's `chgtol`: jolty allowed `reltol·|q| + chgtol` per step instead of SPICE's `reltol·max(|q|, chgtol)`, roughly 1,000 times looser on nets below 10 fC (item 4).
+1. ngspice 47 grants each time step 100 Newton iterations rather than 10, raising any lower limit to 100 (`niiter.c`, lines 37-39; measured in item 1).
+1. Gear2's error estimate used the equal-step constant after a step-size change, underestimating error by up to 7.6 times (item 2, fixed).
 
-**The buck's failed iterations at gate edges** (the old roadmap's item 18, diagnosed on 14 November, an archived note, not kept): about one time step per gate edge runs out of Newton iterations, ngspice none over 2 ms. The first iteration starts with a body diode about 3 V forward, and SPICE3's junction limiter then climbs `vt·ln(1 + Δ/vt)` per iteration, converging linearly at 0.68.
-Ruled out: the prediction of node voltages, ngspice's halving of the gap to a breakpoint, the convergence test.
-Item 1 measured ngspice's iteration limit; items 6 and 7 address the cause.
+**Buck failed iterations at gate edges** (old roadmap item 18, diagnosed on 14 November; archived note not kept): roughly one time step per gate edge exhausts Newton iterations, whereas ngspice has none across 2 ms of simulation.
+The first iteration starts with a body diode around 3 V forward, and SPICE3's junction limiter then climbs by `vt·ln(1 + Δ/vt)` per iteration, converging linearly at rate 0.68.
+Node voltage prediction, ngspice's halving of the gap to a breakpoint, and the convergence test were ruled out.
+Item 1 measured ngspice's iteration limit; items 6 and 7 address the root cause.
 
 ## 3. Gaps
 
-- The charge tolerance now has SPICE's meaning `reltol·max(|q|, chgtol)` (item 4, done), but `chgtol` itself still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
-- Newton's iteration stops at a fixed count, and the junction limiter jumps at 2vt in both engines (items 6 and 7).
-- The cold start needs gmin stepping where SPICE3's would not (item 8).
-- The solver's integrated charge leak is now reported per node on every transient (item 12, done), and lossless oscillations are distinguished from numerical trapezoidal ringing (item 16, done).
-- The bits differ between macOS and Linux (item 13).
+- `charge_tolerance` now follows SPICE's `reltol·max(|q|, chgtol)` definition (item 4, done), while `chgtol` still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
+- Newton iteration stops at a fixed count, and the junction limiter jumps at 2vt in both engines (items 6 and 7).
+- Cold start still requires gmin stepping on circuits where SPICE3's initialization succeeds directly (item 8).
+- Integrated solver charge leak is now reported per node on every transient (item 12, done), and lossless oscillations are distinguished from numerical trapezoidal ringing (item 16, done).
+- Waveform bits still differ between macOS and Linux (item 13).
 
 ## 4. Plan
 
-Each item says what it is, why it matters, and what "done" means; **Lead** marks an item where jolty would go beyond every reference.
-Its source is the research report's row, in `research/accuracy.md` §4.
+Each item specifies its scope, motivation, and completion criteria; **Lead** marks an item where jolty surpasses every reference.
+Each item's source references the corresponding row in `research/accuracy.md` §4.
 
 Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for the owner · ⏸️ parked.
 
-### ✅ 1. ngspice's own iteration limit measured on the buck
+### ✅ 1. ngspice's iteration limit measured on the buck
 
-- **What:** `max_transient_iterations=100` (formerly `transient_iterations`), the limit ngspice 47 actually applies, run on the buck to see how much of jolty's extra work it explains.
-- **Result:** 35% fewer rejected steps, 19% fewer iterations, 15% less time; still 1.24× ngspice's iterations and 3× its time (raw logs, not kept).
-    jolty keeps SPICE's 10 (§5); the measured runs are item 6's baseline.
+- **What:** `max_transient_iterations=100` (formerly `transient_iterations`), the limit ngspice 47 actually applies, run on the buck to measure how much of jolty's extra work that limit explains.
+- **Result:** 35% fewer rejected steps, 19% fewer iterations, and 15% less time, yet still 1.24× ngspice's iterations and 3× ngspice's time (raw logs not kept).
+    jolty keeps SPICE's default of 10 (§5); these measured runs form the baseline for item 6.
 - **Source:** row 5.
 
-### ✅ 2. Gear2's error estimate at its own step ratio
+### ✅ 2. Gear2's error estimate at variable step ratios
 
-- **What:** the second-order Gear formula's error constant depends on the ratio of a step to the one before it, `(1+ω)²/(6ω(1+2ω))`; both engines used its equal-step value, 2/9, after any change.
-- **Result** (`d778b55`): the estimate is right at every ratio, a unit test covers ratios from 0.1 to 10, the guide states it as a departure from ngspice; the trapezoidal default's bits unchanged.
-- **Kept** by the owner (15 November), at 11.6% on the buck with Gear2: the error control means what it says at every ratio.
+- **What:** the second-order Gear formula's error constant depends on the step ratio `ω` via `(1+ω)²/(6ω(1+2ω))`, whereas both engines previously used the equal-step value `2/9` after any change.
+- **Result** (`d778b55`): the estimate is accurate at every ratio, with a unit test covering ratios from 0.1 to 10.
+    The guide documents this behavior as a departure from ngspice, and the trapezoidal default's bits remain unchanged.
+- **Kept** by the owner (15 November) despite an 11.6% cost on the buck with Gear2, ensuring error control stays accurate at every step ratio.
 - **Source:** row 4.
 
-### ✅ 3. Every departure from ngspice stated in the guide
+### ✅ 3. Every departure from ngspice documented in the guide
 
-- **What:** each place where jolty computes otherwise than ngspice, with ngspice's source line or a measurement as evidence, in one page.
-- **Result** (`1e3f31a`): `docs/guide/departures.md`, 39 departures in five tables then (now 55 departures in six tables), each beside the guide's description of jolty's side; two of the research's rows corrected on rereading ngspice's source.
+- **What:** a single page cataloging every place jolty computes differently from ngspice, backed by ngspice source lines or measurements.
+- **Result** (`1e3f31a`): `docs/guide/departures.md` listed 39 departures in five tables initially (now 55 departures in six tables), each paired with the guide's description of jolty's behavior.
+    Two rows from the research report were corrected after re-reading ngspice's source.
 - **Source:** row 15.
 
 ### ✅ 4. `charge_tolerance` with SPICE's meaning
 
-- **What:** a charge's error per time step held to `reltol·max(|q|, chgtol)`, as SPICE and ngspice hold it (`cktterr.c`, lines 40-41), instead of jolty's `reltol·|q| + chgtol`: the option is named after SPICE's, so it must mean SPICE's quantity (`AGENTS.md`, "Knobs").
-- **Result** (`f673b49`): every test passing, each failure the first attempt exposed fixed where it arose: the buck's stop at `reltol` 1e-5 came from a real 10 ps settling at a switch's internal source, below jolty's shortest step, now ngspice's (item 18); the NAND gate's, from a near double root at a node only gmin holds, which Newton's contraction rule now carries (item 6); a currents test's bound and the random circuits' charge tolerance derived again; the comparisons now run both engines at the shared default of 1e-14 C.
-    Measured at the defaults: the 500-inverter chain takes 2,448 accepted steps instead of 749 and 5.2 to 5.4 s instead of 2.33 s, every extra rejection at a p-channel displacement, since jolty judges the whole oxide's charge where ngspice judges Meyer's; at equal error it still takes fewer points than ngspice (2,448 at 0.23 ns mean edge error against ngspice's 3,602 at 0.22 ns).
-    The buck: 82,710 steps instead of 73,880, 0.77 s instead of 0.69 s, its settled output 3.6 mV off instead of 6.5 mV.
-- **Since resolved:** the buck at `reltol` 3e-6 and 1e-6 was fixed by item 6b (`da286de`), and the gallery and discoveries were rebuilt on the new engine with ngspice 47 (`0552d20`, `c766183`, 16 November).
-- **Source:** row 2; raw logs, not kept.
+- **What:** hold per-step charge error to `reltol·max(|q|, chgtol)` as in SPICE and ngspice (`cktterr.c`, lines 40-41), replacing jolty's previous `reltol·|q| + chgtol`.
+    The option carries SPICE's meaning to match SPICE's name (`AGENTS.md`, "Knobs").
+- **Result** (`f673b49`): every test passes, and each failure exposed by the initial attempt was fixed at its root cause.
+    The buck's stop at `reltol = 1e-5` came from a real 10 ps settling event at a switch's internal source, below jolty's previous shortest step (now aligned with ngspice; item 18).
+    The NAND gate's failure came from a near double root on a gmin-held node, now handled by Newton's contraction rule (item 6).
+    A currents test bound and the random circuits' charge tolerance were re-derived, and comparisons now run both engines at the shared default of 1e-14 C.
+    At defaults, the 500-inverter chain takes 2,448 accepted steps instead of 749 and 5.2 to 5.4 s instead of 2.33 s.
+    Every extra rejection occurs at a p-channel displacement because jolty bounds full oxide charge whereas ngspice checks Meyer's capacitance.
+    At equal error, jolty still takes fewer points than ngspice (2,448 points at 0.23 ns mean edge error vs ngspice's 3,602 points at 0.22 ns).
+    The buck takes 82,710 steps instead of 73,880 (0.77 s vs 0.69 s), improving settled output error from 6.5 mV to 3.6 mV.
+- **Since resolved:** the buck at `reltol` 3e-6 and 1e-6 was fixed by item 6b (`da286de`), and the gallery and discoveries were rebuilt on the updated engine with ngspice 47 (`0552d20`, `c766183`, 16 November).
+- **Source:** row 2 (raw logs not kept).
 
 ### 📋 5. Error judged in the unknowns, free of any charge floor
 
-- **What:** the error filter already solves `(G + αC)⁻¹ α d`, the error each charge's estimate makes in the unknowns themselves.
-    Judging that against `reltol·|x|` plus the voltage or current tolerance would hold every node's accuracy whatever its capacitance, with no extra solve; an option beside judging charges.
-- **Why:** scale-free error control; on a 1 fF net no charge tolerance is right for both a femtofarad and a nanofarad.
-- **Done when:** the option exists and its default is chosen by the precision suite's numbers.
-- **Lead:** filtered, local and in the unknowns together, which no reference does.
+- **What:** the error filter already solves `(G + αC)⁻¹ α d`, giving the error each charge estimate produces in the unknowns.
+    Judging that vector against `reltol·|x|` plus the voltage or current tolerance holds every node's accuracy regardless of capacitance with no extra solve, offered as an option alongside charge-based error control.
+- **Why:** scale-free error control, since no single charge tolerance fits both a 1 fF net and a 1 nF net.
+- **Done when:** the option exists and the precision suite selects the default.
+- **Lead:** filtered, local, and unknown-space error control combined, which no reference implements.
     **Source:** row 3.
 
-### 🚧 6. Newton's iteration stopped by its observed contraction
+### 🚧 6. Newton's iteration stopped by observed contraction
 
-- **What:** instead of a fixed count of iterations per step (SPICE's 10), measure how fast the iteration contracts, `θ = ‖δₖ‖/‖δₖ₋₁‖`: go on while θ < 1 and the iterations it predicts still fit, stop at once when θ ≥ 1, and accept when `θ/(1−θ)·‖δ‖`, a bound on the remaining error, is within tolerance.
-- **Why:** no arbitrary limit: a hopeless iteration stops at once, a slowly converging one at a gate edge goes on.
-- **State** (`f673b49`): in a time step, the iteration went on past `transient_iterations` (later renamed `max_transient_iterations` in `be0de7d`) while each step was shorter than the one before, and once it contracted by more than half accepted only when `θ/(1−θ)` times its step was within tolerance; the operating point kept its count.
-    On the chain it trades accuracy for work (0.085 ns of mean edge error at 2,705 steps without it, 0.23 ns at 2,448 with it), an owner's call, listed in `README.md`'s open decisions.
-- **The owner's design** (15 November), simple and orthogonal: one option, `max_transient_iterations`, a true cap; within it the contraction tests are the convergence test itself, never switched off: accept when `θ/(1−θ)·‖δ‖` is within tolerance, cut the step when `θ ≥ 1` or when the iterations left at rate `θ` cannot reach it (Hairer and Wanner IV.8, as RADAU5).
-    The cap's default is measured: SPICE's 10 if every suite passes with it, else the value found, stated.
-    The rule's trade on the chain is kept: its accuracy is set by the tolerance, not by Newton's failures.
-    ngspice's exact iteration behaviour is not reproduced, as its Gear2 constant is not.
-- **Result, in part** (on `main`, `6e01688` and `da286de`, 16 November, raw logs, not kept): `max_transient_iterations` a true cap, 10; acceptance when `θ/(1−θ)·‖δ‖` is within tolerance, its old `max(·,1)` gone; `θ` measured only between steps no device limited; a first, limited or non-contracting step judged by SPICE's step test; the iterate after the last step judged, in DC too.
-    Every suite passes at 10: the Rust tests, the precision suite's 765 runs to the same digits, the hard-circuit corpus's 40 runs.
-    Chain of 500 inverters: 16% fewer iterations, 13% less time, mean edge error 0.228 → 0.229 ns; buck: +4.8% time, its output's error 21.5 → 15.2 mV.
-    **Left out, for the owner:** the two cuts, at `θ ≥ 1` and when the iterations left cannot reach the tolerance.
-    Counted without acting at cap 10, 91% of the buck's 9,135 iterations they would cut and 92% of the chain's 521 converged within 10 anyway; enabled, the chain took 6,103 steps for 2,448 and the buck stopped at 41 µs.
-    Hairer and Wanner's tests assume a simplified Newton's constant rate; jolty's full Newton speeds up near the solution.
-- **Done when:** the buck and the protocol's examples run at equal accuracy for no more work, the DC iteration too; any constant the method needs approved by the owner.
+- **What:** replace a fixed per-step iteration count (SPICE's 10) by measuring the contraction rate `θ = ‖δₖ‖/‖δₖ₋₁‖`.
+    Newton continues while `θ < 1` and predicted iterations fit, stops immediately when `θ ≥ 1`, and accepts when the remaining-error bound `θ/(1−θ)·‖δ‖` lies within tolerance.
+- **Why:** removes arbitrary limits so hopeless iterations stop immediately while slowly converging gate-edge iterations continue.
+- **State** (`f673b49`): inside a time step, iteration continued past `transient_iterations` (later renamed `max_transient_iterations` in `be0de7d`) while steps shrank, whereas operating points kept a fixed count.
+    Once contraction exceeded a factor of two, acceptance required `θ/(1−θ)` times the step to lie within tolerance.
+    On the inverter chain, that rule trades accuracy for work (0.085 ns mean edge error at 2,705 steps without contraction vs 0.23 ns at 2,448 steps with contraction), listed in `README.md` open decisions.
+- **Owner design** (15 November), simple and orthogonal: `max_transient_iterations` acts as a hard cap, and contraction tests form the always-on convergence criterion within that cap.
+    Newton accepts when `θ/(1−θ)·‖δ‖` falls within tolerance and cuts the step when `θ ≥ 1` or when remaining iterations at rate `θ` cannot reach tolerance (Hairer and Wanner IV.8, as in RADAU5).
+    The cap default is chosen by measurement: SPICE's 10 if every suite passes, otherwise the lowest measured value documented explicitly.
+    The accuracy trade on the chain is retained so tolerances, rather than Newton failures, control accuracy.
+    Exact ngspice iteration behavior is not replicated, matching the decision on Gear2's constant.
+- **Result, in part** (on `main`, `6e01688` and `da286de`, 16 November; raw logs not kept): `max_transient_iterations` is now a true cap of 10, and acceptance checks `θ/(1−θ)·‖δ‖` within tolerance without the old `max(·,1)` floor.
+    Contraction rate `θ` is measured only across unlimited steps, while first, limited, or non-contracting steps use SPICE's step test, and the final iterate is judged in DC as well.
+    Every suite passes at cap 10: all Rust tests, all 765 precision suite runs to the same digits, and all 40 hard-circuit corpus runs.
+    The 500-inverter chain takes 16% fewer iterations and 13% less time (mean edge error 0.228 to 0.229 ns), while the buck takes +4.8% time with output error improving from 21.5 to 15.2 mV.
+    **Omitted pending owner approval:** the two early cuts at `θ ≥ 1` and when remaining iterations cannot reach tolerance.
+    Measured without acting at cap 10, 91% of the buck's 9,135 candidate cut iterations and 92% of the chain's 521 converged within 10 iterations anyway.
+    When enabled, those cuts expanded the chain from 2,448 to 6,103 steps and stopped the buck at 41 µs.
+    Hairer and Wanner's tests assume simplified Newton's constant convergence rate, whereas jolty's full Newton accelerates near the solution.
+- **Done when:** the buck and transient-protocol examples run at equal accuracy for no extra work across transient and DC iterations, with any method constant approved by the owner.
 - **Lead** among SPICE-class engines.
     **Source:** row 6; Hairer and Wanner, IV.8; Deuflhard 2004.
 
-### ✅ 6b. A floor at its rounding in Newton's step test
+### ✅ 6b. Rounding floor in Newton's step test
 
-- **What:** the test that a Newton step is small enough asks for 1e-12 A where the equations round at 2.5e-10 A, with no floor at their rounding, so below 1e-13 s Newton cannot settle the current through two off switches.
-- **Why:** the buck at `reltol` 3e-6 and 1e-6 stops at 1.7 ns, where M1's Meyer capacitance turns on with a kink.
+- **What:** Newton's step test requests 1e-12 A where the equations round at 2.5e-10 A without a rounding floor.
+    Below 1e-13 s, Newton therefore cannot settle the current through two off switches.
+- **Why:** the buck at `reltol` 3e-6 and 1e-6 stops at 1.7 ns where M1's Meyer capacitance turns on with a kink.
 - **Done when:** the buck runs at every `reltol` down to 1e-6.
-- **Result** (`da286de`, 16 November): the diagnosis did not hold: an exact floor, the largest move no equation registers, left the buck stopping at 1.70 ns.
-    The cause was a junction's depletion charge, `1 − (1 − v/φ)^(1−m)` losing its digits near 0 V, 3.5e-25 C at 1 nF, 5e-12 A through a step's weight; computed as `−expm1((1−m)·ln1p(−v/φ))`, with `ln_1p` and `exp_m1` in `Real` and `Dual`, the buck runs at 1.25e-4, 1e-5, 3e-6 and 1e-6, with 13 to 15% fewer iterations.
-    No floor added.
-- **Source:** the charge tolerance's second attempt.
+- **Result** (`da286de`, 16 November): the initial diagnosis did not hold, because an exact rounding floor still left the buck stopping at 1.70 ns.
+    The true cause was junction depletion charge `1 − (1 − v/φ)^(1−m)` losing precision near 0 V (3.5e-25 C at 1 nF, yielding 5e-12 A through step weighting).
+    Rewriting that term as `−expm1((1−m)·ln1p(−v/φ))` via `ln_1p` and `exp_m1` on `Real` and `Dual` lets the buck run at `1.25e-4`, `1e-5`, `3e-6`, and `1e-6` with 13 to 15% fewer iterations.
+    No rounding floor was added.
+- **Source:** second attempt on `charge_tolerance`.
 
-### 📋 7. A junction limiter without its jump at 2vt
+### 📋 7. Continuous junction limiter without the 2vt jump
 
-- **What:** SPICE3's limiter for diode-like junctions switches formula at twice the thermal voltage, a discontinuity both engines share; `vold + vt·ln(1 + Δ/vt)` for every forward step above the critical voltage is continuous.
+- **What:** SPICE3's diode junction limiter switches formulas at twice the thermal voltage in both engines, whereas `vold + vt·ln(1 + Δ/vt)` stays continuous for every forward step above the critical voltage.
     Limiting from the last accepted point, as ngspice does, saves 1.5% of the buck's steps.
-- **Done when:** a property test shows the limited voltage monotone and continuous above the critical voltage; the buck's failures and work measured.
+- **Done when:** a property test verifies monotonic, continuous limiting above the critical voltage, and buck failures and work are measured.
 - **Lead.**
     **Source:** row 7.
 
-### 📋 8. A cold start that converges
+### 📋 8. Cold start convergence
 
-- **What:** junctions initialized on the first DC iteration as SPICE3's `MODEINITJCT` does; the DC equations solved block by block in their order, any homotopy confined to the block that needs it; a start from a given point.
-- **Why:** fewer operating points falling back to gmin stepping; the corpus found jolty needing it on a deck where ngspice's Newton iteration alone succeeds.
-- **Done when:** every circuit of the corpus starts without gmin stepping where SPICE3's would.
-- **Source:** row 8; the scaling blueprint (archived note, not kept), §3.1.
+- **What:** initialize junctions on the first DC iteration like SPICE3's `MODEINITJCT`, solve DC blocks sequentially with homotopy confined to failing blocks, and support warm starts from a given point.
+- **Why:** reduces fallback to gmin stepping, since the corpus exposed a deck where ngspice's Newton iteration succeeds without gmin stepping.
+- **Done when:** every corpus circuit starts without gmin stepping wherever SPICE3's initialization succeeds directly.
+- **Source:** row 8; scaling blueprint (archived note not kept), §3.1.
 
 ### 📋 9. DC homotopies
 
-- **What:** continuation along the sources' scale by Keller's pseudo-arclength method, which goes round turning points that source stepping cannot; a MOS homotopy as an option; pseudo-transient steps on the circuit's own capacitances.
-- **Why:** circuits with turning points and large MOS circuits; the corpus's `folded_sources` needs pseudo-transient continuation.
-- **Done when:** the corpus's failure rate falls, no circuit lost.
+- **What:** source continuation via Keller's pseudo-arclength method (traversing turning points that source stepping misses), an optional MOS homotopy, and pseudo-transient continuation using the circuit's internal capacitances.
+- **Why:** supports circuits with turning points and large MOS circuits, including `folded_sources` in the corpus.
+- **Done when:** the corpus failure rate drops with no circuit regressing.
 - **Lead** with deflation along the path.
     **Source:** row 9.
 
-### 📋 10. Failures named as mathematics
+### 📋 10. Mathematical failure diagnostics
 
-- **What:** a transient that stops where no solution continues named an impasse point; loops of capacitors and voltage sources, and cutsets of inductors and current sources, as rules of the checks.
-- **Why:** an agent learns why a run failed, not only that it did.
-    The corpus's impasse circuit runs past its impasse at 5.47 µs, in both engines, naming nothing.
-- **Done when:** each failure of the corpus carries a named cause.
+- **What:** classify a transient terminating where no solution continues as an impasse point, and add check rules for capacitor-voltage-source loops and inductor-current-source cutsets.
+- **Why:** agents learn why a run failed rather than only seeing a failure.
+    Both engines currently run past the corpus impasse circuit's impasse at 5.47 µs without reporting a cause.
+- **Done when:** every corpus failure reports a named mathematical cause.
 - **Lead.**
     **Source:** row 11; Chua and Deng 1989; Estévez Schwarz and Tischendorf 2000.
 
-### 📋 11. A charge model for the MOSFET's levels 1 and 3
+### 📋 11. Charge model for MOSFET levels 1 and 3
 
-- **What:** Ward and Dutton's charge partition as an option beside Meyer's capacitances, so that charge is conserved.
-- **Why:** switched-capacitor and DRAM-like circuits.
-- **Done when:** a closed cycle of voltages returns no net charge, within the solver's leak (item 12).
+- **What:** Ward and Dutton's charge partition as an option alongside Meyer's capacitances to guarantee charge conservation.
+- **Why:** supports switched-capacitor and DRAM-like circuits.
+- **Done when:** a closed voltage cycle returns zero net charge within the solver's reported leak (item 12).
 - **Lead** over ngspice.
     **Source:** row 12.
 
-### ✅ 12. The solver's charge leak reported
+### ✅ 12. Solver charge leak reporting
 
-- **What:** each node's residual integrated over a transient, reported with the statistics, and a property test that a closed system's charge stays within it.
-- **Done when:** every transient's statistics carry it.
-- **Result** (18 November): every transient integrates each node's residual over the accepted steps using Kundert and Clifford (1993) with Neumaier (1974) compensated summation, reported as `ChargeLeak` in Rust, PyO3, Python (`TransientResult.statistics.charge_leak`), text/JSON reports, and results files (version 20 of the format), with strict shape and floating-dtype validation on load plus property tests verifying closed-system charge conservation within the reported leak.
+- **What:** integrate each node's residual over every transient, report the result in statistics, and verify closed-system charge conservation with a property test.
+- **Done when:** every transient's statistics include the charge leak.
+- **Result** (18 November): every transient integrates each node's residual over accepted steps using Kundert and Clifford (1993) with Neumaier (1974) compensated summation.
+    Results are exposed as `ChargeLeak` across Rust, PyO3, Python (`TransientResult.statistics.charge_leak`), text and JSON reports, and version 20 results files with strict shape and floating-dtype validation on load.
+    Property tests verify closed-system charge conservation within the reported leak.
 - **Lead.**
     **Source:** row 13; Kundert and Clifford 1993.
 
-### ⏸️ 13. The same bits on every platform
+### ⏸️ 13. Bit-identical results across platforms
 
-- **What:** jolty's own correctly rounded `exp`, `ln` and `pow`, used by every kernel, so macOS, Linux and Windows give the same bits, where each platform's C library rounds differently today; their cost measured.
-- **Parked** by the owner (15 November): the same bits across platforms is no longer a rule, and the platforms' own functions are already within one unit of the last place, far below any tolerance, so correct rounding would cost speed for nothing a simulation can see.
-- **Done when:** CI's macOS and Linux jobs hash the same waveforms; an `exp`'s cost measured.
+- **What:** dedicated correctly rounded `exp`, `ln`, and `pow` functions used across all kernels so macOS, Linux, and Windows produce identical bits despite C-library rounding differences, with runtime cost measured.
+- **Parked** by the owner (15 November): bit-identical waveforms across platforms are no longer a requirement.
+    Platform math libraries already agree within one ULP, far below simulation tolerances, so software rounding would sacrifice speed without any visible simulation benefit.
+- **Done when:** macOS and Linux CI jobs hash identical waveforms, and `exp` runtime cost is measured.
 - **Lead.**
     **Source:** row 14; `research/speed.md` row M3.
-    This item replaces `speed.md`'s copy of it.
+    Item 13 replaces the duplicate entry in `speed.md`.
 
-### 📋 14. Output at the times asked for, and TR-BDF2 measured
+### 📋 14. Output at requested times, and TR-BDF2 evaluation
 
-- **What:** dense output, the solution interpolated at times the user asks for instead of steps forced onto them, which the comparison harness also needs; TR-BDF2 as an option, measured on the boost converter's stiff phases; variable-order BDF only if a circuit shows a gain (Xyce removed its own in 6.8).
-- **Done when:** the comparison harness stops stepping onto ngspice's times; TR-BDF2's effect on the boost measured.
-- **Source:** row 16; the old roadmap's item 7, narrowed.
+- **What:** dense output interpolating the solution at user-requested times rather than forcing steps onto output points, which the comparison harness also requires.
+    TR-BDF2 will be added as an option and measured on the boost converter's stiff phases, while variable-order BDF will be pursued only if a circuit shows a clear gain (Xyce dropped variable-order BDF in 6.8).
+- **Done when:** the comparison harness stops forcing steps onto ngspice's time points, and TR-BDF2's impact on the boost converter is measured.
+- **Source:** row 16; narrowed from old roadmap item 7.
 
-### 📋 15. Newton's tolerance in a time step tied to the step's error tolerance
+### 📋 15. Newton tolerance tied to step truncation tolerance
 
-- **What:** as DASSL and Xyce do, stop Newton's iteration within a step once its error is well below what the step's truncation error allows, not at a fixed tolerance.
-- **Done when:** the owner decides on the precision suite's numbers.
+- **What:** stop Newton iterations within a time step once Newton error falls well below the step's truncation error allowance, as in DASSL and Xyce, instead of using a fixed tolerance.
+- **Done when:** the owner decides based on precision suite results.
 - **Source:** row 17.
 
-### ✅ 16. A lossless oscillation told from numerical ringing
+### ✅ 16. Lossless oscillation distinguished from numerical ringing
 
-- **What:** the trapezoidal rule's ringing test switches to backward Euler where a charge's derivative turns back and forth twice in a row; on a lossless LC tank, whose oscillation is real, it damps it: 2.7% of its energy left after 20 periods at `reltol` 1e-2, where ngspice keeps 3.6 digits.
-- **Done when:** the tank keeps its energy to the step's error at every tolerance, the ringing test still catching numerical ringing.
-- **Result** (18 November): implemented a two-stage ringing detector in `crates/jolty-engine/src/ringing.rs` (12 unit tests + 5 integration tests in `crates/jolty-engine/tests/analytic.rs`).
-    Stage 1 applies an O(1), zero-solve variable-step scalar restoring-force check; Stage 2 reuses the cached sparse LU factors (zero extra refactorizations) to isolate algebraic `R = -1` trapezoidal ringing from lossless physical oscillations.
-    Measured per §5's transient protocol on machine D (`0f60efc` before vs `5b44dc6` after, beside ngspice 47 Sparse 1.3; all 7 examples pass all specs):
+- **What:** the trapezoidal ringing test switches to backward Euler whenever a charge derivative reverses twice consecutively.
+    On a lossless LC tank with real physical oscillation, that check damps energy down to 2.7% after 20 periods at `reltol = 1e-2`, where ngspice retains 3.6 digits.
+- **Done when:** the LC tank preserves energy to step error at every tolerance while the ringing test still catches numerical ringing.
+- **Result** (18 November): implemented a two-stage ringing detector in `crates/jolty-engine/src/ringing.rs` with 12 unit tests and 5 integration tests in `crates/jolty-engine/tests/analytic.rs`.
+    Stage 1 applies an O(1), zero-solve variable-step scalar restoring-force check.
+    Stage 2 reuses cached sparse LU factors (zero extra refactorizations) to separate algebraic `R = -1` trapezoidal ringing from lossless physical oscillations.
+    Measured under the §5 transient protocol on machine D (`0f60efc` before vs `5b44dc6` after, alongside ngspice 47 Sparse 1.3; all 7 examples pass all specs):
 
 | Fixture (method) | Accepted (before / after) | Rejected (before / after) | Landed (before / after) | Work iters (before / after) | Refactorizations (before / after) | Reuses (before / after) | ngspice 47 (acc / rej / iters) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -210,55 +237,72 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 | `colpitts` (`trapezoidal`) | 10,017 / 10,017 | 7 / 7 | 0 / 0 | 19,992 / 19,992 | 30,005 / 30,005 | 7 / 7 | 10,016 / 1 / 20,032 |
 | `speed_buck` (`trapezoidal`) | 90,797 / 90,543 | 26,805 / 26,370 | 0 / 0 | 331,101 / 328,708 | 433,499 / 431,056 | 1,793 / 13,477 | 52,946 / 3,612 / 195,843 |
 
-- **Precision sweep (`lc_tank` on machine D):** at `reltol = 1e-2`, `E_end / E_0` rises from `0.040785` (`0.02` digits, 95.9% energy lost) to `0.999959` (`4.38` digits), with accepted `85 -> 67`, rejected `39 -> 3` (-92.3%), refactorizations `106 -> 28` (-73.6%); at `reltol = 3e-3`, `0.622130` (`0.42` digits) to `0.999950` (`4.30` digits), rejected `20 -> 3`; at `scaled = 1e-2`, `0.031746` (`0.01` digits) to `0.999957` (`4.37` digits), rejected `41 -> 1` (-97.6%), refactorizations `112 -> 23` (-79.5%); at `scaled = 3e-3`, `0.641889` (`0.45` digits) to `0.999961` (`4.41` digits), rejected `21 -> 3`.
+- **Precision sweep (`lc_tank` on machine D):** at `reltol = 1e-2`, `E_end / E_0` rises from `0.040785` (`0.02` digits, 95.9% energy lost) to `0.999959` (`4.38` digits).
+    At `reltol = 1e-2`, accepted steps drop `85 -> 67`, rejected steps drop `39 -> 3` (-92.3%), and refactorizations drop `106 -> 28` (-73.6%).
+    At `reltol = 3e-3`, `E_end / E_0` improves from `0.622130` (`0.42` digits) to `0.999950` (`4.30` digits) with rejections dropping `20 -> 3`.
+    At `scaled = 1e-2`, `E_end / E_0` rises from `0.031746` (`0.01` digits) to `0.999957` (`4.37` digits), cutting rejections `41 -> 1` (-97.6%) and refactorizations `112 -> 23` (-79.5%).
+    At `scaled = 3e-3`, `E_end / E_0` rises from `0.641889` (`0.45` digits) to `0.999961` (`4.41` digits) with rejections dropping `21 -> 3`.
     From `1e-3` through `1e-6` (both `reltol` and `scaled`), `lc_tank` counts and digits (`4.20` to `4.47`) are bit-identical before and after.
     `speed_buck` runs faster (`1.7667 s -> 1.7424 s`, -254 accepted, -435 rejected, -2,393 work iterations, -2,443 refactorizations), and `inverter_chain_500` takes fewer steps (`2,391 -> 2,312` accepted, `15,340 -> 14,884` refactorizations).
-- **Source:** the precision suite's first run (`benchmarks/precision/README.md`).
+- **Source:** first run of the precision suite (`benchmarks/precision/README.md`).
 
 ### ✅ 17. AC's lost digits near 650 MHz
 
-- **What:** on the precision suite's RLC, jolty and ngspice with KLU lose three digits between 600 and 700 MHz (11.1 and 11.4 correct digits), where ngspice with Sparse keeps 14.2.
-    To diagnose: the complex solve's pivoting is the first suspect.
-- **Done when:** the response's digits flat over frequency, the cause stated.
-- **Result** (`ae943be`, 16 November): not a band but the response's size: digits fell as `16 + log10|v(out)|`, an absolute error of ε volts, from 13.8 at 100 MHz to 11.4 at 1 GHz.
-    The sweep keeps the pivots it chose at 1 Hz, where conductances rule; with them elimination computes the output as a difference of volts.
-    Every solve with `G + jωC` (AC, noise, stability, AC sensitivity, pole-zero) now refines in working precision while Oettli and Prager's componentwise backward error exceeds ε and each step halves it (Higham §12.3; Skeel 1980): 15.6 to 16.5 digits from 1 Hz to 1 GHz, a test holding the RLC within 32 ε.
-    Cost, interleaved against `3945c01` on this Mac: `ac_wide` +10% (20,000 solves of 22 unknowns, the worst case), `bjt_amp` +2%; measured with each complex number's `|re| + |im|` and buffers kept between solves, the modulus and allocation had cost 26 to 29%.
-    On `ac_wide` itself ω was already 0.71 ε at the median and 2.3 ε at worst, 13% of solves refined.
-- **Source:** the precision suite's first run.
+- **What:** on the precision suite's RLC circuit, jolty and ngspice KLU lose three digits between 600 and 700 MHz (11.1 and 11.4 correct digits), whereas ngspice Sparse retains 14.2.
+    Complex solve pivoting was the primary suspect for diagnosis.
+- **Done when:** response accuracy stays flat across frequency with the cause documented.
+- **Result** (`ae943be`, 16 November): accuracy fell with response magnitude rather than frequency band, tracking `16 + log10|v(out)|` (an absolute error of ε volts, from 13.8 digits at 100 MHz to 11.4 at 1 GHz).
+    The frequency sweep reused pivots selected at 1 Hz where conductances dominate, causing elimination to compute the output as a cancellation of volts.
+    Every `G + jωC` solve (AC, noise, stability, AC sensitivity, pole-zero) now applies working-precision iterative refinement while Oettli and Prager's componentwise backward error exceeds ε and each step halves the error (Higham §12.3; Skeel 1980).
+    RLC accuracy now stays at 15.6 to 16.5 digits from 1 Hz to 1 GHz, backed by a regression test holding the RLC within 32 ε.
+    Interleaved against `3945c01` on the local Mac, cost is +10% on `ac_wide` (20,000 solves of 22 unknowns, worst case) and +2% on `bjt_amp`.
+    Using `|re| + |im|` and reusing buffers across solves reduced that overhead from an initial 26 to 29% caused by complex modulus and allocation.
+    On `ac_wide`, backward error ω was already 0.71 ε at the median and 2.3 ε at worst, so 13% of solves refined.
+- **Source:** first run of the precision suite.
 
-### 🚧 18. The shortest time step derived, not chosen
+### 🚧 18. Shortest time step derived rather than chosen
 
-- **What:** jolty's shortest step is 10⁻⁹ of the longest, ngspice's 10⁻¹¹, neither derived; the 1,000-node ladder's runs fail from a scaled tolerance of 5.6e-7, as the step its start needs is below jolty's 8 ps.
-- **State** (`f673b49`): now ngspice's 10⁻¹¹ of the longest, which removes a departure and lets the buck resolve its 10 ps settling; still chosen, not derived.
-- **Done when:** the bound derived from the arithmetic's resolution, the ladder solved at every tolerance.
-- **Source:** the precision suite's first run; the guide's departures page.
+- **What:** jolty's shortest step was 10⁻⁹ of the longest step and ngspice's is 10⁻¹¹, neither derived; the 1,000-node ladder fails from a scaled tolerance of 5.6e-7 because the initial step needed is below 8 ps.
+- **State** (`f673b49`): aligned with ngspice at 10⁻¹¹ of the longest step, removing a departure and letting the buck resolve its 10 ps settling, though still chosen rather than derived.
+- **Done when:** the lower bound is derived from floating-point resolution and the ladder solves at every tolerance.
+- **Source:** first run of the precision suite; departures guide.
 
-### 🚧 19. The departures found on 15 November added to the guide, ngspice's and Xyce's
+### 🚧 19. Departures from ngspice and Xyce found on 15 November added to the guide
 
-- **What:** three found by today's suites: ngspice 47 multiplies a bipolar transistor's base-collector saturation current by the area twice when its card gives no `IBE` or `IBC` (`bjttemp.c`, lines 168, 177-179, 198-202), so `vreg`'s output differs by 8 to 12 mV; ngspice's AC sensitivity is right only at the first frequency, its `lin` sweep's frequencies growing geometrically (to be checked in its source); Xyce's noise is 9.5e-6 above 4kTR, from its 1973 electron charge.
-- **Xyce's, from its agreement tests:** a MOSFET's reverse bulk junction linear, SPICE3f5's, where jolty and ngspice 47 use an exponential with a cubic tail; a bipolar transistor's gmin divided by beta inside the junction current; no noise in its JFET; its JFET's temperature dependence SPICE3f5's; its own excess phase.
-    Two unexplained: at 125 °C `nmos_stage`'s output 1.4e-4 from jolty's, and `cmos_inverter`'s 55 µV across its threshold.
-    Xyce finds no operating point for `negative_load`, after 7,692 Newton iterations, and stalls on the buck.
-- **Done when:** each stated in `docs/guide/departures.md` with its evidence, ngspice's AC sensitivity checked in its source first, Xyce's two unexplained differences explained.
-- **Result, in part** (`00a9e75`, 16 November): in `departures.md`, ngspice's base-collector saturation current multiplied by the area twice (`bjttemp.c`, lines 168, 177-179, 198-202, read); its AC sensitivity's linear sweep, checked in its source: `inc_freq` tests `SENS_LINEAR` (15) against AC's `LINEAR` (3), so each frequency after the first is the one before times the step (`cktsens.c`, line 831); Xyce's departures in the SPICE guide as `tests/test_xyce.py` names them.
-    **Left:** Xyce's noise 9.5e-6 above 4kTR, its electron charge to be read in its source; Xyce's two unexplained differences.
-- **Source:** the corpus's and the coverage matrix's first runs.
+- **What:** three departures uncovered by the benchmark suites require documentation.
+    First, ngspice 47 multiplies a bipolar transistor's base-collector saturation current by area twice when the card omits `IBE` and `IBC` (`bjttemp.c`, lines 168, 177-179, 198-202), shifting `vreg` output by 8 to 12 mV.
+    Second, ngspice's AC sensitivity is accurate only at the first frequency because `lin` sweep frequencies grow geometrically (pending source verification).
+    Third, Xyce's thermal noise exceeds 4kTR by 9.5e-6 due to its 1973 electron charge value.
+- **Xyce departures from agreement tests:** Xyce uses SPICE3f5's linear MOSFET reverse bulk junction where jolty and ngspice 47 use an exponential with a cubic tail.
+    Xyce also divides bipolar `gmin` by beta inside junction current, omits JFET noise, uses SPICE3f5 JFET temperature dependence, and implements a distinct excess-phase formulation.
+    Two differences remain unexplained: at 125 °C, `nmos_stage` output differs from jolty by 1.4e-4, and `cmos_inverter` differs by 55 µV across the switching threshold.
+    Xyce finds no operating point for `negative_load` after 7,692 Newton iterations and stalls on the buck.
+- **Done when:** every departure is documented in `docs/guide/departures.md` with evidence, ngspice's AC sensitivity source is verified, and both unexplained Xyce differences are resolved.
+- **Result, in part** (`00a9e75`, 16 November): `departures.md` now records ngspice's double area multiplication for base-collector saturation current (`bjttemp.c`, lines 168, 177-179, 198-202).
+    Source inspection confirmed the ngspice AC sensitivity linear-sweep bug: `inc_freq` compares `SENS_LINEAR` (15) against AC `LINEAR` (3), multiplying each subsequent frequency by the step (`cktsens.c`, line 831).
+    Xyce's departures are documented in the SPICE guide under the names used in `tests/test_xyce.py`.
+    **Remaining:** verify Xyce's electron charge in source for the 9.5e-6 noise offset, and explain the two remaining Xyce differences.
+- **Source:** first runs of the corpus and coverage matrix.
 
-**Elsewhere:** the precision suite and the hard-circuit corpus are `benchmarks.md` items 7 and 8; their findings are this document's items 4, 8, 9, 10 and 16 to 19.
+**Elsewhere:** the precision suite and hard-circuit corpus live in `benchmarks.md` items 7 and 8; their findings appear in items 4, 8, 9, 10, and 16 to 19 above.
 
 ## 5. Decided
 
 - `truncation_tolerance` means SPICE's `TRTOL`.
-- Every charge's error is bounded: on the buck jolty takes 90,774 attempts to ngspice's 56,624 points, and at equal control 37% fewer steps than ngspice.
-- SPICE3's junction limiter is kept over ngspice 47's `DEVpnjlim`, which halves the buck's Newton failures but saves no work.
+- Every charge's error is bounded: on the buck, jolty takes 90,774 attempts versus ngspice's 56,624 points, and 37% fewer steps than ngspice at equal error control.
+- SPICE3's junction limiter is kept over ngspice 47's `DEVpnjlim`, which halves buck Newton failures without reducing total work.
 - A transient step starts from its prediction.
 - `gmin-dependence` is a warning.
-- Meyer's capacitances conserve charge in neither engine; the notes no longer call jolty's form charge-conserving.
-- Every transient change follows one protocol: a probe of each rejected step first, explained before anything changes; before and after numbers of accepted, rejected and landed steps and Newton iterations on the buck, boost, ring, relaxation, 555 timer, astable and Colpitts examples at default options; ngspice on the same netlists side by side; accuracy unchanged, `test_ngspice.py`, `test_random_circuits.py`, `test_metamorphic.py` and the analytic tests passing with no tolerance loosened; and the guide's table of methods saying what changed and where it comes from.
-- The old roadmap's item 7, measured and set aside: bounding repeated rejections at one time point saves too little; a damped formula for the boost's stiff mode could act only on 36% of its steps, so item 14 measures TR-BDF2 there first.
-- `max_transient_iterations` (formerly `transient_iterations`) keeps SPICE's `ITL4` of 10, though ngspice 47 raises any limit below 100 to 100, a departure the guide states: another count would be a constant picked for one fixture; the fix is item 6.
+- Meyer's capacitances conserve charge in neither engine, and documentation no longer calls jolty's form charge-conserving.
+- Every transient change follows a single protocol: probe and explain every rejected step before modifying code.
+    Record before-and-after accepted, rejected, and landed steps plus Newton iterations at defaults on the buck, boost, ring, relaxation, 555 timer, astable, and Colpitts examples alongside ngspice on identical netlists.
+    Keep accuracy unchanged with `test_ngspice.py`, `test_random_circuits.py`, `test_metamorphic.py`, and analytic tests passing without loosened tolerances.
+    Update the guide's methods table to specify each change and its source.
+- Old roadmap item 7 was measured and set aside because bounding repeated rejections at a single time point saves too little.
+    A damped formula for the boost converter's stiff mode would affect only 36% of steps, so item 14 evaluates TR-BDF2 there first.
+- `max_transient_iterations` (formerly `transient_iterations`) keeps SPICE's `ITL4` of 10, although ngspice 47 raises lower limits to 100 (documented as a departure).
+    Raising the constant for a single fixture would be arbitrary; item 6 provides the principled fix.
 
 ## 6. Open principles
 
-None: the research's proposals were merged into the rules of `AGENTS.md` on 15 November (`444535f`).
+None; the research proposals were merged into `AGENTS.md` on 15 November (`444535f`).

@@ -22,7 +22,7 @@ CLOSED_LOOP = 10 / (1 + 11 / OPEN_LOOP)
 
 @component
 def inverting(c: Builder) -> None:
-    """Rin from the input to the inverting input, Rf from there to the output."""
+    """Builds an inverting op-amp stage with input resistor `Rin` and feedback `Rf`."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     series = c.place(devices.resistor(1 * kohm), name="Rin")
@@ -36,7 +36,7 @@ def inverting(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The amplifier, fed 100 mV at 1 kHz."""
+    """Builds the inverting amplifier driven by a 100 mV, 1 kHz sine wave."""
     ground = c.port("ground", Role.GROUND)
     tone = Sine(offset=0 * V, amplitude=100 * mV, frequency=1 * kHz)
     source = c.place(devices.voltage_source(tone), name="V1")
@@ -47,12 +47,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The amplifier on its bench."""
+    """Returns the inverting amplifier test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The operating point, the frequency response and three periods of the tone."""
+    """Returns operating-point, AC frequency-response, and 3 ms transient analyses."""
     return Plan(
         {
             "op": OperatingPoint(),
@@ -63,7 +63,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """A gain of 20 dB, 90.9 kHz of bandwidth, 2 V peak to peak at the output."""
+    """Returns specifications for 20 dB gain, 90.9 kHz bandwidth, and 2 Vpp swing."""
     return Specs(
         [
             gain("bode", "out", at=100 * Hz).within(20 * math.log10(CLOSED_LOOP), 1e-4),

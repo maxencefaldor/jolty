@@ -24,13 +24,13 @@ STEP = 2e-9
 
 
 def gate(kind: Gate) -> devices.Device:
-    """A two-input gate of `kind`, 100 ps from input to output, on a supply."""
+    """Returns a two-input logic gate of `kind` with a 100 ps propagation delay."""
     return devices.logic_gate(kind, rise=100 * ps, transition=20 * ps, electrical=True)
 
 
 @component
 def full_adder(c: Builder) -> None:
-    """The sum a ⊕ b ⊕ carry_in, and the carry ab + carry_in(a ⊕ b)."""
+    """Builds a full adder computing sum a ⊕ b ⊕ carry_in and carry ab + c(a ⊕ b)."""
     a, b = c.port("a", Role.INPUT), c.port("b", Role.INPUT)
     carry_in = c.port("carry_in", Role.INPUT)
     total, carry_out = c.port("sum", Role.OUTPUT), c.port("carry_out", Role.OUTPUT)
@@ -53,7 +53,7 @@ def full_adder(c: Builder) -> None:
 
 @component
 def adder(c: Builder) -> None:
-    """Four full adders, each one's carry the next one's."""
+    """Builds four ripple-chained full adders passing each carry to the next bit."""
     a = [c.port(f"a{bit}", Role.INPUT) for bit in range(BITS)]
     b = [c.port(f"b{bit}", Role.INPUT) for bit in range(BITS)]
     carry_in = c.port("carry_in", Role.INPUT)
@@ -74,7 +74,7 @@ def adder(c: Builder) -> None:
 
 
 def bits(numbers: list[int], bit: int) -> list[tuple[float, LogicLevel]]:
-    """The level of `bit` of each number, from each one's time on."""
+    """Returns timed `(time, level)` pairs for `bit` across the operand `numbers`."""
     return [
         (index * STEP, 1 if (number >> bit) & 1 else 0)
         for index, number in enumerate(numbers)
@@ -83,7 +83,7 @@ def bits(numbers: list[int], bit: int) -> list[tuple[float, LogicLevel]]:
 
 @component
 def bench(c: Builder) -> None:
-    """The adder on 3.3 V, its inputs stepping through the pairs, its outputs loaded."""
+    """Builds the adder on 3.3 V with stepped operand pairs and capacitive loads."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     total = c.place(adder(), name="X1")
@@ -113,17 +113,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The adder on its bench."""
+    """Returns the ripple-carry adder test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Eight nanoseconds, the four additions."""
+    """Returns an 8 ns transient plan covering all four operand additions."""
     return Plan({"add": Transient(stop=8 * ns, max_step=10 * ps)})
 
 
 def specs() -> Specs:
-    """Each sum's bits, read 1.5 ns after its operands change."""
+    """Returns sum and carry bit specifications sampled 1.5 ns after each change."""
     requirements = []
     for index, (a, b) in enumerate(PAIRS):
         total = a + b

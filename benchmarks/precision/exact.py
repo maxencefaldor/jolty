@@ -1,28 +1,23 @@
 # Copyright 2026 Maxence Faldor
-"""Exact answers, computed independently of jolty.
+"""Independent exact reference solutions for precision benchmark fixtures.
 
-They are closed forms, and linear circuits solved in higher precision.
+Reference values come exclusively from closed-form formulas or high-precision solutions
+of circuit equations, never from another simulator run.
 
-A linear circuit under a piecewise-linear source, from the operating point of its first
-level, moves its every natural mode ``k`` by ``żₖ = λₖ zₖ + u``, and reads output ``p``
-as ``Σₖ Rₚₖ zₖ`` (`Modal`). Along a straight piece of the source, ``u = uⱼ + sⱼ τ`` a
-time ``τ`` into it, each mode is exactly
-``zₖ(τ) = zₖ(0) e^{λₖτ} + uⱼ τ φ₁(λₖτ) + sⱼ τ² φ₂(λₖτ)``, with
-``φ₁(x) = (eˣ - 1)/x`` and ``φ₂(x) = (eˣ - 1 - x)/x²``, terms none of which outgrows the
-mode it sums to. mpmath computes the rates, the residues and each mode's state where
-each piece begins at `DIGITS` decimal digits, and rounds them to doubles; the sum is
-then evaluated in double precision at the points a simulator produced, beside a bound
-on its rounding, which caps the digits a score may claim.
+A linear circuit driven by a piecewise-linear source evolves each natural mode ``k`` by
+``żₖ = λₖ zₖ + u`` and yields output ``p`` as ``Σₖ Rₚₖ zₖ`` (`Modal`). Over a linear
+segment ``u = uⱼ + sⱼ τ``, each mode follows
+``zₖ(τ) = zₖ(0) e^{λₖτ} + uⱼ τ φ₁(λₖτ) + sⱼ τ² φ₂(λₖτ)``.
+The auxiliary functions are ``φ₁(x) = (eˣ - 1)/x`` and
+``φ₂(x) = (eˣ - 1 - x)/x²``. mpmath computes modal rates,
+residues, and segment-boundary states at `DIGITS` decimal digits before rounding to
+doubles. Double-precision evaluation at simulator sample times also computes a rounding
+bound capping claimable digits.
 
-Small circuits are solved by mpmath's general eigensolver (`linear`). The ladders and
-random networks of resistors and capacitors, trees of up to thousands of nodes, are
-solved by their own structure (`tree`): their symmetric pencil's eigenvalues by
-Newton's iteration on its determinant from LAPACK's estimates, each checked by
-Sylvester's inertia to be the one its place stands for, and its eigenvectors by
-inverse iteration, both through the tree's elimination, which fills nothing.
-
-No reference is ever a simulator's run: a closed form, or this higher-precision
-solution of the circuit's own equations.
+Small circuits use mpmath's general eigensolver (`linear`). Large RC ladders and random
+trees exploit tree topology (`tree`) via zero-fill elimination: Newton iteration refines
+LAPACK eigenvalue estimates, Sylvester's inertia verifies eigenvalue ordering, and
+inverse iteration computes eigenvectors.
 """
 
 import itertools
@@ -53,39 +48,34 @@ networks here, never reaches the double's."""
 mp.dps = DIGITS  # every mpmath number of the suite, the fixtures' equations among them
 
 CONVERGED: Final = mpf(10) ** -(DIGITS - 10)
-"""The relative Newton step at which an eigenvalue has converged: ten digits above the
-rounding floor of its determinant's evaluation, which Newton's steps settle at near
-10⁻⁴⁵ on the networks here, and far past the double each rate is rounded to."""
+"""Relative Newton-step convergence tolerance for eigenvalue refinement. Set ten digits
+above the 10⁻⁴⁵ determinant rounding floor and well below double precision."""
 
 NEWTON: Final = 12
-"""The most Newton iterations an eigenvalue takes from LAPACK's estimate, whose
-relative error was under 10⁻⁸ on the networks here: quadratic convergence reaches
-`CONVERGED` in four."""
+"""Maximum Newton iterations per eigenvalue from LAPACK estimates (under 10⁻⁸ initial
+relative error, typically reaching `CONVERGED` in four quadratic steps)."""
 
 EPSILON: Final = float(np.finfo(np.float64).eps)
-"""The double's machine epsilon, 2⁻⁵², twice each rounding's relative error."""
+"""IEEE 754 double-precision machine epsilon (2⁻⁵²), twice the unit roundoff."""
 
 ROUNDINGS: Final = 16
-"""The roundings each term of a modal sum carries beside its sum's, at most: its
-residue's, its state's or level's and its time's to doubles, ``φ``'s evaluation with
-the cancellation of up to seven its direct form allows above `SERIES`, and a complex
-product's four."""
+"""Maximum per-term rounding units in a modal sum prior to summation. Accounts for
+residue, state/level, and time conversions, up to 7x cancellation in direct ``φ``
+evaluation above `SERIES`, and four operations per complex product."""
 
 SERIES: Final = 1.0
-"""Below this modulus of ``λτ``, ``φ₁`` and ``φ₂`` sum their Taylor series, which
-cancel nothing; above it their direct forms cancel at most a factor of seven of their
-terms' magnitude, as ``φ₂`` does at ``λτ = -1``."""
+"""Modulus threshold on ``λτ`` separating Taylor-series evaluation of ``φ₁`` and ``φ₂``
+(cancellation-free) from direct formulas (at most 7x cancellation near ``λτ = -1``)."""
 
 TERMS: Final = 21
-"""The Taylor terms summed below `SERIES`: the last, ``1/22!``, is 10⁻²¹ of the
-first."""
+"""Number of Taylor terms summed below `SERIES`, ending at ``1/22!`` (about 10⁻²¹)."""
 
 
 @dataclass(frozen=True, slots=True)
 class Piece:
-    """A straight piece of the source, from `start`.
+    """Single linear segment of a piecewise-linear source starting at `start`.
 
-    It holds the source's level there, its slope, and each mode's state there.
+    Stores the initial source level, segment slope, and modal state vector at `start`.
     """
 
     start: float
@@ -96,24 +86,23 @@ class Piece:
 
 @dataclass(frozen=True, slots=True)
 class Modal:
-    """A linear circuit's exact response to a piecewise-linear source, by its modes."""
+    """Modal representation of a linear circuit's exact piecewise-linear response."""
 
     outputs: tuple[str, ...]
-    """What each output is, such as ``v(out)``."""
+    """Output signal names such as ``v(out)``."""
     rates: Complex
-    """Each mode's rate ``λₖ``, its real part negative or, undamped, zero."""
+    """Modal rates ``λₖ`` with non-positive real parts (zero when undamped)."""
     residues: Complex
-    """Each output's residue at each mode, one row per output."""
+    """Modal residue matrix with one row per output and one column per mode."""
     pieces: tuple[Piece, ...]
 
     def at(self, times: Real) -> tuple[Real, Real]:
-        """Each output at `times`, one row per output, and a bound on its rounding.
+        """Evaluates outputs at `times` and returns values with rounding error bounds.
 
-        The bound is on each value's absolute error: each term's `ROUNDINGS` and its
-        sum's, one a mode, times the term's magnitude, and the rounding of ``λₖτ``,
-        two of its own, carried into the term by its function's condition number:
-        ``|λτ|`` for ``e^{λτ}``, ``|λτ eᵗ/(eᵗ - 1)| + 1`` for ``φ₁`` and
-        ``|λτ (eᵗ - 1)/(eᵗ - 1 - λτ)| + 2`` for ``φ₂``, ``t = λτ``.
+        Bounds absolute error by summing `ROUNDINGS` plus one summation rounding
+        per mode times each term's magnitude. Propagates two rounding units in ``λₖτ``
+        through condition numbers ``|λτ|`` for ``e^{λτ}``, ``|λτ eᵗ/(eᵗ - 1)| + 1`` for
+        ``φ₁``, and ``|λτ (eᵗ - 1)/(eᵗ - 1 - λτ)| + 2`` for ``φ₂`` (``t = λτ``).
         """
         times = np.asarray(times, dtype=np.float64)
         starts = np.array([piece.start for piece in self.pieces])
@@ -147,7 +136,7 @@ class Modal:
 def _conditioned(
     arguments: Complex, decays: Complex, held: Real, ramped: Real, sloped: Real
 ) -> Real:
-    """Each term's magnitude times its function's condition number in ``λτ``."""
+    """Weights each modal term magnitude by its condition number in ``λτ``."""
     size = np.abs(arguments)
     grown = np.abs(np.expm1(arguments))
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -158,7 +147,7 @@ def _conditioned(
 
 
 def phi(arguments: Complex) -> tuple[Complex, Complex]:
-    """``φ₁`` and ``φ₂`` at each of `arguments`, by their Taylor series near zero."""
+    """Evaluates ``φ₁`` and ``φ₂`` at `arguments`, using Taylor series near zero."""
     z = np.asarray(arguments, dtype=np.complex128)
     near = np.abs(z) < SERIES
     first, second = np.zeros_like(z), np.zeros_like(z)
@@ -176,10 +165,9 @@ def phi(arguments: Complex) -> tuple[Complex, Complex]:
 
 
 def _phi(z: Precise) -> tuple[Precise, Precise]:
-    """``φ₁`` and ``φ₂`` at `z` in mpmath.
+    """Evaluates ``φ₁`` and ``φ₂`` at `z` in mpmath precision.
 
-    Near zero they sum their series, which keep every digit that the direct forms'
-    cancellation would lose.
+    Sums Taylor series near zero to prevent cancellation in direct exponential formulas.
     """
     if abs(z) < SERIES:
         first, second, term = mpf(0), mpf(0), mpf(1)
@@ -200,11 +188,10 @@ def modal(
     residues: Sequence[Sequence[Precise]],
     level: Points,
 ) -> Modal:
-    """The response of modes of `rates`, read with `residues`, to the source `level`.
+    """Constructs a `Modal` response for `rates` and `residues` driven by `level`.
 
-    Each mode starts at its operating point, ``-u₀/λₖ``, and reaches each piece's
-    start by the exact form of `Modal` over the piece before, in mpmath at `DIGITS`
-    digits.
+    Initializes every mode at operating point ``-u₀/λₖ`` and propagates segment-boundary
+    states analytically in mpmath at `DIGITS` decimal digits.
     """
     times = [mpf(time) for time, _ in level]
     levels = [mpf(value) for _, value in level]
@@ -243,7 +230,7 @@ def modal(
 
 
 def _rounded(values: Sequence[Precise]) -> Complex:
-    """`values`, each rounded to the complex double nearest."""
+    """Rounds mpmath `values` to the nearest complex doubles."""
     return np.array([complex(value) for value in values])
 
 
@@ -254,13 +241,11 @@ def linear(
     read: Sequence[Sequence[Precise]],
     level: Points,
 ) -> Modal:
-    """The response of a small circuit ``ẋ = A x + b u``, read by ``y = C x``.
+    """Computes exact modal response for ``ẋ = A x + b u``, ``y = C x``.
 
-    `states` is ``A``, `inputs` ``b`` and `read` ``C``, row by row, in SI base units
-    and in mpmath, so that they hold the circuit's values with no rounding;
-    ``A`` must have distinct eigenvalues, as every circuit here does. mpmath's
-    eigenvectors ``V`` give the inputs in their basis, ``w = V⁻¹ b``, and each residue
-    ``(C V)ₚₖ wₖ``.
+    Takes `states` (``A``), `inputs` (``b``), and `read` (``C``) row by row in SI units
+    as mpmath values, assuming distinct eigenvalues of ``A``. Uses mpmath eigenvectors
+    ``V`` to compute input weights ``w = V⁻¹ b`` and residues ``(C V)ₚₖ wₖ``.
     """
     a = mpmath.matrix([[mpf(value) for value in row] for row in states])
     b = mpmath.matrix([mpf(value) for value in inputs])
@@ -276,7 +261,7 @@ def linear(
 
 
 def poles(states: Sequence[Sequence[Precise]]) -> Complex:
-    """The eigenvalues of ``A``, a circuit's natural frequencies, by mpmath."""
+    """Computes the eigenvalues of state matrix `states` (``A``) in mpmath."""
     a = mpmath.matrix([[mpf(value) for value in row] for row in states])
     found = mpmath.eig(a, left=False, right=False)
     return np.array([complex(value) for value in found])
@@ -299,17 +284,17 @@ class Tree:
 
 
 def tree(network: Tree, outputs: Sequence[int], level: Points) -> Modal:
-    """The response of `network` to the source's `level`, at the nodes `outputs`.
+    """Computes exact modal response of RC tree `network` at `outputs` under `level`.
 
-    With ``v = C^{-1/2} y``, the network's equations ``C v̇ = -G v + g₀ e₀ u`` are
-    ``ẏ = -A y + C^{-1/2} g₀ e₀ u`` for the symmetric ``A = C^{-1/2} G C^{-1/2}``,
-    whose eigenpairs ``(μₖ, qₖ)`` are its modes, of rate ``-μₖ``, and node ``p``'s
-    residue at mode ``k`` is ``qₖ[p] qₖ[0] g₀ / √(cₚ c₀)``. Every node settles at the
-    source's level, so each node's residues over its modes' rates sum to ``-1``.
+    Changing coordinates via ``v = C^{-1/2} y`` transforms ``C v̇ = -G v + g₀ e₀ u``
+    into symmetric ``ẏ = -A y + C^{-1/2} g₀ e₀ u`` with ``A = C^{-1/2} G C^{-1/2}``.
+    Eigenpairs ``(μₖ, qₖ)`` give modes of rate ``-μₖ`` and node residues
+    ``qₖ[p] qₖ[0] g₀ / √(cₚ c₀)``. Summing residues divided by rates verifies ``-1``
+    at every node because unit DC gain holds everywhere.
 
     Raises:
-        ArithmeticError: When an eigenvalue does not converge, or is not the one its
-            place stands for, or a node's residues do not sum to its gain.
+        ArithmeticError: When an eigenvalue fails to converge, violates Sylvester
+            inertia ordering, or fails the unit DC-gain check.
     """
     rates, vectors = _modes(network)
     roots = [mpmath.sqrt(mpf(c)) for c in network.capacitances]
@@ -331,11 +316,11 @@ def tree(network: Tree, outputs: Sequence[int], level: Points) -> Modal:
 
 
 def _modes(network: Tree) -> tuple[list[_mpf], list[list[_mpf]]]:
-    """The rates ``-μₖ`` of `network`'s modes, ascending in ``μ``, and the ``qₖ``.
+    """Computes modal rates ``-μₖ`` (ascending ``μ``) and eigenvectors ``qₖ``.
 
     Raises:
-        ArithmeticError: When an eigenvalue does not converge, or is not the one its
-            place stands for.
+        ArithmeticError: When an eigenvalue fails to converge or violates Sylvester
+            inertia ordering.
     """
     count = len(network.capacitances)
     c = [mpf(value) for value in network.capacitances]
@@ -396,7 +381,7 @@ class _Elimination:
     off: Sequence[_mpf]
 
     def pivots(self, mu: _mpf) -> tuple[list[_mpf], list[_mpf]]:
-        """The pivots ``dᵢ(μ)`` and their derivatives in ``μ``."""
+        """Computes elimination pivots ``dᵢ(μ)`` and their ``μ`` derivatives."""
         pivots = [value - mu for value in self.diagonal]
         slopes = [mpf(-1)] * len(pivots)
         for node in range(len(pivots) - 1, 0, -1):
@@ -408,7 +393,7 @@ class _Elimination:
         return pivots, slopes  # ty: ignore[invalid-explicit-return] - mpmath is untyped
 
     def newton(self, mu: _mpf) -> _mpf:
-        """Newton's step for ``det(A - μI) = Πᵢ dᵢ(μ)``: one over its log's slope."""
+        """Computes the Newton step for ``det(A - μI) = Πᵢ dᵢ(μ)``."""
         pivots, slopes = self.pivots(mu)
         if pivots[0] == 0:
             # Exact root: lim_{d_0 -> 0} 1 / (s_0 / d_0 + finite) = 0.
@@ -419,12 +404,12 @@ class _Elimination:
         return 1 / logarithmic  # ty: ignore[unsound-return] - mpmath is untyped
 
     def below(self, mu: _mpf) -> int:
-        """How many eigenvalues lie below `mu`: the negative pivots, by Sylvester."""
+        """Counts eigenvalues below `mu` from negative pivots via Sylvester inertia."""
         pivots, _ = self.pivots(mu)
         return sum(1 for pivot in pivots if pivot < 0)
 
     def vector(self, mu: _mpf) -> list[_mpf]:
-        """The unit eigenvector at the eigenvalue `mu`, by two inverse iterations."""
+        """Computes the unit eigenvector at `mu` via two inverse iterations."""
         pivots, _ = self.pivots(mu)
         count = len(pivots)
         if pivots[0] == 0:
@@ -454,12 +439,11 @@ class _Elimination:
 def diode(
     levels: Real, resistance: float, saturation: float, thermal: _mpf, gmin: float
 ) -> Real:
-    """The voltage across a diode fed through `resistance` from each of `levels`.
+    """Computes exact diode voltages across `levels` through `resistance` with `gmin`.
 
-    The diode carries ``Is (e^{V/Vt} - 1) + gmin V``, SPICE's junction with its
-    conductance across, so ``(Vs - V)/R = Is (e^{V/Vt} - 1) + gmin V``; with
-    ``G = 1/R + gmin`` and ``a = (Vs/R + Is)/G``, ``V = a - Vt W(Is/(G Vt) e^{a/Vt})``,
-    Lambert's W on its principal branch, in mpmath at `DIGITS` digits.
+    Solves ``(Vs - V)/R = Is (e^{V/Vt} - 1) + gmin V`` in mpmath at `DIGITS`
+    digits. Setting ``G = 1/R + gmin`` and ``a = (Vs/R + Is)/G`` yields
+    ``V = a - Vt W(Is/(G Vt) e^{a/Vt})`` on the principal branch of Lambert's W.
     """
     r, i, vt, g = (mpf(value) for value in (resistance, saturation, thermal, gmin))
     conductance = 1 / r + g
@@ -472,8 +456,8 @@ def diode(
 
 
 def closed(form: Callable[[_mpf], object], abscissa: Real) -> Complex:
-    """`form`, a closed form, evaluated in mpmath at `DIGITS` digits at `abscissa`.
+    """Evaluates closed-form callable `form` at `abscissa` in mpmath at `DIGITS` digits.
 
-    The form returns an mpmath number, real or complex.
+    Accepts real or complex mpmath return values and converts them to complex doubles.
     """
     return np.array([complex(mpmath.mpc(form(mpf(float(x))))) for x in abscissa])

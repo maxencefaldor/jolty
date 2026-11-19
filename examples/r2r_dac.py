@@ -21,7 +21,7 @@ STEP = 10e-9
 
 @component
 def ladder(c: Builder) -> None:
-    """The 2R legs of each bit and the R rungs between them, the LSB's end grounded."""
+    """Builds the R-2R ladder legs and rungs with a grounded LSB termination."""
     legs = [c.port(f"d{bit}", Role.INPUT) for bit in range(BITS)]
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
@@ -43,7 +43,7 @@ def ladder(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The ladder, driven by buffers from a counter of logic sources."""
+    """Builds the ladder driven through buffers by a four-bit logic counter."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     converter = c.place(ladder(), name="X1")
@@ -72,17 +72,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The converter on its bench."""
+    """Returns the R-2R DAC test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The sixteen codes, 10 ns each."""
+    """Returns a 160 ns transient plan stepping through all 16 codes at 10 ns each."""
     return Plan({"count": Transient(stop=2**BITS * STEP * 1e9 * ns, max_step=0.5 * ns)})
 
 
 def specs() -> Specs:
-    """Each code's output the supply times the code over 16, to a microvolt."""
+    """Returns output voltage specifications matching code/16 of supply to 1 µV."""
     return Specs(
         [
             value("count", "out", at=(code + 0.5) * STEP * 1e9 * ns).within(

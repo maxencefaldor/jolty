@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
 """A two-bit ripple counter of edge-triggered D flip-flops, each six NAND gates.
 
-Each flip-flop is the 7474's: two latches of three-input NAND gates that pass the data
-only on the clock's rising edge, with a preset and a clear. Fed its own complement, a
-flip-flop toggles on every rising edge and halves its clock; the second, clocked by the
-first's complement, halves it again, so the two count 0, 1, 2, 3 in binary. The clear
-holds both at zero for the first nanoseconds. Simulate it with
+Each flip-flop follows the 7474 topology: two latches of three-input NAND gates pass
+data on the rising clock edge, with preset and clear. Driven by its complemented
+output, a flip-flop toggles on every rising edge to halve the clock frequency. A second
+stage clocked by the first complement halves the rate again, counting 0, 1, 2, 3 in
+binary while clear holds both outputs at zero initially. Simulate with
 ``jolty simulate examples/ripple_counter.py``.
 """
 
@@ -21,7 +21,7 @@ PERIOD = 10e-9
 
 
 def nand() -> devices.Device:
-    """A three-input NAND gate, 200 ps from input to output, on a supply."""
+    """Returns a three-input NAND gate with a 200 ps propagation delay."""
     return devices.logic_gate(
         "nand", 3, rise=200 * ps, transition=50 * ps, electrical=True
     )
@@ -29,7 +29,7 @@ def nand() -> devices.Device:
 
 @component
 def flip_flop(c: Builder) -> None:
-    """The 7474's positive-edge-triggered D flip-flop, with preset and clear."""
+    """Builds a 7474 positive-edge-triggered D flip-flop with preset and clear."""
     data, clock = c.port("d", Role.INPUT), c.port("clock", Role.INPUT)
     preset, clear = c.port("preset", Role.INPUT), c.port("clear", Role.INPUT)
     q, q_bar = c.port("q", Role.OUTPUT), c.port("q_bar", Role.OUTPUT)
@@ -56,7 +56,7 @@ def flip_flop(c: Builder) -> None:
 
 @component
 def counter(c: Builder) -> None:
-    """Two flip-flops, each toggling, the second clocked by the first's complement."""
+    """Builds two toggling flip-flops with the second clocked by the first `q_bar`."""
     clock, clear = c.port("clock", Role.INPUT), c.port("clear", Role.INPUT)
     low, high = c.port("q0", Role.OUTPUT), c.port("q1", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
@@ -74,7 +74,7 @@ def counter(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The counter on 3.3 V, its clock at 100 MHz, cleared for the first 3 ns."""
+    """Builds the counter on 3.3 V with a 100 MHz clock and a 3 ns initial clear."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     ticks: list[tuple[Quantity, LogicLevel]] = [
@@ -97,17 +97,17 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The counter on its bench."""
+    """Returns the ripple counter test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """Eighty nanoseconds, eight clock edges."""
+    """Returns an 80 ns transient plan covering eight rising clock edges."""
     return Plan({"count": Transient(stop=80 * ns, max_step=0.1 * ns)})
 
 
 def specs() -> Specs:
-    """The count after each rising edge, and each bit at its fraction of the clock."""
+    """Returns binary count specifications after each edge and half-rate frequency."""
     requirements = []
     for edge in range(1, 8):
         at = (edge + 0.5) * PERIOD * 1e9 * ns

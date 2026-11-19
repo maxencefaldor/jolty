@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """A fifth-order Butterworth low-pass filter: an LC ladder between two 50 Ω ends.
 
-Its elements are the Butterworth prototype's, 0.618, 1.618, 2, 1.618 and 0.618, scaled
-to a 1 MHz cutoff and 50 Ω. Between its terminations its gain is half, times
-1/√(1 + (f/f_c)¹⁰): -6.02 dB in its passband, 3.01 dB less at the cutoff, and falling
-100 dB a decade above it. Simulate it with
+Element values scale the fifth-order Butterworth prototype (0.618, 1.618, 2, 1.618, and
+0.618) to a 1 MHz cutoff and 50 Ω impedance. Between matched terminations, gain follows
+0.5 / √(1 + (f/f_c)¹⁰): -6.02 dB in the passband, -3.01 dB lower at cutoff, rolling off
+100 dB per decade above. Simulate with
 ``jolty simulate examples/butterworth_ladder.py``.
 """
 
@@ -25,13 +25,13 @@ PROTOTYPE = [2 * math.sin((2 * k - 1) * math.pi / 10) for k in range(1, 6)]
 
 
 def butterworth(frequency: float) -> float:
-    """The ladder's gain between its terminations at `frequency`, in decibels."""
+    """Returns the terminated ladder gain at `frequency` in decibels."""
     return 20 * math.log10(0.5 / math.sqrt(1 + (frequency / CUTOFF) ** 10))
 
 
 @component
 def ladder(c: Builder) -> None:
-    """Shunt capacitors and series inductors, alternating, from input to output."""
+    """Builds alternating shunt capacitors and series inductors from input to output."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     omega = 2 * math.pi * CUTOFF
@@ -55,7 +55,7 @@ def ladder(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The ladder between a 50 Ω source and a 50 Ω load."""
+    """Builds the LC ladder between a 50 Ω source and a 50 Ω load."""
     ground = c.port("ground", Role.GROUND)
     step = Pulse(
         initial=0 * V,
@@ -76,12 +76,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The ladder between its terminations."""
+    """Returns the terminated Butterworth ladder test bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The frequency response, and the step response."""
+    """Returns AC frequency-response and transient step-response analyses."""
     return Plan(
         {
             "bode": Ac("V1", decade(10 * kHz, 100 * MHz, 40)),
@@ -91,7 +91,7 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The Butterworth magnitude to a thousandth of a decibel, from 10 kHz to 10 MHz."""
+    """Returns Butterworth magnitude specs within 0.001 dB from 10 kHz to 10 MHz."""
     return Specs(
         [
             gain("bode", "out", at=frequency * Hz).within(butterworth(frequency), 1e-3)

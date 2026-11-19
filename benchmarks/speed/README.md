@@ -1,39 +1,41 @@
 # Speed
 
-The engine's speed is measured on a fixed set of circuits, the fixtures, so that every change can say what it does to it.
-`scripts/bench` times them, the speed suite of [the benchmarks](../README.md), in Rust and end to end in Python, writes the times by commit, and compares them with a baseline's.
-The benchmarks stay out of `scripts/check`, which must stay fast and deterministic.
+Engine runtime is tracked on a fixed set of circuit fixtures so every change shows its performance impact.
+`scripts/bench` runs the speed suite of [the benchmarks](../README.md) in Rust and end to end in Python, records commit timings, and compares against a baseline.
+Benchmarks stay outside `scripts/check`, which must remain fast and deterministic.
 
 ## Running
 
 ```sh
-scripts/bench                      # the suite: a few minutes, before and after a change
-scripts/bench bjt_amp buck         # only these fixtures
-scripts/bench --compare main,HEAD  # the builds of main and HEAD, their runs alternating, a change named only where it is decided
-scripts/bench --nightly DIR        # the checked-out commit's build against the previous night's, kept in DIR
-scripts/bench --scale              # the large fixtures, serially and spread over threads, in rounds, with concurrent copies and peak memory
-scripts/bench --scale --largest    # and the 50,000 inverters' chain on each number of threads too
+scripts/bench                      # full speed suite: several minutes, before and after a change
+scripts/bench bjt_amp buck         # selected fixtures only
+scripts/bench --compare main,HEAD  # interleaved comparison of main and HEAD with statistical verdicts
+scripts/bench --nightly DIR        # compare checked-out commit against the previous night's build in DIR
+scripts/bench --scale              # large fixtures, serial and multithreaded rounds, concurrent copies, and peak memory
+scripts/bench --scale --largest    # include the 50,000-inverter chain across every thread count
 scripts/bench --no-peak-memory     # skip isolated peak resident memory probes
 scripts/bench --scale --no-concurrent-copies  # skip N concurrent single-thread copy runs
 scripts/bench --scale --copy-rounds 5         # synchronized rounds for concurrent copies (default 3)
-scripts/bench --view matched       # every simulator on the fixtures, at matched options
-scripts/bench --view defaults      # every simulator on them, each at its own defaults
-scripts/bench --view equal-error   # every simulator's least time to equal error, on the precision suite's fixtures
-scripts/bench --view defaults --scale --xyce-mpi PATH  # the large fixtures, Xyce's parallel build on 1 to 16 ranks too
-scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
-scripts/bench --break-even min_unknowns_per_task  # from which size a threshold pays
+scripts/bench --view matched       # cross-simulator comparison at matched options
+scripts/bench --view defaults      # cross-simulator comparison at simulator defaults
+scripts/bench --view equal-error   # fastest runtime per simulator reaching equal error on precision fixtures
+scripts/bench --view defaults --scale --xyce-mpi PATH  # large fixtures including parallel Xyce on 1 to 16 ranks
+scripts/bench --baseline COMMIT    # compare against COMMIT instead of the latest recorded ancestor
+scripts/bench --break-even min_unknowns_per_task  # find minimum circuit size where a parallelism threshold pays off
 ```
 
-`scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, each with its runs, and prints them against a baseline's, each median with its 95% interval, naming a change only where the two intervals separate.
-The baseline is the newest ancestor of the checked-out commit whose times `results/` holds, unless `--baseline` names a commit or a results file; a time of a results file written before the runs were kept has no interval, so no change of it is named.
-A working tree with changes to tracked files writes `results/<commit>-dirty.json`, which is never taken as a baseline.
-A later run on the same commit adds its times to the file, so the suite, `--scale` and each view can each run once.
-The baseline ran at another time, under another load, so a change is decided by `--compare`, as [Deciding a change](#deciding-a-change) says.
+`scripts/bench` verifies that committed fixture files match their generator scripts, times the fixtures, and writes individual runs to `results/<commit>.json`.
+The summary prints each median with a 95% confidence interval against the baseline, reporting a change only when intervals do not overlap.
+The baseline defaults to the newest ancestor commit recorded in `results/`, unless `--baseline` specifies another commit or results file.
+Older results files written before individual run storage lack confidence intervals, so comparisons against them report no verdicts.
+A working tree with modifications to tracked files writes `results/<commit>-dirty.json`, which is never selected as a baseline.
+Subsequent invocations on the same commit merge new results into that file, allowing the default suite, `--scale`, and each view to run separately.
+The baseline ran earlier under different host load, so use `--compare` to establish a change conclusively (see [Deciding a change](#deciding-a-change)).
 
 ## Fixtures
 
-Each fixture is a circuit, in the circuit format in `circuits/`, and a plan of analyses in the engine's format in `plans/`, both written by the script beside the circuit, which builds it with jolty's own builder.
-Run a script from the repository root after changing it, such as `uv run python benchmarks/speed/circuits/bjt_amp.py`, and commit what it writes.
+Each fixture pairs a circuit in `circuits/` with an engine analysis plan in `plans/`, both generated by the companion Python script using jolty's builder.
+After editing a generator script, run it from the repository root (for example `uv run python benchmarks/speed/circuits/bjt_amp.py`) and commit the regenerated files.
 
 | Fixture | Circuit and plan | What it stresses | Timed by |
 | --- | --- | --- | --- |
@@ -46,35 +48,46 @@ Run a script from the repository root after changing it, such as `uv run python 
 | `rc_mesh_300` | The same mesh of 90,000 nodes | The same, on one large circuit | `--scale` |
 | `monte_carlo` | `bjt_amp`'s analyses on 100,000 samples of its resistors, each within 5% | Many runs of one circuit | the suite, its first 1,000 samples, in Rust as one batch and in Python; `--scale`, every one, in Python |
 
-The MOSFETs of a level 1 model each add three unknowns of their own, the displacements of their Meyer capacitances, so the chains of 500, 5,000 and 50,000 inverters solve for 3,504, 35,004 and 350,004 unknowns; the sparse solver eliminates the displacements before it factors, so it factors 504, 5,004 and 50,004 of them, and, with the currents through the buck's switches' 0.01 Ω drain and source resistances eliminated too, the buck's 13 of its 23.
-The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.1 at the transient's 800 points or so, more than the 2 the engine allows by default.
+Each level-1 MOSFET adds three internal unknowns for Meyer capacitance displacements, giving 3,504, 35,004, and 350,004 unknowns for the 500-, 5,000-, and 50,000-inverter chains.
+The sparse solver eliminates displacement unknowns before factorization, reducing factored dimensions to 504, 5,004, and 50,004.
+Eliminating currents through the 0.01 Ω drain and source resistances of the buck-converter switches similarly reduces the buck matrix from 23 unknowns to 13.
+Inverter-chain plans raise the result buffer limit to 4 GiB because the 50,000-inverter transient uses roughly 2.1 GiB across ~800 time points, exceeding the 2 GiB engine default.
 
 ## Deciding a change
 
-`scripts/bench --compare A,B` times the builds of the revisions `A` and `B` against each other, the suite's fixtures or those named.
-Each revision is built once, by `uv sync`, in a worktree of its own in `--builds`, `target/builds/<commit>` by default, with a target directory of its own, and a second build of the same commit in `<commit>-2`.
-Each run of a build takes a process of the build's own interpreter, which imports the build's jolty, as `timing.py` says, runs the fixture once to warm up and once more, as the Python timing does, and measures that run by the wall clock and by the processor time of every thread of its process.
-A process of its own for each run, its environment padded by a number of bytes drawn uniformly below a page, makes each run take another layout of its stack, its memory and its threads: where the stack begins, which the environment's size sets, can move a program's time by several percent (Mytkowicz, Diwan, Hauswirth and Sweeney, "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and two builds' processes differ in it, their interpreters' paths of different lengths, so these effects widen each build's interval rather than move its median.
-For each time of the suite, the two builds' runs alternate, round after round, each round in the reverse order of the one before, so that neither always follows the other, and the load average is read as each round begins and as it ends.
-A first round warms both up and is discarded.
+`scripts/bench --compare A,B` compares builds of revisions `A` and `B` across the default suite or selected fixtures.
+Each revision builds once via `uv sync` inside a dedicated worktree under `--builds` (`target/builds/<commit>` by default) with a separate Cargo target directory; a duplicate build of the same commit uses `<commit>-2`.
+Each build run spawns a subprocess using that build's Python interpreter to import the build's jolty package, following `timing.py`.
+The subprocess executes one warm-up run followed by one measured run, recording wall-clock time and total process CPU time across all threads.
+Running each sample in a fresh process with random sub-page environment padding varies stack, heap, and thread layouts across runs.
+Stack start addresses set by environment size can shift runtime by several percent (Mytkowicz, Diwan, Hauswirth, and Sweeney, "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009).
+Two builds naturally have different interpreter path lengths, so random padding turns layout bias into interval width rather than median shift.
+For each benchmark timing, the two builds alternate round by round, reversing execution order on every round so neither build consistently runs second.
+The runner records system load averages at the start and end of every round.
+The first round warms both builds and is discarded.
 
-Each time is the median of its rounds, with the interval that holds the true median with 95% confidence whatever the distribution of the runs: between the `k`-th smallest and the `k`-th largest run, `k` the largest rank whose binomial tails, of the runs on each side of the median, hold at most 5% together, as `measuring.rank` computes them exactly.
-Six runs are the fewest that have such an interval, the smallest and the largest of six holding the median with probability 1 − 2/2⁶, 96.9%, where five reach only 93.8%.
-A change is named only where the two builds' intervals separate.
-The resolution of a comparison is the least change at which the intervals would separate, the sum of their inner half-widths over the first build's median.
+Each reported timing is the round median accompanied by a distribution-free 95% confidence interval between the `k`-th smallest and `k`-th largest samples.
+The rank `k` is computed exactly by `measuring.rank` as the largest rank whose two-sided binomial tails sum to at most 5%.
+Six runs are the minimum needed for a 95% interval, where the extreme values bound the median with probability 1 − 2/2⁶ = 96.9% (five runs reach only 93.8%).
+A performance change is reported only when the two builds' confidence intervals do not overlap.
+Comparison resolution is the smallest shift that would separate the intervals, computed as the sum of inner half-widths divided by the first build's median.
 
-The rounds go on until there are six of them and they have taken five seconds for each build, criterion's least time per benchmark, and then until the comparison is decided: the intervals separate, or the resolution is 5% or less, the change `AGENTS.md` asks every change to account for.
-They stop at `--most-rounds`, 24 unless given, four times the fewest, which about halves the intervals as they narrow with the square root of the runs; a comparison stopped there undecided is marked so.
-Only the intervals' widths stop the rounds, never the change itself, so stopping favours no verdict.
+Rounds continue until at least six rounds complete and each build accumulates at least five seconds of runtime (Criterion's minimum benchmark window).
+Execution then continues until the intervals separate or resolution reaches 5% or tighter, matching the threshold `AGENTS.md` requires every change to account for.
+Sampling caps at `--most-rounds` (default 24, four times the minimum, roughly halving interval widths under square-root scaling); comparisons reaching that cap without deciding are marked `undecided`.
+Stopping depends strictly on interval width rather than effect size, preventing early-stopping bias.
 
-The table gives each time's medians and intervals by the wall clock and of the processor, the change, the resolution, the verdict, and the rounds with the least and most load average around them; it is printed, and written to `results/<A>..<B>.md` beside the results file, `results/<A>..<B>.json`, which holds every run and each round's loads.
-The break-evens' sweeps and `--scale` run their settings in the same rounds, each compared with the serial run.
+The comparison table reports wall and CPU medians, confidence intervals, percentage change, resolution, verdict, round count, and min/max load averages.
+The table prints to stdout and saves to `results/<A>..<B>.md` alongside `results/<A>..<B>.json`, which retains every sample and round load.
+Break-even sweeps and `--scale` use the same interleaved-round protocol against the serial baseline.
 
 ### Shown on `dogwood`
 
-On `dogwood`, an AMD Ryzen 9 7950X of 16 cores and 32 threads, on 16 November 2026, while other users' programs ran beside it, the comparison ran on two builds of one commit, `7488b6e`, built from the same source in two worktrees, where it must name no change.
-Timed as at first, by one process of each build kept for every round, at `fba9b0e`, from 20:33 to 20:36 UTC at a load average of 1.8 to 6.5, it named four changes by the wall clock, their intervals apart: `bjt_amp` −0.2%, the buck +3.0%, `rc_mesh_100` −6.3% and a Monte Carlo sample on one core +1.8%; and of the processor the same but the mesh's, +2.8%.
-Timed by a process a run, its environment padded, at `8702b11`, from 20:36 to 20:40 UTC at a load average of 1.6 to 9.1, it named none, each time's resolution by the wall clock 0.9% to 4.6%:
+On 16 November 2026, an A/A validation compared two separate worktree builds of commit `7488b6e` on `dogwood` (16-core, 32-thread AMD Ryzen 9 7950X) while other users ran workloads on the host.
+An unbiased comparison between identical builds must report zero changes.
+An earlier single-process-per-build harness (`fba9b0e`, 20:33 to 20:36 UTC, load 1.8 to 6.5) reported four false wall-clock shifts: `bjt_amp` −0.2%, `buck` +3.0%, `rc_mesh_100` −6.3%, and single-core Monte Carlo +1.8%.
+Process CPU time showed the same false positives except `rc_mesh_100` shifted +2.8%.
+With one environment-padded process per run (`8702b11`, 20:36 to 20:40 UTC, load 1.6 to 9.1), the A/A check reported zero changes at 0.9% to 4.6% wall-clock resolution:
 
 | Time | `7488b6e` | `7488b6e` again | Change | Resolution | Rounds |
 | --- | --- | --- | --- | --- | --- |
@@ -86,8 +99,9 @@ Timed by a process a run, its environment padded, at `8702b11`, from 20:36 to 20
 | `monte_carlo`, a sample on one core | 530.5 µs [525.1, 542.1] | 532.2 µs [523.2, 535.6] | +0.3% | 3.9% | 6 |
 | `monte_carlo`, a sample on every core | 29.78 µs [29.67, 29.96] | 29.75 µs [29.67, 29.85] | −0.1% | 0.9% | 16 |
 
-Then, from 20:40 to 20:45 UTC at a load average of 1.1 to 2.3, it ran on `7488b6e` against a build of it that spins 120 ns at each Newton iteration of a time step, never to land, a known slowdown: at least 120 ns times each fixture's transient iterations, as the engine counts them, plus the spin's own reads of the clock, 0.055 µs each on `dogwood`.
-It named the slowdown wherever it exceeded the resolution, and nothing where there was none:
+Next (20:40 to 20:45 UTC, load 1.1 to 2.3), an A/B check compared `7488b6e` against a throwaway build adding a 120 ns busy-spin per transient Newton iteration.
+The injected delay adds at least 120 ns per transient Newton iteration plus clock-read overhead (0.055 µs per read on `dogwood`).
+The comparator detected every slowdown exceeding measurement resolution and reported no false positives where slowdown was absent:
 
 | Time | Transient iterations | Least slowdown | Change | Resolution | Verdict |
 | --- | --- | --- | --- | --- | --- |
@@ -99,14 +113,17 @@ It named the slowdown wherever it exceeded the resolution, and nothing where the
 | `monte_carlo`, a sample on one core | each sample's | | +3.4% | 3.7% | |
 | `monte_carlo`, a sample on every core | each sample's | | +1.8% | 0.8% | slower |
 
-The buck's intervals, 777.8 to 810.4 ms and 834.1 to 862.2 ms, allow a change of +2.9% to +10.9%, around the spin's +5.0% and more; a Monte Carlo sample, whose transient spins too, was named slower on every core, where its interval is narrowest; the amplifier's +1.1% and a sample on one core lay below their resolution, as the comparison stated.
+The `buck` intervals (777.8 to 810.4 ms versus 834.1 to 862.2 ms) span a +2.9% to +10.9% shift, bracketing the injected +5.0% floor.
+Monte Carlo on all cores has the narrowest interval (0.8% resolution) and cleanly flagged the transient spin as slower.
+Both `bjt_amp` (+1.1%) and single-core Monte Carlo stayed below their resolutions, matching the reported verdicts.
 
 ### The nightly
 
-`scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's, the second build of the newest comparison in `DIR` but today's, as `--compare` does, and writes the comparison to `DIR/<date>/compare.json` and `compare.md`, beside the earlier nights'.
-On its first night it builds the commit twice, a comparison that must name no change.
-It then removes every build but tonight's, the next night's first.
-A checkout of its own, kept at `main` by the line that runs it, runs it each night from its user's crontab, nothing installed outside that user's home:
+`scripts/bench --nightly DIR` compares the checked-out commit against the previous night's build (the second build from the most recent prior entry in `DIR`) via `--compare`.
+Outputs go to `DIR/<date>/compare.json` and `DIR/<date>/compare.md` alongside earlier nightly results.
+On the first run in an empty directory, the script builds the commit twice as an A/A check that must report no change.
+Afterward, the script removes all older builds except tonight's build, keeping it ready as the next night's baseline.
+A dedicated checkout kept on `main` runs the nightly job from the user's crontab without requiring installations outside the home directory:
 
 ```sh
 0 3 * * * cd CHECKOUT && git fetch -q origin && git checkout -q --detach origin/main && scripts/bench --nightly "$HOME/jolty-nightly"
@@ -116,48 +133,55 @@ A checkout of its own, kept at `main` by the line that runs it, runs it each nig
 
 | Time | What it measures |
 | --- | --- |
-| `rust/<fixture>/setup` | Criterion's median of a setup: the circuit read from its JSON text and elaborated, into a simulator ready to run. |
-| `rust/<fixture>/shared` | Criterion's median of a setup from the circuit elaborated once and shared, as each of many runs of one circuit makes it: its devices made again, and a run's buffers. |
-| `rust/<fixture>/run` | Criterion's median of a run: the setup, then every analysis of the plan in order. |
-| `rust/monte_carlo/<n> samples, <t> threads` | Criterion's median of the fixture's first `n` samples run as one batch, per sample: drawn from their indices and run on the circuit elaborated once, on a pool of `t` threads, for 1, 2, 4 and 8 threads and every core, as far as there are cores. |
-| `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. Each run's wall and processor seconds are kept, and the load average as the runs began and ended. |
-| `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, run as the runner runs them, as one batch of `Simulation.batch` on the circuit elaborated once, each sample drawn by the engine from its index, the one elaboration counted: on a pool of one thread, and of a thread per core. The suite runs the first 1,000, and `--scale` all of them, on every core. |
-| `<view>/jolty/<fixture>` | In the view `matched` or `defaults`, the median of at least ten runs over at least five seconds, after one to warm up, of the fixture's circuit elaborated by `Simulation` and every analysis run by `Simulation.run`, at the view's options. |
-| `<view>/ngspice-sparse/<fixture>`, `<view>/ngspice-klu/<fixture>` | The same of ngspice 47 in batch mode on the fixture's netlist as jolty writes it, with Sparse 1.3 or with KLU, its analyses run in turn in one ngspice, saving two nets at each end of the circuit's top: from its start to its exit, so its start-up and the parsing of its netlist count. |
-| `<view>/xyce-serial/<fixture>`, `<view>/xyce-mpi/<n> ranks/<fixture>` | The same of Xyce on the fixture's netlist in Xyce's dialect, each analysis in an Xyce of its own, printing the same nets: from its start to its exit, summed over the analyses; serially, or by its parallel build on `n` MPI ranks. |
-| `<view>/.../analysis` | The same runs' time in their analyses alone: jolty's `Simulation.run`, the engine's work and its results made in Python, its elaboration left out; ngspice's "Total analysis time" of `rusage`; Xyce's "Total Simulation Solvers Run Time", summed over the analyses. |
+| `rust/<fixture>/setup` | Criterion median time to parse the circuit JSON and elaborate it into a runnable simulator. |
+| `rust/<fixture>/shared` | Criterion median time to instantiate fresh devices and run buffers from an already elaborated shared circuit, as used in batch runs. |
+| `rust/<fixture>/run` | Criterion median time for setup followed by every analysis in the fixture plan in order. |
+| `rust/monte_carlo/<n> samples, <t> threads` | Criterion median time per sample for the first `n` samples executed as one batch on a pre-elaborated circuit. Runs scale across 1, 2, 4, 8, and all-core thread pools as available. |
+| `python/<fixture>` | Median of at least ten runs over at least five seconds after one warm-up, covering `Simulation` elaboration and `Simulation.run` with Python result objects. Operating points and transients also record rated instances for checks, logging wall time, CPU time, and load averages. |
+| `python/monte_carlo/<n> samples, one core`, `..., every core` | Per-sample time for the first `n` samples executed via `Simulation.batch` on one thread or one thread per core, including one-time elaboration. The default suite runs 1,000 samples, while `--scale` runs all 100,000 on every core. |
+| `<view>/jolty/<fixture>` | Median of at least ten runs over at least five seconds after one warm-up in `matched` or `defaults` views. Covers `Simulation` elaboration and `Simulation.run` under view options. |
+| `<view>/ngspice-sparse/<fixture>`, `<view>/ngspice-klu/<fixture>` | Median of at least ten runs over at least five seconds for batch-mode ngspice 47 (Sparse 1.3 or KLU) on exported netlists. All analyses run sequentially in one process saving two top-level boundary nets, timed from start to exit. |
+| `<view>/xyce-serial/<fixture>`, `<view>/xyce-mpi/<n> ranks/<fixture>` | Median time for Xyce on Xyce-dialect netlists, running each analysis in a separate process and printing the same boundary nets. Total time sums start-to-exit wall times across analyses, serially or across `n` MPI ranks. |
+| `<view>/.../analysis` | Analysis-only subset of the same runs: jolty `Simulation.run` (omitting elaboration), ngspice `rusage` "Total analysis time", and summed Xyce "Total Simulation Solvers Run Time". |
 
-Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up; each sample's time per run is kept as a run's, the median of which is criterion's own.
-The Python timings follow the same protocol, and so do the views'.
-Beside the times, the suite runs each fixture with a transient once more with the option `profile` on, and writes the transient's statistics' `work` and `profile`: its Newton iterations and factorizations, and where its time went.
+Criterion collects ten samples over five seconds after a one-second warm-up, storing per-run sample times whose median is the reported value.
+Python timings and cross-simulator views follow the same sampling protocol.
+In addition to timing, the suite runs each transient fixture once with `profile` enabled and records transient `work` (Newton iterations and factorizations) and `profile` phase breakdowns.
 
 ## Every simulator, in three views
 
-`scripts/bench --view` times every simulator instead, jolty, ngspice 47 with Sparse 1.3 and with KLU, and Xyce 7.10 serially, each that is installed or those `--simulator` names, in the three views the owner set, and prints each view's table, a row per fixture and a column per simulator, which goes to `results/<commit>/<view>.md` beside the results file too:
+`scripts/bench --view` benchmarks jolty, ngspice 47 (Sparse 1.3 and KLU), and serial Xyce 7.10 (for installed or `--simulator`-selected tools) across three comparison views.
+The runner prints a fixture-by-simulator table for each view and writes a copy to `results/<commit>/<view>.md` alongside the JSON results file:
 
 | View | What each simulator runs at | Where its table comes from |
 | --- | --- | --- |
-| `matched` | Options as tight as jolty's tightest: jolty at `jolty.plan.TIGHT`, ngspice at `jolty.spice.ngspice.OPTIONS`, Xyce at `jolty.spice.xyce.OPTIONS`, which the table's first row states | The fixtures here, every simulator's runs |
-| `defaults` | Its own defaults: no options line, but ngspice's `.options klu` with KLU | The same |
-| `equal-error` | Each setting of the precision suite's sweeps, its least time to the same correct digits of an exact answer | [The precision suite](../precision/README.md)'s fixtures, run as `--precision` runs them, or the results file `--plot` names |
+| `matched` | Matched tight options (`jolty.plan.TIGHT`, `jolty.spice.ngspice.OPTIONS`, `jolty.spice.xyce.OPTIONS`), stated in the table's first row | Speed-suite fixtures executed across simulators |
+| `defaults` | Simulator default options with no `.options` line (except `.options klu` for `ngspice-klu`) | Speed-suite fixtures executed across simulators |
+| `equal-error` | Fastest runtime reaching equal significant correct digits across precision tolerance sweeps | [Precision suite](../precision/README.md) fixtures run via `--precision` or loaded via `--plot` |
 
-Every simulator runs each fixture at the temperature where its thermal voltage is jolty's, as `jolty.spice` runs them, so the simulators differ by their devices rather than their physical constants.
-Each cell gives the median time end to end, then in its analyses alone, and how far each analysis lay from jolty's run at the matched options, the reference: the largest difference over the nets read, two at each end of the circuit's top, as a fraction of the reference's largest magnitude or, in a transient, of its swing, with transient references interpolated at the simulator's points by Huynh (1993) non-oscillatory cubic Hermite interpolation so coarse steps over smooth extrema do not inject linear chord sag while switching corners stay free of overshoot.
-That says whether two simulators found the same solution, the condition for comparing their times; it is no error, as no simulator's run is an exact answer.
-Where jolty fails at the matched options, there is no reference, and each cell says so.
-A simulator whose run fails, or runs past `--timeout`, 300 s unless given, is marked with what stopped it: the first line of its message, the lines of what the simulator printed that say what went wrong, and how far an Xyce transient came; its row is never dropped.
-The results file holds every cell under `views`, by view, simulator and fixture, and the times among the others, so a view's times are compared with a baseline's as every time is.
-The equal-error view's target is `--digits`, or, on each output, the most digits that every simulator that runs the fixture reached; each simulator's time is its precision suite's engine time, of its fastest run that reached the target, beside that run's setting, and a simulator that never reached it is marked with the most it did.
+Every simulator runs at the temperature matching jolty's thermal voltage via `jolty.spice`, isolating device-model differences from physical-constant differences.
+Each view cell reports median end-to-end time, analysis-only time, and deviation from the matched-options jolty reference across two nets at each end of the top-level circuit.
+Deviations normalize by maximum reference magnitude (or peak-to-peak swing for transients).
+Transient references are interpolated at simulator time points via Huynh (1993) non-oscillatory cubic Hermite interpolation, avoiding linear chord sag at smooth extrema while keeping switching corners overshoot-free.
+Deviation confirms whether two simulators reached the same solution before comparing runtimes; it is not an accuracy metric because no simulator serves as an exact reference.
+When jolty fails at matched options, no reference exists and each cell reports that explicitly.
+Simulators that fail or exceed `--timeout` (default 300 s) stay in the table annotated with the failure reason instead of being dropped.
+Annotations record the first error line, key diagnostic lines, and how far an Xyce transient progressed before halting.
+Results store every cell under `views` (keyed by view, simulator, and fixture) and record view timings alongside suite timings for baseline comparisons.
+The equal-error view targets `--digits`, or else the highest digit count achieved on each output by every participating simulator.
+Each cell shows the fastest precision-suite engine time meeting the target together with its tolerance setting, or reports the highest digit count reached if the target was missed.
 
-A machine's clock decides where the views can run.
-ngspice reads it 1,553,155 times in the buck's 195,852 Newton iterations, about eight times an iteration, for the statistics `rusage` prints, as callgrind counted its calls to `clock_gettime` on `elm` on 16 November 2026.
-On `dogwood` a read takes 0.055 µs, from the processor's time-stamp counter, and on `cedar` 1.375 µs, from the HPET, its kernel's only clock source but the ACPI timer, as Python's `time.perf_counter` measured over 300,000 calls each: so ngspice's buck took 2.25 s on `cedar` and 0.21 s on `dogwood`, the same 56,605 time points and 195,852 iterations on each, the same binary, and equally with `OMP_NUM_THREADS=1`.
-`cedar` times jolty's engine, which reads no clock unless its option `profile` is on, but no simulator that reads it in its loop, and no profile: ngspice's and Xyce's columns, and the profiles, come from `dogwood`.
+Host clock-source latency determines which machines can run cross-simulator views accurately.
+During `buck`'s 195,852 Newton iterations, ngspice called `clock_gettime` 1,553,155 times (roughly eight calls per iteration) for `rusage` accounting, as measured by callgrind on `elm` on 16 November 2026.
+Measuring 300,000 calls to Python's `time.perf_counter` showed 0.055 µs per read via TSC on `dogwood` versus 1.375 µs via HPET on `cedar` (where HPET and ACPI are the only kernel clock sources).
+Consequently, the identical ngspice binary with identical 56,605 time points and 195,852 iterations (including `OMP_NUM_THREADS=1`) took 2.25 s on `cedar` versus 0.21 s on `dogwood`.
+Accordingly, `cedar` times unprofiled jolty engine runs (which never query the clock inside the solver loop), while ngspice, Xyce, and profiled runs are measured on `dogwood`.
 
 ## Baseline
 
-The baseline is commit `798b73d`, whose times `results/798b73d4b40d2e7cdd04c7f9a838705d1b8ae471.json` holds.
-It was measured on an Apple M2 Max of 12 cores, 8 for performance and 4 for efficiency, on one socket, with 32 GB of memory, under macOS 27.2, with Rust 1.100.0 and Python 3.15.2, while other programs ran at a load average of 4 to 6.
+The original baseline is commit `798b73d`, stored in `results/798b73d4b40d2e7cdd04c7f9a838705d1b8ae471.json`.
+Measurements ran on a single-socket 12-core Apple M2 Max (8 performance, 4 efficiency, 32 GB RAM, macOS 27.2) under background load averages of 4 to 6.
+Software versions were Rust 1.100.0 and Python 3.15.2.
 
 | Fixture | Rust setup | Rust run | Python | ngspice |
 | --- | --- | --- | --- | --- |
@@ -175,21 +199,22 @@ The large fixtures, each run once:
 | `inverter_chain_50000` | 337.3 s | 409 s |
 | `rc_mesh_300` | 21.57 s | 857.4 s |
 
-A sample of `monte_carlo` takes 932.2 µs on one core, 1,073 samples a second, and 401.5 µs on every core, 2,491 a second: 2.3 times as fast on 12 cores, a parallel efficiency of 19%.
-All 100,000 samples, on every core, take 379 µs each, 37.9 s in all.
-A sample costs less than `bjt_amp`'s own run: Newton iteration alone finds 196 of the first 200 samples' operating points, where the nominal circuit's needs gmin stepping, and their transients take 142 Newton iterations on average, against its 254.
+A `monte_carlo` sample takes 932.2 µs on one core (1,073 samples/s) and 401.5 µs across all cores (2,491 samples/s), achieving 2.3× speedup and 19% parallel efficiency on 12 cores.
+All 100,000 samples across every core average 379 µs each (37.9 s total).
+Each Monte Carlo sample runs faster than nominal `bjt_amp`: plain Newton converges on 196 of the first 200 operating points (whereas nominal needs gmin stepping), and transients average 142 Newton iterations versus 254.
 
-The suite took 3 min 14 s, the benchmarks already built, and the `--scale` run 13 min 53 s.
-Run six times over an hour on the same engine, three times at this commit and three at an earlier one that differs only in `perf/`, each time but two spread by at most 5.6% from its fastest run to its slowest: `rc_mesh_100`'s Rust run by 9.8%, and the Monte Carlo samples on every core, which compete with every other program for the cores, by 19%.
-The baseline's own run was among the slower: the last run at this commit was faster in every time, by 0.6% to 4.4% but for those two.
-On a machine shared with other work, a change of a few percent is within the noise, which is why a change is named only where two intervals separate, and decided by `--compare`.
+With prebuilt binaries, the default suite took 3 min 14 s and `--scale` took 13 min 53 s.
+Across six runs over an hour on the same engine (three at this commit and three at an earlier commit differing only in `perf/`), all metrics except two stayed within 5.6% min-to-max spread.
+The two wider metrics were `rc_mesh_100` Rust runtime (9.8% spread) and all-core Monte Carlo (19% spread due to shared-host CPU contention).
+The recorded baseline happened to be among the slower runs: the final run at the same commit was 0.6% to 4.4% faster on every metric except those two.
+On a shared machine, small single-digit shifts sit within measurement noise, which is why verdicts require non-overlapping intervals via `--compare`.
 
-The engine is built twice from the same code, into the benchmark and into the Python extension, and the two builds differ: `buck`'s run takes 6% to 9% longer in the benchmark's.
-So each kind of time is compared only with its own.
+The engine compiles separately into the Criterion benchmark binary and the Python extension, producing slight build differences (`buck` runs 6% to 9% slower in the Rust benchmark build).
+Each measurement category is therefore compared strictly against matching measurements of the same kind.
 
 ### Where the time goes
 
-Each transient, run once with its profile on, spent its time and did its work as follows; the rest is preparing and everything else.
+Running each transient once with profiling enabled produced the time breakdowns and solver counts below, with remaining time spent on preparation and overhead.
 
 | Transient | Time | Evaluating | Assembling | Factoring | Solving | Step control | Recording | The rest | Newton iterations | Factorizations, refactorizations, fallbacks, reuses |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -201,49 +226,57 @@ Each transient, run once with its profile on, spent its time and did its work as
 | `inverter_chain_50000/tran` | 351.6 s | 69% | 8% | 11% | 8% | 3% | 0% | 1% | 7,812 | 2, 8,532, 60, 15 |
 | `rc_mesh_300/tran` | 20.66 s | 13% | 1% | 78% | 5% | 3% | 0% | 0% | 169 | 1, 53, 0, 202 |
 
-`bjt_amp`'s transient starts from the operating point the plan's first analysis solved, so it makes no full factorization; it records its transistors, rated for a current and a power, at every point.
-A Newton iteration of `inverter_chain_500` takes 0.39 ms, two thirds of it in evaluating the devices; of `inverter_chain_50000`, 45 ms, a hundred and fifteen times as long for a hundred times the inverters.
-The meshes' transients factor a new matrix only when the step changes, 54 times, and spend most of their time doing so: a factorization of the larger mesh takes 33 times as long as one of the smaller, for 9 times the nodes.
+The `bjt_amp` transient starts from the preceding operating-point factorization (requiring zero full factorizations) and records rated transistors at every time point.
+One Newton iteration takes 0.39 ms on `inverter_chain_500` (two-thirds in device evaluation) and 45 ms on `inverter_chain_50000` (115× longer for 100× more inverters).
+Mesh transients factor a new matrix only on the 54 step-size changes and spend most runtime factoring; one `rc_mesh_300` factorization takes 33× longer than `rc_mesh_100` for 9× more nodes.
 
 ### Against the plan's starting point
 
-The many-cores plan's figures came from a two-core machine, on circuits of their own, before the sparse solver became KLU's and before the step control changed; this baseline replaces them.
-jolty's level 1 MOSFETs now carry their Meyer displacements as unknowns, so 500 inverters solve for 3,504 unknowns, where the plan's solved for 504.
-ngspice keeps 52,982 points of `buck`'s 2 ms, where jolty accepts 122,587 steps and rejects 32,900, and takes a fifth of jolty's time.
-It takes two fifths of jolty's time on the chain of 500 inverters and half on the chain of 5,000, but a fifth more on the chain of 50,000, and, with its default sparse solver, Sparse 1.3, 17 and 40 times jolty's on the meshes.
+Figures in the many-cores plan came from a two-core host on separate circuits before adopting KLU and updated step control, so this baseline supersedes them.
+Level-1 MOSFETs now include Meyer displacement unknowns, expanding the 500-inverter chain from 504 to 3,504 unknowns.
+On `buck` (2 ms), ngspice stores 52,982 points and finishes in one-fifth of jolty's time, whereas jolty accepts 122,587 steps and rejects 32,900.
+ngspice takes two-fifths of jolty's runtime on 500 inverters and half on 5,000 inverters, but runs 20% slower than jolty on 50,000 inverters.
+With default Sparse 1.3, ngspice takes 17× and 40× longer than jolty on the 100×100 and 300×300 meshes.
 
 ## One run spread over threads
 
-A run spreads each kind of its work over the engine's threads in tasks of at least its threshold of `Parallelism`, once the work fills such a task for every thread, as [the guide](../../docs/guide/simulation.md#options) says, and no fixture's plan sets one, so the suite times each fixture with every threshold at its default, its break-even below.
+A simulation parallelizes each work category across threads once work reaches at least one `Parallelism` threshold chunk per thread (see [the guide](../../docs/guide/simulation.md#options)).
+Fixture plans leave thresholds unset, so the suite runs with the measured break-even defaults below.
 
 ### Break-evens
 
-`scripts/bench --break-even NAME` measures from which size of circuit setting the threshold `NAME` makes one run faster than running it serially.
-It sweeps circuits of the fixtures' scripts at several sizes: chains of inverters and meshes for the three thresholds a transient reads, and `ac_wide`'s response at fewer frequencies a decade for `min_solves_per_task`.
-Each circuit runs its fixtures' plan serially, on one thread with every threshold set to spread none of its work, a task of all of its solves, devices or unknowns and interiors as large as the circuit, and with the threshold set and the others still spreading none, on 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each spread run compared with the serial run.
-Alternating the order keeps any run from always following the same one: on `cedar`, the median of a serial run of the mesh of 50 a side was 261 ms when it always followed one on 64 threads and 225 ms when it followed one on 2, though none dissected the mesh.
-Each time is the median of its rounds, printed beside the number of rounds and the least and most load average around them, and each spread run's change marked `<` where its interval lies below the serial run's, `>` above, and `?` where the two neither separate nor resolve 5%.
-A run with the threshold set must find the bits of the serial run, or the sweep stops, but for a dissection: its interiors, of a size for each number of threads, order the factorization otherwise.
-`--sizes` and `--threads` sweep other sizes and threads, and naming a script, such as `inverter_chain`, sweeps its circuits alone.
+`scripts/bench --break-even NAME` finds the smallest circuit size where enabling parallelism threshold `NAME` outperforms serial execution.
+The command sweeps scaled versions of fixture circuits: inverter chains and RC meshes for the three transient thresholds, and `ac_wide` with varying frequencies per decade for `min_solves_per_task`.
+Each circuit runs both serially (one thread with all parallelism thresholds disabled) and with the target threshold enabled alone on 2, 4, 8, and all available threads.
+Comparisons follow the interleaved-round protocol of [Deciding a change](#deciding-a-change) against the serial baseline.
+Reversing round order prevents run-order bias between thread configurations.
+On `cedar`, a serial 50×50 mesh run took 261 ms when always following a 64-thread run versus 225 ms after a 2-thread run, even with zero dissection.
+Each entry prints the round median, round count, and min/max load averages.
+Parallel runs are marked `<` when intervals lie below serial, `>` when above, and `?` when neither separated nor resolved within 5%.
+Parallel runs must match serial output bit for bit or the sweep halts, except under nested dissection where thread-dependent interior sizes change factorization ordering.
+The `--sizes` and `--threads` flags customize sweep grids, and passing a script name such as `inverter_chain` restricts the sweep to that circuit family.
 
-On each number of threads, the threshold is set at each size so that it spreads the circuit's work over every thread, however small the circuit:
+At every thread count and circuit size, the sweep sets the tested threshold to distribute work across all threads regardless of circuit size:
 
-| Threshold | Set to | So that |
+| Threshold | Value during sweep | Effect |
 | --- | --- | --- |
-| `min_instances_per_task` | the circuit's devices over the threads, rounded down | each group of its devices evaluates in a task a thread, but a linear group, whose devices are evaluated once a run, in one |
-| `min_unknowns_per_task` | its unknowns over the threads, rounded down | its work on each unknown spreads in a task a thread, in whole chunks of 1,024 |
-| `max_unknowns_per_interior` | its unknowns over the threads, rounded up | its matrix's block is dissected into an interior a thread or more, where that costs fewer multiply-adds than the minimum degree |
-| `min_solves_per_task` | its solves, its frequencies but the first, over the threads, rounded down | its frequencies are solved in a task a thread |
+| `min_instances_per_task` | Total devices divided by threads, rounded down | Evaluates each nonlinear device group in one task per thread (linear groups run once serially) |
+| `min_unknowns_per_task` | Total unknowns divided by threads, rounded down | Splits per-unknown work into one task per thread in whole 1,024-unknown chunks |
+| `max_unknowns_per_interior` | Total unknowns divided by threads, rounded up | Dissects the matrix block into at least one interior per thread when cheaper in multiply-adds than minimum degree |
+| `min_solves_per_task` | Remaining frequency solves (after the first) divided by threads, rounded down | Solves frequencies in one task per thread |
 
-The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster, its interval below the serial run's.
-Its value is the value the threshold was set to there: a task's solves, devices or unknowns, or an interior's most unknowns.
-Set to it, a threshold of tasks spreads a circuit of that size over every thread in tasks as large as there, and a larger one in tasks as large or larger, but spreads none of a smaller one's work, which would make fewer tasks than threads, an arrangement the sweep does not measure; an interior's most unknowns dissects a smaller circuit's block into fewer interiors than threads, where that still costs fewer multiply-adds.
+At a given thread count, the break-even point is the smallest swept size from which every tested larger size also beats serial execution with non-overlapping intervals.
+The recorded break-even value is the threshold used at that size: per-task solves, devices, or unknowns, or maximum unknowns per interior.
+Configured at that break-even value, a task threshold parallelizes circuits at or above the break-even size across all threads while keeping smaller circuits serial rather than spawning underfilled thread pools.
+For `max_unknowns_per_interior`, smaller circuits still dissect into fewer interiors than threads whenever nested dissection lowers multiply-add counts.
 
-The sweeps ran on `cedar`, an AMD Ryzen Threadripper 3970X of 32 cores and 64 threads, with the engine of the change that set the defaults below, on 16 November 2026 from 05:58 to 07:02 UTC, while another user's program kept one core busy: the load average, the measurement's own threads included, was 1.4 to 37 on the 64 threads.
-A chain's block is never dissected, its nested dissection costing three to four times the minimum degree's multiply-adds, so `max_unknowns_per_interior` swept chains of 10, 100 and 500 inverters alone; and `min_unknowns_per_task` swept chains of 100, 500, 1,000 and 2,000, its chain of 5,000 stopped for time, a chain's transient having doubled its steps since a step's charges are held to SPICE's charge tolerance.
-Each change is a spread run's time against the serial run's, at the smallest size from which every larger one gained too, and at the size below it; the load is the load average as that size's rounds began and as they ended.
+Break-even sweeps ran on `cedar` (32-core, 64-thread AMD Ryzen Threadripper 3970X) on 16 November 2026 from 05:58 to 07:02 UTC using the commit setting the defaults below.
+Another user's job occupied one core, putting total load average (including measurement threads) at 1.4 to 37 across 64 threads.
+Inverter chains never dissect because nested dissection costs 3× to 4× more multiply-adds than minimum degree, so `max_unknowns_per_interior` swept only 10, 100, and 500 inverters.
+The `min_unknowns_per_task` sweep covered 100, 500, 1,000, and 2,000 inverters, omitting 5,000 for runtime after SPICE charge tolerance doubled chain step counts.
+Reported changes compare parallel versus serial runtime at the break-even size and the next smaller size, with load averages spanning the break-even rounds.
 
-| Threshold | Circuits | Threads | Pays from | There | Below | Break-even | Load |
+| Threshold | Circuits | Threads | Pays from | At break-even | Below | Break-even | Load |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `min_solves_per_task` | `bjt_amp`'s response | 2 | 1,111 a decade, 9,999 solves | -3.3% | +0.9% at 500 | 4,999 | 3.42 to 3.44 |
 | `min_solves_per_task` | `bjt_amp`'s response | 4 | 5 a decade, 45 solves | -0.4% | +1.8% at 2 | 11 | 6.81 to 5.17 |
@@ -270,17 +303,26 @@ Each change is a spread run's time against the serial run's, at the smallest siz
 | `min_unknowns_per_task` | meshes | 8 | 300 a side, 90,001 unknowns | -1.2% | +3.6% at 100 | 11,250 | 5.01 to 2.03 |
 | `min_unknowns_per_task` | meshes | 64 | 300 a side, 90,001 unknowns | -0.7% | +19.2% at 100 | 1,406 | 5.01 to 2.03 |
 
-A threshold left unset takes its break-even measured on the most threads a run may use or fewer, and spreads none of its work where no size of a script paid, as `jolty.plan.BREAK_EVENS` holds them; `max_unknowns_per_interior`, which orders the factorization and so its results' last digits, takes its break-even on the threads likewise, and none on one: `min_solves_per_task` 4,999, 11, 11 and 4 on 2, 4, 8 and 64 threads, `min_instances_per_task` none, 250, 125 and none, `min_unknowns_per_task` none on every number, and `max_unknowns_per_interior` 5,001, 2,501, 1,251 and 157.
-Interiors of 5,001, the largest, the mesh of 100 a side's break-even on 2 threads, made its run 51% slower on 64 threads of `cedar` than serially, so the interiors too depend on the threads, and a run on another number finds other last digits wherever it dissects a block.
-A mesh's devices are linear, evaluated once a run, for their entries: in a first sweep, whose rounds kept one order, which favoured the spread runs, spreading their rows lost at 100 a side on every number of threads, by 1.0% to 12.5%, and gained at 300 a side by 4.0% at most, so a linear device counts no instance toward `min_instances_per_task`, a mesh's evaluation stays on its run's thread, and the sweep measures chains alone.
-A chain's devices spread paid on 4 and 8 threads, in tasks of 250 and 125 MOSFETs, but on no chain up to 1,000 inverters on 2 threads, where a task took each group of MOSFETs whole, or on 64 in tasks of 31.
-On 2 threads the amplifier's frequencies paid from 9,999 alone: two tasks of 2,250 lost 0.9% at 500 a decade, where tasks of 900 had gained 22.6% at 200, as the solves at closer frequencies, which keep their pivots, cost less each.
-A chain's block is never dissected, so its runs with `max_unknowns_per_interior` set did the serial run's work, and lay within 0.3% of it on every number of threads, the 0.0% of 500 inverters on 64 threads counting as a gain; a mesh's block is dissected from 100 a side at every size of interior swept, and at 70 a side only into interiors of 313 or fewer, where it lost on 64 threads; dissected into interiors of a 64th of its unknowns, the mesh of 300 a side ran 5.2 times as fast on 64 threads as serially.
-The work on each unknown spread lost on every chain up to 2,000 inverters, by 8.0% to 39.9% at 2,000, and gained on the mesh of 300 a side alone, by 0.7% to 1.2%, so it spreads by default on no number of threads, as a chain would lose where a mesh barely gains.
+Unset thresholds inherit the break-even measured for the highest thread count not exceeding the run's thread limit (`jolty.plan.BREAK_EVENS`), staying serial where no tested size paid off.
+The same lookup sets `max_unknowns_per_interior` (which affects factorization ordering and last-digit rounding) to disabled on one thread.
+Defaults for 2, 4, 8, and 64 threads are `min_solves_per_task` = (4,999, 11, 11, 4), `min_instances_per_task` = (none, 250, 125, none), `min_unknowns_per_task` = none everywhere, and `max_unknowns_per_interior` = (5,001, 2,501, 1,251, 157).
+Using 5,001-unknown interiors (the 2-thread break-even for a 100×100 mesh) ran 51% slower than serial on 64 threads of `cedar`.
+Interior limits therefore scale with thread count, meaning dissected circuits can differ in last floating-point digits across thread counts.
+Mesh devices are linear and evaluate once per run: an initial fixed-order sweep (which favored parallel runs) lost 1.0% to 12.5% at 100×100 across all thread counts and gained at most 4.0% at 300×300.
+Linear devices therefore do not count toward `min_instances_per_task`, keeping mesh evaluation single-threaded while sweeping inverter chains alone.
+Parallel device evaluation paid off on chains at 4 and 8 threads (250- and 125-MOSFET tasks), but never paid off up to 1,000 inverters on 2 threads (whole-group tasks) or 64 threads (31-MOSFET tasks).
+On 2 threads, amplifier frequency sweeps paid off only from 9,999 solves.
+Tasks of 2,250 lost 0.9% at 500 frequencies per decade, whereas tasks of 900 gained 22.6% at 200 per decade because closely spaced frequencies reuse pivots cheaply.
+Inverter chains never dissect, so `max_unknowns_per_interior` runs stayed within 0.3% of serial on every thread count (counting the −0.0% at 500 inverters on 64 threads as a gain).
+RC meshes dissect starting at 100×100 for every swept interior bound, and at 70×70 only at ≤313 unknowns per interior (which lost on 64 threads).
+Dissecting the 300×300 mesh into 1/64th-size interiors ran 5.2× faster than serial on 64 threads.
+Parallel per-unknown work slowed every chain up to 2,000 inverters by 8.0% to 39.9% and gained only 0.7% to 1.2% on the 300×300 mesh.
+Per-unknown parallelism therefore stays disabled by default across all thread counts.
 
 ### The suite at the defaults
 
-Each fixture of the suite but `monte_carlo`, whose batches run each run on one thread, ran serially, on one thread with no block dissected, and at the defaults, alternately, round after round, by `bench.interleaved`, on 16 November 2026: on `cedar` on its 64 threads at 07:24 UTC, the load average at 1.2 to 2.2, and on this baseline's Apple M2 Max on 4 of its 12 cores at 07:24 UTC, while other programs kept the load average at 4 to 7; each time is the median of its rounds.
+All default-suite fixtures except `monte_carlo` (whose batch runs already execute single-threaded per sample) ran interleaved between serial undissected mode and default parallelism via `bench.interleaved` on 16 November 2026 at 07:24 UTC.
+Medians were collected on `cedar` (64 threads, load 1.2 to 2.2) and on the baseline Apple M2 Max (4 of 12 cores, load 4 to 7).
 
 | Fixture | `cedar`, serially | `cedar`, defaults | Change | M2 Max, serially | M2 Max, defaults | Change |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -290,39 +332,45 @@ Each fixture of the suite but `monte_carlo`, whose batches run each run on one t
 | `inverter_chain_500` | 8.362 s | 8.358 s | -0.0% | 5.331 s | 3.217 s | -39.7% |
 | `rc_mesh_100` | 1.627 s | 1.274 s | -21.7% | 1.122 s | 482.6 ms | -57.0% |
 
-Every fixture found the serial run's bits but `rc_mesh_100`, which the defaults dissect, its 109 points the same and its voltages within 2.1e-15 V of the serial run's.
-On 64 threads a chain's devices and its work on each unknown stay on one thread, their break-evens none there, and `bjt_amp`'s 71 frequencies fill no task of 4 for each of 64 threads; on 4, they fill tasks of 11, which lost 4.1% of the amplifier's run on the M2 Max, where they gained on `cedar`'s 4 threads from 45 solves.
+Every fixture except `rc_mesh_100` matched serial bits identically; dissected `rc_mesh_100` kept the same 109 time points within 2.1e-15 V of serial.
+On 64 threads, chain device evaluation and per-unknown work stay serial (no break-even), and `bjt_amp`'s 71 frequencies cannot fill 4-solve tasks for all 64 threads.
+On 4 threads, those 71 frequencies fill 11-solve tasks, costing 4.1% on the M2 Max even though `cedar` gained on 4 threads from 45 solves.
 
 ### Scaling
 
-`scripts/bench --scale` runs each large fixture serially, on one thread with no block of its matrix dissected, and with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each compared with the serial run.
-The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Max, so it runs them only with `--largest`, and else once at the defaults; `--threads` names other numbers of threads.
-It prints each run's time, its speed-up against the serial run and against the spread run on one thread, the makespan of N independent single-thread copies run concurrently with its attainable speed-up and throughput efficiency, each row's isolated peak resident memory, and its results' digest, the first 16 hexadecimal digits of the SHA-256 of their arrays.
-The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.
-The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, the digests, each timing's optional `peak_memory_bytes`, and each fixture's concurrent-copy measurements under `copies`.
+`scripts/bench --scale` compares serial undissected execution against default `Parallelism` settings on 1, 2, 4, 8, and all-core thread counts for each large fixture.
+Runs use the interleaved rounds of [Deciding a change](#deciding-a-change), comparing every thread count against the serial run.
+The `inverter_chain_50000` sweep took 17 minutes on a 12-core M2 Max, so `--scale` runs it once at defaults unless `--largest` is passed; `--threads` selects custom thread counts.
+The output prints each run's time, speedups against serial and 1-thread runs, and concurrent-copy makespan with attainable speedup and throughput efficiency.
+Each row also prints isolated peak resident memory and a 16-hex-digit SHA-256 digest of output arrays.
+Parallel runs must match the serial digest bit for bit or `--scale` aborts, except when total unknowns exceed the smallest interior break-even and nested dissection alters ordering.
+Results store the serial time under `python/<fixture>`, parallel timings under `python/<fixture>/spread on <n> threads`, digests, optional `peak_memory_bytes`, and concurrent-copy records under `copies`.
 
 ### Peak memory and concurrent-copy efficiency
 
-Every Python timing records peak resident memory (`peak_memory_bytes`), measured in a fresh child process (`timing.py`) so an earlier fixture's high-water mark cannot contaminate a smaller fixture's reading.
-On Linux, `fork(2)` or `vfork(2)` followed by `execve(2)` preserves the parent process's `hiwater_rss` inside `signal->maxrss`, so `getrusage(2)` `ru_maxrss` in a child would inherit a larger parent's memory; `measuring.peak_memory_bytes` therefore reads `VmHWM` (in kibibytes) from `/proc/self/status` (`proc_pid_status(5)`), which resets on `execve(2)`.
-On macOS and BSDs, or whenever `/proc/self/status` is absent, it reads `getrusage(2)` `ru_maxrss` and converts it through `measuring.ru_maxrss_to_bytes` (bytes on `darwin`, kibibytes times 1,024 elsewhere).
-Byte counts print with IEC binary prefixes (`B`, `KiB`, `MiB`, `GiB`, `TiB`) to four significant figures in the speed summary, baseline comparison, `--compare`, and `--scale` tables.
-In the default suite, each fixture takes one fresh probe beside its repeated timing; for single-run `--scale` fixtures, that one run executes directly in the child process so no extra simulation runs.
-Pass `--no-peak-memory` to skip the probes; older committed baseline files without `peak_memory_bytes` or `copies` remain valid.
+Every Python timing captures peak resident memory (`peak_memory_bytes`) inside a fresh child process (`timing.py`) so earlier fixtures never inflate a smaller fixture's high-water mark.
+On Linux, `fork(2)` or `vfork(2)` followed by `execve(2)` preserves the parent's `hiwater_rss` inside `signal->maxrss`, contaminating child `getrusage(2)` `ru_maxrss` readings.
+To avoid inheritance, `measuring.peak_memory_bytes` reads `VmHWM` (in KiB) from `/proc/self/status` (`proc_pid_status(5)`), which resets on `execve(2)`.
+On macOS, BSDs, or systems without `/proc/self/status`, the helper reads `getrusage(2)` `ru_maxrss` and converts via `measuring.ru_maxrss_to_bytes` (bytes on `darwin`, KiB × 1,024 elsewhere).
+Memory sizes format with IEC binary prefixes (`B`, `KiB`, `MiB`, `GiB`, `TiB`) to four significant figures across summaries, baseline comparisons, `--compare`, and `--scale`.
+In the default suite, each fixture runs one isolated memory probe in addition to timed repeats; single-run `--scale` fixtures run directly in the child process without extra simulation.
+Pass `--no-peak-memory` to disable probes; older committed baselines lacking `peak_memory_bytes` or `copies` remain valid.
 
-Parallel efficiency on mixed-core and SMT machines is measured directly against the machine's attainable throughput: running `N` independent single-thread (`max_threads=1`, undissected) copies of the same fixture at once in separate `timing.py` worker processes, each prepared before a synchronized barrier release so interpreter startup and JSON parsing do not enter the makespan.
+Parallel efficiency on mixed-core and SMT hosts is measured against attainable throughput by running `N` independent single-thread (`max_threads=1`, undissected) copies concurrently in separate `timing.py` processes.
+Workers initialize before a synchronized barrier release so interpreter startup and JSON parsing stay outside the makespan.
 Across `--copy-rounds` (3 by default) synchronized rounds, let `T_1` be the serial median wall time, `T_par(N)` the single `N`-thread run's median wall time, and `T_copies(N)` the median makespan of `N` concurrent copies:
 
 - Observed speed-up: `S(N) = T_1 / T_par(N)`.
 - Attainable speed-up (SPEC-rate aggregate throughput ceiling): `S_attainable(N) = N * T_1 / T_copies(N)`.
 - Throughput efficiency: `E(N) = S(N) / S_attainable(N) = T_copies(N) / (N * T_par(N))`.
 
-Efficiency is never clamped to 100%, because independent copies of a memory-bound fixture can contend for memory bandwidth more than one shared run does, yielding values above 100% that are reported as found.
-Each measurement also records the individual copy wall times from the median round (`copy_seconds`): on hybrid processors (such as performance and efficiency cores), when `max(copy_seconds) / min(copy_seconds) >= 1.25`, the scaling table prints a note showing the steady-state rate-sum attainable speed-up (`T_1 * sum(1 / t_i)`) beside the batch makespan.
-Before launching `N > 1` copies, the runner checks `N * peak_memory_bytes` against 85% of available machine memory (`MemAvailable` on Linux, `hw.memsize` on macOS) and records a clear `skipped_reason` instead of risking an out-of-memory kill on multi-gigabyte fixtures like `inverter_chain_50000`.
-Pass `--no-concurrent-copies` to skip the concurrent-copy runs under `--scale`.
+Efficiency is never clamped to 100%, because independent copies of memory-bound fixtures can experience heavier bandwidth contention than one shared run.
+Each measurement records per-copy wall times from the median round (`copy_seconds`).
+On hybrid CPUs (performance and efficiency cores), when `max(copy_seconds) / min(copy_seconds) >= 1.25`, the scaling table appends a note comparing steady-state rate-sum speedup (`T_1 * sum(1 / t_i)`) against batch makespan.
+Before spawning `N > 1` copies, the runner verifies `N * peak_memory_bytes` stays below 85% of available RAM (`MemAvailable` on Linux, `hw.memsize` on macOS) and records `skipped_reason` instead of risking OOM kills on fixtures like `inverter_chain_50000`.
+Pass `--no-concurrent-copies` to disable concurrent-copy measurements under `--scale`.
 
-Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1,2,4,8,16,32,64]"` on `cedar` on 16 November 2026 from 07:28 to 07:45 UTC, while the load average, the measurement's own threads included, was 1.1 to 9.9 on its 64 threads:
+Scaling measurements ran via `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1,2,4,8,16,32,64]"` on `cedar` on 16 November 2026 (07:28 to 07:45 UTC, total load average 1.1 to 9.9 on 64 threads):
 
 | Fixture | Threads | Time | Against serial | Against 1 thread | Results | Load |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -343,12 +391,15 @@ Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1
 | `rc_mesh_300` | 32 | 7.971 s | 5.86 | 5.92 | `40d3afc4e97cf08b` | 2.13 |
 | `rc_mesh_300` | 64 | 8.693 s | 5.38 | 5.43 | `53418f756c62322e` | 4.52 |
 
-The chain found the serial run's bits on every number of threads; it spread its devices on 4 to 32 threads, from the break-evens on 4 and 8, and nothing on 1, 2 or 64, where no size measured paid, so on 64 it ran as serially.
-The mesh found the serial run's bits on one thread, ordered by the minimum degree, and other last digits on each number of threads whose break-even of the interiors differs, the same on 8, 16 and 32, which take 8's; it ran 5.86 times as fast on 32 threads as serially, its dissection doing it all, as its devices are linear and its work on each unknown spreads on no number.
+The 5,000-inverter chain matched serial bits on every thread count.
+Device evaluation parallelized on 4 to 32 threads (using 4- and 8-thread break-evens) and stayed serial on 1, 2, and 64 threads where no measured size paid off.
+The 300×300 mesh matched serial minimum-degree bits on 1 thread, changed last digits whenever interior break-evens changed, and stayed identical across 8, 16, and 32 threads (sharing the 8-thread bound).
+On 32 threads, nested dissection delivered a 5.86× speedup over serial while linear device evaluation and per-unknown work stayed single-threaded.
 
 ### Machine D baseline (`430c75d`)
 
-Commit `430c75d` (`results/430c75d6b0b402812924ebcfd22ed6c91fee6378.json`) records the full speed suite, scaling runs, and transient profiles on machine D (AMD EPYC 9B14 96-core server, 24 cores available, Linux x86_64 with glibc 2.27, Rust 1.100.0, Python 3.15.2, ngspice 47), measured on 18 November 2026 under shared-host load averages of 145 to 224.
+Commit `430c75d` (`results/430c75d6b0b402812924ebcfd22ed6c91fee6378.json`) records the full speed suite, scaling runs, and transient profiles on machine D (96-core AMD EPYC 9B14, 24 cores available, Linux x86_64, glibc 2.27).
+Measurements ran on 18 November 2026 with Rust 1.100.0, Python 3.15.2, and ngspice 47 under shared-host load averages of 145 to 224.
 Each entry retains individual run samples (`wall` and `cpu`) so baseline comparisons compute exact 95% rank confidence intervals.
 
 | Fixture | Rust setup | Rust shared | Rust run | Python (median [95% CI]) |
@@ -359,7 +410,8 @@ Each entry retains individual run samples (`wall` and `cpu`) so baseline compari
 | `inverter_chain_500` | 7.636 ms | 1.054 ms | 7.825 s | 8.574 s [8.507, 8.639] |
 | `rc_mesh_100` | 66.87 ms | 2.644 ms | 1.340 s | 1.155 s [1.129, 1.195] |
 
-Monte Carlo batch scaling on `430c75d`: in Rust (1,000 samples), 963.1 µs/sample on 1 thread, 493.2 µs on 2, 244.4 µs on 4, 121.9 µs on 8, and 57.92 µs on 24 threads (16.6×); in Python, 979.0 µs/sample on one core, 61.70 µs on 24 cores (1,000 samples, 15.9×), and 59.72 µs on 24 cores across all 100,000 samples (5.97 s total).
+Rust Monte Carlo scaling on `430c75d` (1,000 samples) reached 963.1, 493.2, 244.4, 121.9, and 57.92 µs/sample across 1, 2, 4, 8, and 24 threads (16.6× speedup).
+In Python, scaling reached 979.0 µs/sample on 1 core, 61.70 µs on 24 cores (1,000 samples, 15.9×), and 59.72 µs across all 100,000 samples (5.97 s total).
 
 Large-circuit scaling on machine D (6 interleaved rounds, default parallelism):
 
@@ -381,7 +433,7 @@ Large-circuit scaling on machine D (6 interleaved rounds, default parallelism):
 | `inverter_chain_5000` | 24 | 70.78 s [65.31, 89.90] | 3.54× | 3.17× | faster | `988bcd74633cb666` |
 | `inverter_chain_50000` | default (1 run) | 1,001 s (881.9 s profiled) | | | | |
 
-`inverter_chain_5000` produced the bit-identical result digest `988bcd74633cb666` across every thread count; `rc_mesh_300` matched `4998e669da8acfba` serially and on 1 thread, and `40d3afc4e97cf08b` across 8, 16 and 24 threads (where nested dissection picks the same interior bound).
+The `inverter_chain_5000` runs produced bit-identical digest `988bcd74633cb666` across all thread counts; `rc_mesh_300` matched `4998e669da8acfba` serially and on 1 thread, and `40d3afc4e97cf08b` across 8, 16, and 24 threads (identical interior bound).
 
 Transient profile work counts on `430c75d` (machine D, glibc 2.27):
 
@@ -395,11 +447,12 @@ Transient profile work counts on `430c75d` (machine D, glibc 2.27):
 | `inverter_chain_50000/tran` | 881.9 s | 22% | 26% | 20% | 22% | 8% | 3% | 12,037 | 2, 15,138, 32, 3 |
 | `rc_mesh_300/tran` | 7.513 s | 31% | 10% | 27% | 10% | 20% | 3% | 225 | 1, 94, 0, 245 |
 
-`--view defaults` on machine D (`430c75d`, ngspice 47; raw view JSON kept out of the repository; `bjt_amp` transient deviations below were measured before replacing linear `np.interp` with Huynh (1993) cubic Hermite, after which `--view matched bjt_amp` dropped from `3.8e-03` to `5.9e-05` on both Sparse and KLU):
+Results for `--view defaults` on machine D (`430c75d`, ngspice 47; raw JSON kept outside the repository).
+The `bjt_amp` transient deviations below predate replacing linear `np.interp` with Huynh (1993) cubic Hermite interpolation, which lowered `--view matched bjt_amp` deviation from `3.8e-03` to `5.9e-05` on both Sparse and KLU:
 
 | Fixture | jolty | ngspice-sparse | ngspice-klu |
 | --- | --- | --- | --- |
-| options | its defaults | its defaults | `.options klu` |
+| options | defaults | defaults | `.options klu` |
 | `bjt_amp` | 2.029 ms (1.72 ms analysis); op 1.5e-11, ac 5.8e-13, tran 1.9e-03 | 3.711 ms (881.6 µs analysis); op 2.0e-11, ac 7.5e-13, tran 3.5e-03 | 3.948 ms (1.151 ms analysis); op 1.1e-11, ac 4.1e-13, tran 3.5e-03 |
 | `ac_wide` | 12.42 ms (11.92 ms analysis); ac 5.8e-13 | 44.18 ms (17.24 ms analysis); ac 7.5e-13 | 54.83 ms (27.34 ms analysis); ac 4.4e-13 |
 | `buck` | 1.589 s (1.589 s analysis); tran 2.0e-03 | 358.7 ms (309.8 ms analysis); tran 2.5e-03 | 406.7 ms (359.6 ms analysis); tran 2.5e-03 |

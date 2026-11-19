@@ -1,16 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""The cubic task's scorer, which the agent never sees.
+"""Hidden benchmark scorer for the integrated cubic function generator task.
 
-It places the agent's component on the task's bench and measures, in four cases, the
-mean absolute error of its output current against the input's cube over the reference's
-square: a DC sweep, and a sine at 1 MHz, 100 MHz and 1 GHz. Each error is divided by the
-patented circuit's, ``patent.py``, on the same case, as Koza weighted his fitness cases,
-and the score is their mean. The work meets the task when it builds from the allowed
-parts alone and scores at most 1 from 0 °C to 70 °C with the supply within 5 % of 2 V,
-each corner against the patent's in it, with exact parts and on 95 % of boards of the
-design over the same range. On a board, as on one die, the resistors lie together
-within 20 % of their values, and each within 0.1 % of the others; each capacitor lies
-within 5 %.
+The scorer mounts the agent's component on the task test bench and evaluates mean
+absolute output-current error against ``I_in^3 / I_ref^2`` across four test cases: a
+DC sweep and sinusoidal inputs at 1 MHz, 100 MHz, and 1 GHz. Each case error is
+normalized by the patented circuit error from ``patent.py`` at the same operating
+corner, following Koza's weighting, and averaged into a composite score. A submission
+passes when using only allowed parts and achieving score <= 1.0 across 0 °C to 70 °C
+at +/-5 % supply voltage around 2 V, both nominally and on at least 95 % of Monte
+Carlo boards. Each board applies integrated die tolerances: +/-20 % resistor lot
+spread, +/-0.1 % resistor matching, and +/-5 % capacitor tolerance.
 """
 
 import runpy
@@ -28,20 +27,20 @@ from jolty.units import A, Hz, V, s, uA
 from jolty.waveforms import Sine
 
 REFERENCE = 100e-6
-"""The reference current, in amperes."""
+"""Nominal reference current ``I_ref`` in amperes."""
 FREQUENCIES = (1e6, 1e8, 1e9)
-"""The sine cases' frequencies, in hertz."""
+"""Sinusoidal input frequencies in hertz for the three transient test cases."""
 ALLOWED = {"resistor", "capacitor"}
-"""The devices the design may hold besides the given transistor."""
+"""Passive device models permitted alongside the given integrated NPN transistor."""
 SUPPLIES = ("VS",)
-"""The bench's supply, which strays within 5 % of its level in the corners."""
+"""Top-level bench supply scaled by +/-5 % across operating corners."""
 PORTS = ("supply", "reference", "input", "output", "ground")
-"""The design's ports, which the bench joins."""
+"""Required port names exposed by the integrated cubic generator component."""
 
 
 @component
 def bench(c: Builder, made: Component, frequency: float = 0.0) -> None:
-    """`made` from 2 V, its input a sine at `frequency`, or 0 A to sweep when 0."""
+    """Builds the 2 V cubic test bench around `made` with DC or sinusoidal input."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(2 * V), name="VS")
     level = (
@@ -68,11 +67,11 @@ def bench(c: Builder, made: Component, frequency: float = 0.0) -> None:
 
 
 NAMES = ("dc", *(f"{frequency:.0e} Hz" for frequency in FREQUENCIES))
-"""The four cases' names."""
+"""Display labels for the DC sweep and three sinusoidal test cases."""
 
 
 def errors(made: Component, board: Board) -> list[float]:
-    """Each case's mean absolute error of `made`'s output on `board`, in amperes."""
+    """Computes mean absolute output-current errors in amperes across all cases."""
     swept = board.simulation(circuit(bench(made)), SUPPLIES).run(
         DcSweep("IIN", linear(0 * A, 200 * uA, 41))
     )
@@ -95,9 +94,9 @@ def _error(level: np.ndarray, output: np.ndarray) -> float:
 def measure(
     made: Component, patent: Mapping[Corner, Sequence[float]], board: Board
 ) -> dict[str, float]:
-    """The errors on `board` of `made`, and their score against the `patent`'s.
+    """Measures per-case errors and normalized score for `made` on `board` vs `patent`.
 
-    The patent's are those in the board's corner.
+    Normalizes each case error by the patented circuit error at the matching corner.
     """
     found = errors(made, board)
     measures = {"score": float(np.mean(np.divide(found, patent[board.corner])))}
@@ -108,7 +107,7 @@ def measure(
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measures `found` fall short of the task, if they do."""
+    """Checks cubic generator metrics in `found` and returns any unmet shortfalls."""
     if found["score"] <= 1:
         return []
     return [
@@ -117,7 +116,7 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the cubic `work` against `task`, as `arm` writes it."""
+    """Scores the integrated cubic generator submission in `work` for `arm`."""
     patented = runpy.run_path(str(task / "patent.py"))["cubic"]()
     patent = {corner: errors(patented, Board(corner=corner)) for corner in CORNERS}
     return score_design(

@@ -1,17 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""The comparison's two arms: what an agent has, gets and writes on a task.
+"""Benchmark arm definitions controlling agent tools, prompts, and staged files.
 
-An agent of the jolty arm has jolty, its command line, MCP server and Python package,
-and gets the task's prompt, ``task.md``, and its given files as they are. An agent of
-the ngspice arm has ngspice and a Python with numpy, scipy and matplotlib, and nothing
-of jolty. Its prompt is ``task.md`` with each sentence the task's ``ngspice/task.toml``
-replaces in place, and the tools of ``ngspice.toml`` in place of jolty's; it gets the
-task's given files but its Python scripts, which need jolty, and the SPICE files of the
-task's ``ngspice/given``, which stand for them.
+The jolty arm provides the jolty CLI, MCP server, and Python package, along with the
+unmodified task prompt (``task.md``) and given files. The ngspice arm provides ngspice
+and Python with numpy, scipy, and matplotlib, without jolty. For ngspice, the prompt
+substitutes task-specific sentences from ``ngspice/task.toml`` and tool instructions
+from ``ngspice.toml``. Staged files for ngspice exclude jolty-dependent Python scripts
+and include the replacement SPICE files from ``ngspice/given``.
 
-Each arm writes its design in its own form: the jolty arm a script, such as
-``design.py``, and the ngspice arm a netlist, such as ``design.cir``, which the scorer
-reads with jolty's SPICE reader after the ``.lib`` files it was given.
+Each arm writes designs in a dedicated format: Python scripts (such as ``design.py``)
+for jolty, and SPICE netlists (such as ``design.cir``) for ngspice. The scorer reads
+ngspice netlists through jolty's SPICE reader after loading the provided ``.lib``
+files.
 """
 
 import tomllib
@@ -21,25 +21,25 @@ from typing import Final
 
 
 class Arm(StrEnum):
-    """The tools an agent has: jolty's, or ngspice and a plain Python."""
+    """Tooling configuration assigned to an agent: jolty or ngspice with Python."""
 
     JOLTY = "jolty"
     NGSPICE = "ngspice"
 
 
 TOOLS: Final[Path] = Path(__file__).with_name("ngspice.toml")
-"""The ngspice arm's tools, in place of the jolty arm's in every prompt."""
+"""Tool-description replacement table applied to every ngspice arm prompt."""
 DISCRETE_PARTS: Final[Path] = Path(__file__).with_name("discrete_parts.py")
 """Standalone 2N3904 and 2N3906 definitions shared by discrete transistor tasks."""
 SUFFIXES: Final = {Arm.JOLTY: ".py", Arm.NGSPICE: ".cir"}
-"""The suffix of each arm's designs: a script's, or a netlist's."""
+"""Design file suffix for each arm: Python scripts for jolty, netlists for ngspice."""
 
 
 def _replacement(table: dict[str, object], source: Path) -> tuple[str, str]:
-    """The jolty arm's text and the ngspice arm's in its place, as `table` holds them.
+    """Extracts a ``(jolty, ngspice)`` prompt replacement pair from `table`.
 
     Raises:
-        ValueError: When `table`, read from `source`, does not pair two texts.
+        ValueError: When `table`, read from `source`, does not pair two strings.
     """
     match table:
         case {"jolty": str(jolty), "ngspice": str(ngspice), **rest} if not rest:
@@ -49,12 +49,13 @@ def _replacement(table: dict[str, object], source: Path) -> tuple[str, str]:
 
 
 def replacements(task: Path) -> list[tuple[str, str]]:
-    """The texts of `task`'s prompt the ngspice arm's replace, each with its own.
+    """Returns ordered prompt replacement pairs for `task` on the ngspice arm.
 
-    They are the task's own sentences, then the tools.
+    Task-specific sentence replacements from ``ngspice/task.toml`` appear first,
+    followed by the shared tool description replacement from `TOOLS`.
 
     Raises:
-        ValueError: When a table pairs no two texts.
+        ValueError: When a replacement table does not pair two strings.
     """
     source = task / "ngspice" / "task.toml"
     with source.open("rb") as file:
@@ -68,11 +69,11 @@ def replacements(task: Path) -> list[tuple[str, str]]:
 
 
 def prompt(task: Path, arm: Arm) -> str:
-    """The prompt an agent of `arm` gets on `task`.
+    """Returns the rendered task prompt for `arm` on `task`.
 
     Raises:
-        ValueError: When a text the ngspice arm's prompt replaces is not in the task's
-            prompt exactly once.
+        ValueError: When a jolty prompt substring targeted for ngspice replacement does
+            not occur in ``task.md`` exactly once.
     """
     text = (task / "task.md").read_text(encoding="utf-8")
     if arm is Arm.JOLTY:
@@ -87,10 +88,10 @@ def prompt(task: Path, arm: Arm) -> str:
 
 
 def given(task: Path, arm: Arm) -> list[Path]:
-    """The files an agent of `arm` gets on `task`, by name.
+    """Returns the sorted source files provided to an agent of `arm` on `task`.
 
     Raises:
-        ValueError: When the ngspice arm gets two files of one name.
+        ValueError: When the ngspice arm resolves two files with the same filename.
     """
     files = sorted(path for path in (task / "given").glob("*") if path.is_file())
     if arm is Arm.JOLTY:
@@ -115,11 +116,11 @@ def _standalone_source(path: Path) -> Path:
 
 
 def staged(task: Path, arm: Arm) -> list[tuple[str, Path]]:
-    """The files `arm` stages into a session's working directory, as ``(name, path)``.
+    """Returns ``(name, path)`` pairs staged into the working directory for `arm`.
 
-    When a task's ``given/parts.py`` delegates to `DISCRETE_PARTS`, staging copies the
-    standalone `DISCRETE_PARTS` module as ``parts.py`` so sandboxed agents read the
-    full transistor definitions inside their working directory.
+    When ``given/parts.py`` delegates to `DISCRETE_PARTS`, staging copies the
+    standalone `DISCRETE_PARTS` module as ``parts.py`` so sandboxed agents can read
+    full transistor definitions inside the working directory.
     """
     return [
         (path.name, _standalone_source(path) if arm is Arm.JOLTY else path)
@@ -128,11 +129,11 @@ def staged(task: Path, arm: Arm) -> list[tuple[str, Path]]:
 
 
 def _spice(task: Path) -> list[Path]:
-    """The SPICE files of `task`'s ngspice arm, in place of its Python scripts."""
+    """Returns sorted SPICE files from ``ngspice/given`` for `task`."""
     directory = task / "ngspice" / "given"
     return sorted(path for path in directory.glob("*") if path.is_file())
 
 
 def libraries(task: Path) -> list[Path]:
-    """The SPICE libraries of `task`'s ngspice arm, which the scorer reads first."""
+    """Returns ngspice ``.lib`` libraries for `task`, loaded first by the scorer."""
     return [path for path in _spice(task) if path.suffix == ".lib"]

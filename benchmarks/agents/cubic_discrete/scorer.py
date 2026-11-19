@@ -1,28 +1,27 @@
 # Copyright 2026 Maxence Faldor
-"""The discrete cubic function generator task's scorer, which the agent never sees.
+"""Hidden benchmark scorer for the discrete cubic function generator task.
 
-It places the agent's component on Koza's test fixture for the cubic function generator
-of US patent 6,160,427 (Genetic Programming IV, sections 15.3.1.5 and 15.3.5.5): a 2 V
-supply, the input voltage turned into a current of 100 µA/V drawn from the supply into
-``input``, and the output current drawn from the supply into ``output`` turned into a
-voltage of 10.5 kV/A, which should be the input voltage's cube. Koza meters the output
-between two ports of the circuit; holding one at the supply leaves the same current. It
-runs his four fitness cases, each read at 101 times: a ramp from 0 V to 1.26 V over 1
-ms, one cycle of a sine between them over 1 ms, a ramp back down over 10 ms, and 1 V
+The scorer mounts the agent's component on Koza's test fixture for the cubic function
+generator of US patent 6,160,427 (Genetic Programming IV, sections 15.3.1.5 and
+15.3.5.5). The fixture provides a 2 V supply and converts input voltage into a
+100 µA/V current drawn into ``input``. Output current drawn into ``output`` converts at
+10.5 kV/A to
+match the cubed input voltage. Holding one output meter
+terminal at the supply yields the same current as Koza's two-port meter. Evaluation
+runs Koza's four fitness cases, each sampled at 101 points. The four stimuli are a 1 ms
+ramp from 0 V to 1.26 V, one 1 ms sine cycle over that span, a 10 ms ramp down, and 1 V
 held for 10 ms.
 
-The task is met when the output's absolute error, averaged over the four cases, is at
-most 6.76 mV, the patented circuit's with the 2N3904 and the 2N3906 as Koza measured it;
-the circuit genetic programming evolved reached 4.20 mV. Koza's fitness weighs each
-error 1 below 7 mV and 10 above; the share of errors below 7 mV, his hits, is reported
-beside it: 61 % for the patent, 93.6 % for the evolved circuit. The error must stay
-within the patent's from 0 °C to 70 °C with the supply within 5 % of 2 V, and on 95 % of
-boards of the design too, built of resistors within 1 %, capacitors within 5 % and
-transistors from reels anywhere in their datasheets' ranges, each board over the same
-range: margins Koza's circuits, simulated with exact parts at 27 °C, need not keep.
+A submission passes when the mean absolute output error across all four cases is at
+most 6.76 mV, matching Koza's measurement of the patented circuit built from 2N3904 and
+2N3906 transistors (evolved circuit: 4.20 mV). Koza's hit rate (fraction of samples
+below 7 mV error, where Koza shifts weight from 1 to 10) is reported alongside the
+error (61 % patented, 93.6 % evolved). The error limit must hold from 0 °C to 70 °C at
++/-5 % supply voltage, both nominally and on at least 95 % of Monte Carlo boards built
+with 1 % resistors, 5 % capacitors, and datasheet reel-varied transistors.
 
-Koza does not give the sine's phase; it starts at its middle and rises, as SPICE's do.
-His fixture also puts 1 µΩ in series with the input and the output, as the bench does.
+The sine starts at midpoint rising as in SPICE because Koza omits the initial phase.
+Series 1 µΩ sense resistors match Koza's fixture on both ``input`` and ``output``.
 """
 
 from pathlib import Path
@@ -38,29 +37,29 @@ from jolty.units import A, Hz, Quantity, V, ms, ohm, s
 from jolty.waveforms import Piecewise, Sine
 
 TRANSCONDUCTANCE = 100e-6
-"""The input current per volt of the input, in amperes per volt."""
+"""Input voltage-to-current conversion gain in amperes per volt."""
 TRANSRESISTANCE = 10.5e3
-"""The output voltage per ampere of the output current, in volts per ampere."""
+"""Output current-to-voltage conversion gain in volts per ampere."""
 TOP = 1.26
-"""The input's highest level, the cube root of 2, in volts."""
+"""Maximum input voltage in volts, approximating the cube root of 2."""
 TIMES = 101
-"""The times each case is read at."""
+"""Number of evenly spaced sample times evaluated per fitness case."""
 PATENT = 6.76e-3
-"""The patented circuit's mean absolute error over the four cases, in volts."""
+"""Patented circuit mean absolute output error across the four cases in volts."""
 EVOLVED = 4.20e-3
-"""The evolved circuit's mean absolute error over the four cases, in volts."""
+"""Genetically evolved circuit mean absolute output error in volts."""
 HIT = 7e-3
-"""The error below which Koza counts a hit, in volts."""
+"""Output error threshold in volts defining a hit in Koza's fitness metric."""
 ALLOWED = {"resistor", "capacitor"}
-"""The devices the design may hold besides the given transistors."""
+"""Passive device models permitted in addition to the given discrete transistors."""
 SUPPLIES = ("VCC",)
-"""The bench's supply, which strays within 5 % of its level in the corners."""
+"""Top-level bench supply scaled by +/-5 % across operating corners."""
 PORTS = ("input", "output", "vcc", "ground")
-"""The design's ports, which the bench joins."""
+"""Required port names exposed by the discrete cubic generator component."""
 
 
 def cases() -> list[tuple[Piecewise | Sine | Quantity, float]]:
-    """Koza's four fitness cases: the input's level, in volts, and how long, in s."""
+    """Returns Koza's four stimulus waveforms and durations in seconds."""
     return [
         (Piecewise([(0 * s, 0 * V), (1 * ms, TOP * V)]), 1e-3),
         (Sine(offset=TOP / 2 * V, amplitude=TOP / 2 * V, frequency=1e3 * Hz), 1e-3),
@@ -71,7 +70,7 @@ def cases() -> list[tuple[Piecewise | Sine | Quantity, float]]:
 
 @component
 def bench(c: Builder, made: Component, case: int) -> None:
-    """`made` on Koza's fixture, its input driven as in `case`."""
+    """Builds Koza's discrete cubic fixture around `made` for fitness `case`."""
     ground = c.port("ground", Role.GROUND)
     placed = c.place(made, name="X1")
     supply = c.place(devices.voltage_source(2 * V), name="VCC")
@@ -96,7 +95,7 @@ def bench(c: Builder, made: Component, case: int) -> None:
 
 
 def measure(made: Component, board: Board) -> dict[str, float]:
-    """The output's error on `board` of `made`, over each case and over all four."""
+    """Measures mean and peak output errors and hit rate for `made` on `board`."""
     found = []
     for case, (_, duration) in enumerate(cases()):
         times = np.linspace(0.0, duration, TIMES)
@@ -125,7 +124,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measures `found` fall short of the task, if they do."""
+    """Checks discrete cubic error metrics in `found` and returns any shortfalls."""
     mean = found["mean absolute error"]
     if mean <= PATENT:
         return []
@@ -137,7 +136,7 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
-    """The verdict on the cubic function generator in `work`, as `arm` writes it."""
+    """Scores the discrete cubic generator submission in `work` for `arm`."""
     return score_design(
         task,
         work,

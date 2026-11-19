@@ -1,26 +1,25 @@
 # Copyright 2026 Maxence Faldor
-"""The coverage matrix: what each simulator offers, each cell a fixture that ran.
+"""Coverage matrix runner, evaluator, and Markdown renderer.
 
-``scripts/bench --coverage`` runs it through ``benchmarks/speed/bench.py``. Each row of
-``capabilities.py`` runs its fixture in jolty and in ngspice with Sparse 1.3 and with
-KLU, or in the simulators ``--simulator`` names, each by its runner of
-``benchmarks/simulators.py``, and each cell is judged against the row's known answer:
+``scripts/bench --coverage`` invokes this module through ``benchmarks/speed/bench.py``.
+Each row in ``capabilities.py`` executes in jolty, ngspice (Sparse 1.3 and KLU), or the
+simulators selected by ``--simulator`` via ``benchmarks/simulators.py``. Cells are
+scored against each row's known answer:
 
-- ``agreed``: it ran, and every number it read lies within the row's tolerance of the
-  known answer;
-- ``disagreed``: it ran, and a number lies outside it, which the cell gives;
-- ``failed``: it took the request and did not finish, with its message;
-- ``unsupported``: it refused the request, with its message, or has no statement that
-  asks it, with where its documentation says what it offers;
-- ``solved``: it ran, and the row has no known answer to judge it by yet;
-- ``reference``: it is the implementation that defines the row's model, whose run is
-  the known answer;
-- ``documented``: a simulator that cannot run here offers it, by its manual's section;
-- ``unknown``: no document found says whether it does.
+- ``agreed``: simulator ran and every extracted value lies within tolerance of the known
+  answer.
+- ``disagreed``: simulator ran, and at least one value falls outside tolerance.
+- ``failed``: simulator accepted the fixture but did not complete, recording stderr.
+- ``unsupported``: simulator rejected the fixture or lacks a matching statement, citing
+  its error or manual section.
+- ``solved``: simulator ran, and the row has no known answer yet.
+- ``reference``: defining simulator whose output supplies the known answer.
+- ``documented``: simulator unavailable locally documents the capability in its manual.
+- ``unknown``: no consulted manual documents support for the row.
 
-ngspice runs a fixture's deck by `jolty.spice.ngspice.runs`, writing an ASCII raw file
-per command; Xyce runs it with a ``.print`` of each read in CSV, the program on the
-path. A simulator's words say whether it refused a fixture or failed it.
+ngspice executes fixture decks via `jolty.spice.ngspice.runs` (one ASCII raw file per
+command), while Xyce writes requested reads as CSV via ``.print``. Simulator output
+patterns distinguish explicit refusals from solver failures.
 
 Usage::
 
@@ -28,10 +27,9 @@ Usage::
     scripts/bench --coverage op ac           only these rows
     scripts/bench --coverage --simulator xyce-serial   Xyce's column, where it runs
 
-The cells go to ``benchmarks/coverage/coverage.json``, a run replacing only the cells
-of the rows and simulators it ran, and the matrix is rendered from it into
-``benchmarks/coverage/matrix.md``. ``benchmarks/coverage/README.md`` says how each
-fixture is made.
+Results are merged into ``benchmarks/coverage/coverage.json`` (updating only executed
+rows and simulators) and rendered into ``benchmarks/coverage/matrix.md``. See
+``benchmarks/coverage/README.md`` for fixture authoring details.
 """
 
 import csv
@@ -72,16 +70,16 @@ from jolty.errors import JoltyError
 from jolty.spice import ngspice, xyce
 
 COVERAGE: Final = Path(__file__).resolve().parent
-"""The ``benchmarks/coverage`` directory."""
+"""Directory containing the coverage suite and generated artifacts."""
 
 RESULTS: Final = COVERAGE / "coverage.json"
-"""The cells, the matrix's source."""
+"""JSON data file storing evaluated coverage cells."""
 
 MATRIX: Final = COVERAGE / "matrix.md"
-"""The matrix, rendered."""
+"""Rendered Markdown coverage matrix output path."""
 
 TIMEOUT: Final = 60
-"""The seconds a SPICE simulator may run a fixture; each takes well under one."""
+"""Per-fixture timeout in seconds for external SPICE simulators."""
 
 SIMULATORS: Final = (
     Simulator.JOLTY,
@@ -89,11 +87,11 @@ SIMULATORS: Final = (
     Simulator.NGSPICE_KLU,
     Simulator.XYCE_SERIAL,
 )
-"""The simulators that run the matrix's fixtures."""
+"""Executable simulators supported by the coverage matrix."""
 
 
 class Status(StrEnum):
-    """What a cell found."""
+    """Outcome classification for a coverage matrix cell."""
 
     AGREED = "agreed"
     DISAGREED = "disagreed"
@@ -106,7 +104,7 @@ class Status(StrEnum):
 
 
 class Cell(BaseModel):
-    """One simulator's finding on one row."""
+    """Evaluation result of one simulator on one coverage row."""
 
     status: Status
     evidence: str = ""
@@ -114,7 +112,7 @@ class Cell(BaseModel):
 
 
 class SimulatorProvenance(Provenance):
-    """Where and when a simulator's cells were found, and its version."""
+    """Provenance record for a simulator run, adding version, host load, and date."""
 
     version: str
     load: float
@@ -122,7 +120,7 @@ class SimulatorProvenance(Provenance):
 
 
 class FixtureResults(BaseModel):
-    """A row's fixture as the results hold it: its names, its answer, and each cell."""
+    """Serialized coverage row metadata, reference values, and per-simulator cells."""
 
     category: Category
     name: str
@@ -132,7 +130,7 @@ class FixtureResults(BaseModel):
 
 
 class SuiteResults(BaseModel):
-    """The matrix's source: every row's cells, and where each simulator's were found."""
+    """Root schema for ``coverage.json``, holding simulator provenance and row cells."""
 
     simulators: dict[str, SimulatorProvenance] = Field(default_factory=dict)
     fixtures: dict[str, FixtureResults] = Field(default_factory=dict)
@@ -147,11 +145,11 @@ def _complex(pairs: Mapping[str, tuple[float, float]]) -> Values:
 
 
 def judge(known: Known, found: Values, reference: Values | None) -> tuple[Status, str]:
-    """Whether `found` agrees with the known answer, or `reference`'s run of it.
+    """Evaluates whether `found` agrees with `known` or the `reference` simulator run.
 
-    Each number is judged against the largest known number of its kind in the row,
-    the kind its name begins with, such as ``v`` or ``i``: within `known`'s tolerance
-    of it, it agrees.
+    Scales each error by the largest known magnitude of the same quantity kind (such as
+    ``v`` or ``i``) in the row and marks agreement when all errors stay within
+    `known.tolerance`.
     """
     expected = known.values if known.values is not None else reference
     if expected is None:
@@ -176,20 +174,21 @@ def judge(known: Known, found: Values, reference: Values | None) -> tuple[Status
 
 
 def _number(value: complex) -> str:
-    """A number in its shortest form, complex only when it has an imaginary part."""
+    """Formats `value` compactly, omitting the imaginary part when zero."""
     if value.imag == 0:
         return f"{value.real:.7g}"
     return f"{value.real:.7g}{value.imag:+.7g}j"
 
 
 class _NotInstalledError(Exception):
-    """A simulator binary is not installed on this machine."""
+    """Exception raised when a requested simulator binary is not installed locally."""
 
 
 def run(fixture: Fixture, simulator: Simulator) -> Cell:
-    """Runs `fixture` in `simulator`, its cell not yet judged.
+    """Runs `fixture` in `simulator` and returns an unjudged `Cell`.
 
-    Its messages name the files of the repository from its root, as on any machine.
+    Strips the repository root prefix from error text so paths stay portable across
+    hosts.
     """
     try:
         match simulator:
@@ -214,7 +213,7 @@ def run(fixture: Fixture, simulator: Simulator) -> Cell:
 
 
 def _relative(message: str, root: Path) -> str:
-    """A message with the paths within `root` written from it, as on any machine."""
+    """Rewrites paths under `root` inside `message` as repository-relative paths."""
     return message.replace(f"{root}/", "")
 
 
@@ -331,7 +330,7 @@ SHORT: Final = {
     Status.DOCUMENTED: "documented",
     Status.UNKNOWN: "?",
 }
-"""How the table writes each status."""
+"""Display label for each `Status` in rendered Markdown tables."""
 
 TITLES: Final = {
     Category.ANALYSIS: "Analyses",
@@ -339,7 +338,7 @@ TITLES: Final = {
     Category.SYNTAX: "Syntax",
     Category.OUTPUT: "Outputs",
 }
-"""Each category's heading."""
+"""Section heading for each `Category` in the Markdown matrix."""
 
 OFFERS: Final = frozenset(
     {
@@ -350,11 +349,11 @@ OFFERS: Final = frozenset(
         Status.DOCUMENTED,
     }
 )
-"""The statuses of a simulator that offers what a row asks, right or not."""
+"""Statuses indicating that a simulator implements the requested capability."""
 
 
 def cells(document: SuiteResults, key: str) -> dict[str, Cell]:
-    """Every cell of a row: those that ran, and the documented ones."""
+    """Returns all executed and documented cells for row `key`."""
     found = dict(document.fixtures[key].cells)
     for name, cell in documented.cells(key).items():
         found[name] = Cell(status=Status(cell[0]), evidence=cell[1])
@@ -366,7 +365,7 @@ def render(document: SuiteResults) -> None:
     text = ["# The coverage matrix", ""]
     text.append(
         "Generated by `scripts/bench --coverage` from `coverage.json`; "
-        "[README.md](README.md) says how each cell is found."
+        "[README.md](README.md) explains how each cell is found."
     )
     text.append("")
     text.extend(_provenance(document))
@@ -489,9 +488,10 @@ def _evidence(document: SuiteResults) -> list[str]:
             ]
         )
         for name, cell in cells(document, key).items():
-            # A simulator's own words are quoted as code, as it wrote them.
+            # Simulator diagnostic strings are quoted verbatim as inline code.
             quoted = cell.status in {Status.UNSUPPORTED, Status.FAILED}
-            evidence = f"`` {cell.evidence} ``" if quoted else cell.evidence
+            text_evidence = cell.evidence.replace(". ", "; ")
+            evidence = f"`` {text_evidence} ``" if quoted else cell.evidence
             said = f": {evidence}" if cell.evidence else ""
             text.append(f"- {name}, {cell.status}{said}")
         text.append("")
@@ -499,7 +499,7 @@ def _evidence(document: SuiteResults) -> list[str]:
 
 
 class Failed(Exception):  # noqa: N818 - a finding, not a failure of the suite
-    """A simulator took a fixture's request and did not finish it, with its message."""
+    """Exception raised when a simulator accepts a fixture but fails to complete."""
 
 
 NGSPICE_REFUSALS: Final = re.compile(
@@ -507,29 +507,27 @@ NGSPICE_REFUSALS: Final = re.compile(
     r"undefined|not available|cannot",
     re.IGNORECASE,
 )
-"""ngspice's words when it refuses what a deck asks rather than failing to solve it:
-"unknown subckt", "Unknown model type", "not (yet) supported with option KLU", "no
-such vector", "could not find a valid modelname"; any other message is a failure."""
+"""Pattern matching ngspice messages that reject an unsupported feature (such as
+"unknown subckt" or "not supported with option KLU"). Other errors count as failures."""
 
 XYCE_REFUSALS: Final = re.compile(
     r"Unrecognized|not supported|unknown|undefined|No analysis specified|Netlist error|"
     r"Unable to find|not a valid|is not allowed",
     re.IGNORECASE,
 )
-"""Xyce's words when it refuses what a deck asks: "Unrecognized dot line will be
-ignored", "No analysis specified", "Unable to find", "Netlist error", an error in
-reading the deck; any other message is a failure."""
+"""Pattern matching Xyce netlist rejection messages (such as "Unrecognized dot line" or
+"Netlist error"). Non-matching errors count as solver failures."""
 
 
 def _said(printed: str, refusals: re.Pattern[str]) -> str:
-    """The lines of a simulator's output that say why it stopped, or its last ones."""
+    """Extracts unique refusal or error lines from output, else trailing lines."""
     lines = [" ".join(line.split()) for line in printed.splitlines() if line.strip()]
     said = [line for line in lines if refusals.search(line) or "rror" in line]
     return " / ".join(dict.fromkeys(said or lines[-3:]))[:600]
 
 
 def _refused(printed: str, refusals: re.Pattern[str]) -> Exception:
-    """A refusal when the simulator's words say so, else a failure, with its words."""
+    """Classifies simulator output as `Unsupported` on `refusals`, else `Failed`."""
     said = _said(printed, refusals)
     return Unsupported(said) if refusals.search(printed) else Failed(said)
 
@@ -551,7 +549,7 @@ def run_jolty(fixture: Fixture) -> Values:
 
 
 def _at(scale: np.ndarray, values: np.ndarray, read: Read) -> complex:
-    """The value a read names: at its time, interpolated, or at its index."""
+    """Extracts `read` by interpolating at `read.time` or indexing `read.index`."""
     if read.time is not None:
         if values.size == 1:
             return complex(values[0])
@@ -562,15 +560,14 @@ def _at(scale: np.ndarray, values: np.ndarray, read: Read) -> complex:
 
 
 PRINTED: Final = "printed:"
-"""What begins a read of a number the simulator prints, such as a measurement's
-``tcross = 1.69e-06``, rather than writes as a vector."""
+"""Prefix marking reads parsed from stdout (e.g. ``tcross = 1.69e-06``) not vectors."""
 
 
 def _printed(printed: str, read: str) -> complex:
-    """The number a simulator printed as ``name = value`` or ``name: value``.
+    """Parses a numeric stdout entry formatted as ``name = value`` or ``name: value``.
 
     Raises:
-        Failed: When it printed none.
+        Failed: When the expected name does not appear in `printed`.
     """
     name = read.removeprefix(PRINTED)
     number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
@@ -637,7 +634,7 @@ def run_ngspice(fixture: Fixture, runner: Ngspice) -> Values:
 
 
 def _columns(reads: Mapping[str, Read]) -> list[str]:
-    """The expressions Xyce prints for the reads, each complex one as its two parts."""
+    """Builds Xyce ``.print`` expressions, splitting complex reads into real/imag."""
     columns: list[str] = []
     for read in reads.values():
         if read.xyce is None or not read.printed or read.xyce.startswith(PRINTED):

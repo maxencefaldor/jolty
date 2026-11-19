@@ -1,20 +1,21 @@
 # Copyright 2026 Maxence Faldor
-"""What an agent's transcript says of its session: its turns, tool calls and report.
+"""Parser for agent session transcripts capturing turns, tool calls, and reports.
 
-Claude Code, run with ``--output-format stream-json --verbose``, prints its session as
-events, one JSON object a line: first a ``system`` event that names the model and the
-agent's version and says what it runs with, its tools, MCP servers, permission mode,
-skills, plugins and the source of its key, then each message of the model,
-``assistant``, and of its tools, ``user``, and last a ``result`` event, the agent's own
-report of the session's length, cost and tokens, of how it ended and of the errors it
-met, with its last message. A message the model writes may stream as several events,
-one per block of its content, which share the message's id; a block of type
-``tool_use`` calls a tool, by its ``name``, and one of type ``text`` says something. A
-subagent's messages count with the agent's own. The fields are those of the Claude
-Agent SDK's ``SDKSystemMessage`` and ``SDKResultMessage``.
+Claude Code with ``--output-format stream-json --verbose`` writes one JSON object per
+line. The stream begins with a ``system`` event listing the model, agent version,
+tools, MCP servers, permission mode, skills, plugins, and API key source. Subsequent
+``assistant`` and ``user`` events record model messages and tool results. A final
+``result`` event reports session duration, cost, token usage, outcome, errors, and
+final response text.
 
-A line that holds no JSON object, such as a warning the agent wrote to its error
-stream, which the runner keeps in the same transcript, is not an event.
+A single model message can stream across multiple events that share a message id, one
+per content block. Content blocks of type ``tool_use`` invoke a tool by ``name``, and
+blocks of type ``text`` carry response prose. Subagent messages are counted alongside
+top-level agent messages. Field names follow the Claude Agent SDK ``SDKSystemMessage``
+and ``SDKResultMessage`` schemas.
+
+Non-JSON lines, such as stderr warnings captured in the same transcript file, are
+skipped.
 """
 
 import sys
@@ -33,111 +34,131 @@ from pydantic import (
 )
 
 type Event = dict[str, JsonValue]
-"""An event of a transcript: a JSON object."""
+"""Single JSON object representing a transcript event."""
 
 _JSON: Final = TypeAdapter[JsonValue](JsonValue)
 
 
 class Setup(BaseModel):
-    """What the agent says it runs with, in its first event, as it found it."""
+    """Runtime environment reported by the agent in the initial system event."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    cwd: str | None = Field(default=None, description="Its working directory.")
-    tools: tuple[str, ...] = Field(default=(), description="Its tools, by name.")
+    cwd: str | None = Field(
+        default=None, description="Working directory reported by the agent."
+    )
+    tools: tuple[str, ...] = Field(
+        default=(), description="Available tool names reported by the agent."
+    )
     mcp_servers: dict[str, str] = Field(
         default_factory=dict,
-        description="Its MCP servers, by name, each with its status, such as "
-        "connected.",
+        description="Configured MCP servers mapped from server name to status, such "
+        "as connected.",
     )
     permission_mode: str | None = Field(
-        default=None, description="Its permission mode, such as bypassPermissions."
+        default=None,
+        description="Permission mode reported by the agent, such as bypassPermissions.",
     )
     api_key_source: str | None = Field(
-        default=None, description="Where its key came from, such as user or none."
+        default=None,
+        description="API key source reported by the agent, such as user or none.",
     )
-    output_style: str | None = Field(default=None, description="Its output style.")
-    skills: tuple[str, ...] = Field(default=(), description="Its skills, by name.")
-    agents: tuple[str, ...] = Field(default=(), description="Its subagents, by name.")
+    output_style: str | None = Field(
+        default=None, description="Output style configured for the agent session."
+    )
+    skills: tuple[str, ...] = Field(
+        default=(), description="Loaded skill names reported by the agent."
+    )
+    agents: tuple[str, ...] = Field(
+        default=(), description="Configured subagent names reported by the agent."
+    )
     slash_commands: tuple[str, ...] = Field(
-        default=(), description="Its slash commands, by name."
+        default=(), description="Available slash command names reported by the agent."
     )
-    plugins: tuple[str, ...] = Field(default=(), description="Its plugins, by name.")
+    plugins: tuple[str, ...] = Field(
+        default=(), description="Loaded plugin names reported by the agent."
+    )
 
 
 class Session(BaseModel):
-    """What a transcript says of the agent's session."""
+    """Structured summary extracted from an agent session transcript."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     setup: Setup | None = Field(
         default=None,
-        description="What the agent says it runs with; null without a first event.",
+        description="Agent runtime environment from the initial system event, or null "
+        "if absent.",
     )
 
     model: str | None = Field(
-        default=None, description="The model the session ran, as its first event says."
+        default=None,
+        description="Model identifier reported in the initial system event.",
     )
     agent: str | None = Field(
-        default=None, description="The agent's version, as its first event says."
+        default=None,
+        description="Agent version string reported in the initial system event.",
     )
     turns: int = Field(
-        description="The messages the model wrote, each counted once, however many "
-        "events it streamed in."
+        description="Count of distinct model messages, deduplicated across streamed "
+        "content blocks."
     )
     tool_calls: dict[str, int] = Field(
-        description="How many times the model called each tool, by the tool's name."
+        description="Invocation count for each tool, keyed by tool name."
     )
     reported_turns: int | None = Field(
-        default=None, description="The turns the agent reports; null without a report."
+        default=None,
+        description="Turn count reported in the final result event, or null if absent.",
     )
     seconds: float | None = Field(
         default=None,
-        description="The session's wall time the agent reports, in seconds; null "
-        "without a report.",
+        description="Session wall-clock duration reported by the agent in seconds, or "
+        "null if absent.",
     )
     cost: float | None = Field(
         default=None,
-        description="The session's cost the agent reports, in US dollars; null "
-        "without a report.",
+        description="Session cost reported by the agent in US dollars, or null if "
+        "absent.",
     )
     tokens: dict[str, int] = Field(
         default_factory=dict,
-        description="The tokens the agent reports, by kind, such as output_tokens.",
+        description="Token counts reported by the agent, keyed by usage category such "
+        "as output_tokens.",
     )
     outcome: str | None = Field(
         default=None,
-        description="How the agent reports the session ended, such as success, "
-        "error_max_turns, error_max_budget_usd or error_during_execution; null "
-        "without a report.",
+        description="Session outcome subtype reported by the agent, such as success, "
+        "error_max_turns, error_max_budget_usd, or error_during_execution, or null if "
+        "absent.",
     )
     terminal_reason: str | None = Field(
         default=None,
-        description="Why the agent reports its loop ended, such as completed, "
-        "max_turns or api_error; null when it does not say.",
+        description="Loop termination reason reported by the agent, such as completed, "
+        "max_turns, or api_error, or null if unstated.",
     )
     is_error: bool | None = Field(
         default=None,
-        description="Whether the agent reports its session ended in an error; null "
-        "without a report.",
+        description="Flag indicating whether the agent reported an error outcome, or "
+        "null if absent.",
     )
     errors: tuple[str, ...] = Field(
-        default=(), description="The errors the agent reports it met."
+        default=(),
+        description="Error messages reported by the agent in the final result event.",
     )
     report: str | None = Field(
         default=None,
-        description="The agent's last report: the result it gives, or else the last "
-        "text the model wrote; null when it wrote none.",
+        description="Final session report from the result event, falling back to the "
+        "last text block, or null if none.",
     )
 
     @property
     def calls(self) -> int:
-        """How many tools the model called in all."""
+        """Total number of tool invocations across all tools."""
         return sum(self.tool_calls.values())
 
 
 def events(path: Path) -> Iterator[Event]:
-    """The events of the transcript at `path`, in order."""
+    """Yields JSON event objects from the transcript at `path` in order."""
     with path.open(encoding="utf-8", errors="replace") as file:
         for line in file:
             try:
@@ -149,10 +170,10 @@ def events(path: Path) -> Iterator[Event]:
 
 
 def read(path: Path) -> Session | None:
-    """What the transcript at `path` says of its session; null when it holds no event.
+    """Parses the transcript at `path` into a `Session`, or returns null if empty.
 
-    A transcript holds no event when its agent printed no stream of JSON events, as an
-    agent other than Claude Code may not.
+    Transcripts contain no JSON events when the agent emits plain text instead of a
+    JSON event stream, as non-Claude-Code agents may do.
     """
     found = False
     setup: Setup | None = None
@@ -207,7 +228,7 @@ def read(path: Path) -> Session | None:
 
 
 def _setup(event: Event) -> Setup:
-    """What the first event, `event`, says the agent runs with."""
+    """Builds a `Setup` record from the initial system `event`."""
     servers = _named(event.get("mcp_servers"))
     return Setup(
         cwd=_text(event.get("cwd")),
@@ -227,7 +248,7 @@ def _setup(event: Event) -> Setup:
 
 
 def _named(value: JsonValue) -> dict[str, Event]:
-    """The objects of the list `value` that have a name, by their names."""
+    """Maps named dictionary items in `value` by their name field."""
     found: dict[str, Event] = {}
     for each in value if isinstance(value, list) else []:
         if isinstance(each, dict):
@@ -280,7 +301,7 @@ def _tokens(usage: JsonValue) -> dict[str, int]:
 
 
 def main() -> None:
-    """Prints what the transcript given says of its session, as JSON."""
+    """Prints the parsed JSON summary of the transcript path passed as an argument."""
     session = read(Path(sys.argv[1]))
     print("null" if session is None else session.model_dump_json(indent=2))
 
