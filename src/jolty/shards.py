@@ -21,7 +21,6 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
-from typing import Final
 
 import numpy as np
 from pydantic import JsonValue
@@ -31,9 +30,6 @@ from jolty import specs as specs_module
 from jolty.errors import JoltyError
 from jolty.results import BatchResult
 from jolty.specs import Specs
-
-_PACKAGE: Final = Path(__file__).resolve().parent
-"""jolty's own directory, whose modules and engine a build is."""
 
 
 def digest(described: Mapping[str, JsonValue]) -> str:

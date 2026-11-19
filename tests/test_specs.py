@@ -53,10 +53,12 @@ from jolty.specs import judged as judged_requirement
 from jolty.units import (
     CURRENT,
     FREQUENCY,
+    TEMPERATURE,
     TIME,
     VOLTAGE,
     A,
     Hz,
+    K,
     V,
     kHz,
     mA,
@@ -916,3 +918,20 @@ def test_verdicts_on_a_batch_are_those_on_each_run(
             verdicts.append(judge(requirement, ["op"], runs_of))
         sampled.append(tuple(verdicts))
     assert spread_of(specs, judged) == spread(specs, sampled)
+
+
+def test_temperature_dc_sweep_uses_temperature_axis_dimension() -> None:
+    sweep = results.DcSweepResult(
+        UNKNOWNS,
+        "T1",
+        "temperature",
+        np.array([273.15, 300.0, 350.0]),
+        np.array([[1.0, 0.5, -1e-3], [2.0, 0.5, -2e-3], [3.0, 0.5, -3e-3]]),
+    )
+    reading = value("sweep", "out", at=300 * K).read(sweep)
+    assert reading.value == 2.0
+    assert reading.dimension == VOLTAGE
+    assert unread(value("sweep", "out", at=1 * A) >= 0 * V, sweep) == (
+        "at takes a quantity in K, not 1 A"
+    )
+    assert TEMPERATURE == K.dimension

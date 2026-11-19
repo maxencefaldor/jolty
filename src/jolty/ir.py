@@ -325,7 +325,7 @@ def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | Non
         match found:
             case dict():
                 found = found.get(key)
-            case list() if key.isdecimal() and int(key) < len(found):
+            case list() if key.isascii() and key.isdigit() and int(key) < len(found):
                 found = found[int(key)]
             case _:
                 return None

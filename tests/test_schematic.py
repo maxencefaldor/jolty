@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from matplotlib.figure import Figure
+from pydantic import JsonValue
 
 from jolty import (
     Builder,
@@ -214,3 +215,43 @@ def test_the_draw_command_names_what_it_cannot_draw(
     save_results(results, {"step": Simulation(drawn).run(step)})
     assert run("draw", str(path), "--results", str(results)) == 2
     assert "holds no operating point" in capsys.readouterr().err
+
+
+def test_schematic_labels_integer_parameters_and_exponential_waveforms() -> None:
+    def label(model: str, parameters: dict[str, JsonValue]) -> str:
+        instance = ir.Instance(
+            name="X1",
+            of=ir.DeviceOf(model=model),
+            parameters=parameters,
+            terminals={},
+        )
+        return schematic._value(instance)  # noqa: SLF001 - test value formatting
+
+    assert label("resistor", {"resistance": 1000}) == "1 kΩ"
+    assert label("resistor", {"resistance": True}) == ""
+    assert label("voltage_controlled_voltage_source", {"gain": 2}) == "×2"
+    assert label("voltage_controlled_voltage_source", {"gain": True}) == ""
+    assert label("voltage_source", {"waveform": {"dc": 5}}) == "5 V"
+    assert label("voltage_source", {"waveform": {"dc": True}}) == ""
+    assert (
+        label(
+            "voltage_source",
+            {"waveform": {"sine": {"amplitude": 2, "frequency": 1000}}},
+        )
+        == "2 V sine, 1 kHz"
+    )
+    assert (
+        label("voltage_source", {"waveform": {"pulse": {"pulsed": 3}}})
+        == "pulse to 3 V"
+    )
+    assert (
+        label("voltage_source", {"waveform": {"exponential": {"pulsed": 4}}})
+        == "exponential to 4 V"
+    )
+    assert (
+        label("current_source", {"waveform": {"exponential": {"pulsed": 2.5}}})
+        == "exponential to 2.5 A"
+    )
+    assert (
+        label("voltage_source", {"waveform": {"exponential": {"pulsed": True}}}) == ""
+    )

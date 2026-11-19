@@ -39,7 +39,7 @@ import math
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from jolty import devices
+from jolty import _core, devices
 from jolty.builder import Builder, Component, component
 from jolty.units import A, F, V, W, celsius, m, nA, ns, ohm, pF, ps
 
@@ -174,7 +174,9 @@ SATURATION_CURRENT: Final = 10e-12
 CHANNEL_JUNCTIONS: Final = 1e-80
 """The saturation current of a fitted channel's own junctions, in amperes: so small
 that they carry nothing below the body diode's drop."""
-THERMAL_VOLTAGE: Final = 1.380649e-23 * 300.15 / 1.602176634e-19
+THERMAL_VOLTAGE: Final = (
+    _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE
+)
 """The thermal voltage at 27 °C, in volts."""
 JUNCTION_POTENTIAL: Final = 0.7
 """A fitted body diode's junction potential, in volts, with a grading coefficient of

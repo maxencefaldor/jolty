@@ -16,7 +16,9 @@ import importlib.util
 import math
 import sys
 import sysconfig
-from collections.abc import Callable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,7 +42,7 @@ from jolty import (
 from jolty import function as jolty_function
 from jolty import vjp as jolty_vjp
 from jolty.errors import ElaborationError, SimulationError
-from jolty.jax import PERIOD
+from jolty.jax import PERIOD, JaxOutputs
 from jolty.jax import function as jax_function
 from jolty.plan import (
     Ac,
@@ -1377,3 +1379,33 @@ def test_jax_bridge_keeps_gil_disabled_on_free_threaded_python() -> None:
         assert bool(jnp.all(jnp.isfinite(autonomous_gradient["L1"]["inductance"])))
 
     assert not sys._is_gil_enabled()  # noqa: SLF001 - CPython's only way to ask
+
+
+def test_concurrent_first_call_builds_runner_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrapped = jax_function(crossbar(), OperatingPoint())
+    workers = 4
+    barrier = threading.Barrier(workers)
+    original_check = Elaborated.check
+
+    def synced_check(self: Elaborated, parameters: Mapping[str, Iterable[str]]) -> None:
+        original_check(self, parameters)
+        barrier.wait(timeout=10)
+
+    def evaluate_once() -> JaxOutputs:
+        with jax.enable_x64():
+            return wrapped(_as_jax_parameters(WEIGHTS, dtype=jnp.float64))
+
+    monkeypatch.setattr(Elaborated, "check", synced_check)
+    original_runner = jolty_jax_module._runner  # noqa: SLF001 - count builds
+    with (
+        patch.object(jolty_jax_module, "_runner", wraps=original_runner) as runner_spy,
+        ThreadPoolExecutor(max_workers=workers) as pool,
+    ):
+        futures = [pool.submit(evaluate_once) for _ in range(workers)]
+        results_list = [future.result() for future in futures]
+    assert runner_spy.call_count == 1
+    first = np.asarray(results_list[0]["out0"])
+    for output in results_list[1:]:
+        np.testing.assert_array_equal(np.asarray(output["out0"]), first)

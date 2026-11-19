@@ -497,6 +497,13 @@ _SOURCES: Final = {"voltage_source": "V", "current_source": "A"}
 """The unit of each independent source's waveform."""
 
 
+def _real(value: object) -> float | None:
+    """Returns `value` as a float when it is an int or float (excluding bool)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
 def _value(instance: ir.Instance) -> str:
     """The instance's value as a schematic writes it, such as ``4.7 kΩ``."""
     if not isinstance(instance.of, ir.DeviceOf):
@@ -504,25 +511,43 @@ def _value(instance: ir.Instance) -> str:
     model, parameters = instance.of.model, instance.parameters
     if model in _QUANTITIES:
         name, unit = _QUANTITIES[model]
-        value = parameters.get(name)
-        return format_si(value, unit) if isinstance(value, float) else ""
+        number = _real(parameters.get(name))
+        return format_si(number, unit) if number is not None else ""
     if model in _SOURCES:
         return _waveform(parameters.get("waveform"), _SOURCES[model])
-    gain = parameters.get("gain")
-    if model == "voltage_controlled_voltage_source" and isinstance(gain, float):
+    gain = _real(parameters.get("gain"))
+    if model == "voltage_controlled_voltage_source" and gain is not None:
         return f"{_TIMES}{gain:g}"
     return ""
 
 
+def _sine_label(spec: object, unit: str) -> str:
+    """Formats a sine waveform label when amplitude and frequency are numeric."""
+    if not isinstance(spec, Mapping):
+        return ""
+    amplitude = _real(spec.get("amplitude"))
+    frequency = _real(spec.get("frequency"))
+    if amplitude is None or frequency is None:
+        return ""
+    return f"{format_si(amplitude, unit)} sine, {format_si(frequency, 'Hz')}"
+
+
+def _pulsed_label(kind: str, spec: object, unit: str) -> str:
+    """Formats a pulse or exponential waveform label from its `pulsed` level."""
+    if not isinstance(spec, Mapping):
+        return ""
+    pulsed = _real(spec.get("pulsed"))
+    return f"{kind} to {format_si(pulsed, unit)}" if pulsed is not None else ""
+
+
 def _waveform(spec: object, unit: str) -> str:
-    match spec:
-        case {"dc": float(level)}:
-            return format_si(level, unit)
-        case {"sine": {"amplitude": float(amplitude), "frequency": float(frequency)}}:
-            return f"{format_si(amplitude, unit)} sine, {format_si(frequency, 'Hz')}"
-        case {"pulse": {"pulsed": float(pulsed)}}:
-            return f"pulse to {format_si(pulsed, unit)}"
-        case {"piecewise": _}:
-            return "piecewise"
-        case _:
-            return ""
+    if not isinstance(spec, Mapping):
+        return ""
+    if (level := _real(spec.get("dc"))) is not None:
+        return format_si(level, unit)
+    if "sine" in spec:
+        return _sine_label(spec["sine"], unit)
+    for kind in ("pulse", "exponential"):
+        if kind in spec:
+            return _pulsed_label(kind, spec[kind], unit)
+    return "piecewise" if "piecewise" in spec else ""

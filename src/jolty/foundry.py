@@ -61,7 +61,6 @@ SPICE_OPTIONS: Final = {
 }
 """ngspice's ``.options`` name of each option of [`Options`][jolty.plan.Options] it
 reads alike, by the option's name."""
-"""ngspice's name of each of jolty's options."""
 
 _METHODS: Final = {
     "trapezoidal": "method=trap",

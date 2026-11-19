@@ -1196,11 +1196,15 @@ def _axis(result: results.AnalysisResult, what: str) -> _Axis:
     match result:
         case results.TransientResult():
             return _Axis(TIME, "time")
-        case results.DcSweepResult() if result.nature is None:
-            return _Axis(None, f"value of {result.source}'s {result.parameter}")
         case results.DcSweepResult():
-            along = VOLTAGE if result.nature == "voltage" else CURRENT
-            return _Axis(along, f"level of {result.source}")
+            if result.nature is None:
+                label = (
+                    f"value of {result.source}'s {result.parameter}"
+                    if result.parameter is not None
+                    else f"level of {result.source}"
+                )
+                return _Axis(None, label)
+            return _Axis(_DIMENSIONS[result.nature], f"level of {result.source}")
         case _:
             message = f"{what} reads a transient or a DC sweep, not {_kind(result)}"
             raise MeasureError(message)

@@ -361,15 +361,17 @@ def function(
         dtypes = _Dtypes(
             real, output, np.dtype(jax.dtypes.canonicalize_dtype(np.int64))
         )
+        key = (structure, dtypes)
         with lock:
-            run = runners.get((structure, dtypes))
+            run = runners.get(key)
         if run is None:
             native.elaborated.check(dict(structure))
             names = tuple((path, name) for path, named in structure for name in named)
             with lock:
-                run = runners.setdefault(
-                    (structure, dtypes), _runner(native, names, dtypes, saved)
-                )
+                run = runners.get(key)
+                if run is None:
+                    run = _runner(native, names, dtypes, saved)
+                    runners[key] = run
         theta = (
             jnp.stack([leaf.astype(real) for leaf in leaves])
             if leaves

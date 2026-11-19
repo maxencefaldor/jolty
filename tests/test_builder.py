@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from jolty import Builder, BuildError, Role, circuit, component, devices, ir
 from jolty.units import Quantity, V, kohm, nF
@@ -185,3 +186,12 @@ def test_a_component_states_ratings_and_a_part_number_each_instance_carries() ->
     assert second.part == "PAIR-1"
     with pytest.raises(ValueError, match="neither empty nor spaced at either end"):
         plain.numbered(" PAIR-1")
+
+
+def test_parameter_rejects_non_ascii_decimal_indices() -> None:
+    parameters: dict[str, JsonValue] = {"items": ["zero", "one", "two"]}
+    assert ir.parameter(parameters, "items.0") == "zero"
+    assert ir.parameter(parameters, "items.2") == "two"
+    assert ir.parameter(parameters, "items.3") is None
+    assert ir.parameter(parameters, "items.\u0662") is None
+    assert ir.parameter(parameters, "items.\u00b2") is None
