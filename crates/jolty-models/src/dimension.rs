@@ -27,8 +27,20 @@ impl Dimension {
     /// The dimension of the product `self * other`.
     #[must_use]
     pub const fn mul(self, other: Self) -> Self {
-        let [left_kilogram, left_meter, left_second, left_ampere, left_kelvin] = self.0;
-        let [right_kilogram, right_meter, right_second, right_ampere, right_kelvin] = other.0;
+        let [
+            left_kilogram,
+            left_meter,
+            left_second,
+            left_ampere,
+            left_kelvin,
+        ] = self.0;
+        let [
+            right_kilogram,
+            right_meter,
+            right_second,
+            right_ampere,
+            right_kelvin,
+        ] = other.0;
         Self([
             left_kilogram + right_kilogram,
             left_meter + right_meter,
@@ -41,8 +53,20 @@ impl Dimension {
     /// The dimension of the quotient `self / other`.
     #[must_use]
     pub const fn div(self, other: Self) -> Self {
-        let [left_kilogram, left_meter, left_second, left_ampere, left_kelvin] = self.0;
-        let [right_kilogram, right_meter, right_second, right_ampere, right_kelvin] = other.0;
+        let [
+            left_kilogram,
+            left_meter,
+            left_second,
+            left_ampere,
+            left_kelvin,
+        ] = self.0;
+        let [
+            right_kilogram,
+            right_meter,
+            right_second,
+            right_ampere,
+            right_kelvin,
+        ] = other.0;
         Self([
             left_kilogram - right_kilogram,
             left_meter - right_meter,
@@ -75,13 +99,7 @@ impl Dimension {
     #[must_use]
     pub const fn sqrt(self) -> Self {
         let [kilogram, meter, second, ampere, kelvin] = self.0;
-        Self([
-            kilogram / 2,
-            meter / 2,
-            second / 2,
-            ampere / 2,
-            kelvin / 2,
-        ])
+        Self([kilogram / 2, meter / 2, second / 2, ampere / 2, kelvin / 2])
     }
 }
 

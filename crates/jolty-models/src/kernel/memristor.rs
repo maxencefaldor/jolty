@@ -13,8 +13,8 @@ use crate::dimension::{CHARGE, FREQUENCY, RESISTANCE, VOLTAGE};
 use crate::kernel::dual::Dual;
 use crate::kernel::parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
-    ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its

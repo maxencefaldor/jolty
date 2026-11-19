@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::dimension::{RESISTANCE, TIME};
 use crate::kernel::dual::Dual;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
-    ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to

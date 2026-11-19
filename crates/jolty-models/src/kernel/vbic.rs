@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dimension::{
-    CAPACITANCE, CHARGE, CURRENT, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, RESISTANCE, TEMPERATURE,
-    TIME, VOLTAGE,
+    CAPACITANCE, CHARGE, CURRENT, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, RESISTANCE,
+    TEMPERATURE, TIME, VOLTAGE,
 };
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage};
@@ -17,8 +17,9 @@ use crate::kernel::parts::{
 };
 use crate::kernel::region::Bipolar;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
-    ParameterKind, ParameterMetadata, Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, Polarity, REFERENCE_TEMPERATURE, Real,
+    Regions, Stamp,
 };
 
 /// VBIC's Boltzmann constant, in joules per kelvin: the one its definition's reference code

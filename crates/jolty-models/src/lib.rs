@@ -650,7 +650,8 @@ mod tests {
         );
         let bsim3 = library.get("bsim3").expect("bsim3");
         let bsim4 = library.get("bsim4").expect("bsim4");
-        assert!(!bsim3.binned_parameters().is_empty());
-        assert!(!bsim4.binned_parameters().is_empty());
+        let empty: &[&str] = &[];
+        assert_ne!(bsim3.binned_parameters(), empty);
+        assert_ne!(bsim4.binned_parameters(), empty);
     }
 }

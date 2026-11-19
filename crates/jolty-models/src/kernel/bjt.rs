@@ -21,8 +21,9 @@ use crate::kernel::parts::{
 use crate::kernel::region::Bipolar;
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
-    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real, Regions, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
+    UnknownIndex,
 };
 
 /// The doping order of a bipolar transistor.

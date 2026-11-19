@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dimension::{
-    CAPACITANCE, INDUCTANCE, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, PER_VOLT_SQUARED, RESISTANCE,
-    TEMPERATURE,
+    CAPACITANCE, INDUCTANCE, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, PER_VOLT_SQUARED,
+    RESISTANCE, TEMPERATURE,
 };
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::Temperatures;

@@ -23,8 +23,9 @@ use crate::kernel::parts::{self, Bias, Derivatives, Nodes, Oriented, Series, ser
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
-    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions,
+    Stamp,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,

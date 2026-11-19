@@ -114,10 +114,10 @@ def test_bsim_cards_and_binned_sets_derive_from_engine() -> None:
     assert set(devices.BSIM4_CARD) == (
         set(_core.parameter_dimensions("bsim4")) - bsim4_instance
     )
-    assert devices.BSIM3_BINNED == frozenset(_core.binned_parameters("bsim3"))
-    assert devices.BSIM4_BINNED == frozenset(_core.binned_parameters("bsim4"))
-    assert devices.BSIM3_BINNED <= set(devices.BSIM3_CARD)
-    assert devices.BSIM4_BINNED <= set(devices.BSIM4_CARD)
+    assert frozenset(_core.binned_parameters("bsim3")) == devices.BSIM3_BINNED
+    assert frozenset(_core.binned_parameters("bsim4")) == devices.BSIM4_BINNED
+    assert set(devices.BSIM3_CARD) >= devices.BSIM3_BINNED
+    assert set(devices.BSIM4_CARD) >= devices.BSIM4_BINNED
     assert devices.BSIM3_CARD["uc"] == "uc"
     assert devices.BSIM3_CARD["uc1"] == "uc"
     assert devices.bsim3_dimension("uc", mobility_model=3) == devices.PER_VOLT
@@ -130,7 +130,7 @@ def test_diode_breakdown_temperature_coefficient_follows_temperature_model() -> 
         temperature_model=0,
         breakdown_temperature_coefficient=2e-3 * V / K,
     )
-    assert linear.parameters["breakdown_temperature_coefficient"] == pytest.approx(2e-3)
+    assert linear.parameters["breakdown_temperature_coefficient"] == 2e-3
     with pytest.raises(DimensionError, match="breakdown_temperature_coefficient"):
         devices.diode(
             temperature_model=0,
@@ -143,9 +143,7 @@ def test_diode_breakdown_temperature_coefficient_follows_temperature_model() -> 
             temperature_model=model,
             breakdown_temperature_coefficient=2e-3 / K,
         )
-        assert relative.parameters["breakdown_temperature_coefficient"] == (
-            pytest.approx(2e-3)
-        )
+        assert relative.parameters["breakdown_temperature_coefficient"] == 2e-3
         with pytest.raises(DimensionError, match="breakdown_temperature_coefficient"):
             devices.diode(
                 temperature_model=model,

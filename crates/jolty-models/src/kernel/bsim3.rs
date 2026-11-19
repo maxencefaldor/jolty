@@ -32,8 +32,8 @@ use crate::kernel::dual::Dual;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
 use crate::{
-    Interface, Kernel, Layout, Local, NoiseSource, ParameterError, ParameterKind, ParameterMetadata,
-    Real, Regions, Stamp,
+    Interface, Kernel, Layout, Local, NoiseSource, ParameterError, ParameterKind,
+    ParameterMetadata, Real, Regions, Stamp,
 };
 
 /// The permittivity of silicon dioxide, in farads per meter, as BSIM3 takes it.
