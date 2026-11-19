@@ -216,7 +216,10 @@ mod tests {
     fn a_device_heats_only_when_asked() {
         let model = Thermal::<Diode>::new();
         let heated_bench = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
-        assert_eq!(heated_bench.unknowns(), ["n0", "n1", "n2", "device:junction"]);
+        assert_eq!(
+            heated_bench.unknowns(),
+            ["n0", "n1", "n2", "device:junction"]
+        );
         let interface = |parameters: &str| {
             model
                 .read(&serde_json::from_str(parameters).expect("JSON"))

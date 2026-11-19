@@ -407,8 +407,10 @@ endmodule
     #[test]
     fn resistor_linear_factors_common_disjunct_and_omits_value_on_f64() {
         let source = include_str!("../../models/resistor.va");
-        let code = compile(source, "crates/jolty-veriloga/models/resistor.va", &|_| None)
-            .expect("resistor compiles");
+        let code = compile(source, "crates/jolty-veriloga/models/resistor.va", &|_| {
+            None
+        })
+        .expect("resistor compiles");
         let linear_start = code.find("fn linear(").expect("linear method");
         let linear_end = linear_start + code[linear_start..].find("\n    }\n").expect("end");
         let linear = &code[linear_start..linear_end];

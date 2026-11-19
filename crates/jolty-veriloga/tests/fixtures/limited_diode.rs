@@ -19,7 +19,10 @@
     )
 )]
 
-use jolty_models::{BOLTZMANN, Branch, BranchKind, Dual, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp, limit_junction};
+use jolty_models::{
+    BOLTZMANN, Branch, BranchKind, Dual, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Lift, Local,
+    ParameterError, Real, Stamp, limit_junction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +96,13 @@ impl Kernel for Diode {
         let mut v = Locals { slope: R::constant(0.0), critical: R::constant(0.0) };
         v.slope = temperature * BOLTZMANN / ELEMENTARY_CHARGE;
         v.critical = v.slope * (v.slope / (parameters.saturation_current * std::f64::consts::SQRT_2)).ln();
-        Ok(PreparedDiode { slope: v.slope, critical: v.critical, h2: v.slope * 3.0, saturation_current: parameters.saturation_current, h4: R::constant(1.0) / v.slope })
+        Ok(PreparedDiode {
+            slope: v.slope,
+            critical: v.critical,
+            h2: v.slope * 3.0,
+            saturation_current: parameters.saturation_current,
+            h4: R::constant(1.0) / v.slope,
+        })
     }
 
     fn layout<R: Real>(
@@ -101,7 +110,12 @@ impl Kernel for Diode {
         _: &PreparedDiode<R>,
         layout: &mut Layout,
     ) -> Result<DiodeShape, ParameterError> {
-        Ok(DiodeShape { anode_by_anode: layout.entry(0, 0), anode_by_cathode: layout.entry(0, 1), cathode_by_anode: layout.entry(1, 0), cathode_by_cathode: layout.entry(1, 1) })
+        Ok(DiodeShape {
+            anode_by_anode: layout.entry(0, 0),
+            anode_by_cathode: layout.entry(0, 1),
+            cathode_by_anode: layout.entry(1, 0),
+            cathode_by_cathode: layout.entry(1, 1),
+        })
     }
 
     fn evaluate<R: Real>(
@@ -119,7 +133,14 @@ impl Kernel for Diode {
             applied0: f64,
             limited0: f64,
         }
-        let mut v = Locals { vd: Dual::number(0.0), id: Dual::number(0.0), ratio: Dual::number(0.0), anode_cathode_flow: Dual::number(0.0), applied0: 0.0, limited0: 0.0 };
+        let mut v = Locals {
+            vd: Dual::number(0.0),
+            id: Dual::number(0.0),
+            ratio: Dual::number(0.0),
+            anode_cathode_flow: Dual::number(0.0),
+            applied0: 0.0,
+            limited0: 0.0,
+        };
         let applied0 = at.value(0) - at.value(1);
         let limited0 = match at.limiting.then(|| limit_junction(applied0, memory.limited0, prepared.slope.value(), prepared.critical.value())).flatten() {
             Some(limited) => {
@@ -131,7 +152,7 @@ impl Kernel for Diode {
         memory.limited0 = limited0;
         v.applied0 = applied0;
         v.limited0 = limited0;
-        let [t0000] = Dual::<R, 1>::variables([(at.unknown::<R>(0) - at.unknown::<R>(1)).with_value(limited0)]);
+        let t0000 = Dual::variable((at.unknown::<R>(0) - at.unknown::<R>(1)).with_value(limited0));
         v.vd = t0000;
         if v.vd.value.value() >= -prepared.h2.value() {
             v.id = (v.vd.chain((v.vd.value / prepared.slope, prepared.h4)).exp() - 1.0).scale(prepared.saturation_current);
@@ -149,5 +170,4 @@ impl Kernel for Diode {
         stamp.add_conductance(shape.cathode_by_anode, -t0002);
         stamp.add_conductance(shape.cathode_by_cathode, t0002);
     }
-
 }

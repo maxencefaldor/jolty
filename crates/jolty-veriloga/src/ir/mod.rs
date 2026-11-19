@@ -21,7 +21,7 @@ use jolty_models::Nature;
 use crate::Error;
 use crate::ast::{self, Type};
 
-pub(crate) use analysis::{contributes, visit_contributions};
+pub(crate) use analysis::visit_contributions;
 pub(crate) use currents::probed_currents;
 pub(crate) use fold::{constant, fold};
 

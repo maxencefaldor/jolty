@@ -19,7 +19,10 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError, Real, Stamp, UnknownIndex};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, Real, Stamp, UnknownIndex,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -138,9 +141,15 @@ impl Kernel for Networks {
         ParameterError::positive("r", parameters.r)?;
         ParameterError::non_negative("s", parameters.s)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.grounded)) {
-    return Err(ParameterError(format!("grounded must be at least 0 and at most 1, not {:?}", parameters.grounded)));
-}
-        Ok(PreparedNetworks { r: parameters.r, h1: R::constant(1.0) / parameters.r, k: parameters.k, s: parameters.s, conditions: [parameters.grounded != 0] })
+            return Err(ParameterError(format!("grounded must be at least 0 and at most 1, not {:?}", parameters.grounded)));
+        }
+        Ok(PreparedNetworks {
+            r: parameters.r,
+            h1: R::constant(1.0) / parameters.r,
+            k: parameters.k,
+            s: parameters.s,
+            conditions: [parameters.grounded != 0],
+        })
     }
 
     fn layout<R: Real>(
@@ -176,9 +185,44 @@ impl Kernel for Networks {
         local[8] = match leader(&joined, 8) { 8 => layout.internal("source", Nature::Current), leader => local.get(leader).copied().unwrap_or(NOWHERE) };
         let [_, _, _, inner, joined, upper, lower, noise, source] = local;
         let short = layout.internal("short", Nature::Current);
-        Ok(NetworksShape { inner, joined, upper, lower, noise, source, short, a_by_a: layout.entry(0, 0), a_by_upper: if upper == NOWHERE { NOWHERE } else { layout.entry(0, upper) }, a_by_source: layout.entry(0, source), a_by_short: layout.entry(0, short), b_by_b: layout.entry(1, 1), b_by_inner: layout.entry(1, inner), b_by_joined: layout.entry(1, joined), b_by_source: layout.entry(1, source), inner_by_b: layout.entry(inner, 1), inner_by_inner: layout.entry(inner, inner), inner_by_short: layout.entry(inner, short), joined_by_b: layout.entry(joined, 1), joined_by_joined: layout.entry(joined, joined), upper_by_a: if upper == NOWHERE { NOWHERE } else { layout.entry(upper, 0) }, upper_by_upper: if upper == NOWHERE { NOWHERE } else { layout.entry(upper, upper) }, lower_by_lower: if active[0] && lower != NOWHERE { layout.entry(lower, lower) } else { NOWHERE }, noise_by_noise: layout.entry(noise, noise), noise_by_source: layout.entry(noise, source), source_by_source: layout.entry(source, source), short_by_a: layout.entry(short, 0), short_by_inner: layout.entry(short, inner), conditions: prepared.conditions, active })
+        Ok(NetworksShape {
+            inner,
+            joined,
+            upper,
+            lower,
+            noise,
+            source,
+            short,
+            a_by_a: layout.entry(0, 0),
+            a_by_upper: if upper == NOWHERE { NOWHERE } else { layout.entry(0, upper) },
+            a_by_source: layout.entry(0, source),
+            a_by_short: layout.entry(0, short),
+            b_by_b: layout.entry(1, 1),
+            b_by_inner: layout.entry(1, inner),
+            b_by_joined: layout.entry(1, joined),
+            b_by_source: layout.entry(1, source),
+            inner_by_b: layout.entry(inner, 1),
+            inner_by_inner: layout.entry(inner, inner),
+            inner_by_short: layout.entry(inner, short),
+            joined_by_b: layout.entry(joined, 1),
+            joined_by_joined: layout.entry(joined, joined),
+            upper_by_a: if upper == NOWHERE { NOWHERE } else { layout.entry(upper, 0) },
+            upper_by_upper: if upper == NOWHERE { NOWHERE } else { layout.entry(upper, upper) },
+            lower_by_lower: if active[0] && lower != NOWHERE { layout.entry(lower, lower) } else { NOWHERE },
+            noise_by_noise: layout.entry(noise, noise),
+            noise_by_source: layout.entry(noise, source),
+            source_by_source: layout.entry(source, source),
+            short_by_a: layout.entry(short, 0),
+            short_by_inner: layout.entry(short, inner),
+            conditions: prepared.conditions,
+            active,
+        })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a kernel's function is its Verilog-A source's analog block, which is one block"
+    )]
     fn evaluate<R: Real>(
         shape: &NetworksShape,
         prepared: &PreparedNetworks<R>,
@@ -205,14 +249,32 @@ impl Kernel for Networks {
             a_b_flow: Dual<R, 1>,
             source_ground_flow: Dual<R, 1>,
         }
-        let mut v = Locals { shorted: Dual::number(0.0), voltage_a_upper: Dual::number(0.0), voltage_inner_b: Dual::number(0.0), voltage_joined_b: Dual::number(0.0), voltage_lower_ground: Dual::number(0.0), voltage_noise_ground: Dual::number(0.0), voltage_source_ground: Dual::number(0.0), current_short: Dual::number(0.0), short_potential: R::constant(0.0), source_flow: Dual::number(0.0), load_flow: Dual::number(0.0), inner_b_flow: Dual::number(0.0), joined_b_flow: Dual::number(0.0), lower_ground_flow: Dual::number(0.0), a_upper_flow: Dual::number(0.0), a_b_flow: Dual::number(0.0), source_ground_flow: Dual::number(0.0) };
-        v.voltage_a_upper = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(shape.upper), gradient: [R::constant(1.0)] };
-        v.voltage_inner_b = Dual { value: at.unknown::<R>(shape.inner) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
-        v.voltage_joined_b = Dual { value: at.unknown::<R>(shape.joined) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
-        v.voltage_lower_ground = Dual { value: at.unknown::<R>(shape.lower) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
-        v.voltage_noise_ground = Dual { value: at.unknown::<R>(shape.noise) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
-        v.voltage_source_ground = Dual { value: at.unknown::<R>(shape.source) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
-        v.current_short = Dual { value: at.unknown::<R>(shape.short), gradient: [R::constant(1.0)] };
+        let mut v = Locals {
+            shorted: Dual::number(0.0),
+            voltage_a_upper: Dual::number(0.0),
+            voltage_inner_b: Dual::number(0.0),
+            voltage_joined_b: Dual::number(0.0),
+            voltage_lower_ground: Dual::number(0.0),
+            voltage_noise_ground: Dual::number(0.0),
+            voltage_source_ground: Dual::number(0.0),
+            current_short: Dual::number(0.0),
+            short_potential: R::constant(0.0),
+            source_flow: Dual::number(0.0),
+            load_flow: Dual::number(0.0),
+            inner_b_flow: Dual::number(0.0),
+            joined_b_flow: Dual::number(0.0),
+            lower_ground_flow: Dual::number(0.0),
+            a_upper_flow: Dual::number(0.0),
+            a_b_flow: Dual::number(0.0),
+            source_ground_flow: Dual::number(0.0),
+        };
+        v.voltage_a_upper = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(shape.upper));
+        v.voltage_inner_b = Dual::variable(at.unknown::<R>(shape.inner) - at.unknown::<R>(1));
+        v.voltage_joined_b = Dual::variable(at.unknown::<R>(shape.joined) - at.unknown::<R>(1));
+        v.voltage_lower_ground = Dual::variable(at.unknown::<R>(shape.lower) - at.unknown::<R>(NOWHERE));
+        v.voltage_noise_ground = Dual::variable(at.unknown::<R>(shape.noise) - at.unknown::<R>(NOWHERE));
+        v.voltage_source_ground = Dual::variable(at.unknown::<R>(shape.source) - at.unknown::<R>(NOWHERE));
+        v.current_short = Dual::variable(at.unknown::<R>(shape.short));
         v.short_potential += R::constant(0.0);
         v.inner_b_flow = v.inner_b_flow + v.voltage_inner_b.chain((v.voltage_inner_b.value / prepared.r, prepared.h1));
         v.joined_b_flow = v.joined_b_flow + v.voltage_joined_b.chain((v.voltage_joined_b.value / prepared.r, prepared.h1));

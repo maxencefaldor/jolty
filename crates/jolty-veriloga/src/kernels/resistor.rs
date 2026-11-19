@@ -18,7 +18,10 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError, Real, SMALL_RESISTANCE, Stamp, UnknownIndex};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
+    ParameterError, Real, SMALL_RESISTANCE, Stamp, UnknownIndex,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +118,7 @@ impl Kernel for Resistor {
     }
 
     fn linear(shape: &ResistorShape, prepared: &PreparedResistor<f64>) -> bool {
-        if shape.conditions[0] { prepared.r.value() == 0.0 || (prepared.voltage_coefficient.value() == 0.0 && prepared.quadratic_voltage_coefficient.value() == 0.0) } else { prepared.voltage_coefficient.value() == 0.0 && prepared.quadratic_voltage_coefficient.value() == 0.0 }
+        (shape.conditions[0] && prepared.r == 0.0) || (prepared.voltage_coefficient == 0.0 && prepared.quadratic_voltage_coefficient == 0.0)
     }
 
     fn prepare<R: Real>(
@@ -131,7 +134,11 @@ impl Kernel for Resistor {
         ParameterError::positive("nominal_temperature", parameters.nominal_temperature)?;
         ParameterError::non_negative("flicker_coefficient", parameters.flicker_coefficient)?;
         ParameterError::positive("flicker_exponent", parameters.flicker_exponent)?;
-        let mut v = Locals { difference: R::constant(0.0), factor: R::constant(0.0), r: R::constant(0.0) };
+        let mut v = Locals {
+            difference: R::constant(0.0),
+            factor: R::constant(0.0),
+            r: R::constant(0.0),
+        };
         v.difference = temperature - parameters.nominal_temperature;
         if parameters.exponential_temperature_coefficient.is_some() {
             if parameters.temperature_coefficient.value() != 0.0 || parameters.quadratic_temperature_coefficient.value() != 0.0 {
@@ -145,7 +152,16 @@ impl Kernel for Resistor {
             return Err(ParameterError(format!("the temperature coefficients scale the resistance to zero at {:?} K", temperature.value())));
         }
         v.r = parameters.resistance * v.factor;
-        Ok(PreparedResistor { voltage_coefficient: parameters.voltage_coefficient, quadratic_voltage_coefficient: parameters.quadratic_voltage_coefficient, r: v.r, h3: temperature * 5.522_596e-23, h4: parameters.flicker_coefficient.value() > 0.0, flicker_coefficient: parameters.flicker_coefficient, flicker_exponent: parameters.flicker_exponent, conditions: [v.r.abs().value() < SMALL_RESISTANCE] })
+        Ok(PreparedResistor {
+            voltage_coefficient: parameters.voltage_coefficient,
+            quadratic_voltage_coefficient: parameters.quadratic_voltage_coefficient,
+            r: v.r,
+            h3: temperature * 5.522_596e-23,
+            h4: parameters.flicker_coefficient.value() > 0.0,
+            flicker_coefficient: parameters.flicker_coefficient,
+            flicker_exponent: parameters.flicker_exponent,
+            conditions: [v.r.abs().value() < SMALL_RESISTANCE],
+        })
     }
 
     fn layout<R: Real>(
@@ -160,7 +176,20 @@ impl Kernel for Resistor {
             active[1] = true;
         }
         let current = if active[0] { layout.internal("current", Nature::Current) } else { NOWHERE };
-        Ok(ResistorShape { current, a_by_a: if active[1] { layout.entry(0, 0) } else { NOWHERE }, a_by_b: if active[1] { layout.entry(0, 1) } else { NOWHERE }, a_by_current: if active[0] { layout.entry(0, current) } else { NOWHERE }, b_by_a: if active[1] { layout.entry(1, 0) } else { NOWHERE }, b_by_b: if active[1] { layout.entry(1, 1) } else { NOWHERE }, b_by_current: if active[0] { layout.entry(1, current) } else { NOWHERE }, current_by_a: if active[0] { layout.entry(current, 0) } else { NOWHERE }, current_by_b: if active[0] { layout.entry(current, 1) } else { NOWHERE }, current_by_current: if active[0] { layout.entry(current, current) } else { NOWHERE }, conditions: prepared.conditions, active })
+        Ok(ResistorShape {
+            current,
+            a_by_a: if active[1] { layout.entry(0, 0) } else { NOWHERE },
+            a_by_b: if active[1] { layout.entry(0, 1) } else { NOWHERE },
+            a_by_current: if active[0] { layout.entry(0, current) } else { NOWHERE },
+            b_by_a: if active[1] { layout.entry(1, 0) } else { NOWHERE },
+            b_by_b: if active[1] { layout.entry(1, 1) } else { NOWHERE },
+            b_by_current: if active[0] { layout.entry(1, current) } else { NOWHERE },
+            current_by_a: if active[0] { layout.entry(current, 0) } else { NOWHERE },
+            current_by_b: if active[0] { layout.entry(current, 1) } else { NOWHERE },
+            current_by_current: if active[0] { layout.entry(current, current) } else { NOWHERE },
+            conditions: prepared.conditions,
+            active,
+        })
     }
 
     fn evaluate<R: Real>(
@@ -178,18 +207,20 @@ impl Kernel for Resistor {
             current_potential: Dual<R, 2>,
             a_b_flow: Dual<R, 1>,
         }
-        let mut v = Locals { v: Dual::number(0.0), f: Dual::number(0.0), voltage_a_b: Dual::number(0.0), current_current: Dual::number(0.0), current_potential: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
-        v.current_current = Dual { value: at.unknown::<R>(shape.current), gradient: [R::constant(1.0)] };
+        let mut v = Locals {
+            v: Dual::number(0.0),
+            f: Dual::number(0.0),
+            voltage_a_b: Dual::number(0.0),
+            current_current: Dual::number(0.0),
+            current_potential: Dual::number(0.0),
+            a_b_flow: Dual::number(0.0),
+        };
+        v.voltage_a_b = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(1));
+        v.current_current = Dual::variable(at.unknown::<R>(shape.current));
         v.v = v.voltage_a_b;
         v.f = v.v.scale(prepared.voltage_coefficient) + (v.v * v.v).scale(prepared.quadratic_voltage_coefficient) + 1.0;
         if shape.conditions[0] {
-            let t0000 = v.f.scale(prepared.r);
-            let [t0001] = t0000.gradient;
-            let t0002 = Dual { value: t0000.value, gradient: [t0001, R::constant(0.0)] };
-            let [t0003] = v.current_current.gradient;
-            let t0004 = Dual { value: v.current_current.value, gradient: [R::constant(0.0), t0003] };
-            v.current_potential = v.current_potential + t0002 * t0004;
+            v.current_potential = v.current_potential + v.f.scale(prepared.r).embed::<2>([0]) * v.current_current.embed::<2>([1]);
         } else {
             v.a_b_flow = v.a_b_flow + Dual::number(1.0) / v.f.scale(prepared.r) * v.v;
         }
@@ -202,20 +233,20 @@ impl Kernel for Resistor {
             stamp.add_residual(shape.current, at.unknown::<R>(0) - at.unknown::<R>(1) - v.current_potential.value);
             stamp.add_conductance(shape.current_by_a, R::constant(1.0));
             stamp.add_conductance(shape.current_by_b, R::constant(-1.0));
-            let [t0005, t0006] = v.current_potential.gradient;
-            stamp.add_conductance(shape.current_by_a, -t0005);
-            stamp.add_conductance(shape.current_by_b, t0005);
-            stamp.add_conductance(shape.current_by_current, -t0006);
+            let [t0000, t0001] = v.current_potential.gradient;
+            stamp.add_conductance(shape.current_by_a, -t0000);
+            stamp.add_conductance(shape.current_by_b, t0000);
+            stamp.add_conductance(shape.current_by_current, -t0001);
         }
         if shape.active[1] {
-            let t0007 = v.a_b_flow.value;
-            stamp.add_residual(0, t0007);
-            stamp.add_residual(1, -t0007);
-            let [t0008] = v.a_b_flow.gradient;
-            stamp.add_conductance(shape.a_by_a, t0008);
-            stamp.add_conductance(shape.a_by_b, -t0008);
-            stamp.add_conductance(shape.b_by_a, -t0008);
-            stamp.add_conductance(shape.b_by_b, t0008);
+            let t0002 = v.a_b_flow.value;
+            stamp.add_residual(0, t0002);
+            stamp.add_residual(1, -t0002);
+            let [t0003] = v.a_b_flow.gradient;
+            stamp.add_conductance(shape.a_by_a, t0003);
+            stamp.add_conductance(shape.a_by_b, -t0003);
+            stamp.add_conductance(shape.b_by_a, -t0003);
+            stamp.add_conductance(shape.b_by_b, t0003);
         }
     }
 
@@ -232,7 +263,13 @@ impl Kernel for Resistor {
             voltage_a_b: R,
             current_current: R,
         }
-        let mut v = Locals { v: R::constant(0.0), f: R::constant(0.0), i: R::constant(0.0), voltage_a_b: R::constant(0.0), current_current: R::constant(0.0) };
+        let mut v = Locals {
+            v: R::constant(0.0),
+            f: R::constant(0.0),
+            i: R::constant(0.0),
+            voltage_a_b: R::constant(0.0),
+            current_current: R::constant(0.0),
+        };
         v.voltage_a_b = R::constant(at.value(0) - at.value(1));
         v.current_current = R::constant(at.value(shape.current));
         v.v = v.voltage_a_b;

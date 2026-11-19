@@ -153,7 +153,13 @@ impl Facts<'_> {
                 let kind = [true, false]
                     .into_iter()
                     .find(|&conducting| Self::joined(&edges, (from, to), ports, conducting))
-                    .map(|conducting| if conducting { "Conductive" } else { "Capacitive" });
+                    .map(|conducting| {
+                        if conducting {
+                            "Conductive"
+                        } else {
+                            "Capacitive"
+                        }
+                    });
                 if let Some(kind) = kind {
                     branches.push(format!("Branch::new({from}, {to}, BranchKind::{kind})"));
                 }
@@ -204,7 +210,10 @@ impl Facts<'_> {
             .map(|&output| module.variables[output].0.as_str())
             .collect();
         let quoted: Vec<String> = outputs.iter().map(|name| format!("{name:?}")).collect();
-        let kept: Vec<String> = outputs.iter().map(|name| format!("memory.{name}")).collect();
+        let kept: Vec<String> = outputs
+            .iter()
+            .map(|name| format!("memory.{name}"))
+            .collect();
         out.line(format!(
             "fn variable_names() -> &'static [&'static str] {{\n    \
                  &[{}]\n\
@@ -397,7 +406,11 @@ impl Facts<'_> {
                 function.name
             ));
             out.raw(&too_long(&body, ""));
-            out.line(format!("fn {}({}) -> f64 {{", function.name, inputs.join(", ")));
+            out.line(format!(
+                "fn {}({}) -> f64 {{",
+                function.name,
+                inputs.join(", ")
+            ));
             out.raw(&body);
             out.line("}");
             out.blank();
@@ -489,8 +502,8 @@ impl Facts<'_> {
         };
         let shorts = self.shorts();
         if shorts.is_empty() {
-            for node in module.ports..module.nodes.len() {
-                body.line(format!("let {} = {};", module.nodes[node], claim(node)));
+            for (node, name) in module.nodes.iter().enumerate().skip(module.ports) {
+                body.line(format!("let {name} = {};", claim(node)));
             }
             return;
         }
@@ -760,7 +773,7 @@ impl Facts<'_> {
         let mut values = Vec::new();
         for (name, kind, expr) in fields {
             let operand = emitter.expression(expr, body)?;
-            let operand = emitter.convert(operand, kind, body)?;
+            let operand = Emitter::convert(operand, kind)?;
             values.push(if operand.code == *name {
                 name.clone()
             } else {
@@ -970,7 +983,7 @@ fn emit_local_parameters(emitter: &mut Emitter<'_, '_>) -> Result<EmittedLocals,
         );
         let mut statements = Vec::new();
         let operand = emitter.expression(&value, &mut statements)?;
-        let operand = emitter.convert(operand, &kind, &mut statements)?;
+        let operand = Emitter::convert(operand, &kind)?;
         statements.push(Rust::Line(format!("c.{name} = {};", operand.code)));
         entries.push((name, kind, statements));
     }

@@ -50,12 +50,12 @@ impl Emitter<'_, '_> {
                         && matches!(kind, Kind::Real | Kind::Float(_))
                     {
                         let right = self.expression(right, out)?;
-                        let right = self.convert(right, &kind, out)?;
+                        let right = Self::convert(right, &kind)?;
                         out.push(Rust::Line(format!("v.{name} {operator}= {};", right.code)));
                         continue;
                     }
                     let operand = self.expression(value, out)?;
-                    let operand = self.convert(operand, &kind, out)?;
+                    let operand = Self::convert(operand, &kind)?;
                     out.push(Rust::Line(format!("v.{name} = {};", operand.code)));
                 }
                 Stmt::Contribute {
@@ -209,7 +209,7 @@ impl Emitter<'_, '_> {
             .cloned()
             .unwrap_or(Kind::Real);
         let operand = self.expression(part, out)?;
-        let operand = self.convert(operand, &kind, out)?;
+        let operand = Self::convert(operand, &kind)?;
         let field = self.accumulator(branch, site, charge);
         let line = if kind == Kind::Real {
             format!("v.{field} += {};", operand.code)
@@ -687,9 +687,10 @@ impl Emitter<'_, '_> {
                         }
                         Kind::Integer => (format!("{} == 0", operand.at(SUM)), COMPARE),
                         Kind::Bool => (format!("!{}", operand.at(ATOM)), UNARY),
-                        Kind::Dual(_) => {
-                            (format!("{} == 0.0", Self::value_of(&operand).at(SUM)), COMPARE)
-                        }
+                        Kind::Dual(_) => (
+                            format!("{} == 0.0", Self::value_of(&operand).at(SUM)),
+                            COMPARE,
+                        ),
                     }
                 })
                 .collect();

@@ -1162,8 +1162,14 @@ mod tests {
         &[0.3, 2.5, 0.0, -0.2, 1e-4, 2e-4, -1e-4],
     ];
 
+    /// Plain heated case: `(model, cool_parameters, biases, rises)`.
+    type HeatedCase<'a> = (&'a str, &'a str, &'a [&'a [f64]], &'a [f64]);
+
+    /// Owned heated case: `(model, cool_parameters, biases, rises)`.
+    type OwnedHeatedCase<'a> = (&'a str, String, &'a [&'a [f64]], &'a [f64]);
+
     /// Plain heated cases: `(model, cool_parameters, biases, rises)`.
-    const HEATED_BASE: &[(&str, &str, &[&[f64]], &[f64])] = &[
+    const HEATED_BASE: &[HeatedCase<'_>] = &[
         (
             "diode",
             DIODE_HEATED,
@@ -1214,15 +1220,24 @@ mod tests {
                     .is_some()
             })
             .collect();
-        let mut cases: Vec<(&str, String, &[&[f64]], &[f64])> = HEATED_BASE
+        let mut cases: Vec<OwnedHeatedCase<'_>> = HEATED_BASE
             .iter()
             .map(|&(name, cool, biases, rises)| (name, cool.to_owned(), biases, rises))
             .collect();
+        let bjt_heated_biases: &[&[f64]] = &[&[3.0, 0.7, 0.0, 0.69], &[0.3, 0.75, 0.0, 0.74]];
+        let bsim3_heated_biases: &[&[f64]] = &[&[2.0, 1.5, 0.0, -0.5], &[0.3, 1.0, 0.0, -0.2]];
+        let bsim4_heated_biases: &[&[f64]] = &[&[1.5, 1.2, 0.0, -0.5], &[0.3, 0.9, 0.0, -0.2]];
+        let resistor_heated_biases: &[&[f64]] = &[&[3.0, 1.0, 2e4], &[2.5, -0.5, 2e4]];
+        let vdmos_heated_biases: &[&[f64]] = &[
+            &[12.0, 6.0, 0.0, 11.6, 0.3, 5.9, 0.2],
+            &[-0.8, 5.0, 0.0, 11.6, 0.3, 5.9, 0.2],
+            &[61.0, 0.0, 0.0, 11.6, 0.3, 5.9, 0.2],
+        ];
         cases.extend([
             (
                 "bipolar_transistor",
                 merge(BJT_FULL, r#"{"base_resistance": 50}"#),
-                &[&[3.0, 0.7, 0.0, 0.69][..], &[0.3, 0.75, 0.0, 0.74]][..],
+                bjt_heated_biases,
                 &[20.0, 70.0][..],
             ),
             // Without the substrate current, whose derivatives below saturation central
@@ -1230,13 +1245,13 @@ mod tests {
             (
                 "bsim3",
                 without(BSIM3_SHORT, "alpha0"),
-                &[&[2.0, 1.5, 0.0, -0.5], &[0.3, 1.0, 0.0, -0.2]],
+                bsim3_heated_biases,
                 &[20.0, 60.0],
             ),
             (
                 "bsim4",
                 without(BSIM4_SHORT, "alpha0"),
-                &[&[1.5, 1.2, 0.0, -0.5], &[0.3, 0.9, 0.0, -0.2]],
+                bsim4_heated_biases,
                 &[20.0, 60.0],
             ),
             (
@@ -1251,7 +1266,7 @@ mod tests {
             (
                 "resistor",
                 merge(RESISTOR_HEATED, r#"{"resistance": 1e-4}"#),
-                &[&[3.0, 1.0, 2e4], &[2.5, -0.5, 2e4]],
+                resistor_heated_biases,
                 &[10.0, 80.0],
             ),
             (
@@ -1265,11 +1280,7 @@ mod tests {
                         "source_resistance_temperature_coefficient": 2e-3,
                         "body_resistance_temperature_coefficient": 4e-3}"#,
                 ),
-                &[
-                    &[12.0, 6.0, 0.0, 11.6, 0.3, 5.9, 0.2],
-                    &[-0.8, 5.0, 0.0, 11.6, 0.3, 5.9, 0.2],
-                    &[61.0, 0.0, 0.0, 11.6, 0.3, 5.9, 0.2],
-                ],
+                vdmos_heated_biases,
                 &[20.0, 60.0],
             ),
         ]);

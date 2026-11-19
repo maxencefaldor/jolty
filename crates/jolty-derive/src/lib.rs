@@ -624,9 +624,7 @@ fn parse_binning_mode(input: ParseStream<'_>) -> Result<BinningMode> {
 fn parse_expression_tokens(input: ParseStream<'_>, stop_at_arrow: bool) -> Result<Tokens> {
     let start = input.span();
     let mut tokens = Tokens::new();
-    while !input.is_empty()
-        && !input.peek(Token![,])
-        && !(stop_at_arrow && input.peek(Token![=>]))
+    while !(input.is_empty() || input.peek(Token![,]) || (stop_at_arrow && input.peek(Token![=>])))
     {
         let tree: TokenTree = input.parse()?;
         tokens.extend([tree]);
@@ -866,9 +864,8 @@ impl ExpandedFields {
 
         let (binned_type, value) = match (shape, &field.fallback) {
             (BinnedShape::Required, Some((span, _))) => {
-                let message = format!(
-                    "a fallback expression applies only to an `Option<{number}>` field"
-                );
+                let message =
+                    format!("a fallback expression applies only to an `Option<{number}>` field");
                 return Err(Error::new(*span, message));
             }
             (BinnedShape::Required, None) => (
@@ -1180,25 +1177,8 @@ mod tests {
             .map(|field| field.ident.as_ref().unwrap().to_string())
             .collect();
         let expected_names = [
-            "channel",
-            "binned",
-            "ub",
-            "lub",
-            "wub",
-            "r#pub",
-            "nch",
-            "lnch",
-            "wnch",
-            "pnch",
-            "gamma1",
-            "lgamma1",
-            "wgamma1",
-            "pgamma1",
-            "eu",
-            "leu",
-            "weu",
-            "peu",
-            "tail",
+            "channel", "binned", "ub", "lub", "wub", "r#pub", "nch", "lnch", "wnch", "pnch",
+            "gamma1", "lgamma1", "wgamma1", "pgamma1", "eu", "leu", "weu", "peu", "tail",
         ];
         assert_eq!(names, expected_names);
         let has_serde = fields[0]

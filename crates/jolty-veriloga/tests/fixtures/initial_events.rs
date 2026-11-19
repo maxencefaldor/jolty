@@ -18,7 +18,9 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -102,8 +104,8 @@ impl Kernel for InitialEvents {
         ParameterError::positive("fingers", parameters.fingers)?;
         ParameterError::positive("vmax", parameters.vmax)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.refuse)) {
-    return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
-}
+            return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
+        }
         let mut v = Locals { g: R::constant(0.0) };
         let t0000 = parameters.fingers + 0.5;
         let t0001 = t0000.value();
@@ -120,7 +122,12 @@ impl Kernel for InitialEvents {
         _: &PreparedInitialEvents<R>,
         layout: &mut Layout,
     ) -> Result<InitialEventsShape, ParameterError> {
-        Ok(InitialEventsShape { a_by_a: layout.entry(0, 0), a_by_b: layout.entry(0, 1), b_by_a: layout.entry(1, 0), b_by_b: layout.entry(1, 1) })
+        Ok(InitialEventsShape {
+            a_by_a: layout.entry(0, 0),
+            a_by_b: layout.entry(0, 1),
+            b_by_a: layout.entry(1, 0),
+            b_by_b: layout.entry(1, 1),
+        })
     }
 
     fn evaluate<R: Real>(
@@ -136,8 +143,13 @@ impl Kernel for InitialEvents {
             voltage_a_b: Dual<R, 1>,
             a_b_flow: Dual<R, 1>,
         }
-        let mut v = Locals { vab: Dual::number(0.0), vab2: Dual::number(0.0), voltage_a_b: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        let mut v = Locals {
+            vab: Dual::number(0.0),
+            vab2: Dual::number(0.0),
+            voltage_a_b: Dual::number(0.0),
+            a_b_flow: Dual::number(0.0),
+        };
+        v.voltage_a_b = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(1));
         v.vab = v.voltage_a_b;
         v.vab2 = v.vab.scale(prepared.g);
         let t0000 = if v.vab.value.value() < 0.0 { -v.vab } else { v.vab };
@@ -158,7 +170,6 @@ impl Kernel for InitialEvents {
         stamp.add_conductance(shape.b_by_a, -t0003);
         stamp.add_conductance(shape.b_by_b, t0003);
     }
-
 }
 
 impl InitialEvents {
@@ -177,8 +188,8 @@ impl InitialEvents {
         ParameterError::positive("fingers", parameters.fingers)?;
         ParameterError::positive("vmax", parameters.vmax)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.refuse)) {
-    return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
-}
+            return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
+        }
         let mut found = Vec::new();
         if parameters.fingers.value() > 10.0 {
             found.push(format!("many fingers: {:?}", parameters.fingers.value()));

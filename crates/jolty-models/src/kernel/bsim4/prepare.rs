@@ -933,7 +933,13 @@ impl<R: Real> Bsim4Parameters<R> {
         &self,
         thermal: &Thermal<R>,
         scalings: JunctionScalings<R>,
-        [source_area, drain_area, source_perimeter, drain_perimeter, gate_edge]: [R; 5],
+        [
+            source_area,
+            drain_area,
+            source_perimeter,
+            drain_perimeter,
+            gate_edge,
+        ]: [R; 5],
     ) -> Result<[Junction<R>; 2], ParameterError> {
         let (
             [source_densities, drain_densities],
@@ -1131,7 +1137,13 @@ impl<R: Real> Bsim4Parameters<R> {
     fn depletions(
         &self,
         thermal: &Thermal<R>,
-        [source_area, drain_area, source_perimeter, drain_perimeter, gate_edge]: [R; 5],
+        [
+            source_area,
+            drain_area,
+            source_perimeter,
+            drain_perimeter,
+            gate_edge,
+        ]: [R; 5],
     ) -> [Depletion<R>; 2] {
         let gate_capacitance = self.cjswgs.unwrap_or(self.cjsws);
         let gate_potential = self.pbswgs.unwrap_or(self.pbsws);

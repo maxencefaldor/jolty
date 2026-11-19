@@ -640,11 +640,7 @@ impl Runs {
                 );
             },
             || {
-                slots.fold_in_parallel(
-                    entry_planes,
-                    [conducted, stored],
-                    [Fold::Add, Fold::Add],
-                );
+                slots.fold_in_parallel(entry_planes, [conducted, stored], [Fold::Add, Fold::Add]);
             },
         );
         self.limited.iter().any(|&limited| limited)

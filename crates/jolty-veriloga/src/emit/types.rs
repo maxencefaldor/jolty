@@ -286,8 +286,9 @@ impl Requirement {
             (Self::Never, Self::Or(clauses)) => guard(&not, &clauses),
             (Self::Or(clauses), Self::Never) => guard(condition, &clauses),
             (Self::Or(first), Self::Or(second)) => {
-                let (common, only_first): (Vec<_>, Vec<_>) =
-                    first.into_iter().partition(|clause| second.contains(clause));
+                let (common, only_first): (Vec<_>, Vec<_>) = first
+                    .into_iter()
+                    .partition(|clause| second.contains(clause));
                 let only_second: Vec<_> = second
                     .into_iter()
                     .filter(|clause| !common.contains(clause))

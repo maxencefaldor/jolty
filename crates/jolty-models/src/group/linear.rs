@@ -64,7 +64,8 @@ fn all_fit<S: PlaneSlice, const N: usize>(planes: &[S; N], count: usize) -> bool
 fn take_prefix<S: PlaneSlice, const N: usize>(planes: &mut [S; N], count: usize) -> [S; N] {
     planes.each_mut().map(|plane| {
         let whole = std::mem::take(plane);
-        let (first, rest) = whole.split_at(count.min(whole.len()));
+        let take = count.min(whole.len());
+        let (first, rest) = whole.split_at(take);
         *plane = rest;
         first
     })

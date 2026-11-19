@@ -18,7 +18,9 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -116,13 +118,20 @@ impl Kernel for Constructs {
         ParameterError::positive("conductance", parameters.conductance)?;
         ParameterError::positive("saturation", parameters.saturation)?;
         if !(parameters.saturation.value()..).contains(&parameters.saturation_max.value()) {
-    return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
-}
+            return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
+        }
         ParameterError::positive("scale", parameters.scale)?;
         let mut v = Locals { saturated1_g: R::constant(0.0), saturated1_vs: R::constant(0.0) };
         v.saturated1_g = parameters.conductance;
         v.saturated1_vs = parameters.saturation;
-        Ok(PreparedConstructs { h0: parameters.bend * parameters.conductance * parameters.saturation, saturation: parameters.saturation, h2: R::constant(1.0) / parameters.saturation, h3: v.saturated1_g * v.saturated1_vs, saturated1_vs: v.saturated1_vs, h5: R::constant(1.0) / v.saturated1_vs })
+        Ok(PreparedConstructs {
+            h0: parameters.bend * parameters.conductance * parameters.saturation,
+            saturation: parameters.saturation,
+            h2: R::constant(1.0) / parameters.saturation,
+            h3: v.saturated1_g * v.saturated1_vs,
+            saturated1_vs: v.saturated1_vs,
+            h5: R::constant(1.0) / v.saturated1_vs,
+        })
     }
 
     fn layout<R: Real>(
@@ -130,7 +139,12 @@ impl Kernel for Constructs {
         _: &PreparedConstructs<R>,
         layout: &mut Layout,
     ) -> Result<ConstructsShape, ParameterError> {
-        Ok(ConstructsShape { a_by_a: layout.entry(0, 0), a_by_b: layout.entry(0, 1), b_by_a: layout.entry(1, 0), b_by_b: layout.entry(1, 1) })
+        Ok(ConstructsShape {
+            a_by_a: layout.entry(0, 0),
+            a_by_b: layout.entry(0, 1),
+            b_by_a: layout.entry(1, 0),
+            b_by_b: layout.entry(1, 1),
+        })
     }
 
     fn evaluate<R: Real>(
@@ -150,8 +164,17 @@ impl Kernel for Constructs {
             voltage_a_b: Dual<R, 1>,
             a_b_flow: Dual<R, 1>,
         }
-        let mut v = Locals { current: Dual::number(0.0), small_signal: R::constant(0.0), v: Dual::number(0.0), bent: Dual::number(0.0), saturated1_v: Dual::number(0.0), saturated1_saturated: Dual::number(0.0), voltage_a_b: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        let mut v = Locals {
+            current: Dual::number(0.0),
+            small_signal: R::constant(0.0),
+            v: Dual::number(0.0),
+            bent: Dual::number(0.0),
+            saturated1_v: Dual::number(0.0),
+            saturated1_saturated: Dual::number(0.0),
+            voltage_a_b: Dual::number(0.0),
+            a_b_flow: Dual::number(0.0),
+        };
+        v.voltage_a_b = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(1));
         v.v = v.voltage_a_b;
         let t0000 = v.v.chain((v.v.value / prepared.saturation, prepared.h2));
         let t0001 = t0000.value.value();
@@ -177,7 +200,6 @@ impl Kernel for Constructs {
         memory.current = v.current.value.value();
         memory.small_signal = v.small_signal.value();
     }
-
 }
 
 impl Constructs {
@@ -195,8 +217,8 @@ impl Constructs {
         ParameterError::positive("conductance", parameters.conductance)?;
         ParameterError::positive("saturation", parameters.saturation)?;
         if !(parameters.saturation.value()..).contains(&parameters.saturation_max.value()) {
-    return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
-}
+            return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
+        }
         ParameterError::positive("scale", parameters.scale)?;
         let mut found = Vec::new();
         if parameters.saturation.value() > 10.0 {

@@ -631,7 +631,9 @@ pub(crate) fn accumulation_centroid<R: Real>(
     acde: R,
     debye_length: R,
 ) -> D<R> {
-    let tmp = gate_bulk_over_flat.divide(oxide_thickness * 1.0e8).scale(acde);
+    let tmp = gate_bulk_over_flat
+        .divide(oxide_thickness * 1.0e8)
+        .scale(acde);
     let tcen = if -EXP_THRESHOLD < tmp.value.value() && tmp.value.value() < EXP_THRESHOLD {
         tmp.exp().scale(debye_length)
     } else if tmp.value.value() <= -EXP_THRESHOLD {
@@ -665,7 +667,11 @@ pub(crate) fn effective_oxide_capacitance<R: Real>(
     channel_oxide_cap: R,
 ) -> D<R> {
     let ccen = centroid.recip() * EPSSI;
-    let coxeff = ccen.plus(physical_oxide_cap).recip().scale(physical_oxide_cap) * ccen;
+    let coxeff = ccen
+        .plus(physical_oxide_cap)
+        .recip()
+        .scale(physical_oxide_cap)
+        * ccen;
     coxeff.scale(channel_oxide_cap / electrical_oxide_cap)
 }
 
@@ -766,42 +772,32 @@ pub(crate) fn three_part_depletion<R: Real, const N: usize>(
     voltage: Dual<R, N>,
 ) -> Dual<R, N> {
     if voltage.value.value() < 0.0 {
-        capacitances
-            .into_iter()
-            .zip(potentials)
-            .zip(gradings)
-            .fold(
-                Dual::number(0.0),
-                |sum, ((capacitance, potential), grading)| {
-                    if capacitance.value() <= 0.0 {
-                        return sum;
-                    }
-                    let arg = 1.0 - voltage.divide(potential);
-                    #[expect(
-                        clippy::float_cmp,
-                        reason = "b3ld.c and b4v5ld.c take the square root at exactly 0.5"
-                    )]
-                    let sarg = if grading.value() == 0.5 {
-                        arg.sqrt().recip()
-                    } else {
-                        (arg.ln().scale(-grading)).exp()
-                    };
-                    sum + (1.0 - arg * sarg).scale(potential * capacitance / (-grading + 1.0))
-                },
-            )
+        capacitances.into_iter().zip(potentials).zip(gradings).fold(
+            Dual::number(0.0),
+            |sum, ((capacitance, potential), grading)| {
+                if capacitance.value() <= 0.0 {
+                    return sum;
+                }
+                let arg = 1.0 - voltage.divide(potential);
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "b3ld.c and b4v5ld.c take the square root at exactly 0.5"
+                )]
+                let sarg = if grading.value() == 0.5 {
+                    arg.sqrt().recip()
+                } else {
+                    (arg.ln().scale(-grading)).exp()
+                };
+                sum + (1.0 - arg * sarg).scale(potential * capacitance / (-grading + 1.0))
+            },
+        )
     } else {
         let [bottom, sidewall, gate] = capacitances;
         let total = bottom + sidewall + gate;
-        let slope = capacitances
-            .into_iter()
-            .zip(potentials)
-            .zip(gradings)
-            .fold(
-                R::constant(0.0),
-                |sum, ((capacitance, potential), grading)| {
-                    sum + capacitance * grading / potential
-                },
-            );
+        let slope = capacitances.into_iter().zip(potentials).zip(gradings).fold(
+            R::constant(0.0),
+            |sum, ((capacitance, potential), grading)| sum + capacitance * grading / potential,
+        );
         voltage * voltage.scale(slope * 0.5).plus(total)
     }
 }

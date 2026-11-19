@@ -330,8 +330,8 @@ fn zip<const K: usize>(
 macro_rules! impl_number_ops {
     (
         @linear $name:ident, [$($scalar:ident),*], [$($array:ident),*],
-        $(($trait:ident, $method:ident, $op:tt)),+
-    ) => {$(
+        $trait:ident, $method:ident, $op:tt
+    ) => {
         impl<const K: usize> $trait for $name<K> {
             type Output = Self;
 
@@ -343,7 +343,7 @@ macro_rules! impl_number_ops {
                 }
             }
         }
-    )+};
+    };
     (@shift $name:ident, $(($trait:ident, $method:ident, $op:tt)),+) => {$(
         impl<const K: usize> $trait<f64> for $name<K> {
             type Output = Self;
@@ -358,8 +358,8 @@ macro_rules! impl_number_ops {
     )+};
     (
         @scale $name:ident, [$($scalar:ident),*], [$($array:ident),*],
-        $(($trait:ident, $method:ident, $op:tt)),+
-    ) => {$(
+        $trait:ident, $method:ident, $op:tt
+    ) => {
         impl<const K: usize> $trait<f64> for $name<K> {
             type Output = Self;
 
@@ -371,7 +371,7 @@ macro_rules! impl_number_ops {
                 }
             }
         }
-    )+};
+    };
     (@assign $name:ident, $(($trait:ident, $method:ident, $op:tt)),+) => {$(
         impl<const K: usize> $trait for $name<K> {
             fn $method(&mut self, other: Self) {
@@ -386,15 +386,11 @@ macro_rules! impl_number_ops {
             }
         }
 
-        impl_number_ops!(
-            @linear $name, [$($scalar),*], [$($array),*],
-            (Add, add, +), (Sub, sub, -)
-        );
+        impl_number_ops!(@linear $name, [$($scalar),*], [$($array),*], Add, add, +);
+        impl_number_ops!(@linear $name, [$($scalar),*], [$($array),*], Sub, sub, -);
         impl_number_ops!(@shift $name, (Add, add, +), (Sub, sub, -));
-        impl_number_ops!(
-            @scale $name, [$($scalar),*], [$($array),*],
-            (Mul, mul, *), (Div, div, /)
-        );
+        impl_number_ops!(@scale $name, [$($scalar),*], [$($array),*], Mul, mul, *);
+        impl_number_ops!(@scale $name, [$($scalar),*], [$($array),*], Div, div, /);
         impl_number_ops!(
             @assign $name, (AddAssign, add_assign, +), (SubAssign, sub_assign, -)
         );

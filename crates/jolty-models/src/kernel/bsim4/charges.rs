@@ -79,13 +79,8 @@ impl<R: Real> Core<R> {
         );
 
         // Inversion: the surface potential's rise with the gate.
-        let surface_overdrive = surface_potential_overdrive(
-            overdrive,
-            self.k1ox,
-            self.sqrt_phi,
-            p.moin,
-            self.vtm,
-        );
+        let surface_overdrive =
+            surface_potential_overdrive(overdrive, self.k1ox, self.sqrt_phi, p.moin, self.vtm);
         let field = overdrive.plus(self.vtfbphi2).divide(self.toxp * 2.0e8);
         let effective_oxide = effective_oxide_capacitance(
             inversion_centroid(field),

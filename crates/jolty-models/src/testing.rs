@@ -940,6 +940,12 @@ pub(crate) fn assert_switches_where_margin_vanishes(
     );
 }
 
+/// An expected region check: operating point, region name, and optional exact margins.
+pub(crate) type RegionPoint<'a> = (&'a [f64], &'a str, Option<&'a [f64]>);
+
+/// A region-boundary crossing check: start point, end point, and vanishing margin name.
+pub(crate) type RegionSwitch<'a> = (&'a [f64], &'a [f64], &'a str);
+
 /// Checks that `K` with `parameters` reports each expected region (and, when given, exact
 /// margins) at each point in `points`, that its optional `mirror` reports the same at each
 /// negated point, and that each `(from, to, margin)` in `switches` crosses the boundary
@@ -947,10 +953,9 @@ pub(crate) fn assert_switches_where_margin_vanishes(
 pub(crate) fn assert_regions<K: Kernel>(
     parameters: &str,
     mirror: Option<&str>,
-    points: &[(&[f64], &str, Option<&[f64]>)],
-    switches: &[(&[f64], &[f64], &str)],
-)
-where
+    points: &[RegionPoint<'_>],
+    switches: &[RegionSwitch<'_>],
+) where
     K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
 {
     let mut bench = Bench::new::<K>(parameters);

@@ -291,7 +291,10 @@ impl Emitter<'_, '_> {
     /// The kind of the variable at `variable`, in this mode.
     pub(super) fn variable_kind(&self, variable: usize) -> Kind {
         if let Some(function) = self.function {
-            return Kind::from_type(self.module().functions[function].variables[variable].1, true);
+            return Kind::from_type(
+                self.module().functions[function].variables[variable].1,
+                true,
+            );
         }
         let module = self.module();
         match module.variables[variable].1 {
@@ -328,9 +331,7 @@ impl Emitter<'_, '_> {
             | Expr::Unary("!", _)
             | Expr::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => Kind::Bool,
             Expr::Unary(_, operand) => self.static_kind(operand),
-            Expr::Binary(_, left, right) => {
-                join(&self.static_kind(left), &self.static_kind(right))
-            }
+            Expr::Binary(_, left, right) => join(&self.static_kind(left), &self.static_kind(right)),
             Expr::Conditional(_, then, otherwise) => {
                 join(&self.static_kind(then), &self.static_kind(otherwise))
             }
@@ -482,12 +483,7 @@ impl Emitter<'_, '_> {
     }
 
     /// `operand` converted to `kind`.
-    pub(super) fn convert(
-        &mut self,
-        operand: Operand,
-        kind: &Kind,
-        out: &mut Vec<Rust>,
-    ) -> Result<Operand, Error> {
+    pub(super) fn convert(operand: Operand, kind: &Kind) -> Result<Operand, Error> {
         let unsupported = || Error::at(0, format!("a {:?} cannot become a {kind:?}", operand.kind));
         Ok(match (&operand.kind, kind) {
             (from, to) if from == to => operand,
@@ -497,14 +493,14 @@ impl Emitter<'_, '_> {
             }
             (Kind::Bool, Kind::Float(_) | Kind::Real | Kind::Dual(_)) => {
                 let floated = Self::value_of(&operand);
-                return self.convert(floated, kind, out);
+                return Self::convert(floated, kind);
             }
             (Kind::Integer, Kind::Float(_) | Kind::Real | Kind::Dual(_)) => {
                 let floated = match operand.code.parse::<i32>() {
                     Ok(value) => float(f64::from(value)),
                     Err(_) => Self::value_of(&operand),
                 };
-                return self.convert(floated, kind, out);
+                return Self::convert(floated, kind);
             }
             (Kind::Float(_), Kind::Real) => {
                 Operand::new(format!("R::constant({})", operand.code), ATOM, Kind::Real)
@@ -531,8 +527,8 @@ impl Emitter<'_, '_> {
                 else {
                     return Err(unsupported());
                 };
-                if operand.code.starts_with("Dual::number(")
-                    || operand.code.starts_with("Dual::constant(")
+                if is_bare_call(&operand.code, "Dual::number")
+                    || is_bare_call(&operand.code, "Dual::constant")
                 {
                     return Ok(Operand::new(operand.code, ATOM, kind.clone()));
                 }
@@ -578,7 +574,7 @@ impl Emitter<'_, '_> {
                 let kind = Kind::from_type(parameter.kind, false);
                 let code = if parameter.optional {
                     let default = self.expression(&parameter.default, out)?;
-                    let default = self.convert(default, &kind, out)?;
+                    let default = Self::convert(default, &kind)?;
                     format!("parameters.{}.unwrap_or({})", parameter.name, default.code)
                 } else {
                     format!("parameters.{}", parameter.name)
@@ -705,13 +701,13 @@ impl Emitter<'_, '_> {
                     let x = self.bind(left, out);
                     let divisor = self.static_operand(right);
                     let divisor = if divisor.kind == Kind::Integer {
-                        self.convert(divisor, &Kind::Float(None), out)?
+                        Self::convert(divisor, &Kind::Float(None))?
                     } else {
                         divisor
                     };
                     let reciprocal = Expr::Binary("/", Box::new(Expr::Real(1.0)), right.clone());
                     let reciprocal = self.static_operand(&reciprocal);
-                    let reciprocal = self.convert(reciprocal, &Kind::Real, out)?;
+                    let reciprocal = Self::convert(reciprocal, &Kind::Real)?;
                     return Ok(Operand::new(
                         format!(
                             "{0}.chain(({0}.value / {1}, {2}))",
@@ -724,7 +720,7 @@ impl Emitter<'_, '_> {
                     ));
                 }
                 let right = self.expression(right, out)?;
-                self.arithmetic(operator, left, right, out)?
+                Self::arithmetic(operator, left, right)?
             }
             Expr::Conditional(condition, then, otherwise) => {
                 let condition = self.expression(condition, out)?;
@@ -733,8 +729,8 @@ impl Emitter<'_, '_> {
                 let then = self.expression(then, &mut first)?;
                 let otherwise = self.expression(otherwise, &mut second)?;
                 let kind = join(&then.kind, &otherwise.kind);
-                let then = self.convert(then, &kind, &mut first)?;
-                let otherwise = self.convert(otherwise, &kind, &mut second)?;
+                let then = Self::convert(then, &kind)?;
+                let otherwise = Self::convert(otherwise, &kind)?;
                 let (condition, then, otherwise, first, second) = match positive(&condition) {
                     Some((positive, _)) => (positive, otherwise, then, second, first),
                     None => (condition, then, otherwise, first, second),
@@ -763,9 +759,7 @@ impl Emitter<'_, '_> {
                             block.line(second_value);
                         });
                     }
-                    out.push(Rust::Line(
-                        block.finish().trim_end_matches('\n').to_owned(),
-                    ));
+                    out.push(Rust::Line(block.finish().trim_end_matches('\n').to_owned()));
                 }
                 Operand::new(name, ATOM, kind)
             }
@@ -774,7 +768,7 @@ impl Emitter<'_, '_> {
                 for argument in arguments {
                     let operand = self.expression(argument, out)?;
                     let operand = if operand.kind == Kind::Integer {
-                        self.convert(operand, &Kind::Float(None), out)?
+                        Self::convert(operand, &Kind::Float(None))?
                     } else {
                         operand
                     };
@@ -996,21 +990,15 @@ impl Emitter<'_, '_> {
         clippy::too_many_lines,
         reason = "one arm per construct of the language, which read best side by side"
     )]
-    fn arithmetic(
-        &mut self,
-        operator: &str,
-        left: Operand,
-        right: Operand,
-        out: &mut Vec<Rust>,
-    ) -> Result<Operand, Error> {
+    fn arithmetic(operator: &str, left: Operand, right: Operand) -> Result<Operand, Error> {
         // A truth value counts as the integer 1 or 0, as Verilog-A's arithmetic has it.
         let left = if left.kind == Kind::Bool {
-            self.convert(left, &Kind::Integer, out)?
+            Self::convert(left, &Kind::Integer)?
         } else {
             left
         };
         let right = if right.kind == Kind::Bool {
-            self.convert(right, &Kind::Integer, out)?
+            Self::convert(right, &Kind::Integer)?
         } else {
             right
         };
@@ -1052,12 +1040,12 @@ impl Emitter<'_, '_> {
             ));
         }
         let left = if left.kind == Kind::Integer {
-            self.convert(left, &Kind::Float(None), out)?
+            Self::convert(left, &Kind::Float(None))?
         } else {
             left
         };
         let right = if right.kind == Kind::Integer {
-            self.convert(right, &Kind::Float(None), out)?
+            Self::convert(right, &Kind::Float(None))?
         } else {
             right
         };
@@ -1082,8 +1070,8 @@ impl Emitter<'_, '_> {
             (Kind::Float(_), Kind::Float(_)) => plain(&left, &right, Kind::Float(None)),
             (Kind::Dual(a), Kind::Dual(b)) => {
                 let kind = Kind::Dual(union(&a, &b));
-                let left = self.convert(left, &kind, out)?;
-                let right = self.convert(right, &kind, out)?;
+                let left = Self::convert(left, &kind)?;
+                let right = Self::convert(right, &kind)?;
                 plain(&left, &right, kind)
             }
             (Kind::Dual(_), Kind::Real) => {
@@ -1192,8 +1180,8 @@ impl Emitter<'_, '_> {
             (Builtin::Abs, None) => method(&first, "abs"),
             (Builtin::Min | Builtin::Max, Some(second)) => {
                 let kind = join(&kind, &second.kind);
-                let first = self.convert(first, &kind, out)?;
-                let second = self.convert(second, &kind, out)?;
+                let first = Self::convert(first, &kind)?;
+                let second = Self::convert(second, &kind)?;
                 let name = if builtin == Builtin::Min {
                     "min"
                 } else {
@@ -1291,7 +1279,7 @@ impl Emitter<'_, '_> {
                 Kind::Real,
             ),
             (Kind::Real | Kind::Float(_), Kind::Real) => {
-                let base = self.convert(base, &Kind::Real, out)?;
+                let base = Self::convert(base, &Kind::Real)?;
                 Operand::new(
                     format!("{}.pow({})", base.at(ATOM), exponent.code),
                     ATOM,
@@ -1300,7 +1288,7 @@ impl Emitter<'_, '_> {
             }
             (Kind::Dual(_), Kind::Float(_) | Kind::Real) => {
                 let x = self.bind(base, out);
-                let e = self.convert(exponent, &Kind::Real, out)?;
+                let e = Self::convert(exponent, &Kind::Real)?;
                 let e = self.bind(e, out);
                 // The power's derivative from the power itself, `e · x^e / x`, but at zero.
                 let power = self.temporary();
@@ -1320,7 +1308,7 @@ impl Emitter<'_, '_> {
                 )
             }
             (Kind::Float(_) | Kind::Real, Kind::Dual(_)) => {
-                let base = self.convert(base, &Kind::Real, out)?;
+                let base = Self::convert(base, &Kind::Real)?;
                 Operand::new(
                     format!("{}.scale({}.ln()).exp()", exponent.at(ATOM), base.at(ATOM)),
                     ATOM,
@@ -1329,9 +1317,9 @@ impl Emitter<'_, '_> {
             }
             (Kind::Dual(a), Kind::Dual(b)) => {
                 let kind = Kind::Dual(union(&a, &b));
-                let x = self.convert(base, &kind, out)?;
+                let x = Self::convert(base, &kind)?;
                 let x = self.bind(x, out);
-                let e = self.convert(exponent, &kind, out)?;
+                let e = Self::convert(exponent, &kind)?;
                 Operand::new(
                     format!(
                         "({0}.chain(({0}.value.ln(), {0}.value.recip())) * {1}).exp()",
@@ -1435,4 +1423,29 @@ fn compare(operator: &str, left: &Operand, right: &Operand) -> Operand {
             Kind::Bool,
         ),
     }
+}
+
+/// Reports whether `code` is a single bare call to `prefix(...)` with no trailing
+/// operators or method calls.
+fn is_bare_call(code: &str, prefix: &str) -> bool {
+    let Some(rest) = code.strip_prefix(prefix) else {
+        return false;
+    };
+    if !rest.starts_with('(') {
+        return false;
+    }
+    let mut depth = 0_usize;
+    for (offset, byte) in rest.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return offset + 1 == rest.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }

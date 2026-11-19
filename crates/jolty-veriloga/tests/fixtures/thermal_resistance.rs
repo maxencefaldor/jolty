@@ -16,7 +16,9 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +83,10 @@ impl Kernel for ThermalResistance {
         _: R,
     ) -> Result<PreparedThermalResistance<R>, ParameterError> {
         ParameterError::positive("resistance", parameters.resistance)?;
-        Ok(PreparedThermalResistance { resistance: parameters.resistance, h1: R::constant(1.0) / parameters.resistance })
+        Ok(PreparedThermalResistance {
+            resistance: parameters.resistance,
+            h1: R::constant(1.0) / parameters.resistance,
+        })
     }
 
     fn layout<R: Real>(
@@ -89,7 +94,12 @@ impl Kernel for ThermalResistance {
         _: &PreparedThermalResistance<R>,
         layout: &mut Layout,
     ) -> Result<ThermalResistanceShape, ParameterError> {
-        Ok(ThermalResistanceShape { a_by_a: layout.entry(0, 0), a_by_b: layout.entry(0, 1), b_by_a: layout.entry(1, 0), b_by_b: layout.entry(1, 1) })
+        Ok(ThermalResistanceShape {
+            a_by_a: layout.entry(0, 0),
+            a_by_b: layout.entry(0, 1),
+            b_by_a: layout.entry(1, 0),
+            b_by_b: layout.entry(1, 1),
+        })
     }
 
     fn evaluate<R: Real>(
@@ -104,7 +114,7 @@ impl Kernel for ThermalResistance {
             a_b_flow: Dual<R, 1>,
         }
         let mut v = Locals { voltage_a_b: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
+        v.voltage_a_b = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(1));
         v.a_b_flow = v.a_b_flow + v.voltage_a_b.chain((v.voltage_a_b.value / prepared.resistance, prepared.h1));
         let t0000 = v.a_b_flow.value;
         stamp.add_residual(0, t0000);
@@ -115,5 +125,4 @@ impl Kernel for ThermalResistance {
         stamp.add_conductance(shape.b_by_a, -t0001);
         stamp.add_conductance(shape.b_by_b, t0001);
     }
-
 }

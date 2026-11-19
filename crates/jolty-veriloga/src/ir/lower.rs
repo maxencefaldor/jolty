@@ -394,8 +394,8 @@ fn resolve_local_parameter(
     } else {
         format!("the localparam {}", local.name)
     };
-    if let Some(folded) =
-        fold_const(&value).map_err(|message| Error::at(local.line, format!("{prefix} {message}")))?
+    if let Some(folded) = fold_const(&value)
+        .map_err(|message| Error::at(local.line, format!("{prefix} {message}")))?
     {
         if kind == Type::Real {
             return Ok(LocalValue::Real(folded.as_real()));
@@ -526,21 +526,21 @@ fn given_parameters(module: &ast::Module) -> BTreeSet<String> {
 fn collect_given_stmt(statement: &ast::Statement, given: &mut BTreeSet<String>) {
     match statement {
         ast::Statement::Block(statements) => {
-            statements
-                .iter()
-                .for_each(|inner| collect_given_stmt(inner, given));
+            for inner in statements {
+                collect_given_stmt(inner, given);
+            }
         }
         ast::Statement::Named {
             local_parameters,
             statements,
             ..
         } => {
-            local_parameters
-                .iter()
-                .for_each(|local| collect_given_expr(&local.value, given));
-            statements
-                .iter()
-                .for_each(|inner| collect_given_stmt(inner, given));
+            for local in local_parameters {
+                collect_given_expr(&local.value, given);
+            }
+            for inner in statements {
+                collect_given_stmt(inner, given);
+            }
         }
         ast::Statement::Assign { value, .. } | ast::Statement::Contribute { value, .. } => {
             collect_given_expr(value, given);
@@ -783,7 +783,7 @@ impl<'a> Scope<'a> {
         };
         let index = match (named, operands) {
             (Some(found), _) => found,
-            (None, [node]) | (None, [node, _]) => {
+            (None, [node] | [node, _]) => {
                 let plus = node_index(self.context.nodes, node, line)?;
                 let (name, minus) = if let [_, other] = operands {
                     let minus = node_index(self.context.nodes, other, line)?;
@@ -992,7 +992,12 @@ impl<'a> Scope<'a> {
                 format!("{owner} reads {name}, which is not declared before it"),
             ));
         }
-        if let Some(&(_, binding)) = self.bindings.iter().rev().find(|&&(bound, _)| bound == name) {
+        if let Some(&(_, binding)) = self
+            .bindings
+            .iter()
+            .rev()
+            .find(|&&(bound, _)| bound == name)
+        {
             return match binding {
                 Binding::Variable(variable) => {
                     if let Some(owner) = self.constant_owner {

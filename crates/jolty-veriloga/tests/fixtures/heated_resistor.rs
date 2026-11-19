@@ -17,7 +17,9 @@
     )
 )]
 
-use jolty_models::{Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp};
+use jolty_models::{
+    Branch, BranchKind, Dual, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -90,7 +92,7 @@ impl Kernel for HeatedResistor {
     }
 
     fn linear(shape: &HeatedResistorShape, prepared: &PreparedHeatedResistor<f64>) -> bool {
-        prepared.temperature_coefficient.value() == 0.0 && !shape.conditions[0]
+        prepared.temperature_coefficient == 0.0 && !shape.conditions[0]
     }
 
     fn prepare<R: Real>(
@@ -98,7 +100,11 @@ impl Kernel for HeatedResistor {
         _: R,
     ) -> Result<PreparedHeatedResistor<R>, ParameterError> {
         ParameterError::positive("resistance", parameters.resistance)?;
-        Ok(PreparedHeatedResistor { resistance: parameters.resistance, temperature_coefficient: parameters.temperature_coefficient, conditions: [1 != 0] })
+        Ok(PreparedHeatedResistor {
+            resistance: parameters.resistance,
+            temperature_coefficient: parameters.temperature_coefficient,
+            conditions: [1 != 0],
+        })
     }
 
     fn layout<R: Real>(
@@ -110,7 +116,19 @@ impl Kernel for HeatedResistor {
         if prepared.conditions[0] {
             active[0] = true;
         }
-        Ok(HeatedResistorShape { a_by_a: layout.entry(0, 0), a_by_b: layout.entry(0, 1), a_by_t: layout.entry(0, 2), b_by_a: layout.entry(1, 0), b_by_b: layout.entry(1, 1), b_by_t: layout.entry(1, 2), t_by_a: if active[0] { layout.entry(2, 0) } else { NOWHERE }, t_by_b: if active[0] { layout.entry(2, 1) } else { NOWHERE }, t_by_t: if active[0] { layout.entry(2, 2) } else { NOWHERE }, conditions: prepared.conditions, active })
+        Ok(HeatedResistorShape {
+            a_by_a: layout.entry(0, 0),
+            a_by_b: layout.entry(0, 1),
+            a_by_t: layout.entry(0, 2),
+            b_by_a: layout.entry(1, 0),
+            b_by_b: layout.entry(1, 1),
+            b_by_t: layout.entry(1, 2),
+            t_by_a: if active[0] { layout.entry(2, 0) } else { NOWHERE },
+            t_by_b: if active[0] { layout.entry(2, 1) } else { NOWHERE },
+            t_by_t: if active[0] { layout.entry(2, 2) } else { NOWHERE },
+            conditions: prepared.conditions,
+            active,
+        })
     }
 
     fn evaluate<R: Real>(
@@ -127,40 +145,37 @@ impl Kernel for HeatedResistor {
             heat_flow: Dual<R, 2>,
             a_b_flow: Dual<R, 2>,
         }
-        let mut v = Locals { current: Dual::number(0.0), voltage_a_b: Dual::number(0.0), voltage_t_ground: Dual::number(0.0), heat_flow: Dual::number(0.0), a_b_flow: Dual::number(0.0) };
-        v.voltage_a_b = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(1), gradient: [R::constant(1.0)] };
-        v.voltage_t_ground = Dual { value: at.unknown::<R>(2) - at.unknown::<R>(NOWHERE), gradient: [R::constant(1.0)] };
-        let [t0000] = v.voltage_a_b.gradient;
-        let t0001 = Dual { value: v.voltage_a_b.value, gradient: [t0000, R::constant(0.0)] };
-        let t0002 = (v.voltage_t_ground.scale(prepared.temperature_coefficient) + 1.0).scale(prepared.resistance);
-        let [t0003] = t0002.gradient;
-        let t0004 = Dual { value: t0002.value, gradient: [R::constant(0.0), t0003] };
-        v.current = t0001 / t0004;
+        let mut v = Locals {
+            current: Dual::number(0.0),
+            voltage_a_b: Dual::number(0.0),
+            voltage_t_ground: Dual::number(0.0),
+            heat_flow: Dual::number(0.0),
+            a_b_flow: Dual::number(0.0),
+        };
+        v.voltage_a_b = Dual::variable(at.unknown::<R>(0) - at.unknown::<R>(1));
+        v.voltage_t_ground = Dual::variable(at.unknown::<R>(2) - at.unknown::<R>(NOWHERE));
+        v.current = v.voltage_a_b.embed::<2>([0]) / (v.voltage_t_ground.scale(prepared.temperature_coefficient) + 1.0).scale(prepared.resistance).embed::<2>([1]);
         v.a_b_flow = v.a_b_flow + v.current;
         if shape.conditions[0] {
-            let t0005 = -v.voltage_a_b;
-            let [t0006] = t0005.gradient;
-            let t0007 = Dual { value: t0005.value, gradient: [t0006, R::constant(0.0)] };
-            v.heat_flow = v.heat_flow + t0007 * v.current;
+            v.heat_flow = v.heat_flow + (-v.voltage_a_b).embed::<2>([0]) * v.current;
         }
         if shape.active[0] {
-            let t0008 = v.heat_flow.value;
-            stamp.add_residual(2, t0008);
-            let [t0009, t0010] = v.heat_flow.gradient;
-            stamp.add_conductance(shape.t_by_a, t0009);
-            stamp.add_conductance(shape.t_by_b, -t0009);
-            stamp.add_conductance(shape.t_by_t, t0010);
+            let t0000 = v.heat_flow.value;
+            stamp.add_residual(2, t0000);
+            let [t0001, t0002] = v.heat_flow.gradient;
+            stamp.add_conductance(shape.t_by_a, t0001);
+            stamp.add_conductance(shape.t_by_b, -t0001);
+            stamp.add_conductance(shape.t_by_t, t0002);
         }
-        let t0011 = v.a_b_flow.value;
-        stamp.add_residual(0, t0011);
-        stamp.add_residual(1, -t0011);
-        let [t0012, t0013] = v.a_b_flow.gradient;
-        stamp.add_conductance(shape.a_by_a, t0012);
-        stamp.add_conductance(shape.a_by_b, -t0012);
-        stamp.add_conductance(shape.b_by_a, -t0012);
-        stamp.add_conductance(shape.b_by_b, t0012);
-        stamp.add_conductance(shape.a_by_t, t0013);
-        stamp.add_conductance(shape.b_by_t, -t0013);
+        let t0003 = v.a_b_flow.value;
+        stamp.add_residual(0, t0003);
+        stamp.add_residual(1, -t0003);
+        let [t0004, t0005] = v.a_b_flow.gradient;
+        stamp.add_conductance(shape.a_by_a, t0004);
+        stamp.add_conductance(shape.a_by_b, -t0004);
+        stamp.add_conductance(shape.b_by_a, -t0004);
+        stamp.add_conductance(shape.b_by_b, t0004);
+        stamp.add_conductance(shape.a_by_t, t0005);
+        stamp.add_conductance(shape.b_by_t, -t0005);
     }
-
 }
