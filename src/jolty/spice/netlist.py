@@ -12,7 +12,6 @@ Examples:
     ['GD1', '1', '2', 'TABLE', '{V(1,2)}', '=', '(0,0)', '(1m,1u)']
 """
 
-import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -32,16 +31,46 @@ class Statement:
         return SpiceError(f"{self.file}:{self.line}: {message}: `{self.text}`")
 
 
-_COMMENT: Final = re.compile(r";.*|\s\$.*")
+def _strip_comment(text: str) -> str:
+    """Removes inline SPICE comments outside single- or double-quoted strings.
+
+    Treats ``;`` anywhere outside quotes and ``$`` preceded by whitespace outside
+    quotes as the start of an inline comment.
+    """
+    if ";" not in text and "$" not in text:
+        return text
+    quote: str | None = None
+    for index, character in enumerate(text):
+        if quote is not None:
+            if character == quote:
+                quote = None
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == ";":
+            return text[:index]
+        elif character == "$" and index > 0 and text[index - 1].isspace():
+            return text[: index - 1]
+    return text
 
 
 def statements(text: str, file: str = "<text>") -> list[Statement]:
     """The statements of `text`, from the file `file`."""
     found: list[Statement] = []
     for number, raw in enumerate(text.splitlines(), start=1):
-        printable = "".join(character for character in raw if character.isprintable())
-        line = _COMMENT.sub("", printable).strip()
-        if not line or line.startswith("*"):
+        printable = (
+            raw
+            if raw.isprintable()
+            else "".join(
+                " " if character == "\t" else character
+                for character in raw
+                if character == "\t" or character.isprintable()
+            )
+        )
+        stripped = printable.lstrip()
+        if not stripped or stripped.startswith("*"):
+            continue
+        line = _strip_comment(printable).strip()
+        if not line:
             continue
         if line.startswith("+"):
             if not found:

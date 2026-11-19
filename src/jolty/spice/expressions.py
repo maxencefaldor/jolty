@@ -11,7 +11,7 @@ Examples:
     >>> evaluate(parse("2 * Gain + 1k"), {"gain": 3.0})
     1006.0
     >>> translate(expression, {"gain": 1e3}, str.lower, str.lower)
-    'limit((1000.0 * v(vc+, vc-)), (-0.001), 0.001)'
+    'limit(1000.0 * v(vc+, vc-), -0.001, 0.001)'
 """
 
 import functools
@@ -42,7 +42,7 @@ _SCALES: Final = {
 _NUMBER: Final = re.compile(
     r"(?P<mantissa>[-+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)"
     r"(?P<suffix>meg|mil|[tgkmunpf])?[a-z]*",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -58,6 +58,9 @@ class UndefinedError(SpiceError):
 def number(text: str) -> float | None:
     """The number `text` writes, with its scale suffix, or `None` if it is not one.
 
+    Returns `None` for non-finite values, including literals that overflow IEEE-754
+    double precision on parsing or scale multiplication.
+
     Examples:
         >>> number("4.7k"), number("1MEG"), number("1uF"), number("-2.5E-3")
         (4700.0, 1000000.0, 1e-06, -0.0025)
@@ -68,7 +71,8 @@ def number(text: str) -> float | None:
     if match is None:
         return None
     scale = _SCALES[match["suffix"].lower()] if match["suffix"] else 1.0
-    return float(match["mantissa"]) * scale
+    result = float(match["mantissa"]) * scale
+    return result if math.isfinite(result) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +104,7 @@ class Current:
     source: str
 
 
-@dataclass(frozen=True, slots=True, eq=False)
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Call:
     """A function, by its case-folded name, of its arguments."""
 
@@ -115,8 +119,12 @@ class Call:
     def __hash__(self) -> int:
         return _hash(self)
 
+    @override
+    def __repr__(self) -> str:
+        return _repr(self)
 
-@dataclass(frozen=True, slots=True, eq=False)
+
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Unary:
     """A sign or a negation of an operand."""
 
@@ -131,8 +139,12 @@ class Unary:
     def __hash__(self) -> int:
         return _hash(self)
 
+    @override
+    def __repr__(self) -> str:
+        return _repr(self)
 
-@dataclass(frozen=True, slots=True, eq=False)
+
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Binary:
     """An operator between two operands."""
 
@@ -148,8 +160,12 @@ class Binary:
     def __hash__(self) -> int:
         return _hash(self)
 
+    @override
+    def __repr__(self) -> str:
+        return _repr(self)
 
-@dataclass(frozen=True, slots=True, eq=False)
+
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Conditional:
     """``c ? a : b``."""
 
@@ -166,6 +182,10 @@ class Conditional:
     @override
     def __hash__(self) -> int:
         return _hash(self)
+
+    @override
+    def __repr__(self) -> str:
+        return _repr(self)
 
 
 type Expression = (
@@ -188,7 +208,7 @@ _TOKEN: Final = re.compile(
     r"\s*(?:(?P<number>(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z]*)"
     r"|(?P<name>[a-z_][a-z0-9_.$]*)"
     r"|(?P<symbol>\*\*|==|!=|<>|<=|>=|&&|\|\||[-+*/^<>!~&|?:,(){}]))",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 _LEVELS: Final = (
@@ -227,6 +247,41 @@ _MAX_INLINED_NODES: Final = 100_000
 
 _MAX_POLYNOMIAL_DEGREE: Final = 64
 """The largest polynomial degree integrated in closed form."""
+
+_MAX_TRANSLATED_LENGTH: Final = 1_000_000
+"""Maximum character length allowed for a translated expression string.
+
+Guards `translate` against exponential blowups in duplicating forms (`int`,
+`pwrs`, and odd-integer `_power`), where each nesting level doubles the operand
+string (`2^d`). One million characters far exceeds real SPICE behavioral
+expressions while stopping exponential growth well before memory exhaustion.
+"""
+
+_ATOM_PRECEDENCE: Final = 9
+"""Precedence rank of atomic terms (literals, calls, parenthesized groups)."""
+
+_UNARY_PRECEDENCE: Final = 7
+"""Precedence rank of prefix unary operators (`-`, `+`, `!`), matching Rust."""
+
+_BIN_PRECEDENCE: Final[dict[str, int]] = {
+    "||": 1,
+    "&&": 2,
+    "==": 3,
+    "!=": 3,
+    "<": 4,
+    "<=": 4,
+    ">": 4,
+    ">=": 4,
+    "+": 5,
+    "-": 5,
+    "*": 6,
+    "/": 6,
+}
+"""Precedence ranks (`1..=6`, loosest first) of left-associative binary operators.
+
+Matches `jolty_expressions::parser::binary_operator` so `translate` omits
+redundant parentheses on flat operator chains.
+"""
 
 
 _ENCLOSING: Final = {"{": "}", "'": "'", '"': '"'}
@@ -424,8 +479,8 @@ class _Parser:
             case ("number", text):
                 value = number(text)
                 if value is None:
-                    expected = "a number"
-                    raise self.fail(expected)
+                    message = f"number `{text}` is not finite in `{self.text}`"
+                    raise SpiceError(message)
                 return Number(value)
             # A parameter in braces within an expression, as in PSpice: `{VTHRES} + 1`.
             case ("symbol", "(" | "{" as opening):
@@ -545,6 +600,63 @@ def _hash(expression: Expression) -> int:
             child_hashes = ()
         hashes.append(hash((type(current), _label(current), child_hashes)))
     return hashes[0]
+
+
+def _push_call_repr(
+    parts: list[str],
+    stack: list[Expression | str],
+    function: str,
+    arguments: tuple[Expression, ...],
+) -> None:
+    """Appends a `Call` header and schedules its arguments for iterative `repr`."""
+    parts.append(f"Call(function={function!r}, arguments=(")
+    if not arguments:
+        parts.append("))")
+        return
+    if len(arguments) == 1:
+        stack.append(",))")
+        stack.append(arguments[0])
+        return
+    stack.append("))")
+    for index in range(len(arguments) - 1, -1, -1):
+        stack.append(arguments[index])
+        if index > 0:
+            stack.append(", ")
+
+
+def _repr(expression: Expression) -> str:
+    """Iterative structural representation that never hits Python's recursion limit."""
+    parts: list[str] = []
+    stack: list[Expression | str] = [expression]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        match item:
+            case Number() | Name() | Voltage() | Current():
+                parts.append(repr(item))
+            case Unary(operator, operand):
+                parts.append(f"Unary(operator={operator!r}, operand=")
+                stack.append(")")
+                stack.append(operand)
+            case Binary(operator, left, right):
+                parts.append(f"Binary(operator={operator!r}, left=")
+                stack.append(")")
+                stack.append(right)
+                stack.append(", right=")
+                stack.append(left)
+            case Conditional(condition, then, otherwise):
+                parts.append("Conditional(condition=")
+                stack.append(")")
+                stack.append(otherwise)
+                stack.append(", otherwise=")
+                stack.append(then)
+                stack.append(", then=")
+                stack.append(condition)
+            case Call(function, arguments):
+                _push_call_repr(parts, stack, function, arguments)
+    return "".join(parts)
 
 
 def rebuild(expression: Expression, subexpressions: list[Expression]) -> Expression:
@@ -782,49 +894,101 @@ type Polynomial = dict[int, float]
 """A polynomial of one variable: each power's coefficient."""
 
 
-def _polynomial(  # noqa: C901, PLR0911 - one case per form a polynomial takes
-    expression: Expression, variable: Expression, depth: int = 0
+def _combine_polynomial(
+    expression: Expression, computed: Mapping[int, Polynomial | None]
 ) -> Polynomial | None:
-    """`expression` as a polynomial of `variable`, if it is one of its numbers.
-
-    Sums, differences, products, quotients by a number and whole powers of polynomials
-    are polynomials up to `_MAX_POLYNOMIAL_DEGREE`; a whole power is SPICE's ``^`` or
-    ``POW``, which keep a negative base's sign at an odd power, as `_power` writes
-    them.
-    """
-    if depth > _MAX_DEPTH:
-        return None
-
-    def of(part: Expression) -> Polynomial | None:
-        return _polynomial(part, variable, depth + 1)
-
+    """Combines child polynomials from `computed` for a compound `expression`."""
+    result: Polynomial | None = None
     match expression:
-        case Number(value):
-            return {0: value}
-        case _ if expression == variable:
-            return {1: 1.0}
         case Unary("-", operand):
-            found = of(operand)
-            return None if found is None else _scaled(found, -1.0)
+            found = computed.get(id(operand))
+            result = None if found is None else _scaled(found, -1.0)
         case Unary("+", operand):
-            return of(operand)
+            result = computed.get(id(operand))
         case Binary("+" | "-" as operator, left, right):
-            first, second = of(left), of(right)
-            if first is None or second is None:
-                return None
-            sign = 1.0 if operator == "+" else -1.0
-            return _added(first, _scaled(second, sign))
+            first, second = computed.get(id(left)), computed.get(id(right))
+            if first is not None and second is not None:
+                sign = 1.0 if operator == "+" else -1.0
+                result = _added(first, _scaled(second, sign))
         case Binary("*", left, right):
-            first, second = of(left), of(right)
-            if first is None or second is None:
-                return None
-            return _multiplied(first, second)
+            first, second = computed.get(id(left)), computed.get(id(right))
+            if first is not None and second is not None:
+                result = _multiplied(first, second)
         case Binary("/", left, Number(divisor)) if divisor != 0:
-            found = of(left)
-            return None if found is None else _scaled(found, 1 / divisor)
+            found = computed.get(id(left))
+            result = None if found is None else _scaled(found, 1 / divisor)
         case Binary("^", base, Number(power)) | Call("pow", (base, Number(power))):
-            return _power_polynomial(of(base), power)
-    return None
+            result = _power_polynomial(computed.get(id(base)), power)
+    return result
+
+
+def _push_polynomial_children(
+    current: Expression,
+    frames: list[tuple[Expression, bool]],
+    computed: dict[int, Polynomial | None],
+) -> None:
+    """Schedules polynomial child subtrees or marks non-polynomial nodes `None`."""
+    node_id = id(current)
+    match current:
+        case Unary("-" | "+", operand):
+            frames.append((current, True))
+            frames.append((operand, False))
+        case Binary("+" | "-" | "*", left, right):
+            frames.append((current, True))
+            frames.append((right, False))
+            frames.append((left, False))
+        case Binary("/", left, Number(divisor)) if divisor != 0:
+            frames.append((current, True))
+            frames.append((left, False))
+        case Binary("^", base, Number()) | Call("pow", (base, Number())):
+            frames.append((current, True))
+            frames.append((base, False))
+        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
+            computed[node_id] = None
+            frames.append((argument, False))
+        case _:
+            computed[node_id] = None
+
+
+def _polynomial_map(
+    expression: Expression, variable: Expression
+) -> dict[int, Polynomial | None]:
+    """Computes bottom-up polynomials of `variable` for every reachable subtree.
+
+    Maps each node's `id` to its polynomial dictionary (up to
+    `_MAX_POLYNOMIAL_DEGREE`), or `None` when the subtree is not a polynomial.
+    Runs iteratively in a single `O(N)` pass with no recursion or repeated rescans.
+    """
+    computed: dict[int, Polynomial | None] = {}
+    frames: list[tuple[Expression, bool]] = [(expression, False)]
+    while frames:
+        current, ready = frames.pop()
+        node_id = id(current)
+        if node_id in computed:
+            continue
+        if not ready:
+            if isinstance(current, Number):
+                computed[node_id] = {0: current.value}
+            elif current == variable:
+                computed[node_id] = {1: 1.0}
+            else:
+                _push_polynomial_children(current, frames, computed)
+            continue
+        computed[node_id] = _combine_polynomial(current, computed)
+    return computed
+
+
+def _polynomial_integral(polynomial: Polynomial, variable: Expression) -> Expression:
+    """Integrates a polynomial of `variable` term by term."""
+    terms: list[Expression] = []
+    for power, coefficient in sorted(polynomial.items()):
+        term: Expression = Number(coefficient / (power + 1))
+        for _ in range(power + 1):
+            term = Binary("*", term, variable)
+        terms.append(term)
+    if not terms:
+        return Number(0.0)
+    return functools.reduce(lambda left, right: Binary("+", left, right), terms)
 
 
 def _power_polynomial(base: Polynomial | None, power: float) -> Polynomial | None:
@@ -880,56 +1044,87 @@ _ANTIDERIVATIVES: Final[dict[str, Callable[[Expression], Expression]]] = {
 for every argument, of its argument."""
 
 
-def integral(  # noqa: C901, PLR0911 - one case per form the integral takes
+def _rebuild_integral(expression: Expression, results: list[Expression]) -> Expression:
+    """Builds the integrated parent node from already-integrated child `results`."""
+    match expression:
+        case Unary(operator, _):
+            return Unary(operator, results.pop())
+        case Binary("+" | "-" as operator, _, _):
+            right = results.pop()
+            left = results.pop()
+            return Binary(operator, left, right)
+        case Binary("*", Number() as factor, _) | Binary("*", _, Number() as factor):
+            return Binary("*", factor, results.pop())
+        case Binary("/", _, Number() as divisor):
+            return Binary("/", results.pop(), divisor)
+    message = f"unexpected expression node: {type(expression).__name__}"
+    raise SpiceError(message)
+
+
+def _step_integral(
+    current: Expression,
+    polynomials: Mapping[int, Polynomial | None],
+    frames: list[tuple[Expression, bool]],
+    results: list[Expression],
+) -> bool:
+    """Expands one non-polynomial node during iterative integration.
+
+    Returns True when `current` admits closed-form integration, False otherwise.
+    """
+    match current:
+        case Unary("-" | "+", operand):
+            frames.append((current, True))
+            frames.append((operand, False))
+        case Binary("+" | "-", left, right):
+            frames.append((current, True))
+            frames.append((right, False))
+            frames.append((left, False))
+        case Binary("*", Number(), other) | Binary("*", other, Number()):
+            frames.append((current, True))
+            frames.append((other, False))
+        case Binary("/", other, Number(divisor)) if divisor != 0:
+            frames.append((current, True))
+            frames.append((other, False))
+        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
+            line = polynomials.get(id(argument))
+            if line is None or not set(line) <= {0, 1} or line.get(1, 0.0) == 0:
+                return False
+            antiderivative = _ANTIDERIVATIVES[function](argument)
+            results.append(Binary("/", antiderivative, Number(line[1])))
+        case _:
+            return False
+    return True
+
+
+def integral(
     expression: Expression, variable: Expression, depth: int = 0
 ) -> Expression | None:
     """An antiderivative of `expression` with respect to `variable`, in closed form.
 
     `expression` holds numbers and `variable` alone, as one whose other terms are
-    evaluated does. A closed form is found where it is a sum of a polynomial of the
-    variable and of numbers times ``exp``, ``sinh``, ``cosh``, ``tanh``, ``sin`` or
-    ``cos`` of a linear function of it: each power integrated term by term, and each
-    function by its antiderivative over the line's slope; `None` where it is not.
+    evaluated does. A closed form is found where `expression` is a sum of a polynomial
+    of the variable and of numbers times ``exp``, ``sinh``, ``cosh``, ``tanh``, ``sin``
+    or ``cos`` of a linear function of it: each power integrated term by term, and each
+    function by its antiderivative over the line's slope; `None` where no closed form
+    exists.
     """
     if depth > _MAX_DEPTH:
         return None
-    polynomial = _polynomial(expression, variable)
-    if polynomial is not None:
-        terms: list[Expression] = []
-        for power, coefficient in sorted(polynomial.items()):
-            term: Expression = Number(coefficient / (power + 1))
-            for _ in range(power + 1):
-                term = Binary("*", term, variable)
-            terms.append(term)
-        return functools.reduce(lambda left, right: Binary("+", left, right), terms)
-
-    def of(part: Expression) -> Expression | None:
-        return integral(part, variable, depth + 1)
-
-    match expression:
-        case Unary("-" | "+" as operator, operand):
-            found = of(operand)
-            return None if found is None else Unary(operator, found)
-        case Binary("+" | "-" as operator, left, right):
-            first, second = of(left), of(right)
-            if first is None or second is None:
-                return None
-            return Binary(operator, first, second)
-        case Binary("*", Number() as factor, other) | Binary(
-            "*", other, Number() as factor
-        ):
-            found = of(other)
-            return None if found is None else Binary("*", factor, found)
-        case Binary("/", other, Number(divisor) as number) if divisor != 0:
-            found = of(other)
-            return None if found is None else Binary("/", found, number)
-        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
-            line = _polynomial(argument, variable)
-            if line is None or not set(line) <= {0, 1} or line.get(1, 0.0) == 0:
-                return None
-            antiderivative = _ANTIDERIVATIVES[function](argument)
-            return Binary("/", antiderivative, Number(line[1]))
-    return None
+    polynomials = _polynomial_map(expression, variable)
+    frames: list[tuple[Expression, bool]] = [(expression, False)]
+    results: list[Expression] = []
+    while frames:
+        current, ready = frames.pop()
+        if ready:
+            results.append(_rebuild_integral(current, results))
+            continue
+        polynomial = polynomials.get(id(current))
+        if polynomial is not None:
+            results.append(_polynomial_integral(polynomial, variable))
+            continue
+        if not _step_integral(current, polynomials, frames, results):
+            return None
+    return results[0]
 
 
 def names(expression: Expression) -> set[str]:
@@ -1047,6 +1242,16 @@ def _drawn(
     return results[0]
 
 
+def _check_translated_length(length: int) -> None:
+    """Checks that a translated expression stays within `_MAX_TRANSLATED_LENGTH`."""
+    if length > _MAX_TRANSLATED_LENGTH:
+        message = (
+            f"translated expression length {length} exceeds the limit of "
+            f"{_MAX_TRANSLATED_LENGTH} characters"
+        )
+        raise SpiceError(message)
+
+
 def translate(
     expression: Expression,
     parameters: Mapping[str, float],
@@ -1056,23 +1261,27 @@ def translate(
     """`expression` in jolty's language.
 
     Each parameter is its value, each node but the ground a terminal named by `node`,
-    and each source whose current it reads a port named by `current`.
+    and each source whose current it reads a port named by `current`. Emits
+    parentheses only where operator precedence or associativity requires them.
 
     Raises:
-        SpiceError: When the expression names an unknown parameter or function.
+        SpiceError: When the expression names an unknown parameter or function, or
+            the translated text exceeds `_MAX_TRANSLATED_LENGTH`.
     """
     frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[str] = []
+    results: list[tuple[str, int]] = []
     while frames:
         part, ready = frames.pop()
         if not ready:
             if isinstance(part, Number | Name | Voltage | Current):
-                results.append(_leaf(part, parameters, node, current))
+                leaf_text = _leaf(part, parameters, node, current)
+                _check_translated_length(len(leaf_text))
+                results.append((leaf_text, _ATOM_PRECEDENCE))
                 continue
             subexpressions = children(part)
             if not subexpressions:
                 if isinstance(part, Call):
-                    results.append(_call(part.function, []))
+                    results.append((_call(part.function, []), _ATOM_PRECEDENCE))
                     continue
                 message = f"unexpected expression node: {type(part).__name__}"
                 raise SpiceError(message)
@@ -1082,23 +1291,68 @@ def translate(
         arity = len(children(part))
         built = results[-arity:]
         del results[-arity:]
-        results.append(_format_node(part, built))
-    return results[0]
+        formatted = _format_node(part, built)
+        _check_translated_length(len(formatted[0]))
+        results.append(formatted)
+    return results[0][0]
 
 
-def _format_node(expression: Expression, built: list[str]) -> str:
-    """Formats a non-leaf `expression` from its already-translated `built` children."""
+def _format_unary(operator: str, operand: tuple[str, int]) -> tuple[str, int]:
+    """Formats a unary operation with minimal parentheses and space separation."""
+    operand_text, operand_prec = operand
+    if operand_prec < _UNARY_PRECEDENCE:
+        _check_translated_length(len(operator) + len(operand_text) + 2)
+        return f"{operator}({operand_text})", _UNARY_PRECEDENCE
+    if operand_prec == _UNARY_PRECEDENCE:
+        _check_translated_length(len(operator) + len(operand_text) + 1)
+        return f"{operator} {operand_text}", _UNARY_PRECEDENCE
+    _check_translated_length(len(operator) + len(operand_text))
+    return f"{operator}{operand_text}", _UNARY_PRECEDENCE
+
+
+def _format_binary(
+    operator: str, left: tuple[str, int], right: tuple[str, int]
+) -> tuple[str, int]:
+    """Formats a left-associative binary operation with minimal parentheses."""
+    precedence = _BIN_PRECEDENCE[operator]
+    left_text, left_prec = left
+    right_text, right_prec = right
+    wrap_left = left_prec < precedence
+    wrap_right = right_prec <= precedence or (
+        right_prec == _UNARY_PRECEDENCE and right_text.startswith(("+", "-"))
+    )
+    predicted = (
+        len(left_text)
+        + (2 if wrap_left else 0)
+        + len(operator)
+        + 2
+        + len(right_text)
+        + (2 if wrap_right else 0)
+    )
+    _check_translated_length(predicted)
+    left_out = f"({left_text})" if wrap_left else left_text
+    right_out = f"({right_text})" if wrap_right else right_text
+    return f"{left_out} {operator} {right_out}", precedence
+
+
+def _format_node(
+    expression: Expression, built: list[tuple[str, int]]
+) -> tuple[str, int]:
+    """Formats a non-leaf `expression` from `(text, precedence)` child entries."""
     match expression:
         case Unary(operator, _):
-            return f"({operator}{built[0]})"
+            return _format_unary(operator, built[0])
         case Binary("^", _, _) | Call("pow", (_, _)):
-            return _power(built[0], built[1])
+            return _power(built[0][0], built[1][0]), _ATOM_PRECEDENCE
         case Binary(operator, _, _):
-            return f"({built[0]} {operator} {built[1]})"
+            return _format_binary(operator, built[0], built[1])
         case Conditional():
-            return f"if({built[0]}, {built[1]}, {built[2]})"
+            condition, then_branch, otherwise = (entry[0] for entry in built)
+            predicted = len(condition) + len(then_branch) + len(otherwise) + 8
+            _check_translated_length(predicted)
+            return f"if({condition}, {then_branch}, {otherwise})", _ATOM_PRECEDENCE
         case Call(function, _):
-            return _call(function, built)
+            return _call(function, [entry[0] for entry in built]), _ATOM_PRECEDENCE
     message = f"unexpected expression node: {type(expression).__name__}"
     raise SpiceError(message)
 
@@ -1118,8 +1372,14 @@ def _power(base: str, exponent: str) -> str:
             power = _core.constant(exponent)
         except ValueError:
             power = math.nan
+    magnitude_length = len(base) + len(exponent) + 12
+    is_odd_integer = power.is_integer() and bool(power % 2)
+    if is_odd_integer:
+        _check_translated_length(len(base) + magnitude_length + 10)
+    else:
+        _check_translated_length(magnitude_length)
     magnitude = f"pow(abs({base}), {exponent})"
-    if power.is_integer() and power % 2:
+    if is_odd_integer:
         return f"(sgn({base}) * {magnitude})"
     return magnitude
 
@@ -1173,11 +1433,24 @@ def _call(function: str, arguments: list[str]) -> str:
         message = f"`{function}` takes {arity} arguments, not {len(arguments)}"
         raise SpiceError(message)
     if "{" in written:
+        predicted = len(written)
+        for index, argument in enumerate(arguments):
+            placeholder = f"{{{index}}}"
+            count = written.count(placeholder)
+            predicted += count * (len(argument) - len(placeholder))
+        _check_translated_length(predicted)
         return written.format(*arguments)
+    predicted = (
+        len(written)
+        + 2
+        + sum(len(argument) for argument in arguments)
+        + 2 * max(0, len(arguments) - 1)
+    )
+    _check_translated_length(predicted)
     return f"{written}({', '.join(arguments)})"
 
 
 def _number(value: float) -> str:
     """`value` as jolty's language writes it: a negative one in parentheses."""
     written = repr(value)
-    return f"({written})" if value < 0 else written
+    return f"({written})" if written.startswith("-") else written

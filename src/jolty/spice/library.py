@@ -279,6 +279,9 @@ class _Probe:
 _NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
 """Empty user-function mapping used when a subcircuit defines no local ``.func``."""
 
+_NO_MODELS: Final[Mapping[str, ModelCard]] = MappingProxyType({})
+"""Empty model mapping passed to `models.read` for non-`AKO:` definitions."""
+
 _VOLTAGE_ABSOLUTE_TOLERANCE: Final = 1e-12
 """Absolute tolerance, in volts, when checking initial voltage conditions agree."""
 
@@ -357,6 +360,16 @@ class _TranslationOptions:
     parsed_models: dict[Statement, ModelCard] | None = None
     lock: threading.Lock | None = None
     instantiating: tuple[str, ...] = ()
+    uses: list[Use] | None = None
+
+
+type _BuiltState = tuple[
+    float,
+    dict[str, Function],
+    tuple[tuple[str, float], ...],
+    Compatibility | None,
+]
+"""Snapshot of mutable library state affecting nominal cached component builds."""
 
 
 def _contains_statistical_call(expression: Expression) -> bool:
@@ -531,15 +544,17 @@ class Library:
         """
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
+        self._bins: dict[str, tuple[ModelCard, ...]] | None = None
         self._parsed_models: dict[Statement, ModelCard] = {}
         self._cache_lock = threading.Lock()
+        self._generation = 0
         self._parameters: list[tuple[str, Expression]] = []
         self._global_plan: _GlobalPlan | None = None
         self._scopes: OrderedDict[tuple[Sample, float], dict[str, float]] = (
             OrderedDict()
         )
         self._built: dict[str, _Built] = {}
-        self._built_state: tuple[float, dict[str, Function]] | None = None
+        self._built_state: _BuiltState | None = None
         self.temperature = temperature
         self.compatibility = compatibility
         self.options: dict[str, float] = {}
@@ -562,7 +577,8 @@ class Library:
     @property
     def subcircuits(self) -> tuple[str, ...]:
         """The names of the subcircuits, in the order they are defined."""
-        return tuple(subcircuit.name for subcircuit in self._subcircuits.values())
+        with self._cache_lock:
+            return tuple(subcircuit.name for subcircuit in self._subcircuits.values())
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -570,7 +586,9 @@ class Library:
 
         A binned model is named once, without its bins' numbers.
         """
-        named = (_BIN.sub("", card.name) for card in self._models.values())
+        with self._cache_lock:
+            cards = tuple(self._models.values())
+        named = (_BIN.sub("", card.name) for card in cards)
         return tuple(dict.fromkeys(named))
 
     def read(self, text: str, file: str) -> None:
@@ -625,13 +643,49 @@ class Library:
             message = "the subcircuit never ends"
             raise opened.fail(message)
 
+    def _clear_built_locked(self) -> None:
+        """Clears built components, parsed models and bin index under `_cache_lock`."""
+        self._generation += 1
+        self._built.clear()
+        self._built_state = None
+        self._parsed_models.clear()
+        self._bins = None
+
+    def _clear_caches_locked(self) -> None:
+        """Clears all cached plans, scopes and builds under `_cache_lock`."""
+        self._global_plan = None
+        self._scopes.clear()
+        self._clear_built_locked()
+
     def _invalidate_caches(self) -> None:
-        """Clears cached global plans, drawn scopes and built nominal components."""
+        """Clears cached global plans, drawn scopes, parsed models and built builds."""
         with self._cache_lock:
-            self._global_plan = None
-            self._scopes.clear()
-            self._built.clear()
-            self._built_state = None
+            self._clear_caches_locked()
+
+    def _current_built_state_locked(self) -> _BuiltState:
+        """Snapshots mutable library state affecting nominal cached component builds."""
+        return (
+            self.temperature,
+            dict(self.functions),
+            tuple(sorted(self.options.items())),
+            self.compatibility,
+        )
+
+    def _read_options(self, statement: Statement) -> None:
+        """Evaluates `.option` assignments and updates `self.options` under lock."""
+        with self._cache_lock:
+            functions_snapshot = dict(self.functions)
+        parsed_options = {
+            name: evaluate(inlined(value, functions_snapshot), {})
+            for name, value in _options(statement).items()
+        }
+        for option_name, option_value in parsed_options.items():
+            if not math.isfinite(option_value):
+                message = f"option `{option_name}` is not finite ({option_value!r})"
+                raise statement.fail(message)
+        with self._cache_lock:
+            self.options |= parsed_options
+            self._clear_built_locked()
 
     def _global(self, statement: Statement, keyword: str) -> None:
         """Adds the model, parameters or options `statement`, of `keyword`, defines.
@@ -640,28 +694,36 @@ class Library:
             SpiceError: When the statement defines none of them.
         """
         if keyword == ".model":
-            card = models.read(statement, self._models)
-            self._models[card.name.casefold()] = card
-            self._built.clear()
+            known: Mapping[str, ModelCard] = _NO_MODELS
+            if models.is_derived(statement):
+                with self._cache_lock:
+                    known = dict(self._models)
+            card = models.read(statement, known)
+            with self._cache_lock:
+                self._models[card.name.casefold()] = card
+                self._clear_built_locked()
         elif keyword in PARAMETERS:
-            self._parameters.extend(_assignments(statement))
-            self._invalidate_caches()
+            assigned = _assignments(statement)
+            with self._cache_lock:
+                self._parameters.extend(assigned)
+                self._clear_caches_locked()
         elif keyword in OPTIONS:
-            self.options |= {
-                name: evaluate(inlined(value, self.functions), {})
-                for name, value in _options(statement).items()
-            }
-            self._built.clear()
+            self._read_options(statement)
         elif keyword == FUNCTION:
             name, function = _function(statement)
-            self.functions[name] = function
-            self._invalidate_caches()
+            with self._cache_lock:
+                self.functions[name] = function
+                self._clear_caches_locked()
         elif keyword in INITIAL:
             given = self.initial_conditions if keyword == ".ic" else self.nodesets
-            given |= _voltages(statement, self.values(), self.functions)
+            with self._cache_lock:
+                functions_snapshot = dict(self.functions)
+            given |= _voltages(statement, self.values(), functions_snapshot)
         elif keyword == PERIODIC_STEADY_STATE:
+            with self._cache_lock:
+                functions_snapshot = dict(self.functions)
             self.periodic_steady_states.append(
-                _periodic_steady_state(statement, self.values(), self.functions)
+                _periodic_steady_state(statement, self.values(), functions_snapshot)
             )
         elif keyword != ".end":
             message = (
@@ -865,11 +927,7 @@ class Library:
         given = {key.casefold(): value for key, value in parameters.items()}
 
         def read(probe: _Probe) -> dict[str, dict[str, float]]:
-            built, self._built = self._built, {}
-            try:
-                placed = self._placed(name, _Drawing(probe, path), given).component
-            finally:
-                self._built = built
+            placed = self._placed(name, _Drawing(probe, path), given).component
             return _devices(placed, f"{path}{ir.SEPARATOR}")
 
         recorded = _Probe()
@@ -925,22 +983,19 @@ class Library:
     def survey(self, name: str, /, **parameters: float) -> tuple[Use, ...]:
         """Each element the subcircuit `name` holds, within those it places too.
 
-        It is read as [`component`][jolty.spice.Library.component] reads it, with the
-        `parameters` given, and each element states the model it needs and, where jolty
-        cannot translate it, why. A placed subcircuit needs no model of its own: it
-        states the parameters its placement gives it, and a problem of its placement,
-        such as a parameter its subcircuit lacks; a problem of the subcircuit's own
-        definitions, such as a parameter it cannot evaluate, is stated as a use of no
-        element.
+        Elements are read as [`component`][jolty.spice.Library.component] reads them,
+        with the `parameters` given, and each element states the model it needs and,
+        where jolty cannot translate it, why. A placed subcircuit needs no model of its
+        own: it states the parameters its placement gives it, and a problem of its
+        placement, such as a parameter its subcircuit lacks; a problem of the
+        subcircuit's own definitions, such as a parameter it cannot evaluate, is stated
+        as a use of no element.
         """
         uses: list[Use] = []
-        built, self._built, self._uses = self._built, {}, uses
         try:
-            self._placed(name, _Drawing(None, ""), parameters)
+            self._placed(name, _Drawing(None, ""), parameters, uses=uses)
         except SpiceError as error:
             uses.append(Use("", "", str(error)))
-        finally:
-            self._built, self._uses = built, None
         return tuple(uses)
 
     def survey_model(self, name: str) -> Use:
@@ -957,13 +1012,19 @@ class Library:
             message = f"no model is named `{name}`"
             raise SpiceError(message)
         scope = self.values()
-        model = _described(card, scope, self.functions)
+        with self._cache_lock:
+            functions_snapshot = dict(self.functions)
+        model = _described(card, scope, functions_snapshot)
         try:
             if card.kind in models.GEOMETRIC:
-                read = models.geometric_values(card, scope, functions=self.functions)
+                read = models.geometric_values(
+                    card, scope, functions=functions_snapshot
+                )
                 models.geometric(card, read, {}, card.statement)
             else:
-                models.device(card, scope, {}, card.statement, functions=self.functions)
+                models.device(
+                    card, scope, {}, card.statement, functions=functions_snapshot
+                )
         except UndefinedError as error:
             return Use(card.name, model, str(error), error.name)
         except SpiceError as error:
@@ -971,7 +1032,12 @@ class Library:
         return Use(card.name, model)
 
     def _placed(
-        self, name: str, drawing: _Drawing, parameters: Mapping[str, float]
+        self,
+        name: str,
+        drawing: _Drawing,
+        parameters: Mapping[str, float],
+        *,
+        uses: list[Use] | None = None,
     ) -> _Built:
         subcircuit = self._subcircuits.get(name.casefold())
         if subcircuit is None:
@@ -985,7 +1051,7 @@ class Library:
         else:
             scope = self._scope(drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
-        return self._build(subcircuit, scope, given, drawing)
+        return self._build(subcircuit, scope, given, drawing, uses=uses)
 
     def _define(self, opened: Statement, body: list[Statement]) -> None:
         words = tokens(opened.text)
@@ -1012,8 +1078,9 @@ class Library:
             opened,
             MappingProxyType(local_functions) if local_functions else _NO_FUNCTIONS,
         )
-        self._subcircuits[name.casefold()] = subcircuit
-        self._built.clear()
+        with self._cache_lock:
+            self._subcircuits[name.casefold()] = subcircuit
+            self._clear_built_locked()
 
     def values(self, sample: Sample | None = None) -> dict[str, float]:
         """The values of the parameters defined outside subcircuits, by name.
@@ -1031,22 +1098,32 @@ class Library:
         """Cached partition of global parameters for `(self.temperature, functions)`."""
         with self._cache_lock:
             cached = self._global_plan
+            temperature = self.temperature
+            functions_snapshot = dict(self.functions)
             if (
                 cached is not None
-                and cached.temperature == self.temperature
-                and cached.functions == self.functions
+                and cached.temperature == temperature
+                and cached.functions == functions_snapshot
             ):
                 return cached
-        plan = _build_global_plan(self._parameters, self.temperature, self.functions)
+            generation = self._generation
+            parameters_snapshot = tuple(self._parameters)
+        plan = _build_global_plan(parameters_snapshot, temperature, functions_snapshot)
         with self._cache_lock:
             if (
-                self._global_plan is None
-                or self._global_plan.temperature != plan.temperature
-                or self._global_plan.functions != plan.functions
+                self._generation == generation
+                and self.temperature == plan.temperature
+                and self.functions == plan.functions
             ):
-                self._global_plan = plan
-                self._scopes.clear()
-            return self._global_plan
+                if (
+                    self._global_plan is None
+                    or self._global_plan.temperature != plan.temperature
+                    or self._global_plan.functions != plan.functions
+                ):
+                    self._global_plan = plan
+                    self._scopes.clear()
+                return self._global_plan
+            return plan
 
     def _scope(self, sample: Sample | None) -> Mapping[str, float]:
         """Cached global parameter scope for `(sample, self.temperature)`.
@@ -1081,33 +1158,36 @@ class Library:
         """
         return _evaluate_stochastic(self._plan(), drawing)
 
-    def _build(
+    def _build(  # noqa: PLR0913 - build context and optional survey output list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
         instantiating: tuple[str, ...] = (),
+        *,
+        uses: list[Use] | None = None,
     ) -> _Built:
         """The built `subcircuit` with the `given` parameters, in `scope`.
 
-        Its statistical functions draw as `drawing` does. A multiplier `m` given to a
+        Statistical functions draw as `drawing` specifies. A multiplier `m` given to a
         subcircuit that has no parameter of that name multiplies every element it
         holds, as [`MULTIPLIED`][jolty.spice.library.MULTIPLIED] says.
         """
         key = _check_cycle(subcircuit, instantiating)
-        if self.surveying and drawing.path:
+        surveying = uses is not None
+        if uses is not None and drawing.path:
             # A survey states each placement within, and what it gives.
-            self.use(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
+            uses.append(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
         multiplier, given = _extract_multiplier(subcircuit, given)
         unknown = sorted(set(given) - set(subcircuit.defaults))
         if unknown:
             message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
             error = subcircuit.statement.fail(message)
-            if not self.surveying:
+            if uses is None:
                 raise error
             # A survey states the placement's problem and reads on within it.
-            self.use(Use(drawing.path, "", str(error)))
+            uses.append(Use(drawing.path, "", str(error)))
             given = {key: value for key, value in given.items() if key not in unknown}
         defaults = {
             parameter: default
@@ -1116,17 +1196,19 @@ class Library:
         }
         local = dict(scope)
         local.update(given)
+        with self._cache_lock:
+            library_functions = dict(self.functions)
         scoped_functions = (
-            {**self.functions, **subcircuit.functions}
+            {**library_functions, **subcircuit.functions}
             if subcircuit.functions
-            else self.functions
+            else library_functions
         )
         _resolve_into(
             defaults,
             local,
             drawing.draws,
             scoped_functions,
-            partial=self.surveying,
+            partial=surveying,
         )
         values = {
             parameter: local[parameter]
@@ -1146,41 +1228,82 @@ class Library:
             parsed_models=self._parsed_models,
             lock=self._cache_lock,
             instantiating=(*instantiating, key),
+            uses=uses,
         )
-        if drawing.sample is not None:
+        if drawing.sample is not None or uses is not None:
             return _Translation(self, subcircuit, (scope, local), options).translate(
                 name
             )
-        state = (self.temperature, self.functions)
-        if self._built_state is None or self._built_state != state:
-            self._built.clear()
-            self._built_state = (self.temperature, dict(self.functions))
-        if name not in self._built:
-            self._built[name] = _Translation(
-                self, subcircuit, (scope, local), options
-            ).translate(name)
-        return self._built[name]
+        return self._translate_cached(subcircuit, scope, local, name, options)
+
+    def _translate_cached(
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        local: dict[str, float],
+        name: str,
+        options: _TranslationOptions,
+    ) -> _Built:
+        """Returns the cached nominal build of `subcircuit`, translating on a miss."""
+        with self._cache_lock:
+            generation = self._generation
+            state = self._current_built_state_locked()
+            if self._built_state is None or self._built_state != state:
+                self._built.clear()
+                self._built_state = state
+            cached = self._built.get(name)
+            if cached is not None:
+                return cached
+        built = _Translation(self, subcircuit, (scope, local), options).translate(name)
+        with self._cache_lock:
+            if (
+                self._generation == generation
+                and self._built_state == state
+                and self._current_built_state_locked() == state
+            ):
+                return self._built.setdefault(name, built)
+        return built
 
     def known_models(self, local: Mapping[str, ModelCard]) -> dict[str, ModelCard]:
         """All models visible inside a subcircuit, local shadowing global."""
-        return {**self._models, **local}
+        with self._cache_lock:
+            return {**self._models, **local}
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
         """The model `name`, defined in a subcircuit's body or globally."""
         key = name.casefold()
         return local.get(key) or self._models.get(key)
 
+    def _global_bins(self, base: str) -> tuple[ModelCard, ...]:
+        """Returns cached global bin cards for case-folded base model name `base`."""
+        with self._cache_lock:
+            index = self._bins
+            if index is not None:
+                return index.get(base, ())
+            generation = self._generation
+            snapshot = tuple(self._models.items())
+        grouped: dict[str, list[ModelCard]] = {}
+        for key, card in snapshot:
+            card_base = _bin_base(key)
+            if card_base is not None:
+                grouped.setdefault(card_base, []).append(card)
+        built = {model_name: tuple(cards) for model_name, cards in grouped.items()}
+        with self._cache_lock:
+            if self._generation == generation and self._bins is None:
+                self._bins = built
+            return (self._bins or built).get(base, ())
+
     def card(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
         """The model `name`, or its first bin, defined locally or globally."""
         found = self.model(name, local)
         if found is not None:
             return found
-        bins = _bins(name)
-        for cards in (local, self._models):
-            for key, card in cards.items():
-                if bins.fullmatch(key):
-                    return card
-        return None
+        base = name.casefold()
+        for key, card in local.items():
+            if _bin_base(key) == base:
+                return card
+        bins = self._global_bins(base)
+        return bins[0] if bins else None
 
     @property
     def surveying(self) -> bool:
@@ -1218,13 +1341,15 @@ class Library:
             )
             raise SpiceError(message)
         size = (instance["l"], instance["w"] / finger_count)
-        bins = _bins(name)
-        for cards in (local, self._models):
-            for key, card in reversed(list(cards.items())):
-                if bins.fullmatch(key) and models.holds(
-                    card, scope, size, functions=functions
-                ):
-                    return card
+        base = name.casefold()
+        for key, card in reversed(list(local.items())):
+            if _bin_base(key) == base and models.holds(
+                card, scope, size, functions=functions
+            ):
+                return card
+        for card in reversed(self._global_bins(base)):
+            if models.holds(card, scope, size, functions=functions):
+                return card
         return None
 
     def fingers(self, instance: Mapping[str, float]) -> float:
@@ -1245,30 +1370,36 @@ class Library:
         """The subcircuit `name`."""
         return self._subcircuits.get(name.casefold())
 
-    def place(
+    def place(  # noqa: PLR0913 - subcircuit placement state and optional survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
         instantiating: tuple[str, ...] = (),
+        *,
+        uses: list[Use] | None = None,
     ) -> Component:
         """The component a subcircuit instance with the `given` parameters places.
 
-        Its statistical functions draw as `drawing` does.
+        Statistical functions draw as `drawing` specifies.
         """
-        return self._build(subcircuit, scope, given, drawing, instantiating).component
+        return self._build(
+            subcircuit, scope, given, drawing, instantiating, uses=uses
+        ).component
 
-    def place_built(
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and optional survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         given: Mapping[str, float],
         drawing: _Drawing,
         instantiating: tuple[str, ...] = (),
+        *,
+        uses: list[Use] | None = None,
     ) -> _Built:
         """The built subcircuit (component, nets, initial state) for an instance."""
-        return self._build(subcircuit, scope, given, drawing, instantiating)
+        return self._build(subcircuit, scope, given, drawing, instantiating, uses=uses)
 
 
 def load(*paths: Path | str) -> Library:
@@ -1285,6 +1416,9 @@ def load(*paths: Path | str) -> Library:
 
 _INCLUDES: Final = frozenset({".include", ".inc"})
 """The statements that include a file whole."""
+
+_EXPAND_PREFIXES: Final = (".lib", ".endl", ".inc", ".subckt", ".ends")
+"""Case-folded directive prefixes handled during `.include`/`.lib` expansion."""
 
 
 def _expanded(
@@ -1321,6 +1455,21 @@ def _expanded(
     return found
 
 
+def _update_subcircuit_depth(
+    expanded: Sequence[Statement], subcircuit_depth: int
+) -> int:
+    """Updates `.subckt`/`.ends` nesting depth across `expanded` statements."""
+    for inner in expanded:
+        if not inner.text.startswith("."):
+            continue
+        inner_keyword = _keyword(inner)
+        if inner_keyword == ".subckt":
+            subcircuit_depth += 1
+        elif inner_keyword == ".ends":
+            subcircuit_depth = max(subcircuit_depth - 1, 0)
+    return subcircuit_depth
+
+
 def _expanded_text(
     text: str,
     directory: Path,
@@ -1341,7 +1490,14 @@ def _expanded_text(
     subcircuit_depth = 0
     seen = False
     for statement in statements(text, label):
-        words = [word.strip("'\"") for word in tokens(statement.text)]
+        line = statement.text
+        if not line.startswith(".") or not line[:7].casefold().startswith(
+            _EXPAND_PREFIXES
+        ):
+            if opened == target:
+                found.append(statement)
+            continue
+        words = [word.strip("'\"") for word in tokens(line)]
         keyword = words[0].casefold() if words else ""
         if (
             subcircuit_depth == 0 and keyword == ".lib" and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
@@ -1355,12 +1511,7 @@ def _expanded_text(
             opened = None
         elif opened == target:
             expanded = _included(statement, words, directory, within)
-            for inner in expanded:
-                inner_keyword = _keyword(inner)
-                if inner_keyword == ".subckt":
-                    subcircuit_depth += 1
-                elif inner_keyword == ".ends":
-                    subcircuit_depth = max(subcircuit_depth - 1, 0)
+            subcircuit_depth = _update_subcircuit_depth(expanded, subcircuit_depth)
             found.extend(expanded)
     return found, seen
 
@@ -1712,11 +1863,15 @@ def _voltages(
         match written:
             case [voltage, "=", value] if (node := _node_of(voltage)) is not None:
                 given = number(value)
-                found[node] = (
+                resolved = (
                     evaluate(inlined(parse(value), functions), scope)
                     if given is None
                     else given
                 )
+                if not math.isfinite(resolved):
+                    message = f"initial voltage for `{node}` is not finite: `{value}`"
+                    raise statement.fail(message)
+                found[node] = resolved
             case _:
                 message = (
                     f"a node's voltage is written `V(node)=value`, not "
@@ -1847,8 +2002,20 @@ def _periodic_steady_state(
     if not autonomous:
         if period is not None:
             frequency = 1.0 / period
+            if not (frequency > 0.0 and math.isfinite(frequency)):
+                message = (
+                    f"reciprocal frequency of .pss period `{raw['period']}` is not "
+                    "finite and positive"
+                )
+                raise statement.fail(message)
         elif frequency is not None:
             period = 1.0 / frequency
+            if not (period > 0.0 and math.isfinite(period)):
+                message = (
+                    f"reciprocal period of .pss frequency `{raw['frequency']}` is not "
+                    "finite and positive"
+                )
+                raise statement.fail(message)
 
     return PeriodicSteadyStateCard(
         autonomous=autonomous,
@@ -2019,6 +2186,9 @@ def _pss_node(word: str, statement: Statement) -> str:
     if node == "0":
         message = "an oscillator node cannot be the ground node `0`"
         raise statement.fail(message)
+    if node.casefold() == GROUND:
+        message = f"a node named `{node}`, which jolty names the ground port"
+        raise statement.fail(message)
     if ir.SEPARATOR in node:
         message = (
             f"a node named `{node}`, whose `{ir.SEPARATOR}` separates the levels "
@@ -2080,10 +2250,7 @@ def _pins_and_parameters(
         len(words),
     )
     pins = words[:split]
-    rest = (
-        words[split + 1 :] if words[split : split + 1] == ["PARAMS:"] else words[split:]
-    )
-    rest = [word for word in rest if word.casefold() != "params:"]
+    rest = [word for word in words[split:] if word.casefold() != "params:"]
     return pins, models.assignments(statement, rest)
 
 
@@ -2122,15 +2289,22 @@ class _Translation:
         self.globals, self.scope = scopes
         self.drawing = options.drawing
         self.multiplier = options.multiplier
+        """The subcircuit's multiplier, which multiplies each element it holds."""
         self._parsed_models = options.parsed_models
         self._cache_lock = options.lock
         self.instantiating = options.instantiating
-        """The subcircuit's multiplier, which multiplies each element it holds."""
+        self.uses = options.uses
+        self.order = 0
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
         self.parameters: dict[str, Expression] = {}
+        if self._cache_lock is not None:
+            with self._cache_lock:
+                global_functions = dict(library.functions)
+        else:
+            global_functions = dict(library.functions)
         self.functions: dict[str, Function] = {
-            **library.functions,
+            **global_functions,
             **subcircuit.functions,
         }
         self.models: dict[str, ModelCard] = {}
@@ -2176,7 +2350,8 @@ class _Translation:
         for statement in elements:
             if _letter(statement) in _SENSED:
                 self._source(statement)
-        for statement in elements:
+        for order, statement in enumerate(elements):
+            self.order = order
             self._element(statement)
         self._couple()
         self._join_sensed()
@@ -2252,12 +2427,21 @@ class _Translation:
     def value(self, word: str) -> float:
         """The value `word` writes: a number, or an expression of the parameters.
 
-        Its statistical functions draw as those of the element being translated.
+        Statistical functions draw as those of the element being translated.
+
+        Raises:
+            SpiceError: When `word` evaluates to a non-finite number.
         """
         written = number(word)
-        if written is not None:
-            return written
-        return evaluate(self.parse(word), self.scope, self.draw)
+        resolved = (
+            evaluate(self.parse(word), self.scope, self.draw)
+            if written is None
+            else written
+        )
+        if not math.isfinite(resolved):
+            message = f"`{word}` evaluates to a non-finite value ({resolved!r})"
+            raise SpiceError(message)
+        return resolved
 
     def multiplied(self, instance: Mapping[str, float]) -> dict[str, float]:
         """An element's `instance` parameters, its copies `m` times the subcircuit's.
@@ -2296,7 +2480,7 @@ class _Translation:
         made = _checked_device(statement, model, parameters)
         self.instances.append(
             (
-                statement.line,
+                self.order,
                 ir.Instance(
                     name=identifier or statement.text.split()[0],
                     of=ir.DeviceOf(model=model),
@@ -2377,7 +2561,7 @@ class _Translation:
         }
         self.instances = [
             (
-                line,
+                order,
                 instance.model_copy(
                     update={
                         "terminals": {
@@ -2389,42 +2573,38 @@ class _Translation:
                 if instance.name in moved
                 else instance,
             )
-            for line, instance in self.instances
+            for order, instance in self.instances
         ]
 
     def _heat(self) -> None:
-        """Makes each resistor and capacitor on a thermal node a thermal element.
+        """Converts resistors and capacitors on thermal nodes to thermal elements.
 
-        ngspice's nodes have no nature: a device's thermal node holds a temperature
-        rise as its voltage and takes a power as its current, so a resistor or a
-        capacitor between such nodes, or one and the ground, is a thermal resistance in
-        kelvins per watt or a thermal capacitance in joules per kelvin, of its value. A
-        thermal node is one a heated device's `thermal` terminal joins, or a thermal
-        element's.
+        In SPICE, nodes have no domain: a heated device's thermal node holds a
+        temperature rise as voltage and takes power as current. Thermal membership
+        propagates via breadth-first search across connected resistors and capacitors
+        without crossing ground, so multi-stage Foster and Cauer RC ladders become
+        thermal resistances in kelvins per watt and thermal capacitances in joules
+        per kelvin.
 
         Raises:
-            SpiceError: When such an element joins an electrical node too, or drifts
-                with temperature or voltage.
+            SpiceError: When a passive element joins a thermal node to an electrical
+                node, or drifts with temperature or voltage.
         """
-        elements = {ir.DeviceOf(model=model) for model, _ in _THERMAL_ELEMENTS.values()}
-        thermal = {
-            net
-            for _, instance in self.instances
-            for terminal, net in instance.terminals.items()
-            if instance.of in elements
-            or (instance.parameters.get("thermal") is True and terminal == "thermal")
-        }
+        thermal, electrical, adjacency, queue = _collect_thermal_graph(self.instances)
+        if not queue:
+            return
+        _propagate_thermal(thermal, electrical, adjacency, queue)
         heated: list[tuple[int, ir.Instance]] = []
-        for line, instance in self.instances:
+        for order, instance in self.instances:
             made = _THERMAL_ELEMENTS.get(instance.of)
-            nets = set(instance.terminals.values())
-            if made is None or not nets & thermal:
-                heated.append((line, instance))
+            non_ground = set(instance.terminals.values()) - {GROUND}
+            if made is None or not (non_ground & thermal):
+                heated.append((order, instance))
                 continue
             model, parameter = made
             location = instance.source_location
-            place = f"{location.file}:{location.line}: " if location else ""
-            if not nets <= thermal | {GROUND}:
+            place = f"{location.file}:{location.line}: " if location is not None else ""
+            if non_ground & electrical:
                 message = f"{place}`{instance.name}` joins a thermal node to another"
                 raise SpiceError(message)
             if set(instance.parameters) != {parameter}:
@@ -2443,23 +2623,23 @@ class _Translation:
                 "of": ir.DeviceOf(model=model),
                 "parameters": checked_parameters,
             }
-            heated.append((line, instance.model_copy(update=replaced)))
+            heated.append((order, instance.model_copy(update=replaced)))
         self.instances = heated
 
     def _couple(self) -> None:
         """Joins the inductors that mutual inductances couple into coupled inductors.
 
         The inductors that couplings join, directly or through others, become the
-        windings of one device, in the order the file writes them, which takes the id
-        and the line of the group's first coupling.
+        windings of one device, in the order the expanded subcircuit writes them, which
+        takes the id, source location, and expanded order of the group's first coupling.
 
         Raises:
             SpiceError: When a coupling names no inductor of the subcircuit, couples one
                 with itself, or couples a pair twice.
         """
         inductors = {
-            instance.name.casefold(): (line, instance)
-            for line, instance in self.instances
+            instance.name.casefold(): (order, instance)
+            for order, instance in self.instances
             if instance.of == ir.DeviceOf(model="inductor")
         }
         for coupling in self.couplings:
@@ -2474,8 +2654,8 @@ class _Translation:
                 key=lambda name: inductors[name][0],
             )
             windings = [inductors[name][1] for name in names]
-            line, instance = _coupled(group, names, windings)
-            self.instances.append((line, instance))
+            order, instance = _coupled(group, names, windings)
+            self.instances.append((order, instance))
             for winding_index, name in enumerate(names, start=1):
                 entry = self.inductor_initial_currents.pop(name, None)
                 if entry is not None:
@@ -2484,8 +2664,8 @@ class _Translation:
                     )
             coupled |= set(names)
         self.instances = [
-            (line, instance)
-            for line, instance in self.instances
+            (order, instance)
+            for order, instance in self.instances
             if instance.name.casefold() not in coupled
         ]
 
@@ -2504,7 +2684,7 @@ class _Translation:
         """
         name = statement.text.split()[0]
         self.draw = self.drawing.draws(name.casefold())
-        if not self.library.surveying:
+        if self.uses is None:
             self._translated(statement)
             return
         model = _needed(self, statement)
@@ -2512,14 +2692,14 @@ class _Translation:
         try:
             self._translated(statement)
         except UndefinedError as error:
-            self.library.use(Use(path, model, str(error), error.name))
+            self.uses.append(Use(path, model, str(error), error.name))
         except UnbinnedError as error:
-            self.library.use(Use(path, model, str(error), middle=error.middle))
+            self.uses.append(Use(path, model, str(error), middle=error.middle))
         except SpiceError as error:
-            self.library.use(Use(path, model, str(error)))
+            self.uses.append(Use(path, model, str(error)))
         else:
             if model:
-                self.library.use(Use(path, model))
+                self.uses.append(Use(path, model))
 
     def _translated(self, statement: Statement) -> None:
         name = statement.text.split()[0]
@@ -2563,19 +2743,82 @@ class _Translation:
         )
 
 
+type _ThermalAdjacency = dict[str, list[tuple[str, ir.Instance]]]
+"""Adjacency mapping non-ground nets across passive resistor/capacitor edges."""
+
+
+def _collect_thermal_graph(
+    instances: Sequence[tuple[int, ir.Instance]],
+) -> tuple[set[str], set[str], _ThermalAdjacency, deque[str]]:
+    """Collects thermal seeds, electrical nets and passive adjacency for BFS."""
+    thermal_models = {
+        ir.DeviceOf(model=model) for model, _ in _THERMAL_ELEMENTS.values()
+    }
+    thermal: set[str] = set()
+    electrical: set[str] = set()
+    queue: deque[str] = deque()
+    adjacency: _ThermalAdjacency = {}
+    for _, instance in instances:
+        if instance.of in _THERMAL_ELEMENTS:
+            first, second = instance.terminals["a"], instance.terminals["b"]
+            if first != GROUND and second not in {GROUND, first}:
+                adjacency.setdefault(first, []).append((second, instance))
+                adjacency.setdefault(second, []).append((first, instance))
+            continue
+        is_thermal_element = instance.of in thermal_models
+        heated_device = instance.parameters.get("thermal") is True
+        for terminal, net in instance.terminals.items():
+            if net == GROUND:
+                continue
+            if is_thermal_element or (heated_device and terminal == "thermal"):
+                if net not in thermal:
+                    thermal.add(net)
+                    queue.append(net)
+            else:
+                electrical.add(net)
+    return thermal, electrical, adjacency, queue
+
+
+def _propagate_thermal(
+    thermal: set[str],
+    electrical: set[str],
+    adjacency: _ThermalAdjacency,
+    queue: deque[str],
+) -> None:
+    """Propagates thermal net membership across passive edges via BFS.
+
+    Raises:
+        SpiceError: When a passive element connects a thermal net to an electrical net.
+    """
+    while queue:
+        current = queue.popleft()
+        for neighbor, instance in adjacency.get(current, ()):
+            if neighbor in electrical:
+                location = instance.source_location
+                place = (
+                    f"{location.file}:{location.line}: " if location is not None else ""
+                )
+                message = f"{place}`{instance.name}` joins a thermal node to another"
+                raise SpiceError(message)
+            if neighbor not in thermal:
+                thermal.add(neighbor)
+                queue.append(neighbor)
+
+
 @dataclass(frozen=True, slots=True)
 class _Coupling:
-    """A mutual inductance: the inductors it couples, by name, and its coefficient."""
+    """A mutual inductance: the inductors it couples, by name, coefficient and order."""
 
     statement: Statement
     inductors: tuple[str, ...]
     coefficient: float
+    order: int
 
 
 def _groups(couplings: list[_Coupling]) -> list[list[_Coupling]]:
     """The couplings grouped by the inductors they share, directly or through others.
 
-    Each group is in the order the file writes its couplings.
+    Each group is sorted by expanded statement order.
     """
     groups: list[list[_Coupling]] = []
     for coupling in couplings:
@@ -2587,15 +2830,15 @@ def _groups(couplings: list[_Coupling]) -> list[list[_Coupling]]:
         ]
         groups = [group for group in groups if group not in joined]
         groups.append([*(each for group in joined for each in group), coupling])
-    return [sorted(group, key=lambda each: each.statement.line) for group in groups]
+    return [sorted(group, key=lambda each: each.order) for group in groups]
 
 
 def _coupled(
     group: list[_Coupling], names: list[str], windings: list[ir.Instance]
 ) -> tuple[int, ir.Instance]:
-    """The coupled inductors of `group`'s couplings, and the line of its first.
+    """The coupled inductors of `group`'s couplings and expanded order of the first.
 
-    Their windings are `windings`, the inductors named `names`, and they run at the
+    Windings are `windings`, the inductors named `names`, and they run at the
     windings' own temperature, which every winding shares.
 
     Raises:
@@ -2618,7 +2861,8 @@ def _coupled(
     for pair, coefficient in pairs.items():
         numbered: list[JsonValue] = [*sorted(pair)]
         couplings.append({"windings": numbered, "coefficient": coefficient})
-    first = group[0].statement
+    first_coupling = group[0]
+    first = first_coupling.statement
     owns = [
         {
             key: value
@@ -2653,7 +2897,7 @@ def _coupled(
         },
         source_location=ir.SourceLocation(file=first.file, line=first.line),
     )
-    return first.line, instance
+    return first_coupling.order, instance
 
 
 def _mutual(translation: _Translation, statement: Statement) -> None:
@@ -2671,7 +2915,12 @@ def _mutual(translation: _Translation, statement: Statement) -> None:
         message = "jolty has no magnetic core: a mutual inductance couples inductors"
         raise statement.fail(message)
     translation.couplings.append(
-        _Coupling(statement, tuple(inductors), translation.value(coefficient))
+        _Coupling(
+            statement,
+            tuple(inductors),
+            translation.value(coefficient),
+            translation.order,
+        )
     )
 
 
@@ -2683,9 +2932,12 @@ _BIN: Final = re.compile(r"\.\d+$")
 """A bin's number after its model's name, as in ``nmos_3p3.12``."""
 
 
-def _bins(name: str) -> re.Pattern[str]:
-    """The case-folded names of the bins of the model `name`: it, a dot and a number."""
-    return re.compile(rf"{re.escape(name.casefold())}{_BIN.pattern}")
+def _bin_base(key: str) -> str | None:
+    """Returns the case-folded base model name for a binned key, or None."""
+    base, dot, suffix = key.rpartition(".")
+    if not dot or not suffix or not (suffix.isascii() and suffix.isdigit()):
+        return None
+    return base
 
 
 _FAMILIES: Final = {
@@ -2915,7 +3167,8 @@ def _condition(
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> bool:
     """Whether the condition of an ``.if`` or ``.elseif`` statement holds in `scope`."""
-    _, _, condition = statement.text.partition(" ")
+    parts = statement.text.split(maxsplit=1)
+    condition = parts[1] if len(parts) > 1 else ""
     return evaluate(inlined(parse(condition), functions), scope) != 0
 
 
@@ -2942,6 +3195,61 @@ def _keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     return positional, assigned
 
 
+def _single_keyword(
+    translation: _Translation,
+    statement: Statement,
+    name: str,
+    words: Sequence[str],
+) -> float:
+    """Evaluates a single-valued keyword assignment, rejecting empty or extra tokens."""
+    if not words:
+        message = f"`{name.upper()}` is not assigned a value"
+        raise statement.fail(message)
+    if len(words) != 1:
+        message = f"`{name.upper()}` has one value, not `{' '.join(words)}`"
+        raise statement.fail(message)
+    return translation.value(words[0])
+
+
+def _instance_keywords(
+    translation: _Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+    *,
+    flags: frozenset[str] = frozenset({"off", "on"}),
+    multi_valued: frozenset[str] = frozenset(),
+) -> dict[str, float]:
+    """Evaluates element keyword assignments, rejecting empty or stray tokens.
+
+    Allows trailing initial-state flags in `flags` (such as ``OFF`` and ``ON``)
+    and comma-separated multi-value keywords in `multi_valued` (such as bipolar
+    ``IC=vbe,vce``).
+    """
+    values: dict[str, float] = {}
+    for key, words in assigned.items():
+        if not words:
+            message = f"`{key.upper()}` is not assigned a value"
+            raise statement.fail(message)
+        if key in multi_valued:
+            evaluated = [
+                translation.value(word)
+                for word in words
+                if word.casefold() not in flags
+            ]
+            if not evaluated:
+                message = f"`{key.upper()}` is not assigned a value"
+                raise statement.fail(message)
+            values[key] = evaluated[0]
+            continue
+        value_word, *extra = words
+        stray = [word for word in extra if word.casefold() not in flags]
+        if stray:
+            message = f"`{key.upper()}` has one value, not `{' '.join(words)}`"
+            raise statement.fail(message)
+        values[key] = translation.value(value_word)
+    return values
+
+
 _DRIFT: Final = {
     "tc1": "temperature_coefficient",
     "tc2": "quadratic_temperature_coefficient",
@@ -2954,6 +3262,21 @@ _CURVATURE: Final = {
     "vc2": "quadratic_voltage_coefficient",
 }
 """The voltage coefficients of a resistor or capacitor, by HSPICE's name."""
+
+
+def _passive_value_words(
+    statement: Statement,
+    letter: str,
+    values: list[str],
+    assigned: Mapping[str, list[str]],
+) -> None:
+    """Appends explicit passive keyword value (``R=``, ``C=``, ``L=``) to `values`."""
+    if letter not in assigned:
+        return
+    if not assigned[letter]:
+        message = f"`{letter.upper()}` is not assigned a value"
+        raise statement.fail(message)
+    values.extend(assigned[letter])
 
 
 def _passive(
@@ -3000,12 +3323,12 @@ def _passive(
             raise statement.fail(message)
         element_name, a, b, *rest = positional
         card, values = _card_and_values(translation, rest, {kind, letter} & _CARDS)
-        if letter in assigned:
-            values.extend(assigned[letter])
+        _passive_value_words(statement, letter, values, assigned)
         initial_value = _read_initial_keyword(translation, statement, assigned)
         if _behaves(translation, statement, (a, b), values, assigned):
             _record_passive_initial(
                 translation,
+                statement,
                 model,
                 element_name,
                 (translation.net(a), translation.net(b)),
@@ -3017,9 +3340,9 @@ def _passive(
             message = f"a {model} has one value"
             raise statement.fail(message)
         own = {
-            name: translation.value(words[0])
+            name: _single_keyword(translation, statement, name, words)
             for name, words in assigned.items()
-            if name in {"m", *sized} and words
+            if name in {"m", *sized}
         }
         scale = translation.library.options.get("scale", 1.0)
         own |= {name: own[name] * scale for name in ("w", "l") if name in own}
@@ -3034,9 +3357,9 @@ def _passive(
         value = value * copies if model == "capacitor" else value / copies
         given |= _coefficients(translation, statement, assigned, drifts)
         temperatures = {
-            name: translation.value(words[0])
+            name: _single_keyword(translation, statement, name, words)
             for name, words in assigned.items()
-            if name in {"temp", "dtemp"} and words
+            if name in {"temp", "dtemp"}
         }
         parameters: dict[str, JsonValue] = {parameter: value}
         parameters |= _temperatures(given)
@@ -3051,6 +3374,7 @@ def _passive(
         translation.add(statement, model, parameters, {"a": net_a, "b": net_b})
         _record_passive_initial(
             translation,
+            statement,
             model,
             element_name,
             (net_a, net_b),
@@ -3085,6 +3409,7 @@ def _flicker_parameters(
 
 def _record_passive_initial(  # noqa: PLR0913 - element identity, nets, IC and copies
     translation: _Translation,
+    statement: Statement,
     model: str,
     element_name: str,
     nets: tuple[str, str],
@@ -3095,14 +3420,24 @@ def _record_passive_initial(  # noqa: PLR0913 - element identity, nets, IC and c
     """Records a capacitor ``IC=`` voltage or inductor ``IC=`` current."""
     if initial_value is None:
         return
+    if not math.isfinite(initial_value):
+        message = f"`IC` initial condition is not finite: {initial_value!r}"
+        raise statement.fail(message)
     if model == "capacitor":
         translation.capacitor_initial_voltages.append(
             _DeviceVoltage(element_name, nets[0], nets[1], initial_value)
         )
     elif model == "inductor":
+        scaled = initial_value * copies
+        if not math.isfinite(scaled):
+            message = (
+                f"`IC` current scaled by `m` is not finite: "
+                f"{initial_value!r} * {copies!r}"
+            )
+            raise statement.fail(message)
         translation.inductor_initial_currents[element_name.casefold()] = (
             element_name,
-            initial_value * copies,
+            scaled,
         )
 
 
@@ -3118,7 +3453,11 @@ def _read_initial_keyword(
     if len(words) != 1:
         message = "`IC` has one value"
         raise statement.fail(message)
-    return translation.value(words[0])
+    resolved = translation.value(words[0])
+    if not math.isfinite(resolved):
+        message = f"`IC` is not finite: `{words[0]}`"
+        raise statement.fail(message)
+    return resolved
 
 
 def _behaves(
@@ -3212,11 +3551,9 @@ def _value_of_voltage(
             f"temperature factor for resistor is finite and nonzero, not {factor!r}"
         )
         raise statement.fail(message)
-    own = {
-        name: translation.value(words[0])
-        for name, words in assigned.items()
-        if name == "m" and words
-    }
+    own: dict[str, float] = {}
+    if "m" in assigned:
+        own["m"] = _single_keyword(translation, statement, "m", assigned["m"])
     copies = translation.multiplied(own).get("m", 1.0)
     if not (copies > 0 and math.isfinite(copies)):
         message = f"the element's copies `m` is positive and finite, not {copies!r}"
@@ -3269,14 +3606,41 @@ def _charge(
     return Binary("-", found, Number(zero))
 
 
+def _mark_unknowns(expression: Expression) -> dict[int, bool]:
+    """Marks whether each node in `expression` reads any voltage or current."""
+    marks: dict[int, bool] = {}
+    stack: list[tuple[Expression, bool]] = [(expression, False)]
+    while stack:
+        current, ready = stack.pop()
+        key = id(current)
+        if key in marks:
+            continue
+        if not ready:
+            if isinstance(current, Voltage | Current):
+                marks[key] = True
+                continue
+            subexpressions = children(current)
+            if not subexpressions:
+                marks[key] = False
+                continue
+            stack.append((current, True))
+            stack.extend(
+                (child, False) for child in subexpressions if id(child) not in marks
+            )
+            continue
+        marks[key] = any(marks[id(child)] for child in children(current))
+    return marks
+
+
 def _folded(translation: _Translation, expression: Expression) -> Expression:
     """`expression` with each part that reads no voltage or current evaluated."""
+    has_unknown = _mark_unknowns(expression)
     frames: list[tuple[Expression, bool]] = [(expression, False)]
     results: list[Expression] = []
     while frames:
         current, ready = frames.pop()
         if not ready:
-            if not _unknowns(current):
+            if not has_unknown[id(current)]:
                 results.append(
                     Number(evaluate(current, translation.scope, translation.draw))
                 )
@@ -3364,12 +3728,13 @@ def _charge_of_voltage(
             "voltage or a current"
         )
         raise statement.fail(message)
-    own = {
-        name: translation.value(words[0])
-        for name, words in assigned.items()
-        if name == "m" and words
-    }
+    own: dict[str, float] = {}
+    if "m" in assigned:
+        own["m"] = _single_keyword(translation, statement, "m", assigned["m"])
     copies = translation.multiplied(own).get("m", 1.0)
+    if not (copies > 0 and math.isfinite(copies)):
+        message = f"the element's copies `m` is positive and finite, not {copies!r}"
+        raise statement.fail(message)
     held = charge if copies == 1 else Binary("*", charge, Number(copies))
     _behavioral(translation, statement, "behavioral_capacitor", nodes, held)
 
@@ -3460,21 +3825,22 @@ def _coefficients(
     Raises:
         SpiceError: When ``TC`` gives more than two.
     """
-    listed = assigned.get("tc", [])
-    if len(listed) > 2:  # noqa: PLR2004 - the linear and the quadratic coefficient
-        message = "`TC` gives two coefficients at most"
-        raise statement.fail(message)
+    listed = assigned.get("tc")
+    if listed is not None:
+        if not listed:
+            message = "`TC` is not assigned a value"
+            raise statement.fail(message)
+        if len(listed) > 2:  # noqa: PLR2004 - the linear and the quadratic coefficient
+            message = "`TC` gives two coefficients at most"
+            raise statement.fail(message)
     given = {
         name: translation.value(word)
-        for name, word in zip(("tc1", "tc2"), listed, strict=False)
+        for name, word in zip(("tc1", "tc2"), listed or (), strict=False)
     }
     for name in drifts:
         words = assigned.get(name)
         if words is not None:
-            if not words:
-                message = f"`{name.upper()}` is not assigned a value"
-                raise statement.fail(message)
-            given[name] = translation.value(words[0])
+            given[name] = _single_keyword(translation, statement, name, words)
     return given
 
 
@@ -3698,13 +4064,17 @@ def _scaled_mosfet(
 ) -> dict[str, float]:
     """Scales MOSFET instance sizes by `scale`, raising `SpiceError` on overflow."""
     try:
-        return {
+        scaled = {
             key: value * math.pow(scale, _SCALED.get(key, 0))
             for key, value in instance.items()
         }
     except OverflowError, ValueError:
         message = f"scale option overflows: {scale!r}"
         raise statement.fail(message) from None
+    if any(not math.isfinite(value) for value in scaled.values()):
+        message = f"scale option overflows: {scale!r}"
+        raise statement.fail(message)
+    return scaled
 
 
 def _semiconductor(
@@ -3724,11 +4094,7 @@ def _semiconductor(
             message = f"the element joins {len(terminals)} nodes, then names its model"
             raise statement.fail(message)
         instance = translation.multiplied(
-            {
-                key: translation.value(values[0])
-                for key, values in assigned.items()
-                if values
-            }
+            _instance_keywords(translation, statement, assigned)
         )
         if "nmos" in kinds:
             instance = _scaled_mosfet(
@@ -3850,6 +4216,21 @@ _VDMOS_NODES: Final = 5
 join nothing unless it heats."""
 
 
+def _check_vdmos_flags(statement: Statement, words: Sequence[str]) -> None:
+    """Checks trailing tokens on a VDMOS statement, allowing only ``OFF``."""
+    for word in words:
+        if word.casefold() == "thermal":
+            message = (
+                "jolty reads no `THERMAL` VDMOS: a vdmos heats through a thermal "
+                "terminal of its own, joined to a thermal network"
+            )
+            raise statement.fail(message)
+        # An initial state, `OFF`, only guides the search for the operating point.
+        if word.casefold() != "off":
+            message = f"a VDMOS takes no `{word}`"
+            raise statement.fail(message)
+
+
 def _transistor(translation: _Translation, statement: Statement) -> None:
     """The translation of an `M` element: a MOSFET, or a VDMOS, as its model card says.
 
@@ -3882,24 +4263,15 @@ def _transistor(translation: _Translation, statement: Statement) -> None:
     if len(nodes) > _VDMOS_NODES:
         message = f"a VDMOS joins at most {_VDMOS_NODES} nodes, then names its model"
         raise statement.fail(message)
-    for word in rest:
-        if word.casefold() == "thermal":
-            message = (
-                "jolty reads no `THERMAL` VDMOS: a vdmos heats through a thermal "
-                "terminal of its own, joined to a thermal network"
-            )
+    _check_vdmos_flags(statement, rest)
+    raw_instance: dict[str, float] = {}
+    for key, values in assigned.items():
+        if not values:
+            message = f"`{key.upper()}` is not assigned a value"
             raise statement.fail(message)
-        # An initial state, `OFF`, only guides the search for the operating point.
-        if word.casefold() != "off":
-            message = f"a VDMOS takes no `{word}`"
-            raise statement.fail(message)
-    instance = translation.multiplied(
-        {
-            key: translation.value(values[0])
-            for key, values in assigned.items()
-            if values
-        }
-    )
+        _check_vdmos_flags(statement, values[1:])
+        raw_instance[key] = translation.value(values[0])
+    instance = translation.multiplied(raw_instance)
     made = translation.device(card, instance, statement)
     joined = {
         terminal: translation.net(node)
@@ -3947,11 +4319,12 @@ def _bipolar(translation: _Translation, statement: Statement) -> None:
         raise statement.fail(message)
     nodes, rest = positional[1:named], positional[named + 1 :]
     instance = translation.multiplied(
-        {
-            key: translation.value(values[0])
-            for key, values in assigned.items()
-            if values
-        }
+        _instance_keywords(
+            translation,
+            statement,
+            assigned,
+            multi_valued=frozenset({"ic"}),
+        )
     )
     # An initial state, `OFF`, only guides the search for the operating point.
     areas = [word for word in rest if word.casefold() not in {"off", "on"}]
@@ -4103,9 +4476,24 @@ def _table(
     )
 
 
+_POLY_HEADER: Final = re.compile(r"poly\((\d+)\)", re.IGNORECASE)
+"""Header of a SPICE2 ``POLY(n)`` controlled source."""
+
+_GROUP_SEPARATOR: Final = re.compile(r"[\s,]+")
+"""Whitespace and comma separator inside parenthesized ``POLY`` node groups."""
+
+_NON_IDENT_CHAR: Final = re.compile(r"[^A-Za-z0-9_]")
+"""Character pattern replaced with ``_`` when synthesizing terminal identifiers."""
+
+_ARBITRARY_SOURCE: Final = re.compile(
+    r"\S+\s+(\S+)\s+(\S+)\s+([VI])\s*=\s*(.+)$", re.IGNORECASE
+)
+"""Pattern matching a B-source statement setting ``V=`` or ``I=`` an expression."""
+
+
 def _polynomial_count(statement: Statement, header: str) -> int:
     """Parses the control count of ``POLY(n)`` and checks it is at least 1."""
-    match = re.fullmatch(r"poly\((\d+)\)", header, re.IGNORECASE)
+    match = _POLY_HEADER.fullmatch(header)
     if match is None:
         message = "POLY counts its controls, as POLY(2)"
         raise statement.fail(message)
@@ -4166,7 +4554,7 @@ def _polynomial(
 def _split_group(word: str) -> list[str]:
     """The words of a group such as ``(3,0)``, or the word itself."""
     if word.startswith("(") and word.endswith(")"):
-        return [part for part in re.split(r"[\s,]+", word[1:-1]) if part]
+        return [part for part in _GROUP_SEPARATOR.split(word[1:-1]) if part]
     return [word]
 
 
@@ -4219,11 +4607,9 @@ def _behavioral(
 def _identifier(name: str, taken: set[str]) -> str:
     """A name that jolty's expressions read, from a SPICE node's or source's.
 
-    It names a terminal or a port, unlike any `taken`.
+    The identifier names a terminal or a port, distinct from any in `taken`.
     """
-    base = re.sub(
-        r"[^A-Za-z0-9_]", "_", name.replace("+", "_plus").replace("-", "_minus")
-    )
+    base = _NON_IDENT_CHAR.sub("_", name.replace("+", "_plus").replace("-", "_minus"))
     if not _IDENTIFIER.fullmatch(base):
         base = f"n{base}"
     candidate = base
@@ -4238,9 +4624,7 @@ def _identifier(name: str, taken: set[str]) -> str:
 
 def _arbitrary(translation: _Translation, statement: Statement) -> None:
     """A B source: ``V=`` or ``I=`` an expression."""
-    match = re.match(
-        r"\S+\s+(\S+)\s+(\S+)\s+([VI])\s*=\s*(.+)$", statement.text, re.IGNORECASE
-    )
+    match = _ARBITRARY_SOURCE.match(statement.text)
     if match is None:
         message = "a B source joins two nodes, then sets `V=` or `I=` an expression"
         raise statement.fail(message)
@@ -4340,6 +4724,14 @@ _QUARTER_WAVE_AT_GHZ: Final = (0.25, 1e9)
 """A T element's normalized length and frequency where it gives neither, as ngspice's
 ``trasetup.c`` (lines 94 to 99) sets them: a quarter wavelength at 1 GHz."""
 
+_TRANSMISSION_LINE_TERMINALS: Final = (
+    "positive1",
+    "negative1",
+    "positive2",
+    "negative2",
+)
+"""Terminals of a lossless transmission line, matching SPICE's four-node order."""
+
 
 def _transmission_line(translation: _Translation, statement: Statement) -> None:
     """A T element, a lossless transmission line, between two ports of two nodes.
@@ -4392,14 +4784,13 @@ def _transmission_line(translation: _Translation, statement: Statement) -> None:
         "delay": delay,
     }
     # The line's terminals are in the order of SPICE's nodes, each port's in turn.
-    terminals = _checked_device(statement, "transmission_line", parameters).terminals
     translation.add(
         statement,
         "transmission_line",
         parameters,
         {
             terminal: translation.net(node)
-            for terminal, node in zip(terminals, nodes, strict=True)
+            for terminal, node in zip(_TRANSMISSION_LINE_TERMINALS, nodes, strict=True)
         },
     )
 
@@ -4441,6 +4832,7 @@ def _instance(translation: _Translation, statement: Statement) -> None:
         given,
         translation.drawing.within(name),
         translation.instantiating,
+        uses=translation.uses,
     )
     child = built.component
     ports = [port.name for port in child.definition.ports]
@@ -4474,7 +4866,7 @@ def _instance(translation: _Translation, statement: Statement) -> None:
     translation.children[child.name] = child
     translation.instances.append(
         (
-            statement.line,
+            translation.order,
             ir.Instance(
                 name=name,
                 of=ir.ComponentOf(component=child.name),

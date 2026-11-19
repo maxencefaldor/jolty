@@ -200,7 +200,11 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         JoltyError: When Xyce is not installed, runs out of time, fails, or prints no
             values.
     """
-    command = analysis.split(maxsplit=1)[0].lower()
+    parts = analysis.split(maxsplit=1)
+    if not parts:
+        message = "Xyce analysis command is empty"
+        raise JoltyError(message)
+    command = parts[0].lower()
     if command not in _PRINTED:
         message = f"Xyce has no analysis {command}"
         raise JoltyError(message)
@@ -317,6 +321,9 @@ def execute(
 _SCALES: Final = {"time": "time", "freq": "frequency"}
 """The names of the scales Xyce prints, and jolty's."""
 
+_COMPLEX_PART: Final = re.compile(r"(re|im)\((.*)\)")
+"""Pattern matching a case-folded complex CSV column header."""
+
 
 def _read(text: str) -> dict[str, Values]:
     """The columns of the values Xyce printed as CSV, by lowercase name.
@@ -324,15 +331,15 @@ def _read(text: str) -> dict[str, Values]:
     A complex value's real and imaginary parts, ``Re(V(OUT))`` and ``Im(V(OUT))``,
     make one vector.
     """
-    rows = list(csv.reader(text.splitlines()))
+    rows = [row for row in csv.reader(text.splitlines()) if row]
     if len(rows) < 2:  # noqa: PLR2004 - a header and a row of values at least
         return {}
-    header, *data = (row for row in rows if row)
+    header, *data = rows
     table = np.array([[float(value) for value in row] for row in data])
     vectors: dict[str, Values] = {}
     for column, title in enumerate(header):
         name = title.strip().lower()
-        part = re.fullmatch(r"(re|im)\((.*)\)", name)
+        part = _COMPLEX_PART.fullmatch(name)
         values = table[:, column].astype(np.complex128)
         if part is None:
             vectors[_SCALES.get(name, name)] = values

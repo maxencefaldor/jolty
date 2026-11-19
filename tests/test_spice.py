@@ -4,14 +4,16 @@ import hashlib
 import json
 import math
 import re
+import struct
 import threading
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+import numpy as np
 import pytest
 from pydantic import JsonValue
 
@@ -38,19 +40,26 @@ from jolty import (
     spice,
 )
 from jolty.plan import TIGHT
-from jolty.spice import models, sky130
+from jolty.spice import download, export, models, ngspice, sky130, xyce
 from jolty.spice.export import netlist
 from jolty.spice.expressions import (
+    Binary,
+    Call,
+    Conditional,
+    Expression,
     Function,
     Name,
     Number,
     Unary,
+    Voltage,
     evaluate,
+    integral,
+    nesting_depth,
     number,
     parse,
     translate,
 )
-from jolty.spice.netlist import statements, tokens
+from jolty.spice.netlist import Statement, statements, tokens
 from jolty.spice.ngspice import Compatibility
 from jolty.units import (
     VOLTAGE,
@@ -193,7 +202,7 @@ def test_expressions_say_what_is_wrong(text: str, message: str) -> None:
 def test_translations_name_nodes_and_sources_as_told() -> None:
     expression = parse("V(a, 0) * I(Vsense) - V(0, b)")
     written = translate(expression, {}, lambda node: f"n_{node}", str.lower)
-    assert written == "((v(n_a) * i(vsense)) - (-v(n_b)))"
+    assert written == "v(n_a) * i(vsense) - (-v(n_b))"
 
 
 def test_a_subcircuit_becomes_a_component_with_its_parameters() -> None:
@@ -1324,6 +1333,79 @@ def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
     assert named == set(schema["properties"]) - unread
 
 
+@pytest.mark.parametrize(
+    ("model", "named"),
+    [
+        (
+            "diode",
+            {*(jolty for jolty, _ in models.DIODE.values()), "nominal_temperature"},
+        ),
+        (
+            "jfet",
+            {
+                *(jolty for jolty, _ in models.JFET.values()),
+                "channel",
+                "nominal_temperature",
+            },
+        ),
+        (
+            "bipolar_transistor",
+            {
+                *(jolty for jolty, _ in models.BIPOLAR.values()),
+                "polarity",
+                "substrate",
+                "nominal_temperature",
+                *models.BIPOLAR_TEMPERATURE_MODELS.values(),
+            },
+        ),
+        (
+            "mosfet",
+            {
+                *(jolty for jolty, _ in models.MOSFET.values()),
+                *(jolty for jolty, _ in models.MOSFET_INSTANCE.values()),
+                "channel",
+                "level",
+                "gate_material",
+                "nominal_temperature",
+            },
+        ),
+        (
+            "vdmos",
+            {
+                *(jolty for jolty, _ in models.VDMOS.values()),
+                *(jolty for jolty, _ in models.VDMOS_INSTANCE.values()),
+                "channel",
+                "nominal_temperature",
+            },
+        ),
+        (
+            "vbic",
+            {
+                *(jolty for jolty, _ in models.VBIC.values()),
+                "polarity",
+                "base_charge",
+                "nominal_temperature",
+            },
+        ),
+        (
+            "voltage_controlled_switch",
+            {jolty for jolty, _ in models.SWITCH.values()},
+        ),
+        (
+            "current_controlled_switch",
+            {jolty for jolty, _ in models.CURRENT_SWITCH.values()},
+        ),
+    ],
+)
+def test_compact_model_and_switch_tables_match_engine_schema(
+    model: str, named: set[str]
+) -> None:
+    """Every compact model and switch table names the engine schema's properties."""
+    schema = json.loads(_core.schema(model))
+    unread = {"temperature", "temperature_offset", "thermal"}
+    assert named == set(schema["properties"]) - unread
+
+
 def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
     """As ngspice's INPgetModBin takes a bin, the last defined that holds them.
 
@@ -2104,7 +2186,7 @@ def test_user_functions_are_written_out_in_every_expression() -> None:
     }
     assert parts.values()["p"] == 4.0
     assert read["R1"]["resistance"] == 8.0
-    assert read["B1"]["expression"] == "(2.0 * v(a))"
+    assert read["B1"]["expression"] == "2.0 * v(a)"
 
 
 @pytest.mark.parametrize(
@@ -3651,3 +3733,1073 @@ def test_malformed_pss_statements_raise_factual_spice_errors(
     lowered = message.casefold()
     for word in advice:
         assert word not in lowered, f"advice word {word!r} in {message}"
+
+
+# ---------------------------------------------------------------------------
+# Phase A regression tests: netlist, library, expressions, models, export,
+# download, sky130, ngspice, and xyce
+# ---------------------------------------------------------------------------
+
+
+def test_netlist_preserves_tabs_as_separators() -> None:
+    parsed = statements(
+        ".subckt\tdiv\ta\tb\n.if\t(1)\nR1\ta\tb\t1k\n+\tTC1=1m\n.endif\n.ends\n",
+        "tabs.lib",
+    )
+    assert [item.text for item in parsed] == [
+        ".subckt div a b",
+        ".if (1)",
+        "R1 a b 1k TC1=1m",
+        ".endif",
+        ".ends",
+    ]
+    part = library(
+        ".subckt\tdiv\ta\tb\n.if\t(1)\nR1\ta\tb\t1k\n.endif\n.ends\n"
+    ).component("div")
+    assert _devices(part) == {"R1": ("resistor", {"resistance": 1000.0})}
+
+
+def test_netlist_preserves_semicolon_and_dollar_inside_quoted_strings(
+    tmp_path: Path,
+) -> None:
+    lines = statements(
+        '.include "dir;1/foo.lib" ; real trailing comment\n'
+        ".include 'dir $1/bar.lib' $ real trailing comment\n"
+        "R1 a b 1k ; comment after element\n"
+        "R2 b 0 2k $ dollar comment\n",
+        "quoted.lib",
+    )
+    assert [item.text for item in lines] == [
+        '.include "dir;1/foo.lib"',
+        ".include 'dir $1/bar.lib'",
+        "R1 a b 1k",
+        "R2 b 0 2k",
+    ]
+    semi_dir = tmp_path / "dir;1"
+    semi_dir.mkdir()
+    (semi_dir / "foo.lib").write_text(".subckt s1 a b\nR1 a b 1k\n.ends\n")
+    dollar_dir = tmp_path / "dir $1"
+    dollar_dir.mkdir()
+    (dollar_dir / "bar.lib").write_text(".subckt s2 a b\nR2 a b 2k\n.ends\n")
+    top = tmp_path / "top.lib"
+    top.write_text(
+        ".include \"dir;1/foo.lib\" ; comment\n.include 'dir $1/bar.lib' $ comment\n",
+    )
+    loaded = spice.load(top)
+    assert set(loaded.subcircuits) == {"s1", "s2"}
+    assert _devices(loaded.component("s1")) == {
+        "R1": ("resistor", {"resistance": 1000.0})
+    }
+    assert _devices(loaded.component("s2")) == {
+        "R2": ("resistor", {"resistance": 2000.0})
+    }
+
+
+def test_library_concurrent_survey_component_drawn_and_random_variables() -> None:
+    lib = library(
+        ".param base = agauss(1000, 100, 3)\n"
+        ".subckt leaf a b\n"
+        ".param rval = agauss(500, 50, 3)\n"
+        "R1 a b {rval}\n"
+        ".ends\n"
+        ".subckt top in out\n"
+        "R0 in mid {base}\n"
+        "X1 mid out leaf\n"
+        ".ends\n"
+    )
+    expected_nominal = _devices(lib.component("top"))
+    expected_survey = lib.survey("top")
+    expected_rv = lib.random_variables("top", "U1")
+    workers = 8
+    barrier = threading.Barrier(workers)
+
+    def task(worker: int) -> None:
+        barrier.wait()
+        for step in range(4):
+            kind = (worker + step) % 4
+            if kind == 0:
+                assert lib.survey("top") == expected_survey
+                assert not lib.surveying
+            elif kind == 1:
+                assert _devices(lib.component("top")) == expected_nominal
+            elif kind == 2:
+                sample = spice.Sample(seed=17, index=worker)
+                drawn = lib.drawn("top", sample, f"U{worker}")
+                assert drawn.definition.instances
+            else:
+                assert lib.random_variables("top", "U1") == expected_rv
+
+    with ThreadPoolExecutor(workers) as pool:
+        futures = [pool.submit(task, worker) for worker in range(workers)]
+        for future in futures:
+            future.result()
+    assert not lib.surveying
+
+
+def test_library_cache_invalidates_on_options_compatibility_and_parsed_models() -> None:
+    lib = library(
+        ".model nch.1 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin=0.1u wmax=1.2u vth0=0.4)\n"
+        ".model nch.2 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin=1.2u wmax=10u vth0=0.7)\n"
+        ".subckt dut d g so b\n"
+        ".model dloc d(is=1e-14)\n"
+        "D1 d so dloc\n"
+        "M1 d g so b nch l=1 w=2 nf=2\n"
+        ".ends\n"
+    )
+    lib.options["scale"] = 1e-6
+    first = _devices(lib.component("dut"))
+    assert first["M1"][1]["vth0"] == 0.7
+    assert lib._parsed_models  # noqa: SLF001 - verify local model cache populated
+
+    # Changing scale invalidates cached nominal builds.
+    lib.options["scale"] = 0.5e-6
+    scaled = _devices(lib.component("dut"))
+    assert scaled["M1"][1]["vth0"] == 0.4
+    lib.options["scale"] = 1e-6
+
+    # Changing compatibility from None to "hsa" turns on wnflag=1, halving w/nf to 1u.
+    lib.compatibility = "hsa"
+    second = _devices(lib.component("dut"))
+    assert second["M1"][1]["vth0"] == 0.4
+
+    # Explicit options["wnflag"] overrides compatibility and invalidates cache.
+    lib.options["wnflag"] = 0.0
+    third = _devices(lib.component("dut"))
+    assert third["M1"][1]["vth0"] == 0.7
+
+    # Adding a parameter invalidates _parsed_models so stale cards are not retained.
+    lib.read(".param extra = 1\n", "extra.lib")
+    assert not lib._parsed_models  # noqa: SLF001 - verify cache cleared on invalidation
+
+
+def test_include_inside_subcircuit_preserves_winding_and_coupling_order(
+    tmp_path: Path,
+) -> None:
+    # Included file restarts line numbers at 1, below L1's line number in main file.
+    # Couplings satisfy 0.6**2 + 0.5**2 = 0.61 < 1 (strictly positive definite matrix).
+    (tmp_path / "second.inc").write_text(
+        "L2 b 0 2m\nK1 L1 L2 0.6\nL3 c 0 3m\nK2 L2 L3 0.5\n",
+    )
+    main = tmp_path / "main.lib"
+    main.write_text(
+        "* padding line 1\n"
+        "* padding line 2\n"
+        "* padding line 3\n"
+        "* padding line 4\n"
+        "* padding line 5\n"
+        ".subckt xfmr a b c\n"
+        "R0 a b 10k\n"
+        "L1 a 0 1m\n"
+        '.include "second.inc"\n'
+        "R1 c 0 10k\n"
+        ".ends\n",
+    )
+    comp = spice.load(main).component("xfmr")
+    instance_names = [inst.name for inst in comp.definition.instances]
+    assert instance_names == ["R0", "K1", "R1"]
+    coupled = comp.definition.instances[1]
+    assert coupled.of == ir.DeviceOf(model="coupled_inductors")
+    assert coupled.terminals == {
+        "a1": "a",
+        "b1": "ground",
+        "a2": "b",
+        "b2": "ground",
+        "a3": "c",
+        "b3": "ground",
+    }
+    windings = coupled.parameters["windings"]
+    assert windings == [
+        {"inductance": 1e-3},
+        {"inductance": 2e-3},
+        {"inductance": 3e-3},
+    ]
+
+
+@pytest.mark.parametrize(
+    "deck",
+    [
+        ".ic V(a)={1/0}\n",
+        ".ic V(a)=1e500\n",
+        ".nodeset V(a)={0/0}\n",
+        ".nodeset V(a)=1e500\n",
+        ".option scale={1/0}\n",
+        ".pss period=1e-310\n",
+        ".pss 1e-310\n",
+    ],
+)
+def test_non_finite_top_level_directives_are_rejected(deck: str) -> None:
+    with pytest.raises(SpiceError):
+        library(deck)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "R1 a 0 {1/0}\n",
+        "R1 a 0 {0/0}\n",
+        "V1 a 0 {1/0}\n",
+        "C1 a 0 1u IC={1/0}\n",
+        "L1 a 0 1m IC={1/0}\n",
+        "L1 a 0 1m M=10 IC=1e308\n",
+    ],
+)
+def test_non_finite_element_values_and_ic_are_rejected(body: str) -> None:
+    lib = library(f".subckt s a\n{body}.ends\n")
+    with pytest.raises(SpiceError):
+        lib.component("s")
+
+
+@pytest.mark.parametrize(
+    "card",
+    [
+        ".pss 1meg 0 ground",
+        ".pss 1meg 0 GROUND",
+        ".pss 1meg 0 V(ground)",
+        ".pss 1meg 0 V(GROUND)",
+    ],
+)
+def test_pss_node_rejects_ground_port_name(card: str) -> None:
+    with pytest.raises(SpiceError, match="ground port"):
+        library(card)
+
+
+@pytest.mark.parametrize(
+    "element_line",
+    [
+        "C1 a 0 Q={1u * V(a)} M=0",
+        "C1 a 0 Q={1u * V(a)} M=-2",
+        "C1 a 0 Q={1u * V(a)} M={1/0}",
+        "C1 a 0 C={1u + 0.1u * V(a)} M=0",
+        "C1 a 0 C={1u + 0.1u * V(a)} M=-1",
+    ],
+)
+def test_charge_of_voltage_validates_positive_finite_copies(
+    element_line: str,
+) -> None:
+    lib = library(f".subckt s a\n{element_line}\n.ends\n")
+    with pytest.raises(SpiceError):
+        lib.component("s")
+
+
+def test_binned_model_index_tracks_order_and_invalidation() -> None:
+    lib = library(
+        ".model nch.1 nmos(level=49 lmin=0.1u lmax=1u wmin=1u wmax=10u vth0=0.3)\n"
+        ".model nch.2 nmos(level=49 lmin=0.1u lmax=1u wmin=1u wmax=10u vth0=0.5)\n"
+        ".subckt s d g so b\n"
+        "M1 d g so b nch l=0.5u w=2u\n"
+        ".ends\n"
+    )
+    assert _devices(lib.component("s"))["M1"][1]["vth0"] == 0.5
+    # Adding a parameter clears the bin index and rebuilds it accurately on next lookup.
+    lib.read(".param k = 1\n", "k.lib")
+    assert _devices(lib.component("s"))["M1"][1]["vth0"] == 0.5
+    # Redefining an earlier bin keeps its dictionary position, while a new bin wins.
+    lib.read(
+        ".model nch.3 nmos(level=49 lmin=0.1u lmax=1u wmin=1u wmax=10u vth0=0.8)\n",
+        "b3.lib",
+    )
+    assert _devices(lib.component("s"))["M1"][1]["vth0"] == 0.8
+    assert lib.survey_model("nch").element == "nch.1"
+
+
+def test_heat_propagates_across_multi_stage_foster_and_cauer_ladders() -> None:
+    cauer = library(
+        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
+        ".subckt cauer c b e t\n"
+        "Q1 c b e 0 t hot\n"
+        "Rload c 0 1k\n"
+        "Rth1 t t1 100\n"
+        "Cth1 t1 0 10n\n"
+        "Rth2 t1 t2 200\n"
+        "Cth2 t2 0 20n\n"
+        "Rth3 t2 0 500\n"
+        ".ends\n"
+    )
+    found = _devices(cauer.component("cauer"))
+    assert found["Rload"] == ("resistor", {"resistance": 1000.0})
+    assert found["Rth1"] == ("thermal_resistance", {"resistance": 100.0})
+    assert found["Cth1"] == ("thermal_capacitance", {"capacitance": 10e-9})
+    assert found["Rth2"] == ("thermal_resistance", {"resistance": 200.0})
+    assert found["Cth2"] == ("thermal_capacitance", {"capacitance": 20e-9})
+    assert found["Rth3"] == ("thermal_resistance", {"resistance": 500.0})
+
+    foster = library(
+        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
+        ".subckt foster c b e t\n"
+        "Q1 c b e 0 t hot\n"
+        "R1 t t1 40\n"
+        "C1 t t1 5n\n"
+        "R2 t1 0 60\n"
+        "C2 t1 0 8n\n"
+        ".ends\n"
+    )
+    foster_devices = _devices(foster.component("foster"))
+    assert foster_devices["R1"] == ("thermal_resistance", {"resistance": 40.0})
+    assert foster_devices["C1"] == ("thermal_capacitance", {"capacitance": 5e-9})
+    assert foster_devices["R2"] == ("thermal_resistance", {"resistance": 60.0})
+    assert foster_devices["C2"] == ("thermal_capacitance", {"capacitance": 8e-9})
+
+    bridged = library(
+        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
+        ".subckt bridged c b e t\n"
+        "Q1 c b e 0 t hot\n"
+        "Rth1 t t1 100\n"
+        "Rbad t1 c 1k\n"
+        ".ends\n"
+    )
+    with pytest.raises(SpiceError, match="joins a thermal node to another"):
+        bridged.component("bridged")
+
+    drifting = library(
+        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
+        ".subckt drift c b e t\n"
+        "Q1 c b e 0 t hot\n"
+        "Rth1 t t1 100\n"
+        "Rth2 t1 0 200 TC1=1m\n"
+        ".ends\n"
+    )
+    with pytest.raises(SpiceError, match="drifts with temperature or voltage"):
+        drifting.component("drift")
+
+
+@pytest.mark.parametrize(
+    "deck",
+    [
+        ".subckt s a\nR1 a 0 1k m=\n.ends",
+        ".subckt s a\nR1 a 0 1k m=2 3\n.ends",
+        ".subckt s a\nR1 a 0 1k temp=\n.ends",
+        ".subckt s a\nR1 a 0 1k temp=25 extra\n.ends",
+        ".subckt s a\nR1 a 0 1k r=\n.ends",
+        ".subckt s a\nR1 a 0 1k tc=\n.ends",
+        ".subckt s a\nR1 a 0 1k tc1=1m 2m\n.ends",
+        ".subckt s a\nC1 a 0 Q={1u*V(a)} m=\n.ends",
+        ".subckt s a\nC1 a 0 Q={1u*V(a)} m=2 extra\n.ends",
+        ".subckt s a\nR1 a 0 {1k + V(a)} m=\n.ends",
+        ".model mn nmos\n.subckt s d g so b\nM1 d g so b mn l=\n.ends",
+        ".model mn nmos\n.subckt s d g so b\nM1 d g so b mn l=1u 2u\n.ends",
+        ".model mv vdmos\n.subckt s d g so\nM1 d g so mv m=\n.ends",
+        ".model mv vdmos\n.subckt s d g so\nM1 d g so mv m=2 thermal\n.ends",
+        ".model mv vdmos\n.subckt s d g so\nM1 d g so mv m=2 extra\n.ends",
+        ".model qn npn\n.subckt s c b e\nQ1 c b e qn area=\n.ends",
+        ".model qn npn\n.subckt s c b e\nQ1 c b e qn area=2 3\n.ends",
+    ],
+)
+def test_empty_and_extra_keyword_tokens_are_rejected(deck: str) -> None:
+    lib = library(deck)
+    with pytest.raises(SpiceError):
+        lib.component("s")
+
+
+def test_valid_spice_trailing_flags_and_multi_value_ic_remain_accepted() -> None:
+    lib = library(
+        ".model mn nmos\n"
+        ".model mv vdmos\n"
+        ".model qv npn(level=4 is=1e-16)\n"
+        ".subckt s a b c d\n"
+        "M1 a b c d mn l=1u off\n"
+        "M2 a b c mv m=2 off\n"
+        "Q1 a b c 0 qv area=2 ic=0.7,5.0 off\n"
+        ".ends\n"
+    )
+    found = _devices(lib.component("s"))
+    assert set(found) == {"M1", "M2", "Q1"}
+
+
+def test_folded_behavioral_capacitor_handles_wide_expression_in_linear_time() -> None:
+    terms = " + ".join(["1p"] * 200)
+    lib = library(f".subckt s a\nC1 a 0 {{1n * V(a) + {terms}}}\n.ends\n")
+    found = _devices(lib.component("s"))
+    assert found["C1"][0] == "behavioral_capacitor"
+
+
+def test_transmission_line_maps_four_terminals_in_port_order() -> None:
+    lib = library(".subckt s p1 n1 p2 n2\nT1 p1 n1 p2 n2 Z0=50 TD=2n\n.ends\n")
+    (inst,) = lib.component("s").definition.instances
+    assert inst.of == ir.DeviceOf(model="transmission_line")
+    assert inst.terminals == {
+        "positive1": "p1",
+        "negative1": "n1",
+        "positive2": "p2",
+        "negative2": "n2",
+    }
+
+
+def test_expressions_translate_guards_exponential_expansion() -> None:
+    nested_int: Expression = Voltage("a", None)
+    for _ in range(30):
+        nested_int = Call("int", (nested_int,))
+    with pytest.raises(SpiceError, match="exceeds the limit"):
+        translate(nested_int, {}, str, str)
+
+    nested_pwrs: Expression = Voltage("a", None)
+    for _ in range(30):
+        nested_pwrs = Call("pwrs", (nested_pwrs, Number(2.0)))
+    with pytest.raises(SpiceError, match="exceeds the limit"):
+        translate(nested_pwrs, {}, str, str)
+
+    nested_odd_pow: Expression = Voltage("a", None)
+    for _ in range(20):
+        nested_odd_pow = Binary("^", nested_odd_pow, Number(3.0))
+    with pytest.raises(SpiceError, match="exceeds the limit"):
+        translate(nested_odd_pow, {}, str, str)
+
+
+def test_expressions_translate_minimal_parentheses_allows_flat_300_term_sum() -> None:
+    flat_sum = " + ".join(["1"] * 300)
+    parsed = parse(flat_sum)
+    written = translate(parsed, {}, str, str)
+    assert nesting_depth(written) == 0
+    assert evaluate(parsed, {}) == 300.0
+
+    assert translate(parse("(v(a) + v(b)) * v(c)"), {}, str, str) == (
+        "(v(a) + v(b)) * v(c)"
+    )
+    assert translate(parse("v(a) + v(b) * v(c)"), {}, str, str) == (
+        "v(a) + v(b) * v(c)"
+    )
+    assert translate(parse("v(a) - (v(b) - v(c))"), {}, str, str) == (
+        "v(a) - (v(b) - v(c))"
+    )
+    assert translate(parse("v(a) - v(b) - v(c)"), {}, str, str) == (
+        "v(a) - v(b) - v(c)"
+    )
+    assert translate(parse("v(a) / (v(b) * v(c))"), {}, str, str) == (
+        "v(a) / (v(b) * v(c))"
+    )
+    assert translate(parse("-(v(a) + v(b))"), {}, str, str) == "-(v(a) + v(b))"
+    assert translate(parse("-(-v(a))"), {}, str, str) == "- -v(a)"
+    assert translate(Number(-0.0), {}, str, str) == "(-0.0)"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1e500",
+        "-1e500",
+        "1e308k",
+        "-1e308meg",
+        "1m\u0130l",
+        "1m\u0131l",
+    ],
+)
+def test_expressions_number_rejects_non_finite_and_unicode_suffixes(text: str) -> None:
+    assert number(text) is None
+
+
+def test_expressions_number_underflow_and_parse_non_finite() -> None:
+    assert number("1e-500") == 0.0
+    with pytest.raises(SpiceError, match="not finite"):
+        parse("1e500")
+
+
+def test_expressions_iterative_repr_handles_deep_chain_and_matches_dataclass() -> None:
+    chain: Expression = Number(1.0)
+    for index in range(1500):
+        chain = Binary("+", chain, Number(float(index)))
+    text = repr(chain)
+    assert text.startswith("Binary(operator='+', left=")
+    assert text.endswith("right=Number(value=1499.0))")
+
+    assert repr(Call("f", ())) == "Call(function='f', arguments=())"
+    assert repr(Call("f", (Number(1.0),))) == (
+        "Call(function='f', arguments=(Number(value=1.0),))"
+    )
+    assert repr(Call("f", (Number(1.0), Number(2.0)))) == (
+        "Call(function='f', arguments=(Number(value=1.0), Number(value=2.0)))"
+    )
+    assert repr(Unary("-", Name("x"))) == "Unary(operator='-', operand=Name(name='x'))"
+    assert repr(Conditional(Name("c"), Number(1.0), Number(0.0))) == (
+        "Conditional(condition=Name(name='c'), then=Number(value=1.0), "
+        "otherwise=Number(value=0.0))"
+    )
+
+
+def test_expressions_integral_handles_wide_non_polynomial_sum() -> None:
+    var = Voltage("a", None)
+    expr: Expression = Call("sin", (Binary("*", Number(2.0), var),))
+    for _ in range(300):
+        expr = Binary("+", expr, Number(1.0))
+    antiderivative = integral(expr, var)
+    assert antiderivative is not None
+    # Finite-sum antiderivative evaluated via _core.constant: -cos(2x)/2 + 300x.
+    at_one = translate(antiderivative, {}, lambda _n: "x", str)
+    evaluated = _core.constant(at_one.replace("v(x)", "1.0"))
+    expected = -math.cos(2.0) / 2.0 + 300.0
+    # IEEE-754 floating-point summation of 300 terms matches closed form within 1e-12.
+    assert math.isclose(evaluated, expected, rel_tol=1e-12, abs_tol=1e-12)
+
+
+def test_models_ako_handles_bare_overrides_attached_parens_and_spaces() -> None:
+    lib = library(
+        ".model D1 D(IS=1e-14 N=1.5)\n"
+        ".model D2 AKO:D1 IS=1e-15\n"
+        ".model D3 AKO:D1 IS = 2e-15\n"
+        ".model D4 AKO:D1(IS=3e-15)\n"
+        ".model D5 AKO:D1  D(IS=4e-15)\n"
+        ".model D6 AKO: D1 IS=5e-15\n"
+        ".model M1 VDMOS(VTO=2.0)\n"
+        ".model M2 AKO:M1 pchan VTO=-2.5\n"
+        ".model M3 AKO:M2 nchan VTO=1.8\n"
+        ".subckt s a b\n"
+        "D2 a b D2\n"
+        "D3 a b D3\n"
+        "D4 a b D4\n"
+        "D5 a b D5\n"
+        "D6 a b D6\n"
+        "M2 a b 0 M2\n"
+        "M3 a b 0 M3\n"
+        ".ends\n"
+    )
+    found = _devices(lib.component("s"))
+    assert found["D2"][1]["saturation_current"] == 1e-15
+    assert found["D2"][1]["emission_coefficient"] == 1.5
+    assert found["D3"][1]["saturation_current"] == 2e-15
+    assert found["D4"][1]["saturation_current"] == 3e-15
+    assert found["D5"][1]["saturation_current"] == 4e-15
+    assert found["D6"][1]["saturation_current"] == 5e-15
+    assert found["M2"][1]["channel"] == "p"
+    assert found["M2"][1]["threshold_voltage"] == -2.5
+    assert found["M3"][1]["channel"] == "n"
+    assert found["M3"][1]["threshold_voltage"] == 1.8
+
+    with pytest.raises(SpiceError, match="AKO:"):
+        library(".model Dbad AKO:\n")
+
+
+@pytest.mark.parametrize(
+    "card_line",
+    [
+        ".model m1 d(is=1e-14 nlev=2)\n.subckt s a b\nD1 a b m1\n.ends\n",
+        ".model m1 d(is=1e-14 gdsnoi=1)\n.subckt s a b\nD1 a b m1\n.ends\n",
+        ".model m1 npn(is=1e-16 nlev=2)\n.subckt s c b e\nQ1 c b e m1\n.ends\n",
+        ".model m1 njf(nlev=2)\n.subckt s d g so\nJ1 d g so m1\n.ends\n",
+        ".model m1 vdmos(gdsnoi=1)\n.subckt s d g so\nM1 d g so m1\n.ends\n",
+        ".model m1 npn(level=4 nlev=2)\n.subckt s c b e\nQ1 c b e 0 m1\n.ends\n",
+        ".model m1 vswitch(nlev=2)\n.subckt s a b c d\nS1 a b c d m1\n.ends\n",
+        (".model m1 iswitch(gdsnoi=1)\n.subckt s a b\nV1 a 0 1\nW1 b 0 V1 m1\n.ends\n"),
+    ],
+)
+def test_models_noise_parameters_rejected_outside_mosfet_and_bsim3(
+    card_line: str,
+) -> None:
+    lib = library(card_line)
+    with pytest.raises(SpiceError):
+        lib.component("s")
+
+
+def test_models_noise_parameters_allowed_on_mosfet_and_bsim3() -> None:
+    lib = library(
+        ".model m1 nmos(level=1 nlev=2 gdsnoi=1)\n"
+        ".model m3 nmos(level=49 version=3.3.0 nlev=2 gdsnoi=1)\n"
+        ".subckt s d g so b\n"
+        "M1 d g so b m1 w=1u l=1u\n"
+        "M3 d g so b m3 w=1u l=1u\n"
+        ".ends\n"
+    )
+    found = _devices(lib.component("s"))
+    assert set(found) == {"M1", "M3"}
+
+
+@pytest.mark.parametrize(
+    "card",
+    [
+        ".model m nmos(level=49 binunit=3)",
+        ".model m nmos(level=49 binunit=0)",
+        ".model m nmos(level=49 binunit=1.5)",
+        ".model m nmos(level=49 paramchk=2)",
+        ".model m nmos(level=49 paramchk=-1)",
+        ".model m nmos(level=54 version=4.5 binunit=3)",
+        ".model m nmos(level=54 version=4.5 paramchk=2)",
+        ".model m nmos(level=49 binunit={1/0})",
+        ".model m nmos(level=49 paramchk={0/0})",
+    ],
+)
+def test_models_bsim_rejects_invalid_binunit_and_paramchk(card: str) -> None:
+    lib = library(f"{card}\n.subckt s d g so b\nM1 d g so b m w=1u l=1u\n.ends\n")
+    with pytest.raises(SpiceError):
+        lib.component("s")
+
+
+def test_models_version_strips_surrounding_quotes() -> None:
+    single = models.read(Statement("m.lib", 1, ".model m1 nmos(version='3.3.0')"), {})
+    double = models.read(Statement("m.lib", 1, '.model m2 nmos(version="3.3.0")'), {})
+    assert single.version == "3.3.0"
+    assert double.version == "3.3.0"
+
+
+def test_export_flatten_handles_deep_hierarchy_iteratively() -> None:
+    depth = 1200
+    components: dict[str, ir.Component] = {
+        "c0": ir.Component(
+            ports=(
+                ir.Port(name="p", role=Role.SIGNAL),
+                ir.Port(name="ground", role=Role.GROUND),
+            ),
+            instances=(
+                ir.Instance(
+                    name="R1",
+                    of=ir.DeviceOf(model="resistor"),
+                    parameters={"resistance": 1000.0},
+                    terminals={"a": "p", "b": "ground"},
+                ),
+            ),
+        )
+    }
+    for level in range(1, depth):
+        components[f"c{level}"] = ir.Component(
+            ports=(
+                ir.Port(name="p", role=Role.SIGNAL),
+                ir.Port(name="ground", role=Role.GROUND),
+            ),
+            instances=(
+                ir.Instance(
+                    name="X1",
+                    of=ir.ComponentOf(component=f"c{level - 1}"),
+                    terminals={"p": "p", "ground": "ground"},
+                ),
+            ),
+        )
+    flat = export.flatten(ir.Circuit(top=f"c{depth - 1}", components=components))
+    assert len(flat.components[flat.top].instances) == 1
+
+
+def test_export_written_is_iterative_and_guards_exponential_blowup() -> None:
+    # 1200-deep left-leaning sum must not raise RecursionError.
+    deep: JsonValue = 1.0
+    for _ in range(1200):
+        deep = {"operation": "+", "operands": [deep, 1.0]}
+    rendered = export._written(deep, lambda _node: "v(a)")  # noqa: SLF001 - test internal writer
+    assert rendered.count("+") == 1200
+
+    # Nested limit(0, a, 1) duplicates `a` twice per level (2^d > 1_000_000 at d=15).
+    nested_limit: JsonValue = {"voltage": "a"}
+    for _ in range(18):
+        nested_limit = {"operation": "limit", "operands": [0.0, nested_limit, 1.0]}
+    with pytest.raises(ValueError, match="exceeds the limit"):
+        export._written(nested_limit, lambda _node: "v(a)")  # noqa: SLF001 - test limit guard
+
+    # Nested limit(0, a, a) duplicates both bounds (4^d > 1_000_000 at d=9).
+    nested_both: JsonValue = {"voltage": "a"}
+    for _ in range(10):
+        nested_both = {
+            "operation": "limit",
+            "operands": [0.0, nested_both, nested_both],
+        }
+    with pytest.raises(ValueError, match="exceeds the limit"):
+        export._written(nested_both, lambda _node: "v(a)")  # noqa: SLF001 - test 4^d limit guard
+
+    # Nested tables blow up exponentially if unguarded.
+    nested_table: JsonValue = {"voltage": "a"}
+    for _ in range(12):
+        nested_table = {
+            "table": nested_table,
+            "abscissae": [0.0, 1.0, 2.0, 3.0],
+            "ordinates": [0.0, 1.0, 0.5, 2.0],
+            "rounding": 0.1,
+        }
+    with pytest.raises(ValueError, match="exceeds the limit"):
+        export._written(nested_table, lambda _node: "v(a)")  # noqa: SLF001 - test table guard
+
+    # A table with fewer than 2 points raises ValueError.
+    short_table: JsonValue = {
+        "table": {"voltage": "a"},
+        "abscissae": [0.0],
+        "ordinates": [1.0],
+        "rounding": 0.0,
+    }
+    with pytest.raises(ValueError, match="at least 2 points"):
+        export._written(short_table, lambda _node: "v(a)")  # noqa: SLF001 - test table guard
+
+
+def test_export_passive_uses_explicit_primary_parameter_regardless_of_key_order() -> (
+    None
+):
+    design = ir.Circuit(
+        top="top",
+        components={
+            "top": ir.Component(
+                ports=(ir.Port(name="ground", role=Role.GROUND),),
+                instances=(
+                    ir.Instance(
+                        name="R1",
+                        of=ir.DeviceOf(model="resistor"),
+                        parameters={
+                            "temperature_coefficient": 1e-3,
+                            "resistance": 1000.0,
+                        },
+                        terminals={"a": "n1", "b": "ground"},
+                    ),
+                    ir.Instance(
+                        name="C1",
+                        of=ir.DeviceOf(model="capacitor"),
+                        parameters={
+                            "temperature_coefficient": 2e-4,
+                            "capacitance": 1e-6,
+                        },
+                        terminals={"a": "n1", "b": "ground"},
+                    ),
+                    ir.Instance(
+                        name="L1",
+                        of=ir.DeviceOf(model="inductor"),
+                        parameters={
+                            "temperature_coefficient": 3e-4,
+                            "inductance": 1e-3,
+                        },
+                        terminals={"a": "n1", "b": "ground"},
+                    ),
+                ),
+            )
+        },
+    )
+    deck = netlist(design)
+    assert any(line.startswith("RR1 n1 0 1000.0 tc1=0.001") for line in deck)
+    assert any(line.startswith("CC1 n1 0 1e-06 tc1=0.0002") for line in deck)
+    assert any(line.startswith("LL1 n1 0 0.001 tc1=0.0003") for line in deck)
+
+
+def test_export_netlist_rejects_missing_ground_port_with_jolty_error() -> None:
+    ungrounded = ir.Circuit(
+        top="top",
+        components={
+            "top": ir.Component(
+                ports=(ir.Port(name="a", role=Role.SIGNAL),),
+                instances=(
+                    ir.Instance(
+                        name="R1",
+                        of=ir.DeviceOf(model="resistor"),
+                        parameters={"resistance": 100.0},
+                        terminals={"a": "a", "b": "b"},
+                    ),
+                ),
+            )
+        },
+    )
+    with pytest.raises(JoltyError, match="no ground port"):
+        netlist(ungrounded)
+
+
+def test_export_diode_capacitance_singular_shift_raises_jolty_error() -> None:
+    singular = ir.Circuit(
+        top="top",
+        components={
+            "top": ir.Component(
+                ports=(ir.Port(name="ground", role=Role.GROUND),),
+                instances=(
+                    ir.Instance(
+                        name="D1",
+                        of=ir.DeviceOf(model="diode"),
+                        parameters={
+                            "capacitance_temperature_model": 1,
+                            "nominal_temperature": _core.REFERENCE_TEMPERATURE + 8.0,
+                            "junction_capacitance": 1e-12,
+                            "junction_capacitance_temperature_coefficient": 0.125,
+                        },
+                        terminals={"anode": "a", "cathode": "ground"},
+                    ),
+                ),
+            )
+        },
+    )
+    with pytest.raises(JoltyError, match="singular"):
+        netlist(singular)
+
+
+def test_export_node_voltages_flattens_once_for_kept_and_flattened_subcircuits() -> (
+    None
+):
+    design = ir.Circuit(
+        top="top",
+        components={
+            "stage": ir.Component(
+                ports=(
+                    ir.Port(name="inp", role=Role.SIGNAL),
+                    ir.Port(name="ground", role=Role.GROUND),
+                ),
+                instances=(
+                    ir.Instance(
+                        name="R1",
+                        of=ir.DeviceOf(model="resistor"),
+                        parameters={"resistance": 1000.0},
+                        terminals={"a": "inp", "b": "mid"},
+                    ),
+                    ir.Instance(
+                        name="R2",
+                        of=ir.DeviceOf(model="resistor"),
+                        parameters={"resistance": 1000.0},
+                        terminals={"a": "mid", "b": "ground"},
+                    ),
+                ),
+            ),
+            "top": ir.Component(
+                ports=(ir.Port(name="ground", role=Role.GROUND),),
+                instances=(
+                    ir.Instance(
+                        name="U1",
+                        of=ir.ComponentOf(component="stage"),
+                        terminals={"inp": "a", "ground": "ground"},
+                    ),
+                    ir.Instance(
+                        name="R3",
+                        of=ir.DeviceOf(model="resistor"),
+                        parameters={"resistance": 500.0},
+                        terminals={"a": "a", "b": "ground"},
+                    ),
+                ),
+            ),
+        },
+    )
+    flat_lines = export.node_voltages(".ic", design, {"a": 1.0, "U1/mid": 0.5})
+    assert flat_lines == [".ic v(a)=1.0 v(u1_mid)=0.5"]
+    kept_lines = export.node_voltages(
+        ".nodeset", design, {"a": 1.0, "U1/mid": 0.5}, subcircuits=("stage",)
+    )
+    assert kept_lines == [".nodeset v(a)=1.0 v(xu1.mid)=0.5"]
+
+
+def test_export_spice_value_rejects_booleans() -> None:
+    for flag in (True, False):
+        with pytest.raises(JoltyError, match="no SPICE value"):
+            export._spice_value("level", flag, 1.0, float)  # noqa: SLF001 - bool guard test
+
+
+@pytest.mark.parametrize(
+    "bad_digest",
+    [
+        "../../etc/passwd",
+        "abc",
+        "0" * 63,
+        "0" * 65,
+        "g" * 64,
+        f"{'0' * 64}\n",
+    ],
+)
+def test_download_rejects_malformed_digest(tmp_path: Path, bad_digest: str) -> None:
+    published = tmp_path / "part.lib"
+    published.write_text("ok")
+    with pytest.raises(DownloadError, match="64 hexadecimal digits"):
+        spice.fetch(published.as_uri(), bad_digest, tmp_path / "cache")
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://example.com/",
+        "https://example.com/dir/",
+        "https://example.com/.",
+        "https://example.com/foo/.",
+        "https://example.com/..",
+        "https://example.com/foo/..",
+    ],
+)
+def test_download_rejects_unsafe_url_filename(tmp_path: Path, bad_url: str) -> None:
+    with pytest.raises(DownloadError, match="names no safe file"):
+        spice.fetch(bad_url, "0" * 64, tmp_path / "cache")
+
+
+def test_download_cleans_partial_files_on_digest_mismatch_and_size_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published = tmp_path / "part.lib"
+    published.write_bytes(b"x" * 128)
+    cache = tmp_path / "cache"
+    with pytest.raises(DownloadError, match="has SHA-256 digest"):
+        spice.fetch(published.as_uri(), "0" * 64, cache)
+    assert not list(cache.rglob("*.partial"))
+
+    digest = hashlib.sha256(published.read_bytes()).hexdigest()
+    monkeypatch.setattr(download, "_MAX_DOWNLOAD_BYTES", 32)
+    with pytest.raises(DownloadError, match="exceeds maximum download size"):
+        spice.fetch(published.as_uri(), digest, cache)
+    assert not list(cache.rglob("*.partial"))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"fingers": 0},
+        {"fingers": -1},
+        {"fingers": True},
+        {"width": 0.0},
+        {"width": -1e-6},
+        {"width": float("inf")},
+        {"width": float("nan")},
+        {"width": True},
+        {"length": 0.0},
+        {"length": float("inf")},
+        {"length": False},
+        {"multiplier": 0},
+        {"multiplier": True},
+    ],
+)
+def test_sky130_written_rejects_invalid_and_boolean_parameters(
+    overrides: dict[str, JsonValue],
+) -> None:
+    base: dict[str, JsonValue] = {
+        "pdk": "sky130",
+        "model": "sky130_fd_pr__nfet_01v8",
+        "width": 1e-6,
+        "length": 1.5e-7,
+        "fingers": 1,
+        "multiplier": 1,
+    }
+    base.update(overrides)
+    with pytest.raises(ValueError, match=r"SKY130|positive|1 or more"):
+        sky130.written(base)
+
+
+def test_sky130_mosfet_rejects_non_finite_size_and_boolean_counts() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        sky130.mosfet("nfet_01v8", float("inf") * um, 0.15 * um)
+    with pytest.raises(ValueError, match="1 or more"):
+        sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um, fingers=True)
+    with pytest.raises(ValueError, match="1 or more"):
+        sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um, multiplier=False)
+
+
+def test_ngspice_runs_rejects_empty_deck_and_quotes_include_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(JoltyError, match="deck is empty"):
+        ngspice.runs([], ("op",))
+
+    captured: list[str] = []
+    spaced_dir = tmp_path / "dir with spaces"
+    spaced_dir.mkdir()
+    lib_file = spaced_dir / "models.lib"
+    lib_file.write_text(".model d d\n")
+
+    raw_bytes = (
+        b"Title: test\n"
+        b"Date: today\n"
+        b"Plotname: Operating Point\n"
+        b"Flags: real\n"
+        b"No. Variables: 1\n"
+        b"No. Points: 1\n"
+        b"Variables:\n"
+        b"\t0\tv(a)\tvoltage\n"
+        b"Values:\n"
+        b" 0\t1.0\n"
+    )
+
+    def fake_execute(
+        deck: Sequence[str],
+        *,
+        compatibility: Compatibility | None = None,
+        timeout: float | None = None,
+    ) -> ngspice.Executed:
+        del compatibility, timeout
+        captured.extend(deck)
+        return ngspice.Executed(printed="", code=0, seconds=0.01, values=raw_bytes)
+
+    monkeypatch.setattr(ngspice, "execute", fake_execute)
+    (result,) = ngspice.runs(
+        ["test title", "R1 a 0 1k"], ("op",), libraries=(lib_file,)
+    )
+    assert result.plot == "Operating Point"
+    assert f'.include "{lib_file.resolve()}"' in captured
+
+
+def test_ngspice_parse_raw_checks_ascii_row_index_and_reads_binary_complex() -> None:
+    bad_ascii = (
+        "Title: test\n"
+        "Plotname: Operating Point\n"
+        "Flags: real\n"
+        "No. Variables: 1\n"
+        "No. Points: 2\n"
+        "Variables:\n"
+        "\t0\tv(a)\tvoltage\n"
+        "Values:\n"
+        " 0\t1.0\n"
+        " 5\t2.0\n"
+    )
+    with pytest.raises(JoltyError, match="row index 5, not 1"):
+        ngspice.parse_raw(bad_ascii)
+
+    header = (
+        b"Title: ac\n"
+        b"Plotname: AC Analysis\n"
+        b"Flags: complex\n"
+        b"No. Variables: 2\n"
+        b"No. Points: 2\n"
+        b"Variables:\n"
+        b"\t0\tfrequency\tfrequency\n"
+        b"\t1\tv(out)\tvoltage\n"
+        b"Binary:\n"
+    )
+    payload = struct.pack(
+        "<8d",
+        100.0,
+        0.0,
+        -0.0,
+        -2.5,
+        1000.0,
+        0.0,
+        0.75,
+        0.25,
+    )
+    (plot,) = ngspice.parse_raw(header + payload)
+    assert plot.values.dtype == np.complex128
+    assert plot.values.shape == (2, 2)
+    assert plot.values[0, 0] == 100.0 + 0.0j
+    assert math.copysign(1.0, float(plot.values[0, 1].real)) == -1.0
+    assert plot.values[0, 1] == complex(-0.0, -2.5)
+    assert plot.values[1, 1] == 0.75 + 0.25j
+
+    empty_header = (
+        b"Title: ac\n"
+        b"Plotname: AC Analysis\n"
+        b"Flags: complex\n"
+        b"No. Variables: 2\n"
+        b"No. Points: 0\n"
+        b"Variables:\n"
+        b"\t0\tfrequency\tfrequency\n"
+        b"\t1\tv(out)\tvoltage\n"
+        b"Binary:\n"
+    )
+    (empty_plot,) = ngspice.parse_raw(empty_header)
+    assert empty_plot.values.dtype == np.complex128
+    assert empty_plot.values.shape == (0, 2)
+
+
+def test_xyce_run_rejects_empty_analysis_and_parses_complex_csv_with_blank_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for blank in ("", "   \t\n"):
+        with pytest.raises(JoltyError, match="analysis command is empty"):
+            xyce.run(["* title"], blank)
+
+    printed = (
+        "Total Simulation Solvers Run Time: 0.12 seconds\n"
+        "Total Elapsed Run Time: 0.25 seconds\n"
+    )
+    csv_body = "\nFREQ,Re(V(OUT)),Im(V(OUT))\n\n100.0,0.5,-0.25\n1000.0,0.25,0.75\n\n"
+
+    def fake_execute(
+        deck: Sequence[str],
+        *,
+        launch: Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> xyce.Executed:
+        del deck, launch, timeout
+        return xyce.Executed(printed=printed, code=0, seconds=0.3, values=csv_body)
+
+    monkeypatch.setattr(xyce, "execute", fake_execute)
+    result = xyce.run(["* title", "R1 out 0 1k"], ".ac dec 10 100 1k")
+    assert list(result.vectors["frequency"]) == [100.0 + 0j, 1000.0 + 0j]
+    assert list(result.vectors["v(out)"]) == [0.5 - 0.25j, 0.25 + 0.75j]
+
+    # Blank-only CSV triggers "printed no values" instead of ValueError.
+    def empty_execute(
+        deck: Sequence[str],
+        *,
+        launch: Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> xyce.Executed:
+        del deck, launch, timeout
+        return xyce.Executed(printed=printed, code=0, seconds=0.1, values="\n\n")
+
+    monkeypatch.setattr(xyce, "execute", empty_execute)
+    with pytest.raises(JoltyError, match="printed no values"):
+        xyce.run(["* title", "R1 out 0 1k"], ".op")

@@ -11,6 +11,7 @@ where they are off, as the reader's tables say. Any other parameter jolty does n
 model is an error, never silently dropped.
 """
 
+import functools
 import json
 import math
 import re
@@ -459,6 +460,12 @@ _CALL_PREFIX: Final = re.compile(r"=\s*[A-Za-z_][A-Za-z0-9_]*$")
 
 _CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
 """A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
+
+_AKO: Final = re.compile(r"ako:\s*([^\s(]+)\s*(.*)", re.IGNORECASE | re.DOTALL)
+"""An ``AKO:`` inheritance header: the base model's name and remaining body."""
+
+_LEADING_WORD: Final = re.compile(r"\w*")
+"""A model card's leading type word before any whitespace, ``=``, or ``(``."""
 
 BSIM3_LEVELS: Final = frozenset({8, 49})
 """The levels of a BSIM3 card, ngspice's 8 and HSPICE's 49."""
@@ -1116,14 +1123,27 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     _, name, rest = words
     base: ModelCard | None = None
     if rest.casefold().startswith("ako:"):
-        base_name, _, rest = rest[4:].partition(" ")
+        ako_match = _AKO.fullmatch(rest)
+        if ako_match is None:
+            message = "an `AKO:` model card names the base model it inherits from"
+            raise statement.fail(message)
+        base_name, rest = ako_match.group(1), ako_match.group(2)
         base = known.get(base_name.casefold())
         if base is None:
             message = f"no model `{base_name}` precedes it"
             raise statement.fail(message)
-    word = re.match(r"\w*", rest)
-    kind = "" if word is None else rest[: word.end()]
-    body = rest[len(kind) :].strip()
+    word = _LEADING_WORD.match(rest)
+    candidate = "" if word is None else word.group(0)
+    after = rest[len(candidate) :].strip()
+    is_vdmos_flag = (
+        base is not None
+        and base.kind in VDMOS_KINDS
+        and candidate.casefold() in {"nchan", "pchan"}
+    )
+    if base is not None and candidate and (after.startswith("=") or is_vdmos_flag):
+        kind, body = "", rest.strip()
+    else:
+        kind, body = candidate, after
     resolved = kind.casefold() or (base.kind if base else "")
     if resolved.startswith("vdmos"):
         resolved, body = _vdmos_card(resolved, body)
@@ -1171,7 +1191,14 @@ def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:
     """A card's ``VERSION``, as written, such as ``3.3.0``, and its words without it."""
     for position in range(len(words) - 2):
         if words[position].casefold() == "version" and words[position + 1] == "=":
-            return words[position + 2], words[:position] + words[position + 3 :]
+            raw = words[position + 2]
+            if (
+                len(raw) >= 2  # noqa: PLR2004 - matching opening and closing quotes
+                and raw[0] == raw[-1]
+                and raw[0] in {"'", '"'}
+            ):
+                raw = raw[1:-1].strip()
+            return raw, words[:position] + words[position + 3 :]
     return None, words
 
 
@@ -1182,7 +1209,7 @@ def _vdmos_card(kind: str, body: str) -> tuple[str, str]:
     ``pchan`` anywhere in its card or the type ``VDMOSP``.
     """
     flags = {flag.casefold() for flag in _CHANNEL.findall(body)}
-    polarity = "p" if "p" in flags or kind == "vdmosp" else "n"
+    polarity = "p" if "p" in flags or (kind == "vdmosp" and "n" not in flags) else "n"
     return f"vdmos{polarity}", _CHANNEL.sub(" ", body).strip()
 
 
@@ -1505,6 +1532,12 @@ def _scaled(
     }
 
 
+@functools.cache
+def _defaults(model: str) -> Mapping[str, object]:
+    """Returns a cached read-only mapping of default parameters for `model`."""
+    return MappingProxyType(json.loads(_core.defaulted(model, "{}")))
+
+
 def _area_scaled(
     model: str,
     values: Mapping[str, float],
@@ -1523,7 +1556,7 @@ def _area_scaled(
     if area == 1:
         return dict(values)
     table = _TABLES[model]
-    defaults = json.loads(_core.defaulted(model, "{}"))
+    defaults = _defaults(model)
     filled = dict(values)
     given = {table[name][0] for name in values if name in table}
     for name in (*multiplied, *divided):
@@ -1552,7 +1585,7 @@ def _mapped(
     """
     parameters: dict[str, JsonValue] = {}
     for name, value in values.items():
-        if name in skipped or name in NOISE:
+        if name in skipped:
             continue
         if name in NOMINAL_TEMPERATURES:
             parameters["nominal_temperature"] = celsius(value).value
@@ -1647,7 +1680,7 @@ def _mosfet(
     gate = values.pop("tpg", None)
     # A model card's geometry is its instances' default.
     geometry = {name: values.pop(name) for name in ("l", "w") if name in values}
-    parameters = _mapped(card, values, MOSFET, statement)
+    parameters = _mapped(card, values, MOSFET, statement, NOISE)
     parameters |= _mapped(card, geometry | dict(instance), MOSFET_INSTANCE, statement)
     parameters["channel"] = card.kind[0]
     if level == 3:  # noqa: PLR2004 - the level of the semi-empirical model
@@ -1932,15 +1965,39 @@ def _bsim4(
     return parameters
 
 
+_BSIM_BINUNITS: Final = frozenset({1.0, 2.0})
+"""Accepted values for BSIM ``BINUNIT``: 1 (micrometers) or 2 (meters)."""
+
+_BSIM_PARAMCHK: Final = frozenset({0.0, 1.0})
+"""Accepted values for BSIM ``PARAMCHK``: 0 (off) or 1 (on)."""
+
+
+def _bsim_setting(
+    card: ModelCard, name: str, value: float, statement: Statement
+) -> float | bool:
+    """Converts a BSIM setting (`PARAMCHK` or `XPART`) into its jolty value."""
+    if name != "paramchk":
+        return value
+    if not (math.isfinite(value) and value in _BSIM_PARAMCHK):
+        message = f"`PARAMCHK` of `{card.name}` is 0 or 1, not {value!r}"
+        raise statement.fail(message)
+    return value == 1.0
+
+
 def _bsim_card(
     bsim: Bsim, card: ModelCard, values: dict[str, float], statement: Statement
 ) -> dict[str, JsonValue]:
     """A BSIM card's parameters but its level and its fixed choices, in SI units.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart.
+        SpiceError: When a parameter has no jolty counterpart, or ``BINUNIT`` or
+            ``PARAMCHK`` holds an unsupported value.
     """
-    binned = 1e-6 if values.pop("binunit", 1.0) == 1 else 1.0
+    binunit = values.pop("binunit", 1.0)
+    if not (math.isfinite(binunit) and binunit in _BSIM_BINUNITS):
+        message = f"`BINUNIT` of `{card.name}` is 1 or 2, not {binunit!r}"
+        raise statement.fail(message)
+    binned = 1e-6 if binunit == 1.0 else 1.0
     mobility = values.get("u0", 0.067 if card.kind[0] == "n" else 0.025)
     # ngspice reads a binned u0 above 1 in cm²/(V·s), as b3temp.c and b4v5temp.c do.
     centimeters = 1e-4 if mobility > 1 else 1.0
@@ -1954,8 +2011,9 @@ def _bsim_card(
         elif name in bsim.selectors:
             parameters[bsim.selectors[name]] = _whole(card, name, value, statement)
         elif name in bsim.settings:
-            setting = value == 1 if name == "paramchk" else value
-            parameters[bsim.settings[name]] = setting
+            parameters[bsim.settings[name]] = _bsim_setting(
+                card, name, value, statement
+            )
         elif name in bsim.card:
             parameters[name] = value * _bsim_factor(bsim, name, value, centimeters)
         elif name[:1] in {"l", "w", "p"} and name[1:] in bsim.binned:

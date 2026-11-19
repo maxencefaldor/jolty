@@ -15,6 +15,7 @@ Examples:
     'sky130_fd_pr__nfet_01v8'
 """
 
+import math
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Final
@@ -142,11 +143,11 @@ def mosfet(
         "length": length.to(LENGTH, "a transistor's length"),
     }
     for name, size in sizes.items():
-        if not size > 0:
+        if not (size > 0 and math.isfinite(size)):
             message = f"a transistor's {name} is positive, not {size!r} m"
             raise ValueError(message)
     for name, count in (("fingers", fingers), ("multiplier", multiplier)):
-        if count < 1:
+        if isinstance(count, bool) or count < 1:
             message = f"a transistor's {name} is 1 or more, not {count}"
             raise ValueError(message)
     return device(
@@ -180,12 +181,35 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
             "length": int() | float() as length,
             "fingers": int(fingers),
             "multiplier": int(multiplier),
-        }:
+        } if not (
+            isinstance(width, bool)
+            or isinstance(length, bool)
+            or isinstance(fingers, bool)
+            or isinstance(multiplier, bool)
+        ):
             pass
         case _:
             message = f"not a SKY130 transistor's parameters: {dict(parameters)}"
             raise ValueError(message)
+    if not (width > 0 and math.isfinite(width)):
+        message = f"a transistor's width is positive and finite, not {width!r} m"
+        raise ValueError(message)
+    if not (length > 0 and math.isfinite(length)):
+        message = f"a transistor's length is positive and finite, not {length!r} m"
+        raise ValueError(message)
+    if fingers < 1:
+        message = f"a transistor's fingers is 1 or more, not {fingers}"
+        raise ValueError(message)
+    if multiplier < 1:
+        message = f"a transistor's multiplier is 1 or more, not {multiplier}"
+        raise ValueError(message)
     wide, long = _micrometres(width), _micrometres(length)
+    if not (wide > 0 and math.isfinite(wide) and long > 0 and math.isfinite(long)):
+        message = (
+            f"a transistor's scaled size is positive and finite, not "
+            f"width={width!r} m, length={length!r} m"
+        )
+        raise ValueError(message)
     finger = wide / fingers
     drains, sources = (fingers + 1) // 2, (fingers + 2) // 2
     values = {

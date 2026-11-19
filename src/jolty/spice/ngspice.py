@@ -271,21 +271,28 @@ def runs(
 
     ngspice includes the `libraries`, reads the `sections` of others, and reads them
     and the deck in its `compatibility` mode, its random numbers drawn from `seed`.
-    `options` replaces the tight options. It runs at jolty's `temperature`, in kelvins,
-    its models' nominal temperature at jolty's 27 °C, for at most `timeout` seconds.
-    Each command may run several analyses, and a result is read from the plot of each,
-    with the time the run took.
+    `options` replaces the tight options. The deck runs at jolty's `temperature`, in
+    kelvins, its models' nominal temperature at jolty's 27 °C, for at most `timeout`
+    seconds. Each command runs one analysis producing one plot, and a result is read
+    from each plot with the time the run took.
 
     Raises:
-        JoltyError: When ngspice is not installed, runs out of time, writes no results,
-            runs no analysis, aborts one, or finds an operating point only as the end
-            of a transient of fixed length, which it does not check to be one.
+        JoltyError: When `deck` is empty, ngspice is not installed, runs out of time,
+            writes no results, runs no analysis, aborts one, or finds an operating point
+            only as the end of a transient of fixed length, which it does not check to
+            be one.
     """
+    if not deck:
+        message = "ngspice deck is empty; a SPICE deck begins with a title line"
+        raise JoltyError(message)
     nominal = option_temperature(_core.REFERENCE_TEMPERATURE)
     temperature = running.get("temperature", _core.REFERENCE_TEMPERATURE)
     whole = [
         deck[0],
-        *(f".include {library.resolve()}" for library in running.get("libraries", ())),
+        *(
+            f'.include "{library.resolve()}"'
+            for library in running.get("libraries", ())
+        ),
         *(
             f'.lib "{library.resolve()}" {section}'
             for library, section in running.get("sections", ())
@@ -402,7 +409,7 @@ def parse_raw(data: str | bytes) -> tuple[RawPlot, ...]:
         parsed = _header(header_text)
         variable_count = len(parsed.variables)
         if found[1] == b"Binary":
-            table, position = _binary(
+            values, position = _binary(
                 raw,
                 found.end(),
                 parsed.points,
@@ -417,9 +424,12 @@ def parse_raw(data: str | bytes) -> tuple[RawPlot, ...]:
                 variable_count,
                 complex_values=parsed.complex_values,
             )
-        values = _typed_values(
-            table, parsed.points, variable_count, complex_values=parsed.complex_values
-        )
+            values = _typed_values(
+                table,
+                parsed.points,
+                variable_count,
+                complex_values=parsed.complex_values,
+            )
         plots.append(
             RawPlot(
                 title=parsed.title,
@@ -443,6 +453,13 @@ _NON_WHITESPACE: Final = re.compile(rb"\S")
 """Matches the next non-whitespace byte in a raw file."""
 
 
+_DOUBLE_BYTES: Final = 8
+"""Byte width of a little-endian IEEE-754 double (`<f8`) in a binary raw file."""
+
+_COMPLEX_BYTES: Final = 16
+"""Byte width of a little-endian complex double pair (`<c16`) in a binary raw file."""
+
+
 def _binary(
     raw: bytes,
     start: int,
@@ -450,23 +467,34 @@ def _binary(
     variable_count: int,
     *,
     complex_values: bool,
-) -> tuple[npt.NDArray[np.float64], int]:
-    """Reads `points` binary little-endian double rows from `raw` at `start`."""
-    width = variable_count * (2 if complex_values else 1)
-    count = points * width
-    expected_bytes = 8 * count
+) -> tuple[npt.NDArray[np.float64] | npt.NDArray[np.complex128], int]:
+    """Reads `points` binary little-endian rows from `raw` at `start`."""
+    count = points * variable_count
+    item_bytes = _COMPLEX_BYTES if complex_values else _DOUBLE_BYTES
+    expected_bytes = item_bytes * count
     if start + expected_bytes > len(raw):
         message = (
             f"a raw file's binary values end short of its {points} points "
             f"({len(raw) - start} bytes available, {expected_bytes} required)"
         )
         raise JoltyError(message)
-    table = (
-        np.frombuffer(raw, "<f8", count, start)
-        .reshape(points, width)
-        .astype(np.float64, copy=True)
-    )
-    return table, start + expected_bytes
+    if complex_values:
+        if count == 0:
+            return np.empty((points, variable_count), dtype=np.complex128), start
+        values: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+            np.frombuffer(raw, "<c16", count, start)
+            .reshape(points, variable_count)
+            .astype(np.complex128, copy=True)
+        )
+    else:
+        if count == 0:
+            return np.empty((points, variable_count), dtype=np.float64), start
+        values = (
+            np.frombuffer(raw, "<f8", count, start)
+            .reshape(points, variable_count)
+            .astype(np.float64, copy=True)
+        )
+    return values, start + expected_bytes
 
 
 def _typed_values(
@@ -645,7 +673,7 @@ def _ascii(
             message = f"a raw file's values end short of its {points} points"
             raise JoltyError(message)
         try:
-            int(index_token[0])
+            row_index = int(index_token[0])
         except ValueError:
             found_text = index_token[0].decode("utf-8", errors="replace")
             message = (
@@ -653,6 +681,12 @@ def _ascii(
                 "not an integer index"
             )
             raise JoltyError(message) from None
+        if row_index != point_index:
+            message = (
+                f"a raw file's point {point_index} has row index {row_index}, "
+                f"not {point_index}"
+            )
+            raise JoltyError(message)
         position = index_token.end()
         row, position = _ascii_row(
             raw, position, points, variable_count, complex_values=complex_values

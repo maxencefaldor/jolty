@@ -16,8 +16,9 @@ holds one cannot be written.
 
 import json
 import math
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal
 
 from pydantic import JsonValue, TypeAdapter
@@ -239,42 +240,58 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
     top = circuit.components[circuit.top]
     placed: list[ir.Instance] = []
     active: list[str] = [circuit.top]
-
-    def walk(component: ir.Component, prefix: str, ports: dict[str, str]) -> None:
-        for instance in component.instances:
-            nets = {
-                terminal: ports.get(net, f"{prefix}{net}")
-                for terminal, net in instance.terminals.items()
-            }
-            match instance.of:
-                case ir.ComponentOf(component=name) if name not in subcircuits:
-                    if name in active:
-                        cycle = (*active[active.index(name) :], name)
-                        message = (
-                            f"component `{cycle[0]}` contains itself: "
-                            f"{' -> '.join(cycle)}"
-                        )
-                        raise _unwritable(message)
-                    inner = circuit.components.get(name)
-                    if inner is None:
-                        message = f"no component `{name}`"
-                        raise _unwritable(message)
-                    active.append(name)
-                    try:
-                        walk(inner, f"{prefix}{instance.name}_", nets)
-                    finally:
-                        active.pop()
-                case _:
-                    placed.append(
-                        instance.model_copy(
-                            update={
-                                "name": f"{prefix}{instance.name}",
-                                "terminals": nets,
-                            }
-                        )
+    active_set: set[str] = {circuit.top}
+    stack: list[tuple[str, Iterator[ir.Instance], str, dict[str, str]]] = [
+        (
+            circuit.top,
+            iter(top.instances),
+            "",
+            {port.name: port.name for port in top.ports},
+        )
+    ]
+    while stack:
+        _, iterator, prefix, ports = stack[-1]
+        instance = next(iterator, None)
+        if instance is None:
+            exited = stack.pop()[0]
+            active.pop()
+            active_set.remove(exited)
+            continue
+        nets = {
+            terminal: ports.get(net, f"{prefix}{net}")
+            for terminal, net in instance.terminals.items()
+        }
+        match instance.of:
+            case ir.ComponentOf(component=name) if name not in subcircuits:
+                if name in active_set:
+                    cycle = (*active[active.index(name) :], name)
+                    message = (
+                        f"component `{cycle[0]}` contains itself: {' -> '.join(cycle)}"
                     )
-
-    walk(top, "", {port.name: port.name for port in top.ports})
+                    raise _unwritable(message)
+                inner = circuit.components.get(name)
+                if inner is None:
+                    message = f"no component `{name}`"
+                    raise _unwritable(message)
+                active.append(name)
+                active_set.add(name)
+                stack.append(
+                    (
+                        name,
+                        iter(inner.instances),
+                        f"{prefix}{instance.name}_",
+                        nets,
+                    )
+                )
+            case _:
+                placed.append(
+                    instance.model_copy(
+                        update={
+                            "name": f"{prefix}{instance.name}",
+                            "terminals": nets,
+                        }
+                    )
+                )
     kept: dict[str, ir.Component] = {}
     for instance in placed:
         if isinstance(instance.of, ir.ComponentOf):
@@ -356,6 +373,58 @@ def _spice(table: models.Table) -> dict[str, tuple[str, float]]:
     return names
 
 
+_SPICE_DIODE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.DIODE)
+)
+_SPICE_JFET: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.JFET)
+)
+_SPICE_BIPOLAR: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.BIPOLAR)
+    | {"substrate": ("subs", 1.0)}
+    | {
+        jolty: (spice, 1.0)
+        for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
+    }
+)
+_SPICE_MOSFET: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.MOSFET) | {"gate_material": ("tpg", 1.0), "level": ("level", 1.0)}
+)
+_SPICE_MOSFET_INSTANCE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.MOSFET_INSTANCE)
+)
+_SPICE_VDMOS: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.VDMOS)
+)
+_SPICE_VDMOS_INSTANCE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.VDMOS_INSTANCE)
+)
+_SPICE_VBIC: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
+    _spice(models.VBIC) | {"base_charge": ("qbm", 1.0)}
+)
+_SPICE_BSIM_INSTANCE: Final[Mapping[str, Mapping[str, tuple[str, float]]]] = (
+    MappingProxyType(
+        {
+            name: MappingProxyType(_spice(bsim.instance))
+            for name, bsim in models.BSIMS.items()
+        }
+    )
+)
+_SPICE_BSIM_NAMES: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
+    {
+        name: MappingProxyType(
+            {
+                jolty: spice_name
+                for choices in (bsim.selectors, bsim.settings)
+                for spice_name, jolty in choices.items()
+            }
+        )
+        for name, bsim in models.BSIMS.items()
+    }
+)
+_EMPTY_SPICE_TABLE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType({})
+
+
 _NUMBERED = {
     "gate_material": {material: tpg for tpg, material in models.GATE_TYPES.items()},
     "substrate": {kind: subs for subs, kind in models.CONSTRUCTIONS.items()},
@@ -380,7 +449,7 @@ def _card_names(
 ) -> tuple[
     str,
     dict[str, tuple[str, float]],
-    dict[str, tuple[str, float]],
+    Mapping[str, tuple[str, float]],
     dict[str, JsonValue],
 ]:
     """A device's SPICE type and the names of its parameters.
@@ -392,34 +461,27 @@ def _card_names(
         JoltyError: When the device has no model card, or a VBIC's resistance is too
             small.
     """
-    instance: dict[str, tuple[str, float]] = {}
+    instance: Mapping[str, tuple[str, float]] = _EMPTY_SPICE_TABLE
     match model:
         case "diode":
-            kind, names = "D", _spice(models.DIODE)
+            kind, names = "D", dict(_SPICE_DIODE)
             values, instance = _diode_sidewall(_diode_capacitances(values))
         case "jfet":
             channel = _defaulted(model, values)["channel"]
-            kind, names = f"{channel}jf".upper(), _spice(models.JFET)
+            kind, names = f"{channel}jf".upper(), dict(_SPICE_JFET)
         case "bipolar_transistor":
             kind = str(_defaulted(model, values)["polarity"]).upper()
-            names = _spice(models.BIPOLAR) | {"substrate": ("subs", 1.0)}
-            names |= {
-                jolty: (spice, 1.0)
-                for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
-            }
+            names = dict(_SPICE_BIPOLAR)
         case "mosfet":
             kind = f"{_defaulted(model, values)['channel']}mos".upper()
-            names = _spice(models.MOSFET) | {
-                "gate_material": ("tpg", 1.0),
-                "level": ("level", 1.0),
-            }
-            instance = _spice(models.MOSFET_INSTANCE)
+            names = dict(_SPICE_MOSFET)
+            instance = _SPICE_MOSFET_INSTANCE
         case "vdmos":
-            kind, names = "VDMOS", _spice(models.VDMOS)
-            instance = _spice(models.VDMOS_INSTANCE)
+            kind, names = "VDMOS", dict(_SPICE_VDMOS)
+            instance = _SPICE_VDMOS_INSTANCE
         case "vbic":
             kind = str(_defaulted(model, values)["polarity"]).upper()
-            names = _spice(models.VBIC) | {"base_charge": ("qbm", 1.0)}
+            names = dict(_SPICE_VBIC)
             values = _vbic_resistances(values)
         case _:
             message = f"a {model} has no model card"
@@ -468,8 +530,21 @@ def _diode_capacitances(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
             moved[potential] = _number("diode", defaulted, potential) + fall * shift
         if slope != 0:
             factor = 1 - slope * shift
+            if factor == 0 or not math.isfinite(factor):
+                message = (
+                    f"diode `{coefficient}` shift factor is singular at nominal "
+                    f"temperature {nominal!r} K"
+                )
+                raise _unwritable(message)
+            scaled_slope = slope / factor
+            if not math.isfinite(scaled_slope):
+                message = (
+                    f"diode `{coefficient}` overflows at nominal "
+                    f"temperature {nominal!r} K"
+                )
+                raise _unwritable(message)
             moved[capacitance] = _number("diode", defaulted, capacitance) * factor
-            moved[coefficient] = slope / factor
+            moved[coefficient] = scaled_slope
     return moved
 
 
@@ -609,12 +684,8 @@ def _bsim_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]
     bsim = models.BSIMS[model]
     defaulted = _defaulted(model, values)
     kind = f"{defaulted['channel']}mos".upper()
-    element = _spice(bsim.instance)
-    names = {
-        jolty: name
-        for choices in (bsim.selectors, bsim.settings)
-        for name, jolty in choices.items()
-    }
+    element = _SPICE_BSIM_INSTANCE[model]
+    names = _SPICE_BSIM_NAMES[model]
     nominal = _number(model, defaulted, "nominal_temperature")
     card = [*bsim.written, "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
     written: list[str] = []
@@ -622,7 +693,7 @@ def _bsim_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]
         match key, value:
             case "channel", _:
                 continue
-            case _, int() | float() if key in element:
+            case _, int() | float() if not isinstance(value, bool) and key in element:
                 spice, factor = element[key]
                 written.append(f"{spice}={float(value) * factor!r}")
             case "nominal_temperature", _:
@@ -688,6 +759,8 @@ def _spice_value(
     voltage is jolty's, or as it is for a model whose thermal voltage is its own.
     """
     match value:
+        case bool():
+            pass
         case str(name):
             return repr(_NUMBERED[key][name])
         case int(number):
@@ -800,9 +873,11 @@ def _own_temperature(instance: ir.Instance, model: str, dialect: Dialect) -> str
     celsius = _plain if model == "vbic" else dialect.option_temperature
 
     match instance.parameters:
-        case {"temperature": int() | float() as held}:
+        case {"temperature": int() | float() as held} if not isinstance(held, bool):
             written = f" temp={celsius(held)!r}"
-        case {"temperature_offset": int() | float() as offset}:
+        case {"temperature_offset": int() | float() as offset} if not isinstance(
+            offset, bool
+        ):
             written = f" dtemp={celsius(offset) - celsius(0.0)!r}"
         case _:
             return ""
@@ -841,7 +916,13 @@ def netlist(
     """
     circuit = flatten(circuit, subcircuits)
     top = circuit.components[circuit.top]
-    ground = next(port.name for port in top.ports if port.role is Role.GROUND)
+    ground = next(
+        (port.name for port in top.ports if port.role is Role.GROUND),
+        None,
+    )
+    if ground is None:
+        message = f"top component `{circuit.top}` has no ground port"
+        raise _unwritable(message)
     placed = {
         instance.of.model
         for instance in top.instances
@@ -889,7 +970,7 @@ def _device(
         JoltyError: When the dialect has no element for the device.
     """
     ground, excited = nets
-    element(instance, dialect)
+    element_name = element(instance, dialect)
     values = _cool(instance.parameters)
     own = _own_temperature(instance, model, dialect)
     nodes = " ".join("0" if net == ground else net for net in _nets(instance, model))
@@ -957,7 +1038,7 @@ def _device(
                 raise _unwritable(str(error)) from None
         case _:
             value = _value(model, values)
-    lines.append(f"{element(instance, dialect)} {nodes} {value}{own}")
+    lines.append(f"{element_name} {nodes} {value}{own}")
     return lines
 
 
@@ -1124,6 +1205,8 @@ def _number(id: str, values: Mapping[str, JsonValue], key: str) -> float:
         JoltyError: When it is no number.
     """
     match values.get(key):
+        case bool():
+            pass
         case int() | float() as found:
             return float(found)
     message = f"{id}'s {key} is no number"
@@ -1152,6 +1235,13 @@ def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     return f"X{instance.name} {nodes} {subcircuit}{parameters}"
 
 
+_PASSIVE_PRIMARY: Final = {
+    "resistor": "resistance",
+    "capacitor": "capacitance",
+    "inductor": "inductance",
+}
+"""Each passive device's primary parameter name."""
+
 _PASSIVE_DRIFT = {
     "temperature_coefficient": "tc1",
     "quadratic_temperature_coefficient": "tc2",
@@ -1165,6 +1255,23 @@ _CURVATURE = ("voltage_coefficient", "quadratic_voltage_coefficient")
 
 _FLICKER: Final = {"flicker_coefficient": "kf", "flicker_exponent": "af"}
 """A resistor's flicker noise parameters, as ngspice's model card names them."""
+
+
+def _passive_drift(
+    model: str,
+    rest: list[tuple[str, JsonValue]],
+    named: str,
+) -> list[str]:
+    """Formats non-primary drift parameters for a passive SPICE element."""
+    drift: list[str] = []
+    for key, amount in rest:
+        if key in _CURVATURE or (named and key in _FLICKER):
+            continue
+        if key not in _PASSIVE_DRIFT:
+            message = f"a {model}'s {key} has no ngspice element parameter"
+            raise _unwritable(message)
+        drift.append(f"{_PASSIVE_DRIFT[key]}={amount!r}")
+    return drift
 
 
 def _passive(
@@ -1186,7 +1293,12 @@ def _passive(
             resistor whose value bends with its voltage makes flicker noise: ngspice's
             expression for a resistance makes no noise.
     """
-    number, *rest = values.items()
+    primary = _PASSIVE_PRIMARY[model]
+    if primary not in values:
+        message = f"a {model} has no `{primary}` parameter"
+        raise _unwritable(message)
+    nominal = values[primary]
+    rest = [(key, amount) for key, amount in values.items() if key != primary]
     taken = None if dialect.passives is None else dialect.passives[model]
     lacking = sorted(
         name.upper()
@@ -1204,17 +1316,10 @@ def _passive(
         written = " ".join(f"{name}={amount!r}" for name, amount in flicker.items())
         lines.append(f".model M{id} R({written})")
         named = f"M{id} "
-    drift = []
-    for key, amount in rest:
-        if key in _CURVATURE or (named and key in _FLICKER):
-            continue
-        if key not in _PASSIVE_DRIFT:
-            message = f"a {model}'s {key} has no ngspice element parameter"
-            raise _unwritable(message)
-        drift.append(f"{_PASSIVE_DRIFT[key]}={amount!r}")
+    drift = _passive_drift(model, rest, named)
     linear, quadratic = (values.get(key, 0.0) for key in _CURVATURE)
     if linear == 0 and quadratic == 0:
-        return named + " ".join([repr(number[1]), *drift])
+        return named + " ".join([repr(nominal), *drift])
     if dialect.expressions is not None:
         message = (
             f"a {model} whose value bends with its voltage is written as an "
@@ -1227,14 +1332,14 @@ def _passive(
     voltage = f"v({nodes[0]},{nodes[1]})"
     if model == "resistor":
         factor = f"1+{linear!r}*{voltage}+{quadratic!r}*{voltage}*{voltage}"
-        written = f"R={{{number[1]!r}*({factor})}}"
+        written = f"R={{{nominal!r}*({factor})}}"
     else:
         # Products, not powers: ngspice's `^` raises the magnitude of a negative base.
         squared = f"{voltage}*{voltage}"
         integral = (
             f"{voltage}+{linear!r}*{squared}/2+{quadratic!r}*{squared}*{voltage}/3"
         )
-        written = f"Q={{{number[1]!r}*({integral})}}"
+        written = f"Q={{{nominal!r}*({integral})}}"
     return " ".join([written, *drift])
 
 
@@ -1266,7 +1371,10 @@ def _coupled(instance: ir.Instance, ground: str, dialect: Dialect) -> list[str]:
         lines.append(f"L{id}_{number} {' '.join(nodes)} {written}")
     for coupling in couplings:
         match coupling:
-            case {"windings": [int(first), int(second)], "coefficient": float(value)}:
+            case {
+                "windings": [int(first), int(second)],
+                "coefficient": float(value),
+            } if not (isinstance(first, bool) or isinstance(second, bool)):
                 lines.append(
                     f"K{id}_{first}_{second} L{id}_{first} L{id}_{second} {value!r}"
                 )
@@ -1369,40 +1477,113 @@ _INFIX: Final = frozenset(
 """The operators of two operands that jolty and ngspice write and read alike."""
 
 
-def _written(term: JsonValue, read: Callable[[JsonValue], str]) -> str:
-    """A term of a jolty expression's tree in ngspice's language.
+_MAX_EXPORTED_EXPRESSION_LENGTH: Final = 1_000_000
+"""Maximum character length allowed for an exported SPICE behavioral expression.
 
-    Every operation is written in parentheses, so ngspice's own precedence and grouping
-    never come into it, and `read` writes each voltage or current the term reads.
+Guards `_written` against exponential expansion in duplicating forms (`limit`, which
+repeats each bound twice, yielding `4^d` growth on nested bounds; and `_interpolation`,
+which repeats the input expression across every table segment and parabola). One million
+characters far exceeds any practical SPICE deck line while halting blowups before memory
+exhaustion.
+"""
 
-    Raises:
-        ValueError: When the term holds what ngspice cannot read, such as a number
-            that is not finite.
-    """
-    match term:
-        case int() | float() if math.isfinite(term):
-            return repr(float(term)) if term >= 0 else f"({float(term)!r})"
+
+def _check_expression_length(length: int) -> None:
+    """Checks that an exported behavioral expression stays within the length budget."""
+    if length > _MAX_EXPORTED_EXPRESSION_LENGTH:
+        message = (
+            f"exported expression length {length} exceeds the limit of "
+            f"{_MAX_EXPORTED_EXPRESSION_LENGTH} characters"
+        )
+        raise ValueError(message)
+
+
+def _push_written_node(
+    current: JsonValue,
+    read: Callable[[JsonValue], str],
+    frames: list[tuple[JsonValue, bool]],
+    results: list[str],
+) -> None:
+    """Emits a leaf expression term or schedules children of a compound node."""
+    match current:
+        case bool():
+            message = f"it holds {current!r}, which ngspice cannot read"
+            raise ValueError(message)
+        case int() | float() if math.isfinite(current):
+            value = float(current)
+            results.append(repr(value) if value >= 0 else f"({value!r})")
         case "time":
-            return "time"
+            results.append("time")
         case {"voltage": _} | {"current": _}:
-            return read(term)
-        case {"operation": str(name), "operands": list(operands)}:
-            written = [_written(operand, read) for operand in operands]
-            return _operation(name, written, operands)
+            results.append(read(current))
+        case {"operation": str(), "operands": list(operands)}:
+            frames.append((current, True))
+            frames.extend((operand, False) for operand in reversed(operands))
         case {
             "table": dict() | str() | int() | float() as table,
+            "abscissae": list(),
+            "ordinates": list(),
+            "rounding": int() | float() as rounding,
+        } if not isinstance(table, bool) and not isinstance(rounding, bool):
+            frames.append((current, True))
+            frames.append((table, False))
+        case _:
+            message = f"it holds {current!r}, which ngspice cannot read"
+            raise ValueError(message)
+
+
+def _finish_written_node(current: JsonValue, results: list[str]) -> str:
+    """Combines already-rendered children for a compound expression node."""
+    match current:
+        case {"operation": str(name), "operands": list(operands)}:
+            arity = len(operands)
+            written = results[-arity:] if arity else []
+            if arity:
+                del results[-arity:]
+            result = _operation(name, written, operands)
+            _check_expression_length(len(result))
+            return result
+        case {
+            "table": _,
             "abscissae": list(abscissae),
             "ordinates": list(ordinates),
             "rounding": int() | float() as rounding,
         }:
+            input_text = results.pop()
             points = [
                 (float(x), float(y))
                 for x, y in zip(abscissae, ordinates, strict=True)
-                if isinstance(x, int | float) and isinstance(y, int | float)
+                if isinstance(x, int | float)
+                and not isinstance(x, bool)
+                and isinstance(y, int | float)
+                and not isinstance(y, bool)
             ]
-            return _interpolation(_written(table, read), points, float(rounding))
-    message = f"it holds {term!r}, which ngspice cannot read"
+            return _interpolation(input_text, points, float(rounding))
+    message = f"it holds {current!r}, which ngspice cannot read"
     raise ValueError(message)
+
+
+def _written(term: JsonValue, read: Callable[[JsonValue], str]) -> str:
+    """A term of a jolty expression's tree in ngspice's language.
+
+    Every operation is written in parentheses, so ngspice's own precedence and grouping
+    never come into it, and `read` writes each voltage or current the term reads. Runs
+    iteratively so deeply nested expression trees do not hit Python's recursion limit.
+
+    Raises:
+        ValueError: When the term holds what ngspice cannot read, such as a number
+            that is not finite, or the exported expression exceeds
+            `_MAX_EXPORTED_EXPRESSION_LENGTH`.
+    """
+    frames: list[tuple[JsonValue, bool]] = [(term, False)]
+    results: list[str] = []
+    while frames:
+        current, ready = frames.pop()
+        if not ready:
+            _push_written_node(current, read, frames, results)
+        else:
+            results.append(_finish_written_node(current, results))
+    return results[0]
 
 
 def _operation(name: str, written: list[str], operands: list[JsonValue]) -> str:
@@ -1414,15 +1595,24 @@ def _operation(name: str, written: list[str], operands: list[JsonValue]) -> str:
     """
     match name, written:
         case "^", [base, raised]:
+            _check_expression_length(len(base) + len(raised) + 6)
             return _power(base, operands[1], raised)
         case "limit", [x, a, b]:
+            _check_expression_length(len(x) + 2 * len(a) + 2 * len(b) + 25)
             return f"min(max({x},min({a},{b})),max({a},{b}))"
         case "if", [condition, chosen, otherwise]:
+            _check_expression_length(len(condition) + len(chosen) + len(otherwise) + 4)
             return f"({condition}?{chosen}:{otherwise})"
         case "-" | "!", [operand]:
+            _check_expression_length(len(operand) + len(name) + 2)
             return f"({name}{operand})"
         case _, [left, right] if name in _INFIX:
+            _check_expression_length(len(left) + len(right) + len(name) + 2)
             return f"({left}{name}{right})"
+    predicted = (
+        len(name) + 2 + sum(len(part) for part in written) + max(0, len(written) - 1)
+    )
+    _check_expression_length(predicted)
     return f"{name}({','.join(written)})"
 
 
@@ -1436,6 +1626,8 @@ def _power(base: str, exponent: JsonValue, raised: str) -> str:
     reads the base's logarithm.
     """
     match exponent:
+        case bool():
+            pass
         case int() | float() if float(exponent).is_integer() and int(exponent) % 2:
             return f"pwr({base},{raised})"
     return f"pow({base},{raised})"
@@ -1449,6 +1641,11 @@ def _interpolation(x: str, points: list[tuple[float, float]], rounding: float) -
     XSPICE's parabola over `rounding` times the shorter of them; below the first
     segment's midpoint and above the last's, the input follows that segment's line.
     """
+    if len(points) < 2:  # noqa: PLR2004 - at least two endpoints define a segment
+        message = f"table interpolation takes at least 2 points, not {len(points)}"
+        raise ValueError(message)
+    # Each table segment/condition embeds `x`; reject obvious blowups upfront.
+    _check_expression_length(len(x) * len(points))
     xs, ys = [x_ for x_, _ in points], [y for _, y in points]
     last = len(points) - 1
 
@@ -1459,11 +1656,15 @@ def _interpolation(x: str, points: list[tuple[float, float]], rounding: float) -
     # Each piece runs up to its bound, the last to no bound; a segment's line runs on
     # across the corners no parabola rounds.
     pieces: list[tuple[float, str]] = []
+    running_length = 0
     for corner in range(1, last):
         below, above = xs[corner] - xs[corner - 1], xs[corner + 1] - xs[corner]
         domain = rounding * min(below, above)
         if domain <= 0:
-            pieces.append((xs[corner], line(corner - 1)))
+            segment = line(corner - 1)
+            running_length += len(x) + len(segment) + 8
+            _check_expression_length(running_length)
+            pieces.append((xs[corner], segment))
             continue
         lower, upper = (
             (ys[corner] - ys[corner - 1]) / below,
@@ -1474,12 +1675,23 @@ def _interpolation(x: str, points: list[tuple[float, float]], rounding: float) -
         linear = upper - 2.0 * curvature * right
         constant = ys[corner] + upper * domain - curvature * right * right
         constant -= linear * right
+        _check_expression_length(running_length + 4 * len(x) + 32)
+        segment = line(corner - 1)
         parabola = f"({curvature!r}*{x}*{x}+{linear!r}*{x}+{constant!r})"
-        pieces += [(xs[corner] - domain, line(corner - 1)), (right, parabola)]
-    written = line(last - 1)
-    for bound, piece in reversed(pieces):
-        written = f"({x}<{bound!r}?{piece}:{written})"
-    return written
+        running_length += 2 * len(x) + len(segment) + len(parabola) + 16
+        _check_expression_length(running_length)
+        pieces += [(xs[corner] - domain, segment), (right, parabola)]
+    tail = line(last - 1)
+    prefix_parts: list[str] = []
+    total = len(tail)
+    for bound, piece in pieces:
+        chunk = f"({x}<{bound!r}?{piece}:"
+        total += len(chunk) + 1
+        _check_expression_length(total)
+        prefix_parts.append(chunk)
+    prefix_parts.append(tail)
+    prefix_parts.append(")" * len(pieces))
+    return "".join(prefix_parts)
 
 
 def _sense(instance: ir.Instance) -> str:
@@ -1558,11 +1770,22 @@ def node_voltages(
     """
     if not voltages:
         return []
-    written = " ".join(
-        f"{vector(circuit, Unknown(net, 'voltage'), subcircuits, dialect)}={volts!r}"
-        for net, volts in voltages.items()
+    flat = flatten(circuit, subcircuits)
+    top = flat.components[flat.top]
+    subcircuit_names = frozenset(
+        instance.name
+        for instance in top.instances
+        if isinstance(instance.of, ir.ComponentOf)
     )
-    return [f"{keyword} {written}"]
+    parts: list[str] = []
+    for net, volts in voltages.items():
+        first, *rest = net.split("/")
+        if rest and first in subcircuit_names:
+            name = f"v({dialect.separator.join([f'x{first}', *rest]).lower()})"
+        else:
+            name = f"v({_node(net).lower()})"
+        parts.append(f"{name}={volts!r}")
+    return [f"{keyword} {' '.join(parts)}"]
 
 
 def _waveform(spec: JsonValue, dialect: Dialect) -> str:
