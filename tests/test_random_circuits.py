@@ -139,6 +139,9 @@ type Waveforms = dict[str, Real]
 SHORTENED: Final = (4, 16, 64)
 """The factors by which both engines shorten their longest step where they differ."""
 
+NGSPICE_TIMEOUT: Final = 20
+"""Seconds ngspice may run on a random transient before counting as stalled."""
+
 
 def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
     """The waveforms jolty finds with `step` the longest, read at `times`."""
@@ -167,7 +170,9 @@ def _transients(
     circuit = simulation.circuit
     try:
         raw = ngspice.run(
-            netlist(circuit, transient=True), f"tran {step!r} {STOP!r} 0 {step!r}"
+            netlist(circuit, transient=True),
+            f"tran {step!r} {STOP!r} 0 {step!r}",
+            timeout=NGSPICE_TIMEOUT,
         )
     except JoltyError:
         return None

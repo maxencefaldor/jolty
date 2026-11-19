@@ -46,13 +46,27 @@ for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
 
 for script in (
     "arms",
-    "verdict",
-    "scoring",
-    "score",
-    "run",
-    "stub",
-    "transcript",
+    "bench",
+    "capabilities",
     "compare",
+    "corpus",
+    "decks",
+    "deterministic.bench",
+    "documented",
+    "exact",
+    "fixtures",
+    "matrix",
+    "measuring",
+    "run",
+    "sandbox",
+    "score",
+    "scoring",
+    "simulators",
+    "stub",
+    "suite",
+    "timing",
+    "transcript",
+    "verdict",
 ):
     importlib.import_module(script)
 
