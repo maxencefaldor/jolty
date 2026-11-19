@@ -6,10 +6,15 @@
 //! Copyright 2004 Regents of the University of California. All rights reserved. Used
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
-use super::channel::{Operating, effective_drain, smooth_positive};
+use super::Charges;
+use super::channel::Operating;
 use super::prepare::{Core, Junction, Junctions, Overlaps};
-use super::{Charges, D, DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP};
 use crate::Real;
+use crate::kernel::bsim::{
+    D, DELTA, Partition, accumulation_centroid, charge_thickness_charges, cv_overdrive, depletion,
+    effective_drain, effective_oxide_capacitance, flat_band, inversion_centroid, smooth_overlap,
+    source_partition_charge, surface_potential_overdrive, three_part_depletion,
+};
 
 /// The intrinsic charges on the gate, the bulk and the drain, in the frame where the drain
 /// lies at or above the source, the source's their sum's opposite, and the inversion
@@ -20,55 +25,6 @@ pub(super) struct Intrinsic<R: Real> {
     pub(super) bulk: D<R>,
     pub(super) drain: D<R>,
     pub(super) inversion: f64,
-}
-
-/// How `xpart` shares the channel's charge in saturation: the drain takes none, 40 % or
-/// half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Partition {
-    /// `xpart` above 0.5: 0/100.
-    None,
-    /// `xpart` below 0.5: 40/60.
-    Forty,
-    /// `xpart` of 0.5: 50/50.
-    Half,
-}
-
-impl Partition {
-    fn from_xpart(xpart: f64) -> Self {
-        if xpart > 0.5 {
-            Self::None
-        } else if xpart < 0.5 {
-            Self::Forty
-        } else {
-            Self::Half
-        }
-    }
-}
-
-/// `x0 − ½ · (v + √(v² ± 4δ · x0))`, the smooth minimum of `b3ld.c`'s effective
-/// flat-band voltage, with `v = x0 − x − δ`, the sign of the root's term that of `x0`.
-pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
-    let t0 = if vfb.value() <= 0.0 {
-        (v3 * v3 - D::constant(vfb * (4.0 * DELTA))).sqrt()
-    } else {
-        (v3 * v3 + D::constant(vfb * (4.0 * DELTA))).sqrt()
-    };
-    (-((v3 + t0) * 0.5)).plus(vfb)
-}
-
-/// The depletion charge under the gate, `CoxWL · k1ox · (√(k1ox²/4 + v) − k1ox/2)`,
-/// continued linearly below `v = 0`, with `capacitance` the gate's oxide capacitance.
-pub(crate) fn depletion<R: Real>(k1ox: R, v: D<R>, capacitance: D<R>) -> D<R> {
-    let t0 = k1ox * 0.5;
-    let t1 = if k1ox.value() == 0.0 {
-        D::number(0.0)
-    } else if v.value.value() < 0.0 {
-        v.divide(k1ox).plus(t0)
-    } else {
-        (v.plus(t0 * t0)).sqrt()
-    };
-    capacitance * t1.plus(-t0).scale(k1ox)
 }
 
 impl<R: Real> Core<R> {
@@ -107,18 +63,12 @@ impl<R: Real> Core<R> {
         } else {
             channel.vbseff.scale(self.phi) / channel.vbseff.plus(self.phi)
         };
-        let noff = channel.n.scale(self.binned.noff);
-        let t0 = noff.scale(self.vtm);
-        let voffcv = self.binned.voffcv;
-        let vgst = channel.vgs_eff - channel.vth;
-        let vgst_nvt = vgst.plus(-voffcv) / t0;
-        let vgsteff = if vgst_nvt.value.value() > EXP_THRESHOLD {
-            vgst.plus(-voffcv)
-        } else if vgst_nvt.value.value() < -EXP_THRESHOLD {
-            t0 * MIN_EXP.ln_1p()
-        } else {
-            t0 * vgst_nvt.exp().ln_1p()
-        };
+        let vgsteff = cv_overdrive(
+            channel.vgs_eff,
+            channel.vth,
+            channel.n,
+            (self.binned.noff, self.binned.voffcv, self.vtm),
+        );
         Cv {
             vds,
             vbseff,
@@ -261,39 +211,18 @@ impl<R: Real> Core<R> {
             let inversion_bulk = ((-abulk_cv + 1.0) * (vds * 0.5 - t3)).scale(cox_wl);
             gate = gate + inversion_gate;
             bulk = bulk + inversion_bulk;
-            self.partitioned(partition, (vgsteff, t0, t1), (cox_wl, gate + bulk))
+            source_partition_charge(
+                partition,
+                (vgsteff, t0, t1),
+                D::constant(cox_wl),
+                gate + bulk,
+            )
         };
         Intrinsic {
             gate,
             bulk,
             drain: -(gate + bulk + source),
             inversion: -(gate + bulk).value.value(),
-        }
-    }
-
-    /// The source's share of the inversion charge below saturation, of `capmod` 1 and 2:
-    /// with the gate overdrive, `Abulk · Vds` and `12 · (Vgsteff − Abulk · Vds / 2)`, the
-    /// channel's oxide capacitance and the inversion charges on the gate and the bulk.
-    fn partitioned(
-        &self,
-        partition: Partition,
-        (vgsteff, t0, t1): (D<R>, D<R>, D<R>),
-        (cox_wl, inversion): (R, D<R>),
-    ) -> D<R> {
-        let _ = self;
-        match partition {
-            Partition::None => {
-                let t1 = t1 * 2.0;
-                -((vgsteff * 0.5 + t0 * 0.25 - t0 * t0 / t1).scale(cox_wl))
-            }
-            Partition::Forty => {
-                let t1 = t1 / 12.0;
-                let t2 = (t1 * t1).recip().scale(cox_wl * 0.5);
-                let t3 = vgsteff * (t0 * t0 * (2.0 / 3.0) + vgsteff * (vgsteff - t0 * (4.0 / 3.0)))
-                    - t0 * t0 * t0 * (2.0 / 15.0);
-                -(t2 * t3)
-            }
-            Partition::Half => -(inversion * 0.5),
         }
     }
 
@@ -325,7 +254,12 @@ impl<R: Real> Core<R> {
         let inversion = -((vgsteff - t0 * 0.5 + abulk_cv * t3).scale(cox_wl));
         let gate = (vgsteff - vdseff_cv * 0.5 + t3).scale(cox_wl);
         let bulk = ((-abulk_cv + 1.0) * (vdseff_cv * 0.5 - t3)).scale(cox_wl);
-        let source = self.partitioned(partition, (vgsteff, t0, t1), (cox_wl, gate + bulk));
+        let source = source_partition_charge(
+            partition,
+            (vgsteff, t0, t1),
+            D::constant(cox_wl),
+            gate + bulk,
+        );
         let gate = gate + qac0 + qsub0;
         let bulk = bulk - (qac0 + qsub0);
         Intrinsic {
@@ -350,85 +284,44 @@ impl<R: Real> Core<R> {
         let vfbzb = self.vfbzb;
         let vgs_eff = channel.vgs_eff;
         let vfbeff = flat_band(vfbzb, (vbseff - vgs_eff).plus(vfbzb - DELTA));
-        let cox = self.cox;
-        let tox = self.tox * 1.0e8;
-        let ldeb = self.ldeb;
         // The accumulation and depletion charge's centroid.
-        let t0 = (vgs_eff - vbseff).plus(-vfbzb).divide(tox);
-        let tmp = t0.scale(self.acde);
-        let tcen = if tmp.value.value() > -EXP_THRESHOLD && tmp.value.value() < EXP_THRESHOLD {
-            tmp.exp().scale(ldeb)
-        } else if tmp.value.value() <= -EXP_THRESHOLD {
-            D::constant(ldeb * MIN_EXP)
-        } else {
-            D::constant(ldeb * MAX_EXP)
-        };
-        let link = self.tox * 1.0e-3;
-        let v3 = (-tcen).plus(ldeb - link);
-        let v4 = (v3 * v3).plus(link * ldeb * 4.0).sqrt();
-        let tcen = (-((v3 + v4) * 0.5)).plus(ldeb);
-        let effective = |tcen: D<R>| {
-            let ccen = D::number(EPSSI) / tcen;
-            let coxeff = ccen * (ccen.plus(cox)).recip().scale(cox);
-            coxeff.divide(cox).scale(cox_wl)
-        };
-        let cox_wl_cen = effective(tcen);
+        let tcen = accumulation_centroid(
+            (vgs_eff - vbseff).plus(-vfbzb),
+            self.tox,
+            self.acde,
+            self.ldeb,
+        );
+        let cox_wl_cen = effective_oxide_capacitance(tcen, self.cox, self.cox, cox_wl);
         let qac0 = cox_wl_cen * vfbeff.plus(-vfbzb);
         let qsub0 = depletion(self.k1ox, vgs_eff - vfbeff - vbseff - vgsteff, cox_wl_cen);
 
         // The gate bias's effect on the surface potential.
-        let vtm = self.vtm;
-        let (denominator, t0) = if self.k1ox.value() <= 0.0 {
-            (self.binned.moin * vtm * 0.25, self.sqrt_phi * 0.5)
-        } else {
-            (
-                self.binned.moin * vtm * self.k1ox * self.k1ox,
-                self.k1ox * self.sqrt_phi,
-            )
-        };
-        let t1 = vgsteff.plus(t0 * 2.0);
-        let delta_phi = (t1 * vgsteff).divide(denominator).ln_1p().scale(vtm);
-        let t0 = vgsteff - delta_phi - 0.001;
-        let vgdp = smooth_positive(t0, vgsteff * 0.004);
+        let vgdp = surface_potential_overdrive(
+            vgsteff,
+            self.k1ox,
+            self.sqrt_phi,
+            self.binned.moin,
+            self.vtm,
+        );
 
         // The inversion charge's centroid.
-        let t3 = (channel.vth.plus(-(vfbzb + self.phi))) * 4.0;
-        let tox = tox * 2.0;
-        let t0 = if t3.value.value() >= 0.0 {
+        let t3 = channel.vth.plus(-(vfbzb + self.phi)) * 4.0;
+        let tox = self.tox * 2.0e8;
+        let field = if t3.value.value() >= 0.0 {
             (vgsteff + t3).divide(tox)
         } else {
             (vgsteff + 1.0e-20).divide(tox)
         };
-        let tmp = (t0.ln() * 0.7).exp();
-        let tcen = D::number(1.9e-9) / (tmp + 1.0);
-        let cox_wl_cen = effective(tcen);
+        let cox_wl_cen =
+            effective_oxide_capacitance(inversion_centroid(field), self.cox, self.cox, cox_wl);
 
         let abulk_cv = channel.abulk0.scale(self.abulk_cv_factor);
-        let vdsat_cv = vgdp / abulk_cv;
-        let vdseff_cv = effective_drain(vds, vdsat_cv, R::constant(DELTA));
-        let t0 = abulk_cv * vdseff_cv;
-        let t1 = vgdp;
-        let t2 = (t1 - t0 * 0.5 + 1.0e-20) * 12.0;
-        let t3 = t0 / t2;
-        let inversion = cox_wl_cen * (t1 - t0 * (-t3 + 0.5));
-        let bulk = cox_wl_cen * (-abulk_cv + 1.0) * (vdseff_cv * 0.5 - t0 * vdseff_cv / t2);
-        let source = match partition {
-            Partition::None => -(cox_wl_cen * (t1 * 0.5 + t0 * 0.25 - t0 * t0 * 0.5 / t2)),
-            Partition::Forty => {
-                let t2 = t2 / 12.0;
-                let t3 = cox_wl_cen * 0.5 / (t2 * t2);
-                let t4 = t1 * (t0 * t0 * (2.0 / 3.0) + t1 * (t1 - t0 * (4.0 / 3.0)))
-                    - t0 * t0 * t0 * (2.0 / 15.0);
-                -(t3 * t4)
-            }
-            Partition::Half => -(inversion * 0.5),
-        };
-        let gate = inversion + qac0 + qsub0 - bulk;
-        let bulk = bulk - (qac0 + qsub0);
+        let [gate, bulk, drain, inversion] =
+            charge_thickness_charges(vds, vgdp, abulk_cv, cox_wl_cen, (qac0, qsub0), partition);
         Intrinsic {
             gate,
             bulk,
-            drain: -(gate + bulk + source),
+            drain,
             inversion: -inversion.value.value(),
         }
     }
@@ -461,13 +354,7 @@ impl<R: Real> Overlaps<R> {
                     v.scale(cgl + cgo)
                 }
             }
-            Charges::Two | Charges::Three => {
-                let t0 = v + DELTA;
-                let t1 = (t0 * t0 + 4.0 * DELTA).sqrt();
-                let t2 = (t0 - t1) * 0.5;
-                let t4 = (-(t2.divide(ckappa) * 4.0) + 1.0).sqrt();
-                v.scale(cgo + cgl) - (t2 + (t4 - 1.0).scale(ckappa * 0.5)).scale(cgl)
-            }
+            Charges::Two | Charges::Three => smooth_overlap(v, cgo, cgl, ckappa),
         };
         [
             side(vgs, self.cgso, self.cgsl),
@@ -482,40 +369,6 @@ impl<R: Real> Junctions<R> {
     /// or the source's: the power law of each part in reverse bias, and in forward bias a
     /// capacitance growing linearly from its zero-bias value with the slope it has there.
     pub(super) fn charge(&self, junction: &Junction<R>, v: D<R>) -> D<R> {
-        let mut charge = D::number(0.0);
-        if v.value.value() < 0.0 {
-            for ((&capacitance, &potential), &grading) in junction
-                .capacitances
-                .iter()
-                .zip(&self.potentials)
-                .zip(&self.gradings)
-            {
-                if capacitance.value() > 0.0 {
-                    let arg = -v.divide(potential) + 1.0;
-                    #[expect(clippy::float_cmp, reason = "b3ld.c's own test for a square root")]
-                    let root = grading.value() == 0.5;
-                    let sarg = if root {
-                        arg.sqrt().recip()
-                    } else {
-                        (arg.ln().scale(-grading)).exp()
-                    };
-                    charge = charge
-                        + (-(arg * sarg) + 1.0).scale(potential * capacitance / (-grading + 1.0));
-                }
-            }
-            return charge;
-        }
-        let mut total = R::constant(0.0);
-        let mut slope = R::constant(0.0);
-        for ((&capacitance, &potential), &grading) in junction
-            .capacitances
-            .iter()
-            .zip(&self.potentials)
-            .zip(&self.gradings)
-        {
-            total += capacitance;
-            slope += capacitance * grading / potential;
-        }
-        v * (v.scale(slope * 0.5)).plus(total)
+        three_part_depletion(junction.capacitances, self.potentials, self.gradings, v)
     }
 }

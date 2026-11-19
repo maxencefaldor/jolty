@@ -164,6 +164,14 @@ pub trait Real:
         self.chain((tangent, slope, 2.0 * tangent * slope))
     }
 
+    /// The arctangent, in radians.
+    #[must_use]
+    fn atan(self) -> Self {
+        let value = self.value();
+        let slope = 1.0 / (1.0 + value * value);
+        self.chain((value.atan(), slope, -2.0 * value * slope * slope))
+    }
+
     /// The least non-negative remainder of division by `divisor`: the number less
     /// `divisor` times the floor of their quotient.
     #[must_use]
@@ -191,6 +199,24 @@ pub trait Real:
             self
         }
     }
+}
+
+/// Forwards [`Real`] methods on `f64` directly to the inherent `f64` operations.
+macro_rules! forward_f64 {
+    ($($method:ident),+ $(,)?) => {
+        $(
+            fn $method(self) -> Self {
+                f64::$method(self)
+            }
+        )+
+    };
+    ($($method:ident($arg:ident: $ty:ty) => $target:ident),+ $(,)?) => {
+        $(
+            fn $method(self, $arg: $ty) -> Self {
+                f64::$target(self, $arg)
+            }
+        )+
+    };
 }
 
 impl Real for f64 {
@@ -224,61 +250,14 @@ impl Real for f64 {
         value
     }
 
-    fn exp(self) -> Self {
-        f64::exp(self)
-    }
-
-    fn ln(self) -> Self {
-        f64::ln(self)
-    }
-
-    fn ln_1p(self) -> Self {
-        f64::ln_1p(self)
-    }
-
-    fn exp_m1(self) -> Self {
-        f64::exp_m1(self)
-    }
-
-    fn sqrt(self) -> Self {
-        f64::sqrt(self)
-    }
-
-    fn recip(self) -> Self {
-        f64::recip(self)
-    }
-
-    fn powf(self, exponent: f64) -> Self {
-        f64::powf(self, exponent)
-    }
-
-    fn pow(self, exponent: Self) -> Self {
-        f64::powf(self, exponent)
-    }
-
-    fn abs(self) -> Self {
-        f64::abs(self)
-    }
-
-    fn sin(self) -> Self {
-        f64::sin(self)
-    }
-
-    fn tan(self) -> Self {
-        f64::tan(self)
-    }
-
-    fn rem_euclid(self, divisor: Self) -> Self {
-        f64::rem_euclid(self, divisor)
-    }
-
-    fn max(self, other: Self) -> Self {
-        f64::max(self, other)
-    }
-
-    fn min(self, other: Self) -> Self {
-        f64::min(self, other)
-    }
+    forward_f64!(exp, ln, ln_1p, exp_m1, sqrt, recip, abs, sin, tan, atan);
+    forward_f64!(
+        powf(exponent: f64) => powf,
+        pow(exponent: Self) => powf,
+        rem_euclid(divisor: Self) => rem_euclid,
+        max(other: Self) => max,
+        min(other: Self) => min,
+    );
 }
 
 /// A number and its exact derivatives with respect to `K` parameters or seeded unknowns,
@@ -298,25 +277,25 @@ impl<const K: usize> Gradient<K> {
         Self { value, derivatives }
     }
 
-    /// Each derivative, as `combine` makes it of the same derivative of `self` and of
-    /// `other`.
-    fn zip(self, other: Self, combine: impl Fn(f64, f64) -> f64) -> [f64; K] {
-        zip(self.derivatives, other.derivatives, combine)
+    /// `self · other`, by the product rule.
+    fn product(self, other: Self) -> Self {
+        Self {
+            value: self.value * other.value,
+            derivatives: zip(self.derivatives, other.derivatives, |own, others| {
+                own * other.value + self.value * others
+            }),
+        }
     }
 
-    /// Each derivative, as `map` makes it of the same derivative of `self`.
-    fn map(self, map: impl Fn(f64) -> f64) -> [f64; K] {
-        self.derivatives.map(map)
-    }
-
-    /// The derivatives of `self · other`, by the product rule.
-    fn product(self, other: Self) -> [f64; K] {
-        self.zip(other, |own, others| own * other.value + self.value * others)
-    }
-
-    /// The derivatives of `self / other`, whose value is `value`, by the quotient rule.
-    fn quotient(self, other: Self, value: f64) -> [f64; K] {
-        self.zip(other, |own, others| (own - value * others) / other.value)
+    /// `self / other`, by the quotient rule.
+    fn quotient(self, other: Self) -> Self {
+        let value = self.value / other.value;
+        Self {
+            value,
+            derivatives: zip(self.derivatives, other.derivatives, |own, others| {
+                (own - value * others) / other.value
+            }),
+        }
     }
 }
 
@@ -345,10 +324,109 @@ fn zip<const K: usize>(
     combined
 }
 
-impl<const K: usize> Default for Gradient<K> {
-    fn default() -> Self {
-        Self::constant(0.0)
-    }
+/// Implements `Default`, `Add`, `Sub`, `Mul`, `Div`, `Neg`, scalar `f64` arithmetic and
+/// assignment operators for a forward-mode number type with scalar fields and `[f64; K]`
+/// derivative arrays, delegating `Mul` and `Div` to its `product` and `quotient` methods.
+macro_rules! impl_number_ops {
+    (
+        @linear $name:ident, [$($scalar:ident),*], [$($array:ident),*],
+        $(($trait:ident, $method:ident, $op:tt)),+
+    ) => {$(
+        impl<const K: usize> $trait for $name<K> {
+            type Output = Self;
+
+            fn $method(self, other: Self) -> Self {
+                Self {
+                    value: self.value $op other.value,
+                    $($scalar: self.$scalar $op other.$scalar,)*
+                    $($array: zip(self.$array, other.$array, |own, others| own $op others),)*
+                }
+            }
+        }
+    )+};
+    (@shift $name:ident, $(($trait:ident, $method:ident, $op:tt)),+) => {$(
+        impl<const K: usize> $trait<f64> for $name<K> {
+            type Output = Self;
+
+            fn $method(self, other: f64) -> Self {
+                Self {
+                    value: self.value $op other,
+                    ..self
+                }
+            }
+        }
+    )+};
+    (
+        @scale $name:ident, [$($scalar:ident),*], [$($array:ident),*],
+        $(($trait:ident, $method:ident, $op:tt)),+
+    ) => {$(
+        impl<const K: usize> $trait<f64> for $name<K> {
+            type Output = Self;
+
+            fn $method(self, other: f64) -> Self {
+                Self {
+                    value: self.value $op other,
+                    $($scalar: self.$scalar $op other,)*
+                    $($array: self.$array.map(|derivative| derivative $op other),)*
+                }
+            }
+        }
+    )+};
+    (@assign $name:ident, $(($trait:ident, $method:ident, $op:tt)),+) => {$(
+        impl<const K: usize> $trait for $name<K> {
+            fn $method(&mut self, other: Self) {
+                *self = *self $op other;
+            }
+        }
+    )+};
+    ($name:ident, scalars: [$($scalar:ident),*], arrays: [$($array:ident),*]) => {
+        impl<const K: usize> Default for $name<K> {
+            fn default() -> Self {
+                Self::constant(0.0)
+            }
+        }
+
+        impl_number_ops!(
+            @linear $name, [$($scalar),*], [$($array),*],
+            (Add, add, +), (Sub, sub, -)
+        );
+        impl_number_ops!(@shift $name, (Add, add, +), (Sub, sub, -));
+        impl_number_ops!(
+            @scale $name, [$($scalar),*], [$($array),*],
+            (Mul, mul, *), (Div, div, /)
+        );
+        impl_number_ops!(
+            @assign $name, (AddAssign, add_assign, +), (SubAssign, sub_assign, -)
+        );
+
+        impl<const K: usize> Mul for $name<K> {
+            type Output = Self;
+
+            fn mul(self, other: Self) -> Self {
+                self.product(other)
+            }
+        }
+
+        impl<const K: usize> Div for $name<K> {
+            type Output = Self;
+
+            fn div(self, other: Self) -> Self {
+                self.quotient(other)
+            }
+        }
+
+        impl<const K: usize> Neg for $name<K> {
+            type Output = Self;
+
+            fn neg(self) -> Self {
+                Self {
+                    value: -self.value,
+                    $($scalar: -self.$scalar,)*
+                    $($array: self.$array.map(|derivative| -derivative),)*
+                }
+            }
+        }
+    };
 }
 
 impl<const K: usize> Real for Gradient<K> {
@@ -391,122 +469,12 @@ impl<const K: usize> Real for Gradient<K> {
     fn chain(self, (value, slope, _): (f64, f64, f64)) -> Self {
         Self {
             value,
-            derivatives: self.map(|derivative| scaled(slope, derivative)),
+            derivatives: self.derivatives.map(|derivative| scaled(slope, derivative)),
         }
     }
 }
 
-impl<const K: usize> Add for Gradient<K> {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            value: self.value + other.value,
-            derivatives: self.zip(other, |own, others| own + others),
-        }
-    }
-}
-
-impl<const K: usize> Sub for Gradient<K> {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self {
-        Self {
-            value: self.value - other.value,
-            derivatives: self.zip(other, |own, others| own - others),
-        }
-    }
-}
-
-impl<const K: usize> Mul for Gradient<K> {
-    type Output = Self;
-
-    fn mul(self, other: Self) -> Self {
-        Self {
-            value: self.value * other.value,
-            derivatives: self.product(other),
-        }
-    }
-}
-
-impl<const K: usize> Div for Gradient<K> {
-    type Output = Self;
-
-    fn div(self, other: Self) -> Self {
-        let value = self.value / other.value;
-        Self {
-            value,
-            derivatives: self.quotient(other, value),
-        }
-    }
-}
-
-impl<const K: usize> Neg for Gradient<K> {
-    type Output = Self;
-
-    fn neg(self) -> Self {
-        Self {
-            value: -self.value,
-            derivatives: self.map(|derivative| -derivative),
-        }
-    }
-}
-
-impl<const K: usize> Add<f64> for Gradient<K> {
-    type Output = Self;
-
-    fn add(self, other: f64) -> Self {
-        Self {
-            value: self.value + other,
-            derivatives: self.derivatives,
-        }
-    }
-}
-
-impl<const K: usize> Sub<f64> for Gradient<K> {
-    type Output = Self;
-
-    fn sub(self, other: f64) -> Self {
-        Self {
-            value: self.value - other,
-            derivatives: self.derivatives,
-        }
-    }
-}
-
-impl<const K: usize> Mul<f64> for Gradient<K> {
-    type Output = Self;
-
-    fn mul(self, other: f64) -> Self {
-        Self {
-            value: self.value * other,
-            derivatives: self.map(|derivative| derivative * other),
-        }
-    }
-}
-
-impl<const K: usize> Div<f64> for Gradient<K> {
-    type Output = Self;
-
-    fn div(self, other: f64) -> Self {
-        Self {
-            value: self.value / other,
-            derivatives: self.map(|derivative| derivative / other),
-        }
-    }
-}
-
-impl<const K: usize> AddAssign for Gradient<K> {
-    fn add_assign(&mut self, other: Self) {
-        *self = *self + other;
-    }
-}
-
-impl<const K: usize> SubAssign for Gradient<K> {
-    fn sub_assign(&mut self, other: Self) {
-        *self = *self - other;
-    }
-}
+impl_number_ops!(Gradient, scalars: [], arrays: [derivatives]);
 
 /// A number, its derivatives with respect to `K` parameters or seeded unknowns and to a
 /// second variable, and its mixed derivatives with respect to both: second-order
@@ -581,12 +549,6 @@ impl<const K: usize> Hyper<K> {
     }
 }
 
-impl<const K: usize> Default for Hyper<K> {
-    fn default() -> Self {
-        Self::constant(0.0)
-    }
-}
-
 impl<const K: usize> Real for Hyper<K> {
     const SEEDS: usize = K;
 
@@ -643,120 +605,7 @@ impl<const K: usize> Real for Hyper<K> {
     }
 }
 
-impl<const K: usize> Add for Hyper<K> {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            value: self.value + other.value,
-            first: zip(self.first, other.first, |own, others| own + others),
-            second: self.second + other.second,
-            both: zip(self.both, other.both, |own, others| own + others),
-        }
-    }
-}
-
-impl<const K: usize> Sub for Hyper<K> {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self {
-        Self {
-            value: self.value - other.value,
-            first: zip(self.first, other.first, |own, others| own - others),
-            second: self.second - other.second,
-            both: zip(self.both, other.both, |own, others| own - others),
-        }
-    }
-}
-
-impl<const K: usize> Mul for Hyper<K> {
-    type Output = Self;
-
-    fn mul(self, other: Self) -> Self {
-        self.product(other)
-    }
-}
-
-impl<const K: usize> Div for Hyper<K> {
-    type Output = Self;
-
-    fn div(self, other: Self) -> Self {
-        self.quotient(other)
-    }
-}
-
-impl<const K: usize> Neg for Hyper<K> {
-    type Output = Self;
-
-    fn neg(self) -> Self {
-        Self {
-            value: -self.value,
-            first: self.first.map(|first| -first),
-            second: -self.second,
-            both: self.both.map(|both| -both),
-        }
-    }
-}
-
-impl<const K: usize> Add<f64> for Hyper<K> {
-    type Output = Self;
-
-    fn add(self, other: f64) -> Self {
-        Self {
-            value: self.value + other,
-            ..self
-        }
-    }
-}
-
-impl<const K: usize> Sub<f64> for Hyper<K> {
-    type Output = Self;
-
-    fn sub(self, other: f64) -> Self {
-        Self {
-            value: self.value - other,
-            ..self
-        }
-    }
-}
-
-impl<const K: usize> Mul<f64> for Hyper<K> {
-    type Output = Self;
-
-    fn mul(self, other: f64) -> Self {
-        Self {
-            value: self.value * other,
-            first: self.first.map(|first| first * other),
-            second: self.second * other,
-            both: self.both.map(|both| both * other),
-        }
-    }
-}
-
-impl<const K: usize> Div<f64> for Hyper<K> {
-    type Output = Self;
-
-    fn div(self, other: f64) -> Self {
-        Self {
-            value: self.value / other,
-            first: self.first.map(|first| first / other),
-            second: self.second / other,
-            both: self.both.map(|both| both / other),
-        }
-    }
-}
-
-impl<const K: usize> AddAssign for Hyper<K> {
-    fn add_assign(&mut self, other: Self) {
-        *self = *self + other;
-    }
-}
-
-impl<const K: usize> SubAssign for Hyper<K> {
-    fn sub_assign(&mut self, other: Self) {
-        *self = *self - other;
-    }
-}
+impl_number_ops!(Hyper, scalars: [second], arrays: [first, both]);
 
 #[cfg(test)]
 mod tests {
@@ -797,17 +646,33 @@ mod tests {
         );
         check(|g| (g * 3.0).sin(), |v| (3.0 * v).sin());
         check(|g| (g * 0.5).tan(), |v| (0.5 * v).tan());
+        check(|g| (g * 0.5).atan(), |v| (0.5 * v).atan());
         check(
             |g| (g * 10.0).rem_euclid(g + 1.0),
             |v| (10.0 * v).rem_euclid(v + 1.0),
         );
+        let hyper = Hyper {
+            value: 0.7,
+            first: [2.0],
+            second: 3.0,
+            both: [5.0],
+        }
+        .atan();
+        let slope = 1.0 / (1.0 + 0.7 * 0.7);
+        let curvature = -2.0 * 0.7 * slope * slope;
+        assert!((hyper.value - 0.7_f64.atan()).abs() < 1e-15);
+        assert!((hyper.first[0] - 2.0 * slope).abs() < 1e-15);
+        assert!((hyper.second - 3.0 * slope).abs() < 1e-15);
+        assert!((hyper.both[0] - (5.0 * slope + 6.0 * curvature)).abs() < 1e-14);
     }
 
     /// A function of two numbers, each seeded on a parameter of its own, that exercises
     /// every operation a number has.
     fn exercise<R: Real>(x: R, y: R) -> R {
         let z = (x * y + x * 3.0) / (y - 2.0) - (x / y).exp().ln_1p().sqrt();
-        (z.powf(1.5).recip() + z.pow(y) * 0.5 - x.abs().max(y).min(z)) / 4.0 + z.sin().tan()
+        (z.powf(1.5).recip() + z.pow(y) * 0.5 - x.abs().max(y).min(z)) / 4.0
+            + z.sin().tan()
+            + x.atan()
     }
 
     #[test]

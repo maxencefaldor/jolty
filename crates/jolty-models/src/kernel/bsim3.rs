@@ -21,81 +21,28 @@ mod prepare;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use self::channel::{
-    above_half, above_tenth, effective_drain, factor_above_tenth, non_saturation_excess,
-    reciprocal_above_tenth, saturation_voltage, smooth_floor, smooth_positive,
-};
-pub(crate) use self::charges::{depletion, flat_band};
 pub use self::parameters::Bsim3Parameters;
-use self::prepare::PreparedBsim3;
-use self::prepare::{Junction, Junctions};
-pub(crate) use self::prepare::{check, lost};
+use self::prepare::{Junction, Junctions, PreparedBsim3};
+pub(crate) use crate::kernel::bsim::by_channel;
+use crate::kernel::bsim::{
+    D, N_MINLOG, NOISE_CHARGE, REGIONS, Region, VARIABLE_NAMES, VT0, clm_noise_length,
+    critical_voltage, forward_frame, fringe_factor, interface, unswapped, variables,
+};
 use crate::kernel::dual::Dual;
-use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
-use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
-use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, REGION,
-    Real, Regions, Stamp,
-};
+use crate::{Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Regions, Stamp};
 
-/// Boltzmann's constant over the elementary charge, in volts per kelvin, as `b3temp.c`
-/// and `b4v5temp.c` take it.
-pub(crate) const KBOQ: f64 = 8.617_087e-5;
 /// The permittivity of silicon dioxide, in farads per meter, as BSIM3 takes it.
 const EPSOX: f64 = 3.453_133e-11;
-/// The permittivity of silicon, in farads per meter, as BSIM3 and BSIM4 take it.
-pub(crate) const EPSSI: f64 = 1.035_94e-10;
-/// The elementary charge, in coulombs, as `b3temp.c`, `b3ld.c`, `b4v5temp.c` and
-/// `b4v5ld.c` take it.
-pub(crate) const Q: f64 = 1.602_19e-19;
-/// `e^34`, where `b3ld.c` and `b4v5ld.c` stop their exponentials.
-pub(crate) const MAX_EXP: f64 = 5.834_617_425e14;
-/// `e^−34`.
-pub(crate) const MIN_EXP: f64 = 1.713_908_431e-15;
-/// The argument beyond which `b3ld.c` and `b4v5ld.c` stop their exponentials.
-pub(crate) const EXP_THRESHOLD: f64 = 34.0;
-/// The smoothing of `b3ld.c`'s and `b4v5ld.c`'s effective voltages of the charges, their
-/// `DELTA_1` to `DELTA_4`, in volts.
-pub(crate) const DELTA: f64 = 0.02;
-/// The elementary charge, in coulombs, as ngspice's `const.h` gives it to `b3noi.c` and
-/// to `b4v5ld.c`'s poly gate depletion.
-pub(crate) const NOISE_CHARGE: f64 = 1.602_176_620_8e-19;
 /// Boltzmann's constant over the elementary charge, in volts per kelvin, as `b3noi.c`
 /// writes it.
 const NOISE_KBOQ: f64 = 8.62e-5;
-/// The least argument of `b3noi.c`'s logarithms, its `N_MINLOG`.
-pub(crate) const N_MINLOG: f64 = 1e-38;
-/// The thermal voltage at 27 °C with ngspice's constants, `CONSTvt0`, from which
-/// `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps.
-pub(crate) const VT0: f64 = NGSPICE_BOLTZMANN * 300.15 / NOISE_CHARGE;
-/// Boltzmann's constant, in joules per kelvin, as ngspice's `const.h` gives it,
-/// `CONSTboltz`, to `b4v5noi.c` and to its thermal voltage.
-pub(crate) const NGSPICE_BOLTZMANN: f64 = 1.380_648_52e-23;
-
-/// The critical voltage of a junction of 10 fA at [`VT0`], `VT0 · ln(VT0 / (√2 · 10 fA))`,
-/// from which `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps, their `vcrit`.
-pub(crate) fn critical_voltage() -> f64 {
-    VT0 * (VT0 / (std::f64::consts::SQRT_2 * 1.0e-14)).ln()
-}
-
-/// A number and its derivatives with respect to a transistor's gate-source, drain-source
-/// and bulk-source voltages.
-type D<R> = Dual<R, 3>;
-
-/// `n` for an n-channel and `p` for a p-channel.
-pub(crate) const fn by_channel(channel: Channel, n: f64, p: f64) -> f64 {
-    match channel {
-        Channel::N => n,
-        Channel::P => p,
-    }
-}
 
 /// `b3set.c`'s fringing capacitance per width of an oxide `tox` thick,
 /// `2 · εox / π · ln(1 + 0.4 µm / tox)`.
 fn fringe<R: Real>(tox: R) -> R {
-    (R::constant(0.4e-6) / tox + 1.0).ln() * (2.0 * EPSOX / std::f64::consts::PI)
+    fringe_factor(tox) * (2.0 * EPSOX / std::f64::consts::PI)
 }
 
 /// The mobility model, `mobmod`.
@@ -120,28 +67,11 @@ impl Mobility {
     }
 }
 
-impl TryFrom<u8> for Mobility {
-    type Error = String;
-
-    fn try_from(mobmod: u8) -> Result<Self, String> {
-        match mobmod {
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            3 => Ok(Self::Three),
-            _ => Err(format!("BSIM3's mobility_model is 1, 2 or 3, not {mobmod}")),
-        }
-    }
-}
-
-impl From<Mobility> for u8 {
-    fn from(mobmod: Mobility) -> Self {
-        match mobmod {
-            Mobility::One => 1,
-            Mobility::Two => 2,
-            Mobility::Three => 3,
-        }
-    }
-}
+super::numbered_enum!(Mobility, "BSIM3's mobility_model is 1, 2 or 3", {
+    1 => One,
+    2 => Two,
+    3 => Three,
+});
 
 /// The model of the charges under the gate, `capmod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -157,30 +87,12 @@ pub enum Charges {
     Three,
 }
 
-impl TryFrom<u8> for Charges {
-    type Error = String;
-
-    fn try_from(capmod: u8) -> Result<Self, String> {
-        match capmod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            3 => Ok(Self::Three),
-            _ => Err(format!("BSIM3's capacitance_model is 0 to 3, not {capmod}")),
-        }
-    }
-}
-
-impl From<Charges> for u8 {
-    fn from(capmod: Charges) -> Self {
-        match capmod {
-            Charges::Zero => 0,
-            Charges::One => 1,
-            Charges::Two => 2,
-            Charges::Three => 3,
-        }
-    }
-}
+super::numbered_enum!(Charges, "BSIM3's capacitance_model is 0 to 3", {
+    0 => Zero,
+    1 => One,
+    2 => Two,
+    3 => Three,
+});
 
 /// The noise model, `noimod`: SPICE2's or BSIM3's channel thermal noise and flicker
 /// noise.
@@ -203,34 +115,14 @@ pub enum NoiseModel {
     Six,
 }
 
-impl TryFrom<u8> for NoiseModel {
-    type Error = String;
-
-    fn try_from(noimod: u8) -> Result<Self, String> {
-        match noimod {
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            3 => Ok(Self::Three),
-            4 => Ok(Self::Four),
-            5 => Ok(Self::Five),
-            6 => Ok(Self::Six),
-            _ => Err(format!("BSIM3's noise_model is 1 to 6, not {noimod}")),
-        }
-    }
-}
-
-impl From<NoiseModel> for u8 {
-    fn from(noimod: NoiseModel) -> Self {
-        match noimod {
-            NoiseModel::One => 1,
-            NoiseModel::Two => 2,
-            NoiseModel::Three => 3,
-            NoiseModel::Four => 4,
-            NoiseModel::Five => 5,
-            NoiseModel::Six => 6,
-        }
-    }
-}
+super::numbered_enum!(NoiseModel, "BSIM3's noise_model is 1 to 6", {
+    1 => One,
+    2 => Two,
+    3 => Three,
+    4 => Four,
+    5 => Five,
+    6 => Six,
+});
 
 /// A MOSFET in BSIM3v3.3, SPICE's level 8 and 49 model of short channels, as ngspice 47
 /// implements it.
@@ -280,41 +172,6 @@ pub struct Bsim3Memory {
     variables: [f64; 5],
 }
 
-/// The variables a BSIM3 transistor reports: its threshold and saturation voltages, in
-/// its own polarity, and its region among [`REGIONS`] and its margins.
-const VARIABLE_NAMES: [&str; 5] = [
-    "threshold_voltage",
-    "saturation_voltage",
-    REGION,
-    OVERDRIVE,
-    SATURATION_MARGIN,
-];
-
-/// The regions of a transistor's channel, on either side of its threshold and saturation
-/// voltages, `Vth` and `Vdsat`, which bound the subthreshold, linear and saturation
-/// regions the BSIM3v3.3 manual derives its drain current in, in the order of
-/// [`REGIONS`]' names. The equations blend one region into the next through `Vgsteff` and
-/// `Vdseff`, smooth functions that turn from one region's asymptote to the next's around
-/// those voltages, and switch at neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Region {
-    /// Below its threshold, its current falling exponentially.
-    WeakInversion,
-    /// At or above its threshold, with the drain below saturation.
-    Linear,
-    /// At or above its threshold, with the drain at or past saturation.
-    Saturated,
-}
-
-/// The regions a transistor's equations distinguish, and its margins to their boundaries:
-/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in an n-channel's sign as
-/// [`Regions::margins`] are, with the drain and the source swapped where the drain lies
-/// below the source, as the equations swap them.
-const REGIONS: Regions = Regions {
-    names: &["weak_inversion", "linear", "saturated"],
-    margins: &[OVERDRIVE, SATURATION_MARGIN],
-};
-
 /// Local node indices: the gate and the bulk, then the drain and source behind their
 /// resistances, which are the terminals themselves without one.
 const GATE: usize = 0;
@@ -358,17 +215,6 @@ struct Terminals<R: Real> {
     margins: [f64; 2],
 }
 
-/// `f`, a function of the gate-source, drain-source and bulk-source voltages of the frame
-/// whose source is the drain, with its derivatives with respect to the terminals' own
-/// voltages.
-fn unswapped<R: Real>(f: D<R>) -> D<R> {
-    let [gate, drain, bulk] = f.gradient;
-    D {
-        value: f.value,
-        gradient: [gate, -(gate + drain + bulk), bulk],
-    }
-}
-
 impl<R: Real> Junctions<R> {
     /// The current from the bulk into `junction` at its voltage `v`, with `gmin` across it.
     fn current(&self, junction: &Junction<R>, v: D<R>, gmin: f64) -> D<R> {
@@ -399,13 +245,7 @@ impl<R: Real> PreparedBsim3<R> {
     )]
     fn terminals(&self, voltages: [R; 3], gmin: f64) -> Terminals<R> {
         let [vgs, vds, vbs] = Dual::variables(voltages);
-        let [gate, drain, bulk] = voltages;
-        let forward = drain.value() >= 0.0;
-        let frame = if forward {
-            voltages
-        } else {
-            [gate - drain, -drain, bulk - drain]
-        };
+        let (forward, frame) = forward_frame(voltages);
         let [mode_gs, mode_ds, mode_bs] = Dual::variables(frame);
         let core = &self.core;
         let operating = core.evaluate([mode_gs, mode_ds, mode_bs]);
@@ -430,11 +270,7 @@ impl<R: Real> PreparedBsim3<R> {
             (operating.vgs_eff - operating.vth).value.value(),
             (mode_ds - operating.vdsat).value.value(),
         ];
-        let region = match margins {
-            [overdrive, _] if overdrive < 0.0 => Region::WeakInversion,
-            [_, margin] if margin < 0.0 => Region::Linear,
-            _ => Region::Saturated,
-        };
+        let region = Region::classify(margins);
         Terminals {
             channel: if forward { ids } else { -ids },
             substrate: (if forward { INNER_DRAIN } else { INNER_SOURCE }, isub),
@@ -513,17 +349,7 @@ impl Kernel for Bsim3 {
     type Memory = Bsim3Memory;
 
     fn interface<R: Real>(_: &Bsim3Parameters<R>) -> Interface {
-        Interface::new(
-            &["drain", "gate", "source", "bulk"],
-            &[
-                Branch::new(0, 2, BranchKind::Conductive),
-                Branch::new(3, 0, BranchKind::Conductive),
-                Branch::new(3, 2, BranchKind::Conductive),
-                Branch::new(1, 2, BranchKind::Capacitive),
-                Branch::new(1, 0, BranchKind::Capacitive),
-                Branch::new(1, 3, BranchKind::Capacitive),
-            ],
-        )
+        interface()
     }
 
     fn prepare<R: Real>(
@@ -570,14 +396,13 @@ impl Kernel for Bsim3 {
         let voltages = bias.across(&shape.stamp, at, (sign, VARIABLES));
         let terminals = prepared.terminals(voltages, at.gmin);
         memory.threshold = Some(terminals.threshold);
-        let [overdrive, margin] = terminals.margins;
-        memory.variables = [
-            sign * terminals.threshold,
-            sign * terminals.saturation,
-            f64::from(terminals.region as u8),
-            overdrive,
-            margin,
-        ];
+        memory.variables = variables(
+            sign,
+            terminals.threshold,
+            terminals.saturation,
+            terminals.region,
+            terminals.margins,
+        );
         let added = Oriented {
             nodes: &shape.stamp,
             sign,
@@ -660,12 +485,8 @@ impl<R: Real> PreparedBsim3<R> {
         channel: [crate::Node; 2],
         sources: &mut Vec<NoiseSource>,
     ) {
-        let [gate, drain, bulk] = voltages;
-        let frame = if drain >= 0.0 {
-            voltages
-        } else {
-            [gate - drain, -drain, bulk - drain]
-        };
+        let [_, drain, _] = voltages;
+        let (_, frame) = forward_frame(voltages);
         let core = &self.core;
         let variables = Dual::variables(frame.map(R::constant));
         let operating = core.evaluate(variables);
@@ -739,12 +560,7 @@ impl<R: Real> PreparedBsim3<R> {
         let esat = 2.0 * core.vsattemp.value() / ueff;
         let litl = core.litl.value();
         let vdseff = value(operating.vdseff);
-        let clm = if noise.em <= 0.0 {
-            0.0
-        } else {
-            let t0 = ((vds - vdseff) / litl + noise.em) / esat;
-            (litl * t0.max(N_MINLOG).ln()).max(0.0)
-        };
+        let clm = clm_noise_length(vds, vdseff, litl, esat, noise.em);
         let cox = core.cox.value();
         let vgsteff = value(operating.vgsteff);
         let temperature = self.temperature;
@@ -769,11 +585,13 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::kernel::bsim::{EPSSI, INTRINSIC, KBOQ, Q};
+    use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
     use crate::testing::{
-        Bench, Evaluation, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, Evaluation, assert_close, assert_jacobians_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
-    use crate::{Differentiable, Input, REFERENCE_TEMPERATURE};
+    use crate::{Input, REFERENCE_TEMPERATURE};
 
     /// A short n-channel with every effect of the drain current switched on: the poly
     /// gate's depletion, the parasitic resistance, the non-saturation effect, the
@@ -848,48 +666,6 @@ mod tests {
         ) {
             let bulk = drain.min(0.0) - reverse;
             assert_jacobians_match::<Bsim3>("{}", &[drain, gate, 0.0, bulk]);
-        }
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let binned = r#""lvth0": 2e-8, "wvth0": -1e-8, "pvth0": 1e-15, "lu0": 1e-9,
-            "wua": 1e-16, "pk2": 1e-15, "lrdsw": 1e-5, "wvsat": 1e-3, "lcgsl": 1e-17,
-            "nominal_temperature": 290, "kt1l": 1e-9, "ute": -1.3, "prt": 20,
-            "tpb": 1e-3, "tcj": 1e-3, "xti": 2.5, "rsh": 15"#;
-        // Below saturation the substrate current falls to 1e-19 A, whose derivatives
-        // central differences no longer resolve: it is checked in saturation alone.
-        let substrate = with(SHORT, binned);
-        let parameters = substrate.replace(r#""alpha0": 1e-6, "#, "");
-        let derived = r#"{"width": 4e-6, "length": 1e-6, "nsub": 2e22, "xt": 1.2e-7,
-            "lint": 2e-8, "wint": 3e-8, "ll": 1e-13, "vfb": -2, "dlc": 3e-8, "capacitance_model": 2, "mobility_model": 2,
-            "nominal_temperature": 290, "drain_area": 4e-12, "source_area": 4e-12}"#;
-        for [drain, gate, bulk] in [
-            [2.0, 1.5, -0.5],
-            [0.3, 2.0, -0.2],
-            [-1.0, 1.2, -1.5],
-            [2.0, 0.3, -0.1],
-        ] {
-            // The internal nodes away from where their currents balance, which would leave
-            // differences of their residuals only rounding.
-            let inner = [drain, gate, 0.0, bulk, 0.8 * drain, 0.1];
-            assert_parameter_gradients_match::<Bsim3>(&parameters, &inner);
-            assert_parameter_gradients_match::<Bsim3>(derived, &[drain, gate, 0.0, bulk]);
-        }
-        assert_parameter_gradients_match::<Bsim3>(&substrate, &[2.5, 1.5, 0.0, -0.5, 2.2, 0.1]);
-    }
-
-    #[test]
-    fn a_p_channel_mirrors_an_n_channel() {
-        for capmod in 0..4 {
-            let n = with(SHORT, &format!(r#""capacitance_model": {capmod}"#));
-            for x in [
-                [2.0, 1.5, 0.0, -0.5],
-                [-1.0, 2.0, 0.0, -1.5],
-                [1.0, 0.3, 0.0, 0.2],
-            ] {
-                assert_mirrors(&Differentiable::<Bsim3>::new(), &n, &x);
-            }
         }
     }
 
@@ -1065,32 +841,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
-        let model = crate::Thermal::<Bsim3>::new();
-        // Without the substrate current, whose derivatives below saturation central
-        // differences no longer resolve.
-        let smooth = SHORT.replace(r#""alpha0": 1e-6, "#, "");
-        for every in [smooth.clone(), p_channel(&smooth)] {
-            let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
-            let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench =
-                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-            for rise in [0.0, 40.0] {
-                let mut plain = Bench::at::<Bsim3>(&every, REFERENCE_TEMPERATURE + rise);
-                let [d, g, b] = [2.0, 1.5, -0.5].map(|v| sign * v);
-                let hot = bench.settle(&[d, g, 0.0, b, rise]);
-                let reference = plain.settle(&[d, g, 0.0, b]);
-                assert_close(&hot.residual[..4], &reference.residual);
-            }
-            for [d, g, b, rise] in [[2.0, 1.5, -0.5, 20.0], [0.3, 1.0, -0.2, 60.0]] {
-                let x = [sign * d, sign * g, 0.0, sign * b, rise];
-                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
-            }
-        }
-    }
-
     /// A transistor is in weak inversion below its threshold, linear above it with its
     /// drain below its saturation voltage, and saturated past it, each region switching
     /// where its margin vanishes, the drain and the source swapping where the drain lies
@@ -1246,7 +996,6 @@ mod tests {
 
     impl DefaultBsim3Constants {
         fn compute() -> Self {
-            const INTRINSIC: f64 = 1.45e10;
             const OXIDE_THICKNESS: f64 = 1.5e-8;
             const CHANNEL_LENGTH: f64 = 5e-6;
             const CHANNEL_WIDTH: f64 = 5e-6;

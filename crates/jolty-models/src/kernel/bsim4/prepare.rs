@@ -8,19 +8,19 @@
 
 use super::channel::theta;
 use super::charges::Depletion;
+use super::dexp;
 use super::parameters::{Binned, Bsim4Parameters};
 use super::{
     BodyResistance, DrainSourceResistance, EPS0, FlickerNoise, GateResistance, PI, Perimeter,
     ThermalNoise,
 };
-use super::{D, dexp};
-use crate::kernel::bsim3::{EPSSI, KBOQ, Q, by_channel, check, lost};
+use crate::kernel::bsim::{
+    D, EPSSI, KBOQ, Q, band_gap, by_channel, check, default_overlaps, derived_body_factors,
+    heated_capacitance, heated_potential, intrinsic_carrier, lost, vbsc_clamp,
+};
 use crate::kernel::parts::series_value;
 use crate::{ParameterError, Real};
 
-/// The intrinsic carrier concentration of silicon at 300.15 K, per cubic centimeter, as
-/// `b4v5temp.c` takes it.
-const INTRINSIC: f64 = 1.45e10;
 /// The smoothing `b4v5temp.c` adds to the stress effect's factors, its `DELTA`.
 const STRESS_DELTA: f64 = 1.0e-9;
 /// The oxide thickness `b4v5set.c` defaults `toxe` to, in meters.
@@ -205,11 +205,74 @@ pub struct PreparedBsim4<R: Real> {
     pub(super) multiplier: R,
 }
 
-/// The arctangent of `x`.
-fn atan<R: Real>(x: R) -> R {
-    let value = x.value();
-    let slope = 1.0 / (1.0 + value * value);
-    x.chain((value.atan(), slope, -2.0 * value * slope * slope))
+/// Temperature-derived quantities shared across `b4v5temp.c`'s preparation stages.
+#[derive(Debug, Clone, Copy)]
+struct Thermal<R: Real> {
+    ratio: R,
+    rise: R,
+    delta: R,
+    vtm0: R,
+    vtm: R,
+    eg0: R,
+    eg: R,
+    ni: R,
+}
+
+/// Drawn and effective channel dimensions of one finger.
+#[derive(Debug, Clone, Copy)]
+struct Geometry<R: Real> {
+    length: R,
+    l_new: R,
+    w_new: R,
+    dwc_model: R,
+    leff: R,
+    weff: R,
+    leff_cv: R,
+    weff_cv: R,
+    weff_cj: R,
+}
+
+/// Source and drain saturation densities, emission coefficients and forward thresholds.
+type JunctionScalings<R> = ([[R; 3]; 2], [R; 2], [R; 2]);
+
+/// Computes `b4v5temp.c`'s thermal ratios, band gaps and intrinsic carrier concentration.
+fn thermal_state<R: Real>(temperature: R, nominal: R) -> Thermal<R> {
+    let ratio = temperature / nominal;
+    let rise = ratio - 1.0;
+    let delta = temperature - nominal;
+    let nominal_thermal_voltage = nominal * KBOQ;
+    let nominal_band_gap = band_gap(nominal);
+    let intrinsic = intrinsic_carrier(nominal, nominal_band_gap, nominal_thermal_voltage);
+    Thermal {
+        ratio,
+        rise,
+        delta,
+        vtm0: nominal_thermal_voltage,
+        vtm: temperature * KBOQ,
+        eg0: nominal_band_gap,
+        eg: band_gap(temperature),
+        ni: intrinsic,
+    }
+}
+
+/// Builds one `diomod` 1 [`Junction`] from its saturation current, emission coefficient,
+/// forward threshold and trap-assisted tunneling terms.
+fn build_junction<R: Real>(
+    vtm: R,
+    saturation_current: R,
+    emission: R,
+    ijth: R,
+    tunneling: [(R, R, R); 3],
+) -> Junction<R> {
+    let slope = vtm * emission;
+    let vjm = slope * (ijth / saturation_current + 1.0).ln();
+    Junction {
+        saturation_current,
+        slope,
+        vjm,
+        current_at_vjm: saturation_current * (vjm / slope).exp(),
+        tunneling,
+    }
 }
 
 /// The source's and the drain's diffusions of `fingers` fingers, `b4v5geo.c`'s
@@ -278,11 +341,6 @@ impl<R: Real> Bsim4Parameters<R> {
     }
 
     /// The transistor's numbers at `temperature`, in kelvins.
-    #[expect(
-        clippy::too_many_lines,
-        clippy::similar_names,
-        reason = "one pass through b4v5temp.c, in its order, by its names"
-    )]
     pub(super) fn prepared(&self, temperature: R) -> Result<PreparedBsim4<R>, ParameterError> {
         if temperature.value() <= 0.0 {
             return Err(ParameterError(format!(
@@ -296,37 +354,89 @@ impl<R: Real> Bsim4Parameters<R> {
         check(fingers.value() < 1.0, || {
             format!("nf must be at least 1, not {:?}", fingers.value())
         })?;
-        let sign = self.channel.sign();
-        let [toxe, toxp] = self.thicknesses();
-        let toxm = self.toxm.unwrap_or(self.set_toxe());
+        let oxide = self.oxide()?;
+        let thermal = thermal_state(temperature, tnom);
+        let scalings = self.saturation_densities(&thermal)?;
+        let geometry = self.geometry(fingers)?;
+        let (mut core, [ndep, nsub, nsd, pow_weff_wr]) =
+            self.prepare_core(&thermal, &geometry, oxide, fingers)?;
+        let body_network = self.body_network(multiplier);
+        let gate = self.gate_network(&core.binned, &thermal, &geometry, fingers);
+        let areas = self.diffusion_areas(&geometry, fingers);
+        let resistances = self.resistances()?;
+        let series = resistances.map(series_value);
+        let [drain_junction, source_junction] = self.junctions(&thermal, scalings, areas)?;
+
+        // `b4v5check.c` stops on these whatever the gate's model.
+        check(geometry.l_new.value() <= self.xgl.value(), || {
+            format!(
+                "xgl, {:?}, must be less than the drawn length plus xl, {:?}",
+                self.xgl.value(),
+                geometry.l_new.value()
+            )
+        })?;
+        check(self.ngcon.value() < 1.0, || {
+            format!("ngcon must be at least 1, not {:?}", self.ngcon.value())
+        })?;
+        self.checked(
+            &core.binned,
+            [geometry.leff, geometry.weff],
+            [ndep, nsub, core.phi, core.ngate],
+            [core.u0temp, core.vsattemp],
+        )?;
+        let external = self.clamp_and_external(&mut core, &thermal, pow_weff_wr, nsd);
+        let overlaps = self.overlaps(&core.binned, core.coxe, &geometry, fingers);
+        let [drain_depletion, source_depletion] = self.depletions(&thermal, areas);
+        let noise = self.noise_parameters(&geometry);
+        Ok(PreparedBsim4 {
+            external,
+            overlaps,
+            resistances,
+            noise,
+            temperature: temperature.value(),
+            drain_depletion,
+            source_depletion,
+            core,
+            drain_junction,
+            source_junction,
+            series,
+            body_network,
+            gate,
+            multiplier,
+        })
+    }
+
+    /// Validates oxide thicknesses and returns `[[toxe, toxp, toxm], [coxe, coxp, factor1]]`.
+    fn oxide(&self) -> Result<[[R; 3]; 2], ParameterError> {
+        let [electrical, physical] = self.thicknesses();
+        let measured = self.toxm.unwrap_or(self.set_toxe());
         for (name, value) in [
-            ("toxe", toxe),
-            ("toxp", toxp),
-            ("toxm", toxm),
+            ("toxe", electrical),
+            ("toxp", physical),
+            ("toxm", measured),
             ("toxref", self.toxref),
         ] {
-            check(value.value() <= 0.0, || {
-                format!("{name} must be positive, not {:?}", value.value())
-            })?;
+            ParameterError::positive(name, value)?;
         }
-        let coxe = self.epsrox * EPS0 / toxe;
-        let coxp = self.epsrox * EPS0 / toxp;
-        let ratio = temperature / tnom;
-        let rise = ratio - 1.0;
-        let delta_temperature = temperature - tnom;
-        let factor1 = (toxe * EPSSI / (self.epsrox * EPS0)).sqrt();
-        let vtm0 = tnom * KBOQ;
-        let eg0 = -(tnom * tnom * 7.02e-4 / (tnom + 1108.0)) + 1.16;
-        let reference = tnom / 300.15;
-        let ni =
-            reference * reference.sqrt() * INTRINSIC * (-(eg0 / (vtm0 * 2.0)) + 21.556_598_1).exp();
-        let vtm = temperature * KBOQ;
-        let eg = -(temperature * temperature * 7.02e-4 / (temperature + 1108.0)) + 1.16;
+        Ok([
+            [electrical, physical, measured],
+            [
+                self.epsrox * EPS0 / electrical,
+                self.epsrox * EPS0 / physical,
+                (electrical * EPSSI / (self.epsrox * EPS0)).sqrt(),
+            ],
+        ])
+    }
 
-        // The diffusions' saturation current densities at the temperature, the drain's
-        // defaulting to the source's.
-        let source_densities = [self.jss, self.jsws, self.jswgs];
-        let drain_densities = [
+    /// Scales source and drain saturation current densities, emission coefficients and
+    /// forward thresholds to `thermal`'s temperature, the drain's defaulting to the
+    /// source's.
+    fn saturation_densities(
+        &self,
+        thermal: &Thermal<R>,
+    ) -> Result<JunctionScalings<R>, ParameterError> {
+        let source_raw = [self.jss, self.jsws, self.jswgs];
+        let drain_raw = [
             self.jsd.unwrap_or(self.jss),
             self.jswd.unwrap_or(self.jsws),
             self.jswgd.unwrap_or(self.jswgs),
@@ -336,11 +446,9 @@ impl<R: Real> Bsim4Parameters<R> {
             Some(njd) => ParameterError::positive("njd", njd)?,
             None => source_emission,
         };
-        let source_exponent = self.xtis;
-        let drain_exponent = self.xtid.unwrap_or(self.xtis);
         let heated = |densities: [R; 3], exponent: R, emission: R| {
-            let t0 = eg0 / vtm0 - eg / vtm;
-            let t3 = ((t0 + exponent * ratio.ln()) / emission).exp();
+            let t0 = thermal.eg0 / thermal.vtm0 - thermal.eg / thermal.vtm;
+            let t3 = ((t0 + exponent * thermal.ratio.ln()) / emission).exp();
             densities.map(|density| {
                 let scaled = density * t3;
                 if scaled.value() < 0.0 {
@@ -350,8 +458,6 @@ impl<R: Real> Bsim4Parameters<R> {
                 }
             })
         };
-        let source_densities = heated(source_densities, source_exponent, source_emission);
-        let drain_densities = heated(drain_densities, drain_exponent, drain_emission);
         let at_least = |value: R| {
             if value.value() <= 0.0 {
                 R::constant(0.1)
@@ -359,22 +465,33 @@ impl<R: Real> Bsim4Parameters<R> {
                 value
             }
         };
-        let ijthsfwd = at_least(self.ijthsfwd);
-        let ijthdfwd = at_least(self.ijthdfwd.unwrap_or(self.ijthsfwd));
+        Ok((
+            [
+                heated(source_raw, self.xtis, source_emission),
+                heated(drain_raw, self.xtid.unwrap_or(self.xtis), drain_emission),
+            ],
+            [source_emission, drain_emission],
+            [
+                at_least(self.ijthsfwd),
+                at_least(self.ijthdfwd.unwrap_or(self.ijthsfwd)),
+            ],
+        ))
+    }
 
-        // The effective sizes.
+    /// Computes effective channel, charge and junction dimensions of one finger.
+    fn geometry(&self, fingers: R) -> Result<Geometry<R>, ParameterError> {
         let length = ParameterError::positive("length", self.length)?;
         let width = ParameterError::positive("width", self.width)?;
-        let l_new = length + self.xl;
-        let w_new = width / fingers + self.xw;
-        let [by_length, by_width] = [l_new.pow(self.lln), w_new.pow(self.lwn)];
-        let [of_length, of_width] = [l_new.pow(self.wln), w_new.pow(self.wwn)];
-        let dl = lost(
+        let drawn_length = length + self.xl;
+        let drawn_width = width / fingers + self.xw;
+        let [by_length, by_width] = [drawn_length.pow(self.lln), drawn_width.pow(self.lwn)];
+        let [of_length, of_width] = [drawn_length.pow(self.wln), drawn_width.pow(self.wwn)];
+        let delta_length = lost(
             self.lint,
             [self.ll, self.lw, self.lwl],
             [by_length, by_width],
         );
-        let dw = lost(
+        let delta_width = lost(
             self.wint,
             [self.wl, self.ww, self.wwl],
             [of_length, of_width],
@@ -389,8 +506,8 @@ impl<R: Real> Bsim4Parameters<R> {
             ],
             [of_length, of_width],
         );
-        let dwj = self.dwj.unwrap_or(dwc_model) + width_lost_cv;
-        let dlc = lost(
+        let junction_width_lost = self.dwj.unwrap_or(dwc_model) + width_lost_cv;
+        let length_lost_cv = lost(
             self.dlc.unwrap_or(self.lint),
             [
                 self.llc.unwrap_or(self.ll),
@@ -399,17 +516,17 @@ impl<R: Real> Bsim4Parameters<R> {
             ],
             [by_length, by_width],
         );
-        let leff_cv = l_new - dlc * 2.0;
-        let weff_cv = w_new - (dwc_model + width_lost_cv) * 2.0;
-        let leff = l_new - dl * 2.0;
-        let weff = w_new - dw * 2.0;
-        let weff_cj = w_new - dwj * 2.0;
+        let charge_length = drawn_length - length_lost_cv * 2.0;
+        let charge_width = drawn_width - (dwc_model + width_lost_cv) * 2.0;
+        let effective_length = drawn_length - delta_length * 2.0;
+        let effective_width = drawn_width - delta_width * 2.0;
+        let junction_width = drawn_width - junction_width_lost * 2.0;
         for (name, value) in [
-            ("length", leff),
-            ("width", weff),
-            ("length of the charges", leff_cv),
-            ("width of the charges", weff_cv),
-            ("width of the junctions", weff_cj),
+            ("length", effective_length),
+            ("width", effective_width),
+            ("length of the charges", charge_length),
+            ("width of the charges", charge_width),
+            ("width of the junctions", junction_width),
         ] {
             check(value.value() <= 0.0, || {
                 format!(
@@ -418,75 +535,187 @@ impl<R: Real> Bsim4Parameters<R> {
                 )
             })?;
         }
-        let inverse = [leff.recip(), weff.recip(), (leff * weff).recip()];
-        let mut binned = self.binned(inverse);
+        Ok(Geometry {
+            length,
+            l_new: drawn_length,
+            w_new: drawn_width,
+            dwc_model,
+            leff: effective_length,
+            weff: effective_width,
+            leff_cv: charge_length,
+            weff_cv: charge_width,
+            weff_cj: junction_width,
+        })
+    }
 
-        // tempmod 0.
-        let pow_weff_wr = (weff_cj * 1e6).pow(binned.wr) * fingers;
-        let ua = binned.ua + binned.ua1 * rise;
-        let ub = binned.ub + binned.ub1 * rise;
-        let uc = binned.uc + binned.uc1 * rise;
-        let ud = binned.ud + binned.ud1 * rise;
-        let vsattemp = binned.vsat - binned.at * rise;
+    /// Bins parameters, applies `tempmod` 0 scaling, doping potentials, short-channel
+    /// roll-offs and LOD stress, and returns `(core, [ndep, nsub, nsd, pow_weff_wr])`.
+    fn prepare_core(
+        &self,
+        thermal: &Thermal<R>,
+        geometry: &Geometry<R>,
+        oxide: [[R; 3]; 2],
+        fingers: R,
+    ) -> Result<(Core<R>, [R; 4]), ParameterError> {
+        let [thicknesses, capacitances] = oxide;
+        let [electrical_oxide, physical_oxide, measured_oxide] = thicknesses;
+        let [electrical_cap, physical_cap, factor1] = capacitances;
+        let sign = self.channel.sign();
+        let rise = thermal.rise;
+        let (mut binned, [pow_weff_wr, u0temp], tfactor) =
+            self.tempmod_zero(thermal, geometry, fingers);
         let t10 = binned.prt * rise;
-        let mut rds0 = (binned.rdsw + t10) * fingers / pow_weff_wr;
-        let mut rdswmin = (self.rdswmin + t10) * fingers / pow_weff_wr;
-        let t5 = -(binned.up * (-(leff / binned.lp)).exp()) + 1.0;
-        let u0temp = binned.u0 * t5 * ratio.pow(binned.ute);
-        binned.voff = binned.voff * (binned.tvoff * delta_temperature + 1.0);
-        let limited = self.vtl.is_some_and(|vtl| vtl.value() > 0.0);
-        let tfactor = limited.then(|| {
+        let mut vsattemp = binned.vsat - binned.at * rise;
+
+        let (
+            [channel, substrate, diffusion, gate],
+            [phi, sqrt_phi, depletion_depth, built_in_potential],
+            (k1, mut k2, vfb, mut vth0),
+        ) = self.doping_potentials(&mut binned, thermal, electrical_cap);
+        let k1ox = k1 * electrical_oxide / measured_oxide;
+        let [theta0vb0, theta_rout, vfbzb_factor] = self.short_channel_factors(
+            &binned,
+            (thermal, geometry),
+            (electrical_oxide, factor1, depletion_depth),
+            (phi, sqrt_phi, built_in_potential, k1, k1ox),
+        );
+        let mut eta0 = binned.eta0;
+        self.apply_stress(
+            thermal,
+            geometry,
+            fingers,
+            (&mut vth0, &mut k2, &mut eta0, &mut vsattemp),
+        )?;
+        vth0 += self.threshold_adjustment;
+        let vfb = vfb + self.threshold_adjustment * sign;
+        let vtfbphi2 = (vth0 * sign - vfb - phi).max(R::constant(0.0)) * 4.0;
+        let core = Core {
+            sign,
+            toxe: electrical_oxide,
+            toxp: physical_oxide,
+            coxe: electrical_cap,
+            coxp: physical_cap,
+            factor1,
+            vtm: thermal.vtm,
+            temperature_rise: rise,
+            leff: geometry.leff,
+            weff: geometry.weff,
+            weff_cj: geometry.weff_cj,
+            leff_cv: geometry.leff_cv,
+            weff_cv: geometry.weff_cv,
+            fingers,
+            xpart: self.charge_partition,
+            abulk_cv_factor: (binned.clc / geometry.leff_cv).pow(binned.cle) + 1.0,
+            vfbzb: vfbzb_factor + vth0 * sign,
+            ldeb: (thermal.vtm0 * EPSSI / (channel * (Q * 1.0e6))).sqrt() / 3.0,
+            acde: binned.acde * (channel / 2.0e16).powf(-0.25),
+            phi,
+            sqrt_phi,
+            xdep0: depletion_depth,
+            vbi: built_in_potential,
+            cdep0: (channel * (Q * EPSSI * 1e6 / 2.0) / phi).sqrt(),
+            litl: (binned.xj * electrical_oxide * 3.0).sqrt(),
+            k1,
+            k1ox,
+            k2ox: k2 * electrical_oxide / measured_oxide,
+            mstar: binned.minv.atan() / PI + 0.5,
+            voffcbn: binned.voff + self.voffl / geometry.leff,
+            theta0vb0,
+            theta_rout,
+            rds0: (binned.rdsw + t10) * fingers / pow_weff_wr,
+            rdswmin: (self.rdswmin + t10) * fingers / pow_weff_wr,
+            ua: binned.ua + binned.ua1 * rise,
+            ub: binned.ub + binned.ub1 * rise,
+            uc: binned.uc + binned.uc1 * rise,
+            ud: binned.ud + binned.ud1 * rise,
+            u0temp: u0temp * self.mobility_multiplier,
+            vsattemp,
+            tfactor,
+            vth0,
+            vfb,
+            eta0,
+            vbsc: vbsc_clamp(phi, k1, k2, binned.vbm),
+            vtfbphi2,
+            ngate: gate,
+            pditsl: self.pditsl,
+            lambda: self
+                .lambda
+                .is_some_and(|lambda| lambda.value() > 0.0)
+                .then_some(binned.lambda),
+            binned,
+        };
+        Ok((core, [channel, substrate, diffusion, pow_weff_wr]))
+    }
+
+    /// Bins parameters, applies `tempmod` 0 scaling to `voff`, and returns
+    /// `(binned, [pow_weff_wr, u0temp], tfactor)`.
+    fn tempmod_zero(
+        &self,
+        thermal: &Thermal<R>,
+        geometry: &Geometry<R>,
+        fingers: R,
+    ) -> (Binned<R>, [R; 2], Option<R>) {
+        let inverse = [
+            geometry.leff.recip(),
+            geometry.weff.recip(),
+            (geometry.leff * geometry.weff).recip(),
+        ];
+        let mut binned = self.binned(inverse);
+        let pow_weff_wr = (geometry.weff_cj * 1e6).pow(binned.wr) * fingers;
+        let length_mobility = -(binned.up * (-(geometry.leff / binned.lp)).exp()) + 1.0;
+        let u0temp = binned.u0 * length_mobility * thermal.ratio.pow(binned.ute);
+        binned.voff = binned.voff * (binned.tvoff * thermal.delta + 1.0);
+        let tfactor = self.vtl.is_some_and(|vtl| vtl.value() > 0.0).then(|| {
             let lc = if self.lc.value() < 0.0 {
                 R::constant(0.0)
             } else {
                 self.lc
             };
-            let t0 = leff / (binned.xn * leff + lc);
+            let t0 = geometry.leff / (binned.xn * geometry.leff + lc);
             (-t0 + 1.0) / (t0 + 1.0)
         });
+        (binned, [pow_weff_wr, u0temp], tfactor)
+    }
 
+    /// Computes doping concentrations (in cm⁻³), potentials, body factors and zero-bias
+    /// threshold, normalizing positive `binned.vbm` when `k1` and `k2` are derived.
+    fn doping_potentials(
+        &self,
+        binned: &mut Binned<R>,
+        thermal: &Thermal<R>,
+        electrical_cap: R,
+    ) -> ([R; 4], [R; 4], (R, R, R, R)) {
+        let sign = self.channel.sign();
         // Concentrations per cubic centimeter, as `b4v5temp.c` and `b4v5ld.c` read them.
-        let mut ndep = binned.ndep * 1e-6;
+        let mut channel = binned.ndep * 1e-6;
         if self.ndep.is_none()
             && let Some(gamma1) = binned.gamma1
         {
-            let product = gamma1 * coxe;
-            ndep = product * product * 3.012_48e22;
+            let product = gamma1 * electrical_cap;
+            channel = product * product * 3.012_48e22;
         }
-        let nsub = binned.nsub * 1e-6;
-        let nsd = binned.nsd * 1e-6;
-        let ngate = binned.ngate * 1e-6;
-        let phi = vtm0 * (ndep / ni).ln() + binned.phin + 0.4;
+        let substrate = binned.nsub * 1e-6;
+        let diffusion = binned.nsd * 1e-6;
+        let gate = binned.ngate * 1e-6;
+        let phi = thermal.vtm0 * (channel / thermal.ni).ln() + binned.phin + 0.4;
         let sqrt_phi = phi.sqrt();
-        let xdep0 = (R::constant(2.0 * EPSSI / (Q * 1e6)) / ndep).sqrt() * sqrt_phi;
-        let litl = (binned.xj * toxe * 3.0).sqrt();
-        let vbi = vtm0 * (nsd * ndep / (ni * ni)).ln();
-        let cdep0 = (ndep * (Q * EPSSI * 1e6 / 2.0) / phi).sqrt();
-        let mstar = atan(binned.minv) / PI + 0.5;
-        let voffcbn = binned.voff + self.voffl / leff;
-
-        let (k1, mut k2) = if self.k1.is_some() || self.k2.is_some() {
+        let depletion_depth = (R::constant(2.0 * EPSSI / (Q * 1e6)) / channel).sqrt() * sqrt_phi;
+        let built_in_potential =
+            thermal.vtm0 * (diffusion * channel / (thermal.ni * thermal.ni)).ln();
+        let (k1, k2) = if self.k1.is_some() || self.k2.is_some() {
             (
                 binned.k1.unwrap_or(R::constant(0.53)),
                 binned.k2.unwrap_or(R::constant(-0.0186)),
             )
         } else {
-            let mut vbx = binned
-                .vbx
-                .unwrap_or(phi - ndep * binned.xt * binned.xt * 7.7348e-4);
-            if vbx.value() > 0.0 {
-                vbx = -vbx;
-            }
-            if binned.vbm.value() > 0.0 {
-                binned.vbm = -binned.vbm;
-            }
-            let gamma1 = binned.gamma1.unwrap_or(ndep.sqrt() * 5.753e-12 / coxe);
-            let gamma2 = binned.gamma2.unwrap_or(nsub.sqrt() * 5.753e-12 / coxe);
-            let t0 = gamma1 - gamma2;
-            let t1 = (phi - vbx).sqrt() - sqrt_phi;
-            let t2 = (phi * (phi - binned.vbm)).sqrt() - phi;
-            let k2 = t0 * t1 / (t2 * 2.0 + binned.vbm);
-            (gamma2 - k2 * (phi - binned.vbm).sqrt() * 2.0, k2)
+            let (k1, k2, vbm) = derived_body_factors(
+                (phi, sqrt_phi),
+                (channel, substrate, electrical_cap),
+                (binned.vbx, binned.vbm, binned.xt),
+                (binned.gamma1, binned.gamma2),
+            );
+            binned.vbm = vbm;
+            (k1, k2)
         };
         let vfb = binned.vfb.unwrap_or_else(|| match binned.vth0 {
             Some(vth0) => vth0 * sign - phi - k1 * sqrt_phi,
@@ -495,115 +724,135 @@ impl<R: Real> Bsim4Parameters<R> {
         let vth0 = binned
             .vth0
             .unwrap_or_else(|| (vfb + phi + k1 * sqrt_phi) * sign);
-        let k1ox = k1 * toxe / toxm;
-        let tmp = (toxe * xdep0 * EPSSI / (self.epsrox * EPS0)).sqrt();
-        let theta0vb0 = theta(D::constant(binned.dsub * leff / tmp)).value;
-        let theta_rout =
-            binned.pdiblc1 * theta(D::constant(binned.drout * leff / tmp)).value + binned.pdiblc2;
-        let abulk_cv_factor = (binned.clc / leff_cv).pow(binned.cle) + 1.0;
-        let ldeb = (vtm0 * EPSSI / (ndep * (Q * 1.0e6))).sqrt() / 3.0;
-        let acde = binned.acde * (ndep / 2.0e16).powf(-0.25);
-        let tmp2 = factor1 * xdep0.sqrt();
-        let v0 = vbi - phi;
-        let t8 = binned.dvt0w * theta(D::constant(binned.dvt1w * weff * leff / tmp2)).value * v0;
-        let t9 = binned.dvt0 * theta(D::constant(binned.dvt1 * leff / tmp2)).value * v0;
-        let t4 = toxe * phi / (weff + binned.w0);
-        let t0 = (binned.lpe0 / leff + 1.0).sqrt();
-        let t3 = (binned.kt1 + binned.kt1l / leff) * rise;
-        let t5 = k1ox * (t0 - 1.0) * sqrt_phi + t3;
-        let vfbzb_factor = -t8 - t9 + binned.k3 * t4 + t5 - phi - k1 * sqrt_phi;
+        (
+            [channel, substrate, diffusion, gate],
+            [phi, sqrt_phi, depletion_depth, built_in_potential],
+            (k1, k2, vfb, vth0),
+        )
+    }
 
-        // The stress of the length of diffusion.
-        let wlod = if self.wlod.value() < 0.0 {
+    /// Computes `[theta0vb0, theta_rout, vfbzb_factor]` from short-channel roll-off terms.
+    fn short_channel_factors(
+        &self,
+        binned: &Binned<R>,
+        (thermal, geometry): (&Thermal<R>, &Geometry<R>),
+        (electrical_oxide, factor1, depletion_depth): (R, R, R),
+        (phi, sqrt_phi, built_in_potential, k1, k1ox): (R, R, R, R, R),
+    ) -> [R; 3] {
+        let characteristic_length =
+            (electrical_oxide * depletion_depth * EPSSI / (self.epsrox * EPS0)).sqrt();
+        let theta0vb0 = theta(D::constant(
+            binned.dsub * geometry.leff / characteristic_length,
+        ))
+        .value;
+        let theta_rout = binned.pdiblc1
+            * theta(D::constant(
+                binned.drout * geometry.leff / characteristic_length,
+            ))
+            .value
+            + binned.pdiblc2;
+        let short_channel_scale = factor1 * depletion_depth.sqrt();
+        let v0 = built_in_potential - phi;
+        let t8 = binned.dvt0w
+            * theta(D::constant(
+                binned.dvt1w * geometry.weff * geometry.leff / short_channel_scale,
+            ))
+            .value
+            * v0;
+        let t9 = binned.dvt0
+            * theta(D::constant(
+                binned.dvt1 * geometry.leff / short_channel_scale,
+            ))
+            .value
+            * v0;
+        let t4 = electrical_oxide * phi / (geometry.weff + binned.w0);
+        let t0 = (binned.lpe0 / geometry.leff + 1.0).sqrt();
+        let t3 = (binned.kt1 + binned.kt1l / geometry.leff) * thermal.rise;
+        let t5 = k1ox * (t0 - 1.0) * sqrt_phi + t3;
+        [
+            theta0vb0,
+            theta_rout,
+            -t8 - t9 + binned.k3 * t4 + t5 - phi - k1 * sqrt_phi,
+        ]
+    }
+
+    /// Applies length-of-diffusion stress shifts to `threshold`, `k2`, `eta0` and
+    /// `vsattemp`.
+    fn apply_stress(
+        &self,
+        thermal: &Thermal<R>,
+        geometry: &Geometry<R>,
+        fingers: R,
+        (threshold, k2, eta0, vsattemp): (&mut R, &mut R, &mut R, &mut R),
+    ) -> Result<(), ParameterError> {
+        let width_offset = if self.wlod.value() < 0.0 {
             R::constant(0.0)
         } else {
             self.wlod
         };
-        let w_lod = w_new + wlod;
+        let stressed_width = geometry.w_new + width_offset;
         let ku0 = lost(
             R::constant(1.0),
             [self.lku0, self.wku0, self.pku0],
-            [l_new.pow(self.llodku0), w_lod.pow(self.wlodku0)],
+            [
+                geometry.l_new.pow(self.llodku0),
+                stressed_width.pow(self.wlodku0),
+            ],
         );
         let kvth0 = lost(
             R::constant(1.0),
             [self.lkvth0, self.wkvth0, self.pkvth0],
-            [l_new.pow(self.llodvth), w_lod.pow(self.wlodvth)],
+            [
+                geometry.l_new.pow(self.llodvth),
+                stressed_width.pow(self.wlodvth),
+            ],
         );
         let kvth0 = (kvth0 * kvth0 + STRESS_DELTA).sqrt();
-        let ku0temp = ku0 * (self.tku0 * rise + 1.0) + STRESS_DELTA;
-        let half = length * 0.5;
-        let inv_od_ref = (self.saref + half).recip() + (self.sbref + half).recip();
-        let rho_ref = self.ku0 / ku0temp * inv_od_ref;
-        let (sa, sb) = (self.diffusion_edge_a, self.diffusion_edge_b);
-        let sd = self.finger_spacing.unwrap_or(self.dmcg * 2.0);
+        let ku0temp = ku0 * (self.tku0 * thermal.rise + 1.0) + STRESS_DELTA;
+        let half = geometry.length * 0.5;
+        let reference_od = (self.saref + half).recip() + (self.sbref + half).recip();
+        let rho_ref = self.ku0 / ku0temp * reference_od;
+        let (first_edge, second_edge) = (self.diffusion_edge_a, self.diffusion_edge_b);
+        let spacing = self.finger_spacing.unwrap_or(self.dmcg * 2.0);
         #[expect(
             clippy::float_cmp,
             reason = "b4v5temp.c stresses a single finger, `nf` exactly 1, as it is"
         )]
         let single = fingers.value() == 1.0;
-        let stressed = sa.value() > 0.0
-            && sb.value() > 0.0
-            && (single || (fingers.value() > 1.0 && sd.value() > 0.0));
-        let (mut vth0, mut eta0, mut vsattemp) = (vth0, binned.eta0, vsattemp);
-        if stressed {
-            for (name, value) in [("saref", self.saref), ("sbref", self.sbref)] {
-                check(value.value() <= 0.0, || {
-                    format!("{name} must be positive, not {:?}", value.value())
-                })?;
-            }
-            let kvsat = self.kvsat.max(R::constant(-1.0)).min(R::constant(1.0));
-            let mut inv_sa = R::constant(0.0);
-            let mut inv_sb = R::constant(0.0);
-            let mut finger = 0.0;
-            while finger < fingers.value() {
-                let step = (sd + length) * finger;
-                inv_sa += (fingers * (sa + half + step)).recip();
-                inv_sb += (fingers * (sb + half + step)).recip();
-                finger += 1.0;
-            }
-            let inv_od_eff = inv_sa + inv_sb;
-            let rho = self.ku0 / ku0temp * inv_od_eff;
-            // `b4v5temp.c` scales the mobility here, then takes the unstressed one with
-            // `mulu0` below: the stress leaves the mobility as it was.
-            vsattemp = vsattemp * (kvsat * rho + 1.0) / (kvsat * rho_ref + 1.0);
-            let offset = inv_od_eff - inv_od_ref;
-            vth0 += self.kvth0 / kvth0 * offset;
-            k2 += self.stk2 / kvth0.pow(self.lodk2) * offset;
-            eta0 += self.steta0 / kvth0.pow(self.lodeta0) * offset;
+        let stressed = first_edge.value() > 0.0
+            && second_edge.value() > 0.0
+            && (single || (fingers.value() > 1.0 && spacing.value() > 0.0));
+        if !stressed {
+            return Ok(());
         }
-        vth0 += self.threshold_adjustment;
-        let vfb = vfb + self.threshold_adjustment * sign;
-        let u0temp = u0temp * self.mobility_multiplier;
-        let t3 = vth0 * sign - vfb - phi;
-        let vtfbphi2 = if t3.value() < 0.0 {
-            R::constant(0.0)
-        } else {
-            t3 * 4.0
-        };
-        let vbsc = if k2.value() < 0.0 {
-            let t0 = k1 * 0.5 / k2;
-            let vbsc = (phi - t0 * t0) * 0.9;
-            if vbsc.value() > -3.0 {
-                R::constant(-3.0)
-            } else if vbsc.value() < -30.0 {
-                R::constant(-30.0)
-            } else {
-                vbsc
-            }
-        } else {
-            R::constant(-30.0)
-        };
-        let vbsc = if vbsc.value() > binned.vbm.value() {
-            binned.vbm
-        } else {
-            vbsc
-        };
-        let k2ox = k2 * toxe / toxm;
-        let vfbzb = vfbzb_factor + vth0 * sign;
+        for (name, value) in [("saref", self.saref), ("sbref", self.sbref)] {
+            ParameterError::positive(name, value)?;
+        }
+        let kvsat = self.kvsat.max(R::constant(-1.0)).min(R::constant(1.0));
+        let mut inv_first = R::constant(0.0);
+        let mut inv_second = R::constant(0.0);
+        let mut index = 0.0;
+        while index < fingers.value() {
+            let step = (spacing + geometry.length) * index;
+            inv_first += (fingers * (first_edge + half + step)).recip();
+            inv_second += (fingers * (second_edge + half + step)).recip();
+            index += 1.0;
+        }
+        let effective_od = inv_first + inv_second;
+        let rho = self.ku0 / ku0temp * effective_od;
+        // `b4v5temp.c` scales the mobility here, then takes the unstressed one with
+        // `mulu0` below: the stress leaves the mobility as it was.
+        *vsattemp = *vsattemp * (kvsat * rho + 1.0) / (kvsat * rho_ref + 1.0);
+        let offset = effective_od - reference_od;
+        *threshold += self.kvth0 / kvth0 * offset;
+        *k2 += self.stk2 / kvth0.pow(self.lodk2) * offset;
+        *eta0 += self.steta0 / kvth0.pow(self.lodeta0) * offset;
+        Ok(())
+    }
 
-        // The body's resistances.
-        let body_network = match self.body_resistance_model {
+    /// Computes the five body-network conductances of `rbodymod` 1, scaled by `multiplier`.
+    fn body_network(&self, multiplier: R) -> Option<[R; 5]> {
+        match self.body_resistance_model {
             BodyResistance::Zero => None,
             BodyResistance::One => {
                 let conductance = |resistance: R| {
@@ -618,16 +867,22 @@ impl<R: Real> Bsim4Parameters<R> {
                         .map(|resistance| conductance(resistance) * multiplier),
                 )
             }
-        };
+        }
+    }
 
-        // The gate electrode's resistance, `b4v5temp.c`'s `grgeltd` (lines 1559 to 1568):
-        // `rshg` along `xgw` and a third of a finger's junction width over `ngcon`,
-        // across `ngcon · nf` strips of the drawn length less `xgl`; 1 kS where it is not
-        // positive.
-        let gate = (self.gate_resistance_model != GateResistance::Zero).then(|| {
+    /// Computes the gate electrode's conductance (`b4v5temp.c`'s `grgeltd`, lines 1559 to
+    /// 1568) and intrinsic-input resistance factors for `rgatemod` 1 to 3.
+    fn gate_network(
+        &self,
+        binned: &Binned<R>,
+        thermal: &Thermal<R>,
+        geometry: &Geometry<R>,
+        fingers: R,
+    ) -> Option<Gate<R>> {
+        (self.gate_resistance_model != GateResistance::Zero).then(|| {
             let ngcon = self.ngcon;
-            let resistance = self.rshg * (self.xgw + weff_cj / 3.0 / ngcon)
-                / (ngcon * fingers * (l_new - self.xgl));
+            let resistance = self.rshg * (self.xgw + geometry.weff_cj / 3.0 / ngcon)
+                / (ngcon * fingers * (geometry.l_new - self.xgl));
             let electrode = if resistance.value() > 0.0 {
                 resistance.recip()
             } else {
@@ -637,105 +892,119 @@ impl<R: Real> Bsim4Parameters<R> {
                 model: self.gate_resistance_model,
                 electrode,
                 xrcrg1_nf: binned.xrcrg1 * fingers,
-                xrcrg2_vtm: binned.xrcrg2 * vtm,
+                xrcrg2_vtm: binned.xrcrg2 * thermal.vtm,
             }
-        });
+        })
+    }
 
-        // The diffusions, from their areas and perimeters where given.
-        let dmcg = self.dmcg - self.dmcgt;
-        let dmci = self.dmci.unwrap_or(self.dmcg);
-        let [source_perimeter, drain_perimeter, source_area, drain_area] =
-            diffusions(fingers.value(), weff_cj, [dmcg, dmci]);
+    /// Returns `[source_area, drain_area, source_perimeter, drain_perimeter, gate_edge]`
+    /// from given values or `b4v5geo.c`'s defaults.
+    fn diffusion_areas(&self, geometry: &Geometry<R>, fingers: R) -> [R; 5] {
+        let gate_contact_spacing = self.dmcg - self.dmcgt;
+        let isolation_spacing = self.dmci.unwrap_or(self.dmcg);
+        let [
+            derived_source_perimeter,
+            derived_drain_perimeter,
+            derived_source_area,
+            derived_drain_area,
+        ] = diffusions(
+            fingers.value(),
+            geometry.weff_cj,
+            [gate_contact_spacing, isolation_spacing],
+        );
+        let gate_edge = geometry.weff_cj * fingers;
         let perimeter = |given: Option<R>, derived: R| match (given, self.perimeter_model) {
             (Some(given), Perimeter::Zero) => given,
-            (Some(given), Perimeter::One) => given - weff_cj * fingers,
+            (Some(given), Perimeter::One) => given - gate_edge,
             (None, _) => derived,
         };
-        let pseff = perimeter(self.source_perimeter, source_perimeter);
-        let pdeff = perimeter(self.drain_perimeter, drain_perimeter);
-        let aseff = self.source_area.unwrap_or(source_area);
-        let adeff = self.drain_area.unwrap_or(drain_area);
-        let resistances = self.resistances()?;
-        let series = resistances.map(series_value);
+        [
+            self.source_area.unwrap_or(derived_source_area),
+            self.drain_area.unwrap_or(derived_drain_area),
+            perimeter(self.source_perimeter, derived_source_perimeter),
+            perimeter(self.drain_perimeter, derived_drain_perimeter),
+            gate_edge,
+        ]
+    }
 
-        // The junctions, `diomod` 1, and their trap-assisted tunneling.
-        let gate_edge = weff_cj * fingers;
-        let saturation = |area: R, perimeter: R, densities: [R; 3]| {
+    /// Builds `[drain_junction, source_junction]` for `diomod` 1 with trap-assisted
+    /// tunneling.
+    fn junctions(
+        &self,
+        thermal: &Thermal<R>,
+        scalings: JunctionScalings<R>,
+        [source_area, drain_area, source_perimeter, drain_perimeter, gate_edge]: [R; 5],
+    ) -> Result<[Junction<R>; 2], ParameterError> {
+        let (
+            [source_densities, drain_densities],
+            [source_emission, drain_emission],
+            [source_threshold, drain_threshold],
+        ) = scalings;
+        let saturation = |area: R, perimeter: R, [bottom, sidewall, gate]: [R; 3]| {
             if area.value() <= 0.0 && perimeter.value() <= 0.0 {
                 R::constant(1.0e-14)
             } else {
-                area * densities[0] + perimeter * densities[1] + gate_edge * densities[2]
+                area * bottom + perimeter * sidewall + gate_edge * gate
             }
         };
-        let source_saturation = saturation(aseff, pseff, source_densities);
-        let drain_saturation = saturation(adeff, pdeff, drain_densities);
-        let njtstemp = self.njts * (self.tnjts * rise + 1.0);
-        let njtsswtemp = self.njtssw * (self.tnjtssw * rise + 1.0);
-        let njtsswgtemp = self.njtsswg * (self.tnjtsswg * rise + 1.0);
-        let t7 = eg0 / vtm * rise;
-        let tunneling = |[bottom, sidewall, gate]: [R; 3],
-                         [xts_bottom, xts_sidewall, xts_gate]: [R; 3],
-                         [vts_bottom, vts_sidewall, vts_gate]: [R; 3],
+        let source_saturation = saturation(source_area, source_perimeter, source_densities);
+        let drain_saturation = saturation(drain_area, drain_perimeter, drain_densities);
+        let bottom_slope = thermal.vtm0 * (self.njts * (self.tnjts * thermal.rise + 1.0));
+        let sidewall_slope = thermal.vtm0 * (self.njtssw * (self.tnjtssw * thermal.rise + 1.0));
+        let gate_slope = thermal.vtm0 * (self.njtsswg * (self.tnjtsswg * thermal.rise + 1.0));
+        let t7 = thermal.eg0 / thermal.vtm * thermal.rise;
+        let tunneling = |[bottom_current, sidewall_current, gate_current]: [R; 3],
+                         [bottom_exponent, sidewall_exponent, gate_exponent]: [R; 3],
+                         [bottom_voltage, sidewall_voltage, gate_voltage]: [R; 3],
                          [area, perimeter]: [R; 2]| {
             [
                 (
-                    dexp(D::constant(xts_bottom * t7)).value * area * bottom,
-                    vts_bottom,
-                    vtm0 * njtstemp,
+                    dexp(D::constant(bottom_exponent * t7)).value * area * bottom_current,
+                    bottom_voltage,
+                    bottom_slope,
                 ),
                 (
-                    dexp(D::constant(xts_sidewall * t7)).value * perimeter * sidewall,
-                    vts_sidewall,
-                    vtm0 * njtsswtemp,
+                    dexp(D::constant(sidewall_exponent * t7)).value * perimeter * sidewall_current,
+                    sidewall_voltage,
+                    sidewall_slope,
                 ),
                 (
-                    dexp(D::constant(xts_gate * t7)).value * gate_edge * gate,
-                    vts_gate,
-                    vtm0 * njtsswgtemp,
+                    dexp(D::constant(gate_exponent * t7)).value * gate_edge * gate_current,
+                    gate_voltage,
+                    gate_slope,
                 ),
             ]
         };
-        let junction = |saturation_current: R, emission: R, ijth: R, tunneling| {
-            let slope = vtm * emission;
-            let vjm = slope * (ijth / saturation_current + 1.0).ln();
-            Junction {
-                saturation_current,
-                slope,
-                vjm,
-                current_at_vjm: saturation_current * (vjm / slope).exp(),
-                tunneling,
-            }
-        };
-        let vts_source = [self.vtss, self.vtssws, self.vtsswgs];
-        let vts_drain = [
+        let source_vts = [self.vtss, self.vtssws, self.vtsswgs];
+        let drain_vts = [
             self.vtsd.unwrap_or(self.vtss),
             self.vtsswd.unwrap_or(self.vtssws),
             self.vtsswgd.unwrap_or(self.vtsswgs),
         ];
         for (name, value) in ["vtss", "vtssws", "vtsswgs"]
             .into_iter()
-            .zip(vts_source)
-            .chain(["vtsd", "vtsswd", "vtsswgd"].into_iter().zip(vts_drain))
+            .zip(source_vts)
+            .chain(["vtsd", "vtsswd", "vtsswgd"].into_iter().zip(drain_vts))
         {
-            check(value.value() < 0.0, || {
-                format!("{name} must be at least 0, not {:?}", value.value())
-            })?;
+            ParameterError::non_negative(name, value)?;
         }
-        let source_junction = junction(
+        let source_junction = build_junction(
+            thermal.vtm,
             source_saturation,
             source_emission,
-            ijthsfwd,
+            source_threshold,
             tunneling(
                 [self.jtss, self.jtssws, self.jtsswgs],
                 [self.xtss, self.xtssws, self.xtsswgs],
-                vts_source,
-                [aseff, pseff],
+                source_vts,
+                [source_area, source_perimeter],
             ),
         );
-        let drain_junction = junction(
+        let drain_junction = build_junction(
+            thermal.vtm,
             drain_saturation,
             drain_emission,
-            ijthdfwd,
+            drain_threshold,
             tunneling(
                 [
                     self.jtsd.unwrap_or(self.jtss),
@@ -747,53 +1016,47 @@ impl<R: Real> Bsim4Parameters<R> {
                     self.xtsswd.unwrap_or(self.xtssws),
                     self.xtsswgd.unwrap_or(self.xtsswgs),
                 ],
-                vts_drain,
-                [adeff, pdeff],
+                drain_vts,
+                [drain_area, drain_perimeter],
             ),
         );
+        Ok([drain_junction, source_junction])
+    }
 
-        // `b4v5check.c` stops on these whatever the gate's model.
-        check(l_new.value() <= self.xgl.value(), || {
-            format!(
-                "xgl, {:?}, must be less than the drawn length plus xl, {:?}",
-                self.xgl.value(),
-                l_new.value()
-            )
-        })?;
-        check(self.ngcon.value() < 1.0, || {
-            format!("ngcon must be at least 1, not {:?}", self.ngcon.value())
-        })?;
-        self.checked(
-            &binned,
-            [leff, weff],
-            [ndep, nsub, phi, ngate],
-            [u0temp, vsattemp],
-        )?;
+    /// Applies `paramchk = 1` clamps and builds `rdsmod` 1's external resistances,
+    /// zeroing the internal channel resistance terms when `rdsmod` is 1.
+    fn clamp_and_external(
+        &self,
+        core: &mut Core<R>,
+        thermal: &Thermal<R>,
+        pow_weff_wr: R,
+        nsd: R,
+    ) -> Option<External<R>> {
         if self.check_parameters {
             // ngspice's `paramchk = 1` clamps what it warns of.
-            if binned.a2.value() < 0.01 {
-                binned.a2 = R::constant(0.01);
-            } else if binned.a2.value() > 1.0 {
-                binned.a2 = R::constant(1.0);
-                binned.a1 = R::constant(0.0);
+            if core.binned.a2.value() < 0.01 {
+                core.binned.a2 = R::constant(0.01);
+            } else if core.binned.a2.value() > 1.0 {
+                core.binned.a2 = R::constant(1.0);
+                core.binned.a1 = R::constant(0.0);
             }
-            if binned.prwg.value() < 0.0 {
-                binned.prwg = R::constant(0.0);
+            if core.binned.prwg.value() < 0.0 {
+                core.binned.prwg = R::constant(0.0);
             }
-            if binned.rdsw.value() < 0.0 {
-                binned.rdsw = R::constant(0.0);
-                rds0 = R::constant(0.0);
+            if core.binned.rdsw.value() < 0.0 {
+                core.binned.rdsw = R::constant(0.0);
+                core.rds0 = R::constant(0.0);
             }
-            if rds0.value() < 0.0 {
-                rds0 = R::constant(0.0);
+            if core.rds0.value() < 0.0 {
+                core.rds0 = R::constant(0.0);
             }
-            if rdswmin.value() < 0.0 {
-                rdswmin = R::constant(0.0);
+            if core.rdswmin.value() < 0.0 {
+                core.rdswmin = R::constant(0.0);
             }
         }
         let external =
             (self.drain_source_resistance_model == DrainSourceResistance::One).then(|| {
-                let t10 = binned.prt * rise;
+                let t10 = core.binned.prt * thermal.rise;
                 let at_least_zero = |resistance: R| {
                     if resistance.value() < 0.0 {
                         R::constant(0.0)
@@ -810,34 +1073,40 @@ impl<R: Real> Bsim4Parameters<R> {
                 External {
                     minimums: [self.rdwmin, self.rswmin]
                         .map(|minimum| at_least_zero(minimum + t10) / pow_weff_wr),
-                    resistances: [binned.rdw, binned.rsw]
+                    resistances: [core.binned.rdw, core.binned.rsw]
                         .map(|resistance| at_least_zero(resistance + t10) / pow_weff_wr),
-                    vfbsd: if ngate.value() > 0.0 {
-                        vtm0 * (ngate / nsd).ln()
+                    vfbsd: if core.ngate.value() > 0.0 {
+                        thermal.vtm0 * (core.ngate / nsd).ln()
                     } else {
                         R::constant(0.0)
                     },
-                    prwg: binned.prwg,
-                    prwb: binned.prwb,
+                    prwg: core.binned.prwg,
+                    prwb: core.binned.prwb,
                     sheet,
                 }
             });
         if external.is_some() {
             // `b4v5ld.c` takes no resistance within the drain current at `rdsmod` 1.
-            rds0 = R::constant(0.0);
-            rdswmin = R::constant(0.0);
+            core.rds0 = R::constant(0.0);
+            core.rdswmin = R::constant(0.0);
         }
+        external
+    }
 
-        // The overlaps, their defaults from the oxide.
-        let dlc_given = self.dlc.filter(|dlc| dlc.value() > 0.0);
-        let overlap = |given: Option<R>, lightly: R| {
-            given.unwrap_or_else(|| {
-                dlc_given.map_or(self.xj * coxe * 0.6, |dlc| dlc * coxe - lightly)
-            })
-        };
-        let cgso_model = overlap(self.cgso, self.cgsl);
-        let cgdo_model = overlap(self.cgdo, self.cgdl);
-        let cgbo_model = self.cgbo.unwrap_or(dwc_model * coxe * 2.0);
+    /// Computes gate-overlap capacitances and `ckappa` clamps from the oxide.
+    fn overlaps(
+        &self,
+        binned: &Binned<R>,
+        coxe: R,
+        geometry: &Geometry<R>,
+        fingers: R,
+    ) -> Overlaps<R> {
+        let [source_model, drain_model, bulk_model] = default_overlaps(
+            [self.cgso, self.cgdo, self.cgbo],
+            [self.cgsl, self.cgdl],
+            (coxe, self.xj),
+            (self.dlc, geometry.dwc_model),
+        );
         let at_least_kappa = |kappa: R| {
             if kappa.value() < 0.02 {
                 R::constant(0.02)
@@ -845,85 +1114,74 @@ impl<R: Real> Bsim4Parameters<R> {
                 kappa
             }
         };
-        let overlaps = Overlaps {
-            cgso: (cgso_model + binned.cf) * weff_cv,
-            cgdo: (cgdo_model + binned.cf) * weff_cv,
-            cgsl: binned.cgsl * weff_cv,
-            cgdl: binned.cgdl * weff_cv,
+        Overlaps {
+            cgso: (source_model + binned.cf) * geometry.weff_cv,
+            cgdo: (drain_model + binned.cf) * geometry.weff_cv,
+            cgsl: binned.cgsl * geometry.weff_cv,
+            cgdl: binned.cgdl * geometry.weff_cv,
             ckappas: at_least_kappa(binned.ckappas),
             ckappad: at_least_kappa(binned.ckappad),
-            cgbo: cgbo_model * leff_cv * fingers,
+            cgbo: bulk_model * geometry.leff_cv * fingers,
             fingers,
-        };
+        }
+    }
 
-        // The junctions' depletion, their capacitances and potentials at the
-        // temperature, the drain's defaulting to the source's.
-        let heated_capacitance = |capacitance: R, coefficient: R| {
-            let t0 = coefficient * delta_temperature;
-            if t0.value() >= -1.0 {
-                capacitance * (t0 + 1.0)
-            } else {
-                R::constant(0.0)
-            }
-        };
-        let heated_potential = |potential: R, coefficient: R| {
-            let potential = if potential.value() < 0.1 {
-                R::constant(0.1)
-            } else {
-                potential
-            };
-            let heated = potential - coefficient * delta_temperature;
-            if heated.value() <= 0.01 {
-                R::constant(0.01)
-            } else {
-                heated
-            }
-        };
-        let cjswgs = self.cjswgs.unwrap_or(self.cjsws);
-        let pbswgs = self.pbswgs.unwrap_or(self.pbsws);
-        let mjswgs = self.mjswgs.unwrap_or(self.mjsws);
-        let depletion = |[bottom, sidewall, gate]: [R; 3],
-                         [pb, pbsw, pbswg]: [R; 3],
-                         gradings: [R; 3],
-                         [area, perimeter]: [R; 2]| Depletion {
+    /// Computes `[drain_depletion, source_depletion]` junction capacitances and built-in
+    /// potentials at `thermal`'s temperature.
+    fn depletions(
+        &self,
+        thermal: &Thermal<R>,
+        [source_area, drain_area, source_perimeter, drain_perimeter, gate_edge]: [R; 5],
+    ) -> [Depletion<R>; 2] {
+        let gate_capacitance = self.cjswgs.unwrap_or(self.cjsws);
+        let gate_potential = self.pbswgs.unwrap_or(self.pbsws);
+        let gate_grading = self.mjswgs.unwrap_or(self.mjsws);
+        let build = |[bottom_cap, sidewall_cap, gate_cap]: [R; 3],
+                     [bottom_pot, sidewall_pot, gate_pot]: [R; 3],
+                     gradings: [R; 3],
+                     [area, perimeter]: [R; 2]| Depletion {
             capacitances: [
-                heated_capacitance(bottom, self.tcj) * area,
-                heated_capacitance(sidewall, self.tcjsw) * perimeter,
-                heated_capacitance(gate, self.tcjswg) * gate_edge,
+                heated_capacitance(bottom_cap, self.tcj, thermal.delta) * area,
+                heated_capacitance(sidewall_cap, self.tcjsw, thermal.delta) * perimeter,
+                heated_capacitance(gate_cap, self.tcjswg, thermal.delta) * gate_edge,
             ],
             potentials: [
-                heated_potential(pb, self.tpb),
-                heated_potential(pbsw, self.tpbsw),
-                heated_potential(pbswg, self.tpbswg),
+                heated_potential(bottom_pot, self.tpb, thermal.delta),
+                heated_potential(sidewall_pot, self.tpbsw, thermal.delta),
+                heated_potential(gate_pot, self.tpbswg, thermal.delta),
             ],
             gradings,
         };
-        let source_depletion = depletion(
-            [self.cjs, self.cjsws, cjswgs],
-            [self.pbs, self.pbsws, pbswgs],
-            [self.mjs, self.mjsws, mjswgs],
-            [aseff, pseff],
+        let source_depletion = build(
+            [self.cjs, self.cjsws, gate_capacitance],
+            [self.pbs, self.pbsws, gate_potential],
+            [self.mjs, self.mjsws, gate_grading],
+            [source_area, source_perimeter],
         );
-        let drain_depletion = depletion(
+        let drain_depletion = build(
             [
                 self.cjd.unwrap_or(self.cjs),
                 self.cjswd.unwrap_or(self.cjsws),
-                self.cjswgd.unwrap_or(cjswgs),
+                self.cjswgd.unwrap_or(gate_capacitance),
             ],
             [
                 self.pbd.unwrap_or(self.pbs),
                 self.pbswd.unwrap_or(self.pbsws),
-                self.pbswgd.unwrap_or(pbswgs),
+                self.pbswgd.unwrap_or(gate_potential),
             ],
             [
                 self.mjd.unwrap_or(self.mjs),
                 self.mjswd.unwrap_or(self.mjsws),
-                self.mjswgd.unwrap_or(mjswgs),
+                self.mjswgd.unwrap_or(gate_grading),
             ],
-            [adeff, pdeff],
+            [drain_area, drain_perimeter],
         );
+        [drain_depletion, source_depletion]
+    }
 
-        let noise = Noise {
+    /// Resolves the flicker and thermal noise parameters for `geometry`.
+    fn noise_parameters(&self, geometry: &Geometry<R>) -> Noise {
+        Noise {
             flicker_model: self.flicker_noise_model,
             thermal_model: self.thermal_noise_model,
             noia: self
@@ -942,78 +1200,8 @@ impl<R: Real> Bsim4Parameters<R> {
             tnoib: self.tnoib.value(),
             rnoia: self.rnoia.value(),
             rnoib: self.rnoib.value(),
-            length: (leff - self.lintnoi * 2.0).value(),
-        };
-        Ok(PreparedBsim4 {
-            external,
-            overlaps,
-            resistances,
-            noise,
-            temperature: temperature.value(),
-            drain_depletion,
-            source_depletion,
-            core: Core {
-                sign,
-                toxe,
-                toxp,
-                coxe,
-                coxp,
-                factor1,
-                vtm,
-                temperature_rise: rise,
-                leff,
-                weff,
-                weff_cj,
-                leff_cv,
-                weff_cv,
-                fingers,
-                xpart: self.charge_partition,
-                abulk_cv_factor,
-                vfbzb,
-                ldeb,
-                acde,
-                phi,
-                sqrt_phi,
-                xdep0,
-                vbi,
-                cdep0,
-                litl,
-                k1,
-                k1ox,
-                k2ox,
-                mstar,
-                voffcbn,
-                theta0vb0,
-                theta_rout,
-                rds0,
-                rdswmin,
-                ua,
-                ub,
-                uc,
-                ud,
-                u0temp,
-                vsattemp,
-                tfactor,
-                vth0,
-                vfb,
-                eta0,
-                vbsc,
-                vtfbphi2,
-                ngate,
-                pditsl: self.pditsl,
-                lambda: self
-                    .lambda
-                    .is_some_and(|lambda| lambda.value() > 0.0)
-                    .then_some(binned.lambda),
-                binned,
-            },
-            drain_junction,
-            source_junction,
-            series,
-            body_network,
-            gate,
-            multiplier,
-        })
+            length: (geometry.leff - self.lintnoi * 2.0).value(),
+        }
     }
 
     /// Fails on what `b4v5check.c` stops on in the binned parameters at the effective
@@ -1051,9 +1239,7 @@ impl<R: Real> Bsim4Parameters<R> {
             ("vsat at the temperature", vsattemp),
             ("pclm", binned.pclm),
         ] {
-            check(value.value() <= 0.0, || {
-                format!("{name} must be positive, not {:?}", value.value())
-            })?;
+            ParameterError::positive(name, value)?;
         }
         check(ngate.value() < 0.0 || ngate.value() > 1.0e25, || {
             format!(
@@ -1072,9 +1258,7 @@ impl<R: Real> Bsim4Parameters<R> {
             ("pditsl", self.pditsl),
             ("clc", binned.clc),
         ] {
-            check(value.value() < 0.0, || {
-                format!("{name} must be at least 0, not {:?}", value.value())
-            })?;
+            ParameterError::non_negative(name, value)?;
         }
         for (name, value) in [("w0", binned.w0), ("b1", binned.b1)] {
             #[expect(

@@ -31,6 +31,7 @@
 
 pub(crate) mod behavioral;
 pub(crate) mod bjt;
+pub(crate) mod bsim;
 pub(crate) mod bsim3;
 pub(crate) mod bsim4;
 pub(crate) mod connect;
@@ -62,6 +63,39 @@ use crate::{
     Choice, Delayed, Interface, Lift, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
     Regions,
 };
+
+/// Generates `TryFrom<u8>` and `From<$name> for u8` for a `u8`-coded SPICE enum.
+macro_rules! numbered_enum {
+    (
+        $name:ident,
+        $message:literal,
+        { $($code:literal => $variant:ident),+ $(,)? }
+    ) => {
+        impl TryFrom<u8> for $name {
+            type Error = String;
+
+            fn try_from(value: u8) -> Result<Self, String> {
+                match value {
+                    $($code => Ok(Self::$variant),)+
+                    _ => {
+                        let prefix = $message;
+                        Err(format!("{prefix}, not {value}"))
+                    }
+                }
+            }
+        }
+
+        impl From<$name> for u8 {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => $code,)+
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use numbered_enum;
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.

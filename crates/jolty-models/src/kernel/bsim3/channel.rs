@@ -6,9 +6,15 @@
 //! Copyright 2004 Regents of the University of California. All rights reserved. Used
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
+use super::Mobility;
 use super::prepare::Core;
-use super::{D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, Mobility, Q};
 use crate::Real;
+use crate::kernel::bsim::{
+    D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, Q, above_dibl_floor, above_fifth, above_half,
+    above_tenth, effective_drain, effective_width, factor_above_tenth, impact_ionization_factor,
+    non_saturation_excess, poly_depletion, reciprocal_above_tenth, saturation_voltage,
+    smooth_floor, substrate_early_voltage,
+};
 
 /// What the channel yields at one bias, in the frame where the drain lies at or above the
 /// source, each with its derivatives with respect to that frame's gate-source,
@@ -38,153 +44,6 @@ pub(super) struct Operating<R: Real> {
     pub(super) abulk0: D<R>,
     pub(super) ueff: D<R>,
     pub(super) rds: D<R>,
-}
-
-/// The clamp of `b3ld.c` that keeps a factor `1 + x` from approaching zero: `1 + x` down
-/// to `x = −0.9`, then `(17 + 20x) / (0.8 + x)`'s reciprocal, its first form's value and
-/// slope continued.
-pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
-    if x.value.value() >= -0.9 {
-        (x + 1.0).recip()
-    } else {
-        (x * 20.0 + 17.0) / (x + 0.8)
-    }
-}
-
-/// `1 + x`, continued below `x = −0.9` by `(0.8 + x) / (17 + 20x)`, as `b3ld.c` keeps
-/// such a factor positive.
-pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
-    let above = if inclusive {
-        x.value.value() >= -0.9
-    } else {
-        x.value.value() > -0.9
-    };
-    if above {
-        x + 1.0
-    } else {
-        (x + 0.8) / (x * 20.0 + 17.0)
-    }
-}
-
-/// `x`, continued below 0.1 by `(0.2 − x) / (3 − 20x)`.
-pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
-    if x.value.value() < 0.1 {
-        (-x + 0.2) / (-(x * 20.0) + 3.0)
-    } else {
-        x
-    }
-}
-
-/// `1 + x`, continued below `x = −0.5` by `(1 + 3x) / (3 + 8x)`.
-pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
-    if x.value.value() >= -0.5 {
-        x + 1.0
-    } else {
-        (x * 3.0 + 1.0) / (x * 8.0 + 3.0)
-    }
-}
-
-/// `(x + √(x² + spread)) / 2`, the positive branch of a smooth clamp: written as
-/// `(spread / 2) / (√(x² + spread) − x)` where `x < 0` so `x` and its root never cancel.
-pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
-    let root = (x * x + spread).sqrt();
-    if x.value.value() >= 0.0 {
-        (x + root) * 0.5
-    } else {
-        (spread * 0.5) / (root - x)
-    }
-}
-
-/// The smooth lower clamp `bound + (shifted + √(shifted² − 0.004 · bound)) / 2` with
-/// `shifted = x − bound − 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
-///
-/// By `(shifted² − 0.004 · bound) − (x − bound + 0.001)² = −0.004 · x`, the curve passes
-/// through zero, lies strictly above `x` for `x < 0`, and lies strictly below `x` for
-/// `x > 0`. For `x >= bound / 2`, rationalizing it as
-/// `x − 0.002 · x / (root + x − bound + 0.001)` prevents `bound` and `smooth_positive`
-/// from cancelling near `x = 0` (losing ~12 digits and chattering BSIM3's `vbseff < vbs`
-/// clamp within ~6e-12 V of zero); below `bound / 2`, `smooth_positive(shifted, ...) + bound`
-/// stays exact through the knee and at large negative `x`.
-pub(crate) fn smooth_floor<R: Real>(x: D<R>, bound: R) -> D<R> {
-    let shifted = (x - 0.001).plus(-bound);
-    let spread = D::constant(bound * -0.004);
-    if x.value.value() >= 0.5 * bound.value() {
-        let root = (shifted * shifted + spread).sqrt();
-        let denominator = root + (x + 0.001).plus(-bound);
-        x - (x * 0.002) / denominator
-    } else {
-        smooth_positive(shifted, spread).plus(bound)
-    }
-}
-
-/// The smooth minimum of `vds >= 0` and `vdsat >= 0` with smoothing `delta >= 0`,
-/// `vdsat − (shifted + root) / 2` where `shifted = vdsat − vds − delta` and
-/// `root = √(shifted² + 4 · delta · vdsat)`, shared by BSIM3 and BSIM4 for both `Vdseff`
-/// and `VdseffCV`.
-///
-/// Rationalized on both sides of `vds = vdsat + delta`:
-/// - `vds <= vdsat + delta`: `2 · vdsat · vds / (vdsat + vds + delta + root)` eliminates
-///   cancellation of `vdsat` near `vds = 0` (even when `vdsat < delta`), gives exact zero
-///   with zero `gate` and `bulk` derivatives at `vds = 0`, and keeps full precision at
-///   small `vds` such as 1e-9 V where the raw difference loses ~8 digits;
-/// - `vds > vdsat + delta`: `vdsat · (1 − 2 · delta / (root − shifted))` keeps
-///   `2 · delta / (root − shifted) <= 0.5` and preserves full precision on `d/d(vds)` at
-///   large `vds`.
-pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R> {
-    let shifted = vdsat - vds - D::constant(delta);
-    let root = (shifted * shifted + vdsat.scale(delta * 4.0)).sqrt();
-    if vds.value.value() <= vdsat.value.value() + delta.value() {
-        let denominator = (vdsat + vds + root).plus(delta);
-        if denominator.value.value() <= 0.0 {
-            D::number(0.0)
-        } else {
-            (vdsat * vds * 2.0) / denominator
-        }
-    } else {
-        let ratio = D::constant(delta * 2.0) / (root - shifted);
-        vdsat * (-ratio + 1.0)
-    }
-}
-
-/// `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` written in its
-/// excess over unity so `1 − λ` and `1 / λ − 1` never cancel as `λ → 1`.
-pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R> {
-    let slope = a1.value();
-    if slope == 0.0 {
-        D::constant((-a2 + 1.0) / a2)
-    } else if slope > 0.0 {
-        let margin = -a2 + 1.0;
-        let shifted = (-vgsteff.scale(a1)).plus(margin - 0.0001);
-        let gap = smooth_positive(shifted, D::constant(margin * 0.0004));
-        gap / (1.0 - gap)
-    } else {
-        let shifted = vgsteff.scale(a1).plus(a2 - 0.0001);
-        let lambda = smooth_positive(shifted, D::constant(a2 * 0.0004));
-        (1.0 - lambda) / lambda
-    }
-}
-
-/// The saturation voltage `Vdsat` of `b3ld.c` and `b4v5ld.c`, rationalized to
-/// `2 · c / (b + √(b² − 2·a·c))` where `b ≥ 0` so `b` and its root never cancel when `a`
-/// is small (as with `rds = 0` and `λ → 1`), and continuous through `a = 0` without a
-/// special branch.
-pub(crate) fn saturation_voltage<R: Real>(
-    vgst2vtm: D<R>,
-    esat_l: D<R>,
-    abulk: D<R>,
-    wv_cox_rds: D<R>,
-    excess: D<R>,
-) -> D<R> {
-    let scaled_rds = abulk * wv_cox_rds;
-    let leading = abulk * (scaled_rds + excess) * 2.0;
-    let linear = vgst2vtm * (excess * 2.0 + 1.0) + abulk * esat_l + (vgst2vtm * scaled_rds) * 3.0;
-    let constant = vgst2vtm * (esat_l + (vgst2vtm * wv_cox_rds) * 2.0);
-    let root = (linear * linear - leading * constant * 2.0).sqrt();
-    if linear.value.value() >= 0.0 {
-        (constant * 2.0) / (linear + root)
-    } else {
-        (linear - root) / leading
-    }
 }
 
 /// `t · (1 + 2t)` at `t = e^x`, with `e^x` at its floor below `−EXP_THRESHOLD`.
@@ -239,11 +98,7 @@ impl<R: Real> Core<R> {
             .scale(self.temperature_rise)
             .plus(self.k1ox * ((p.nlx / leff + 1.0).sqrt() - 1.0) * self.sqrt_phi);
         let tmp2 = self.tox * self.phi / (self.weff + p.w0);
-        let mut t3 = vbseff.scale(p.etab).plus(p.eta0);
-        if t3.value.value() < 1.0e-4 {
-            // Keeps the drain-induced barrier lowering from turning negative.
-            t3 = (-t3 + 2.0e-4) / (-(t3 * 2.0e4) + 3.0);
-        }
+        let t3 = above_dibl_floor(vbseff.scale(p.etab).plus(p.eta0));
         let dibl = (t3 * vds).scale(self.theta0vb0);
         let vth = sqrt_phis.scale(self.k1ox) - vbseff.scale(self.k2ox) - delta_vth - narrow
             + (vbseff.scale(p.k3b).plus(p.k3)).scale(tmp2)
@@ -257,19 +112,7 @@ impl<R: Real> Core<R> {
         let n = above_half((tmp2 + tmp3 * theta0).plus(p.cit).divide(self.cox));
 
         // The poly gate's depletion.
-        let flat = self.vfb + self.phi;
-        let ngate = self.ngate.value();
-        let vgs_eff = if ngate > 1.0e18 && ngate < 1.0e25 && vgs.value.value() > flat.value() {
-            let t1 = self.ngate * (1.0e6 * Q * EPSSI) / (self.cox * self.cox);
-            let t4 = ((vgs.plus(-flat) * 2.0).divide(t1) + 1.0).sqrt();
-            let t2 = (t4 - 1.0).scale(t1);
-            let t3 = (t2 * t2 * 0.5).divide(t1);
-            let t7 = -t3 + (1.12 - 0.05);
-            let t5 = -smooth_positive(t7, D::number(0.224)) + 1.12;
-            vgs - t5
-        } else {
-            vgs
-        };
+        let vgs_eff = poly_depletion(vgs, self.ngate, self.vfb + self.phi, self.cox, Q);
         let vgst = vgs_eff - vth;
 
         // The effective gate overdrive, smooth through the threshold.
@@ -290,12 +133,11 @@ impl<R: Real> Core<R> {
 
         // The channel's effective width and the parasitic resistance.
         let t9 = sqrt_phis.plus(-self.sqrt_phi);
-        let mut weff = (vgsteff.scale(p.dwg) + t9.scale(p.dwb))
-            .scale(R::constant(-2.0))
-            .plus(self.weff);
-        if weff.value.value() < 2.0e-8 {
-            weff = (-weff + 4.0e-8) * 2.0e-8 / (-(weff * 2.0) + 6.0e-8);
-        }
+        let weff = effective_width(
+            (vgsteff.scale(p.dwg) + t9.scale(p.dwb))
+                .scale(R::constant(-2.0))
+                .plus(self.weff),
+        );
         let rds =
             factor_above_tenth(vgsteff.scale(p.prwg) + t9.scale(p.prwb), true).scale(self.rds0);
 
@@ -329,11 +171,7 @@ impl<R: Real> Core<R> {
                 t3 * (t3.scale(self.ub).plus(self.ua)) * (vbseff.scale(self.uc) + 1.0)
             }
         };
-        let denominator = if t5.value.value() >= -0.8 {
-            t5 + 1.0
-        } else {
-            (t5 + 0.6) / (t5 * 10.0 + 7.0)
-        };
+        let denominator = above_fifth(t5);
         let ueff = denominator.recip().scale(self.u0temp);
 
         // The saturation voltage.
@@ -383,16 +221,7 @@ impl<R: Real> Core<R> {
         let va = vasat + t0 * (vaclm * vadibl / (vaclm + vadibl));
 
         // The substrate current's body effect on the output resistance.
-        let vascbe = if p.pscbe2.value() > 0.0 {
-            if diff_vds.value.value() > p.pscbe1.value() * self.litl.value() / EXP_THRESHOLD {
-                let t0 = diff_vds.recip().scale(p.pscbe1 * self.litl);
-                t0.exp().scale(leff / p.pscbe2)
-            } else {
-                D::constant(leff / p.pscbe2 * MAX_EXP)
-            }
-        } else {
-            D::number(MAX_EXP)
-        };
+        let vascbe = substrate_early_voltage(diff_vds, (p.pscbe1, p.pscbe2), (leff, self.litl));
 
         // The drain current.
         let beta = ueff * weff.scale(self.cox / leff);
@@ -404,18 +233,8 @@ impl<R: Real> Core<R> {
         let ids = idsa * (diff_vds / vascbe + 1.0);
 
         // The substrate current.
-        let tmp = p.alpha0 + p.alpha1 * leff;
-        let isub = if tmp.value() <= 0.0 || p.beta0.value() <= 0.0 {
-            D::number(0.0)
-        } else {
-            let t2 = tmp / leff;
-            let t1 = if diff_vds.value.value() > p.beta0.value() / EXP_THRESHOLD {
-                (diff_vds * (-diff_vds.recip().scale(p.beta0)).exp()).scale(t2)
-            } else {
-                diff_vds.scale(t2 * MIN_EXP)
-            };
-            t1 * idsa
-        };
+        let isub = impact_ionization_factor(diff_vds, (p.alpha0, p.alpha1, p.beta0), leff)
+            .map_or(D::number(0.0), |factor| factor * idsa);
         Operating {
             ids,
             isub,

@@ -6,13 +6,14 @@
 //! Copyright 2005 Regents of the University of California. All rights reserved. Used
 //! under the BSIM4 terms of use, which the repository's `NOTICE` reproduces.
 
-use super::D;
 use super::prepare::Core;
 use crate::Real;
-use crate::kernel::bsim3::{
-    EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, Q, above_half, above_tenth,
-    effective_drain, factor_above_tenth, non_saturation_excess, reciprocal_above_tenth,
-    saturation_voltage, smooth_floor, smooth_positive,
+use crate::kernel::bsim::{
+    D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, NOISE_CHARGE, Q, above_dibl_floor, above_fifth,
+    above_half, above_tenth, effective_drain, effective_width, factor_above_tenth,
+    impact_ionization_factor, inversion_centroid, non_saturation_excess, poly_depletion,
+    reciprocal_above_tenth, saturation_voltage, smooth_floor, smooth_positive,
+    substrate_early_voltage,
 };
 
 /// The exponent of `b4v5ld.c`'s smoothing of the source end's velocity limit, `2 · MM`
@@ -74,20 +75,13 @@ impl<R: Real> Core<R> {
     /// The gate's voltage less the poly gate's depletion, `BSIM4v5polyDepletion` at the
     /// gate-source voltage `vgs`.
     fn poly_depletion(&self, vgs: D<R>) -> D<R> {
-        let phi = self.vfb + self.phi;
-        let ngate = self.ngate.value();
-        if ngate > 1.0e18 && ngate < 1.0e25 && vgs.value.value() > phi.value() {
-            let t1 = self.ngate * (1.0e6 * NOISE_CHARGE * EPSSI) / (self.coxe * self.coxe);
-            let t8 = vgs.plus(-phi);
-            let t4 = (t8.divide(t1) * 2.0 + 1.0).sqrt();
-            let t2 = t8 * 2.0 / (t4 + 1.0);
-            let t3 = (t2 * t2 * 0.5).divide(t1);
-            let t7 = 1.12 - t3 - 0.05;
-            let t5 = 1.12 - smooth_positive(t7, D::number(0.224));
-            vgs - t5
-        } else {
-            vgs
-        }
+        poly_depletion(
+            vgs,
+            self.ngate,
+            self.vfb + self.phi,
+            self.coxe,
+            NOISE_CHARGE,
+        )
     }
 
     /// The channel at the gate-source, drain-source and body-source voltages of the frame
@@ -122,12 +116,7 @@ impl<R: Real> Core<R> {
         let t1 = (vbseff.scale(p.kt2) + c(p.kt1 + p.kt1l / leff)).scale(self.temperature_rise)
             + c(self.k1ox * (t0 - 1.0) * self.sqrt_phi);
         let vth_narrow_w = self.toxe * self.phi / (self.weff + p.w0);
-        let t3 = vbseff.scale(p.etab) + c(self.eta0);
-        let t3 = if t3.value.value() < 1.0e-4 {
-            (2.0e-4 - t3) / (3.0 - t3 * 2.0e4)
-        } else {
-            t3
-        };
+        let t3 = above_dibl_floor(vbseff.scale(p.etab) + c(self.eta0));
         let dibl_sft = (t3 * vds).scale(self.theta0vb0);
         let lpe_vb = (p.lpeb / leff + 1.0).sqrt();
         let mut vth = (sqrt_phis.scale(self.k1ox) - c(self.k1 * self.sqrt_phi)).scale(lpe_vb)
@@ -187,12 +176,7 @@ impl<R: Real> Core<R> {
 
         // The effective width and the source and drain resistance.
         let t9 = sqrt_phis - c(self.sqrt_phi);
-        let weff = c(self.weff) - (vgsteff.scale(p.dwg) + t9.scale(p.dwb)) * 2.0;
-        let weff = if weff.value.value() < 2.0e-8 {
-            (4.0e-8 - weff) * 2.0e-8 / (6.0e-8 - weff * 2.0)
-        } else {
-            weff
-        };
+        let weff = effective_width(c(self.weff) - (vgsteff.scale(p.dwg) + t9.scale(p.dwb)) * 2.0);
         let t0 = vgsteff.scale(p.prwg) + 1.0;
         let t2 = t0.recip() + t9.scale(p.prwb);
         let rds = smooth_positive(t2, D::number(0.01))
@@ -220,11 +204,7 @@ impl<R: Real> Core<R> {
         let t3 = t0.divide(self.toxe);
         let t6 = (vth * vth).scale(self.ud) / (t3 * t3);
         let t5 = t3 * (t2 + t3.scale(self.ub)) + t6;
-        let denominator = if t5.value.value() >= -0.8 {
-            t5 + 1.0
-        } else {
-            (t5 + 0.6) / (t5 * 10.0 + 7.0)
-        };
+        let denominator = above_fifth(t5);
         let ueff = denominator.recip().scale(self.u0temp);
 
         // The saturation voltage.
@@ -262,9 +242,7 @@ impl<R: Real> Core<R> {
         let vasat = t0 / t1;
 
         // The linear current, with the inversion layer's thickness.
-        let t0 = (vgsteff.plus(self.vtfbphi2)).divide(self.toxp * 2.0e8);
-        let tmp3 = (t0.ln() * 0.7).exp();
-        let tcen = (tmp3 + 1.0).recip() * 1.9e-9;
+        let tcen = inversion_centroid(vgsteff.plus(self.vtfbphi2).divide(self.toxp * 2.0e8));
         let coxeff = (tcen.scale(self.coxp) + EPSSI)
             .recip()
             .scale(self.coxp * EPSSI);
@@ -315,34 +293,13 @@ impl<R: Real> Core<R> {
         } else {
             D::number(MAX_EXP)
         };
-        let vascbe = if p.pscbe2.value() > 0.0 {
-            let threshold = p.pscbe1 * self.litl / EXP_THRESHOLD;
-            if diff_vds.value.value() > threshold.value() {
-                let t0 = diff_vds.recip().scale(p.pscbe1 * self.litl);
-                t0.exp().scale(leff / p.pscbe2)
-            } else {
-                c(leff * MAX_EXP / p.pscbe2)
-            }
-        } else {
-            D::number(MAX_EXP)
-        };
+        let vascbe = substrate_early_voltage(diff_vds, (p.pscbe1, p.pscbe2), (leff, self.litl));
         let idsa = idl * (diff_vds / vadibl + 1.0) * (diff_vds / vadits + 1.0);
         let idsa = idsa * ((va / vasat).ln() / cclm + 1.0);
 
         // The impact ionization's substrate current.
-        let tmp = p.alpha0 + p.alpha1 * leff;
-        let isub = if tmp.value() <= 0.0 || p.beta0.value() <= 0.0 {
-            D::number(0.0)
-        } else {
-            let t2 = tmp / leff;
-            let t1 = if diff_vds.value.value() > (p.beta0 / EXP_THRESHOLD).value() {
-                let t0 = -diff_vds.recip().scale(p.beta0);
-                (diff_vds * t0.exp()).scale(t2)
-            } else {
-                diff_vds.scale(t2 * MIN_EXP)
-            };
-            t1 * idsa * vdseff
-        };
+        let isub = impact_ionization_factor(diff_vds, (p.alpha0, p.alpha1, p.beta0), leff)
+            .map_or(D::number(0.0), |factor| factor * idsa * vdseff);
 
         // The drain current, and the source end's velocity limit.
         let ids = idsa * (diff_vds / vascbe + 1.0);

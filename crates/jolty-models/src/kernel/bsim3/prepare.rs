@@ -6,15 +6,14 @@
 //! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use super::parameters::{Binned, Bsim3Parameters};
-use super::{
-    Charges, EPSOX, EPSSI, EXP_THRESHOLD, KBOQ, MIN_EXP, Mobility, NoiseModel, Q, by_channel,
+use super::{Charges, EPSOX, Mobility, NoiseModel};
+use crate::kernel::bsim::{
+    EPSSI, EXP_THRESHOLD, KBOQ, MIN_EXP, Q, band_gap, by_channel, check, default_overlaps,
+    derived_body_factors, heated_capacitance, heated_potential, intrinsic_carrier, lost,
+    vbsc_clamp,
 };
 use crate::kernel::parts::series_value;
 use crate::{ParameterError, Real};
-
-/// The intrinsic carrier concentration of silicon at 300.15 K, per cubic centimeter, as
-/// `b3temp.c` takes it.
-const INTRINSIC: f64 = 1.45e10;
 
 /// The numbers the drain current and the charges of one transistor read, its channel's
 /// size and temperature folded in. Concentrations are per cubic centimeter, as the
@@ -140,24 +139,6 @@ pub struct PreparedBsim3<R: Real> {
     pub(super) temperature: f64,
 }
 
-/// Fails with `message` when `failed` holds, as `b3check.c` stops on a fatal error.
-pub(crate) fn check(failed: bool, message: impl FnOnce() -> String) -> Result<(), ParameterError> {
-    if failed {
-        Err(ParameterError(message()))
-    } else {
-        Ok(())
-    }
-}
-
-/// The reciprocal-free length or width lost, `int + l / L^ln + w / W^wn + wl / (L^ln · W^wn)`.
-pub(crate) fn lost<R: Real>(
-    base: R,
-    [by_length, by_width, by_area]: [R; 3],
-    [length, width]: [R; 2],
-) -> R {
-    base + by_length / length + by_width / width + by_area / (length * width)
-}
-
 impl<R: Real> Bsim3Parameters<R> {
     /// The transistor's numbers at `temperature`, in kelvins.
     #[expect(
@@ -174,24 +155,16 @@ impl<R: Real> Bsim3Parameters<R> {
         }
         let tnom = ParameterError::positive("nominal_temperature", self.nominal_temperature)?;
         let multiplier = ParameterError::positive("multiplier", self.multiplier)?;
-        let tox = self.tox;
-        check(tox.value() <= 0.0, || {
-            format!("tox must be positive, not {:?}", tox.value())
-        })?;
-        let toxm = self.toxm.unwrap_or(tox);
-        check(toxm.value() <= 0.0, || {
-            format!("toxm must be positive, not {:?}", toxm.value())
-        })?;
+        let tox = ParameterError::positive("tox", self.tox)?;
+        let toxm = ParameterError::positive("toxm", self.toxm.unwrap_or(tox))?;
         let cox = R::constant(EPSOX) / tox;
         let sign = self.channel.sign();
         let ratio = temperature / tnom;
         let rise = ratio - 1.0;
         let factor1 = (tox * (EPSSI / EPSOX)).sqrt();
         let vtm0 = tnom * KBOQ;
-        let eg0 = -(tnom * tnom * 7.02e-4 / (tnom + 1108.0)) + 1.16;
-        let reference = tnom / 300.15;
-        let ni =
-            reference * reference.sqrt() * INTRINSIC * (-(eg0 / (vtm0 * 2.0)) + 21.556_598_1).exp();
+        let eg0 = band_gap(tnom);
+        let ni = intrinsic_carrier(tnom, eg0, vtm0);
         let vtm = temperature * KBOQ;
 
         let geometry = self.geometry()?;
@@ -206,7 +179,12 @@ impl<R: Real> Bsim3Parameters<R> {
         let vsattemp = binned.vsat - binned.at * rise;
         let mut rds0 = (binned.rdsw + binned.prt * rise) / (weff * 1e6).pow(binned.wr);
         self.checked(&binned, [leff, weff], [u0temp, vsattemp])?;
-        let (mut cgso, mut cgdo, mut cgbo) = self.overlap_defaults(cox);
+        let [mut cgso, mut cgdo, mut cgbo] = default_overlaps(
+            [self.cgso, self.cgdo, self.cgbo],
+            [self.cgsl, self.cgdl],
+            (cox, self.xj),
+            (self.dlc, self.dwc.unwrap_or(self.wint)),
+        );
         if self.check_parameters {
             // ngspice's `paramchk = 1` clamps what it warns of.
             if binned.a2.value() < 0.01 {
@@ -258,27 +236,8 @@ impl<R: Real> Bsim3Parameters<R> {
         let cdep0 = (npeak * (Q * EPSSI * 1e6) / 2.0 / phi).sqrt();
         let ldeb = (vtm0 * EPSSI / (npeak * (Q * 1e6))).sqrt() / 3.0;
         let acde = binned.acde * (npeak / 2e16).powf(-0.25);
-        let (k1, k2) = self.body(&binned, (phi, sqrt_phi), (npeak, cox));
-        let mut vbm = binned.vbm;
-        if self.k1.is_none() && self.k2.is_none() && vbm.value() > 0.0 {
-            vbm = -vbm;
-        }
-        let mut vbsc = if k2.value() < 0.0 {
-            let t0 = k1 * 0.5 / k2;
-            let vbsc = (phi - t0 * t0) * 0.9;
-            if vbsc.value() > -3.0 {
-                R::constant(-3.0)
-            } else if vbsc.value() < -30.0 {
-                R::constant(-30.0)
-            } else {
-                vbsc
-            }
-        } else {
-            R::constant(-30.0)
-        };
-        if vbsc.value() > vbm.value() {
-            vbsc = vbm;
-        }
+        let (k1, k2, vbm) = self.body(&binned, (phi, sqrt_phi), (npeak, cox));
+        let vbsc = vbsc_clamp(phi, k1, k2, vbm);
         let vfb = binned.vfb.unwrap_or_else(|| {
             binned
                 .vth0
@@ -484,9 +443,7 @@ impl<R: Real> Bsim3Parameters<R> {
             ("pclm", binned.pclm),
         ];
         for (name, number) in positive {
-            check(value(number) <= 0.0, || {
-                format!("{name} must be positive, not {:?}", value(number))
-            })?;
+            ParameterError::positive(name, number)?;
         }
         let non_negative = [
             ("ngate", binned.ngate),
@@ -499,9 +456,7 @@ impl<R: Real> Bsim3Parameters<R> {
             ("ijth", self.ijth),
         ];
         for (name, number) in non_negative {
-            check(value(number) < 0.0, || {
-                format!("{name} must be at least 0, not {:?}", value(number))
-            })?;
+            ParameterError::non_negative(name, number)?;
         }
         check(value(binned.ngate) > 1e31, || {
             format!(
@@ -516,68 +471,28 @@ impl<R: Real> Bsim3Parameters<R> {
                 format!("{name} + Weff must not be zero, as {name} is {weff:?} below 0")
             })?;
         }
-        check(value(u0temp) <= 0.0, || {
-            format!(
-                "u0 at the temperature must be positive, not {:?}",
-                value(u0temp)
-            )
-        })?;
-        check(value(vsattemp) <= 0.0, || {
-            format!(
-                "vsat at the temperature must be positive, not {:?}",
-                value(vsattemp)
-            )
-        })
+        ParameterError::positive("u0 at the temperature", u0temp)?;
+        ParameterError::positive("vsat at the temperature", vsattemp)?;
+        Ok(())
     }
 
-    /// `cgso`, `cgdo` and `cgbo`, given or as `b3set.c` derives them from the oxide
-    /// capacitance per area `cox`.
-    #[expect(clippy::similar_names, reason = "the overlaps' names in BSIM3")]
-    fn overlap_defaults(&self, cox: R) -> (R, R, R) {
-        let derived = |lightly: R| match self.dlc {
-            Some(dlc) if dlc.value() > 0.0 => dlc * cox - lightly,
-            _ => self.xj * cox * 0.6,
-        };
-        let cgso = self.cgso.unwrap_or_else(|| derived(self.cgsl));
-        let cgdo = self.cgdo.unwrap_or_else(|| derived(self.cgdl));
-        let cgbo = self
-            .cgbo
-            .unwrap_or_else(|| self.dwc.unwrap_or(self.wint) * cox * 2.0);
-        (cgso, cgdo, cgbo)
-    }
-
-    /// `k1` and `k2`: as given, the one missing at ngspice's default, or derived from the
-    /// body effects at the surface and in the bulk, with `phi` and its root, the channel's
-    /// doping `npeak` per cubic centimeter and the oxide capacitance `cox`.
-    fn body(&self, binned: &Binned<R>, (phi, sqrt_phi): (R, R), (npeak, cox): (R, R)) -> (R, R) {
+    /// `k1`, `k2` and `vbm`: as given, the one missing at ngspice's default, or derived
+    /// from the body effects at the surface and in the bulk, with `phi` and its root, the
+    /// channel's doping `npeak` per cubic centimeter and the oxide capacitance `cox`.
+    fn body(&self, binned: &Binned<R>, (phi, sqrt_phi): (R, R), (npeak, cox): (R, R)) -> (R, R, R) {
         if self.k1.is_some() || self.k2.is_some() {
             return (
                 binned.k1.unwrap_or(R::constant(0.53)),
                 binned.k2.unwrap_or(R::constant(-0.0186)),
+                binned.vbm,
             );
         }
-        let mut vbx = binned
-            .vbx
-            .unwrap_or_else(|| phi - npeak * binned.xt * binned.xt * 7.7348e-4);
-        if vbx.value() > 0.0 {
-            vbx = -vbx;
-        }
-        let mut vbm = binned.vbm;
-        if vbm.value() > 0.0 {
-            vbm = -vbm;
-        }
-        let gamma1 = binned
-            .gamma1
-            .unwrap_or_else(|| npeak.sqrt() * 5.753e-12 / cox);
-        let gamma2 = binned
-            .gamma2
-            .unwrap_or_else(|| (binned.nsub * 1e-6).sqrt() * 5.753e-12 / cox);
-        let t0 = gamma1 - gamma2;
-        let t1 = (phi - vbx).sqrt() - sqrt_phi;
-        let t2 = (phi * (phi - vbm)).sqrt() - phi;
-        let k2 = t0 * t1 / (t2 * 2.0 + vbm);
-        let k1 = gamma2 - k2 * (phi - vbm).sqrt() * 2.0;
-        (k1, k2)
+        derived_body_factors(
+            (phi, sqrt_phi),
+            (npeak, binned.nsub * 1e-6, cox),
+            (binned.vbx, binned.vbm, binned.xt),
+            (binned.gamma1, binned.gamma2),
+        )
     }
 
     /// The junctions at `temperature`, with the parameters' nominal temperature `tnom`,
@@ -590,35 +505,21 @@ impl<R: Real> Bsim3Parameters<R> {
         (eg0, weff): (R, R),
     ) -> Result<Junctions<R>, ParameterError> {
         let nj = ParameterError::positive("nj", self.nj)?;
-        let eg = -(temperature * temperature * 7.02e-4 / (temperature + 1108.0)) + 1.16;
+        let eg = band_gap(temperature);
         let t0 = eg0 / vtm0 - eg / vtm + self.xti * (temperature / tnom).ln();
         let scaling = (t0 / nj).exp();
         let floor = |value: R| value.max(R::constant(0.0));
         let js = floor(self.js * scaling);
         let jsw = floor(self.jsw * scaling);
         let difference = temperature - tnom;
-        let scaled = |capacitance: R, coefficient: R| {
-            let t0 = coefficient * difference;
-            if t0.value() >= -1.0 {
-                capacitance * (t0 + 1.0)
-            } else {
-                R::constant(0.0)
-            }
-        };
-        let cj = scaled(self.cj, self.tcj);
-        let cjsw = scaled(self.cjsw, self.tcjsw);
-        let cjswg = scaled(self.cjswg.unwrap_or(self.cjsw), self.tcjswg);
-        // `b3temp.c` raises a built-in potential below 0.1 V to it, then one that the
-        // temperature brings below 0.01 V to that.
-        let potential = |given: R, coefficient: R| {
-            let given = given.max(R::constant(0.1));
-            (given - coefficient * difference).max(R::constant(0.01))
-        };
+        let cj = heated_capacitance(self.cj, self.tcj, difference);
+        let cjsw = heated_capacitance(self.cjsw, self.tcjsw, difference);
+        let cjswg = heated_capacitance(self.cjswg.unwrap_or(self.cjsw), self.tcjswg, difference);
         let pbsw = self.pbsw;
         let potentials = [
-            potential(self.pb, self.tpb),
-            potential(pbsw, self.tpbsw),
-            potential(self.pbswg.unwrap_or(pbsw), self.tpbswg),
+            heated_potential(self.pb, self.tpb, difference),
+            heated_potential(pbsw, self.tpbsw, difference),
+            heated_potential(self.pbswg.unwrap_or(pbsw), self.tpbswg, difference),
         ];
         let mjsw = self.mjsw;
         let gradings = [self.mj, mjsw, self.mjswg.unwrap_or(mjsw)];

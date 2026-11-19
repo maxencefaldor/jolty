@@ -205,29 +205,6 @@ impl<R: Real> Dual<R, 1> {
     }
 }
 
-impl<R: Real, const N: usize> Add for Dual<R, N> {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        let mut gradient = self.gradient;
-        for (derivative, other) in gradient.iter_mut().zip(other.gradient) {
-            *derivative += other;
-        }
-        Self {
-            value: self.value + other.value,
-            gradient,
-        }
-    }
-}
-
-impl<R: Real, const N: usize> Sub for Dual<R, N> {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self {
-        self + -other
-    }
-}
-
 impl<R: Real, const N: usize> Neg for Dual<R, N> {
     type Output = Self;
 
@@ -239,10 +216,36 @@ impl<R: Real, const N: usize> Neg for Dual<R, N> {
     }
 }
 
-impl<R: Real, const N: usize> Mul for Dual<R, N> {
-    type Output = Self;
+/// Implements binary operators on [`Dual`] returning `Dual<R, N>`.
+macro_rules! dual_ops {
+    ($(
+        $trait:ident :: $method:ident ($self:ident : $lhs:ty, $other:ident : $rhs:ty) $body:block
+    )*) => {$(
+        impl<R: Real, const N: usize> $trait<$rhs> for $lhs {
+            type Output = Dual<R, N>;
 
-    fn mul(self, other: Self) -> Self {
+            fn $method($self, $other: $rhs) -> Dual<R, N> $body
+        }
+    )*};
+}
+
+dual_ops! {
+    Add::add(self: Dual<R, N>, other: Dual<R, N>) {
+        let mut gradient = self.gradient;
+        for (derivative, other) in gradient.iter_mut().zip(other.gradient) {
+            *derivative += other;
+        }
+        Self {
+            value: self.value + other.value,
+            gradient,
+        }
+    }
+
+    Sub::sub(self: Dual<R, N>, other: Dual<R, N>) {
+        self + -other
+    }
+
+    Mul::mul(self: Dual<R, N>, other: Dual<R, N>) {
         let mut gradient = [R::constant(0.0); N];
         let pairs = self.gradient.into_iter().zip(other.gradient);
         for (derivative, (own, others)) in gradient.iter_mut().zip(pairs) {
@@ -253,14 +256,10 @@ impl<R: Real, const N: usize> Mul for Dual<R, N> {
             gradient,
         }
     }
-}
 
-impl<R: Real, const N: usize> Div for Dual<R, N> {
-    type Output = Self;
-
-    /// The quotient `a / b`, with the derivatives `(a′ − (a / b) · b′) / b`, each
-    /// multiplied by the reciprocal of `b`, so that one division serves them all.
-    fn div(self, other: Self) -> Self {
+    // The quotient `a / b`, with the derivatives `(a′ − (a / b) · b′) / b`, each
+    // multiplied by the reciprocal of `b`, so that one division serves them all.
+    Div::div(self: Dual<R, N>, other: Dual<R, N>) {
         let value = self.value / other.value;
         let reciprocal = other.value.recip();
         let mut gradient = self.gradient;
@@ -269,35 +268,31 @@ impl<R: Real, const N: usize> Div for Dual<R, N> {
         }
         Self { value, gradient }
     }
-}
 
-impl<R: Real, const N: usize> Add<f64> for Dual<R, N> {
-    type Output = Self;
-
-    fn add(self, other: f64) -> Self {
+    Add::add(self: Dual<R, N>, other: f64) {
         Self {
             value: self.value + other,
             ..self
         }
     }
-}
 
-impl<R: Real, const N: usize> Sub<f64> for Dual<R, N> {
-    type Output = Self;
-
-    fn sub(self, other: f64) -> Self {
+    Sub::sub(self: Dual<R, N>, other: f64) {
         self + -other
     }
-}
 
-impl<R: Real, const N: usize> Mul<f64> for Dual<R, N> {
-    type Output = Self;
-
-    fn mul(self, other: f64) -> Self {
+    Mul::mul(self: Dual<R, N>, other: f64) {
         Self {
             value: self.value * other,
             gradient: self.gradient.map(|derivative| derivative * other),
         }
+    }
+
+    Mul::mul(self: f64, other: Dual<R, N>) {
+        other * self
+    }
+
+    Sub::sub(self: f64, other: Dual<R, N>) {
+        -other + self
     }
 }
 
@@ -314,22 +309,6 @@ impl<R: Real, const N: usize> Div<f64> for Dual<R, N> {
             value: self.value / other,
             gradient: self.gradient.map(|derivative| derivative * reciprocal),
         }
-    }
-}
-
-impl<R: Real, const N: usize> Mul<Dual<R, N>> for f64 {
-    type Output = Dual<R, N>;
-
-    fn mul(self, other: Dual<R, N>) -> Dual<R, N> {
-        other * self
-    }
-}
-
-impl<R: Real, const N: usize> Sub<Dual<R, N>> for f64 {
-    type Output = Dual<R, N>;
-
-    fn sub(self, other: Dual<R, N>) -> Dual<R, N> {
-        -other + self
     }
 }
 

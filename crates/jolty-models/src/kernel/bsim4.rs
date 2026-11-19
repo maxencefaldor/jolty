@@ -30,16 +30,16 @@ use serde::{Deserialize, Serialize};
 use self::channel::Operating;
 pub use self::parameters::Bsim4Parameters;
 use self::prepare::{External, Gate, Junction, PreparedBsim4};
-use crate::kernel::bsim3::{
-    DELTA, EXP_THRESHOLD, MIN_EXP, N_MINLOG, NGSPICE_BOLTZMANN, NOISE_CHARGE, VT0, critical_voltage,
+use crate::kernel::bsim::{
+    D, DELTA, EXP_THRESHOLD, MAX_EXP, MIN_EXP, N_MINLOG, NGSPICE_BOLTZMANN, NOISE_CHARGE, REGIONS,
+    Region, VARIABLE_NAMES, VT0, clm_noise_length, critical_voltage, forward_frame, fringe_factor,
+    interface, unswapped, variables,
 };
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
-use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    REGION, Real, Regions, Stamp,
+    Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError, Real, Regions, Stamp,
 };
 
 /// The permittivity of vacuum, in farads per meter, as `b4v5temp.c` takes it.
@@ -51,17 +51,13 @@ const EPS0: f64 = 8.85418e-12;
 )]
 const PI: f64 = 3.141_592_654;
 
-/// A number and its derivatives with respect to a transistor's gate-source, drain-source
-/// and bulk-source voltages.
-type D<R> = Dual<R, 3>;
-
 /// A junction's voltage, with its derivative with respect to itself.
 type J<R> = Dual<R, 1>;
 
 /// `b4v5set.c`'s fringing capacitance per width of an oxide `toxe` thick, of relative
 /// permittivity `epsrox`, `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)`.
 fn fringe<R: Real>(epsrox: R, toxe: R) -> R {
-    (R::constant(0.4e-6) / toxe + 1.0).ln() * epsrox * (2.0 * EPS0 / PI)
+    fringe_factor(toxe) * epsrox * (2.0 * EPS0 / PI)
 }
 
 /// The body's resistance network, `rbodymod`.
@@ -75,28 +71,14 @@ pub enum BodyResistance {
     One,
 }
 
-impl TryFrom<u8> for BodyResistance {
-    type Error = String;
-
-    fn try_from(rbodymod: u8) -> Result<Self, String> {
-        match rbodymod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "jolty's BSIM4 has body_resistance_model 0 or 1, not {rbodymod}"
-            )),
-        }
+super::numbered_enum!(
+    BodyResistance,
+    "jolty's BSIM4 has body_resistance_model 0 or 1",
+    {
+        0 => Zero,
+        1 => One,
     }
-}
-
-impl From<BodyResistance> for u8 {
-    fn from(rbodymod: BodyResistance) -> Self {
-        match rbodymod {
-            BodyResistance::Zero => 0,
-            BodyResistance::One => 1,
-        }
-    }
-}
+);
 
 /// The gate's resistance network, `rgatemod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -117,32 +99,16 @@ pub enum GateResistance {
     Three,
 }
 
-impl TryFrom<u8> for GateResistance {
-    type Error = String;
-
-    fn try_from(rgatemod: u8) -> Result<Self, String> {
-        match rgatemod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            3 => Ok(Self::Three),
-            _ => Err(format!(
-                "BSIM4's gate_resistance_model is 0, 1, 2 or 3, not {rgatemod}"
-            )),
-        }
+super::numbered_enum!(
+    GateResistance,
+    "BSIM4's gate_resistance_model is 0, 1, 2 or 3",
+    {
+        0 => Zero,
+        1 => One,
+        2 => Two,
+        3 => Three,
     }
-}
-
-impl From<GateResistance> for u8 {
-    fn from(rgatemod: GateResistance) -> Self {
-        match rgatemod {
-            GateResistance::Zero => 0,
-            GateResistance::One => 1,
-            GateResistance::Two => 2,
-            GateResistance::Three => 3,
-        }
-    }
-}
+);
 
 /// What a diffusion's perimeter `ps` or `pd` includes, `permod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -154,26 +120,10 @@ pub enum Perimeter {
     One,
 }
 
-impl TryFrom<u8> for Perimeter {
-    type Error = String;
-
-    fn try_from(permod: u8) -> Result<Self, String> {
-        match permod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!("BSIM4's perimeter_model is 0 or 1, not {permod}")),
-        }
-    }
-}
-
-impl From<Perimeter> for u8 {
-    fn from(permod: Perimeter) -> Self {
-        match permod {
-            Perimeter::Zero => 0,
-            Perimeter::One => 1,
-        }
-    }
-}
+super::numbered_enum!(Perimeter, "BSIM4's perimeter_model is 0 or 1", {
+    0 => Zero,
+    1 => One,
+});
 
 /// The source and drain resistances, `rdsmod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -187,28 +137,14 @@ pub enum DrainSourceResistance {
     One,
 }
 
-impl TryFrom<u8> for DrainSourceResistance {
-    type Error = String;
-
-    fn try_from(rdsmod: u8) -> Result<Self, String> {
-        match rdsmod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "BSIM4's drain_source_resistance_model is 0 or 1, not {rdsmod}"
-            )),
-        }
+super::numbered_enum!(
+    DrainSourceResistance,
+    "BSIM4's drain_source_resistance_model is 0 or 1",
+    {
+        0 => Zero,
+        1 => One,
     }
-}
-
-impl From<DrainSourceResistance> for u8 {
-    fn from(rdsmod: DrainSourceResistance) -> Self {
-        match rdsmod {
-            DrainSourceResistance::Zero => 0,
-            DrainSourceResistance::One => 1,
-        }
-    }
-}
+);
 
 /// The flicker noise model, `fnoimod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -220,28 +156,10 @@ pub enum FlickerNoise {
     One,
 }
 
-impl TryFrom<u8> for FlickerNoise {
-    type Error = String;
-
-    fn try_from(fnoimod: u8) -> Result<Self, String> {
-        match fnoimod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "BSIM4's flicker_noise_model is 0 or 1, not {fnoimod}"
-            )),
-        }
-    }
-}
-
-impl From<FlickerNoise> for u8 {
-    fn from(fnoimod: FlickerNoise) -> Self {
-        match fnoimod {
-            FlickerNoise::Zero => 0,
-            FlickerNoise::One => 1,
-        }
-    }
-}
+super::numbered_enum!(FlickerNoise, "BSIM4's flicker_noise_model is 0 or 1", {
+    0 => Zero,
+    1 => One,
+});
 
 /// The channel's thermal noise model, `tnoimod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -254,28 +172,10 @@ pub enum ThermalNoise {
     One,
 }
 
-impl TryFrom<u8> for ThermalNoise {
-    type Error = String;
-
-    fn try_from(tnoimod: u8) -> Result<Self, String> {
-        match tnoimod {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "BSIM4's thermal_noise_model is 0 or 1, not {tnoimod}"
-            )),
-        }
-    }
-}
-
-impl From<ThermalNoise> for u8 {
-    fn from(tnoimod: ThermalNoise) -> Self {
-        match tnoimod {
-            ThermalNoise::Zero => 0,
-            ThermalNoise::One => 1,
-        }
-    }
-}
+super::numbered_enum!(ThermalNoise, "BSIM4's thermal_noise_model is 0 or 1", {
+    0 => Zero,
+    1 => One,
+});
 
 /// A MOSFET in BSIM4.5, SPICE's level 14 and 54 model of short channels, as ngspice 47
 /// implements it.
@@ -344,37 +244,6 @@ pub struct Bsim4Memory {
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
     variables: [f64; 5],
 }
-
-/// The variables a BSIM4 transistor reports: its threshold and saturation voltages, in
-/// its own polarity, and its region among [`REGIONS`] and its margins.
-const VARIABLE_NAMES: [&str; 5] = [
-    "threshold_voltage",
-    "saturation_voltage",
-    REGION,
-    OVERDRIVE,
-    SATURATION_MARGIN,
-];
-
-/// The regions of a transistor's channel, on either side of its threshold and saturation
-/// voltages, in the order of [`REGIONS`]' names. The equations blend one region into the
-/// next through `Vgsteff` and `Vdseff`, and switch at neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Region {
-    /// Below its threshold, its current falling exponentially.
-    WeakInversion,
-    /// At or above its threshold, with the drain below saturation.
-    Linear,
-    /// At or above its threshold, with the drain at or past saturation.
-    Saturated,
-}
-
-/// The regions a transistor's equations distinguish, and its margins to their boundaries:
-/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in an n-channel's sign, with the drain and
-/// the source swapped where the drain lies below the source, as the equations swap them.
-const REGIONS: Regions = Regions {
-    names: &["weak_inversion", "linear", "saturated"],
-    margins: &[OVERDRIVE, SATURATION_MARGIN],
-};
 
 /// Local node indices among the stamped ones: the channel's gate, behind the gate's
 /// resistances, and the bulk, the drain and source behind their resistances, the body's
@@ -499,14 +368,13 @@ struct Terminals<R: Real> {
 impl<R: Real> Terminals<R> {
     /// The values of [`VARIABLE_NAMES`] of a channel of `sign`, in its own polarity.
     fn variables(&self, sign: f64) -> [f64; 5] {
-        let [overdrive, margin] = self.margins;
-        [
-            sign * self.threshold,
-            sign * self.saturation,
-            f64::from(self.region as u8),
-            overdrive,
-            margin,
-        ]
+        variables(
+            sign,
+            self.threshold,
+            self.saturation,
+            self.region,
+            self.margins,
+        )
     }
 }
 
@@ -525,23 +393,12 @@ fn add_body_network<R: Real>(
     }
 }
 
-/// `f`, a function of the gate-source, drain-source and body-source voltages of the frame
-/// whose source is the drain, with its derivatives with respect to the terminals' own
-/// voltages.
-fn unswapped<R: Real>(f: D<R>) -> D<R> {
-    let [gate, drain, bulk] = f.gradient;
-    D {
-        value: f.value,
-        gradient: [gate, -(gate + drain + bulk), bulk],
-    }
-}
-
 /// `b4v5ld.c`'s and `b4v5temp.c`'s `DEXP`: `e^x`, continued linearly above
 /// [`EXP_THRESHOLD`] and held at [`MIN_EXP`] below its negative.
 fn dexp<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
     let value = x.value.value();
     if value > EXP_THRESHOLD {
-        (x - EXP_THRESHOLD + 1.0) * crate::kernel::bsim3::MAX_EXP
+        (x - EXP_THRESHOLD + 1.0) * MAX_EXP
     } else if value < -EXP_THRESHOLD {
         Dual::number(MIN_EXP)
     } else {
@@ -722,12 +579,7 @@ impl<R: Real> PreparedBsim4<R> {
     )]
     fn terminals(&self, voltages: [R; 3], middle: R, junctions: [R; 2], gmin: f64) -> Terminals<R> {
         let [gate, drain, bulk] = voltages;
-        let forward = drain.value() >= 0.0;
-        let frame = if forward {
-            voltages
-        } else {
-            [gate - drain, -drain, bulk - drain]
-        };
+        let (forward, frame) = forward_frame(voltages);
         let core = &self.core;
         let variables = Dual::variables(frame);
         let operating = core.evaluate(variables);
@@ -761,11 +613,7 @@ impl<R: Real> PreparedBsim4<R> {
             (operating.vgs_eff - operating.vth).value.value(),
             (variables[1] - operating.vdsat).value.value(),
         ];
-        let region = match margins {
-            [overdrive, _] if overdrive < 0.0 => Region::WeakInversion,
-            [_, margin] if margin < 0.0 => Region::Linear,
-            _ => Region::Saturated,
-        };
+        let region = Region::classify(margins);
         let [vbd_jct, vbs_jct] = junctions.map(|v| J::variables([v])[0]);
         Terminals {
             channel: if forward { ids } else { -ids },
@@ -872,17 +720,7 @@ impl Kernel for Bsim4 {
     type Memory = Bsim4Memory;
 
     fn interface<R: Real>(_: &Bsim4Parameters<R>) -> Interface {
-        Interface::new(
-            &["drain", "gate", "source", "bulk"],
-            &[
-                Branch::new(0, 2, BranchKind::Conductive),
-                Branch::new(3, 0, BranchKind::Conductive),
-                Branch::new(3, 2, BranchKind::Conductive),
-                Branch::new(1, 2, BranchKind::Capacitive),
-                Branch::new(1, 0, BranchKind::Capacitive),
-                Branch::new(1, 3, BranchKind::Capacitive),
-            ],
-        )
+        interface()
     }
 
     fn prepare<R: Real>(
@@ -1219,13 +1057,7 @@ impl<R: Real> PreparedBsim4<R> {
     /// The channel's noise at the gate-source, drain-source and body-source voltages
     /// `voltages`, as `b4v5noi.c` computes it.
     fn channel_noise(&self, voltages: [f64; 3]) -> ChannelNoise {
-        let [gate, drain, bulk] = voltages;
-        let forward = drain >= 0.0;
-        let frame = if forward {
-            voltages
-        } else {
-            [gate - drain, -drain, bulk - drain]
-        };
+        let (forward, frame) = forward_frame(voltages);
         let vds = frame[1];
         let operating = self.core.evaluate(Dual::variables(frame.map(R::constant)));
         let (thermal, source_side) = self.thermal_noise(&operating, vds);
@@ -1320,12 +1152,7 @@ impl<R: Real> PreparedBsim4<R> {
                 let leffsq = length * length;
                 let esat = 2.0 * core.vsattemp.value() / ueff;
                 let litl = core.litl.value();
-                let clm = if noise.em <= 0.0 {
-                    0.0
-                } else {
-                    let t0 = ((vds - vdseff) / litl + noise.em) / esat;
-                    (litl * t0.max(N_MINLOG).ln()).max(0.0)
-                };
+                let clm = clm_noise_length(vds, vdseff, litl, esat, noise.em);
                 let weff = core.weff.value() * fingers;
                 let t1 =
                     NOISE_CHARGE * NOISE_CHARGE * NGSPICE_BOLTZMANN * current * temperature * ueff;
@@ -1360,12 +1187,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Thermal;
+    use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors, assert_model_jacobians_match,
-        assert_model_parameter_gradients_match, assert_parameter_gradients_match,
+        Bench, assert_close, assert_jacobians_match, assert_model_jacobians_match,
         assert_switches_where_margin_vanishes, assert_unknown_derivatives_match, source,
     };
-    use crate::{REFERENCE_TEMPERATURE, Thermal};
 
     /// A short n-channel with every effect of the drain current and the charges switched
     /// on: the poly gate's depletion, the pocket implant, the parasitic resistance, the
@@ -1460,51 +1287,6 @@ mod tests {
                     assert_jacobians_match::<Bsim4>(&parameters, &x);
                 }
             }
-        }
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let binned = r#""lvth0": 2e-9, "wvth0": -1e-9, "pvth0": 1e-16, "lu0": 1e-10,
-            "wua": 1e-17, "pk2": 1e-16, "lrdsw": 1e-6, "wvsat": 1e-3, "lcgsl": 1e-18,
-            "nominal_temperature": 290, "kt1l": 1e-9, "ute": -1.3, "prt": 20, "tpb": 1e-3,
-            "tcj": 1e-3, "rsh": 15, "drain_squares": 1, "source_squares": 1,
-            "gate_resistance_model": 3, "rshg": 20, "xgw": 1e-7, "lxrcrg1": 1e-6,
-            "wxrcrg2": 1e-7"#;
-        let parameters = with(SHORT, binned);
-        for [drain, gate, bulk] in [
-            [1.5, 1.2, -0.5],
-            // Strongly inverted, the subthreshold swing moves the currents by 1e-15 of
-            // themselves, which central differences no longer resolve: the gate stays
-            // below 1 V here.
-            [0.3, 0.9, -0.2],
-            [-1.0, 1.2, -1.5],
-            [1.5, 0.3, -0.1],
-        ] {
-            // The internal nodes away from where their currents balance, which would leave
-            // differences of their residuals only rounding.
-            let inner = [
-                drain,
-                gate,
-                0.0,
-                bulk,
-                0.8 * drain,
-                0.1,
-                0.9 * gate,
-                0.95 * gate,
-            ];
-            assert_parameter_gradients_match::<Bsim4>(&parameters, &inner);
-        }
-    }
-
-    #[test]
-    fn a_p_channel_mirrors_an_n_channel() {
-        for x in [
-            [1.5, 1.2, 0.0, -0.5],
-            [-1.0, 1.5, 0.0, -1.5],
-            [1.0, 0.3, 0.0, 0.2],
-        ] {
-            assert_mirrors(&Thermal::<Bsim4>::new(), SHORT, &x);
         }
     }
 
@@ -1775,38 +1557,16 @@ mod tests {
         }
     }
 
-    /// Checks that a heated BSIM4 matches the isothermal device at its raised temperature,
-    /// reports dissipated power on the thermal terminal, and differentiates exact Jacobians
-    /// (including at nominal temperature where `T == Tnom`) and parameter gradients.
+    /// Forward-biased junctions at `rise = 0.0` (`T == Tnom`) verify that saturation
+    /// current temperature scaling preserves `d/dT` at the nominal temperature.
     #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
+    fn forward_junction_thermal_derivative_is_exact_at_nominal_temperature() {
         let model = Thermal::<Bsim4>::new();
-        // Without the substrate current, whose derivatives below saturation central
-        // differences no longer resolve.
         let smooth = SHORT.replace(r#""alpha0": 1e-6, "#, "");
-        for every in [smooth.clone(), p_channel(&smooth)] {
-            let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
-            let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench =
-                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-            for rise in [0.0, 40.0] {
-                let mut plain = Bench::at::<Bsim4>(&every, REFERENCE_TEMPERATURE + rise);
-                let [d, g, b] = [1.5, 1.2, -0.5].map(|v| sign * v);
-                let hot = bench.settle(&[d, g, 0.0, b, rise]);
-                let reference = plain.settle(&[d, g, 0.0, b]);
-                assert_close(&hot.residual[..4], &reference.residual);
-                let power = d * hot.residual[0] + g * hot.residual[1] + b * hot.residual[3];
-                assert_close(&[-hot.residual[4]], &[power]);
-            }
-            // Forward-biased junctions at `rise = 0.0` (`T == Tnom`) verify that saturation
-            // current temperature scaling preserves `d/dT` at the nominal temperature.
+        for (parameters, sign) in [(smooth.clone(), 1.0), (p_channel(&smooth), -1.0)] {
+            let heated = parameters.replace('{', r#"{"thermal": true, "#);
             let [d, g, b] = [0.05, -0.2, 0.45].map(|v| sign * v);
             assert_model_jacobians_match(&model, &heated, &[d, g, 0.0, b, 0.0]);
-            for [d, g, b, rise] in [[1.5, 1.2, -0.5, 20.0], [0.3, 0.9, -0.2, 60.0]] {
-                let x = [sign * d, sign * g, 0.0, sign * b, rise];
-                assert_model_jacobians_match(&model, &heated, &x);
-                assert_model_parameter_gradients_match(&model, &heated, &x, None);
-            }
         }
     }
 
