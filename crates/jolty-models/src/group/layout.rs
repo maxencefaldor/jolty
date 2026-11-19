@@ -23,10 +23,10 @@ pub(super) struct Group {
     /// Each instance's device, by its index among the circuit's devices, in their order.
     pub(super) members: Vec<usize>,
     /// The circuit's unknown of each instance's local unknowns, instance after instance,
-    /// or [`UNMAPPED`] for one on the reference.
+    /// or [`UNMAPPED`] for one on ground.
     pub(super) nodes: Vec<u32>,
     /// The circuit's entry of each instance's local entries, instance after instance, or
-    /// none for one that joins the reference, until the pattern is known.
+    /// none for one that joins ground, until the pattern is known.
     claims: Vec<Option<Entry>>,
     /// The stored position of each instance's local entries, instance after instance, a
     /// stride apart, or [`UNMAPPED`] for none.
@@ -528,7 +528,7 @@ impl Groups {
     }
 }
 
-/// The index among the circuit's unknowns of `node`, or [`UNMAPPED`] for the reference.
+/// The index among the circuit's unknowns of `node`, or [`UNMAPPED`] for ground.
 fn mapped(node: Node) -> u32 {
     node.and_then(|unknown| u32::try_from(unknown.index()).ok())
         .unwrap_or(UNMAPPED)

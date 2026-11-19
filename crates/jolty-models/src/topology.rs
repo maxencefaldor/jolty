@@ -1,7 +1,7 @@
 //! The structure of a device: which of its terminals it joins, and how.
 //!
 //! Structural checks read it to find what makes a circuit's equations singular before any
-//! analysis runs, such as a node with no path to the reference at DC or a loop of voltage
+//! analysis runs, such as a node with no path to ground at DC or a loop of voltage
 //! sources, and schematics read it to draw each device. A terminal on no branch only senses
 //! its node, as a controlled source's control inputs do.
 

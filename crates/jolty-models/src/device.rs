@@ -151,7 +151,7 @@ where
     }
 
     fn kernel(&self) -> Instance<'_> {
-        Instance::of::<K>(&self.0)
+        Instance::from_parameters::<K>(&self.0)
     }
 }
 

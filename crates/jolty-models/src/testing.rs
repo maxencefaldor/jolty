@@ -304,7 +304,7 @@ impl Bench {
     }
 
     /// The device's excitation, as an independent source's: the derivative of each
-    /// residual with respect to its level.
+    /// residual with respect to its value.
     pub(crate) fn excitation(&self) -> Vec<f64> {
         let mut derivative = vec![0.0; self.unknowns.len()];
         self.runs.excite(&self.groups, 0, &mut derivative);
@@ -546,7 +546,7 @@ where
 
 /// The excitation of an independent source of `model` with `parameters`, each terminal on
 /// an unknown of its own, by unknown, and the derivative of its residuals at `x` with
-/// respect to the level of the source of that model held at its level, as a DC sweep holds
+/// respect to the value of the source of that model held at its DC value, as a DC sweep holds
 /// it: its waveform's `dc`.
 pub(crate) fn excitation_and_derivative(
     model: &dyn Model,
@@ -555,16 +555,16 @@ pub(crate) fn excitation_and_derivative(
 ) -> (Vec<f64>, Vec<f64>) {
     let parameters = serde_json::from_str(parameters).expect("a JSON object");
     let (groups, runs, _, _) = grouped(model, &parameters, REFERENCE_TEMPERATURE).expect("valid");
-    let level = runs.level(&groups, 0).expect("a source");
+    let value = runs.dc_value(&groups, 0).expect("a source");
     let mut excitation = vec![0.0; x.len()];
     runs.excite(&groups, 0, &mut excitation);
-    let held = crate::held_source(level);
+    let held = crate::held_source(value);
     let (groups, runs, _, _) = grouped(model, &held, REFERENCE_TEMPERATURE).expect("valid");
     let specification = model.read(&held).expect("valid");
     let instance = (&specification.kernel(), REFERENCE_TEMPERATURE);
     let mut twin = runs
         .twin(&groups, 0, instance, &Seeds::units(&["waveform.dc"]))
-        .expect("a real level");
+        .expect("a real value");
     twin.evaluate(&Input::new(x, None, 0.0));
     let mut derivative = vec![0.0; x.len()];
     for (unknown, (_, derivatives)) in twin.residual() {
@@ -708,7 +708,7 @@ fn assert_chunks_match_seeds_alone(
     real: &[(String, [Vec<Gradient>; 3])],
     (x, time): (&[f64], Option<f64>),
 ) {
-    for width in [Seeds::MOST, 3] {
+    for width in [Seeds::MAX, 3] {
         for chunk in real.chunks(width) {
             let paths: Vec<&str> = chunk.iter().map(|(name, _)| name.as_str()).collect();
             let along = rig

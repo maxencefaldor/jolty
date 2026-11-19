@@ -132,7 +132,7 @@ pub struct VoltageControlledCurrentSource;
 /// Where a voltage-controlled current source's contributions go: at the entries joining
 /// each output terminal to each control terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlledCurrentShape([usize; 4]);
+pub struct VoltageControlledCurrentSourceShape([usize; 4]);
 
 /// The parameters of a [`VoltageControlledCurrentSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
@@ -149,7 +149,7 @@ impl Kernel for VoltageControlledCurrentSource {
         name: "voltage_controlled_current_source",
         parameters: VoltageControlledCurrentSourceParameters,
         field: transconductance,
-        shape: ControlledCurrentShape,
+        shape: VoltageControlledCurrentSourceShape,
         branches: &[Branch::new(0, 1, BranchKind::CurrentSource)],
     }
 
@@ -157,8 +157,8 @@ impl Kernel for VoltageControlledCurrentSource {
         _: &VoltageControlledCurrentSourceParameters<R>,
         _: &R,
         layout: &mut Layout,
-    ) -> Result<ControlledCurrentShape, ParameterError> {
-        Ok(ControlledCurrentShape([
+    ) -> Result<VoltageControlledCurrentSourceShape, ParameterError> {
+        Ok(VoltageControlledCurrentSourceShape([
             layout.entry(POSITIVE, CONTROL_POSITIVE),
             layout.entry(POSITIVE, CONTROL_NEGATIVE),
             layout.entry(NEGATIVE, CONTROL_POSITIVE),
@@ -167,7 +167,7 @@ impl Kernel for VoltageControlledCurrentSource {
     }
 
     fn evaluate<R: Real>(
-        ControlledCurrentShape(entries): &ControlledCurrentShape,
+        VoltageControlledCurrentSourceShape(entries): &VoltageControlledCurrentSourceShape,
         &transconductance: &R,
         (): &mut (),
         at: &Local<'_>,
@@ -277,7 +277,7 @@ pub struct CurrentControlledVoltageSource;
 /// Where a current-controlled voltage source's contributions go: through its sensing
 /// port and its output branch, and at the entry of its current's equation at the control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SensedVoltageShape {
+pub struct CurrentControlledVoltageSourceShape {
     sense: CurrentBranch,
     branch: CurrentBranch,
     entry: usize,
@@ -298,7 +298,7 @@ impl Kernel for CurrentControlledVoltageSource {
         name: "current_controlled_voltage_source",
         parameters: CurrentControlledVoltageSourceParameters,
         field: transresistance,
-        shape: SensedVoltageShape,
+        shape: CurrentControlledVoltageSourceShape,
         branches: &[
             Branch::new(0, 1, BranchKind::VoltageSource),
             Branch::new(2, 3, BranchKind::VoltageSource),
@@ -309,11 +309,11 @@ impl Kernel for CurrentControlledVoltageSource {
         _: &CurrentControlledVoltageSourceParameters<R>,
         _: &R,
         layout: &mut Layout,
-    ) -> Result<SensedVoltageShape, ParameterError> {
+    ) -> Result<CurrentControlledVoltageSourceShape, ParameterError> {
         let sense = CurrentBranch::new(layout, "control", [CONTROL_POSITIVE, CONTROL_NEGATIVE]);
         let branch = CurrentBranch::new(layout, "current", [POSITIVE, NEGATIVE]);
         let entry = layout.entry(branch.unknown(), sense.unknown());
-        Ok(SensedVoltageShape {
+        Ok(CurrentControlledVoltageSourceShape {
             sense,
             branch,
             entry,
@@ -321,7 +321,7 @@ impl Kernel for CurrentControlledVoltageSource {
     }
 
     fn evaluate<R: Real>(
-        shape: &SensedVoltageShape,
+        shape: &CurrentControlledVoltageSourceShape,
         &transresistance: &R,
         (): &mut (),
         at: &Local<'_>,

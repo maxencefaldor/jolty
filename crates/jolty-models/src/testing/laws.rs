@@ -1534,7 +1534,7 @@ mod tests {
                 "subthreshold_slope_quadratic_temperature_coefficient": 1e-6,
                 "drain_resistance_temperature_coefficient": 3e-3,
                 "drain_resistance_quadratic_temperature_coefficient": 1e-5,
-                "quasi_saturation_temperature_exponent": 0.4,
+                "quasi_saturation_resistance_temperature_exponent": 0.4,
                 "source_resistance_temperature_coefficient": 2e-3,
                 "source_resistance_quadratic_temperature_coefficient": 2e-5,
                 "gate_resistance_temperature_coefficient": 1e-3,

@@ -24,14 +24,14 @@ pub struct Seeds {
 }
 
 impl Seeds {
-    /// The most seeds one twin carries: twins are compiled for 1, 2, 4 and this many, a
-    /// twin of another count taking the next of them up.
-    pub const MOST: usize = 8;
+    /// The maximum number of seeds one twin carries: twins are compiled for 1, 2, 4 and this many,
+    /// a twin of another count taking the next of them up.
+    pub const MAX: usize = 8;
 
     /// A seed for each of the numbers at `paths`, which moves that number alone; a path
     /// given more than once moves along each of its seeds.
     ///
-    /// A twin accepts between `1` and [`Seeds::MOST`] seeds; empty or larger sets yield
+    /// A twin accepts between `1` and [`Seeds::MAX`] seeds; empty or larger sets yield
     /// `None` when passed to [`Runs::twin`](crate::Runs::twin).
     #[must_use]
     pub fn units(paths: &[&str]) -> Self {
@@ -54,25 +54,25 @@ impl Seeds {
         })
     }
 
-    /// A seed for each of the circuit's `unknowns`, at most [`Seeds::MOST`], its parameters
+    /// A seed for each of the circuit's `unknowns`, at most [`Seeds::MAX`], its parameters
     /// constant: the derivatives of what an instance adds with respect to those unknowns,
     /// the second derivatives of its equations among them.
     #[must_use]
     pub fn unknowns(unknowns: Vec<u32>) -> Option<Self> {
         let count = unknowns.len();
-        (1..=Self::MOST).contains(&count).then_some(Self {
+        (1..=Self::MAX).contains(&count).then_some(Self {
             numbers: Vec::new(),
             count,
             seeded: unknowns,
         })
     }
 
-    /// `count` seeds, at most [`Seeds::MOST`], its parameters constant, for
+    /// `count` seeds, at most [`Seeds::MAX`], its parameters constant, for
     /// [`Twin::evaluate_along`] to move the circuit's unknowns along `count` tangent
     /// vectors.
     #[must_use]
     pub const fn tangents(count: usize) -> Option<Self> {
-        if count >= 1 && count <= Self::MOST {
+        if count >= 1 && count <= Self::MAX {
             Some(Self {
                 numbers: Vec::new(),
                 count,
@@ -83,13 +83,13 @@ impl Seeds {
         }
     }
 
-    /// `count` seeds, between `1` and [`Seeds::MOST`], along which each number of
+    /// `count` seeds, between `1` and [`Seeds::MAX`], along which each number of
     /// `numbers`, at its path, moves at its rates, one per seed, a path given more than once
     /// moving at the sum of its rates, added in the order given; `None` when `count` is out
     /// of range or a number has another count of rates.
     #[must_use]
     pub fn new(numbers: Vec<(String, Vec<f64>)>, count: usize) -> Option<Self> {
-        if !(1..=Self::MOST).contains(&count)
+        if !(1..=Self::MAX).contains(&count)
             || numbers.iter().any(|(_, rates)| rates.len() != count)
         {
             return None;
@@ -219,13 +219,12 @@ impl<K: Kind, const SEEDS: usize> Twinned for KernelTwin<K, SEEDS> {
 #[derive(Debug)]
 pub struct Twin {
     evaluated: Box<dyn Twinned>,
-    /// The circuit's unknown of each local unknown, or [`UNMAPPED`] for one on the
-    /// reference.
+    /// The circuit's unknown of each local unknown, or [`UNMAPPED`] for one on ground.
     nodes: Vec<u32>,
     /// The stored position of each local entry, or [`UNMAPPED`] for none.
     slots: Vec<u32>,
     /// The circuit's unknown each seed moves, in their order, or [`UNMAPPED`] for a local
-    /// unknown on the reference; none when the seeds are directions of the parameters.
+    /// unknown on ground; none when the seeds are directions of the parameters.
     seeded: Vec<u32>,
     seeds: usize,
 }
@@ -272,14 +271,14 @@ impl Twin {
     }
 
     /// The circuit's unknown each seed moves, by seed, when the seeds are local unknowns:
-    /// [`UNMAPPED`] for one on the reference, which moves nothing.
+    /// [`UNMAPPED`] for one on ground, which moves nothing.
     #[must_use]
     pub fn seeded(&self) -> &[u32] {
         &self.seeded
     }
 
     /// Each residual the instance adds, by the circuit's unknown whose equation it enters,
-    /// in the order of its local unknowns, those on the reference left out: `f`, and
+    /// in the order of its local unknowns, those on ground left out: `f`, and
     /// `∂f/∂p · s` along each seed `s`, as last evaluated.
     pub fn residual(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>)> + '_ {
         self.by_unknown(Contribution::Residual)
@@ -292,7 +291,7 @@ impl Twin {
     }
 
     /// Each mapped matrix slot the twin stamps into, in the order of its local entries,
-    /// those on the reference left out.
+    /// those on ground left out.
     pub fn slots(&self) -> impl Iterator<Item = usize> + '_ {
         self.slots
             .iter()
@@ -302,7 +301,7 @@ impl Twin {
     }
 
     /// Each conductance and capacitance the instance adds, by the stored position it adds
-    /// to, in the order of its local entries, those on the reference left out: `G` and `C`,
+    /// to, in the order of its local entries, those on ground left out: `G` and `C`,
     /// and their derivatives along each seed, as last evaluated.
     pub fn entries(&self) -> impl Iterator<Item = (usize, TwinNumber<'_>, TwinNumber<'_>)> + '_ {
         self.slots
@@ -317,7 +316,7 @@ impl Twin {
     }
 
     /// Each `contribution` at a local unknown, by the circuit's unknown of the local
-    /// unknown, those on the reference left out.
+    /// unknown, those on ground left out.
     fn by_unknown(
         &self,
         contribution: Contribution,

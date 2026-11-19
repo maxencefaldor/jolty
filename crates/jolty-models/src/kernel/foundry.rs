@@ -25,9 +25,9 @@ pub struct FoundryMosfetParameters<R: Real = f64> {
     pub pdk: String,
     /// The kit's model of the transistor, such as `sky130_fd_pr__nfet_01v8`.
     pub model: String,
-    /// The channel's width, all its fingers together, in metres; positive.
+    /// The channel's width, all its fingers together, in meters; positive.
     pub width: R,
-    /// The channel's length, in metres; positive.
+    /// The channel's length, in meters; positive.
     pub length: R,
     /// The fingers the width is split into; 1 unless given.
     #[serde(default = "one")]

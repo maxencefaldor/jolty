@@ -139,7 +139,7 @@ impl<R: Real> PreparedSwitch<R> {
 /// Where a voltage-controlled switch's contributions go: at the entries joining each output
 /// terminal to every terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VoltageSwitchShape([[usize; 4]; 2]);
+pub struct VoltageControlledSwitchShape([[usize; 4]; 2]);
 
 /// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `VSWITCH`.
@@ -186,7 +186,7 @@ const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 impl Kernel for VoltageControlledSwitch {
     const NAME: &'static str = "voltage_controlled_switch";
     type Parameters<R: Real> = VoltageControlledSwitchParameters<R>;
-    type Shape = VoltageSwitchShape;
+    type Shape = VoltageControlledSwitchShape;
     type Prepared<R: Real> = PreparedSwitch<R>;
     type Memory = ();
 
@@ -225,15 +225,15 @@ impl Kernel for VoltageControlledSwitch {
         _: &VoltageControlledSwitchParameters<R>,
         _: &PreparedSwitch<R>,
         layout: &mut Layout,
-    ) -> Result<VoltageSwitchShape, ParameterError> {
+    ) -> Result<VoltageControlledSwitchShape, ParameterError> {
         let [positive, negative, ..] = TERMINALS;
-        Ok(VoltageSwitchShape([positive, negative].map(|row| {
+        Ok(VoltageControlledSwitchShape([positive, negative].map(|row| {
             TERMINALS.map(|column| layout.entry(row, column))
         })))
     }
 
     fn evaluate<R: Real>(
-        VoltageSwitchShape(entries): &VoltageSwitchShape,
+        VoltageControlledSwitchShape(entries): &VoltageControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         (): &mut (),
         at: &Local<'_>,
@@ -253,7 +253,7 @@ impl Kernel for VoltageControlledSwitch {
 
     /// The thermal noise of the resistance the control sets.
     fn noise<R: Real>(
-        _: &VoltageSwitchShape,
+        _: &VoltageControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
@@ -281,7 +281,7 @@ pub struct CurrentControlledSwitch;
 /// Where a current-controlled switch's contributions go: through its sensing port, and at
 /// the entries joining each output terminal to each output terminal and to the control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CurrentSwitchShape {
+pub struct CurrentControlledSwitchShape {
     sense: CurrentBranch,
     entries: [[usize; 3]; 2],
 }
@@ -320,7 +320,7 @@ impl<R: Real> Default for CurrentControlledSwitchParameters<R> {
 impl Kernel for CurrentControlledSwitch {
     const NAME: &'static str = "current_controlled_switch";
     type Parameters<R: Real> = CurrentControlledSwitchParameters<R>;
-    type Shape = CurrentSwitchShape;
+    type Shape = CurrentControlledSwitchShape;
     type Prepared<R: Real> = PreparedSwitch<R>;
     type Memory = ();
 
@@ -362,17 +362,17 @@ impl Kernel for CurrentControlledSwitch {
         _: &CurrentControlledSwitchParameters<R>,
         _: &PreparedSwitch<R>,
         layout: &mut Layout,
-    ) -> Result<CurrentSwitchShape, ParameterError> {
+    ) -> Result<CurrentControlledSwitchShape, ParameterError> {
         let [positive, negative, control_positive, control_negative] = TERMINALS;
         let sense = CurrentBranch::new(layout, "control", [control_positive, control_negative]);
         let columns = [positive, negative, sense.unknown()];
         let entries =
             [positive, negative].map(|row| columns.map(|column| layout.entry(row, column)));
-        Ok(CurrentSwitchShape { sense, entries })
+        Ok(CurrentControlledSwitchShape { sense, entries })
     }
 
     fn evaluate<R: Real>(
-        shape: &CurrentSwitchShape,
+        shape: &CurrentControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         (): &mut (),
         at: &Local<'_>,
@@ -393,7 +393,7 @@ impl Kernel for CurrentControlledSwitch {
 
     /// The thermal noise of the resistance the control sets.
     fn noise<R: Real>(
-        shape: &CurrentSwitchShape,
+        shape: &CurrentControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,

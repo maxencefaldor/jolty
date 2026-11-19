@@ -32,7 +32,7 @@ const LEAKAGE: f64 = 1e-15;
 /// The depletion threshold, `FC · VJ` at the transistor's temperature, in volts, above
 /// which ngspice's VDMOS replaces the body diode's junction potential with `2.5 / N`,
 /// which leaves its depletion charge discontinuous there.
-const LARGEST_DEPLETION_THRESHOLD: f64 = 2.5;
+const MAX_DEPLETION_THRESHOLD: f64 = 2.5;
 
 /// A vertical double-diffused power MOSFET, ngspice's VDMOS, between `drain`, `gate` and
 /// `source`, as ngspice 47 implements it.
@@ -302,7 +302,7 @@ pub struct VdmosParameters<R: Real = f64> {
     pub drain_resistance_quadratic_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the quasi-saturation resistance,
     /// `TEXP1`; default 0.3.
-    pub quasi_saturation_temperature_exponent: R,
+    pub quasi_saturation_resistance_temperature_exponent: R,
     /// The source resistance's linear temperature coefficient, `TRS1`, per kelvin; default
     /// 0.
     #[dimension(PER_KELVIN)]
@@ -376,7 +376,7 @@ impl<R: Real> Default for VdmosParameters<R> {
             drain_resistance_temperature_exponent: None,
             drain_resistance_temperature_coefficient: zero,
             drain_resistance_quadratic_temperature_coefficient: zero,
-            quasi_saturation_temperature_exponent: R::constant(0.3),
+            quasi_saturation_resistance_temperature_exponent: R::constant(0.3),
             source_resistance_temperature_coefficient: zero,
             source_resistance_quadratic_temperature_coefficient: zero,
             gate_resistance_temperature_coefficient: zero,
@@ -900,7 +900,7 @@ impl<R: Real> VdmosParameters<R> {
             resistance: resistance / multiplier
                 * temperatures
                     .ratio()
-                    .pow(self.quasi_saturation_temperature_exponent),
+                    .pow(self.quasi_saturation_resistance_temperature_exponent),
             voltage,
         }))
     }
@@ -965,7 +965,7 @@ impl<R: Real> VdmosParameters<R> {
         let (potential, capacitance) =
             temperatures.junction(potential, capacitance * multiplier, grading);
         let threshold = (coefficient * potential).value();
-        if threshold > LARGEST_DEPLETION_THRESHOLD {
+        if threshold > MAX_DEPLETION_THRESHOLD {
             return Err(ParameterError(format!(
                 "the body diode's depletion threshold, depletion_coefficient · \
                  junction_potential, is {threshold:?} V at {:?} K, beyond the 2.5 V where \

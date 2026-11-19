@@ -32,7 +32,7 @@ impl Case {
         clippy::panic,
         reason = "every non-current unknown in a benchmark case must be explicitly biased"
     )]
-    fn of<K: Kernel>(parameters: &str, bias: fn(&str) -> Option<f64>) -> Self
+    fn from_bias<K: Kernel>(parameters: &str, bias: fn(&str) -> Option<f64>) -> Self
     where
         K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
     {
@@ -80,13 +80,13 @@ pub(crate) struct TwinCase {
 
 impl TwinCase {
     /// The twin of an instance of `K` with `parameters`, differentiated along the first
-    /// `seeds` of the numbers at `paths`, each alone, its unknowns where [`Case::of`] puts
+    /// `seeds` of the numbers at `paths`, each alone, its unknowns where [`Case::from_bias`] puts
     /// them by `bias`.
     #[expect(
         clippy::panic,
         reason = "a case's parameters are the bench's own, each read as a real number"
     )]
-    fn of<K: Kernel>(
+    fn from_bias<K: Kernel>(
         (parameters, paths): (&str, &[&str]),
         seeds: usize,
         bias: fn(&str) -> Option<f64>,
@@ -94,7 +94,7 @@ impl TwinCase {
     where
         K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
     {
-        let Case { x, .. } = Case::of::<K>(parameters, bias);
+        let Case { x, .. } = Case::from_bias::<K>(parameters, bias);
         let seeds = Seeds::units(paths.get(..seeds).unwrap_or(paths));
         let twin = twin::<K>(parameters, REFERENCE_TEMPERATURE, &seeds)
             .unwrap_or_else(|| panic!("{parameters} reads a real number at each of {paths:?}"));
@@ -154,11 +154,11 @@ const VBIC_FULL: &str = r#"{"saturation_current": 2e-16, "forward_emission_coeff
     "parasitic_saturation_current": 5e-18, "parasitic_extrinsic_fraction": 0.7,
     "parasitic_ideal_base_emitter_current": 1e-19,
     "parasitic_ideal_base_collector_current": 2e-19, "parasitic_knee_current": 1e-4,
-    "intrinsic_collector_resistance": 20, "epi_saturation_voltage": 2,
-    "epi_doping_parameter": 2e-11, "high_current_collector_factor": 0.5,
+    "intrinsic_collector_resistance": 20, "epitaxial_saturation_voltage": 2,
+    "epitaxial_doping_parameter": 2e-11, "high_current_collector_factor": 0.5,
     "intrinsic_base_resistance": 30, "parasitic_base_resistance": 40,
     "base_emitter_capacitance": 2e-14, "base_collector_capacitance": 1e-14,
-    "extrinsic_base_collector_capacitance": 5e-15, "epi_charge": 1e-14,
+    "extrinsic_base_collector_capacitance": 5e-15, "epitaxial_charge": 1e-14,
     "collector_substrate_capacitance": 3e-14, "forward_transit_time": 1e-11,
     "transit_time_bias_coefficient": 3, "transit_time_voltage": 2,
     "transit_time_current": 0.01, "reverse_transit_time": 1e-9,
@@ -173,34 +173,34 @@ fn with(parameters: &str, more: &str) -> String {
 
 /// A Gummel-Poon transistor at its defaults, forward active.
 pub(crate) fn bipolar_transistor_defaults() -> Case {
-    Case::of::<BipolarTransistor>("{}", forward_active)
+    Case::from_bias::<BipolarTransistor>("{}", forward_active)
 }
 
 /// A Gummel-Poon transistor with every part of its model in play, forward active.
 pub(crate) fn bipolar_transistor_full() -> Case {
-    Case::of::<BipolarTransistor>(GUMMEL_POON_FULL, forward_active)
+    Case::from_bias::<BipolarTransistor>(GUMMEL_POON_FULL, forward_active)
 }
 
 /// [`bipolar_transistor_full`] with an excess phase of 30°.
 pub(crate) fn bipolar_transistor_delayed() -> Case {
     let delayed = with(GUMMEL_POON_FULL, r#""excess_phase": 30"#);
-    Case::of::<BipolarTransistor>(&delayed, forward_active)
+    Case::from_bias::<BipolarTransistor>(&delayed, forward_active)
 }
 
 /// A VBIC transistor at its defaults, forward active.
 pub(crate) fn vbic_defaults() -> Case {
-    Case::of::<Vbic>("{}", forward_active)
+    Case::from_bias::<Vbic>("{}", forward_active)
 }
 
 /// A VBIC transistor with every part of its model in play, forward active.
 pub(crate) fn vbic_full() -> Case {
-    Case::of::<Vbic>(VBIC_FULL, forward_active)
+    Case::from_bias::<Vbic>(VBIC_FULL, forward_active)
 }
 
 /// [`vbic_full`] with an excess phase's delay of 2 ps.
 pub(crate) fn vbic_delayed() -> Case {
     let delayed = with(VBIC_FULL, r#""excess_phase_delay": 2e-12"#);
-    Case::of::<Vbic>(&delayed, forward_active)
+    Case::from_bias::<Vbic>(&delayed, forward_active)
 }
 
 /// A field-effect transistor's unknowns, saturated: its drain at 3 V, its gate at −0.5 V
@@ -225,12 +225,12 @@ const JFET_FULL: &str = r#"{"threshold_voltage": -1.8, "transconductance_paramet
 
 /// A JFET at its defaults, saturated.
 pub(crate) fn jfet_defaults() -> Case {
-    Case::of::<Jfet>("{}", saturated)
+    Case::from_bias::<Jfet>("{}", saturated)
 }
 
 /// A JFET with every part of its model in play, saturated.
 pub(crate) fn jfet_full() -> Case {
-    Case::of::<Jfet>(JFET_FULL, saturated)
+    Case::from_bias::<Jfet>(JFET_FULL, saturated)
 }
 
 /// A power MOSFET's unknowns, its drain resistance quasi-saturated: its drain at 20 V, its
@@ -250,7 +250,7 @@ pub(crate) fn vdmos_quasi_saturated() -> Case {
     let quasi = r#"{"threshold_voltage": 3, "transconductance_parameter": 10,
         "drain_resistance": 2, "quasi_saturation_resistance": 5,
         "quasi_saturation_voltage": 20}"#;
-    Case::of::<Vdmos>(quasi, quasi_saturated)
+    Case::from_bias::<Vdmos>(quasi, quasi_saturated)
 }
 
 /// A two-terminal device's unknowns, with what controls it: 1.5 V across it, 1.2 V,
@@ -274,44 +274,44 @@ const COEFFICIENTS: &str = r#""voltage_coefficient": 0.01, "quadratic_voltage_co
 /// A resistor with voltage coefficients.
 pub(crate) fn resistor_coefficients() -> Case {
     let parameters = with(r#"{"resistance": 1000}"#, COEFFICIENTS);
-    Case::of::<Resistor>(&parameters, controlled)
+    Case::from_bias::<Resistor>(&parameters, controlled)
 }
 
 /// A capacitor with voltage coefficients.
 pub(crate) fn capacitor_coefficients() -> Case {
     let parameters = with(r#"{"capacitance": 1e-12}"#, COEFFICIENTS);
-    Case::of::<Capacitor>(&parameters, controlled)
+    Case::from_bias::<Capacitor>(&parameters, controlled)
 }
 
 /// A voltage-controlled switch between off and on.
 pub(crate) fn voltage_controlled_switch_between() -> Case {
     let parameters = r#"{"on_voltage": 1.5, "off_voltage": 1}"#;
-    Case::of::<VoltageControlledSwitch>(parameters, controlled)
+    Case::from_bias::<VoltageControlledSwitch>(parameters, controlled)
 }
 
 /// A current-controlled switch between off and on.
 pub(crate) fn current_controlled_switch_between() -> Case {
     let parameters = r#"{"on_current": 1.5e-3, "off_current": 1e-3}"#;
-    Case::of::<CurrentControlledSwitch>(parameters, controlled)
+    Case::from_bias::<CurrentControlledSwitch>(parameters, controlled)
 }
 
 /// A voltage-controlled memristor driven toward off.
 pub(crate) fn voltage_controlled_memristor_driven() -> Case {
     let parameters = r#"{"on_resistance": 100, "off_resistance": 1e4, "on_voltage": -1,
         "off_voltage": 1, "on_rate": 1e3, "off_rate": 1e3}"#;
-    Case::of::<VoltageControlledMemristor>(parameters, controlled)
+    Case::from_bias::<VoltageControlledMemristor>(parameters, controlled)
 }
 
 /// A current-controlled memristor, driven by its current.
 pub(crate) fn current_controlled_memristor_driven() -> Case {
     let parameters = r#"{"on_resistance": 100, "off_resistance": 1e4, "charge": 1e-6}"#;
-    Case::of::<CurrentControlledMemristor>(parameters, controlled)
+    Case::from_bias::<CurrentControlledMemristor>(parameters, controlled)
 }
 
 /// A photocell whose response lags the light.
 pub(crate) fn photocell_lagging() -> Case {
     let parameters = r#"{"resistance": 1e4, "response_time": 1e-3}"#;
-    Case::of::<Photocell>(parameters, controlled)
+    Case::from_bias::<Photocell>(parameters, controlled)
 }
 
 /// A BSIM4 n-channel with eight of its numbers given, and their paths, in the order its
@@ -339,7 +339,7 @@ fn bsim4_saturated(name: &str) -> Option<f64> {
 
 /// A twin of a BSIM4 n-channel along `seeds` of its numbers, saturated.
 pub(crate) fn bsim4_twin(seeds: usize) -> TwinCase {
-    TwinCase::of::<Bsim4>(BSIM4_GIVEN, seeds, bsim4_saturated)
+    TwinCase::from_bias::<Bsim4>(BSIM4_GIVEN, seeds, bsim4_saturated)
 }
 
 /// A diode with eight of its numbers given, and their paths, in the order its twins seed
@@ -373,7 +373,7 @@ fn forward(name: &str) -> Option<f64> {
 
 /// A twin of a diode along `seeds` of its numbers, forward.
 pub(crate) fn diode_twin(seeds: usize) -> TwinCase {
-    TwinCase::of::<Diode>(DIODE_GIVEN, seeds, forward)
+    TwinCase::from_bias::<Diode>(DIODE_GIVEN, seeds, forward)
 }
 
 /// A resistor with eight of its numbers given, and their paths, in the order its twins seed
@@ -397,5 +397,5 @@ const RESISTOR_GIVEN: (&str, &[&str]) = (
 
 /// A twin of a resistor with voltage coefficients along `seeds` of its numbers.
 pub(crate) fn resistor_twin(seeds: usize) -> TwinCase {
-    TwinCase::of::<Resistor>(RESISTOR_GIVEN, seeds, controlled)
+    TwinCase::from_bias::<Resistor>(RESISTOR_GIVEN, seeds, controlled)
 }

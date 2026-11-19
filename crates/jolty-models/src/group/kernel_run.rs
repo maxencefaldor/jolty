@@ -41,11 +41,11 @@ pub(super) trait GroupRun: fmt::Debug + Send {
     /// Writes the variables of the instance `member` at its last evaluation to `values`.
     fn variables(&self, member: usize, values: &mut [f64]);
 
-    /// The level of the instance `member`, if it is an independent source.
-    fn level(&self, member: usize) -> Option<f64>;
+    /// The DC value of the instance `member`, if it is an independent source.
+    fn dc_value(&self, member: usize) -> Option<f64>;
 
     /// The derivative of each residual of an instance of `group`, as an independent source,
-    /// with respect to its level, one value per local unknown.
+    /// with respect to its value, one value per local unknown.
     fn excitation(&self, group: &Group) -> Vec<f64>;
 
     /// Starts the instance `member`, if it is a logic driver, on the ramp `ramp`, and
@@ -239,8 +239,8 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         }
     }
 
-    fn level(&self, member: usize) -> Option<f64> {
-        K::level(self.prepared.get(member)?.as_ref()?)
+    fn dc_value(&self, member: usize) -> Option<f64> {
+        K::dc_value(self.prepared.get(member)?.as_ref()?)
     }
 
     fn excitation(&self, group: &Group) -> Vec<f64> {
@@ -388,7 +388,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
             1 => KernelTwin::<K, 1>::made(made, seeds, sizes),
             2 => KernelTwin::<K, 2>::made(made, seeds, sizes),
             3 | 4 => KernelTwin::<K, 4>::made(made, seeds, sizes),
-            5..=Seeds::MOST => KernelTwin::<K, { Seeds::MOST }>::made(made, seeds, sizes),
+            5..=Seeds::MAX => KernelTwin::<K, { Seeds::MAX }>::made(made, seeds, sizes),
             _ => None,
         }
     }

@@ -18,7 +18,7 @@ impl UnknownIndex {
     }
 }
 
-/// Where a terminal connects: an unknown node voltage, or `None` for the reference node,
+/// Where a terminal connects: an unknown node voltage, or `None` for ground,
 /// whose voltage is zero and which has no equation.
 pub type Node = Option<UnknownIndex>;
 
@@ -130,7 +130,7 @@ impl<'a> Binding<'a> {
         UnknownIndex(self.first + self.unknowns.len() - 1)
     }
 
-    /// Claims the matrix entry at `row` and `column`, or none when either is the reference.
+    /// Claims the matrix entry at `row` and `column`, or none when either is ground.
     pub fn entry(&mut self, row: Node, column: Node) -> Option<Entry> {
         let (row, column) = (row?.index(), column?.index());
         Some(self.pattern.entry(row, column))

@@ -396,8 +396,8 @@ impl Terms {
     /// its entries times the local unknowns of their columns, from zero, in their order,
     /// and each listed residual's scale its magnitude, as a kernel's [`Stamp`] keeps the
     /// largest of the one term it adds; and adds each, when `into` is given, to its
-    /// unknown's there, through `at`'s map, as soon as it is written. Those on the
-    /// reference, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
+    /// unknown's there, through `at`'s map, as soon as it is written. Those on
+    /// ground, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
     #[inline]
     pub(super) fn write(
         &self,
@@ -510,8 +510,8 @@ pub(super) fn add_entries(
 
 /// Adds one instance's block to `into`: each local unknown's residual, scale and charge to
 /// its unknown's of `map`, and each local entry's conductance and capacitance to its
-/// stored position of `slots`, in the order of their local indices; those on the
-/// reference, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
+/// stored position of `slots`, in the order of their local indices; those on
+/// ground, [`UNMAPPED`](jolty_numerics::UNMAPPED), go nowhere.
 fn add(
     into: &mut Contributions,
     (map, slots): (&[u32], &[u32]),

@@ -71,7 +71,7 @@ binned_parameters! {
         /// The distance from the gate to the edge of the diffusion on the other side, `sb`,
         /// in meters; default 0.
         pub diffusion_edge_b: R = R::constant(0.0) [LENGTH],
-        /// The distance between neighbouring fingers, `sd`, in meters; default twice `dmcg`.
+        /// The distance between neighboring fingers, `sd`, in meters; default twice `dmcg`.
         pub finger_spacing: Option<R> = None [LENGTH],
         /// A shift of the zero-bias threshold, `delvto`, in volts; default 0.
         pub threshold_adjustment: R = R::constant(0.0) [VOLTAGE],

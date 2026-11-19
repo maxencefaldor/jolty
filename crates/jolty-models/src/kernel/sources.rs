@@ -8,13 +8,13 @@ use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
 };
 
-/// The parameters of an independent source held at a constant `level`, in volts or
-/// amperes, whatever its waveform: those of a source whose waveform is that level. A DC
-/// sweep makes its source from them at each of its levels.
+/// The parameters of an independent source held at a constant `value`, in volts or
+/// amperes, whatever its waveform: those of a source whose waveform is that value. A DC
+/// sweep makes its source from them at each of its values.
 #[must_use]
-pub fn held_source(level: f64) -> Parameters {
+pub fn held_source(value: f64) -> Parameters {
     let mut parameters = Parameters::new();
-    parameters.insert("waveform".to_owned(), serde_json::json!({ "dc": level }));
+    parameters.insert("waveform".to_owned(), serde_json::json!({ "dc": value }));
     parameters
 }
 
@@ -23,7 +23,7 @@ pub fn held_source(level: f64) -> Parameters {
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct SourceParameters<R: Real = f64> {
-    /// The source's level over time, in volts or amperes.
+    /// The source's value over time, in volts or amperes.
     pub waveform: Waveform<R>,
 }
 
@@ -76,7 +76,7 @@ macro_rules! source_common {
             waveform.varies_in_time()
         }
 
-        fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
+        fn dc_value<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
             Some(waveform.value(0.0).value())
         }
     };
@@ -84,7 +84,7 @@ macro_rules! source_common {
 
 /// An independent voltage source from terminal `negative` to terminal `positive`.
 ///
-/// It holds `v_positive − v_negative` at its level. Its current, flowing from `positive`
+/// It holds `v_positive − v_negative` at its value. Its current, flowing from `positive`
 /// through the source to `negative`, is an unknown labelled `current`, so a source that
 /// delivers power carries a negative current.
 #[derive(Debug, Clone, Copy)]
@@ -118,18 +118,18 @@ impl Kernel for VoltageSource {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let level = waveform.value(at.time) * at.source_scale;
+        let value = waveform.value(at.time) * at.source_scale;
         let voltage = branch.voltage::<R>(at);
-        branch.add(at, stamp, -(level - voltage));
+        branch.add(at, stamp, -(value - voltage));
     }
 
-    /// The residual of the branch's equation, `v − level`, falls by one with the level.
+    /// The residual of the branch's equation, `v − value`, falls by one with the value.
     fn excite<R: Real>(VoltageSourceShape(branch): &VoltageSourceShape, stamp: &mut Stamp<'_, R>) {
         stamp.add_residual(branch.unknown(), R::constant(-1.0));
     }
 }
 
-/// An independent current source that drives its level from terminal `positive` through the
+/// An independent current source that drives its value from terminal `positive` through the
 /// source to terminal `negative`, so it pushes current into the `negative` node.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentSource;
@@ -162,8 +162,7 @@ impl Kernel for CurrentSource {
         stamp.add_residual(negative, -current);
     }
 
-    /// The current leaves `positive` and enters `negative`, one ampere for each of the
-    /// level.
+    /// The current leaves `positive` and enters `negative`, one ampere per unit of its value.
     fn excite<R: Real>((): &(), stamp: &mut Stamp<'_, R>) {
         let [positive, negative] = TERMINALS;
         stamp.add_residual(positive, R::constant(1.0));
@@ -190,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn source_stepping_scales_the_level() {
+    fn source_stepping_scales_the_value() {
         let mut bench = Bench::new::<CurrentSource>(r#"{"waveform": {"dc": 2e-3}}"#);
         let mut input = Input::new(&[0.0, 0.0], None, 0.0);
         input.source_scale = 0.5;
@@ -198,13 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn level_derivatives_excite_the_right_rows() {
+    fn value_derivatives_excite_the_right_rows() {
         let bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
         assert_close(&bench.excitation(), &[0.0, 0.0, -1.0]);
     }
 
     #[test]
-    fn a_sources_excitation_is_the_derivative_of_its_stamp_with_respect_to_its_level() {
+    fn a_sources_excitation_is_the_derivative_of_its_stamp_with_respect_to_its_value() {
         let pulse = r#"{"waveform": {"pulse": {"initial": 0.5, "pulsed": 2, "rise": 0.2,
             "fall": 0.3, "width": 0.4}}}"#;
         for parameters in [FIVE_VOLTS, pulse] {

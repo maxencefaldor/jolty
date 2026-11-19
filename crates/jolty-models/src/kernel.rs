@@ -292,16 +292,16 @@ pub trait Kernel: Send + Sync + 'static {
         let _ = (shape, prepared, memory, at, found);
     }
 
-    /// The level of an instance that is an independent source, which analyses excite: its
-    /// waveform's at time zero. `None` for an instance that is no independent source.
+    /// The DC value of an instance that is an independent source, which analyses excite: its
+    /// waveform's value at time zero. `None` for an instance that is no independent source.
     #[must_use]
-    fn level<R: Real>(prepared: &Self::Prepared<R>) -> Option<f64> {
+    fn dc_value<R: Real>(prepared: &Self::Prepared<R>) -> Option<f64> {
         let _ = prepared;
         None
     }
 
     /// Adds to `stamp` the derivative of each residual of an instance that is an
-    /// independent source, of `shape`, with respect to its level: how a small-signal
+    /// independent source, of `shape`, with respect to its value: how a small-signal
     /// analysis excites it. Nothing for an instance that is no independent source.
     fn excite<R: Real>(shape: &Self::Shape, stamp: &mut Stamp<'_, R>) {
         let _ = (shape, stamp);
@@ -525,7 +525,7 @@ enum UnknownSeeds<'a> {
 
 impl<'a> Local<'a> {
     /// The state of an instance whose local unknown at each index is the unknown of `x`
-    /// that `map` gives there, or the reference, whose value is zero, where it gives
+    /// that `map` gives there, or ground, whose value is zero, where it gives
     /// [`jolty_numerics::UNMAPPED`], at `time` and the rest of `like`'s.
     #[must_use]
     pub(crate) const fn new(x: &'a [f64], map: &'a [u32], like: &crate::Input<'a>) -> Self {
@@ -596,7 +596,7 @@ impl<'a> Local<'a> {
                 .map_or_else(|| R::constant(value), |slot| R::unit(value, slot)),
             UnknownSeeds::Tangents(tangents) => {
                 let index = unknown as usize;
-                let mut rates = [0.0; crate::Seeds::MOST];
+                let mut rates = [0.0; crate::Seeds::MAX];
                 for (rate, tangent) in rates.iter_mut().zip(tangents) {
                     *rate = tangent.get(index).copied().unwrap_or(0.0);
                 }
@@ -606,7 +606,7 @@ impl<'a> Local<'a> {
     }
 
     /// The derivative of the local unknown at `local` along seed `slot`: zero when no twin
-    /// seeds the unknowns or the unknown is on the reference.
+    /// seeds the unknowns or the unknown is on ground.
     #[inline]
     #[must_use]
     pub fn unknown_derivative(&self, local: usize, slot: usize) -> f64 {
@@ -634,7 +634,7 @@ impl<'a> Local<'a> {
         }
     }
 
-    /// The value of the local unknown at `local`: zero for one on the reference, and for
+    /// The value of the local unknown at `local`: zero for one on ground, and for
     /// one the instance does not have.
     #[must_use]
     pub fn value(&self, local: usize) -> f64 {
@@ -646,7 +646,7 @@ impl<'a> Local<'a> {
     }
 
     /// The circuit's unknown of each local unknown, [`jolty_numerics::UNMAPPED`] for one on
-    /// the reference.
+    /// ground.
     pub(crate) const fn map(&self) -> &'a [u32] {
         self.map
     }
@@ -674,8 +674,7 @@ impl<'a> Local<'a> {
     /// its derivative with respect to the local unknown's present value: the present
     /// value, and 1, outside a transient, where the past is the present; in a transient,
     /// as [`Past::at`] interpolates the points it accepted, and the present when the
-    /// time `delay` before lies within the step being solved. Zero, and 0, for one on the
-    /// reference.
+    /// time `delay` before lies within the step being solved. Zero, and 0, for one on ground.
     ///
     /// The past keeps the unknowns of the columns [`Kernel::delayed`] states; any other
     /// reads its present value, as at DC.

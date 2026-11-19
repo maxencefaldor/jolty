@@ -75,11 +75,11 @@ impl<const K: usize> Heating for Gradient<K> {
 /// The largest step a heated device's temperature takes from one evaluation to the next,
 /// in kelvins: a Newton step beyond it is limited, as a junction's voltage is, and the
 /// device evaluated there and extended linearly.
-const MOST_TEMPERATURE_STEP: f64 = 50.0;
+const MAX_TEMPERATURE_STEP: f64 = 50.0;
 
 /// The lowest temperature a heated device is evaluated at, in kelvins, however far below
 /// it a Newton step goes.
-const LOWEST_TEMPERATURE: f64 = 1.0;
+const MIN_TEMPERATURE: f64 = 1.0;
 
 /// The [`Model`] of a [`Kernel`] `K`, whose instances heat when their parameters say
 /// `"thermal": true`.
@@ -205,8 +205,8 @@ where
 
     fn kernel(&self) -> Instance<'_> {
         match self {
-            Self::Cool(parameters) => Instance::of::<K>(parameters),
-            Self::Heated(parameters) => Instance::of_kind::<HeatedKernel<K>>(parameters),
+            Self::Cool(parameters) => Instance::from_parameters::<K>(parameters),
+            Self::Heated(parameters) => Instance::from_kind::<HeatedKernel<K>>(parameters),
         }
     }
 }

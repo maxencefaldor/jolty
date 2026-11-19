@@ -45,11 +45,11 @@ const VBIC_CHARGE: f64 = 1.602_189e-19;
 /// drives across the junction. The parasitic substrate transistor runs from the external
 /// base through the parasitic base, behind the collector, to the substrate, with its own
 /// junctions, transport current and knee. The intrinsic collector's resistance follows
-/// Kull's quasi-saturation model with the epi layer's velocity saturation, and the intrinsic
+/// Kull's quasi-saturation model with the epitaxial layer's velocity saturation, and the intrinsic
 /// and parasitic base resistances fall with their transistors' base charges. Every junction
 /// holds a depletion charge, smoothed at its potential as VBIC smooths it, the base-collector
 /// ones reaching through at their reach-through voltage; the base-emitter one holds the
-/// forward transit charge, the base-collector ones the reverse transit and epi charges, and
+/// forward transit charge, the base-collector ones the reverse transit and epitaxial charges, and
 /// overlap capacitances join the terminals.
 ///
 /// The extrinsic collector, extrinsic base, emitter and substrate resistances add internal
@@ -145,7 +145,7 @@ const INTRINSIC: [usize; 2] = [VBEI, VBCI];
 /// junctions its base charge reads.
 const INTRINSIC_BASE: [usize; 3] = [VRBI, VBEI, VBCI];
 /// The intrinsic collector resistance's current reads its own drop, then the junctions at
-/// either end of the epi layer.
+/// either end of the epitaxial layer.
 const INTRINSIC_COLLECTOR: [usize; 3] = [VRCI, VBCI, VBCX];
 /// The parasitic transistor's base-emitter charge reads its base-emitter junction and the
 /// intrinsic base-collector junction, which share its forward current.
@@ -171,12 +171,12 @@ pub struct VbicParameters<R: Real = f64> {
     /// The intrinsic collector resistance, `RCI`, in ohms, positive; default 0.1.
     #[dimension(RESISTANCE)]
     pub intrinsic_collector_resistance: R,
-    /// The epi layer's drift saturation voltage, `VO`, in volts; infinite by default, for
+    /// The epitaxial layer's drift saturation voltage, `VO`, in volts; infinite by default, for
     /// no velocity saturation.
     #[dimension(VOLTAGE)]
-    pub epi_saturation_voltage: Option<R>,
-    /// The epi layer's doping parameter, `GAMM`; default 0.
-    pub epi_doping_parameter: R,
+    pub epitaxial_saturation_voltage: Option<R>,
+    /// The epitaxial layer's doping parameter, `GAMM`; default 0.
+    pub epitaxial_doping_parameter: R,
     /// The high-current factor of the intrinsic collector resistance, `HRCF`, positive;
     /// default 1.
     pub high_current_collector_factor: R,
@@ -229,9 +229,9 @@ pub struct VbicParameters<R: Real = f64> {
     /// default 0.
     #[dimension(CAPACITANCE)]
     pub base_collector_capacitance: R,
-    /// The epi layer's charge, `QCO`, in coulombs; default 0.
+    /// The epitaxial layer's charge, `QCO`, in coulombs; default 0.
     #[dimension(CHARGE)]
-    pub epi_charge: R,
+    pub epitaxial_charge: R,
     /// The zero-bias extrinsic base-collector depletion capacitance, `CJEP`, in farads, the
     /// parasitic transistor's base-emitter junction's; default 0.
     #[dimension(CAPACITANCE)]
@@ -388,7 +388,7 @@ pub struct VbicParameters<R: Real = f64> {
     /// The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C.
     #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
-    /// The activation energy of the transport saturation current and of the epi doping,
+    /// The activation energy of the transport saturation current and of the epitaxial doping,
     /// `EA`, in volts; default 1.12.
     #[dimension(VOLTAGE)]
     pub activation_energy: R,
@@ -468,9 +468,9 @@ pub struct VbicParameters<R: Real = f64> {
     /// The exponent of the temperature ratio that scales the parasitic base resistance,
     /// `XRBP`; default 0.
     pub parasitic_base_resistance_temperature_exponent: R,
-    /// The exponent of the temperature ratio that scales the epi saturation voltage, `XVO`;
+    /// The exponent of the temperature ratio that scales the epitaxial saturation voltage, `XVO`;
     /// default 0.
-    pub epi_saturation_voltage_temperature_exponent: R,
+    pub epitaxial_saturation_voltage_temperature_exponent: R,
     /// The linear temperature coefficient of the base-emitter breakdown voltage, `TVBBE1`,
     /// per kelvin; default 0.
     #[dimension(PER_KELVIN)]
@@ -499,8 +499,8 @@ impl<R: Real> Default for VbicParameters<R> {
             polarity: Polarity::Npn,
             extrinsic_collector_resistance: zero,
             intrinsic_collector_resistance: R::constant(0.1),
-            epi_saturation_voltage: None,
-            epi_doping_parameter: zero,
+            epitaxial_saturation_voltage: None,
+            epitaxial_doping_parameter: zero,
             high_current_collector_factor: one,
             extrinsic_base_resistance: zero,
             intrinsic_base_resistance: R::constant(0.1),
@@ -518,7 +518,7 @@ impl<R: Real> Default for VbicParameters<R> {
             base_emitter_smoothing: R::constant(-0.5),
             base_collector_overlap_capacitance: zero,
             base_collector_capacitance: zero,
-            epi_charge: zero,
+            epitaxial_charge: zero,
             extrinsic_base_collector_capacitance: zero,
             base_collector_potential: R::constant(0.75),
             base_collector_grading: R::constant(0.33),
@@ -595,7 +595,7 @@ impl<R: Real> Default for VbicParameters<R> {
             emitter_resistance_temperature_exponent: zero,
             substrate_resistance_temperature_exponent: zero,
             parasitic_base_resistance_temperature_exponent: zero,
-            epi_saturation_voltage_temperature_exponent: zero,
+            epitaxial_saturation_voltage_temperature_exponent: zero,
             breakdown_voltage_temperature_coefficient: zero,
             breakdown_voltage_quadratic_temperature_coefficient: zero,
             breakdown_emission_temperature_coefficient: zero,
@@ -866,7 +866,7 @@ struct Collector<R: Real> {
     inverse_factor: R,
 }
 
-/// What the transistor stores: its depletion charges, transit charges and epi charges.
+/// What the transistor stores: its depletion charges, transit charges and epitaxial charges.
 #[derive(Debug, Clone, Copy)]
 struct Charges<R: Real> {
     base_emitter: Depletion<R>,
@@ -876,7 +876,7 @@ struct Charges<R: Real> {
     /// The zero-bias capacitances of the base-emitter, intrinsic and extrinsic
     /// base-collector and collector-substrate junctions.
     capacitances: [R; 4],
-    epi: R,
+    epitaxial: R,
     forward_transit_time: R,
     base_width_coefficient: R,
     bias_coefficient: R,
@@ -1140,9 +1140,9 @@ impl<R: Real> Core<R> {
     }
 
     /// The current through the intrinsic collector resistance, quasi-saturating by Kull's
-    /// model with the epi layer's velocity saturation, at the voltages across it, across
+    /// model with the epitaxial layer's velocity saturation, at the voltages across it, across
     /// the intrinsic base-collector junction and from the intrinsic base to the collector
-    /// behind its extrinsic resistance, with the epi layer's normalized charges at both
+    /// behind its extrinsic resistance, with the epitaxial layer's normalized charges at both
     /// ends, each of its own junction's voltage.
     #[expect(
         clippy::similar_names,
@@ -1175,7 +1175,7 @@ impl<R: Real> Core<R> {
     /// The charges on the intrinsic and extrinsic base-emitter junctions, the intrinsic and
     /// extrinsic base-collector junctions, and the parasitic transistor's base-emitter and
     /// base-collector junctions, from the intrinsic junctions' normalized depletion charges
-    /// and the other junctions' voltages, with the parasitic forward current and the epi
+    /// and the other junctions' voltages, with the parasitic forward current and the epitaxial
     /// layer's normalized charges.
     #[expect(
         clippy::similar_names,
@@ -1224,8 +1224,8 @@ impl<R: Real> Core<R> {
                 .scale(emitter * -(fraction - 1.0)),
             qbc: qdbc.scale(collector)
                 + iri.scale(charges.reverse_transit_time)
-                + kbci.scale(charges.epi),
-            qbcx: kbcx.scale(charges.epi),
+                + kbci.scale(charges.epitaxial),
+            qbcx: kbcx.scale(charges.epitaxial),
             // Within the parasitic forward current's law, `Vbep` comes first.
             qbep: charges
                 .base_collector
@@ -1672,10 +1672,12 @@ impl<R: Real> VbicParameters<R> {
         scaling: Scaling<R>,
         resistance: R,
     ) -> Result<Collector<R>, ParameterError> {
-        let doping =
-            ParameterError::non_negative("epi_doping_parameter", self.epi_doping_parameter)?;
-        let saturation = self.epi_saturation_voltage.map(|voltage| {
-            scaling.power(voltage, self.epi_saturation_voltage_temperature_exponent)
+        let doping = ParameterError::non_negative(
+            "epitaxial_doping_parameter",
+            self.epitaxial_doping_parameter,
+        )?;
+        let saturation = self.epitaxial_saturation_voltage.map(|voltage| {
+            scaling.power(voltage, self.epitaxial_saturation_voltage_temperature_exponent)
         });
         Ok(Collector {
             resistance,
@@ -1684,7 +1686,7 @@ impl<R: Real> VbicParameters<R> {
                     self.saturation_current_temperature_exponent,
                     self.activation_energy,
                 ),
-            inverse_saturation: inverse("epi_saturation_voltage", saturation)?,
+            inverse_saturation: inverse("epitaxial_saturation_voltage", saturation)?,
             inverse_factor: ParameterError::positive(
                 "high_current_collector_factor",
                 self.high_current_collector_factor,
@@ -1775,7 +1777,7 @@ impl<R: Real> VbicParameters<R> {
                 )?,
                 substrate,
             ],
-            epi: non_negative("epi_charge", self.epi_charge)?,
+            epitaxial: non_negative("epitaxial_charge", self.epitaxial_charge)?,
             forward_transit_time: non_negative("forward_transit_time", self.forward_transit_time)?,
             base_width_coefficient: self.transit_time_base_width_coefficient,
             bias_coefficient: self.transit_time_bias_coefficient,
@@ -2205,14 +2207,14 @@ mod tests {
         "parasitic_nonideal_base_collector_current": 3e-16,
         "parasitic_nonideal_base_collector_emission_coefficient": 1.7,
         "parasitic_knee_current": 1e-4, "intrinsic_collector_resistance": 20,
-        "epi_saturation_voltage": 2, "epi_doping_parameter": 2e-11,
+        "epitaxial_saturation_voltage": 2, "epitaxial_doping_parameter": 2e-11,
         "high_current_collector_factor": 0.5, "intrinsic_base_resistance": 30,
         "parasitic_base_resistance": 40, "base_emitter_capacitance": 2e-14,
         "base_emitter_potential": 0.85, "base_emitter_grading": 0.3,
         "base_emitter_smoothing": -0.5, "base_collector_capacitance": 1e-14,
         "base_collector_potential": 0.65, "base_collector_grading": 0.35,
         "base_collector_smoothing": -0.5, "extrinsic_base_collector_capacitance": 5e-15,
-        "epi_charge": 1e-14, "collector_substrate_capacitance": 3e-14,
+        "epitaxial_charge": 1e-14, "collector_substrate_capacitance": 3e-14,
         "collector_substrate_potential": 0.6, "collector_substrate_grading": 0.4,
         "collector_substrate_smoothing": -0.5, "collector_substrate_fixed_capacitance": 1e-15,
         "depletion_coefficient": 0.85, "forward_transit_time": 1e-11,
@@ -2246,7 +2248,7 @@ mod tests {
         "emitter_resistance_temperature_exponent": 1.1,
         "substrate_resistance_temperature_exponent": 1.2,
         "parasitic_base_resistance_temperature_exponent": 1.3,
-        "epi_saturation_voltage_temperature_exponent": 0.4,
+        "epitaxial_saturation_voltage_temperature_exponent": 0.4,
         "breakdown_voltage_temperature_coefficient": 1e-3,
         "breakdown_voltage_quadratic_temperature_coefficient": 1e-6,
         "breakdown_emission_temperature_coefficient": 1e-4, "#;
@@ -2460,7 +2462,7 @@ mod tests {
 
     #[test]
     fn its_intrinsic_collector_quasi_saturates() {
-        let parameters = r#"{"intrinsic_collector_resistance": 100, "epi_saturation_voltage": 1,
+        let parameters = r#"{"intrinsic_collector_resistance": 100, "epitaxial_saturation_voltage": 1,
             "high_current_collector_factor": 2}"#;
         let mut bench = Bench::new::<Vbic>(parameters);
         let drop = 1.5;

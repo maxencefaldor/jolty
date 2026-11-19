@@ -52,13 +52,13 @@ impl<'a> Instance<'a> {
     /// An instance of the kernel `K` with `parameters`, at the temperature of its
     /// surroundings.
     #[must_use]
-    pub fn of<K: Kernel>(parameters: &'a K::Parameters<f64>) -> Self {
-        Self::of_kind::<K>(parameters)
+    pub fn from_parameters<K: Kernel>(parameters: &'a K::Parameters<f64>) -> Self {
+        Self::from_kind::<K>(parameters)
     }
 
     /// An instance of the kind `K` with `parameters`, at the temperature of its
     /// surroundings.
-    pub(crate) fn of_kind<K: Kind>(parameters: &'a K::Parameters) -> Self {
+    pub(crate) fn from_kind<K: Kind>(parameters: &'a K::Parameters) -> Self {
         Self {
             kernel: TypeId::of::<K>(),
             name: K::NAME,
@@ -223,8 +223,8 @@ pub(crate) trait Kind: Send + Sync + 'static {
         found: &mut Vec<Choice>,
     );
 
-    /// As [`Kernel::level`].
-    fn level(prepared: &Self::Prepared) -> Option<f64>;
+    /// As [`Kernel::dc_value`].
+    fn dc_value(prepared: &Self::Prepared) -> Option<f64>;
 
     /// As [`Kernel::excite`].
     fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>);
@@ -307,7 +307,7 @@ impl<K: Kernel> Kind for K {
         fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>);
         fn choices(shape: &Self::Shape, prepared: &Self::Prepared, memory: &mut Self::Memory,
             at: &Local<'_>, found: &mut Vec<Choice>);
-        fn level(prepared: &Self::Prepared) -> Option<f64>;
+        fn dc_value(prepared: &Self::Prepared) -> Option<f64>;
         fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>);
         fn drive(memory: &mut Self::Memory, ramp: (f64, LogicLevel, f64)) -> Option<f64>;
         fn driven(shape: &Self::Shape) -> Option<usize>;

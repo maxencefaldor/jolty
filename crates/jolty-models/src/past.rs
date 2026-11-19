@@ -5,10 +5,10 @@ use std::collections::VecDeque;
 
 use jolty_numerics::UNMAPPED;
 
-/// The most points an interpolation reads: one more than the highest order of an
+/// The maximum number of points an interpolation reads: one more than the highest order of an
 /// integration method, Gear2's and the trapezoidal formula's 2
 /// ([`jolty_numerics::integration::Method::order`]).
-const MOST_NODES: usize = 3;
+const MAX_NODES: usize = 3;
 
 /// A part of an instance's conductance that reads the local unknown of its column `delay`
 /// seconds in the past, which [`crate::Kernel::delayed`] states: in a small-signal analysis
@@ -50,7 +50,7 @@ pub struct DelayedEntry {
 /// instances read, as [`Past::forget_before`] says.
 #[derive(Debug, Clone, Default)]
 pub struct Past {
-    /// The degree of the interpolating polynomials, at most [`MOST_NODES`] − 1.
+    /// The degree of the interpolating polynomials, at most [`MAX_NODES`] − 1.
     order: usize,
     /// The column of each of the circuit's unknowns among those kept, by the unknown's
     /// index, or [`UNMAPPED`] for one not kept.
@@ -83,7 +83,7 @@ impl Past {
             }
         }
         Self {
-            order: order.clamp(1, MOST_NODES - 1),
+            order: order.clamp(1, MAX_NODES - 1),
             columns,
             width: width as usize,
             times: VecDeque::new(),
@@ -203,8 +203,8 @@ impl Past {
                 (None, None) => break,
             }
         }
-        let mut times = [0.0; MOST_NODES];
-        let mut values = [0.0; MOST_NODES];
+        let mut times = [0.0; MAX_NODES];
+        let mut values = [0.0; MAX_NODES];
         for (offset, index) in (start..=end).enumerate() {
             if let (Some(at), Some(value)) = (times.get_mut(offset), values.get_mut(offset)) {
                 (*at, *value) = node(index);

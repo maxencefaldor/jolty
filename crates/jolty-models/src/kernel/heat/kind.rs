@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 
 use jolty_numerics::UNMAPPED;
 
-use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
+use super::{Heating, MAX_TEMPERATURE_STEP, MIN_TEMPERATURE};
 use crate::group::Kind;
 use crate::lift::{constant, lift};
 use crate::{
@@ -249,8 +249,8 @@ fn heated_shape<S>(inner: S, own: &Layout, layout: &mut Layout) -> HeatedShape<S
 }
 
 /// Moves a heated instance of `shape`, with the numbers `prepared`, to its temperature at
-/// `at`, no further than [`MOST_TEMPERATURE_STEP`] from its last evaluation's when `at`
-/// limits its steps and no lower than [`LOWEST_TEMPERATURE`], preparing its kernel's
+/// `at`, no further than [`MAX_TEMPERATURE_STEP`] from its last evaluation's when `at`
+/// limits its steps and no lower than [`MIN_TEMPERATURE`], preparing its kernel's
 /// instance again there into `memory`, and returns how far its applied temperature lies
 /// beyond the one it is evaluated at. Marks `stamp` limited when that is not the applied
 /// one.
@@ -264,13 +264,13 @@ fn heat<K: Kernel, R: Heating>(
     let applied = prepared.ambient + at.value(shape.terminals);
     let stepped = if at.limiting {
         applied.clamp(
-            memory.last - MOST_TEMPERATURE_STEP,
-            memory.last + MOST_TEMPERATURE_STEP,
+            memory.last - MAX_TEMPERATURE_STEP,
+            memory.last + MAX_TEMPERATURE_STEP,
         )
     } else {
         applied
     };
-    let temperature = stepped.max(LOWEST_TEMPERATURE);
+    let temperature = stepped.max(MIN_TEMPERATURE);
     let seeding = R::SEEDS > 0 && at.seeds_unknowns();
     if temperature.to_bits() != memory.last.to_bits() || seeding || memory.seeded {
         // The temperature moves with the thermal net when a twin seeds it.
@@ -508,8 +508,8 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         );
     }
 
-    fn level(prepared: &Self::Prepared) -> Option<f64> {
-        K::level(&prepared.at_ambient)
+    fn dc_value(prepared: &Self::Prepared) -> Option<f64> {
+        K::dc_value(&prepared.at_ambient)
     }
 
     fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>) {

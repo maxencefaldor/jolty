@@ -1,20 +1,20 @@
-//! Waveforms: the level of an independent source over time.
+//! Waveforms: the value of an independent source over time.
 //!
 //! A waveform is written as a JSON object with one key, its shape:
 //!
-//! - `dc`: the level.
+//! - `dc`: the constant value.
 //! - `pulse`: `initial`, `pulsed`, `delay` (default 0), `rise`, `fall`, `width`, and `period`
 //!   (by default, a single pulse).
 //! - `sine`: `offset`, `amplitude`, `frequency`, `delay` (default 0), `damping` (default 0) and
 //!   `phase` in radians (default 0).
-//! - `piecewise`: `points`, a list of `[time, level]` pairs in increasing time.
+//! - `piecewise`: `points`, a list of `[time, value]` pairs in increasing time.
 //! - `exponential`: `initial`, `pulsed`, `rise_delay` (default 0), `rise_time_constant`,
 //!   `fall_delay` and `fall_time_constant`.
 //!
 //! Times are in seconds, frequencies in hertz and damping in inverse seconds. A sine is
 //! `offset + amplitude · e^{-damping·s} · sin(2π·frequency·s + phase)`, where `s` is the time since
 //! its delay, and holds its value at `s = 0` before the delay. A piecewise waveform draws
-//! straight lines between its points and holds its first and last levels outside them. An
+//! straight lines between its points and holds its first and last values outside them. An
 //! exponential waveform is SPICE's `EXP` (ngspice 47 manual, §4.1.3): it holds `initial` until
 //! its rise delay, rises toward `pulsed` from then, `initial + (pulsed − initial)(1 −
 //! e^{−(t − rise_delay)/rise_time_constant})`, and from its fall delay on adds the fall back
@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Lift, ParameterError, Real};
 
-/// The level of an independent source over time, in volts or amperes.
+/// The value of an independent source over time, in volts or amperes.
 ///
-/// Every analysis but a transient one reads the level at time zero. A waveform is checked as
+/// Every analysis but a transient one reads the value at time zero. A waveform is checked as
 /// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
 /// carry their derivatives with respect to a parameter.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema, Lift)]
@@ -49,18 +49,18 @@ impl<R: Real + Serialize> Serialize for Waveform<R> {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 enum Shape<R: Real> {
-    /// A constant level.
+    /// A constant value.
     Dc(R),
     /// A trapezoidal pulse, repeated each period, if it has one.
     Pulse(Pulse<R>),
     /// A sine, damped from its delay on.
     Sine(Sine<R>),
-    /// Straight lines between points, holding the first and last levels outside them.
+    /// Straight lines between points, holding the first and last values outside them.
     Piecewise {
-        /// Each point's time and level, in strictly increasing time; at least one.
+        /// Each point's time and value, in strictly increasing time; at least one.
         points: Vec<(R, R)>,
     },
-    /// A rise toward a level and a fall back, each exponential, as SPICE's `EXP`.
+    /// A rise toward a value and a fall back, each exponential, as SPICE's `EXP`.
     Exponential(Exponential<R>),
 }
 
@@ -68,9 +68,9 @@ enum Shape<R: Real> {
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 struct Pulse<R: Real> {
-    /// The level before the delay and between pulses.
+    /// The value before the delay and between pulses.
     initial: R,
-    /// The level at the top of each pulse.
+    /// The value at the top of each pulse.
     pulsed: R,
     /// The time the first pulse starts its rise, in seconds.
     #[serde(default)]
@@ -91,7 +91,7 @@ struct Pulse<R: Real> {
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 struct Sine<R: Real> {
-    /// The level the sine swings about.
+    /// The value the sine swings about.
     offset: R,
     /// The sine's amplitude at its delay.
     amplitude: R,
@@ -112,9 +112,9 @@ struct Sine<R: Real> {
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 struct Exponential<R: Real> {
-    /// The level before the rise delay.
+    /// The value before the rise delay.
     initial: R,
-    /// The level the rise tends to.
+    /// The value the rise tends to.
     pulsed: R,
     /// The time the rise starts, in seconds.
     #[serde(default)]
@@ -192,19 +192,19 @@ impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
 }
 
 impl Waveform {
-    /// A constant `level`.
+    /// A constant `value`.
     #[must_use]
-    pub fn dc(level: f64) -> Self {
-        Self(Shape::Dc(level))
+    pub fn dc(value: f64) -> Self {
+        Self(Shape::Dc(value))
     }
 }
 
 impl<R: Real> Waveform<R> {
-    /// The level at `time`.
+    /// The value at `time`.
     #[must_use]
     pub fn value(&self, time: f64) -> R {
         match &self.0 {
-            Shape::Dc(level) => *level,
+            Shape::Dc(value) => *value,
             Shape::Pulse(pulse) => pulse.value(time),
             Shape::Sine(sine) => sine.value(time),
             Shape::Piecewise { points } => piecewise(points, time),
@@ -212,12 +212,12 @@ impl<R: Real> Waveform<R> {
         }
     }
 
-    /// Whether the level varies with time.
+    /// Whether the value varies with time.
     ///
     /// Returns `false` for a constant `dc` waveform, a `pulse` or `exponential` whose
-    /// initial and pulsed levels are equal (or an `exponential` whose rise and fall have
+    /// initial and pulsed values are equal (or an `exponential` whose rise and fall have
     /// equal delays and time constants), a `piecewise` waveform whose points all share one
-    /// level, or a `sine` with zero amplitude or zero frequency and either zero damping or
+    /// value, or a `sine` with zero amplitude or zero frequency and either zero damping or
     /// zero phase sine.
     #[must_use]
     pub fn varies_in_time(&self) -> bool {
@@ -232,7 +232,7 @@ impl<R: Real> Waveform<R> {
             Shape::Piecewise { points } => points.first().is_some_and(|&(_, first)| {
                 points
                     .iter()
-                    .any(|&(_, level)| level.value() - first.value() != 0.0)
+                    .any(|&(_, value)| value.value() - first.value() != 0.0)
             }),
             Shape::Exponential(exponential) => {
                 exponential.pulsed.value() - exponential.initial.value() != 0.0
@@ -244,7 +244,7 @@ impl<R: Real> Waveform<R> {
         }
     }
 
-    /// Appends the times in `[start, stop]` where the level has a corner.
+    /// Appends the times in `[start, stop]` where the value has a corner.
     pub fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
         let mut push = |time: f64| {
             if (start..=stop).contains(&time) {
@@ -319,7 +319,7 @@ impl<R: Real> Sine<R> {
 }
 
 impl<R: Real> Exponential<R> {
-    /// The level at `time`, as ngspice 47's `vsrcload.c` computes it: the initial level up
+    /// The value at `time`, as ngspice 47's `vsrcload.c` computes it: the initial value up
     /// to the rise delay, the rise after it, and the rise and the fall after the fall delay.
     fn value(&self, time: f64) -> R {
         if time <= self.rise_delay.value() {

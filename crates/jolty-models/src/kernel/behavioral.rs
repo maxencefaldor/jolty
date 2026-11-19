@@ -28,7 +28,7 @@ pub struct Behavior {
     ports: Vec<(String, [usize; 2])>,
 }
 
-/// What one variable reads: the voltage of a terminal over another or over the reference,
+/// What one variable reads: the voltage of a terminal over another or over ground,
 /// by their indices among the terminals; the current through a port, by its index among
 /// the ports; or time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +148,7 @@ pub struct BehavioralShape {
 }
 
 /// What one variable of an expression reads: the voltage of a local unknown over another
-/// or over the reference, a port's current, or time.
+/// or over ground, a port's current, or time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Read {
     Voltage(usize, Option<usize>),
@@ -171,7 +171,7 @@ struct Room {
     gradient: Vec<f64>,
     tangent: Vec<f64>,
     gradient_tangent: Vec<f64>,
-    gradient_derivatives: Vec<[f64; crate::Seeds::MOST]>,
+    gradient_derivatives: Vec<[f64; crate::Seeds::MAX]>,
 }
 
 impl BehavioralShape {
@@ -257,8 +257,8 @@ impl BehavioralShape {
         }
         let seeded = R::SEEDS > 0 && at.seeds_unknowns();
         let value_derivatives = if seeded {
-            let mut value_derivatives = [0.0; crate::Seeds::MOST];
-            for slot in 0..R::SEEDS.min(crate::Seeds::MOST) {
+            let mut value_derivatives = [0.0; crate::Seeds::MAX];
+            for slot in 0..R::SEEDS.min(crate::Seeds::MAX) {
                 self.read_tangent(at, slot, &mut room.tangent);
                 if room.tangent.iter().all(|&rate| rate == 0.0) {
                     if let Some(target) = value_derivatives.get_mut(slot) {
@@ -312,11 +312,11 @@ impl BehavioralShape {
         &self,
         stamp: &mut Stamp<'_, R>,
         value: f64,
-        value_derivatives: Option<&[f64; crate::Seeds::MOST]>,
+        value_derivatives: Option<&[f64; crate::Seeds::MAX]>,
         gradient: &[f64],
-        gradient_derivatives: &[[f64; crate::Seeds::MOST]],
+        gradient_derivatives: &[[f64; crate::Seeds::MAX]],
     ) {
-        let make = |base: f64, factor: f64, rates: Option<&[f64; crate::Seeds::MOST]>| match rates {
+        let make = |base: f64, factor: f64, rates: Option<&[f64; crate::Seeds::MAX]>| match rates {
             Some(rates) => {
                 let scaled = rates.map(|rate| factor * rate);
                 R::seeded(factor * base, &scaled)
@@ -401,7 +401,7 @@ impl BehavioralShape {
             gradient: vec![0.0; count],
             tangent: vec![0.0; count],
             gradient_tangent: vec![0.0; count],
-            gradient_derivatives: vec![[0.0; crate::Seeds::MOST]; count],
+            gradient_derivatives: vec![[0.0; crate::Seeds::MAX]; count],
         }))
     }
 }

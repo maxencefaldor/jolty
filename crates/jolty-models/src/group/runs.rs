@@ -122,7 +122,7 @@ impl Clone for Runs {
 /// scale and charge of each of its local unknowns, its terminals then its internal unknowns,
 /// and the conductance and capacitance of each of its local entries, each the pair of local
 /// unknowns `entries` gives, and the circuit's unknown of each local unknown, or
-/// [`UNMAPPED`] for one on the reference.
+/// [`UNMAPPED`] for one on ground.
 #[derive(Debug, Clone, Copy)]
 pub struct Block<'a> {
     /// The residual of each local unknown's equation.
@@ -144,7 +144,7 @@ pub struct Block<'a> {
 /// One instance's block of contributions, evaluated alone, and where its values go among
 /// the circuit's: the residual, scale and charge of each local unknown, the conductance and
 /// capacitance of each local entry, the circuit's unknown of each local unknown, or
-/// [`UNMAPPED`] for one on the reference, and the stored position of each local entry, or
+/// [`UNMAPPED`] for one on ground, and the stored position of each local entry, or
 /// [`UNMAPPED`] for none.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Alone {
@@ -220,7 +220,7 @@ impl Runs {
 
     /// Twins of the instance the device `device` is, at `temperature`, whose seeds move
     /// each of the circuit's unknowns its local unknowns map to, once, up to
-    /// [`Seeds::MOST`] unknowns to a twin, its parameters constant.
+    /// [`Seeds::MAX`] unknowns to a twin, its parameters constant.
     #[must_use]
     pub fn unknown_twins(
         &self,
@@ -241,7 +241,7 @@ impl Runs {
             }
         }
         unique
-            .chunks(Seeds::MOST)
+            .chunks(Seeds::MAX)
             .filter_map(|chunk| {
                 let seeds = Seeds::unknowns(chunk.to_vec())?;
                 self.twin(groups, device, instance, &seeds)
@@ -249,15 +249,15 @@ impl Runs {
             .collect()
     }
 
-    /// The level of the instance the device `device` is, if it is an independent source,
-    /// which analyses excite: its waveform's at time zero.
+    /// The DC value of the instance the device `device` is, if it is an independent source,
+    /// which analyses excite: its waveform's value at time zero.
     #[must_use]
-    pub fn level(&self, groups: &Groups, device: usize) -> Option<f64> {
+    pub fn dc_value(&self, groups: &Groups, device: usize) -> Option<f64> {
         let (_, run, member) = self.entry(groups, device)?;
-        run.level(member)
+        run.dc_value(member)
     }
 
-    /// Adds the derivative of each of the circuit's residuals with respect to the level of
+    /// Adds the derivative of each of the circuit's residuals with respect to the value of
     /// the instance the device `device` is, if it is an independent source, to
     /// `derivative`, one value per unknown: how a small-signal analysis excites it.
     pub fn excite(&self, groups: &Groups, device: usize, derivative: &mut [f64]) {
@@ -274,7 +274,7 @@ impl Runs {
     }
 
     /// The derivative of each residual of the instance the device `device` is with respect
-    /// to its level, as an independent source's, one value per local unknown: zero for
+    /// to its value, as an independent source's, one value per local unknown: zero for
     /// each, for an instance that is no independent source.
     #[must_use]
     pub fn excitation(&self, groups: &Groups, device: usize) -> Option<Vec<f64>> {
@@ -358,7 +358,7 @@ impl Runs {
     /// Each part of the circuit's conductance that an instance of `groups` reads in the
     /// past, as [`Kernel::delayed`](crate::Kernel::delayed) states it, placed among the
     /// circuit's equations, in the order of the groups and their instances: none in a
-    /// circuit without a delay line. A part whose row or column is the reference's is not
+    /// circuit without a delay line. A part whose row or column is ground is not
     /// among them.
     #[must_use]
     pub fn delayed(&self, groups: &Groups) -> Vec<DelayedEntry> {

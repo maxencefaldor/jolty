@@ -60,7 +60,7 @@ impl<'a> Input<'a> {
         }
     }
 
-    /// The value of `node`'s unknown, or zero for the reference node.
+    /// The value of `node`'s unknown, or zero for ground.
     #[must_use]
     pub fn value(&self, node: Node) -> f64 {
         node.map_or(0.0, |unknown| self.x[unknown.index()])
