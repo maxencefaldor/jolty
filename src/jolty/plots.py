@@ -1,21 +1,22 @@
 # Copyright 2026 Maxence Faldor
-"""Plots of results: waveforms, DC sweeps, Bode plots, noise spectra and pole maps.
+"""Result plotting for waveforms, DC sweeps, Bode plots, noise spectra, and pole maps.
 
-A plot draws chosen unknowns and logic nets of one result, or a loop gain alone, against
-0 dB and -180°, where its margins are read, or a noise spectrum alone: the output's
-noise density with its noisiest sources', and the noise referred to the input, on log
-axes, or poles and zeros alone, each at its natural frequency and damping ratio.
-Voltages, currents, temperatures, devices' states and logic levels never share an
-axis: each quantity has a panel of its own, and a response has two, its magnitude and
-its phase. Logic nets share a panel in lanes of their own, each named on its axis, with
-unknown levels hatched. Series take their colors in a fixed order, checked to stay
-apart under the common color-vision deficiencies; a legend names them, and up to four
-are also labeled at their end.
+Single-result plots render selected unknowns and logic nets for transient, DC sweep,
+and AC analyses. Stability plots render loop gain against 0 dB and -180° reference
+lines for phase and gain margins. Noise plots display output noise density alongside
+top contributors and optional input-referred noise on log-log axes. Pole-zero plots
+place each pole and zero by natural frequency and damping ratio.
 
-A batch of runs plots their distribution, not each run: a histogram of each
-measure's values over the runs, against its requirement's bounds, and an envelope
-of each unknown it traced along an analysis, its least, median and greatest value over
-the runs at each point.
+Each physical quantity (voltage, current, temperature, device state, and logic level)
+occupies a dedicated panel, with AC responses split into magnitude and phase panels.
+Logic nets share a panel in separate horizontal lanes, labeled on the vertical axis
+with hatched bands for unknown levels. Series use a fixed color palette designed for
+distinguishability under common color-vision deficiencies, with legends and end labels
+for up to four traces.
+
+Batch plots summarize run distributions instead of individual traces. Histograms show
+measured requirement values against specification bounds, while envelopes plot the
+minimum, median, and maximum trace values across completed runs.
 
 Install the optional extra with ``pip install 'jolty[plots]'`` to use this module.
 
@@ -82,23 +83,23 @@ COLORS: Final = (
     "#6250d6",
     "#e34948",
 )
-"""The series colors, in the order series take them; adjacent ones stay apart under
-every common color-vision deficiency."""
+"""Ordered palette of series colors chosen to remain distinguishable under common
+color-vision deficiencies."""
 
 MAX_SERIES: Final = len(COLORS)
-"""The most unknowns one plot draws."""
+"""Maximum number of unknown traces rendered in a single plot."""
 
 _LABELED: Final = 4
-"""The most series a panel labels at their end, beside its legend."""
+"""Maximum number of series labeled directly at the right edge of a panel."""
 
 SURFACE: Final = "#fcfcfb"
-"""The surface jolty's plots are drawn on."""
+"""Background surface color for jolty plots."""
 INK: Final = "#0b0b0b"
-"""The ink of their titles and text."""
+"""Primary foreground ink color for plot titles and labels."""
 MUTED: Final = "#52514e"
-"""The muted ink of their axes' labels and reference lines."""
+"""Secondary muted color for axis labels, spines, and reference lines."""
 GRID: Final = "#e4e3df"
-"""Their grid's color."""
+"""Grid line color for plot panels."""
 
 type Plotted = (
     results.DcSweepResult
@@ -108,7 +109,7 @@ type Plotted = (
     | results.NoiseResult
     | results.PoleZeroResult
 )
-"""A result a plot draws; an operating point has no axis to draw along."""
+"""Analysis result types that have an axis to plot; excludes operating points."""
 
 type _Quantity = Literal["voltage", "current", "temperature", "state", "logic"]
 type _Drawer = Callable[
@@ -116,18 +117,23 @@ type _Drawer = Callable[
 ]
 
 _LANE: Final = 1.5
-"""The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
+"""Vertical lane height for each logic net, combining a 1.0 level span and gap."""
 
 
 def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
-    """The plot of the unknowns `traces` in the result of the analysis `name`.
+    """Builds a figure plotting `traces` from the `name` analysis `result`.
 
-    A loop gain's plot draws the loop gain alone, a noise spectrum's the noise alone,
-    and a pole-zero analysis's its poles and zeros alone, whatever the traces.
+    Stability, noise, and pole-zero results always render their dedicated layouts
+    regardless of `traces`.
+
+    Args:
+        name: Analysis name shown in the figure title.
+        result: Simulation analysis result to render.
+        traces: Unknown or logic net names to include in the plot.
 
     Raises:
-        JoltyError: When a trace names no unknown, or there are more than
-            [`MAX_SERIES`][jolty.plots.MAX_SERIES] traces.
+        JoltyError: If a trace does not match an unknown or logic net, or if `traces`
+            exceeds [`MAX_SERIES`][jolty.plots.MAX_SERIES].
     """
     if isinstance(result, results.StabilityResult):
         return _loop(name, result)
@@ -178,10 +184,10 @@ def _grouped(
     result: results.DcSweepResult | results.AcResult | results.TransientResult,
     traces: Sequence[str],
 ) -> tuple[dict[_Quantity, list[str]], dict[str, int]]:
-    """The `traces` by quantity, each quantity that has one, and each unknown's column.
+    """Groups `traces` by physical quantity and maps each unknown to its column index.
 
     Raises:
-        JoltyError: When a trace names neither an unknown nor a logic net.
+        JoltyError: If a trace matches neither an unknown nor a logic net in `result`.
     """
     nets = () if isinstance(result, results.AcResult) else result.nets
     columns = {}
@@ -205,9 +211,10 @@ def _grouped(
 
 
 def _loop(name: str, result: results.StabilityResult) -> Figure:
-    """The Bode plot of a loop gain, against 0 dB and -180°, where its margins are read.
+    """Builds a Bode plot of loop gain against 0 dB and -180° reference lines.
 
-    Its frequencies are the positive ones, increasing, as a log axis needs.
+    Positive frequencies are sorted in ascending order for the logarithmic frequency
+    axis.
     """
     order = np.argsort(result.frequencies)
     order = order[result.frequencies[order] > 0]
@@ -224,10 +231,11 @@ def _loop(name: str, result: results.StabilityResult) -> Figure:
 
 
 def _noise(name: str, result: results.NoiseResult) -> Figure:
-    """The noise density of the output, with its noisiest sources', on log axes.
+    """Builds a log-log plot of output noise density and top noise contributors.
 
-    The sources are the noisiest over the frequencies, as many as colors remain; the
-    noise referred to the input, given one, has a panel of its own, in its unit.
+    Contributor traces select the highest-integrated noise sources up to the remaining
+    palette slots. When `result` includes an input reference, a second panel plots the
+    input-referred noise density in the source's unit.
     """
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
@@ -270,10 +278,10 @@ def _noise(name: str, result: results.NoiseResult) -> Figure:
 
 
 def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
-    """Each pole and zero at its natural frequency, on a log axis, and damping ratio.
+    """Builds a scatter plot of poles and optional zeros by frequency and damping ratio.
 
-    A damping ratio below zero is a root in the right half-plane, across the line at
-    zero; a conjugate pair shares its point, and a zero at the origin has none.
+    Negative damping ratios indicate right-half-plane roots below the zero reference
+    line. Conjugate pairs share a single point, and roots at the origin are omitted.
     """
     figure, (axes,) = _new_figure(f"{name}: {_describe(result)}", 1)
     _style(axes, "damping ratio")
@@ -302,7 +310,7 @@ def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
 def _new_figure(
     title: str, panels: int, *, sharex: bool = True
 ) -> tuple[Figure, list[Axes]]:
-    """A figure titled `title` with `panels` stacked axes."""
+    """Creates a figure titled `title` with `panels` vertically stacked axes."""
     figure = Figure(
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
         dpi=150,
@@ -323,7 +331,7 @@ def _add_legend(axes: Axes) -> None:
 
 
 def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
-    """Labels the abscissa of `axes`, the bottom panel, for `result`, in `unit`."""
+    """Formats the horizontal axis of `axes` for `result` using engineering `unit`."""
     axes.xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     axes.set_xlabel(_abscissa_label(result), color=MUTED)
 
@@ -331,10 +339,10 @@ def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
 def _steps(
     result: results.DcSweepResult | results.TransientResult, net: str
 ) -> tuple[results.Real, results.Real]:
-    """Where the level of the logic net `net` changes, and the level from each on.
+    """Computes step-plot coordinates and logic levels for `net` in `result`.
 
-    A transient's last level holds until it stops; a sweep's levels change halfway
-    between the source's levels.
+    Transient logic levels hold their final value through the end time, while DC sweep
+    transitions occur midway between swept source values.
     """
     if isinstance(result, results.TransientResult):
         trace = result.logic_level(net)
@@ -356,10 +364,10 @@ def _steps(
 def _draw_logic(
     axes: Axes, lanes: list[tuple[str, str, results.Real, results.Real]]
 ) -> None:
-    """Draws the logic nets of `lanes` top to bottom, unknown levels hatched.
+    """Draws logic net waveforms from `lanes` top to bottom with hatched unknown bands.
 
-    Each lane is a net's name, its color, the times its level changes and the level
-    from each.
+    Each lane entry specifies a net name, line color, transition coordinates, and logic
+    levels.
     """
     _style(axes, "logic")
     for index, (_, color, x, levels) in enumerate(lanes):
@@ -386,7 +394,7 @@ def _draw_logic(
 
 
 def _bode(phasors: results.Complex) -> tuple[results.Real, results.Real]:
-    """Magnitude in decibels (zero at -6000 dB) and unwrapped phase in degrees."""
+    """Computes decibel magnitude (floored at -6000 dB) and unwrapped degree phase."""
     magnitude = np.asarray(
         20 * np.log10(np.maximum(np.abs(phasors), 1e-300)), dtype=np.float64
     )
@@ -415,11 +423,11 @@ def _bode_panels(
 
 
 def histograms(name: str, batch: files.Batch) -> Figure:
-    """A histogram of each measure of `batch`, the batch `name`, over its runs.
+    """Builds histograms for each requirement measure across runs in `batch`.
 
-    Each panel counts the runs whose value lies in each bin, numpy's ``auto`` bins of
-    the values read, and draws the requirement's bounds across it; its title says how
-    many runs read no value.
+    Each panel bins finite readings with numpy's ``auto`` rule and marks specification
+    bounds with dashed lines. Panel titles report counts of missing or infinite
+    readings.
     """
     found = batch.result
     title = f"{name}: {found.runs} runs, each measure's values"
@@ -434,8 +442,8 @@ def histograms(name: str, batch: files.Batch) -> Figure:
         symbol = "" if unit is None or unit == "" else str(unit)
         if read.size:
             edges = np.histogram_bin_edges(read, bins="auto")
-            # An edge in the bars' color draws a bin narrower than a pixel, as one is
-            # beside a bound far from every value.
+            # Matching bar edge color keeps sub-pixel bins visible when a distant bound
+            # widens the axis range.
             axes.hist(
                 read,
                 bins=edges.tolist(),
@@ -449,7 +457,7 @@ def histograms(name: str, batch: files.Batch) -> Figure:
         _style(axes, "runs")
         unread = found.runs - measured.size
         missing = f", {unread} read none" if unread else ""
-        # An infinite reading, as a gain of exactly nothing, has no bin to fall in.
+        # Infinite readings, such as zero gain in decibels, cannot be placed in bins.
         infinite = "".join(
             f", {count} read {sign}inf"
             for sign, count in (
@@ -469,12 +477,12 @@ def histograms(name: str, batch: files.Batch) -> Figure:
 
 
 def envelope(name: str, traces: results.Traces) -> Figure:
-    """The envelope of each unknown `traces` along an analysis of the batch `name`.
+    """Builds min-median-max envelope panels for each traced unknown in `traces`.
 
-    Each draws its least and its greatest value over the runs at each point as a band,
-    and its median as a line, the runs that did not end the analysis left out; a
-    response draws its magnitude and its phase, each run's phase unwrapped first. The
-    unknowns of each quantity share a panel, as a plot's do.
+    Each series shades the minimum-to-maximum band and plots the median across runs
+    that completed the analysis, omitting incomplete runs. Frequency-domain responses
+    unwrap each run's phase before rendering magnitude and phase panels grouped by
+    physical quantity.
     """
     natures = list(dict.fromkeys(unknown.nature for unknown in traces.unknowns))
     response = traces.along == "frequency"
@@ -539,10 +547,10 @@ def _band(
     label: str,
     unit: str,
 ) -> None:
-    """Draws `series`, each a name, a color and its values, one row per run, along `x`.
+    """Draws min-max bands and median curves for `series` along `x` on `axes`.
 
-    Each is a band from its least to its greatest value at each point, and a line at
-    its median, over the runs whose values are numbers.
+    Each series entry contains a label, color, and 2D array with one row per run,
+    filtering out runs containing NaN values.
     """
     for name, color, values in series:
         ended = values[~np.isnan(values).any(axis=1)]
@@ -632,7 +640,7 @@ def _draw(
     label: str,
     unit: str,
 ) -> None:
-    """Draws `series`, each a name, a color and values along `x`, on `axes`."""
+    """Draws named `(label, color, values)` curves from `series` along `x` on `axes`."""
     for name, color, values in series:
         axes.plot(x, values, color=color, linewidth=1.0, label=name)
     _style(axes, label)
@@ -647,7 +655,7 @@ def _draw(
 
 
 def _style(axes: Axes, label: str) -> None:
-    """Gives `axes` its surface, its grid and its spines, and labels it `label`."""
+    """Applies surface color, grid, spine styling, and y-axis `label` to `axes`."""
     axes.set_facecolor(SURFACE)
     axes.set_ylabel(label, color=MUTED)
     axes.grid(visible=True, color=GRID, linewidth=0.6)
@@ -661,10 +669,10 @@ def _style(axes: Axes, label: str) -> None:
 
 
 def _label_ends(axes: Axes, ends: list[tuple[str, str, float]]) -> None:
-    """Labels each series beside the right edge of `axes`, at the height it ends at.
+    """Annotates each series at the right edge of `axes` near its final y-coordinate.
 
-    Labels that would overlap are pushed apart; a short line in the series' color
-    precedes each name, which is in ink.
+    Overlapping labels are shifted vertically apart, each preceded by a short swatch
+    line in the series color.
     """
     axes.autoscale_view()
     to_axes = axes.transAxes.inverted()

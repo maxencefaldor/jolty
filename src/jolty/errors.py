@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""The errors jolty raises, each stating what is wrong and where."""
+"""Exception hierarchy and validation-error helpers for jolty."""
 
 import difflib
 from collections.abc import Sequence
@@ -9,11 +9,11 @@ from pydantic import ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 _SHORT_NAME_LENGTH: Final = 2
-"""Names of two characters score at most 0.5 for a single-character edit."""
+"""Maximum name length that falls back to the 0.5 fuzzy-matching cutoff."""
 
 
 def fail(kind: LiteralString, message: str) -> Never:
-    """Raises a Pydantic custom error holding literal `message` safe from braces."""
+    """Raises a Pydantic custom error holding literal `message` escaped from braces."""
     raise PydanticCustomError(kind, "{message}", {"message": message})
 
 
@@ -23,7 +23,7 @@ def detail(
     value: object,
     location: tuple[int | str, ...] = (),
 ) -> InitErrorDetails:
-    """One structured validation error entry at `location` with literal `message`."""
+    """Builds one structured validation error entry at `location` with `message`."""
     return InitErrorDetails(
         type=PydanticCustomError(kind, "{message}", {"message": message}),
         loc=location,
@@ -32,18 +32,18 @@ def detail(
 
 
 def raise_if_errors(title: str, found: Sequence[InitErrorDetails]) -> None:
-    """Raises `ValidationError` holding every entry of `found`, if any."""
+    """Raises `ValidationError` containing every entry in `found` when non-empty."""
     if found:
         raise ValidationError.from_exception_data(title, list(found))
 
 
 def close_names(names: Sequence[str], name: str) -> str:
-    """The names among `names` closest to `name`, as the end of a message, if any.
+    """Formats up to three close matches from `names` for `name` as a suffix.
 
-    Uses `difflib.get_close_matches` at its default cutoff (0.6). When nothing matches
-    by exact case, falls back to case-insensitive matching, and for two-character names
-    to cutoff 0.5 so that a single-character edit (such as ``V2`` for ``V1`` or ``po``
-    for ``op``) still matches.
+    Matching runs `difflib.get_close_matches` at cutoff 0.6, falling back to
+    case-insensitive matching when needed. Two-character names fall back further to
+    cutoff 0.5 so single-character edits (such as ``V2`` for ``V1`` or ``po`` for
+    ``op``) still match.
 
     Examples:
         >>> close_names(["out", "in"], "ou")
@@ -69,45 +69,45 @@ def close_names(names: Sequence[str], name: str) -> str:
 
 
 class JoltyError(Exception):
-    """The base of every error jolty raises."""
+    """Base exception for all errors raised by jolty."""
 
 
 class DimensionError(JoltyError, TypeError):
-    """A quantity has the wrong dimension, such as farads where ohms belong."""
+    """Error raised when a physical quantity has an incompatible unit dimension."""
 
 
 class BuildError(JoltyError, ValueError):
-    """A script describes a circuit that cannot exist, such as two shorted ports."""
+    """Error raised when a circuit script describes an invalid topology."""
 
 
 class SpiceError(JoltyError, ValueError):
-    """A SPICE file holds what jolty cannot read, or reads what it does not define."""
+    """Error raised when a SPICE file has unsupported syntax or missing references."""
 
 
 class DownloadError(JoltyError):
-    """A file cannot be downloaded, or what was downloaded is not the file expected."""
+    """Error raised when a file download fails or mismatches its expected digest."""
 
 
 class ScriptError(JoltyError):
-    """A script lacks the function a command calls, or it returns the wrong type."""
+    """Error raised when a script lacks a required function or returns a wrong type."""
 
 
 class ElaborationError(JoltyError):
-    """The engine cannot elaborate a circuit: every problem it found, as errors."""
+    """Error raised when circuit elaboration fails, collecting every problem found."""
 
     def __init__(self, problems: Sequence[str]) -> None:
-        """Holds `problems`, each what is wrong, then its instance and source line."""
+        """Stores formatted elaboration `problems` and initializes the message."""
         self.problems = tuple(problems)
         super().__init__("\n\n".join(self.problems))
 
 
 class NetlistError(JoltyError):
-    """A component cannot be written as a board's netlist: every problem found."""
+    """Error raised when a component cannot be exported to a board netlist."""
 
     def __init__(self, problems: Sequence[str]) -> None:
-        """Holds `problems`: what keeps the component, or an instance, off a board.
+        """Stores netlist export `problems` and formats the exception message.
 
-        A problem of an instance begins with its path.
+        Instance-specific problems are prefixed with their hierarchical path.
         """
         self.problems = tuple(problems)
         listed = "".join(f"\n  {problem}" for problem in self.problems)
@@ -115,17 +115,17 @@ class NetlistError(JoltyError):
 
 
 class SimulationError(JoltyError):
-    """An analysis failed, such as an operating point that no strategy finds."""
+    """Error raised when an analysis fails to solve or converge."""
 
 
 class PlanError(SimulationError, ValueError):
-    """A plan, an analysis or specs cannot run on a circuit: every problem found."""
+    """Error raised when a plan, analysis, or specification is invalid for a circuit."""
 
     def __init__(self, problems: Sequence[str]) -> None:
-        """Holds `problems`, each an unresolved name or invalid setting."""
+        """Stores plan validation `problems` and initializes the exception message."""
         self.problems = tuple(problems)
         super().__init__("\n\n".join(self.problems))
 
 
 class CharacterizationError(JoltyError):
-    """A component cannot be characterized as a logic cell, as it stands."""
+    """Error raised when a component cannot be characterized as a digital logic cell."""

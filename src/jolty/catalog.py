@@ -1,19 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Orderable parts, preferred values, and bills of materials.
+"""Orderable parts, IEC 60063 preferred values, and bills of materials.
 
-A [`Catalog`][jolty.catalog.Catalog] lists parts a circuit can be built from, each at a
-unit price: a resistor, a capacitor or an inductor of one value and tolerance, a part
-its maker numbers, or both, in a package, at a stage of its lifecycle. A catalog file
-holds one as JSON. A [`Bill`][jolty.catalog.Bill] prices the instances of a circuit, or
-of one component instance in it. An instance that stands for a numbered part, a device
-or a whole component instance, takes the cheapest part of that number; any other device
-instance takes the cheapest part of its device, of its value, whose tolerance is within
-its own. No instance takes an obsolete part. An instance that states no tolerance, that
-comes from a lot, whose shared spread no part states, or that no part matches, stays
-unpriced, and the bill says why.
+A [`Catalog`][jolty.catalog.Catalog] lists purchasable parts with unit prices,
+packages, footprints, and lifecycle states. Each catalog file stores one catalog as
+JSON. A [`Bill`][jolty.catalog.Bill] prices every circuit instance or a single
+component subtree.
 
-The E series of IEC 60063 space preferred values evenly on a log scale: E24 with 24
-values a decade, for tolerances of 5 %, to E192 for 0.5 % and better.
+Numbered instances select the cheapest matching orderable part with that part number.
+Unnumbered resistors, capacitors, and inductors select the cheapest orderable part
+matching their kind, value, and tolerance. Obsolete parts are never selected, and
+unpriced instances record the reason no part matched.
+
+IEC 60063 E-series tables space preferred values logarithmically per decade, from E24
+(24 values per decade, 5 % tolerance) to E192 (0.5 % tolerance and tighter).
 
 Examples:
     >>> values("E12", 1e3, 2e3)
@@ -35,36 +34,36 @@ from jolty import _core, ir
 from jolty.units import format_si
 
 type PartKind = Literal["resistor", "capacitor", "inductor"]
-"""A device a catalog prices."""
+"""Device kind that a catalog prices by value and tolerance."""
 
 type Series = Literal["E3", "E6", "E12", "E24", "E48", "E96", "E192"]
-"""An E series of preferred values."""
+"""IEC 60063 E-series identifier for preferred values."""
 
 type Lifecycle = Literal["active", "not-recommended", "obsolete"]
-"""Where a part stands in its maker's lifecycle: made, made but not recommended for new
-designs, or no longer made."""
+"""Manufacturer lifecycle status: active, not recommended for new designs, or
+obsolete."""
 
 VALUED: Final[dict[PartKind, str]] = {
     "resistor": "resistance",
     "capacitor": "capacitance",
     "inductor": "inductance",
 }
-"""The parameter that holds the value of each device a catalog prices."""
+"""Mapping from each catalog-priced device kind to its primary value parameter."""
 
 SYMBOLS: Final[dict[PartKind, str]] = {
     "resistor": "Ω",
     "capacitor": "F",
     "inductor": "H",
 }
-"""The symbol of the unit of each device's value."""
+"""Mapping from each catalog-priced device kind to its SI unit symbol."""
 
 
 @cache
 def mantissas(series: Series) -> tuple[float, ...]:
-    """The values of `series` in the decade from 1 to 10.
+    """Returns the normalized decade mantissas of `series` from 1 to 10.
 
-    E3 to E24 are IEC 60063's historical values; E48 to E192 round 10 to the power of
-    each step to three significant digits, but for E192's 9.20.
+    E3 through E24 use historical IEC 60063 values. E48 through E192 round decade
+    powers to three significant digits, except for 9.20 in E192.
 
     Examples:
         >>> mantissas("E96")[:4]
@@ -74,7 +73,7 @@ def mantissas(series: Series) -> tuple[float, ...]:
 
 
 def values(series: Series, low: float, high: float) -> tuple[float, ...]:
-    """Every value of `series` from `low` to `high`, both included, increasing.
+    """Returns every `series` value from `low` to `high` inclusive in ascending order.
 
     Raises:
         ValueError: When `low` is not positive or exceeds `high`.
@@ -93,7 +92,7 @@ def values(series: Series, low: float, high: float) -> tuple[float, ...]:
 
 
 def neighbors(series: Series, value: float) -> tuple[float, float]:
-    """The values of `series` nearest `value` at or below it and at or above it.
+    """Returns the `series` values immediately at or below and at or above `value`.
 
     Raises:
         ValueError: When `value` is not positive.
@@ -109,12 +108,12 @@ def neighbors(series: Series, value: float) -> tuple[float, float]:
 
 
 def _value(mantissa: float, decade: int) -> float:
-    """`mantissa` times 10 to the power `decade`, rounded to its own digits."""
+    """Returns `mantissa` scaled by ``10 ** decade`` and rounded to mantissa digits."""
     return float(f"{mantissa}e{decade}")
 
 
 def _same(value: float, other: float) -> bool:
-    """Whether two values are one, but for rounding."""
+    """Returns whether two values are equal within rounding precision."""
     return math.isclose(value, other, rel_tol=1e-9)
 
 
@@ -123,16 +122,18 @@ def _within(value: float, low: float, high: float) -> bool:
 
 
 type Pins = dict[str, tuple[Annotated[str, Field(min_length=1)], ...]]
-"""The pads of a part's package each terminal or port of its instance joins, by name,
-such as ``{"collector": ("3",), "base": ("2",), "emitter": ("1",)}``; a terminal of no
-pads joins none."""
+"""Mapping from instance terminal or port names to package pad tuples.
+
+For example, ``{"collector": ("3",), "base": ("2",), "emitter": ("1",)}`` maps BJT
+terminals to package pads; an empty tuple denotes an unconnected terminal."""
 
 
 class Part(ir.FrozenModel):
-    """A part at a unit price: a device of one value and tolerance, numbered, or both.
+    """Orderable part entry priced by device value and tolerance, part number, or both.
 
-    A part that states no device is any device or component its number names. Its
-    footprint and pins place it on a board, as a [KiCad netlist][jolty.kicad] writes it.
+    A part without a device kind matches any device or component carrying its part
+    number. Package footprint and pin mappings support [KiCad netlist][jolty.kicad]
+    export.
     """
 
     kind: PartKind | None = Field(default=None, exclude_if=lambda kind: kind is None)
@@ -140,38 +141,38 @@ class Part(ir.FrozenModel):
         default=None,
         gt=0,
         exclude_if=lambda value: value is None,
-        description="Its value, in SI base units.",
+        description="Nominal component value in SI base units.",
     )
     tolerance: float | None = Field(
         default=None,
         gt=0,
         lt=1,
         exclude_if=lambda tolerance: tolerance is None,
-        description="Its relative tolerance, such as 0.01 for 1 %.",
+        description="Relative manufacturing tolerance, such as 0.01 for 1 %.",
     )
-    price: float = Field(ge=0, description="Its unit price, in the catalog's currency.")
+    price: float = Field(ge=0, description="Unit price in the catalog currency.")
     part_number: ir.PartNumber | None = Field(
         default=None,
         exclude_if=lambda part_number: part_number is None,
-        description="Its maker's part number.",
+        description="Manufacturer part number.",
     )
     package: str | None = Field(
         default=None,
         min_length=1,
         exclude_if=lambda package: package is None,
-        description="Its package, such as 0603 or TO-92.",
+        description="Physical package name, such as 0603 or TO-92.",
     )
     footprint: str | None = Field(
         default=None,
         pattern=r"^[^:]+:[^:]+$",
         exclude_if=lambda footprint: footprint is None,
-        description="Its footprint, as KiCad's libraries name it, such as "
+        description="KiCad library footprint name, such as "
         "Resistor_SMD:R_0603_1608Metric.",
     )
     pins: Pins | None = Field(
         default=None,
         exclude_if=lambda pins: pins is None,
-        description="The pads each terminal or port of its instance joins, by name.",
+        description="Package pad numbers mapped by instance terminal or port name.",
     )
     lifecycle: Lifecycle = Field(
         default="active", exclude_if=lambda lifecycle: lifecycle == "active"
@@ -179,7 +180,7 @@ class Part(ir.FrozenModel):
 
     @model_validator(mode="after")
     def _identified(self) -> Self:
-        """Holds a part to a device, a value and a tolerance together, or a number."""
+        """Validates part identification fields and checks for duplicate pads."""
         valued = (self.kind, self.value, self.tolerance)
         if any(each is None for each in valued) and any(
             each is not None for each in valued
@@ -197,11 +198,11 @@ class Part(ir.FrozenModel):
 
     @property
     def orderable(self) -> bool:
-        """Whether its maker still makes it."""
+        """Orderability status; true when the part lifecycle is not obsolete."""
         return self.lifecycle != "obsolete"
 
     def describe(self) -> str:
-        """The part as text, its price aside."""
+        """Formats a human-readable summary of the part excluding price."""
         said = []
         if self.kind is not None and self.value is not None:
             said.append(
@@ -218,26 +219,27 @@ class Part(ir.FrozenModel):
 
 
 class Catalog(ir.FrozenModel):
-    """The parts a circuit can be built from, priced in one currency."""
+    """Collection of orderable parts priced in a single currency."""
 
     format: Literal["jolty-catalog"] = "jolty-catalog"
     version: Literal[3] = 3
-    currency: str = Field(description="The currency of every price, such as USD.")
+    currency: str = Field(description="Currency code for all part prices, such as USD.")
     parts: tuple[Part, ...]
 
     @classmethod
     def load(cls, path: Path) -> Catalog:
-        """The catalog in the file at `path`."""
+        """Loads and validates a catalog from the JSON file at `path`."""
         return cls.model_validate_json(path.read_bytes())
 
     def save(self, path: Path) -> None:
-        """Writes the catalog to `path` as JSON."""
+        """Writes the catalog to `path` as indented JSON."""
         path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     def cheapest(self, kind: PartKind, value: float, tolerance: float) -> Part | None:
-        """The cheapest orderable part of `kind` of `value`, within `tolerance`.
+        """Returns the cheapest orderable part matching `kind`, `value`, and tolerance.
 
-        Of parts at one price, the first listed. None when no part matches.
+        Price ties break in favor of the first listed part. Returns ``None`` when no
+        orderable part matches.
         """
         return _cheapest(
             part for part in self.matching(kind, value, tolerance) if part.orderable
@@ -246,13 +248,13 @@ class Catalog(ir.FrozenModel):
     def matching(
         self, kind: PartKind, value: float, tolerance: float
     ) -> tuple[Part, ...]:
-        """Every part of `kind` of `value` within `tolerance`, orderable or not."""
+        """Returns all parts matching `kind`, `value`, and `tolerance`."""
         return tuple(
             part for part, held in self._valued(kind, tolerance) if _same(held, value)
         )
 
     def values(self, kind: PartKind, tolerance: float) -> tuple[float, ...]:
-        """Each value of `kind` an orderable part within `tolerance` has, in order."""
+        """Returns sorted distinct values of orderable parts within `tolerance`."""
         found = sorted(
             held for part, held in self._valued(kind, tolerance) if part.orderable
         )
@@ -263,12 +265,11 @@ class Catalog(ir.FrozenModel):
         return tuple(distinct)
 
     def part_for(self, instance: ir.Instance) -> Part | str:
-        """The cheapest orderable part that builds `instance`, or why none does.
+        """Returns the cheapest orderable part for `instance`, or a failure reason.
 
-        A numbered instance takes a part of its number, which a part that states a
-        device builds only as that device would, of its value and within the
-        instance's tolerance if it states one. A resistor, a capacitor or an inductor
-        takes a part of its value within its tolerance. Any other instance takes none.
+        Numbered instances select a matching part with that part number; if the part
+        declares a device kind, the instance value and tolerance also match. Unnumbered
+        resistors, capacitors, and inductors match by kind, value, and tolerance.
         """
         if instance.part is not None:
             return _numbered(self, instance, instance.part)
@@ -300,7 +301,7 @@ class Catalog(ir.FrozenModel):
         return f"no {described} is in the catalog"
 
     def _valued(self, kind: PartKind, tolerance: float) -> Iterator[tuple[Part, float]]:
-        """Each part of `kind` within `tolerance`, orderable or not, and its value."""
+        """Yields each part of `kind` within `tolerance` alongside its nominal value."""
         for part in self.parts:
             if (
                 part.kind == kind
@@ -312,39 +313,41 @@ class Catalog(ir.FrozenModel):
 
 
 class Line(ir.FrozenModel):
-    """An instance, and the part that builds it."""
+    """Priced bill-of-materials entry pairing an instance path with a catalog part."""
 
-    instance: str = Field(description="The instance's path.")
+    instance: str = Field(description="Hierarchical path of the priced instance.")
     part: Part
 
 
 class Unpriced(ir.FrozenModel):
-    """An instance that no part of the catalog builds."""
+    """Unpriced bill-of-materials entry for an instance without a matching part."""
 
-    instance: str = Field(description="The instance's path.")
-    reason: str = Field(description="Why no part builds it.")
+    instance: str = Field(description="Hierarchical path of the unpriced instance.")
+    reason: str = Field(
+        description="Explanation for why no catalog part matches the instance."
+    )
 
 
 class Bill(ir.FrozenModel):
-    """The parts that build the instances of a circuit, and what they cost.
+    """Bill of materials listing priced parts, unpriced instances, and total cost.
 
-    Its instances are the numbered ones, devices or component instances, and the other
-    device instances outside them.
+    Entries cover every numbered device or component instance together with all
+    remaining device instances outside numbered components.
     """
 
     currency: str
     lines: tuple[Line, ...]
     unpriced: tuple[Unpriced, ...] = Field(
-        description="Instances no part builds, which the total leaves out."
+        description="Instances excluded from the total because no catalog part matches."
     )
 
     @property
     def total(self) -> float:
-        """The sum of the parts' prices."""
+        """Sum of unit prices across all priced bill-of-materials lines."""
         return math.fsum(line.part.price for line in self.lines)
 
     def describe(self) -> str:
-        """The bill as text."""
+        """Formats the bill of materials as a plain-text report."""
         head = (
             f"{len(self.lines)} parts for {self.total:.6g} {self.currency}, "
             f"{len(self.unpriced)} instances unpriced"
@@ -362,10 +365,10 @@ class Bill(ir.FrozenModel):
 
 
 def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
-    """The bill of materials of the component at `instance`, the top by default.
+    """Builds a bill of materials for the component at `instance` (top by default).
 
     Raises:
-        KeyError: When no component instance is at `instance`.
+        KeyError: When no component instance exists at `instance`.
     """
     if not instance:
         component = circuit.top
@@ -390,10 +393,10 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
 def built(
     circuit: ir.Circuit, component: str, prefix: str = ""
 ) -> Iterator[tuple[str, ir.Instance]]:
-    """Each instance within `component` a part builds, by its path after `prefix`.
+    """Yields each billable instance inside `component` with its path after `prefix`.
 
-    They are the numbered instances, devices or component instances, and the device
-    instances outside them, in the order the components place them.
+    Yielded entries include numbered devices or components plus unnumbered device
+    instances outside them, in placement order.
     """
     for path, instance in circuit.walk(
         component, prefix=prefix, descend=lambda placed: placed.part is None
@@ -403,7 +406,7 @@ def built(
 
 
 def _valued(instance: ir.Instance, kind: PartKind) -> tuple[float, float] | str:
-    """The value and the tolerance a part of `instance` must have, or why none has."""
+    """Extracts the required value and tolerance for `instance`, or a failure reason."""
     parameter = VALUED[kind]
     value = instance.parameters.get(parameter)
     tolerance = instance.tolerances.get(parameter)
@@ -420,10 +423,10 @@ def _valued(instance: ir.Instance, kind: PartKind) -> tuple[float, float] | str:
 
 
 def _numbered(catalog: Catalog, instance: ir.Instance, number: str) -> Part | str:
-    """The cheapest part numbered `number` that builds `instance`, or why none does.
+    """Selects the cheapest orderable part numbered `number` for `instance`, or reason.
 
-    A part that states a device builds only an instance of that device, of its value,
-    and within the instance's tolerance if it states one.
+    A catalog part that specifies a device kind only matches an instance of that kind,
+    matching value, and compatible tolerance when present.
     """
     numbered = [part for part in catalog.parts if part.part_number == number]
     if not numbered:
@@ -441,7 +444,7 @@ def _numbered(catalog: Catalog, instance: ir.Instance, number: str) -> Part | st
 
 
 def _fits(part: Part, instance: ir.Instance) -> bool:
-    """Whether `part`, numbered as `instance` is, builds it as a device would."""
+    """Returns whether part-number-matched `part` satisfies `instance` constraints."""
     if part.kind is None or part.value is None or part.tolerance is None:
         return True
     if instance.of != ir.DeviceOf(model=part.kind):
@@ -455,5 +458,5 @@ def _fits(part: Part, instance: ir.Instance) -> bool:
 
 
 def _cheapest(parts: Iterable[Part]) -> Part | None:
-    """The cheapest of `parts`, the first listed of those at one price, if any."""
+    """Returns the lowest-priced part from `parts`, breaking ties by list order."""
     return min(parts, key=lambda part: part.price, default=None)

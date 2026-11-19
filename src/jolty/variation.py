@@ -1,20 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""Monte Carlo samples of a circuit's tolerances, and their extremes.
+"""Monte Carlo tolerance sampling and worst-case parameter extremes.
 
-A device may give some of its parameters a tolerance, such as a resistor's 1 %, or a
-supply's DC level, ``waveform.dc``. Each sample draws every such parameter of every
-device instance, independently, around its nominal value, by a factor its
-[distribution][jolty.ir.Distribution] spreads. Two placements of one component vary
-apart, since each is its own instance. A part from a lot is scaled by the lot's factor
-too, drawn once per sample for each parameter and shared by every part in the lot, as
-the parts on one die drift together. A sample replaces the parameters by instance path,
-then by parameter path, as the engine's overrides do. A worst case moves each parameter,
-and each lot's spread, to an extreme of its tolerance instead, or a step toward one.
+A device can attach a tolerance to any numeric parameter, such as a 1 % resistance or a
+supply DC level (``waveform.dc``). Each Monte Carlo sample scales every toleranced
+parameter independently around its nominal value according to its
+[distribution][jolty.ir.Distribution]. Separate placements of the same component vary
+independently, while parts sharing a lot also multiply by one per-sample lot factor.
+Worst-case analysis moves parameters and lots to tolerance extremes instead.
 
-The engine draws every sample, so a sample drawn here is the one a batch of runs draws:
-each factor from the seed, the sample's index and the name of its part, or of its lot,
-alone. Sample `i` is the same however many samples are drawn, and a part added to the
-circuit leaves every other part's draws as they were.
+Sampling runs inside the Rust engine so standalone draws match batch runs bit for bit.
+Each draw depends strictly on the seed, sample index, and instance or lot parameter
+name, so sample `i` is invariant to total sample count or unrelated added parts.
 
 Examples:
     >>> from jolty import Builder, Role, circuit, component, devices
@@ -46,25 +42,25 @@ from jolty import _core, ir
 
 @dataclass(frozen=True, slots=True)
 class Toleranced:
-    """One parameter of one device instance that varies within its tolerance."""
+    """Single device parameter that varies within an assigned tolerance."""
 
     instance: str
-    """The instance's path, such as ``X1/R1``."""
+    """Hierarchical path of the device instance, such as ``X1/R1``."""
     parameter: str
-    """The parameter's path, such as ``resistance`` or ``waveform.dc``."""
+    """Dotted parameter path, such as ``resistance`` or ``waveform.dc``."""
     nominal: float
     tolerance: ir.Tolerance
 
 
 def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
-    """Every parameter of every device instance of `circuit` that has a tolerance.
+    """Collects every toleranced device parameter in `circuit` in hierarchy order.
 
-    They come in the order of the hierarchy, each instance's parameters by path, as the
-    engine lists them.
+    Entries appear in hierarchy order with each instance's parameters sorted by path,
+    matching the engine listing.
 
     Raises:
-        ValueError: When a tolerance's parameter has no number, or when a component
-            contains itself through a cycle of placements.
+        ValueError: When a toleranced parameter is non-numeric or when component
+            placements form a cycle.
     """
     return tuple(
         Toleranced(
@@ -92,15 +88,14 @@ def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
 def sample(
     toleranced: Iterable[Toleranced], seed: int, index: int
 ) -> dict[str, dict[str, float]]:
-    """The sample `index` of `toleranced`, drawn from `seed` as the engine draws it.
+    """Draws Monte Carlo sample `index` of `toleranced` using `seed` in the engine.
 
-    It holds each parameter's value, by instance path then by parameter path: its
-    nominal value times its own factor and, if it has a lot, the lot's, each drawn from
-    the seed, the index, and the name of the part's instance and parameter, or of the
-    lot and the parameter, alone.
+    The returned nested mapping stores parameter values keyed by instance path and
+    parameter path. Each value multiplies nominal by an independent instance factor
+    plus any shared lot factor, seeded by `seed`, `index`, and the parameter key.
 
     Raises:
-        OverflowError: When the seed or the index is negative, or 2**64 or more.
+        OverflowError: When `seed` or `index` is negative or at least ``2**64``.
     """
     chosen = tuple(toleranced)
     encoded = json.dumps(payload(chosen), allow_nan=False)
@@ -113,11 +108,11 @@ def sample(
 
 
 type LotMember = tuple[str, str]
-"""A lot's spread of one parameter: the lot's name and the parameter's path."""
+"""Identifier pairing a shared lot name with a parameter path."""
 
 
 def lot(toleranced: Toleranced) -> LotMember | None:
-    """The lot whose spread `toleranced` shares, by name and parameter, if any."""
+    """Returns the shared `(lot_name, parameter)` key for `toleranced`, or None."""
     shared = toleranced.tolerance.lot
     return None if shared is None else (shared.name, toleranced.parameter)
 
@@ -125,9 +120,9 @@ def lot(toleranced: Toleranced) -> LotMember | None:
 def moved(
     toleranced: Sequence[Toleranced], index: int, fraction: float
 ) -> dict[str, dict[str, float]]:
-    """The parameter of `toleranced` at `index` moved `fraction` of its tolerance up.
+    """Builds an override moving `toleranced[index]` by `fraction` of its tolerance.
 
-    The others keep their nominal values, which the circuit holds already.
+    All other circuit parameters remain at their nominal values.
     """
     parameter = toleranced[index]
     value = parameter.nominal * edge(parameter.tolerance, fraction)
@@ -139,11 +134,12 @@ def extreme(
     directions: Sequence[float],
     lots: Mapping[LotMember, float],
 ) -> dict[str, dict[str, float]]:
-    """Each of `toleranced` at the extreme of its tolerance in its direction.
+    """Computes parameter overrides placing every entry of `toleranced` at an extreme.
 
-    A direction is 1 up, -1 down, or 0 for the nominal value; each part is scaled by its
-    lot's spread too, at the extreme in the lot's direction in `lots`, 0 unless given.
-    The values come by instance path, then by parameter path.
+    Each entry in `directions` uses ``1`` for upper, ``-1`` for lower, or ``0`` for
+    nominal. Parts belonging to a lot also multiply by the lot extreme looked up in
+    `lots` (defaulting to ``0``). Results are nested by instance path and parameter
+    path.
     """
     found: dict[str, dict[str, float]] = {}
     for parameter, direction in zip(toleranced, directions, strict=True):
@@ -158,10 +154,11 @@ def extreme(
 
 
 def edge(spread: ir.Tolerance | ir.Lot, direction: float) -> float:
-    """The factor `direction` of the way from nominal to the upper extreme of `spread`.
+    """Computes the multiplicative scale factor at `direction` along `spread`.
 
-    The extreme is its relative tolerance, three standard deviations of a normal one, or
-    its factor ``1 + relative`` for a logarithmic one; -1 is the lower extreme.
+    Linear tolerances evaluate ``1 + direction * relative`` (where ``relative`` is
+    three standard deviations for normal distributions), and logarithmic tolerances
+    evaluate ``(1 + relative) ** direction``. Passing ``-1`` selects the lower extreme.
 
     Examples:
         >>> edge(ir.Tolerance(relative=0.05), -1)

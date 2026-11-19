@@ -1,30 +1,30 @@
 # Copyright 2026 Maxence Faldor
-"""Circuit, results, batch and shard files, and SPICE's raw files.
+"""Circuit, results, batch, shard, and SPICE raw file serialization.
 
-A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A batch file holds a
-plan's batches of runs, each a [`Batch`][jolty.files.Batch]: the arrays of its
-[`BatchResult`][jolty.results.BatchResult] under keys such as ``monte-carlo.measured``,
-and a JSON header of the rest. A shard file holds a [`Shard`][jolty.files.Shard], a
-range of a plan's Monte Carlo samples: the arrays of its batch at each of the plan's
-conditions under keys such as ``1.measured``, for the plan's first corner, and a JSON
-header of the rest, the requirements it measured among it. Every file but a circuit's
-is a NumPy ``.npz`` archive whose bytes are a function of what it holds alone, so a
-shard run again writes the same file. A results file holds the
-results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
-circuit's unknowns and logic nets, says what the analyses recorded of its devices, each
-recording once however many analyses share it, and says what each analysis is, then
-the arrays of each analysis under keys such as ``step.times``, ``step.values``,
-``step.currents`` and ``step.conductances``, ``loop.frequencies`` and ``loop.gains``, or
-``hiss.densities`` and ``hiss.contributions``, and where each analysis used logic
-devices outside their domains. Its header also states the results'
-[`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
-simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 20 of the format, which holds that provenance, the regions of operation
-each recorded transistor's model distinguishes, the Newton iterations that found each
-operating point, each recording's summed terminals as its ``summed_terminals``, a
-periodic steady state as an analysis of its own, a mismatch analysis's random
-variables, and each transient's integrated residuals (`charge_leak`); a file of another
-version is not read.
+A circuit file stores a [`Circuit`][jolty.ir.Circuit] as JSON. A batch file stores a
+plan's named [`Batch`][jolty.files.Batch] objects, combining
+[`BatchResult`][jolty.results.BatchResult] arrays (such as ``monte-carlo.measured``)
+with a JSON header for metadata. A shard file stores a [`Shard`][jolty.files.Shard]
+covering a range of Monte Carlo samples across plan conditions. Shard arrays use
+condition-indexed keys such as ``1.measured`` for the first corner, while the JSON
+header records metadata and measured requirements. Batch, shard, and results files are
+deterministic NumPy ``.npz`` archives whose bytes depend solely on their contents, so
+re-running a shard reproduces identical output.
+
+A results file stores named analysis results in a NumPy ``.npz`` archive with a JSON
+header and per-analysis arrays. The header lists circuit unknowns, logic nets,
+deduplicated device recordings shared across analyses, and analysis metadata. Array
+keys are prefixed by analysis name, such as ``step.times``, ``step.values``,
+``step.currents``, ``step.conductances``, ``loop.frequencies``, ``loop.gains``,
+``hiss.densities``, and ``hiss.contributions``. Analysis entries also record logic
+domain excursions and [`Provenance`][jolty.files.Provenance] metadata: jolty version,
+build, platform, and circuit and plan digests.
+
+Results headers use format version 20; files of any other version are rejected.
+Version 20 records provenance, transistor operating regions, operating-point Newton
+iteration counts, and ``summed_terminals`` for hierarchical recordings. Format version
+20 also supports dedicated periodic steady-state analyses, mismatch random variables,
+and integrated transient residuals (`charge_leak`).
 
 Examples:
     >>> import tempfile
@@ -60,46 +60,46 @@ from jolty.files._results import (
 from jolty.files._shards import Shard, load_shard, save_shard
 
 CIRCUIT_SUFFIX: Final = ".jolty.json"
-"""The suffix of circuit files, such as ``rc_filter.jolty.json``."""
+"""Filename suffix for circuit JSON files, such as ``rc_filter.jolty.json``."""
 
 RESULTS_SUFFIX: Final = ".results.npz"
-"""The suffix of results files, such as ``rc_filter.results.npz``."""
+"""Filename suffix for analysis results archives, such as ``rc_filter.results.npz``."""
 
 RAW_SUFFIX: Final = ".raw"
-"""The suffix of SPICE raw files, such as ``rc_filter.raw``."""
+"""Filename suffix for SPICE raw files, such as ``rc_filter.raw``."""
 
 BATCHES_SUFFIX: Final = ".batches.npz"
-"""The suffix of batch files, such as ``rc_filter.batches.npz``."""
+"""Filename suffix for batch archives, such as ``rc_filter.batches.npz``."""
 
 SHARDS_SUFFIX: Final = ".shards"
-"""The suffix of the directories that hold a script's shards, such as ``amp.shards``."""
+"""Directory suffix for Monte Carlo shard directories, such as ``amp.shards``."""
 
 SHARD_PATTERN: Final = "shard-*-*.npz"
-"""The names of shard files, which a merge reads in their directory."""
+"""Glob pattern matching shard archive filenames within a shards directory."""
 
 
 def circuit_path(script: Path) -> Path:
-    """Where a script's circuit is saved by default: as ``<stem>.jolty.json``."""
+    """Returns the default circuit JSON path ``<stem>.jolty.json`` for `script`."""
     return script.with_name(script.stem + CIRCUIT_SUFFIX)
 
 
 def results_path(script: Path) -> Path:
-    """Where a script's results are saved by default: as ``<stem>.results.npz``."""
+    """Returns the default results archive path ``<stem>.results.npz`` for `script`."""
     return script.with_name(script.stem + RESULTS_SUFFIX)
 
 
 def raw_path(script: Path) -> Path:
-    """Where a script's SPICE raw file goes by default: as ``<stem>.raw``."""
+    """Returns the default SPICE raw path ``<stem>.raw`` for `script`."""
     return script.with_name(script.stem + RAW_SUFFIX)
 
 
 def shards_path(script: Path) -> Path:
-    """Where a script's shards are written by default: in ``<stem>.shards``."""
+    """Returns the default shard directory path ``<stem>.shards`` for `script`."""
     return script.with_name(script.stem + SHARDS_SUFFIX)
 
 
 def shard_name(start: int, stop: int) -> str:
-    """The name of the file of the samples from `start` up to `stop`.
+    """Returns the shard filename for sample indices from `start` up to `stop`.
 
     Examples:
         >>> shard_name(0, 1000)
@@ -109,7 +109,7 @@ def shard_name(start: int, stop: int) -> str:
 
 
 def merged_path(shards: Path) -> Path:
-    """Where the batch merged from the shards in `shards` goes: beside the directory.
+    """Returns the merged batch archive path next to the `shards` directory.
 
     Examples:
         >>> merged_path(Path("amp.shards")).name
@@ -119,7 +119,7 @@ def merged_path(shards: Path) -> Path:
 
 
 def batches_path(results: Path) -> Path:
-    """Where the batches go beside their plan's results: ``<stem>.batches.npz``.
+    """Returns the sibling batch archive path ``<stem>.batches.npz`` for `results`.
 
     Examples:
         >>> batches_path(Path("rc.results.npz")).name
@@ -130,9 +130,7 @@ def batches_path(results: Path) -> Path:
 
 
 def plot_path(results: Path, analysis: str) -> Path:
-    """Where the plot of `analysis` goes beside its results or its batches.
-
-    It is ``<stem>.<name>.plot.png``.
+    """Returns the plot path ``<stem>.<analysis>.plot.png`` next to `results`.
 
     Examples:
         >>> plot_path(Path("rc.results.npz"), "step").name
@@ -147,7 +145,7 @@ def plot_path(results: Path, analysis: str) -> Path:
 
 
 def viewer_path(circuit: Path) -> Path:
-    """Where the 3D viewer of a circuit goes beside it: ``<stem>.view.html``.
+    """Returns the 3D viewer path ``<stem>.view.html`` next to `circuit`.
 
     Examples:
         >>> viewer_path(Path("rc.jolty.json")).name
@@ -158,18 +156,18 @@ def viewer_path(circuit: Path) -> Path:
 
 
 def _component_path(circuit: Path, instance: str, suffix: str) -> Path:
-    """Path beside `circuit` carrying `instance`'s path segments and `suffix`."""
+    """Returns a sibling path next to `circuit` for `instance` and `suffix`."""
     stem = circuit.name.removesuffix(CIRCUIT_SUFFIX).removesuffix(".json")
     parts = [stem, *instance.split("/")] if instance else [stem]
     return circuit.with_name(".".join([*parts, suffix]))
 
 
 def schematic_path(circuit: Path, instance: str = "") -> Path:
-    """Where the schematic of the component at `instance` goes beside its circuit.
+    """Returns the schematic PNG path for the component at `instance` next to `circuit`.
 
-    The top component's is ``<stem>.schematic.png``; another's carries the ids of its
-    instance's path, joined by dots, as ``<stem>.X1.X2.schematic.png``. The suffixes
-    keep schematics and plots apart, whatever their names.
+    The top component uses ``<stem>.schematic.png``; nested instances join their path
+    segments with dots, such as ``<stem>.X1.X2.schematic.png``. Distinct suffixes keep
+    schematic files separate from plot files regardless of component or analysis names.
 
     Examples:
         >>> schematic_path(Path("rc.jolty.json")).name
@@ -181,10 +179,10 @@ def schematic_path(circuit: Path, instance: str = "") -> Path:
 
 
 def netlist_path(circuit: Path, instance: str = "") -> Path:
-    """Where the KiCad netlist of the component at `instance` goes beside its circuit.
+    """Returns the KiCad netlist path for the component at `instance` next to `circuit`.
 
-    The top component's is ``<stem>.net``; another's carries the ids of its instance's
-    path, joined by dots, as ``<stem>.X1.X2.net``.
+    The top component uses ``<stem>.net``; nested instances join their path segments
+    with dots, such as ``<stem>.X1.X2.net``.
 
     Examples:
         >>> netlist_path(Path("amp.jolty.json")).name

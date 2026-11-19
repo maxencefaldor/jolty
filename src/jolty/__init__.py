@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
 """jolty: a compiler and simulator for electronic circuits, built for AI agents.
 
-Circuits are written as Python components with [`component`][jolty.builder.component]
-and a [`Builder`][jolty.builder.Builder], with values in the units of
-[`jolty.units`][jolty.units]. A [`Simulation`][jolty.simulate.Simulation] runs the
-analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine, and
-[`jolty.specs`][jolty.specs] states what their results must show.
+Circuits are authored as Python components using [`component`][jolty.builder.component]
+and [`Builder`][jolty.builder.Builder], with physical values in
+[`jolty.units`][jolty.units]. A [`Simulation`][jolty.simulate.Simulation] runs
+[`jolty.plan`][jolty.plan] analyses in the Rust engine, and
+[`jolty.specs`][jolty.specs] defines pass/fail criteria for the results.
 """
 
 __lazy_modules__ = [

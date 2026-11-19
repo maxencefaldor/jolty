@@ -48,24 +48,27 @@ def save_raw(
     *,
     binary: bool = True,
 ) -> None:
-    """Writes the results of `analyses` to `path` as SPICE's raw file, a plot each.
+    """Writes the results of `analyses` to `path` in SPICE raw format, one plot each.
 
-    The file is ngspice's raw format, which other tools read: each plot a header, its
-    title the analysis's name, its scale and its vectors' names and types, then its
-    points, in `binary`, little-endian doubles, or ASCII, each plot named as ngspice 47
-    names its analysis's. An operating point is a plot of one point and no scale, a DC
-    sweep's scale is ``v-sweep``, ``i-sweep`` or ``temp-sweep`` (with type ``notype``
-    when the sweep has no nature, as for a parameter), a small-signal response's
-    ``frequency`` and its values complex, and a transient's ``time``. A net's vector is
-    named by its path, and a source's or an inductor's current, such as ``V1:current``,
-    as ngspice names it, ``V1#branch``; every other unknown by its name. A thermal
-    unknown carries type ``temperature`` and a state unknown ``notype``. It holds no
-    date, so the same results give the same bytes. [`load_raw`][jolty.files.load_raw]
-    reads the file back.
+    Each plot follows the ngspice 47 raw format with a header (analysis title, scale,
+    and vector names and types) followed by data points. Points are encoded as
+    little-endian IEEE-754 doubles when `binary` is true, or as ASCII otherwise.
+
+    An operating point writes a single point with no scale vector. A DC sweep uses
+    ``v-sweep``, ``i-sweep``, or ``temp-sweep`` as its scale, falling back to type
+    ``notype`` for parameter sweeps without a physical nature. An AC analysis uses a
+    ``frequency`` scale with complex values, and a transient analysis uses a ``time``
+    scale.
+
+    Net vectors use the net path, and branch currents such as ``V1:current`` use
+    ngspice ``V1#branch`` notation; all other unknowns keep their names. Thermal
+    unknowns use type ``temperature`` and state unknowns use ``notype``. Output headers
+    omit timestamps so identical results produce identical bytes, and
+    [`load_raw`][jolty.files.load_raw] reads the file back.
 
     Raises:
-        ValueError: When `analyses` is empty, a name holds a line break, or an analysis
-            is of a kind a raw file holds no plot of.
+        ValueError: When `analyses` is empty, an analysis name contains a line break,
+            or an analysis type is unsupported in SPICE raw format.
     """
     if not analyses:
         message = "a raw file holds one or more analyses"
@@ -81,20 +84,21 @@ def save_raw(
 
 
 def load_raw(path: Path) -> dict[str, RawAnalysisResult]:
-    """Reads the SPICE raw file at `path` as jolty analysis results, by plot title.
+    """Reads the SPICE raw file at `path` into jolty results keyed by plot title.
 
     Supports both binary (little-endian IEEE-754 doubles) and ASCII raw files written by
-    [`save_raw`][jolty.files.save_raw] or by ngspice, including multi-plot files. Each
-    plot's ``Title:`` becomes its key in the returned mapping; an empty title falls back
-    to the analysis kind (``operating_point``, ``dc_sweep``, ``ac`` or ``transient``),
-    and duplicate titles receive ``#2``, ``#3`` and so on so no plot is dropped.
+    [`save_raw`][jolty.files.save_raw] or ngspice, including multi-plot files. Each
+    plot's ``Title:`` becomes its mapping key; an empty title falls back to the analysis
+    kind (``operating_point``, ``dc_sweep``, ``ac``, or ``transient``). Duplicate titles
+    receive ``#2``, ``#3``, and subsequent suffixes so no plot is dropped.
 
-    SPICE's raw format stores only headers and vector arrays: an operating point loaded
-    from raw carries ``strategy="raw"`` and ``iterations=None``, an AC analysis carries
-    ``source=""`` and an all-NaN ``operating_point`` placeholder, a DC sweep carries the
-    scale vector's name as ``source`` and ``parameter=None``, and a transient carries
-    step count ``max(len(times) - 1, 0)`` with zero rejected steps. Binary raw files
-    preserve exact IEEE-754 bits, including ``-0.0``.
+    SPICE raw files store only headers and vector arrays, so jolty fills missing
+    metadata with defaults. Loaded operating points carry ``strategy="raw"`` and
+    ``iterations=None``, while AC results carry ``source=""`` and an all-NaN
+    ``operating_point`` placeholder. Loaded DC sweeps use the scale vector name as
+    ``source`` with ``parameter=None``, and transients set step count to
+    ``max(len(times) - 1, 0)`` with zero rejected steps. Binary raw files preserve exact
+    IEEE-754 bits, including ``-0.0``.
 
     Examples:
         >>> import tempfile
@@ -111,9 +115,9 @@ def load_raw(path: Path) -> dict[str, RawAnalysisResult]:
         2.5
 
     Raises:
-        JoltyError: When the file holds no plots, malformed headers, truncated values,
-            invalid numbers, an unsupported ``Plotname:``, or mismatched real/complex
-            flags.
+        JoltyError: When the file contains no plots, malformed headers, truncated
+            values, invalid numbers, an unsupported ``Plotname:``, or mismatched
+            real/complex flags.
     """
     data = path.read_bytes()
     try:
@@ -175,14 +179,14 @@ def _prepare_plot(name: str, result: results.AnalysisResult) -> _Plot:
 
 
 def _raw_sweep_scale(nature: results.Nature | None) -> tuple[str, str]:
-    """Scale vector name and SPICE type for a DC sweep of `nature`."""
+    """Returns the scale vector name and SPICE type for a DC sweep of `nature`."""
     if nature is None:
         return ("v-sweep", "notype")
     return _SWEEP_SCALES.get(nature, ("v-sweep", "notype"))
 
 
 def _raw_sweep_nature(scale: ngspice.RawVariable) -> results.Nature | None:
-    """DC sweep nature inferred from its raw scale vector."""
+    """Infers the DC sweep physical nature from its raw scale vector."""
     if scale.kind == "current" or scale.name.casefold() == "i-sweep":
         return "current"
     found = unknowns.parse_nature(scale.kind)
@@ -215,7 +219,7 @@ def _raw_scaled(
     *,
     expect_complex: bool = False,
 ) -> tuple[ngspice.RawVariable, tuple[results.Unknown, ...], np.ndarray, np.ndarray]:
-    """Checks scale and real/complex flags of a scaled raw plot and extracts arrays."""
+    """Validates scale and real/complex flags of a scaled raw plot and extracts data."""
     label = plot.title or plot.plot
     if plot.complex_values != expect_complex:
         found = "real values, not complex" if expect_complex else "complex values"
@@ -299,7 +303,7 @@ def _raw_transient(path: Path, plot: ngspice.RawPlot) -> results.TransientResult
 
 
 def _unknown_from_raw(variable: ngspice.RawVariable) -> results.Unknown:
-    """The jolty unknown for a raw file's vector, reversing `_raw_name`."""
+    """Converts a raw file vector into a jolty `Unknown`, reversing `_raw_name`."""
     name = variable.name
     nature = unknowns.parse_nature(variable.kind)
     if name.endswith("#branch") and len(name) > len("#branch"):
@@ -322,7 +326,7 @@ def _raw_header(
     complex_values: bool,
     binary: bool,
 ) -> bytes:
-    """Header bytes for one plot of a SPICE raw file."""
+    """Formats the header bytes for one plot of a SPICE raw file."""
     lines = [
         f"Title: {spec.title}",
         f"Plotname: {spec.plot}",
@@ -337,7 +341,7 @@ def _raw_header(
 
 
 def _raw_values(matrix: np.ndarray, *, complex_values: bool, binary: bool) -> bytes:
-    """Encoded point matrix bytes for one plot of a SPICE raw file."""
+    """Encodes the point matrix bytes for one plot of a SPICE raw file."""
     if complex_values:
         typed = matrix.astype(np.complex128)
         if binary:
@@ -359,7 +363,7 @@ def _raw_values(matrix: np.ndarray, *, complex_values: bool, binary: bool) -> by
 
 
 def _raw_plot(spec: _Plot, *, binary: bool) -> bytes:
-    """One plot of a raw file: its header, then its values, ASCII or `binary`."""
+    """Serializes one SPICE raw plot as header bytes plus ASCII or `binary` values."""
     named = [
         (_raw_name(unknown), "notype" if unknown.nature == "state" else unknown.nature)
         for unknown in spec.unknowns
@@ -378,7 +382,7 @@ def _raw_plot(spec: _Plot, *, binary: bool) -> bytes:
 
 
 def _raw_name(unknown: results.Unknown) -> str:
-    """The name of `unknown`'s vector in a raw file, as ngspice names it."""
+    """Formats the SPICE raw vector name for `unknown` using ngspice conventions."""
     path, separator, label = unknown.name.rpartition(":")
     if separator and label == "current" and unknown.nature == "current":
         return f"{path}#branch"

@@ -1,16 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""Reports: what each analysis found, as data and as text for people and agents.
+"""Structured and text reports summarizing simulation analysis results.
 
-A report states facts: the value of every unknown at an operating point, and the first,
-lowest, highest and last value of every unknown over a sweep, a frequency response or a
-transient; the level of every logic net at an operating point, and its first and last
-level and how often it changed over a sweep or a transient; and each transistor's region
-of operation at an operating point, with its margins to the regions' boundaries, those
-nearest one first. It lists the first unknowns and logic nets, and transistors, up to a
-limit; the results file holds them all.
-A corner's report states whether the circuit elaborates there and which analyses fail,
-and a Monte Carlo analysis's, or a plan's variants', how many runs failed, what each
-requirement read over the runs, as its spread, and the yield, with its Wilson interval.
+An analysis report presents key facts for people and agents. Operating-point reports
+record unknown values, logic net levels, and transistor operating regions sorted by
+nearest boundary margin. Sweep, AC, and transient reports summarize the first,
+minimum, maximum, and final values of unknowns along with logic net transition counts.
+Each report truncates listed unknowns, logic nets, and transistors to a configured
+limit, while the results archive retains the complete data.
+
+Corner reports record elaboration problems and failed analyses at each corner. Monte
+Carlo and variant batch reports summarize failed run counts, requirement spreads, and
+overall yield with its Wilson confidence interval.
 """
 
 import math
@@ -27,9 +27,9 @@ from jolty.units import format_si
 
 
 def _shown(value: float, nature: results.Nature) -> str:
-    """`value`, an unknown's of `nature`, with an SI prefix to its unit.
+    """Formats an unknown `value` of `nature` with an SI unit prefix.
 
-    A device's state has no unit, and is written as a plain number.
+    Device state unknowns are dimensionless and are formatted as plain numbers.
     """
     if nature == "state":
         return f"{value:.4g}"
@@ -46,7 +46,7 @@ _STRATEGIES: Final = {
 
 
 def _found(strategy: str, iterations: int | None) -> str:
-    """How an operating point was found, as text: by `strategy`, in `iterations`.
+    """Formats operating-point `strategy` and optional `iterations` count as text.
 
     Examples:
         >>> _found("gmin_stepping", 412)
@@ -61,14 +61,14 @@ def _found(strategy: str, iterations: int | None) -> str:
 
 
 _ITERATIONS: Final = (
-    "The Newton iterations that found it: the strategy's that found it, and those of "
-    "every strategy tried before it; null for ngspice's, which it does not count."
+    "Total Newton iterations across the converging strategy and all earlier "
+    "fallback strategies, or null for ngspice runs that do not report counts."
 )
-"""What a report's iterations of an operating point are."""
+"""Field description for operating-point Newton iteration counts."""
 
 
 class Value(ir.FrozenModel):
-    """The value of one unknown, in volts or amperes."""
+    """Scalar value of a single unknown, in SI base units."""
 
     unknown: str
     nature: results.Nature
@@ -76,7 +76,7 @@ class Value(ir.FrozenModel):
 
 
 class Extent(ir.FrozenModel):
-    """The values one unknown takes over an analysis, in volts or amperes."""
+    """Summary of values taken by a single unknown across an analysis."""
 
     unknown: str
     nature: results.Nature
@@ -87,60 +87,66 @@ class Extent(ir.FrozenModel):
 
 
 class NetLevel(ir.FrozenModel):
-    """The level of one logic net."""
+    """Logic level of a single digital net."""
 
     net: str
     level: LogicLevel
 
 
 class Activity(ir.FrozenModel):
-    """The levels one logic net takes over an analysis."""
+    """Summary of logic levels taken by a digital net across an analysis."""
 
     net: str
     first: LogicLevel
-    changes: int = Field(description="How many times its level changed.")
+    changes: int = Field(description="Number of times the logic net level changed.")
     last: LogicLevel
 
 
 class Margin(ir.FrozenModel):
-    """A transistor's margin to a boundary of its regions of operation, in volts."""
+    """Transistor margin to an operating-region boundary, in volts."""
 
-    variable: str = Field(description="Its variable, such as saturation_margin.")
+    variable: str = Field(
+        description="Margin variable name, such as saturation_margin."
+    )
     value: float
 
 
 class Transistor(ir.FrozenModel):
-    """A transistor's region of operation and its margins to the regions' bounds."""
+    """Transistor operating region and margins to region boundaries."""
 
     path: str
-    region: str = Field(description="Its region, as its model's equations say.")
+    region: str = Field(
+        description="Operating region determined by the device model equations."
+    )
     margins: tuple[Margin, ...]
 
 
 class OperatingPointReport(ir.FrozenModel):
-    """An operating point."""
+    """Report summarizing a DC operating-point analysis."""
 
     kind: Literal["operating_point"] = "operating_point"
     name: str
     strategy: str = Field(
-        description="How the engine found it: direct, gmin_stepping, "
-        "junction_gmin_stepping, source_stepping or pseudo_transient."
+        description="Solver strategy that found the operating point: direct, "
+        "gmin_stepping, junction_gmin_stepping, source_stepping, or pseudo_transient."
     )
     iterations: int | None = Field(default=None, description=_ITERATIONS)
     values: tuple[Value, ...]
     levels: tuple[NetLevel, ...] = ()
-    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
+    unlisted: int = Field(
+        description="Number of unknowns and logic nets omitted from the report."
+    )
     transistors: tuple[Transistor, ...] = Field(
         default=(),
-        description="Each transistor's region, nearest a boundary first: by the least "
-        "magnitude of its margins.",
+        description="Recorded transistors ordered by smallest absolute boundary "
+        "margin first.",
     )
     unlisted_transistors: int = Field(
-        default=0, description="Transistors left out of the list."
+        default=0, description="Number of recorded transistors omitted from the report."
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the operating-point report as human-readable text."""
         rows = [
             [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
@@ -173,33 +179,35 @@ class OperatingPointReport(ir.FrozenModel):
 
 
 class Solutions(ir.FrozenModel):
-    """The value of one unknown at each DC solution, in volts or amperes."""
+    """Values of a single unknown across multiple DC solutions, in SI base units."""
 
     unknown: str
     nature: results.Nature
-    values: tuple[float, ...] = Field(description="Its value at each solution.")
+    values: tuple[float, ...] = Field(
+        description="Value of the unknown at each DC solution."
+    )
 
 
 class OperatingPointsReport(ir.FrozenModel):
-    """Every DC solution a search found, the operating point first."""
+    """Report listing every DC solution found by a search, operating point first."""
 
     kind: Literal["operating_points"] = "operating_points"
     name: str
     strategies: tuple[str, ...] = Field(
-        description="How the engine found each solution: direct, gmin_stepping, "
-        "junction_gmin_stepping, source_stepping or pseudo_transient, on the equations "
-        "deflated by those before it."
+        description="Solver strategy that found each solution on the deflated "
+        "equations: direct, gmin_stepping, junction_gmin_stepping, source_stepping, "
+        "or pseudo_transient."
     )
     iterations: tuple[int | None, ...] = Field(
         default=(),
-        description="The Newton iterations that found each solution, the search's "
-        "on the equations deflated by those before it.",
+        description="Newton iteration counts for each solution found on the deflated "
+        "equations.",
     )
     values: tuple[Solutions, ...]
-    unlisted: int = Field(description="Unknowns left out of the list.")
+    unlisted: int = Field(description="Number of unknowns omitted from the report.")
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the multi-solution DC report as human-readable text."""
         count = len(self.strategies)
         found = "solution" if count == 1 else "solutions"
         head = f"{self.name}: {count} DC {found}, the operating point first"
@@ -218,41 +226,41 @@ class OperatingPointsReport(ir.FrozenModel):
 
 
 class DcSweepReport(ir.FrozenModel):
-    """A DC sweep."""
+    """Report summarizing a DC sweep analysis."""
 
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
-    source: str = Field(description="The swept instance's path.")
+    source: str = Field(description="Instance path of the swept source or device.")
     nature: results.Nature | None = Field(
-        description="Whether its values are voltages or currents; null for a "
-        "parameter's."
+        description="Physical quantity of swept values (voltage or current), or null "
+        "for parameter sweeps."
     )
     parameter: str | None = Field(
         default=None,
-        description="The parameter swept, such as 'resistance'; null for a source's "
-        "value.",
+        description="Swept parameter name, such as 'resistance', or null when sweeping "
+        "a source value.",
     )
-    first: float = Field(description="The first value, in SI base units.")
-    last: float = Field(description="The last value, in SI base units.")
-    swept: int = Field(description="Values the sweep solved.")
+    first: float = Field(description="Initial swept value, in SI base units.")
+    last: float = Field(description="Final swept value, in SI base units.")
+    swept: int = Field(description="Number of sweep points solved.")
     iterations: int | None = Field(
         default=None,
-        description="The Newton iterations that found the operating points at every "
-        "value, each from the value before it; null for ngspice's, which it does not "
-        "count.",
+        description="Total Newton iterations across all sweep points using "
+        "continuation, or null for ngspice runs that do not report counts.",
     )
     strategies: dict[str, int] = Field(
         default_factory=dict,
-        description="The values each strategy found the operating point at, by its "
-        "name, in the order the sweep first used it; empty for ngspice's, which does "
-        "not say.",
+        description="Count of sweep points solved by each strategy in order of first "
+        "use, or empty for ngspice runs.",
     )
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
-    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
+    unlisted: int = Field(
+        description="Number of unknowns and logic nets omitted from the report."
+    )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the DC sweep report as human-readable text."""
         if self.nature is None:
             swept = f"{self.source}'s {self.parameter}"
             first, last = f"{self.first:.4g}", f"{self.last:.4g}"
@@ -284,22 +292,24 @@ class _FrequencyReport(ir.FrozenModel):
     name: str
     start: float = Field(description="Lowest frequency, in hertz.")
     stop: float = Field(description="Highest frequency, in hertz.")
-    frequencies: int = Field(description="Frequencies the analysis solved.")
+    frequencies: int = Field(
+        description="Number of frequencies solved by the analysis."
+    )
 
 
 class AcReport(_FrequencyReport):
-    """A small-signal frequency response, as magnitudes per unit excitation."""
+    """Report summarizing a small-signal AC frequency response."""
 
     kind: Literal["ac"] = "ac"
-    source: str = Field(description="The excited source's path.")
+    source: str = Field(description="Instance path of the excited AC source.")
     magnitudes: tuple[Extent, ...] = Field(
-        description="Magnitude of each unknown's phasor, from the lowest frequency "
-        "to the highest."
+        description="Summary of phasor magnitudes for each unknown from the lowest "
+        "frequency to the highest."
     )
-    unlisted: int = Field(description="Unknowns left out of the list.")
+    unlisted: int = Field(description="Number of unknowns omitted from the report.")
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the AC frequency-response report as human-readable text."""
         head = (
             f"{self.name}: response to {self.source} at {self.frequencies} "
             "frequencies from "
@@ -310,38 +320,41 @@ class AcReport(_FrequencyReport):
 
 
 class NetChargeLeak(ir.FrozenModel):
-    """The electrical net with the largest integrated KCL residual over a run."""
+    """Electrical net with the largest integrated KCL residual over a run."""
 
-    net: str = Field(description="The electrical net with the largest absolute leak.")
+    net: str = Field(
+        description="Electrical net with the largest cumulative absolute charge leak."
+    )
     signed: float = Field(
-        description="The signed net charge leaked into that net, in coulombs."
+        description="Signed net charge leaked into the net, in coulombs."
     )
     absolute: float = Field(
-        description="The cumulative absolute charge leaked across every step at that "
-        "net, in coulombs, bounding the drift at every intermediate accepted time."
+        description="Cumulative absolute charge leaked across all steps at the net, "
+        "in coulombs, bounding intermediate charge drift."
     )
 
 
 class _WaveformReport(ir.FrozenModel):
-    """Shared fields and rendering for time-domain waveform reports."""
+    """Shared fields and rendering helpers for time-domain waveform reports."""
 
     name: str
-    accepted: int = Field(description="Time steps accepted.")
+    accepted: int = Field(description="Number of accepted time steps.")
     rejected: int = Field(
-        description="Time steps rejected for their error or for Newton iteration that "
-        "did not converge."
+        description="Number of time steps rejected due to truncation error or "
+        "non-convergent Newton iterations."
     )
     landed: int = Field(
-        description="Time steps tried again shorter to land on an event within them: "
-        "a detector's crossing, a logic driver's change or a device's jump."
+        description="Number of time steps shortened to land on detector crossings, "
+        "logic transitions, or device discontinuities."
     )
     extents: tuple[Extent, ...]
-    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
+    unlisted: int = Field(
+        description="Number of unknowns and logic nets omitted from the report."
+    )
     charge_leak: NetChargeLeak | None = Field(
         default=None,
-        description="The electrical net with the largest cumulative absolute charge "
-        "leak over the run, when nonzero; null when zero, when there are no "
-        "electrical nets, or when the solver reports no charge leak.",
+        description="Electrical net with the largest nonzero cumulative absolute "
+        "charge leak, or null if zero, absent, or unreported.",
     )
 
     def _steps_text(self) -> str:
@@ -363,14 +376,16 @@ class _WaveformReport(ir.FrozenModel):
 
 
 class TransientReport(_WaveformReport):
-    """A transient analysis."""
+    """Report summarizing a transient time-domain analysis."""
 
     kind: Literal["transient"] = "transient"
-    stop: float = Field(description="Time the analysis ended, in seconds.")
+    stop: float = Field(
+        description="Final simulation time of the transient analysis, in seconds."
+    )
     activities: tuple[Activity, ...] = ()
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the transient analysis report as human-readable text."""
         head = (
             f"{self.name}: transient to {format_si(self.stop, 's')} "
             f"{self._steps_text()}"
@@ -381,20 +396,20 @@ class TransientReport(_WaveformReport):
 
 
 class PeriodicSteadyStateReport(_WaveformReport):
-    """One period of a periodic steady state."""
+    """Report summarizing one period of a periodic steady-state analysis."""
 
     kind: Literal["periodic_steady_state"] = "periodic_steady_state"
     period: float = Field(
-        description="The period in seconds: the analysis's, or an oscillator's, which "
-        "it found."
+        description="Steady-state period in seconds, either fixed by the analysis or "
+        "solved for an oscillator."
     )
     periods: int = Field(
-        description="The periods shooting simulated to find the steady state; the "
-        "steps counted are the last's."
+        description="Number of shooting periods simulated to reach steady state; "
+        "reported step counts cover the final period."
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the periodic steady-state report as human-readable text."""
         head = (
             f"{self.name}: periodic steady state of period "
             f"{format_si(self.period, 's')}, {format_si(1 / self.period, 'Hz')}, "
@@ -404,28 +419,31 @@ class PeriodicSteadyStateReport(_WaveformReport):
 
 
 class StabilityReport(_FrequencyReport):
-    """The loop gain through a probe, and the margins it leaves."""
+    """Report summarizing loop gain and stability margins through a probe."""
 
     kind: Literal["stability"] = "stability"
-    probe: str = Field(description="The probe's path.")
-    gain: float = Field(description="The loop gain at the lowest frequency, in dB.")
+    probe: str = Field(description="Instance path of the stability probe.")
+    gain: float = Field(
+        description="Loop gain magnitude at the lowest frequency, in dB."
+    )
     phase: float = Field(
-        description="The loop gain's phase at the lowest frequency, in degrees."
+        description="Loop gain phase at the lowest frequency, in degrees."
     )
     crossover: float | None = Field(
-        description="Where the loop gain first falls through 0 dB, in hertz; null "
-        "when it does not over the positive frequencies."
+        description="Frequency in hertz where loop gain first crosses 0 dB downward, "
+        "or null if no crossover occurs over positive frequencies."
     )
     phase_margin: float | None = Field(
-        description="180° plus the loop gain's phase at the crossover, in degrees."
+        description="Phase margin in degrees, equal to 180° plus the loop gain phase "
+        "at the unity-gain crossover."
     )
     gain_margin: float | None = Field(
-        description="Minus the loop gain where its phase first falls through -180°, "
-        "in dB; null when it does not over the positive frequencies."
+        description="Gain margin in dB, equal to the negated loop gain where phase "
+        "first crosses -180°, or null if no crossing occurs over positive frequencies."
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the stability analysis report as human-readable text."""
         lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         head = (
             f"{self.name}: loop gain through {self.probe} at {self.frequencies} "
@@ -447,30 +465,36 @@ class StabilityReport(_FrequencyReport):
 
 
 class TransferFunctionReport(ir.FrozenModel):
-    """The small-signal transfer function at DC: a gain and two resistances."""
+    """Report summarizing a DC small-signal transfer function analysis."""
 
     kind: Literal["transfer_function"] = "transfer_function"
     name: str
-    source: str = Field(description="The input source's path.")
-    output: str = Field(description="The output: a net or a voltage source's current.")
+    source: str = Field(description="Instance path of the input source.")
+    output: str = Field(
+        description="Output unknown name, either a net voltage or a voltage-source "
+        "current."
+    )
     reference: str | None = Field(
         default=None,
-        description="The net the output voltage is taken over; null for the ground.",
+        description="Reference net for a differential output voltage, or null for "
+        "ground.",
     )
     gain: specs.ExtendedReal = Field(
-        description="The output per volt or ampere of the source's level."
+        description="Small-signal output change per volt or ampere of input source "
+        "level."
     )
-    unit: str = Field(description="The gain's unit, such as 'V/V' or 'A/V'.")
+    unit: str = Field(
+        description="Unit string for the small-signal gain, such as 'V/V' or 'A/V'."
+    )
     input_resistance: specs.ExtendedReal = Field(
-        description="The resistance the source sees, in ohms."
+        description="Small-signal input resistance seen by the input source, in ohms."
     )
     output_resistance: specs.ExtendedReal = Field(
-        description="The resistance the output sees with the source at its level, in "
-        "ohms."
+        description="Small-signal output resistance seen at the output port, in ohms."
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the transfer-function report as human-readable text."""
         over = "" if self.reference is None else f" over {self.reference}"
         header = (
             f"{self.name}: transfer function from {self.source} to {self.output}{over}"
@@ -486,59 +510,67 @@ class TransferFunctionReport(ir.FrozenModel):
 
 
 class NoiseContribution(ir.FrozenModel):
-    """What one noise source of a device adds to a noise analysis's output."""
+    """Contribution of a single device noise source to output noise."""
 
-    instance: str = Field(description="The device's path.")
+    instance: str = Field(description="Instance path of the contributing device.")
     name: str = Field(
-        description="What makes the noise, such as thermal or collector shot."
+        description="Noise mechanism name, such as thermal or collector shot."
     )
     rms: float = Field(
-        description="Its RMS noise at the output over the frequencies, in volts or "
-        "amperes as the output is."
+        description="Integrated RMS output noise from the source across the band, in "
+        "volts or amperes."
     )
     share: float = Field(
-        description="Its fraction of the output's noise power over the frequencies."
+        description="Fraction of total output noise power contributed by the source "
+        "across the band."
     )
 
 
 class NoiseReport(_FrequencyReport):
-    """The noise at an output, and the devices that make the most of it."""
+    """Report summarizing output noise and the dominant device noise sources."""
 
     kind: Literal["noise"] = "noise"
-    output: str = Field(description="The output, an unknown by name.")
+    output: str = Field(description="Name of the output unknown.")
     reference: str | None = Field(
-        description="The node the output voltage is over; null for the ground."
+        description="Reference net for a differential output voltage, or null for "
+        "ground."
     )
-    nature: results.Nature = Field(description="What the output is.")
+    nature: results.Nature = Field(
+        description="Physical quantity of the output unknown."
+    )
     first: float = Field(
-        description="The output's noise density at the lowest frequency, in V/√Hz or "
-        "A/√Hz."
+        description="Output noise spectral density at the lowest frequency, in V/√Hz "
+        "or A/√Hz."
     )
     last: float = Field(
-        description="The output's noise density at the highest frequency, in V/√Hz or "
-        "A/√Hz."
+        description="Output noise spectral density at the highest frequency, in V/√Hz "
+        "or A/√Hz."
     )
     rms: float | None = Field(
-        description="The output's RMS noise over the frequencies, in volts or "
-        "amperes; null for one frequency."
+        description="Integrated RMS output noise across the frequency band, in volts "
+        "or amperes, or null for a single frequency."
     )
     source: str | None = Field(
-        description="The source the noise is referred to; null for none."
+        description="Instance path of the input-referred source, or null if omitted."
     )
     referred: float | None = Field(
-        description="The RMS noise referred to the source over the frequencies, in "
-        "the unit of its value; null without a source or for one frequency."
+        description="Integrated input-referred RMS noise across the band, or null "
+        "without an input source or for a single frequency."
     )
     referred_nature: results.Nature | None = Field(
-        description="What the source's value is; null without a source."
+        description="Physical quantity of the input-referred source, or null if "
+        "omitted."
     )
     contributions: tuple[NoiseContribution, ...] = Field(
-        description="The noise sources that make the most noise, the most first."
+        description="Top contributing noise sources ordered from largest to smallest "
+        "noise power."
     )
-    unlisted: int = Field(description="Noise sources left out of the list.")
+    unlisted: int = Field(
+        description="Number of noise sources omitted from the report."
+    )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the noise analysis report as human-readable text."""
         lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
         unit = unknowns.SYMBOLS[self.nature]
@@ -574,24 +606,23 @@ class NoiseReport(_FrequencyReport):
 
 
 class Root(ir.FrozenModel):
-    """A pole or a zero, or a conjugate pair of them."""
+    """Single pole or zero, or a complex-conjugate pair represented once."""
 
-    real: float = Field(description="The real part, in radians per second.")
+    real: float = Field(description="Real part of the root, in radians per second.")
     imaginary: float = Field(
-        description="The imaginary part, in radians per second: zero for a real root, "
-        "and positive for a pair, whose other member is its conjugate."
+        description="Imaginary part in radians per second: zero for a real root, or "
+        "positive for a complex-conjugate pair."
     )
     frequency: float = Field(
-        description="The natural frequency, the magnitude over 2π, in hertz."
+        description="Natural frequency in hertz, equal to the root magnitude over 2π."
     )
     damping: float | None = Field(
-        description="The damping ratio, minus the real part over the magnitude: 1 for "
-        "a real root in the left half-plane, negative in the right half-plane; null at "
-        "the origin."
+        description="Damping ratio equal to the negated real part over magnitude: 1 "
+        "in the left half-plane, negative in the right half-plane, or null at origin."
     )
 
     def written(self, kind: str) -> list[str]:
-        """The root as a table's row: its kind, value, frequency and damping."""
+        """Formats the root as a table row of kind, value, frequency, and damping."""
         value = format_si(self.real, "rad/s")
         if self.imaginary:
             value += f" ± j{format_si(self.imaginary, 'rad/s')}"
@@ -600,25 +631,34 @@ class Root(ir.FrozenModel):
 
 
 class PoleZeroReport(ir.FrozenModel):
-    """The poles of the linearized circuit, and the zeros of a transfer function."""
+    """Report listing poles of a linearized circuit and transfer-function zeros."""
 
     kind: Literal["pole_zero"] = "pole_zero"
     name: str
-    source: str | None = Field(description="The source the transfer function is from.")
-    output: str | None = Field(description="The output the transfer function is to.")
+    source: str | None = Field(
+        description="Instance path of the transfer-function input source, or null."
+    )
+    output: str | None = Field(
+        description="Name of the transfer-function output unknown, or null."
+    )
     reference: str | None = Field(
-        description="The node the output voltage is over; null for the ground."
+        description="Reference net for a differential output voltage, or null for "
+        "ground."
     )
     poles: tuple[Root, ...] = Field(
-        description="The poles, by increasing magnitude, a conjugate pair once."
+        description="Listed poles ordered by increasing magnitude, with each "
+        "complex-conjugate pair shown once."
     )
     zeros: tuple[Root, ...] | None = Field(
-        description="The zeros, likewise, given a source and an output."
+        description="Listed zeros ordered by increasing magnitude when both source "
+        "and output are given, or null."
     )
-    unlisted: int = Field(description="Roots left out of the lists.")
+    unlisted: int = Field(
+        description="Number of poles and zeros omitted from the report."
+    )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the pole-zero analysis report as human-readable text."""
         count = sum(2 if root.imaginary else 1 for root in self.poles)
         head = f"{self.name}: {count} poles listed"
         if self.zeros is not None:
@@ -633,43 +673,44 @@ class PoleZeroReport(ir.FrozenModel):
 
 
 class Derivative(ir.FrozenModel):
-    """An output's derivative with respect to one parameter."""
+    """First-order derivative of an output with respect to a single parameter."""
 
-    instance: str = Field(description="The device's path.")
-    parameter: str = Field(description="The parameter's name, such as resistance.")
-    value: float = Field(description="The parameter's value, in SI base units.")
+    instance: str = Field(
+        description="Instance path of the device owning the parameter."
+    )
+    parameter: str = Field(description="Parameter name, such as resistance.")
+    value: float = Field(description="Nominal parameter value, in SI base units.")
     derivative: float = Field(
-        description="The output's derivative with respect to the parameter, in SI "
-        "base units: at the operating point, or the largest in magnitude over the "
-        "points, signed, a response's magnitude."
+        description="Derivative of the output with respect to the parameter in SI "
+        "base units, evaluated at the operating point or at peak magnitude."
     )
     at: float | None = Field(
         default=None,
-        description="The value, frequency or time it is largest at, in SI base units; "
-        "null at an operating point.",
+        description="Sweep value, frequency, or time of peak derivative magnitude in "
+        "SI base units, or null at an operating point.",
     )
 
 
 class OutputSensitivity(ir.FrozenModel):
-    """An output's derivatives with respect to the parameters."""
+    """Summary of parameter derivatives for a single output unknown."""
 
     output: str
     nature: results.Nature
     value: float | None = Field(
         default=None,
-        description="Its value at the operating point, in volts or amperes; null "
-        "along another analysis.",
+        description="Nominal output value at the operating point in SI base units, "
+        "or null for multi-point analyses.",
     )
     derivatives: tuple[Derivative, ...] = Field(
-        description="Its derivative with respect to the first parameters, in the "
-        "circuit's order."
+        description="Output derivatives with respect to the listed parameters in "
+        "circuit order."
     )
 
 
 type Differentiated = Literal[
     "operating_point", "dc_sweep", "ac", "transient", "periodic_steady_state"
 ]
-"""The analysis a sensitivity or a mismatch analysis differentiates."""
+"""Analysis kind differentiated by a sensitivity or mismatch analysis."""
 
 _ALONG: Final[dict[Differentiated, str]] = {
     "dc_sweep": "along a DC sweep at {points} values",
@@ -683,24 +724,29 @@ class _DifferentiatedReport(ir.FrozenModel):
     """Shared fields and helpers for sensitivity and mismatch reports."""
 
     name: str
-    of: Differentiated = Field(description="The analysis differentiated.")
-    points: int = Field(description="The points the derivatives are taken at.")
+    of: Differentiated = Field(
+        description="Kind of underlying analysis differentiated."
+    )
+    points: int = Field(
+        description="Number of points at which derivatives are evaluated."
+    )
     strategy: str | None = Field(
         default=None,
-        description="How the engine found the operating point: direct, gmin_stepping, "
-        "junction_gmin_stepping, source_stepping or pseudo_transient; null along a "
-        "sweep or a transient.",
+        description="Solver strategy that found the operating point, or null for "
+        "sweeps and transients.",
     )
     iterations: int | None = Field(default=None, description=_ITERATIONS)
     unit: str = Field(
         default="",
-        description="The unit of the points: V or A along a sweep, Hz, or s.",
+        description="Axis unit of the evaluated points: V or A for sweeps, Hz, or s.",
     )
     period: float | None = Field(
         default=None,
-        description="An oscillator's period, in seconds; null for any other analysis.",
+        description="Solved oscillator period in seconds, or null for other analyses.",
     )
-    unlisted: int = Field(description="Entries left out of each output's list.")
+    unlisted: int = Field(
+        description="Number of entries omitted from each output list."
+    )
 
     def _where(self) -> str:
         if self.of == "operating_point":
@@ -715,24 +761,23 @@ class _DifferentiatedReport(ir.FrozenModel):
 
 
 class SensitivityReport(_DifferentiatedReport):
-    """Sensitivities at the operating point, or along a sweep, a response or time.
+    """Report summarizing first-order parameter sensitivities.
 
-    Along a periodic steady state's period, too, and an oscillator's period's.
+    Sensitivity reports cover operating points, DC sweeps, AC responses, transients,
+    periodic steady states, and oscillator periods.
     """
 
     kind: Literal["sensitivity"] = "sensitivity"
-    parameters: int = Field(
-        description="Parameters the derivatives are with respect to."
-    )
+    parameters: int = Field(description="Total number of differentiated parameters.")
     outputs: tuple[OutputSensitivity, ...]
     period_derivatives: tuple[Derivative, ...] = Field(
         default=(),
-        description="An oscillator's period's derivative with respect to the first "
-        "parameters, in the circuit's order.",
+        description="Derivatives of an oscillator period with respect to the listed "
+        "parameters in circuit order.",
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the sensitivity report as human-readable text."""
         header = (
             f"{self.name}: derivatives with respect to {self.parameters} parameters "
             f"{self._where()}"
@@ -780,74 +825,74 @@ class SensitivityReport(_DifferentiatedReport):
 
 
 class MismatchContribution(ir.FrozenModel):
-    """What one random variable adds to an output's spread."""
+    """Contribution of a single random variable to first-order output spread."""
 
     instance: str | None = Field(
-        description="The path of the instance that draws it: the part whose tolerance "
-        "it is, or the placement whose kit's statistical function it is; null for a "
-        "lot's."
+        description="Instance path owning the random variable for part tolerances or "
+        "foundry statistical calls, or null for shared lots."
     )
     lot: str | None = Field(
-        description="The lot whose shared spread it is; null for none."
+        description="Shared lot name for a lot-level random variable, or null."
     )
     name: str = Field(
-        description="What it is within its instance or lot: the parameter a tolerance "
-        "spreads, or which call of a statistical function it is, such as vth0#0."
+        description="Random variable name within the instance or lot, such as a "
+        "parameter name or statistical call label like vth0#0."
     )
     contribution: float = Field(
-        description="Its derivative times its standard deviation: how far the output "
-        "moves, to first order, as it moves one standard deviation up, in the "
-        "output's unit."
+        description="First-order output shift per one-sigma change in the random "
+        "variable, equal to derivative times standard deviation."
     )
-    share: float = Field(description="Its fraction of the output's variance.")
+    share: float = Field(
+        description="Fraction of total first-order output variance from this variable."
+    )
 
 
 class OutputMismatch(ir.FrozenModel):
-    """How far an output, or a response's magnitude or phase, spreads, and why."""
+    """First-order statistical spread summary for one output or phasor component."""
 
     output: str
     nature: results.Nature
     part: results.PhasorPart | None = Field(
         default=None,
-        description="What of a response's phasor spreads, its magnitude or its phase; "
-        "null for real values.",
+        description="Phasor component analyzed for AC responses (magnitude or phase), "
+        "or null for real-valued analyses.",
     )
     value: float | None = Field(
         default=None,
-        description="Its value at the operating point, in volts or amperes; null "
-        "along another analysis.",
+        description="Nominal output value at the operating point in SI base units, "
+        "or null for multi-point analyses.",
     )
     standard_deviation: float = Field(
-        description="Its standard deviation, to first order: at the operating point, "
-        "or the largest over the points, a phase's in degrees."
+        description="First-order output standard deviation at the operating point or "
+        "peak across points, in degrees for phasor phase."
     )
     at: float | None = Field(
         default=None,
-        description="The value, frequency or time it is largest at, in SI base units; "
-        "null at an operating point.",
+        description="Sweep value, frequency, or time of peak standard deviation in "
+        "SI base units, or null at an operating point.",
     )
     contributions: tuple[MismatchContribution, ...] = Field(
-        description="The random variables that contribute most there, the largest "
-        "share first, a phase's contributions in degrees."
+        description="Top random-variable contributors ordered by descending variance "
+        "share, with phase contributions in degrees."
     )
 
 
 class MismatchReport(_DifferentiatedReport):
-    """How far outputs spread with the random variables, to first order, and why."""
+    """Report summarizing first-order output spread across random variables."""
 
     kind: Literal["mismatch"] = "mismatch"
     random_variables: int = Field(
-        description="Random variables the outputs spread with."
+        description="Total number of random variables included in the analysis."
     )
     outputs: tuple[OutputMismatch, ...]
     period_standard_deviation: float | None = Field(
         default=None,
-        description="The standard deviation of an oscillator's period, to first "
-        "order, in seconds; null for any other analysis.",
+        description="First-order standard deviation of an oscillator period in "
+        "seconds, or null for other analyses.",
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the mismatch analysis report as human-readable text."""
         header = (
             f"{self.name}: standard deviations, to first order, with "
             f"{self.random_variables} random variables {self._where()}"
@@ -892,44 +937,45 @@ class MismatchReport(_DifferentiatedReport):
 
 
 class FailureReport(ir.FrozenModel):
-    """An analysis that failed."""
+    """Report recording a failed analysis."""
 
     kind: Literal["failure"] = "failure"
     name: str
-    error: str = Field(description="Why the analysis failed.")
+    error: str = Field(description="Error message explaining the analysis failure.")
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the failure report as human-readable text."""
         return f"{self.name}: failed: {self.error}"
 
 
 class CornerReport(ir.FrozenModel):
-    """What a corner of the plan found.
+    """Report summarizing simulation results at a single plan corner.
 
-    It lists why the circuit does not elaborate there, or which analyses failed there.
+    Corner reports record circuit elaboration errors or failed analyses at the
+    specified temperature and process corner.
     """
 
     name: str
-    temperature: float = Field(description="The corner's temperature, in kelvins.")
+    temperature: float = Field(description="Corner ambient temperature, in kelvins.")
     process: str | None = Field(
         default=None,
-        description="The corner's process corner of a foundry's devices, if it names "
-        "one.",
+        description="Foundry process corner name, or null if not specified.",
     )
     problems: tuple[str, ...] = Field(
-        default=(), description="Why the circuit does not elaborate at the corner."
+        default=(),
+        description="Elaboration errors preventing simulation at the corner.",
     )
     failures: tuple[FailureReport, ...] = Field(
-        default=(), description="The analyses that failed at the corner."
+        default=(), description="Analyses that failed at the corner."
     )
 
     @property
     def ok(self) -> bool:
-        """Whether the circuit elaborates at the corner and every analysis ends."""
+        """Flag indicating whether elaboration and all analyses succeeded."""
         return not self.problems and not self.failures
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the corner report as human-readable text."""
         head = f"corner {self.name}, at {self.temperature - 273.15:.4g} °C"
         if self.process is not None:
             head += f", process {self.process}"
@@ -951,20 +997,21 @@ class _BatchReport(ir.FrozenModel):
 
     corners: tuple[str, ...] = Field(
         default=(),
-        description="The corners each run also ran at, after the plan's own "
+        description="Additional plan corners evaluated for every run after nominal "
         "conditions.",
     )
     failed: int = Field(
-        description="Runs on which the circuit did not elaborate or an analysis "
-        "failed, at the plan's own conditions or a corner."
+        description="Number of runs with elaboration problems or failed analyses "
+        "under nominal conditions or any corner."
     )
     spreads: tuple[Spread, ...] = Field(
-        default=(), description="What each requirement of the specs read."
+        default=(),
+        description="Measured value spreads for each specification requirement.",
     )
     yield_: Yield | None = Field(
         default=None,
         alias="yield",
-        description="How many runs meet every requirement; null without specs.",
+        description="Summary of runs meeting all requirements, or null without specs.",
     )
 
     def _describe_batch(self, head: str, count: int) -> str:
@@ -976,18 +1023,20 @@ class _BatchReport(ir.FrozenModel):
 
 
 class MonteCarloReport(_BatchReport):
-    """What a Monte Carlo analysis found over its samples."""
+    """Report summarizing results of a Monte Carlo analysis over all samples."""
 
     samples: int
     seed: int
-    toleranced: int = Field(description="The toleranced parameters each sample draws.")
+    toleranced: int = Field(
+        description="Number of toleranced parameters sampled on each run."
+    )
     mismatched: int = Field(
         default=0,
-        description="The foundry's devices each sample draws its kit's mismatch for.",
+        description="Number of foundry devices with sampled statistical mismatch.",
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the Monte Carlo report as human-readable text."""
         at = "".join(f", at {name}" for name in self.corners)
         mismatch = (
             f" and the mismatch of {self.mismatched} foundry's devices"
@@ -1002,37 +1051,45 @@ class MonteCarloReport(_BatchReport):
 
 
 LARGE: Final = 10e9
-"""The bytes past which the shards of a Monte Carlo analysis's samples are large: 10 GB,
-past which a shard's report warns."""
+"""Byte threshold (10 GB) above which combined Monte Carlo shard arrays trigger a
+warning in the shard report."""
 
 
 class ShardReport(ir.FrozenModel):
-    """What a shard of a plan's Monte Carlo analysis ran, and the file it wrote."""
+    """Report summarizing a single Monte Carlo shard run and its output file."""
 
-    start: int = Field(description="The first sample the shard ran.")
-    stop: int = Field(description="The sample the shard ran up to, and not.")
-    samples: int = Field(description="The samples of the analysis, in every shard.")
+    start: int = Field(
+        description="Inclusive starting sample index processed by the shard."
+    )
+    stop: int = Field(
+        description="Exclusive ending sample index processed by the shard."
+    )
+    samples: int = Field(
+        description="Total number of Monte Carlo samples across all shards."
+    )
     corners: tuple[str, ...] = Field(
         default=(),
-        description="The corners each sample also ran at, after the plan's own "
+        description="Additional plan corners evaluated per sample after nominal "
         "conditions.",
     )
     failed: int = Field(
-        description="Samples of the shard on which the circuit did not elaborate or "
-        "an analysis failed, at the plan's own conditions or a corner."
+        description="Number of shard samples with elaboration problems or failed "
+        "analyses under nominal conditions or any corner."
     )
-    size: int = Field(description="The bytes of the arrays the shard's file holds.")
+    size: int = Field(
+        description="Total byte size of the NumPy arrays stored in the shard file."
+    )
     total: int = Field(
-        description="The bytes of the arrays the shards of every sample hold: as many "
-        "a sample as this shard's."
+        description="Projected total byte size of arrays across all shards at the "
+        "same bytes-per-sample rate."
     )
     digest: str = Field(
-        description="The SHA-256 digest of what the shard's numbers depend on, which "
-        "every shard of one analysis shares."
+        description="Shared SHA-256 digest of inputs governing the Monte Carlo "
+        "analysis across all shards."
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the Monte Carlo shard report as human-readable text."""
         at = "".join(f", at {name}" for name in self.corners)
         head = (
             f"shard: samples {self.start} up to {self.stop} of {self.samples}{at}; "
@@ -1049,17 +1106,17 @@ class ShardReport(ir.FrozenModel):
 
 
 class VariantsReport(_BatchReport):
-    """What the runs of a plan's variants found."""
+    """Report summarizing results across parameter variants of a plan."""
 
     runs: int
     parameters: tuple[str, ...] = Field(
         default=(),
-        description="The numbers the variants vary, such as 'R1 resistance' or "
-        "'temperature'.",
+        description="Names of parameters varied across runs, such as 'R1 resistance' "
+        "or 'temperature'.",
     )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the variants batch report as human-readable text."""
         at = "".join(f", at {name}" for name in self.corners)
         varied = " and ".join(self.parameters) or "nothing"
         head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
@@ -1067,37 +1124,37 @@ class VariantsReport(_BatchReport):
 
 
 class WorstCaseReport(ir.FrozenModel):
-    """What each requirement read at the extremes of the tolerances that worsen it."""
+    """Report summarizing worst-case tolerance evaluation for each requirement."""
 
     step: float = Field(
-        description="The fraction of its tolerance each parameter moved to find which "
-        "way each requirement's value moves with it."
+        description="Fractional tolerance step used to determine sensitivity "
+        "direction for each parameter."
     )
-    toleranced: int = Field(description="The toleranced parameters moved.")
+    toleranced: int = Field(description="Number of toleranced parameters perturbed.")
     corners: tuple[str, ...] = Field(
         default=(),
-        description="The corners the worst case also ran at, after the plan's own "
-        "conditions.",
+        description="Additional plan corners evaluated during worst-case analysis "
+        "after nominal conditions.",
     )
     runs: int = Field(
-        description="The simulations run: one per parameter and conditions to find "
-        "which way each value moves, and one per distinct set of extremes."
+        description="Total simulations executed for sensitivity probing and distinct "
+        "extreme tolerance combinations."
     )
     verdicts: tuple[Verdict, ...] = Field(
         default=(),
-        description="Each requirement's verdict, the worst over its bounds' extremes "
-        "at the plan's own conditions and at each corner.",
+        description="Worst-case verdict for each requirement across nominal "
+        "conditions and all corners.",
     )
 
     @property
     def ok(self) -> bool:
-        """Whether every requirement passes, if marginally, at its extremes."""
+        """Flag indicating whether all requirements pass or are marginal at extremes."""
         return all(
             verdict.status in {"passed", "marginal"} for verdict in self.verdicts
         )
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the worst-case report as human-readable text."""
         at = "".join(f", at {name}" for name in self.corners)
         head = (
             f"worst case: {self.toleranced} toleranced parameters, each moved "
@@ -1125,11 +1182,11 @@ type AnalysisReport = Annotated[
     | FailureReport,
     Field(discriminator="kind"),
 ]
-"""The report of any analysis."""
+"""Discriminated union of all analysis report types."""
 
 
 def _largest_charge_leak(result: results.TransientResult) -> NetChargeLeak | None:
-    """The electrical net with the largest absolute charge leak, if nonzero."""
+    """Returns the electrical net with the largest nonzero absolute charge leak."""
     leak = result.statistics.charge_leak
     if leak is None:
         return None
@@ -1156,7 +1213,7 @@ def _waveforms_report(
     result: results.TransientResult,
     listed: tuple[tuple[Extent, ...], tuple[str, ...], int],
 ) -> TransientReport | PeriodicSteadyStateReport:
-    """The report of `result`, a transient's or a period's waveforms."""
+    """Builds a transient or periodic steady-state report from `result`."""
     extents, nets, unlisted = listed
     statistics = result.statistics
     charge_leak = _largest_charge_leak(result)
@@ -1190,10 +1247,10 @@ def _waveforms_report(
 def report(
     name: str, result: results.AnalysisResult, max_unknowns: int
 ) -> AnalysisReport:
-    """The report of the analysis `name`.
+    """Builds the structured report for analysis `name` from `result`.
 
-    It lists its first `max_unknowns` unknowns, then its first logic nets, up to
-    `max_unknowns` in all.
+    The report lists up to `max_unknowns` circuit unknowns followed by logic nets
+    within the same combined limit.
     """
     listed_unknowns = result.unknowns[:max_unknowns]
     all_nets = results.nets_of(result)
@@ -1279,7 +1336,7 @@ def report(
 
 
 def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
-    """The region and margins of each transistor `point` recorded, nearest first."""
+    """Returns transistor regions and margins from `point`, nearest boundary first."""
     found = [
         Transistor(
             path=device.path,
@@ -1312,7 +1369,7 @@ def _linear(
     | results.TransferFunctionResult,
     max_unknowns: int,
 ) -> AnalysisReport:
-    """The report of a small-signal analysis or of sensitivities."""
+    """Builds a report for small-signal, sensitivity, or mismatch results."""
     match result:
         case results.TransferFunctionResult():
             return _transfer(name, result)
@@ -1331,7 +1388,7 @@ def _linear(
 def _poles_zeros(
     name: str, result: results.PoleZeroResult, max_unknowns: int
 ) -> PoleZeroReport:
-    """The report of the pole-zero analysis `name`, its first `max_unknowns` roots."""
+    """Builds a pole-zero report for `name` listing up to `max_unknowns` roots."""
     poles = _roots(result.poles)
     zeros = None if result.zeros is None else _roots(result.zeros)
     every = len(poles) + len(zeros or ())
@@ -1349,7 +1406,7 @@ def _poles_zeros(
 
 
 def _roots(roots: results.Complex) -> tuple[Root, ...]:
-    """`roots` as the report lists them: real ones, and each conjugate pair once."""
+    """Converts complex `roots` to report rows, keeping each conjugate pair once."""
     frequencies = results.natural_frequencies(roots)
     dampings = results.dampings(roots)
     return tuple(
@@ -1365,7 +1422,7 @@ def _roots(roots: results.Complex) -> tuple[Root, ...]:
 
 
 def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseReport:
-    """The report of the noise analysis `name`, its `max_unknowns` noisiest sources."""
+    """Builds a noise report for `name` listing up to `max_unknowns` top sources."""
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
     banded = len(frequencies) > 1
@@ -1412,7 +1469,7 @@ def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseRe
 def _transfer(
     name: str, result: results.TransferFunctionResult
 ) -> TransferFunctionReport:
-    """The report of the transfer function analysis `name`."""
+    """Builds a transfer-function report for analysis `name`."""
     output = next(
         unknown.nature for unknown in result.unknowns if unknown.name == result.output
     )
@@ -1429,7 +1486,7 @@ def _transfer(
 
 
 def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
-    """The report of the stability analysis `name`."""
+    """Builds a stability report for analysis `name`."""
     order = np.argsort(result.frequencies)
     lowest = result.gains[order[0]]
     positive = result.frequencies > 0
@@ -1453,7 +1510,7 @@ def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
 
 
 def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | None:
-    """What `measure` reads of `result`, or None when it cannot read it."""
+    """Evaluates `measure` on `result`, returning None if evaluation fails."""
     try:
         return measure.read(result).value
     except specs.MeasureError:
@@ -1463,7 +1520,7 @@ def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | 
 def _differentiated(
     result: results.DifferentiatedResult,
 ) -> tuple[Differentiated, int, str, results.OperatingPointResult | None]:
-    """What a sensitivity or a mismatch analysis differentiated, as `result` says."""
+    """Extracts analysis kind, point count, unit, and operating point from `result`."""
     match result:
         case results.OperatingPointResult():
             return "operating_point", 1, "", result
@@ -1481,7 +1538,7 @@ def _differentiated(
 def _sensitivities(
     name: str, result: results.SensitivityResult, max_unknowns: int
 ) -> SensitivityReport:
-    """The report of the sensitivity `name`, its first `max_unknowns` parameters."""
+    """Builds a sensitivity report for `name` with up to `max_unknowns` parameters."""
     listed_parameters = min(max_unknowns, len(result.parameters))
     of, points, unit, point = _differentiated(result.result)
     period = None
@@ -1523,7 +1580,7 @@ def _sensitivities(
 def _output(
     result: results.SensitivityResult, output: str, max_unknowns: int
 ) -> OutputSensitivity:
-    """The value of `output` and its derivatives by the first `max_unknowns` params."""
+    """Builds sensitivity data for `output` over the first `max_unknowns` parameters."""
     gradient = result.gradient(output)
     column = results.column(result.unknowns, output)
     nature = result.unknowns[column].nature
@@ -1566,7 +1623,7 @@ def _output(
 def _mismatch(
     name: str, result: results.MismatchResult, max_unknowns: int
 ) -> MismatchReport:
-    """The report of the mismatch analysis `name`."""
+    """Builds a mismatch report for analysis `name`."""
     of, points, unit, point = _differentiated(result.result)
     parts: tuple[results.PhasorPart | None, ...] = (
         ("magnitude", "phase") if of == "ac" else (None,)
@@ -1603,7 +1660,7 @@ def _output_mismatch(
     part: results.PhasorPart | None,
     listed: int,
 ) -> OutputMismatch:
-    """How far `output`, or `part` of its phasor, spreads, and why."""
+    """Builds first-order mismatch summary for `output` and optional phasor `part`."""
     column = results.column(result.unknowns, output)
     nature = result.unknowns[column].nature
     contributions = np.atleast_2d(result.contributions(output, part))
@@ -1645,14 +1702,14 @@ def _output_mismatch(
 
 
 def _level(level: float) -> LogicLevel:
-    """A logic level from its number: 0, 1, or None for NaN."""
+    """Converts a numeric logic `level` to 0, 1, or None for NaN."""
     if np.isnan(level):
         return None
     return 1 if level else 0
 
 
 def _activity(net: str, levels: results.Real) -> Activity:
-    """What the logic net `net` did over `levels`, its successive levels."""
+    """Summarizes initial level, final level, and transition count for logic `net`."""
     known = np.nan_to_num(levels, nan=-1.0)
     return Activity(
         net=net,
@@ -1681,7 +1738,7 @@ def _activities(activities: tuple[Activity, ...]) -> list[str]:
 def _extents_of(
     listed_unknowns: tuple[results.Unknown, ...], values: results.Real
 ) -> tuple[Extent, ...]:
-    """The extent of each unknown, whose values are the matching column of `values`."""
+    """Computes first, minimum, maximum, and final values for `listed_unknowns`."""
     return tuple(
         Extent(
             unknown=unknown.name,

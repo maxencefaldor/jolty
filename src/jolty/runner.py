@@ -1,40 +1,36 @@
 # Copyright 2026 Maxence Faldor
-"""Run scripts in a process of their own.
+"""Subprocess runner for executing circuit build scripts and simulation plans.
 
-The service starts ``python -P -m jolty.runner DIRECTORY`` for every command that runs
-scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json``. It
-calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
-names a plan, calls the plan's ``plan()`` and runs each analysis, at the plan's own
-conditions then at each of its corners, building the circuit again with a corner's
-arguments. Every run takes the models the plan's fidelity chooses, characterized once
-each, and spot checks run again with sampled instances at their circuit's fidelity. It
-evaluates the requirements its ``specs()`` returns, when it defines one, on every run,
-then on each sample of the plan's Monte Carlo analysis and each run of its variants,
-which run at the plan's own conditions and at each corner. It writes the
-[`JobResult`][jolty.runner.JobResult], what was built or why it failed, to
-``DIRECTORY/outcome.json``, the results of the analyses at the plan's
-own conditions to ``DIRECTORY/results.npz``, and the plan's batches of runs, its Monte
-Carlo analysis's and its variants', at the plan's own conditions, to
-``DIRECTORY/batches.npz``.
+The service launches ``python -P -m jolty.runner DIRECTORY`` for every command that
+executes user scripts. The runner reads the [`Job`][jolty.runner.Job] from
+``DIRECTORY/job.json``, invokes ``build()``, and elaborates the returned circuit.
+When the job specifies a plan script, the runner calls ``plan()`` and executes every
+analysis at nominal plan conditions and then at each corner. Corners with custom
+arguments rebuild the circuit before simulation. Every run uses logic models selected
+by plan fidelity (characterized once each), while spot checks re-simulate sampled
+instances at full circuit fidelity.
 
-A job that names samples of the plan's Monte Carlo analysis runs them alone, as a shard
-([`jolty.shards`][jolty.shards]): at the plan's own conditions and at every corner, and
-writes them to ``DIRECTORY/shard.npz``, running none of the plan's other analyses.
+When the plan script defines ``specs()``, the runner evaluates every requirement
+across nominal analyses, corners, Monte Carlo samples, and variant runs. Output
+artifacts are written to ``DIRECTORY/outcome.json`` as a
+[`JobResult`][jolty.runner.JobResult], ``DIRECTORY/results.npz`` for nominal analysis
+results, and ``DIRECTORY/batches.npz`` for nominal Monte Carlo and variant batches.
 
-Every run but those of the plan's own conditions runs in a batch, one call to the
-engine for many runs of one circuit across its threads: the conditions whose circuits
-are one, the plan's own and those of the corners that change only the temperature,
-share the circuit and take their temperatures as the values of their runs, the
-corners' runs one batch, and a Monte Carlo analysis's samples or the variants' runs a
-batch at each condition; a corner whose arguments build the circuit again runs on a
-circuit of its own.
+A job requesting a Monte Carlo sample range runs only those samples as a shard
+([`jolty.shards`][jolty.shards]) across nominal and corner conditions. Shard runs
+skip standalone nominal analyses and write their output to ``DIRECTORY/shard.npz``.
 
-Scripts and analyses therefore run outside the command line and the MCP server, whose
-standard output may be a protocol channel: what a script prints is captured, a timeout
-stops a script or an analysis that runs too long, and a crash ends only the runner.
+All non-nominal runs execute in multithreaded engine batches over shared circuits.
+Conditions that share an identical elaborated circuit, such as temperature-only
+corners, reuse one circuit instance and pass temperatures as batch run values.
+Corners with custom build arguments elaborate and simulate on a separate circuit.
+
+Running scripts in an isolated subprocess protects the CLI and MCP server standard
+output channels. Subprocess isolation captures script print output, enforces timeouts
+on runaway scripts or analyses, and confines crashes to the worker process.
 """
 
-# jolty's modules load as the runner first uses them, keeping worker startup lean.
+# Jolty modules load lazily on first use, keeping worker startup lean.
 __lazy_modules__ = ["jolty"]
 
 import json
@@ -89,25 +85,25 @@ from jolty.specs import (
 from jolty.units import TEMPERATURE, Quantity
 
 JOB: Final = "job.json"
-"""The file in the job's directory that holds the job."""
+"""Filename of the serialized job specification inside a job directory."""
 
 OUTCOME: Final = "outcome.json"
-"""The file in the job's directory where the runner writes what the job produced."""
+"""Filename of the serialized `JobResult` inside a job directory."""
 
 RESULTS: Final = "results.npz"
-"""The file in the job's directory where the runner writes the analyses' results."""
+"""Filename of the nominal analysis results archive inside a job directory."""
 
 BATCHES: Final = "batches.npz"
-"""The file in the job's directory where the runner writes the plan's batches."""
+"""Filename of the nominal batch archive inside a job directory."""
 
 SHARD: Final = "shard.npz"
-"""The file in the job's directory where the runner writes the shard a job runs."""
+"""Filename of the Monte Carlo shard archive inside a job directory."""
 
 MONTE_CARLO: Final = "monte-carlo"
-"""The name of a plan's Monte Carlo analysis's batch, which no analysis's name is."""
+"""Batch archive key for a plan's Monte Carlo analysis (not a valid identifier)."""
 
 VARIANT_RUNS: Final = "variant-runs"
-"""The name of the batch of a plan's variants, which no analysis's name is."""
+"""Batch archive key for a plan's variant runs (not a valid identifier)."""
 
 _LIBRARIES: Final = tuple(
     {
@@ -118,11 +114,11 @@ _LIBRARIES: Final = tuple(
         ),
     }
 )
-"""Where code that is not a script lives: jolty, the standard library, packages."""
+"""Directory roots excluded from script tracebacks: jolty, stdlib, and packages."""
 
 
 class Thresholds(FrozenModel):
-    """The thresholds of the parallelism a job sets in place of its plan's."""
+    """Parallelism threshold overrides supplied by a job in place of plan defaults."""
 
     min_solves_per_task: int | None = Field(default=None, ge=1)
     min_instances_per_task: int | None = Field(default=None, ge=1)
@@ -131,115 +127,119 @@ class Thresholds(FrozenModel):
 
 
 class Job(FrozenModel):
-    """What the runner runs."""
+    """Serializable specification of a build, simulation, or shard runner job."""
 
-    script: Path = Field(description="The script that defines build().")
+    script: Path = Field(description="Path to the Python script defining build().")
     plan: Path | None = Field(
         default=None,
-        description="The script that defines plan(); null to elaborate only.",
+        description="Path to the script defining plan(), or null to elaborate only.",
     )
-    max_unknowns: int = Field(ge=1, description="Unknowns each report lists.")
+    max_unknowns: int = Field(
+        ge=1, description="Maximum number of unknowns listed in each analysis report."
+    )
     check: bool = Field(
         default=True,
-        description="Whether to check the rules at the plan's operating point.",
+        description="Flag enabling rule checks at the plan operating point.",
     )
     record: list[str] | None = Field(
         default=None,
-        description="The instances the results record, in the plan's place; null "
-        "for the plan's own record.",
+        description="Instance patterns overriding plan recording, or null to keep "
+        "plan settings.",
     )
     plot: bool = Field(
         default=False,
-        description="Whether each batch traces the unknowns its plots draw, at the "
-        "plan's own conditions.",
+        description="Flag enabling batch trace collection for nominal condition plots.",
     )
     traces: list[str] = Field(
         default_factory=list,
-        description="The unknowns a batch traces for its plots; by default the nets "
-        "the top component names, as a plot draws them.",
+        description="Unknown names traced by batches for plotting; defaults to "
+        "top-level nets.",
     )
     parallelism: Thresholds = Field(
         default_factory=Thresholds,
-        description="The thresholds of the plan's parallelism replaced, where given.",
+        description="Per-threshold parallelism overrides applied on top of plan "
+        "options.",
     )
     samples: tuple[int, int] | None = Field(
         default=None,
-        description="The samples of the plan's Monte Carlo analysis to run alone, as "
-        "a shard, from the first up to the second; null to run the plan.",
+        description="Half-open Monte Carlo sample range for shard execution, or null "
+        "for a full plan.",
     )
 
 
 class Built(FrozenModel):
-    """A circuit, whether the engine elaborates it, and the reports of its analyses."""
+    """Successful build output with elaboration metadata, diagnostics, and reports."""
 
     kind: Literal["built"] = "built"
     circuit: ir.Circuit
     devices: int | None = Field(
         default=None,
-        description="Devices with every component instance unfolded; null when the "
-        "circuit does not elaborate.",
+        description="Unfolded primitive device count, or null when elaboration fails.",
     )
     unknowns: int | None = Field(
         default=None,
-        description="Unknowns the engine solves for; null when the circuit does not "
-        "elaborate.",
+        description="Solved circuit unknown count, or null when elaboration fails.",
     )
     problems: tuple[str, ...] = Field(
-        default=(), description="Why the circuit does not elaborate."
+        default=(),
+        description="Elaboration error messages explaining why elaboration failed.",
     )
     diagnostics: tuple[checks.Diagnostic, ...] = Field(
         default=(),
-        description="The checks' diagnostics, at their default levels: the structural "
-        "ones, then, with a plan, those at its operating point.",
+        description="Default-level structural diagnostics followed by operating-point "
+        "diagnostics.",
     )
     analyses: tuple[report.AnalysisReport, ...] = Field(
-        default=(), description="A report per analysis of the plan, in its order."
+        default=(), description="Analysis reports for the plan, in definition order."
     )
     corners: tuple[report.CornerReport, ...] = Field(
-        default=(), description="A report per corner of the plan, in its order."
+        default=(), description="Corner reports for the plan, in definition order."
     )
     monte_carlo: report.MonteCarloReport | None = Field(
         default=None,
-        description="What the plan's Monte Carlo analysis found; null without one.",
+        description="Summary report for the plan Monte Carlo analysis, or null if "
+        "absent.",
     )
     variants: report.VariantsReport | None = Field(
         default=None,
-        description="What the runs of the plan's variants found; null without them.",
+        description="Summary report for the plan variant runs, or null if absent.",
     )
     worst_case: report.WorstCaseReport | None = Field(
         default=None,
-        description="What the plan's worst-case analysis found; null without one.",
+        description="Summary report for the plan worst-case analysis, or null if "
+        "absent.",
     )
     shard: report.ShardReport | None = Field(
         default=None,
-        description="What the shard of the plan's Monte Carlo samples ran; null but "
-        "for a job of samples.",
+        description="Summary report for a sharded Monte Carlo run, or null for "
+        "non-shard jobs.",
     )
     specs: tuple[Verdict, ...] = Field(
         default=(),
-        description="The verdict on each requirement of the plan's specs, in order; "
-        "empty when the plan defines no specs().",
+        description="Requirement verdicts in specs() order, or empty when specs() is "
+        "undefined.",
     )
     fidelity: FidelityReport | None = Field(
         default=None,
-        description="The models the plan's fidelity chose, and its spot checks; null "
-        "when it chooses none.",
+        description="Characterized fidelity models and spot-check results, or null "
+        "when unused.",
     )
 
 
 class Failure(FrozenModel):
-    """Why a script produced nothing."""
+    """Structured error record describing why a runner script failed."""
 
     kind: Literal["failure"] = "failure"
-    error: str = Field(description="The exception's type, such as 'BuildError'.")
-    message: str = Field(description="The exception's message.")
+    error: str = Field(description="Exception class name, such as 'BuildError'.")
+    message: str = Field(description="Exception message string.")
     frames: tuple[ir.SourceLocation, ...] = Field(
-        default=(), description="The script lines of the traceback, innermost first."
+        default=(),
+        description="User-script traceback locations ordered innermost to outermost.",
     )
 
     @override
     def __str__(self) -> str:
-        """The error and its message, after the script line that raised it."""
+        """Formats the script traceback, error type, and message for display."""
         head = f"{self.error}: {self.message}" if self.message else self.error
         if not self.frames:
             return head
@@ -250,30 +250,30 @@ class Failure(FrozenModel):
 
 
 type JobResult = Annotated[Built | Failure, Field(discriminator="kind")]
-"""What a job produced: a circuit, or why the script failed."""
+"""Discriminated union representing either a built result or a script failure."""
 
 JOB_RESULTS: Final = TypeAdapter[JobResult](JobResult)
-"""Reads and writes job results as JSON."""
+"""Pydantic `TypeAdapter` for serializing and deserializing `JobResult` JSON."""
 
 
 @dataclass(slots=True)
 class _Condition:
-    """Where a plan's analyses run, its own or a corner's conditions, and results."""
+    """Nominal or corner condition paired with resolved fidelity and results."""
 
     corner: str | None
-    """The corner, None for the plan's own conditions."""
+    """Corner name, or `None` for nominal plan conditions."""
     temperature: Quantity
     chosen: fidelity.Fidelity | None
-    """The models chosen there, None where the circuit does not elaborate."""
+    """Resolved fidelity state at this condition, or `None` on elaboration failure."""
     solved: Mapping[str, AnalysisResult] = field(default_factory=dict)
-    """The results there of the analyses that end, by name."""
+    """Completed analysis results at this condition, keyed by analysis name."""
     failures: Mapping[str, str] = field(default_factory=dict)
-    """Why each analysis that failed there failed, by name."""
+    """Failure messages for analyses that errored at this condition, by name."""
 
 
 @dataclass(frozen=True, slots=True)
 class _RunContext:
-    """Shared context for running a validated plan across corners and batches."""
+    """Shared context for executing a validated plan across corners and batches."""
 
     job: Job
     directory: Path
@@ -287,22 +287,22 @@ class _RunContext:
 
 @dataclass(slots=True)
 class _Structure:
-    """Conditions whose circuits are one, and the simulation of it batches run on.
+    """Group of conditions sharing one elaborated circuit and its `Simulation`.
 
-    Each condition's runs take its temperature as their values, so the conditions run
-    on one circuit, elaborated once.
+    Grouped conditions differ only in temperature, so batch runs elaborate the shared
+    circuit once and pass each condition's temperature as a run parameter.
     """
 
     simulation: Simulation
     members: list[int]
-    """The conditions, by their places among the plan's."""
+    """Indices of grouped conditions within the plan's condition list."""
 
 
 def run(job: Job, directory: Path) -> JobResult:
-    """Runs `job` in this process, writing the results of its analyses to `directory`.
+    """Executes `job` in the current process and writes outputs into `directory`.
 
-    The directories of the scripts come first on the import path while they run, so a
-    script imports the modules beside it, as under ``python script.py``.
+    Script directories are prepended to `sys.path` during execution so scripts can
+    import sibling modules just as under ``python script.py``.
     """
     try:
         with _importable(job.script, job.plan):
@@ -314,7 +314,7 @@ def run(job: Job, directory: Path) -> JobResult:
 
 
 def _precheck_fidelity(simulation: Simulation, plan: Plan, specs: Specs | None) -> None:
-    """Checks fidelity scopes, process corners, and spec names before characterizing."""
+    """Validates fidelity scopes, process corners, and spec names before modeling."""
     problems: list[str] = []
     try:
         fidelity.scopes(simulation.circuit, plan.fidelity)
@@ -385,7 +385,7 @@ def _run(job: Job, directory: Path) -> Built:
         return Built(circuit=built, problems=error.problems)
     context = _RunContext(job, directory, built, plan, specs, chosen, simulation)
     if job.samples is not None:
-        # A shard runs none of the plan's analyses at its own conditions.
+        # Shard jobs skip standalone nominal analyses.
         conditions, _ = _corners(context, namespaces, cache, {})
         shard = _shard(replace(context, conditions=conditions))
         return elaborated.model_copy(update={"shard": shard})
@@ -433,10 +433,10 @@ def _run(job: Job, directory: Path) -> Built:
 def _batched(
     context: _RunContext,
 ) -> tuple[report.MonteCarloReport | None, report.VariantsReport | None]:
-    """What the plan's Monte Carlo analysis and its variants found, if it has them.
+    """Executes plan Monte Carlo and variant batches and returns summary reports.
 
-    Their batches at the plan's own conditions, tracing the unknowns the job's plots
-    draw, are written to ``context.directory``.
+    Nominal condition batches, including plot traces when enabled, are written to
+    ``context.directory``.
     """
     traces = _traces(context)
     batches: dict[str, files.Batch] = {}
@@ -458,9 +458,10 @@ def _batched(
 def _at_operating_point(
     simulation: Simulation, plan: Plan
 ) -> tuple[checks.Diagnostic, ...]:
-    """The diagnostics of the rules at the plan's operating point.
+    """Returns rule diagnostics evaluated at the plan operating point.
 
-    A circuit with no operating point has none: the analyses that need it report why.
+    Circuits without a valid operating point yield no diagnostics here; failing
+    analyses report the underlying solver error separately.
     """
     try:
         return simulation.check_operating_point(plan.options)
@@ -471,11 +472,11 @@ def _at_operating_point(
 def _fidelity(
     context: _RunContext, solved: Mapping[str, AnalysisResult]
 ) -> FidelityReport | None:
-    """The models `context.chosen` holds, and spot checks of `solved`.
+    """Builds a `FidelityReport` with characterized models and spot checks of `solved`.
 
-    Each spot check holds its instance to its contract, and measures `context.specs`
-    again to find the requirements whose verdict depends on the instance's fidelity. It
-    is None when no model stands in for an instance.
+    Each spot check validates a sampled instance against its fidelity contract and
+    re-evaluates `context.specs` to identify verdicts sensitive to fidelity. Returns
+    `None` when no component instances match a characterized model.
     """
     chosen, plan, specs = context.chosen, context.plan, context.specs
     if not chosen.matched:
@@ -504,10 +505,10 @@ def _built(
     namespaces: dict[Path, dict[str, object]],
     arguments: Mapping[str, object],
 ) -> ir.Circuit:
-    """The circuit `script`'s ``build()`` returns, called with `arguments`.
+    """Invokes ``build()`` in `script` with `arguments` and returns an `ir.Circuit`.
 
     Raises:
-        ScriptError: When it returns neither a component nor a circuit.
+        ScriptError: When ``build()`` returns neither a `Component` nor a `Circuit`.
     """
     match _call(script, "build", namespaces, arguments=arguments):
         case Component() as top:
@@ -522,12 +523,12 @@ def _built(
 
 
 def _kelvins(temperature: Quantity | None) -> Quantity:
-    """`temperature`, 27 °C when it is None, as a run's values give it."""
+    """Converts `temperature` to a kelvin `Quantity`, defaulting `None` to 27 °C."""
     return Quantity(kelvins(temperature), TEMPERATURE)
 
 
 def _unrecorded(plan: Plan) -> dict[str, Analysis]:
-    """The plan's analyses, recording nothing beyond what the checks read."""
+    """Returns copies of plan analyses with recording cleared beyond check needs."""
     return {
         name: _recording(analysis, plan, recorded=False)
         for name, analysis in plan.analyses.items()
@@ -540,11 +541,10 @@ def _corners(
     cache: fidelity.Cache,
     solved: Mapping[str, AnalysisResult],
 ) -> tuple[tuple[_Condition, ...], tuple[report.CornerReport, ...]]:
-    """The plan's own conditions and its corners', and what each corner found.
+    """Executes corner simulations and returns all conditions and corner reports.
 
-    A corner builds the circuit again with its arguments, if it gives any, and takes the
-    models the plan's fidelity chooses there, characterized unless `cache` holds them;
-    the corners whose circuits are one run in one batch.
+    Corners with custom arguments rebuild the circuit before resolving fidelity models
+    via `cache`. Conditions sharing an identical circuit execute together in one batch.
     """
     plan = context.plan
     conditions = [
@@ -612,12 +612,11 @@ def _corners(
 def _structures(
     conditions: Sequence[_Condition], problems: dict[int, tuple[str, ...]]
 ) -> list[_Structure]:
-    """The conditions whose circuits are one, each with the simulation of it.
+    """Groups conditions that share an elaborated circuit with their `Simulation`.
 
-    Two conditions' circuits are one when they build the same circuit and take the same
-    models at the same process corner, whatever their temperatures. The simulation is
-    the first condition's whose circuit elaborates; a condition whose circuit does not
-    joins `problems`, by its place, with why.
+    Two conditions share a circuit when they use the same built circuit, matched
+    models, and process corner, regardless of temperature. Each group elaborates from
+    its first valid condition, recording elaboration errors in `problems` by index.
     """
     structures: list[_Structure] = []
     keys: list[tuple[ir.Circuit, object, object, str | None]] = []
@@ -650,7 +649,7 @@ def _structures(
 def _at_temperatures(
     conditions: Sequence[_Condition], members: Sequence[int]
 ) -> Explicit:
-    """A run at the temperature of each of `members`, among `conditions`."""
+    """Builds an `Explicit` variant list with each indexed member's temperature."""
     return Explicit(
         [Variant(temperature=conditions[member].temperature) for member in members]
     )
@@ -662,9 +661,10 @@ def _kept(
     variants: Variants,
     plan: Plan,
 ) -> list[Run]:
-    """What `analyses` find on each run of `variants`, batched on `simulation`.
+    """Executes `analyses` across `variants` on `simulation`, returning ordered runs.
 
-    A run whose values make problems holds them, and no result.
+    Runs that fail elaboration or parameter application record their problems without
+    producing analysis results.
     """
     kept: dict[int, Run] = {}
 
@@ -682,12 +682,12 @@ def _batches(
     traces: Sequence[str] = (),
     taken: range | None = None,
 ) -> list[BatchResult | None]:
-    """What the plan's analyses find on runs `taken` of `variants` at each condition.
+    """Executes plan analyses on `variants` across conditions, sliced by `taken`.
 
-    It runs every run of the variants unless `taken` names some. Each condition whose
-    circuit elaborates holds the batch of its runs, a batch of its own on the circuit
-    it shares with others, measuring the requirements of `context.specs`, the plan's
-    own tracing the unknowns `traces` names; one whose circuit does not, none.
+    Every variant run executes unless `taken` selects a subrange. Each elaborating
+    condition runs a batch measuring `context.specs` on its shared circuit, while
+    nominal conditions also collect `traces`. Conditions failing elaboration yield
+    `None`.
     """
     plan, specs, conditions = context.plan, context.specs, context.conditions
     analyses = _unrecorded(plan)
@@ -709,15 +709,13 @@ def _batches(
 def _monte_carlo(
     context: _RunContext, monte_carlo: MonteCarlo, *, traces: Sequence[str]
 ) -> tuple[report.MonteCarloReport, files.Batch]:
-    """What `context.plan`'s analyses find on each sample of `monte_carlo`.
+    """Executes `monte_carlo` across conditions, returning report and nominal batch.
 
-    Each sample draws the circuit's tolerances, and the kit's mismatch of its foundry
-    devices, and runs at every condition whose circuit elaborates, with the models
-    chosen there; the models stand for their circuits' nominal parts. Every condition
-    draws its samples from the seed afresh, so a corner whose circuit holds the same
-    toleranced parameters runs each sample on the same parts, and a requirement's
-    verdict on a sample is its worst over the runs. Also returns the samples at the
-    plan's own conditions, tracing `traces`.
+    Each sample draws circuit tolerances and foundry mismatch, running across every
+    elaborating condition with nominal characterized models. Every condition seeds its
+    draws independently from `monte_carlo.seed`, aligning identical toleranced circuits
+    across corners while taking the worst requirement verdict per sample. Nominal
+    samples also collect `traces`.
     """
     return shards.monte_carlo(
         _sampled(context, monte_carlo, taken=range(monte_carlo.samples), traces=traces)
@@ -731,10 +729,10 @@ def _sampled(
     taken: range,
     traces: Sequence[str],
 ) -> files.Shard:
-    """The shard of the samples `taken` of `monte_carlo`, run at each condition.
+    """Executes the `taken` slice of `monte_carlo` across conditions as a `Shard`.
 
-    They are measured against `context.specs`, and the plan's own conditions trace
-    `traces`.
+    Samples are measured against `context.specs`, and the nominal condition batch
+    records `traces`.
     """
     nominal = context.conditions[0].chosen
     described = _described(context, monte_carlo, traces)
@@ -755,15 +753,14 @@ def _sampled(
 
 
 def _shard(context: _RunContext) -> report.ShardReport:
-    """Runs the samples `context.job` names of the plan's Monte Carlo analysis.
+    """Executes the Monte Carlo sample slice requested by `context.job` as a shard.
 
-    They run at every condition, as all the samples do, the batch at the plan's own
-    conditions tracing the unknowns the job's plots draw, and the shard is written to
-    `context.directory`.
+    Requested samples execute across nominal and corner conditions, collecting plot
+    traces on nominal conditions and saving the shard archive into `context.directory`.
 
     Raises:
-        ScriptError: When the plan has no Monte Carlo analysis, or its samples hold
-            none of those the job names.
+        ScriptError: When the plan defines no Monte Carlo analysis or the requested
+            sample range exceeds the configured sample count.
     """
     monte_carlo = context.plan.monte_carlo
     if monte_carlo is None:
@@ -793,7 +790,7 @@ def _shard(context: _RunContext) -> report.ShardReport:
 
 
 def _size(batch: BatchResult) -> int:
-    """The bytes of the arrays of `batch`, the same for each of its runs."""
+    """Computes the total byte size of all NumPy arrays stored in `batch`."""
     arrays = [batch.values, batch.ended, batch.measured, batch.causes]
     arrays.extend(traces.values for traces in batch.traces)
     return sum(array.nbytes for array in arrays)
@@ -802,15 +799,14 @@ def _size(batch: BatchResult) -> int:
 def _described(
     context: _RunContext, monte_carlo: MonteCarlo, traces: Sequence[str]
 ) -> dict[str, JsonValue]:
-    """What the numbers of a shard of `monte_carlo`'s samples depend on, as JSON.
+    """Builds a JSON-serializable digest payload capturing all shard-affecting inputs.
 
-    It is the analyses and the options, but for the parallelism, which changes no result
-    save for the interiors its factorization is dissected into; the fidelity's models,
-    by scope; the samples and their seed; each condition's corner, temperature, process
-    corner, and the [`circuit_digest`][jolty.files.circuit_digest] of its circuit, which
-    leaves out the script lines that placed its instances, none where it does not
-    elaborate; the requirements of `context.specs`, in words, and their yield target;
-    and the unknowns `traces` names.
+    The payload includes analyses, fidelity models, sample count, seed, per-condition
+    metadata, and spec requirements and yield target. Options exclude parallelism
+    fields other than `max_unknowns_per_interior`, which can alter factorization order.
+    Each elaborating condition records its
+    [`circuit_digest`][jolty.files.circuit_digest] (ignoring source line locations), or
+    `None` when elaboration fails.
     """
     plan, specs = context.plan, context.specs
     digests: dict[int, str] = {}
@@ -825,7 +821,7 @@ def _described(
 
     options = plan.options.to_json()
     spread = options.pop("parallelism", None)
-    # The interiors order the factorization's operations, so the numbers' last digits.
+    # Dissected interior size alters factorization order and floating-point rounding.
     if isinstance(spread, dict) and "max_unknowns_per_interior" in spread:
         options["parallelism"] = {
             "max_unknowns_per_interior": spread["max_unknowns_per_interior"]
@@ -859,11 +855,10 @@ def _described(
 def _variants(
     context: _RunContext, variants: Variants, *, traces: Sequence[str]
 ) -> tuple[report.VariantsReport, files.Batch]:
-    """What `context.plan`'s analyses find on each run of `variants`.
+    """Executes `variants` across conditions and returns the report and nominal batch.
 
-    Each run takes its values at every condition whose circuit elaborates, and a
-    requirement's verdict on it is its worst over the conditions. Also returns the runs
-    at the plan's own conditions, tracing `traces`.
+    Each variant runs across every elaborating condition, taking the worst requirement
+    verdict across conditions. The returned nominal batch includes `traces`.
     """
     found = _batches(context, variants, traces=traces)
     count = runs(variants)
@@ -883,10 +878,10 @@ def _variants(
 
 
 def _traces(context: _RunContext) -> tuple[str, ...]:
-    """The unknowns each batch traces for the job's plots, by name; none unplotted.
+    """Selects unknown names to trace in batch runs for job plotting.
 
-    They are the job's traces, or the nets the top component names, as a plot draws
-    them, that are unknowns of the simulation's circuit.
+    Returns an empty tuple when plotting is disabled. Otherwise filters `context.job`
+    traces, or default top-level net traces, to unknowns present in the circuit.
     """
     job, simulation = context.job, context.simulation
     if not job.plot:
@@ -897,13 +892,13 @@ def _traces(context: _RunContext) -> tuple[str, ...]:
 
 
 def _worst_case(context: _RunContext, worst_case: WorstCase) -> report.WorstCaseReport:
-    """Each requirement of `context.specs` at the tolerance extremes that worsen it.
+    """Evaluates `context.specs` requirements at tolerance extremes that worsen them.
 
-    At each condition, a run per toleranced parameter, moved its `worst_case` step,
-    finds which way each requirement's value moves with it, and a run per bound of each
-    requirement sets every parameter, and every lot's spread, at the extreme that moves
-    the value toward the bound; runs at the same extremes are shared. A requirement's
-    verdict is its worst over every bound and conditions where the circuit elaborates.
+    At each condition, one perturbed run per toleranced parameter determines sensitivity
+    signs for every requirement. Subsequent runs set each parameter and shared lot
+    spread to the extreme moving a requirement toward each bound, deduplicating
+    identical combinations. Each requirement receives its worst verdict across bounds
+    and elaborating conditions.
     """
     conditions, plan, specs = context.conditions, context.plan, context.specs
     requirements = () if specs is None else specs.requirements
@@ -916,7 +911,7 @@ def _worst_case(context: _RunContext, worst_case: WorstCase) -> report.WorstCase
         total_runs += ran
         for at, more in zip(found, judged, strict=True):
             at.extend(more)
-    # Each requirement is judged at the plan's own conditions, then at each corner.
+    # Judge each requirement at nominal plan conditions first, then at each corner.
     verdicts = tuple(
         judge(
             requirement,
@@ -939,7 +934,7 @@ def _worst_case(context: _RunContext, worst_case: WorstCase) -> report.WorstCase
 
 
 def _condition(judged: tuple[int, str | None, Mapping[str, AnalysisResult]]) -> int:
-    """The place among the plan's conditions of the condition a result comes from."""
+    """Extracts the plan condition index from a judged worst-case result tuple."""
     return judged[0]
 
 
@@ -949,10 +944,10 @@ def _extremes(
     worst_case: WorstCase,
     requirements: Sequence[Requirement],
 ) -> tuple[int, list[list[tuple[int, str | None, Mapping[str, AnalysisResult]]]]]:
-    """How many runs a worst case makes at the conditions of `structure`, and more.
+    """Executes worst-case sensitivity and extreme runs for conditions in `structure`.
 
-    It returns what each requirement is judged on there too: at each condition, by its
-    place and its corner, the results at the extremes of each of its bounds, in order.
+    Returns the total batch run count alongside per-requirement lists of
+    `(condition_index, corner_name, results)` tuples ordered by condition and bound.
     """
     conditions, plan = context.conditions, context.plan
     analyses = _unrecorded(plan)
@@ -1019,10 +1014,10 @@ def _keyed(
     keyed: dict[str, int],
     extremes: list[Variant],
 ) -> int:
-    """The place among `extremes` of the run at `overrides`, unless `keyed` holds it.
+    """Returns the index of `overrides` in `extremes`, deduplicating via `keyed`.
 
-    The run takes the numbers the models `at` holds do not stand in for, at its
-    temperature; the runs at the same extremes of one condition are shared.
+    Unmodeled parameter overrides are combined with the condition temperature in `at`
+    so identical extreme combinations within one condition run once.
     """
     key = json.dumps(overrides, sort_keys=True)
     if key not in keyed:
@@ -1037,10 +1032,10 @@ def _slopes(
     nominal: Mapping[str, AnalysisResult],
     moved: Sequence[Run],
 ) -> list[list[float]]:
-    """How far each requirement's value moves, per run of `moved`, one parameter moved.
+    """Computes finite-difference requirement deltas for each perturbed run in `moved`.
 
-    A value moves from its value on the `nominal` results, and 0 where either cannot be
-    read.
+    Deltas are measured relative to `nominal`, falling back to `0.0` whenever either
+    nominal or perturbed reading is unavailable.
     """
     base = [reading(requirement, nominal) for requirement in requirements]
     slopes = []
@@ -1054,7 +1049,7 @@ def _slopes(
 
 
 def _bounds(requirement: Requirement) -> list[float]:
-    """The way toward each of `requirement`'s bounds: -1 down, 1 up."""
+    """Returns bound directions for `requirement`: -1.0 (minimum) and 1.0 (maximum)."""
     return [
         direction
         for direction, bound in (
@@ -1068,9 +1063,10 @@ def _bounds(requirement: Requirement) -> list[float]:
 def _extreme(
     varied: Sequence[variation.Toleranced], directions: Sequence[float]
 ) -> dict[str, dict[str, float]]:
-    """Each of `varied`, and each lot's spread, at the extreme in its direction.
+    """Computes extreme overrides for `varied` and lot spreads along `directions`.
 
-    A lot's direction is the sum of its parts'.
+    Each lot's overall direction is determined by summing the directions of its member
+    parameters.
     """
     lots: dict[variation.LotMember, float] = {}
     for parameter, direction in zip(varied, directions, strict=True):
@@ -1084,10 +1080,10 @@ def _extreme(
 
 
 def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | None:
-    """The specs `script`'s ``specs()`` returns; None when it defines none.
+    """Invokes optional ``specs()`` in `script`, returning `None` when undefined.
 
     Raises:
-        ScriptError: When ``specs()`` returns no specs.
+        ScriptError: When ``specs()`` returns an object that is not a `Specs` instance.
     """
     match _call(script, "specs", namespaces, required=False):
         case None | Specs() as specs:
@@ -1105,13 +1101,12 @@ def _analyses(
     *,
     recorded: bool = False,
 ) -> tuple[dict[str, AnalysisResult], tuple[report.AnalysisReport, ...]]:
-    """The results of the analyses of `plan` that end, by name, and a report on each.
+    """Executes all analyses in `plan` and returns completed results and reports.
 
-    The excursions outside its logic devices' domains of each analysis that ends join
-    `outside`. The results keep what the plan and each analysis record when they are
-    `recorded`, as the plan's own run's are, which are saved and checked, and nothing
-    more than the checks read otherwise, as a corner's, a sample's and a spot check's
-    are, which only specs and contracts read.
+    Logic domain excursions from completed analyses are appended to `outside` when
+    provided. When `recorded` is true, results retain plan and per-analysis device
+    recordings for saving and checks; otherwise recordings stay minimal for specs and
+    fidelity contracts.
     """
     solved: dict[str, AnalysisResult] = {}
     reports: list[report.AnalysisReport] = []
@@ -1133,10 +1128,11 @@ def _analyses(
 
 
 def _recording(analysis: Analysis, plan: Plan, *, recorded: bool) -> Analysis:
-    """`analysis` recording what it names, or else the `plan`'s record, when `recorded`.
+    """Configures recording fields on `analysis` according to `plan` and `recorded`.
 
-    An operating point records every transistor's region besides, which its report
-    lists. Otherwise it records nothing, beyond what the checks read.
+    When `recorded` is true, applies analysis or plan recording patterns and enables
+    transistor operating-region recording on `OperatingPoint`. When `recorded` is false,
+    clears explicit recording patterns.
     """
     if not isinstance(analysis, Recorded):
         return analysis
@@ -1155,13 +1151,13 @@ def _call(
     required: bool = True,
     arguments: Mapping[str, object] | None = None,
 ) -> object:
-    """Calls the function `name` of `script` with `arguments`.
+    """Invokes function `name` in `script` with `arguments`, caching script execution.
 
-    The script runs once however often it is used.
-    A script that defines no function `name` returns None when it is not `required`.
+    Each script executes at most once in `namespaces` regardless of call count. Missing
+    functions return `None` when `required` is false.
 
     Raises:
-        ScriptError: When the script defines no function `name` and it is required.
+        ScriptError: When `script` defines no callable `name` and `required` is true.
     """
     if script not in namespaces:
         namespaces[script] = runpy.run_path(str(script), run_name="__jolty__")
@@ -1188,7 +1184,7 @@ def _importable(*scripts: Path | None) -> Generator[None]:
 
 
 def _failure(error: BaseException, message: str) -> Failure:
-    """Describes `error` by the script lines it passed through, innermost first."""
+    """Describes `error` with user-script traceback frames ordered innermost first."""
     frames = [
         ir.SourceLocation(
             file=_relative(frame.f_code.co_filename),
@@ -1219,7 +1215,7 @@ def _relative(filename: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Runs the job in the directory named by the only argument."""
+    """Executes the runner job located in the directory passed as the CLI argument."""
     (argument,) = sys.argv[1:] if argv is None else argv
     directory = Path(argument)
     job = Job.model_validate_json((directory / JOB).read_bytes())

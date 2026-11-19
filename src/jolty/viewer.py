@@ -1,19 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""A standalone 3D viewer: one HTML page to orbit a circuit and scrub its simulation.
+"""Standalone 3D HTML viewer for orbiting a circuit and scrubbing simulation results.
 
-The page lays each component out as its schematic does, on a board: every device a part
-standing on its pins, every wire a trace, the ground and supply pins posts. Its
-simulation plays on it: each trace takes its net's voltage as a color, current flows
-along each lead as moving light, faster as it grows, and each part glows with the power
-it takes. A timeline scrubs through every point of each analysis; clicking a part shows
-its parameters and its state at that point, the voltage, current and charge of each
-terminal, its variables and its small-signal conductances; double-clicking a component
-instance opens it. Currents, charges, variables and conductances are those the results
-recorded: a plan records every instance with ``record=["**"]``.
+The viewer arranges each component on a 3D board matching its schematic layout: devices
+stand on pins, wires appear as traces, and ground and supply pins appear as posts.
+Simulation playback colors traces by net voltage, animates lead current flow, and
+illuminates devices by dissipated power. A timeline scrubs through every analysis point;
+clicking a part inspects parameters, terminal states, variables, and conductances, while
+double-clicking opens a child component. Per-device currents, charges, variables, and
+conductances appear for instances recorded with ``record=["**"]``.
 
-The page holds the circuit, the layouts and the results as JSON, and the viewer's
-script and styles, and loads three.js from jsDelivr, so it needs a network connection
-when opened.
+The generated HTML embeds the circuit, layouts, results, script, and styles, and loads
+three.js from jsDelivr (requiring network access unless a local mirror is configured).
 
 Examples:
     >>> from jolty import Builder, OperatingPoint, Role, Simulation, circuit, component
@@ -49,20 +46,20 @@ from pydantic import JsonValue
 from jolty import ir, layout, results, unknowns
 
 THREE_VERSION: Final = "0.170.0"
-"""The three.js version the viewer loads."""
+"""Version of three.js loaded by generated viewer pages."""
 
 _THREE: Final = f"https://cdn.jsdelivr.net/npm/three@{THREE_VERSION}"
-"""The three.js package on jsDelivr."""
+"""Base jsDelivr CDN URL for the pinned three.js package."""
 
 FRAMES: Final = 240
-"""The most points of an analysis the viewer plays: a longer one is sampled evenly."""
+"""Maximum sampled animation frames per analysis in the 3D viewer."""
 
 _DIGITS: Final = 5
-"""The significant digits each number keeps."""
+"""Significant digits retained for serialized viewer numbers."""
 
 
 def _number(value: float) -> JsonValue:
-    """A finite number rounded to its significant digits, or None."""
+    """Rounds finite `value` to `_DIGITS` significant digits, or returns None."""
     if not math.isfinite(value):
         return None
     if value == 0:
@@ -71,19 +68,19 @@ def _number(value: float) -> JsonValue:
 
 
 def _series(values: np.ndarray) -> JsonValue:
-    """Numbers, each rounded to its significant digits."""
+    """Converts numeric array `values` into rounded JSON-safe numbers."""
     return [_number(float(value)) for value in values]
 
 
 def _frames(count: int) -> np.ndarray:
-    """The indices of at most `FRAMES` points, evenly spread, the ends kept."""
+    """Selects up to `FRAMES` evenly spaced point indices, preserving endpoints."""
     if count <= FRAMES:
         return np.arange(count)
     return np.unique(np.round(np.linspace(0, count - 1, FRAMES)).astype(int))
 
 
 def _layout(circuit: ir.Circuit, name: str) -> dict[str, JsonValue]:
-    """A component's layout as the viewer draws it."""
+    """Builds the serialized 3D layout geometry for component `name` in `circuit`."""
     drawn = layout.layout(circuit, name)
     instances: list[JsonValue] = []
     for placed in drawn.instances:
@@ -136,10 +133,10 @@ def _layout(circuit: ir.Circuit, name: str) -> dict[str, JsonValue]:
 
 
 def _views(circuit: ir.Circuit) -> dict[str, JsonValue]:
-    """Each component instance's view, by path, the top's being ``""``.
+    """Maps every component instance path to its component definition and circuit nets.
 
-    A view names the instance's component, and the net of the whole circuit that each
-    of the component's own nets is.
+    The top-level component uses the empty path ``""``. Each view maps local net names
+    to their resolved full-circuit net names.
     """
     views: dict[str, JsonValue] = {}
 
@@ -177,11 +174,11 @@ _RECORDED: Final = (
     results.DcSweepResult,
     results.TransientResult,
 )
-"""The results that hold what every device did at each point."""
+"""Analysis result types that record per-device terminal and state arrays."""
 
 
 def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | None:
-    """What an analysis plays along: its kind, its points, their label and unit."""
+    """Extracts the analysis kind, sweep axis values, axis label, and unit."""
     match result:
         case results.OperatingPointResult():
             return "operating_point", np.zeros(1), "", ""
@@ -200,7 +197,7 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
 
 
 def _rows(result: _RecordedResult, field: str) -> np.ndarray:
-    """One of what every device did, a row per point even at an operating point."""
+    """Extracts a 2-D per-point array for `field` from `result`, even for OP."""
     values = np.asarray(getattr(result, field))
     return (
         values[None, :] if isinstance(result, results.OperatingPointResult) else values
@@ -208,7 +205,7 @@ def _rows(result: _RecordedResult, field: str) -> np.ndarray:
 
 
 def _levels(result: results.AnalysisResult, axis: np.ndarray) -> dict[str, np.ndarray]:
-    """Each logic net's level at each point."""
+    """Extracts per-point logic levels for every logic net in `result`."""
     match result:
         case results.OperatingPointResult():
             return {net: result.logic[[index]] for index, net in enumerate(result.nets)}
@@ -227,11 +224,10 @@ def _levels(result: results.AnalysisResult, axis: np.ndarray) -> dict[str, np.nd
 def _currents(
     recording: results.Recording, frames: np.ndarray, currents: np.ndarray
 ) -> dict[str, JsonValue]:
-    """The current into every recorded electrical terminal, at `frames`.
+    """Extracts electrical terminal current series sampled at `frames`.
 
-    A component instance's or a logic device's terminal carries the sum the result
-    recorded. The heat into a thermal terminal is no current: no light moves along its
-    lead.
+    Component and logic terminals use recorded summed currents; thermal terminals are
+    excluded because heat flow is not rendered as electrical current.
     """
     terminals: dict[str, JsonValue] = {}
     if not currents.size:
@@ -244,10 +240,10 @@ def _currents(
 
 
 def _state(result: _RecordedResult, frames: np.ndarray) -> dict[str, JsonValue]:
-    """Each recorded device's charges, variables and conductances, at `frames`.
+    """Extracts per-device charges, internal variables, and conductances at `frames`.
 
-    A device's charges are its terminals', and its conductances those between two of
-    its terminals.
+    Charges are keyed by terminal path, and small-signal conductances are keyed by
+    terminal pairs.
     """
     recording = result.recording
     stored = _rows(result, "charges")
@@ -282,9 +278,9 @@ def _state(result: _RecordedResult, frames: np.ndarray) -> dict[str, JsonValue]:
 
 
 def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue] | None:
-    """One analysis as the viewer plays it, its points sampled.
+    """Serializes one analysis result sampled at viewer frames, or returns None.
 
-    A frequency response plays the magnitudes of its phasors along its frequencies.
+    AC analyses render phasor magnitudes across frequency.
     """
     found = _axis(result)
     if found is None:
@@ -329,7 +325,7 @@ def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue]
 def scene(
     circuit: ir.Circuit, analyses: Mapping[str, results.AnalysisResult], title: str = ""
 ) -> dict[str, JsonValue]:
-    """Everything the viewer shows of `circuit` and the results of its `analyses`."""
+    """Builds the complete JSON scene payload for `circuit` and `analyses`."""
     layouts: dict[str, JsonValue] = {
         name: _layout(circuit, name)
         for name in sorted(
@@ -373,7 +369,7 @@ def _compact_number(value: JsonValue) -> JsonValue:
 
 
 def _is_scalar(value: JsonValue) -> bool:
-    """Whether `value` is a number or null that a series can collapse to."""
+    """Returns whether `value` is a numeric scalar or null eligible for collapsing."""
     if value is None:
         return True
     return isinstance(value, int | float) and not isinstance(value, bool)
@@ -459,7 +455,7 @@ _PAGE: Final = """<!doctype html>
 
 
 def _asset_tags(assets: str | None) -> tuple[str, str]:
-    """The stylesheet and module script tags: inlined, or linked under `assets`."""
+    """Builds inline or external `<style>` and `<script>` tags from `assets`."""
     if assets is None:
         bundled = files("jolty").joinpath("assets")
         style = bundled.joinpath("viewer.css").read_text(encoding="utf-8")
@@ -483,11 +479,11 @@ def page(
     *,
     assets: str | None = None,
 ) -> str:
-    """The HTML page of a scene, loading three.js from `three`.
+    """Renders the viewer HTML page for scene `data` loading three.js from `three`.
 
-    When `assets` is omitted, the viewer's stylesheet and script are inlined so the
-    page stands alone. When `assets` names a base URL or relative directory, the page
-    links ``viewer.css`` and ``viewer.js`` beneath it instead.
+    Omitting `assets` inlines the bundled stylesheet and module script for a standalone
+    file. Passing a base URL or relative path in `assets` links external ``viewer.css``
+    and ``viewer.js`` files beneath that base instead.
     """
     imports = {
         "imports": {
@@ -516,11 +512,11 @@ def save_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset bas
     *,
     assets: str | None = None,
 ) -> None:
-    """Writes the viewer of `circuit` and its `analyses` to `path`.
+    """Writes the interactive 3D viewer HTML for `circuit` and `analyses` to `path`.
 
-    The page loads three.js from `three`, the package's base URL, jsDelivr's unless
-    given. When `assets` is given, the page links ``viewer.css`` and ``viewer.js``
-    beneath that base instead of inlining them.
+    The generated page loads three.js from `three` (jsDelivr by default). Passing
+    `assets` links external ``viewer.css`` and ``viewer.js`` beneath that base URL
+    instead of inlining them.
     """
     rendered = page(scene(circuit, analyses, title), three, assets=assets)
     path.write_text(rendered, encoding="utf-8")

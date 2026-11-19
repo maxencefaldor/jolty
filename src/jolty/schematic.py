@@ -1,15 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""Schematics: a component drawn the way engineers draw circuits.
+"""Circuit schematic rendering for jolty components.
 
-[`jolty.layout`][jolty.layout] places the instances and routes the wires; this module
-draws them with the standard symbols: zigzag resistors, plate capacitors, coiled
-inductors, triangle diodes, circled sources, diamond controlled sources, and boxes for
-components, with their ports as pins. Each instance carries its name and its value, a
-ground symbol or a supply flag marks each pin on a rail, and a dot marks where wires
-join.
+Component placement and wire routing come from [`jolty.layout`][jolty.layout]. Standard
+schematic symbols represent zigzag resistors, plate capacitors, coiled inductors,
+triangle diodes, circled sources, diamond controlled sources, and boxes with port pins
+for subcomponents. Each instance displays its name and value, rail pins carry ground
+symbols or supply flags, and dots mark wire junctions.
 
-A schematic can carry facts: the voltage of each net at an operating point, and the
-instances that diagnostics name, drawn in red with an exclamation point.
+Schematics can also annotate operating-point net voltages and highlight diagnostic
+instances in red with an exclamation mark.
 
 Install the optional extra with ``pip install 'jolty[plots]'`` to use this module.
 
@@ -70,12 +69,12 @@ _VOLTAGE: Final = "#b45309"
 _MINUS: Final = "\N{MINUS SIGN}"
 _TIMES: Final = "\N{MULTIPLICATION SIGN}"
 _SCALE: Final = 0.32
-"""Inches per grid unit."""
+"""Figure scale in inches per schematic grid unit."""
 _LINE: Final = 1.1
-"""The width of every stroke, in points."""
+"""Stroke width for schematic lines and outlines, in points."""
 
 type _Local = tuple[float, float]
-"""A point in a symbol's own frame, upright with its first terminal at the top."""
+"""Coordinates in a symbol's local frame, upright with its first terminal at the top."""
 
 
 def draw(
@@ -85,14 +84,18 @@ def draw(
     point: OperatingPointResult | None = None,
     marked: Collection[str] = (),
 ) -> Figure:
-    """The schematic of the component the instance at `path` places, or of the top.
+    """Draws the schematic for the component at `path`, or for the top-level component.
 
-    `point` gives the voltage to write on each net, and `marked` the paths of instances
-    to draw in red, such as those diagnostics name: an instance that holds a marked one
-    is marked too.
+    Args:
+        circuit: Circuit containing the component to draw.
+        path: Hierarchical instance path selecting a subcomponent, or empty for the top
+            level.
+        point: Optional operating-point result supplying net voltage annotations.
+        marked: Instance paths highlighted in red, propagating up to enclosing
+            instances.
 
     Raises:
-        JoltyError: When no component instance is at `path`.
+        JoltyError: If `path` does not refer to a component instance in `circuit`.
     """
     scope = _scope(circuit, path)
     drawn = layout(circuit, scope.component)
@@ -123,24 +126,24 @@ def draw(
 
 @dataclass(frozen=True, slots=True)
 class _Scope:
-    """A component as an instance path places it in a circuit."""
+    """Hierarchical scope locating a component instance within a circuit."""
 
     component: str
     prefix: str = ""
-    """The instance's path and a slash, or nothing at the top."""
+    """Instance path prefix ending in a slash, or an empty string at the top level."""
     ports: Mapping[str, str] = field(default_factory=dict)
-    """The path in the circuit of each port's net, by port."""
+    """Mapping from each component port name to its resolved circuit net path."""
 
     def path(self, net: str) -> str:
-        """The path in the circuit of the component's `net`, which names its voltage."""
+        """Returns the full circuit path naming the voltage of `net`."""
         return self.ports.get(net, self.prefix + net)
 
     def voltages(
         self, point: OperatingPointResult, nets: Iterable[str]
     ) -> dict[str, float]:
-        """The voltage `point` holds for each of `nets` of the component, by net.
+        """Returns a mapping from each net in `nets` to its operating-point voltage.
 
-        A net `point` holds no voltage for, such as the ground, is left out.
+        Nets without a solved voltage in `point`, such as ground, are omitted.
         """
         solved = {
             unknown.name: float(value)
@@ -150,7 +153,7 @@ class _Scope:
         return {net: solved[self.path(net)] for net in nets if self.path(net) in solved}
 
     def marked(self, paths: Collection[str]) -> set[str]:
-        """The ids of the component's instances that are or hold one of `paths`."""
+        """Returns local instance names matching or enclosing any path in `paths`."""
         return {
             path.removeprefix(self.prefix).partition("/")[0]
             for path in paths
@@ -159,10 +162,10 @@ class _Scope:
 
 
 def _scope(circuit: ir.Circuit, path: str) -> _Scope:
-    """The scope of the component the instance at `path` places, or of the top.
+    """Resolves the component scope for the instance at `path`, or the top level.
 
     Raises:
-        JoltyError: When no component instance is at `path`.
+        JoltyError: If `path` does not refer to a component instance in `circuit`.
     """
     scope = _Scope(circuit.top)
     for name in path.split("/") if path else ():
@@ -186,10 +189,10 @@ def _scope(circuit: ir.Circuit, path: str) -> _Scope:
 def _draw_net(
     axes: Axes, net: Net, voltages: Mapping[str, float], flagged: Collection[Point]
 ) -> None:
-    """A net's wires and junctions, its rail symbols, and its voltage.
+    """Draws wires, junctions, rail symbols, labels, and voltages for `net`.
 
-    A signal net without wires carries its name at each pin but the `flagged` ones,
-    whose flags already name it.
+    Unwired signal nets display their name at every pin outside `flagged`, since port
+    flags already label the flagged pins.
     """
     for (x1, y1), (x2, y2) in net.segments:
         axes.plot([x1, x2], [y1, y2], color=_WIRE, linewidth=_LINE)
@@ -210,7 +213,7 @@ def _draw_net(
 
 
 def _draw_voltage(axes: Axes, net: Net, voltage: float) -> None:
-    """A net's voltage above the middle of its longest wire, or below its first pin."""
+    """Draws the voltage label for `net` on its longest wire or near its first pin."""
     text = format_si(voltage, "V")
     if not net.segments:
         x, y = net.pins[0]
@@ -229,7 +232,7 @@ def _draw_voltage(axes: Axes, net: Net, voltage: float) -> None:
         _write(axes, beside, text, color=_VOLTAGE, bold=True, va="center")
 
 
-def _write(  # noqa: PLR0913 - the styles of a text, each with a default
+def _write(  # noqa: PLR0913 - text styling parameters with defaults
     axes: Axes,
     point: _Local,
     text: str,
@@ -254,7 +257,7 @@ def _write(  # noqa: PLR0913 - the styles of a text, each with a default
 
 
 def _draw_ground(axes: Axes, pin: Point) -> None:
-    """A ground symbol below `pin`: a lead and three bars, each shorter."""
+    """Draws a three-bar ground symbol below `pin`."""
     x, y = pin
     axes.plot([x, x], [y, y - 0.6], color=_INK, linewidth=_LINE)
     for index, half in enumerate((0.6, 0.4, 0.2)):
@@ -263,7 +266,7 @@ def _draw_ground(axes: Axes, pin: Point) -> None:
 
 
 def _draw_supply(axes: Axes, pin: Point, name: str) -> None:
-    """A supply symbol above `pin`: a lead and a bar, the supply's name over it."""
+    """Draws a labeled supply rail bar above `pin`."""
     x, y = pin
     axes.plot([x, x], [y, y + 0.6], color=_INK, linewidth=_LINE)
     axes.plot([x - 0.6, x + 0.6], [y + 0.6, y + 0.6], color=_INK, linewidth=_LINE)
@@ -271,10 +274,10 @@ def _draw_supply(axes: Axes, pin: Point, name: str) -> None:
 
 
 def _draw_flag(axes: Axes, name: str, point: Point, side: int) -> None:
-    """A port flag pointing the way signal flows, its name beyond it.
+    """Draws a directional port flag and its name at `point`.
 
-    An input's flag, on the left, points into its net; an output's, on the right, points
-    away from it.
+    Input flags on the left point into the net, while output flags on the right point
+    outward.
     """
     x, y = point
     length, tip = 2.2, 0.5
@@ -293,21 +296,21 @@ def _draw_flag(axes: Axes, name: str, point: Point, side: int) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _Pen:
-    """Draws in a placed symbol's own frame, in the symbol's color."""
+    """Drawing helper operating in a placed symbol's local coordinate frame."""
 
     axes: Axes
     placed: Placed
     color: str
 
     def line(self, *points: _Local) -> None:
-        """A stroke through `points`."""
+        """Draws a polyline stroke through `points`."""
         xs, ys = zip(*(self.placed.at(point) for point in points), strict=True)
         self.axes.plot(
             xs, ys, color=self.color, linewidth=_LINE, solid_joinstyle="round"
         )
 
     def polygon(self, *points: _Local) -> None:
-        """A closed outline through `points`."""
+        """Draws a closed polygon outline through `points`."""
         corners = [self.placed.at(point) for point in points]
         self.axes.add_patch(
             Polygon(
@@ -316,7 +319,7 @@ class _Pen:
         )
 
     def circle(self, center: _Local, radius: float) -> None:
-        """A circle's outline."""
+        """Draws a circle outline centered at `center` with `radius`."""
         self.axes.add_patch(
             Circle(
                 self.placed.at(center),
@@ -328,7 +331,7 @@ class _Pen:
         )
 
     def sign(self, point: _Local, text: str) -> None:
-        """A small sign, centered at `point`."""
+        """Draws a centered polarity sign `text` at `point`."""
         at = self.placed.at(point)
         _write(self.axes, at, text, color=self.color, size=6, ha="center", va="center")
 
@@ -367,14 +370,14 @@ def _diode(pen: _Pen) -> None:
 
 
 def _signs(pen: _Pen, height: float) -> None:
-    """A plus above and a minus below the symbol's center."""
+    """Draws a plus sign above and a minus sign below the symbol center."""
     pen.line((-0.2, height), (0.2, height))
     pen.line((0, height - 0.2), (0, height + 0.2))
     pen.line((-0.2, -height), (0.2, -height))
 
 
 def _arrow(pen: _Pen, length: float) -> None:
-    """An arrow down through the symbol's center: the current's direction."""
+    """Draws a downward current-direction arrow through the symbol center."""
     pen.line((0, length), (0, -length))
     pen.line((-0.22, 0.28 - length), (0, -length), (0.22, 0.28 - length))
 
@@ -394,7 +397,7 @@ def _current_source(pen: _Pen) -> None:
 
 
 def _controlled(pen: _Pen, inside: Callable[[_Pen], None]) -> None:
-    """A diamond with `inside` drawn in it, and control leads on its left."""
+    """Draws a controlled-source diamond with `inside` and left-side control leads."""
     pen.line((0, 2), (0, 1))
     pen.polygon((0, 1), (1, 0), (0, -1), (-1, 0))
     inside(pen)
@@ -426,7 +429,7 @@ _SYMBOLS: Final[Mapping[str, Callable[[_Pen], None]]] = {
 
 
 def _draw_instance(axes: Axes, placed: Placed, *, marked: bool) -> None:
-    """An instance's symbol, its name and its value, or a box for a component."""
+    """Draws a placed device symbol or component box with its name and value."""
     color = _MARKED if marked else _INK
     label = f"! {placed.name}" if marked else placed.name
     x, y = placed.origin
@@ -451,9 +454,10 @@ def _draw_instance(axes: Axes, placed: Placed, *, marked: bool) -> None:
 
 
 def _draw_box(axes: Axes, placed: Placed, name: str, color: str) -> None:
-    """A component as a box: its function and its arguments inside, and its ports.
+    """Draws a component box displaying its name, arguments, and port leads.
 
-    Each port is a lead from its pin to the box, a port on a side named inside it.
+    Each port connects from its pin to the box boundary, with side port names labeled
+    inside the box.
     """
     (left, bottom), (right, top) = placed.body()
     axes.add_patch(
@@ -503,10 +507,10 @@ _QUANTITIES: Final = {
     "inductor": ("inductance", "H"),
     "voltage_controlled_current_source": ("transconductance", "S"),
 }
-"""The parameter that is each model's value, and its unit."""
+"""Mapping from device model name to its primary value parameter and unit symbol."""
 
 _SOURCES: Final = {"voltage_source": "V", "current_source": "A"}
-"""The unit of each independent source's waveform."""
+"""Mapping from independent source model name to its waveform unit symbol."""
 
 
 def _real(value: object) -> float | None:
@@ -517,7 +521,7 @@ def _real(value: object) -> float | None:
 
 
 def _value(instance: ir.Instance) -> str:
-    """The instance's value as a schematic writes it, such as ``4.7 kΩ``."""
+    """Formats the primary schematic value of `instance`, such as ``4.7 kΩ``."""
     if not isinstance(instance.of, ir.DeviceOf):
         return ""
     model, parameters = instance.of.model, instance.parameters

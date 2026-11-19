@@ -23,11 +23,11 @@ from pydantic_settings import (
 from jolty.errors import JoltyError
 
 ALL: Final = "all"
-"""The key that sets the level of every rule at once."""
+"""Wildcard key setting the severity level for every check rule at once."""
 
 
 class Level(StrEnum):
-    """How a check reports a rule's diagnostics, by the names ty gives its levels."""
+    """Severity level assigned to check rule diagnostics (matching ty naming)."""
 
     ERROR = "error"
     WARN = "warn"
@@ -35,11 +35,11 @@ class Level(StrEnum):
 
 
 type RuleKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+(-[a-z]+)*$")]
-"""A rule's name, such as ``no-dc-path``, or ``all`` for every rule."""
+"""Check rule name (such as ``no-dc-path``) or ``all`` for every rule."""
 
 
 def _user_cache() -> Path:
-    """`$XDG_CACHE_HOME/jolty`, or `~/.cache/jolty` where `XDG_CACHE_HOME` is unset."""
+    """Returns `$XDG_CACHE_HOME/jolty`, or `~/.cache/jolty` when unset."""
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "jolty"
 
 
@@ -56,66 +56,60 @@ class Settings(BaseSettings):
     timeout: float = Field(
         default=300.0,
         gt=0,
-        description="Seconds a script may run, its analyses included, "
-        "before jolty stops it.",
+        description="Maximum runtime in seconds for a script and its analyses before "
+        "termination.",
     )
     max_output: int = Field(
         default=20_000,
         ge=0,
-        description="Characters kept from each of a script's standard output "
-        "and standard error.",
+        description="Maximum characters retained separately from script standard "
+        "output and standard error.",
     )
     max_unknowns: int = Field(
         default=40,
         ge=1,
-        description="Unknowns a report lists for each analysis; "
-        "the results file holds every one.",
+        description="Maximum unknowns listed per analysis in reports; results files "
+        "store all unknowns.",
     )
     max_diagnostics: int = Field(
         default=20,
         ge=1,
-        description="Diagnostics a check report lists; it counts the rest.",
+        description="Maximum diagnostics listed in a check report; remaining "
+        "diagnostics are counted.",
     )
     cache: Path = Field(
         default_factory=_user_cache,
-        description="Directory that keeps what jolty downloads, such as the model "
-        "files of parts; by default, jolty's own in the user's cache.",
+        description="Directory for cached downloads such as device models; defaults "
+        "to the user cache directory.",
     )
     pdk_root: Path | None = Field(
         default=None,
-        description="Directory that holds the process design kits as open_pdks "
-        "installs them, sky130A, gf180mcuD and ihp-sg13g2 within it; by default, "
-        "jolty's pinned releases, fetched into the cache.",
+        description="Directory containing open_pdks installs (sky130A, gf180mcuD, "
+        "ihp-sg13g2); defaults to cached pinned releases.",
     )
     threads: int | None = Field(
         default=None,
         ge=1,
-        description="Threads the engine runs on: a batch's runs, and a simulation's "
-        "own work, such as its frequencies, where its options spread it; by default, "
-        "one per processor. No result depends on them.",
+        description="Worker thread count for batches and parallel analyses; defaults "
+        "to one per CPU without affecting numerical results.",
     )
     rules: dict[RuleKey, Level] = Field(
         default_factory=dict,
-        description="Level of each rule by name, or of every rule with 'all': error, "
-        "warn or ignore. A rule's own entry overrides 'all', and rules left out keep "
-        "their default level.",
+        description="Severity override per rule name or 'all' (error, warn, ignore). "
+        "Explicit rule names override 'all', and unlisted rules keep default levels.",
     )
     analysis_log: Path | None = Field(
         default=None,
-        description="File each analysis a simulation runs appends a line to, "
-        "whatever runs it: the command line, the MCP server or a script, so a "
-        "session's simulations can be counted. Each line is a JSON object of the "
-        "analysis's kind, the runs it runs on, one alone or a batch's, and when it "
-        "started; by default, none is kept.",
+        description="Append-only JSONL file recording analysis kind, run count, and "
+        "start timestamp across CLI, MCP, and scripts; disabled by default.",
     )
 
     @classmethod
     def load(cls) -> Self:
-        """The configured settings.
+        """Loads and validates settings from all configured sources.
 
         Raises:
-            JoltyError: When a source sets a setting that does not exist, or an invalid
-                value.
+            JoltyError: When a source specifies an unknown setting or an invalid value.
         """
         try:
             return cls()
@@ -140,7 +134,7 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Read explicit values, then the environment, then ``pyproject.toml``."""
+        """Reads explicit arguments, then environment variables, then pyproject.toml."""
         return (
             init_settings,
             env_settings,

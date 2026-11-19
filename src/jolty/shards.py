@@ -1,19 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""Shards: a plan's Monte Carlo samples run in ranges, by any number of processes.
+"""Monte Carlo shard splitting, digest verification, and merging.
 
-Every sample is a pure function of the circuit, the plan, its index and the options, so
-a plan's Monte Carlo analysis splits into shards, each the samples from a start up to a
-stop, which any machine runs in any order, and the merge of the shards, their batches
-joined in the order of their samples, holds what one run of every sample holds, bit for
-bit. A shard is ``jolty simulate SCRIPT --samples START:STOP``, a command with no state
-of its own, which a failed shard runs again; it writes a
-[`Shard`][jolty.files.Shard] to ``shard-<start>-<stop>.npz``, and ``jolty merge``
-reports the shards of a directory as one run of every sample reports them.
+Every Monte Carlo sample is a deterministic function of the circuit, plan, sample
+index, and options. A Monte Carlo analysis can split into independent sample ranges
+(shards) executed on any machine in any order. Merging shards produces results
+bit-identical to running all samples in a single process.
 
-Each shard carries a [`digest`][jolty.shards.digest] of what its numbers
-depend on, which leaves out where the scripts that built its circuits lie, and the
-merge refuses shards whose digests differ, or whose samples leave a gap or
-overlap.
+Each shard runs via ``jolty simulate SCRIPT --samples START:STOP``, writing a stateless
+[`Shard`][jolty.files.Shard] to ``shard-<start>-<stop>.npz`` that can be retried safely
+on failure. Running ``jolty merge`` combines a shard directory and reports results
+identically to a full run. Each shard stores a [`digest`][jolty.shards.digest] of its
+numerical inputs (excluding build-script paths), and merging rejects mismatched
+digests, gaps, or overlapping sample ranges.
 """
 
 import hashlib
@@ -33,11 +31,11 @@ from jolty.specs import Specs
 
 
 def digest(described: Mapping[str, JsonValue]) -> str:
-    """A SHA-256 digest, in hexadecimal, of what a shard's numbers depend on.
+    """Computes a hexadecimal SHA-256 digest of all inputs affecting shard results.
 
-    It digests `described`, which says what the shard ran, with jolty's version, its
-    [`build`][jolty.files.build] and its [`platform`][jolty.files.platform]: the
-    determinism contract holds the bits to one build on one platform.
+    The digest hashes `described` with the jolty version, [`build`][jolty.files.build],
+    and [`platform`][jolty.files.platform] to enforce bit-identical determinism within
+    one build and platform.
 
     Examples:
         >>> len(digest({"samples": 10}))
@@ -54,14 +52,14 @@ def digest(described: Mapping[str, JsonValue]) -> str:
 
 
 def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
-    """The shards at `paths` as one, of every sample, their batches joined in order.
+    """Merges shard files at `paths` into one complete shard covering all samples.
 
-    Also returns the paths, in the order of the shards' samples.
+    Returns the merged [`Shard`][jolty.files.Shard] along with the input paths sorted
+    by sample range.
 
     Raises:
-        JoltyError: When there is no shard, a file is not one, the shards' digests
-            differ, naming the shards of each, or their samples leave a gap or overlap,
-            naming the shards beside each, every one of them.
+        JoltyError: When `paths` is empty, a file is invalid, shard digests differ, or
+            sample ranges contain gaps or overlaps.
     """
     if not paths:
         message = "there is no shard to merge"
@@ -125,10 +123,10 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
 
 
 def _same(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
-    """Checks that the shards `loaded` share their digest.
+    """Verifies that all shards in `loaded` share the same provenance digest.
 
     Raises:
-        JoltyError: When they do not, naming the shards of each digest.
+        JoltyError: When digests differ, listing the shard filenames for each digest.
     """
     by: dict[str, list[Path]] = {}
     for path, shard in loaded:
@@ -147,10 +145,10 @@ def _same(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
 
 
 def _tiled(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
-    """Checks that the samples of the shards `loaded`, by their starts, tile every one.
+    """Verifies that sorted shards in `loaded` tile every sample without gaps.
 
     Raises:
-        JoltyError: Naming the shards beside each gap and each overlap.
+        JoltyError: When gaps or overlapping ranges exist, naming the adjacent shards.
     """
     problems = []
     reach, reached = 0, None
@@ -178,23 +176,23 @@ def _tiled(loaded: Sequence[tuple[Path, files.Shard]]) -> None:
 
 
 def _names(paths: Iterable[Path]) -> str:
-    """The names of `paths`, joined in words."""
+    """Joins filenames from `paths` into an English list."""
     named = [path.name for path in paths]
     return named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
 
 
 def _condition(shard: files.Shard, place: int) -> str:
-    """The condition at `place` among those of `shard`, in words."""
+    """Formats condition `place` of `shard` as nominal or its corner name."""
     return "the plan's own conditions" if place == 0 else shard.corners[place - 1]
 
 
 def monte_carlo(
     shard: files.Shard,
 ) -> tuple[report.MonteCarloReport, files.Batch]:
-    """What the samples of `shard`, every one of its analysis's, found, against specs.
+    """Evaluates all samples in `shard` against specs and builds the report.
 
-    Returns the report, and the batch of the samples at the plan's own conditions as a
-    batch file saves it.
+    Returns the report together with the nominal-condition batch formatted for a batch
+    file.
     """
     if not shard.conditions:
         message = "the shard holds no conditions"
@@ -222,11 +220,11 @@ def spreads(
     count: int,
     specs: Specs | None,
 ) -> tuple[int, tuple[specs_module.Spread, ...], specs_module.Yield | None]:
-    """How many of `count` runs failed at any condition, the spreads and the yield.
+    """Computes failure count, specification spreads, and overall yield across corners.
 
-    `found` holds the runs at each condition, None where the circuit does not
-    elaborate, `planned` names every analysis of the plan, and each run's verdict on a
-    requirement is its worst over the conditions.
+    `found` holds each condition batch (or ``None`` when elaboration failed) and
+    `planned` lists the plan analysis names. Each sample takes its worst verdict across
+    all conditions for every requirement.
     """
     failed = np.zeros(count, dtype=np.bool_)
     for batch in found:
@@ -252,9 +250,10 @@ def saved(
     planned: Sequence[str],
     specs: Specs | None,
 ) -> files.Batch:
-    """The batch of `count` runs `found` at the plan's own conditions, as it is saved.
+    """Builds the serializable nominal-condition batch for `count` runs from `found`.
 
-    With none found, the circuit does not elaborate there, and no run reads anything.
+    When `found` is ``None``, elaboration failed and every sample records empty
+    readings with an elaboration-failure diagnostic.
     """
     requirements = () if specs is None else tuple(specs.requirements)
     if found is None:

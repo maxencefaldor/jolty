@@ -1,21 +1,22 @@
 # Copyright 2026 Maxence Faldor
-"""Simulation plans: the analyses to run on a circuit, how, and in which conditions.
+"""Simulation plans defining analyses, solver options, and operating conditions.
 
-A plan is kept apart from the circuit: the circuit says what exists, the plan how to
-simulate it. A plan runs its analyses at its temperature, then again at each of its
-corners: another temperature, or other arguments to the build script's ``build()``, and
-on Monte Carlo samples of the circuit's tolerances, and on the runs of its variants,
-each at its own conditions and at every corner. Variants are the values of many runs of
-one circuit, each a pure function of the run's index: listed
-([`Explicit`][jolty.plan.Explicit]), on a [`Grid`][jolty.plan.Grid] of parameters and
-temperatures, drawn as [`MonteCarlo`][jolty.plan.MonteCarlo] samples, or every one of
-one at every one of another ([`Product`][jolty.plan.Product]). Its fidelity chooses, for
-the component instances its scopes match, logic models characterized from their
-circuits.
+A plan is separate from the circuit: the circuit defines structure, while the plan
+defines how to simulate the circuit. A plan runs its analyses at its nominal
+temperature and repeats them at each corner, which may vary temperature, process
+corner, or arguments passed to ``build()``. Plans can also evaluate Monte Carlo
+tolerance samples and structured variant sweeps across nominal and corner conditions.
 
-Every plan object validates through Pydantic, reporting every invalid field and entry
-at once as a [`ValidationError`][pydantic.ValidationError], as circuit and results
-files do.
+Variants parameterize multiple runs of one circuit as pure functions of the run index:
+explicit lists ([`Explicit`][jolty.plan.Explicit]), parameter and temperature grids
+([`Grid`][jolty.plan.Grid]), random tolerance draws
+([`MonteCarlo`][jolty.plan.MonteCarlo]), and Cartesian combinations
+([`Product`][jolty.plan.Product]). Plan fidelity maps instance scopes to logic models
+characterized from the underlying component circuits.
+
+Every plan object validates through Pydantic, collecting all invalid fields and
+entries into a single [`ValidationError`][pydantic.ValidationError] consistent with
+circuit and results serialization.
 
 Examples:
     >>> from jolty.units import us
@@ -58,19 +59,21 @@ from jolty.units import (
 )
 
 DECADE_DIGITS: Final = 40
-"""The decimal digits a decade sweep's frequencies are computed to before they are
-rounded to floats: so many more than a float's 17 that a million steps' rounding stays
-far below a float's, and each frequency rounds to the float nearest its exact value."""
+"""Decimal precision used when computing decade sweep frequencies before rounding.
+
+Using 40 decimal digits (far beyond 64-bit float's 17 digits) prevents accumulated
+rounding drift over large sweeps so each frequency rounds to the nearest float.
+"""
 
 _MAX_SEED_EXCLUSIVE: Final = 2**64
-"""The exclusive upper bound of a 64-bit unsigned seed."""
+"""Exclusive upper bound of a 64-bit unsigned integer seed."""
 
 _CONFIG: Final = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 """Shared Pydantic configuration for every plan dataclass."""
 
 type Method = Literal["trapezoidal", "gear2", "backward_euler"]
-"""An integration method: trapezoidal by default, Gear2 for stiff circuits that ring,
-backward Euler for the most damping."""
+"""Transient integration method: trapezoidal (default), Gear2 for stiff ringing
+circuits, or backward Euler for maximum damping."""
 
 
 def _integer(
@@ -514,7 +517,7 @@ def _rising_grid(name: str, *, strictly_positive: bool) -> BeforeValidator:
 
 @stdlib_dataclass(frozen=True, slots=True)
 class _MappingRule:
-    """Describes key and value error messages for a validated mapping field."""
+    """Key and value validation rules and error messages for a mapping field."""
 
     title: str
     key_message: str
@@ -524,7 +527,7 @@ class _MappingRule:
 
 
 def _valid_mapping_key(key: object, *, identifier_keys: bool) -> bool:
-    """Whether `key` satisfies a mapping rule's key constraint."""
+    """Returns whether `key` satisfies a mapping rule's key constraint."""
     if not isinstance(key, str):
         return False
     return key.isidentifier() if identifier_keys else bool(key)
@@ -677,19 +680,19 @@ _OUTPUTS: Final = _sequence_of(str, "outputs", "unknown names")
 
 
 def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
-    """The voltage of each net `given` names, in volts, each checked as `what`.
+    """Converts named net voltages in `given` to volts, validated as `what`.
 
     Raises:
-        DimensionError: When one is not a voltage.
+        DimensionError: When any value in `given` does not have voltage dimension.
     """
     return {net: voltage.to(VOLTAGE, what) for net, voltage in given.items()}
 
 
 def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
-    """`record` as a tuple of patterns, or None when it is left out.
+    """Normalizes `record` to a tuple of patterns, or `None` when omitted.
 
     Raises:
-        ValidationError: When `record` is a string, or holds anything but strings.
+        ValidationError: When `record` is a string or contains non-string entries.
     """
     try:
         return _check_record(record)
@@ -702,12 +705,12 @@ def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Recorded:
-    """An analysis whose results can keep the devices' detail beside the unknowns.
+    """Base class for analyses that can record per-device details alongside unknowns.
 
-    Its `record` names the instances whose detail its results keep, as a plan's does,
-    and replaces the plan's when set (see [`Plan`][jolty.plan.Plan]). With `regions`,
-    its results keep besides each other transistor's region of operation and its
-    margins to the regions' boundaries alone, which an operating point's `region` reads.
+    When set, `record` selects instance paths whose detailed currents, charges, and
+    derivatives are retained, overriding the plan-level `record` setting (see
+    [`Plan`][jolty.plan.Plan]). Setting `regions` additionally records each transistor's
+    operating region and boundary margins for inspection on operating-point results.
     """
 
     record: Annotated[Sequence[str] | None, _RECORD] = field(default=None, kw_only=True)
@@ -716,21 +719,21 @@ class Recorded:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class OperatingPoint(Recorded):
-    """The DC operating point, with every source at its level at time zero."""
+    """DC operating-point analysis evaluated with every source at time zero."""
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         return "operating_point"
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class OperatingPoints(Recorded):
-    """The circuit's DC solutions, up to `max_solutions`, the operating point first.
+    """DC multi-solution search finding up to `max_solutions` operating points.
 
-    Once the operating point is found, the circuit's equations deflated by the
-    solutions found so far lead Newton iteration to another, until none does, so a
-    latch has a solution per state and one balanced between them, and a self-biased
-    reference its zero-current state beside its working one.
+    Starting from the initial operating point, deflated Newton iteration suppresses
+    previously found solutions to locate additional equilibria until convergence stops.
+    Multi-solution search reveals every stable and metastable state of a latch, as well
+    as both the zero-current and active states of a self-biased reference.
     """
 
     max_solutions: Annotated[
@@ -742,18 +745,17 @@ class OperatingPoints(Recorded):
     ] = 8
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         return {"operating_points": {"max_solutions": self.max_solutions}}
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class DcSweep(Recorded):
-    """The operating point at each level of one independent source, or of a parameter.
+    """DC operating-point sweep over levels of a source or device parameter.
 
-    The source is named by its path, such as ``V1`` or ``bias/I1``. With a
-    `parameter`, named by its path among the instance's parameters, such as
-    ``resistance``, the sweep sets that number of any device to each level instead, the
-    device made again from its parameters with the number replaced.
+    The target `source` is specified by instance path, such as ``V1`` or ``bias/I1``.
+    When `parameter` names a device parameter path such as ``resistance``, each sweep
+    step rebuilds the device with that parameter set to the corresponding sweep value.
     """
 
     source: Annotated[str, _NON_EMPTY]
@@ -761,7 +763,7 @@ class DcSweep(Recorded):
     parameter: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The analysis in the engine's format, checked against `dimension`."""
+        """Serializes the DC sweep into engine JSON, validating against `dimension`."""
         values: list[JsonValue] = [
             value.to(dimension, "a sweep level") for value in self.values
         ]
@@ -773,7 +775,7 @@ class DcSweep(Recorded):
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Ac(Recorded):
-    """The small-signal response to a unit excitation of a source, at each frequency."""
+    """Small-signal AC frequency response to a unit excitation of a source."""
 
     source: Annotated[str, _NON_EMPTY]
     frequencies: Annotated[
@@ -785,7 +787,7 @@ class Ac(Recorded):
     ]
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -794,16 +796,16 @@ class Ac(Recorded):
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Transient(Recorded):
-    """The response over time, from the operating point at zero until `stop`.
+    """Time-domain transient response from time zero until `stop`.
 
-    The analysis steps onto each of `breakpoints` exactly, besides the times it chooses.
-    Its `initial_conditions` hold nets, by path such as ``out`` or ``amp/mid``, at the
-    voltage they start from, as SPICE's ``.ic``: each is held there while the operating
-    point is solved, then left free. A net that voltage sources and inductors join to
-    the ground, or to a net named before it, is left to them, and its voltage there must
-    be the one stated. Without its `operating_point`, as SPICE's ``UIC``, the transient
-    starts from its initial conditions alone, every other unknown at zero, so a circuit
-    starts from rest or from a state no DC solution has, such as an oscillator's kick.
+    The integrator steps directly onto every time in `breakpoints` in addition to
+    adaptively chosen time steps. The `initial_conditions` mapping fixes named nets
+    (such as ``out`` or ``amp/mid``) to initial voltages during operating-point
+    solution before releasing them, matching SPICE ``.ic``. Nets rigidly tied through
+    voltage sources or inductors to ground or to an earlier net follow those
+    constraints and match the stated voltage. Setting `operating_point` to `False`
+    (matching SPICE ``UIC``) skips the DC solve and starts from `initial_conditions`
+    with all other unknowns at zero, enabling startup or oscillator kick simulations.
 
     Examples:
         >>> from jolty.units import V, us
@@ -828,7 +830,7 @@ class Transient(Recorded):
     operating_point: Annotated[bool, _STRICT_BOOL] = True
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         transient: dict[str, JsonValue] = {
             "stop": self.stop.to(TIME, "a transient's stop time"),
             "method": self.method,
@@ -850,14 +852,14 @@ class Transient(Recorded):
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class PeriodicSteadyState(Recorded):
-    """One period of the steady state a circuit repeats, found by shooting.
+    """Single period of a circuit's periodic steady state computed via shooting.
 
-    With a `period`, that of every source, shooting starts from the operating point;
-    without one, the circuit is an oscillator whose sources hold steady, and shooting
-    finds its period too, starting where a transient from its operating point, kicked
-    along its fastest-growing natural mode, settles onto its orbit. The period's steps
-    are at most `max_step`, by default a fiftieth of the period, and land on each of
-    `breakpoints`, times within the period.
+    When `period` is given, shooting starts from the operating point for driven
+    circuits sharing that source period. When `period` is `None`, the circuit is
+    treated as an autonomous oscillator with DC sources, and shooting solves for the
+    unknown period after a startup transient kicked along the fastest-growing mode.
+    Time steps stay at or below `max_step` (defaulting to one fiftieth of the period)
+    and hit every time listed in `breakpoints`.
 
     Examples:
         >>> from jolty.units import us
@@ -887,9 +889,9 @@ class PeriodicSteadyState(Recorded):
     def from_spice(cls, card: PeriodicSteadyStateCard) -> PeriodicSteadyState:
         """Converts a SPICE ``.pss`` card into a [`PeriodicSteadyState`] analysis.
 
-        An autonomous card leaves `period` as ``None`` so shooting solves for the
-        oscillator's period; a driven card sets `period` in seconds. When `max_step`
-        is omitted on a driven card with `points` set, `max_step` is
+        An autonomous card leaves `period` as `None` so shooting solves for the
+        oscillator period, whereas a driven card sets `period` in seconds. When
+        `max_step` is omitted on a driven card with `points` set, `max_step` defaults to
         ``period / points``.
         """
         period = None if card.autonomous or card.period is None else card.period * s
@@ -908,7 +910,7 @@ class PeriodicSteadyState(Recorded):
         )
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         steady: dict[str, JsonValue] = {"method": self.method}
         if self.period is not None:
             steady["period"] = self.period.to(TIME, "a periodic steady state's period")
@@ -922,8 +924,7 @@ class PeriodicSteadyState(Recorded):
 
 
 type Differentiated = DcSweep | Ac | Transient | PeriodicSteadyState | None
-"""An analysis a sensitivity or a mismatch analysis differentiates, None for the
-operating point."""
+"""Analysis type supported for differentiation, or `None` for the operating point."""
 
 _DIFFERENTIATED: Final = _instance(
     (DcSweep, Ac, Transient, PeriodicSteadyState),
@@ -935,9 +936,9 @@ _DIFFERENTIATED: Final = _instance(
 
 
 def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
-    """The analysis `of`, differentiated, in the engine's format.
+    """Serializes the differentiated analysis `of` into the engine's JSON format.
 
-    The levels of a DC sweep are checked against `level`.
+    DC sweep levels are validated against `level`.
 
     Examples:
         >>> differentiated(None, VOLTAGE)
@@ -954,26 +955,25 @@ def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Sensitivity:
-    """How unknowns move with every number of every device's parameters.
+    """First-order sensitivity of circuit unknowns with respect to device parameters.
 
-    Each output is an unknown by name, a voltage such as ``out`` or a current such as
-    ``V1:current``. The derivatives are taken at the operating point, or at each point
-    of the analysis `of`: each level of a DC sweep, each frequency of a small-signal
-    response, each time of a transient, and each point of a periodic steady state's
-    period, at its fraction of the period, the state the period starts from moving so
-    that it still repeats, and an oscillator's period with it. They are the analysis's
-    Jacobian, which [`jvp`][jolty.simulate.jvp] finds a parameter at a time and
-    [`vjp`][jolty.simulate.vjp] an output at a time; the analysis takes whichever costs
-    the fewer solves.
+    Each entry in `outputs` names an unknown, such as a node voltage (``out``) or
+    branch current (``V1:current``). Derivatives are evaluated at the operating point
+    when `of` is `None`, or at every point of a DC sweep, AC sweep, transient, or
+    periodic steady state. For periodic steady states, derivatives are taken at fixed
+    period fractions while adjusting the periodic initial state and oscillator period
+    to preserve periodicity. The engine computes the full Jacobian using whichever of
+    [`jvp`][jolty.simulate.jvp] (per parameter) or [`vjp`][jolty.simulate.vjp] (per
+    output) requires fewer linear solves.
     """
 
     outputs: Annotated[Sequence[str], _OUTPUTS]
     of: Annotated[Differentiated, _DIFFERENTIATED] = None
 
     def to_json(self, level: Dimension = VOLTAGE) -> JsonValue:
-        """The analysis in the engine's format.
+        """Serializes the sensitivity analysis into engine JSON.
 
-        The levels of a DC sweep it differentiates are checked against `level`.
+        When differentiating a DC sweep, sweep levels are validated against `level`.
         """
         outputs: list[JsonValue] = list(self.outputs)
         return {
@@ -983,20 +983,19 @@ class Sensitivity:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Mismatch:
-    """How far unknowns spread, to first order, with the numbers samples draw at random.
+    """First-order statistical spread of circuit unknowns under random variations.
 
-    Each output is an unknown by name, as a [`Sensitivity`][jolty.plan.Sensitivity]'s
-    is, and spreads at the operating point, or at each point of the analysis `of`, with
-    every random variable ([`RandomVariable`][jolty.ir.RandomVariable]): each part's own
-    factor and each lot's of the circuit's tolerances, as a Monte Carlo sample draws
-    them, and the `random_variables` provided besides, such as a process kit's
-    statistical functions
-    ([`Library.random_variables`][jolty.spice.Library.random_variables]). Its
-    derivative with respect to each is the sensitivity analysis's, summed over the
-    numbers the random variable moves; the random variables are drawn apart from one
-    another, so to first order the output's standard deviation is the root of the sum
-    of each derivative times its random variable's standard deviation, squared, and each
-    random variable's share of its variance is its own term's.
+    Each entry in `outputs` names an unknown evaluated at the operating point or across
+    every point of the analysis `of`, matching [`Sensitivity`][jolty.plan.Sensitivity].
+    Variations include per-part and per-lot circuit tolerances (matching Monte Carlo
+    draws) along with explicit [`RandomVariable`][jolty.ir.RandomVariable] inputs in
+    `random_variables`, such as process-kit statistical models from
+    [`Library.random_variables`][jolty.spice.Library.random_variables].
+
+    Each random variable's output derivative sums the sensitivity contributions of its
+    affected parameters. Independent random variables combine in quadrature: first-order
+    output standard deviation equals the root-sum-square of each derivative scaled by
+    its standard deviation, and each squared term gives that variable's variance share.
     """
 
     outputs: Annotated[Sequence[str], _OUTPUTS]
@@ -1008,9 +1007,9 @@ class Mismatch:
     def to_json(
         self, level: Dimension = VOLTAGE, toleranced: Sequence[JsonValue] = ()
     ) -> JsonValue:
-        """The analysis in the engine's format, with the circuit's `toleranced` numbers.
+        """Serializes the mismatch analysis and `toleranced` entries into engine JSON.
 
-        The levels of a DC sweep it differentiates are checked against `level`.
+        When differentiating a DC sweep, sweep levels are validated against `level`.
         """
         outputs: list[JsonValue] = list(self.outputs)
         provided: list[JsonValue] = [
@@ -1028,14 +1027,14 @@ class Mismatch:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Stability:
-    """The loop gain through a probe at each frequency, by Middlebrook's injections.
+    """Small-signal loop-gain stability analysis using Middlebrook injection probes.
 
-    The probe is an independent voltage source in series with the loop, named by its
-    path, such as ``VP``: the loop's signal enters its ``positive`` terminal from its
-    ``negative`` one, and neither terminal is the ground, through which the injected
-    current returns. One voltage injected in series and one current injected from the
-    ground compute the loop gain however the two sides load each other (Middlebrook,
-    1975). Negative feedback makes the loop gain positive at low frequencies.
+    The `probe` names an independent voltage source placed in series with the feedback
+    loop (such as ``VP``), with loop signal entering ``positive`` from ``negative`` and
+    neither terminal tied to ground. Combining series voltage injection with shunt
+    current injection from ground yields exact loop gain regardless of loading
+    impedances (Middlebrook, 1975). Negative feedback produces positive low-frequency
+    loop gain.
     """
 
     probe: Annotated[str, _NON_EMPTY]
@@ -1047,7 +1046,7 @@ class Stability:
     ]
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -1056,13 +1055,13 @@ class Stability:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class TransferFunction:
-    """The small-signal transfer function at DC, as SPICE's ``.tf`` reports it.
+    """DC small-signal transfer function analysis matching SPICE ``.tf``.
 
-    From an independent source, named by its path such as ``V1``, to an output: a net's
-    voltage, over the ground or over the net `reference` names, or a voltage source's
-    current, such as ``V2:current``. It computes the gain, the output per volt or ampere
-    of the source, the resistance the source sees, and the resistance the output sees
-    with the source at its level: a voltage source a short, a current source open.
+    Evaluates the linearized transfer relationship from an independent `source` (such
+    as ``V1``) to an `output`, which may be a node voltage (relative to ground or
+    `reference`) or a branch current (such as ``V2:current``). Results report the DC
+    gain, input resistance seen by `source`, and output resistance with `source` set
+    to zero (shorted voltage source or open current source).
 
     Examples:
         >>> TransferFunction("V1", "out").to_json()
@@ -1074,7 +1073,7 @@ class TransferFunction:
     reference: Annotated[str | None, _REFERENCE] = None
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         named: dict[str, JsonValue] = {"source": self.source, "output": self.output}
         if self.reference is not None:
             named["reference"] = self.reference
@@ -1083,14 +1082,13 @@ class TransferFunction:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Noise:
-    """The noise density at an output at each frequency, from every device's noise.
+    """Small-signal noise spectral density at an output across positive frequencies.
 
-    The output is an unknown by name, a voltage such as ``out`` or a current such as
-    ``V1:current``, or a voltage over a `reference` node, for a differential output.
-    Resistances make thermal noise, junctions shot noise, and diodes and transistors
-    with a flicker coefficient flicker noise, as SPICE models them. With a `source`,
-    an independent source such as ``V1``, the gain from its level to the output refers
-    the noise back to it, as an input's noise.
+    The `output` names a circuit unknown (voltage or current), or a differential node
+    voltage when `reference` is provided. Resistors contribute thermal noise, junctions
+    contribute shot noise, and diodes and transistors with flicker coefficients
+    contribute flicker noise per standard SPICE models. When an independent `source` is
+    specified, the transfer gain refers output noise back to an equivalent input noise.
     """
 
     output: Annotated[str, _NON_EMPTY]
@@ -1104,7 +1102,7 @@ class Noise:
     source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -1121,13 +1119,12 @@ class Noise:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class PoleZero:
-    """The poles of the linearized circuit, and the zeros of a transfer function.
+    """Poles of the linearized circuit and optional zeros of a transfer function.
 
-    The circuit is linearized at its operating point, and the transfer function is from
-    a `source` to an `output`, with both set. The poles are the circuit's natural
-    frequencies, the complex frequencies at which its small-signal equations have a
-    solution without any excitation. The output is an unknown by name, or a voltage
-    over a `reference` node.
+    The circuit is linearized at its operating point to compute natural pole
+    frequencies where the homogeneous small-signal system has nontrivial solutions.
+    Setting both `source` and `output` (optionally over `reference`) additionally
+    computes transfer-function zeros.
     """
 
     source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
@@ -1149,7 +1146,7 @@ class PoleZero:
         return self
 
     def to_json(self) -> JsonValue:
-        """The analysis in the engine's format."""
+        """Serializes the analysis into the simulation engine's JSON format."""
         found = {
             "source": self.source,
             "output": self.output,
@@ -1175,7 +1172,7 @@ type Analysis = (
     | PoleZero
     | TransferFunction
 )
-"""Any analysis."""
+"""Union of all supported simulation analysis types."""
 
 _ANALYSIS_TYPES: Final = (
     OperatingPoint,
@@ -1196,30 +1193,26 @@ _ANALYSIS_TYPES: Final = (
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Parallelism:
-    """How a run spreads its own work across the engine's threads.
+    """Multithreaded execution thresholds for distributing work within a single run.
 
-    Each kind of work spreads in tasks of at least its threshold, its least size per
-    task, once it fills such a task for every thread the run may occupy, and stays on
-    the run's own thread for less: the frequencies of a run's small-signal analyses and
-    the right-hand sides of its sensitivities, in tasks of at least
-    `min_solves_per_task`; each group of its device instances, in tasks of at least
-    `min_instances_per_task`, but a linear one's, which are evaluated once a run, for
-    their entries; and the work of its Newton iteration and its transient's step control
-    on each unknown and each stored entry of its matrix, in tasks of at least
-    `min_unknowns_per_task`, in whole chunks of 1,024 its threads take as they free.
-    Each block of its matrix of more than `max_unknowns_per_interior` unknowns is
-    ordered by nested dissection into interiors of at most as many and the separators
-    between them, which factor at once, wherever that costs its elimination fewer
-    multiply-adds than the minimum degree ordering. A run spreads over at most
-    `max_threads` of the engine's threads, the setting `threads` or
-    [`threads`][jolty.simulate.threads], and over all of them by default; a batch runs
-    each run on one thread whenever it has a run for every thread. Each setting left out
-    but `max_threads` takes its break-even on the threads the run may occupy,
-    [`BREAK_EVENS`][jolty.plan.BREAK_EVENS]. Every result is the same bits however the
-    work is split, and no setting but `max_unknowns_per_interior` changes any: that one
-    orders the factorization's operations otherwise, so results agree with those of
-    another to within its rounding, as they do on another number of threads where its
-    default dissects a block.
+    Each workload splits into parallel tasks of at least its configured minimum size
+    once enough work exists to occupy every available thread; smaller workloads run on
+    the calling thread. Small-signal frequency sweeps and sensitivity right-hand sides
+    partition by `min_solves_per_task`. Nonlinear device groups partition by
+    `min_instances_per_task`, while linear devices evaluate once per run. Newton
+    iteration and transient step control partition unknowns and matrix entries by
+    `min_unknowns_per_task` in dynamic chunks of 1,024. Matrix blocks exceeding
+    `max_unknowns_per_interior` use nested dissection with parallel separator
+    factorization whenever elimination requires fewer multiply-adds than minimum-degree
+    ordering.
+
+    A single run uses at most `max_threads` worker threads, defaulting to the global
+    [`threads`][jolty.simulate.threads] limit; batches run each simulation on one thread
+    whenever runs saturate available threads. Any omitted threshold takes its measured
+    thread-count break-even from [`BREAK_EVENS`][jolty.plan.BREAK_EVENS]. All settings
+    except `max_unknowns_per_interior` produce bit-identical results regardless of
+    partitioning. Changing `max_unknowns_per_interior` reorders factorization
+    operations, so results agree within floating-point rounding.
 
     Examples:
         >>> Parallelism(min_solves_per_task=16).to_json()
@@ -1235,7 +1228,7 @@ class Parallelism:
     max_unknowns_per_interior: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
 
     def to_json(self) -> dict[str, JsonValue]:
-        """The settings in the engine's format, without those left to defaults."""
+        """Serializes configured parallelism overrides into JSON, omitting defaults."""
         values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
 
@@ -1247,9 +1240,11 @@ DEFAULTS: Final[Mapping[str, float]] = MappingProxyType(
         if isinstance(value, int | float) and not isinstance(value, bool)
     }
 )
-"""The engine's default of each numerical option of [`Options`][jolty.plan.Options], by
-name, SPICE's: what an option left unset takes, as the engine defines it; those of its
-[`Parallelism`][jolty.plan.Parallelism] are [`BREAK_EVENS`][jolty.plan.BREAK_EVENS].
+"""Engine default values for numerical fields of [`Options`][jolty.plan.Options].
+
+Values match SPICE defaults for any omitted option; defaults for
+[`Parallelism`][jolty.plan.Parallelism] thresholds are listed separately in
+[`BREAK_EVENS`][jolty.plan.BREAK_EVENS].
 
 Examples:
     >>> DEFAULTS["charge_tolerance"]
@@ -1259,10 +1254,11 @@ Examples:
 BREAK_EVENS: Final[Mapping[str, tuple[int | None, ...]]] = MappingProxyType(
     {name: tuple(values) for name, values in json.loads(_core.break_evens()).items()}
 )
-"""The break-evens each threshold of [`Parallelism`][jolty.plan.Parallelism] left unset
-takes, as the engine defines them: under ``"threads"``, the numbers of threads they were
-measured on, and under each threshold's name, its break-even on each, none where no size
-measured paid; a run takes the one measured on the most threads it may occupy or fewer.
+"""Measured break-even thresholds for [`Parallelism`][jolty.plan.Parallelism] fields.
+
+The ``"threads"`` entry lists measured thread counts, and each threshold name maps to
+the corresponding break-even sizes (`None` where parallelism never paid off). A run
+selects the entry for the highest measured thread count not exceeding its limit.
 
 Examples:
     >>> BREAK_EVENS["threads"]
@@ -1272,11 +1268,11 @@ Examples:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Options:
-    """Numerical settings; each one left out takes the engine's default, SPICE's own.
+    """Numerical solver options, defaulting omitted fields to SPICE engine defaults.
 
-    Tolerances are in SI base units: volts, amperes and coulombs. The `parallelism`
-    says how a run spreads its own work across threads, which changes no result but
-    for the last digits its dissected factorization's order of operations produces.
+    Tolerances use SI base units: volts, amperes, and coulombs. The `parallelism` field
+    configures thread distribution without altering numerical results beyond rounding
+    differences from dissected factorization order.
 
     Examples:
         >>> Options(gmin=1e-15).to_json()
@@ -1295,22 +1291,22 @@ class Options:
     truncation_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
     max_memory: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
     profile: Annotated[bool | None, _boolean(optional=True)] = None
-    """Whether a transient measures where its time goes, into its statistics' profile;
-    it changes no other result."""
+    """Flag enabling transient timing profiles without altering simulation results."""
     parallelism: Annotated[Parallelism, _model(Parallelism, "a Parallelism")] = field(
         default_factory=Parallelism
     )
     nodesets: Annotated[
         Mapping[str, Quantity], _voltage_map("nodesets", "a nodeset")
     ] = field(default_factory=dict)
-    """The voltage each net named, by path, is held at while an operating point is
-    first solved from zero, then released and solved again from there, as SPICE's
-    ``.nodeset``: a guess that leads it to one solution of several. A net that voltage
-    sources and inductors join to the ground, or to a net named before it, is left to
-    them."""
+    """Initial voltage guesses keyed by net path for operating-point convergence.
+
+    Matches SPICE ``.nodeset``: named nets are held at their target voltages during an
+    initial DC solve from zero, then released for the final solve. Nets rigidly tied by
+    voltage sources or inductors to ground or an earlier net follow those constraints.
+    """
 
     def to_json(self) -> dict[str, JsonValue]:
-        """The options in the engine's format, without those left to defaults."""
+        """Serializes configured solver options into engine JSON, omitting defaults."""
         values: dict[str, JsonValue] = {
             setting.name: getattr(self, setting.name)
             for setting in fields(self)
@@ -1328,30 +1324,27 @@ class Options:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Conditions:
-    """What a simulation runs its circuit at.
+    """Operating conditions applied during a single circuit simulation run.
 
-    A Monte Carlo sample and a corner each run at conditions of their own.
+    Monte Carlo samples and plan corners each execute with dedicated condition sets.
     """
 
     temperature: Annotated[float, _real()]
-    """The temperature, in kelvins."""
+    """Simulation temperature in kelvins."""
     process: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
-    """The process corner of a foundry's devices, such as ``ss``, its kit's typical one
-    unless set."""
+    """Foundry process corner such as ``ss``, defaulting to the kit typical corner."""
     overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
-    """The parameters that replace the circuit's, by instance path, then by parameter
-    path, such as ``waveform.dc``, in SI base units."""
+    """SI base-unit parameter overrides keyed by instance path and parameter path."""
     mismatch: Annotated[int | None, _seed("mismatch", optional=True)] = None
-    """The seed a foundry's devices draw their kit's mismatch from, if they draw it."""
+    """Optional 64-bit seed controlling foundry device mismatch draws."""
 
 
 @stdlib_dataclass(frozen=True, slots=True, init=False)
 class Corner:
-    """Conditions a plan also runs its analyses at.
+    """Alternative operating condition evaluated alongside nominal plan conditions.
 
-    A corner holds a temperature and a foundry's process corner, the plan's unless set,
-    and arguments to the build script's ``build()``, which builds the circuit again with
-    them, such as a lower supply voltage.
+    A corner may override temperature, foundry process corner, and keyword arguments
+    passed to ``build()`` to rebuild the circuit (for example, at a lower supply).
 
     Examples:
         >>> from jolty.units import V, celsius
@@ -1373,10 +1366,10 @@ class Corner:
         process: str | None = None,
         **arguments: object,
     ) -> None:
-        """A corner at `temperature` and `process`, building with `arguments`.
+        """Initializes a corner at `temperature` and `process` with build `arguments`.
 
         Raises:
-            DimensionError: When `temperature` has another dimension than temperature.
+            DimensionError: When `temperature` does not have temperature dimension.
             ValidationError: When `temperature` is not a finite `Quantity` or `process`
                 is not a non-empty string.
         """
@@ -1405,13 +1398,13 @@ class Corner:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class MonteCarlo:
-    """Samples of the circuit's tolerances, each a run of the plan's analyses.
+    """Random tolerance sampling specification across all plan analyses and corners.
 
-    Each sample runs at the plan's own conditions and at each of its corners, on the
-    same parts wherever the corner's circuit holds the same toleranced parameters, and
-    a requirement's verdict on it is its worst there. A `seed` draws the same samples
-    from the same circuit: sample `i` from the seed and `i` alone, as the engine draws
-    it. As variants, sample `i` is run `i`.
+    Each sample executes at nominal plan conditions and at every corner, reusing the
+    same drawn device values whenever a corner shares identical toleranced parameters.
+    Requirement verdicts for a sample take the worst outcome across all conditions. Each
+    sample index `i` derives deterministically from `seed` and `i` alone, matching run
+    index `i` when used as variants.
     """
 
     samples: Annotated[
@@ -1426,11 +1419,11 @@ class MonteCarlo:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Variant:
-    """The values one run of a batch takes: numbers and a temperature.
+    """Parameter overrides and optional temperature for a single batch run.
 
-    The numbers replace parameters of devices, by instance path then by parameter path,
-    such as ``waveform.dc``, in SI base units, as a simulation's overrides do; the
-    temperature is the simulation's unless set.
+    Parameter overrides map instance paths to parameter paths (such as ``waveform.dc``)
+    in SI base units, and `temperature` defaults to the simulation temperature when
+    unset.
 
     Examples:
         >>> from jolty.units import celsius
@@ -1449,7 +1442,7 @@ class Variant:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Explicit:
-    """Runs at listed values, run `i` at the variant `i`.
+    """Explicit sequence of variant runs, where run `i` uses variant `i`.
 
     Examples:
         >>> from jolty.units import celsius
@@ -1472,11 +1465,11 @@ class Explicit:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Axis:
-    """What one axis of a grid steps, and its values in order.
+    """Single sweep axis of a grid defining the swept target and ordered values.
 
-    It steps a number of a device's parameters, named by the instance's path and the
-    parameter's, such as ``R1`` and ``resistance``, its values in SI base units in the
-    dimension of the first; or the temperature, with neither named.
+    An axis sweeps either a device parameter (identified by `instance` and `parameter`
+    paths, using SI base units of the first value's dimension) or temperature when both
+    `instance` and `parameter` are `None`.
 
     Examples:
         >>> from jolty.units import celsius, kohm
@@ -1492,14 +1485,14 @@ class Axis:
 
     @classmethod
     def temperature(cls, values: Sequence[Quantity]) -> Axis:
-        """The axis that steps the temperature through `values`."""
+        """Builds a temperature sweep `Axis` across `values`."""
         return cls(None, None, values)
 
     def numbers(self) -> list[float]:
-        """The values in SI base units: kelvins for the temperature.
+        """Converts axis values into SI base-unit floats, using kelvins for temperature.
 
         Raises:
-            DimensionError: When a value is not of the axis's dimension.
+            DimensionError: When any value does not match the axis dimension.
         """
         dimension = TEMPERATURE if self.instance is None else self.values[0].dimension
         return [value.to(dimension, "an axis's value") for value in self.values]
@@ -1507,12 +1500,11 @@ class Axis:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Grid:
-    """Runs on a grid: every combination of its axes' values, the last axis fastest.
+    """Cartesian product of parameter and temperature axes varying last axis fastest.
 
-    Run `i` takes, from the last axis back, the value of each axis at `i` modulo its
-    length, `i` then divided by it, as digits in mixed radix. Each line along the last
-    axis is a chain of warm runs when `warm`: each run of it starts from the operating
-    point of the one before, as a DC sweep's levels do.
+    Run index `i` selects values from the last axis backward using mixed-radix indexing.
+    When `warm` is true, each line along the last axis forms a warm-start chain where
+    every run starts from the preceding operating point, mirroring a DC sweep.
 
     Examples:
         >>> from jolty.units import celsius, kohm
@@ -1532,11 +1524,11 @@ class Grid:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Product:
-    """Every run of `first` at every run of `second`.
+    """Cartesian product combining every run of `first` with every run of `second`.
 
-    Run `i` is run `i // len(second)` of `first`, then run `i % len(second)` of
-    `second`, whose values replace those of `first` where both hold one, so corners,
-    samples and a sweep make one batch. Its chains are those of `second`.
+    Run `i` pairs run ``i // len(second)`` of `first` with run ``i % len(second)`` of
+    `second`, letting `second` override overlapping entries so corners, samples, and
+    sweeps compose into one batch. Warm-start chains follow those of `second`.
     """
 
     first: Annotated[Variants, BeforeValidator(_check_product_part)]
@@ -1544,13 +1536,14 @@ class Product:
 
 
 type Variants = MonteCarlo | Grid | Explicit | Product
-"""The values of many runs of one circuit, each a pure function of the run's index."""
+"""Union of variant specifications mapping run indices to parameter overrides."""
 
-rebuild_dataclass(Product)  # ty: ignore[invalid-argument-type] - @pydantic.dataclasses.dataclass attaches __pydantic_complete__ at runtime
+# @pydantic.dataclasses.dataclass attaches __pydantic_complete__ at runtime.
+rebuild_dataclass(Product)  # ty: ignore[invalid-argument-type]
 
 
 def runs(variants: Variants) -> int:
-    """How many runs `variants` make.
+    """Computes the total number of runs generated by `variants`.
 
     Examples:
         >>> from jolty.units import celsius
@@ -1571,15 +1564,13 @@ def runs(variants: Variants) -> int:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class WorstCase:
-    """Each requirement at the extremes of the circuit's tolerances that worsen it.
+    """Tolerance-corner analysis evaluating each requirement at worsening extremes.
 
-    At the plan's own conditions and at each corner, a run per toleranced parameter,
-    moved a `step` of its tolerance, finds which way each requirement's value moves with
-    it. Then, for each bound of each requirement, every parameter goes to the extreme of
-    its tolerance that moves the value toward the bound, and a lot's shared spread to
-    the extreme its parts move it toward together, as PSpice's worst-case analysis sets
-    them, and the requirement is judged there. A normal tolerance's extreme is its three
-    standard deviations.
+    At nominal conditions and every corner, one perturbed run per toleranced parameter
+    (offset by `step` of its tolerance) determines each requirement's sensitivity sign.
+    For every requirement bound, each parameter and shared lot spread moves to the
+    extreme pushing the requirement toward that bound, following PSpice worst-case
+    conventions. Normal tolerances use three standard deviations as their extremes.
     """
 
     step: Annotated[float, BeforeValidator(_check_worst_case_step)] = 0.1
@@ -1587,15 +1578,14 @@ class WorstCase:
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Characterized:
-    """A logic model characterized from a component's own circuit, at `supply`.
+    """Logic timing model characterized from a component circuit at `supply`.
 
-    The component's ports are its inputs, its outputs, one supply and one ground. Its
-    timing is measured over a grid of input transitions, `slews` times the cell's own
-    output transition, and of output loads, `fanouts` times its mean input capacitance.
-    Each run, `spot_checks` of the instances the scope matches, drawn with `seed`, are
-    simulated again at their circuit's fidelity, and each of their outputs' changes must
-    lie within the model's measured error, plus `tolerance` times its mean delay, of the
-    model's.
+    The target component exposes input ports, output ports, one supply, and one ground.
+    Characterization sweeps input transitions (`slews` times nominal output slew) and
+    capacitive loads (`fanouts` times mean input capacitance). On each run,
+    `spot_checks` matched instances selected using `seed` re-simulate at transistor
+    level and validate output transitions against measured error plus `tolerance` times
+    mean delay.
 
     Examples:
         >>> from jolty.units import V
@@ -1628,42 +1618,38 @@ TIGHT: Final = Options(
     voltage_tolerance=ngspice.VOLTAGE_TOLERANCE,
     current_tolerance=ngspice.CURRENT_TOLERANCE,
 )
-"""jolty's options as tight as the ones [`jolty.spice.ngspice`][jolty.spice.ngspice]
-sets for ngspice, which the comparisons of the two run with.
+"""Strict solver options matching the tolerances configured for ngspice comparisons.
 
-The charge tolerance is both engines' default, 1e-14 C, as both read it alike: the least
-charge the relative tolerance is taken of, so a charge is held to 1e-20 C at least."""
+Matches [`jolty.spice.ngspice`][jolty.spice.ngspice] relative, voltage, and current
+tolerances while keeping the shared 1e-14 C default charge tolerance (at least 1e-20 C
+absolute accuracy).
+"""
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Plan:
-    """Named analyses to run on a circuit, the options they share, and its conditions.
+    """Named analyses, shared solver options, and operating conditions for a circuit.
 
-    Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
-    names its results too. The circuit's devices are simulated at `temperature`, 27 °C
-    unless set, a foundry's devices at its `process` corner, its kit's typical unless
-    set, then at each of the `corners`, each named by an identifier too, on the
-    samples of a `monte_carlo` analysis, on the runs of its `variants`, and at the
-    extremes of a `worst_case` analysis. The samples and the variants each run at the
-    plan's own conditions and at every corner, as one batch of runs per circuit.
+    Each analysis uses a Python identifier key (such as ``step`` or ``bode``) that also
+    names its results. Analyses run at `temperature` (defaulting to 27 °C) and `process`
+    (defaulting to the foundry kit typical corner), then repeat across all named
+    `corners`. Optional `monte_carlo`, `variants`, and `worst_case` configurations also
+    execute across nominal and corner conditions, running one batch per distinct
+    circuit.
 
-    Its `fidelity` maps scopes, patterns of instance paths such as ``adder/*``, where
-    ``*`` matches within a level of the hierarchy and ``**`` across levels, to the
-    logic models characterized for the component instances they match; an instance
-    within another that a scope matches takes the outer one's model.
+    The `fidelity` mapping binds instance path scopes (such as ``adder/*``, where ``*``
+    matches one hierarchy level and ``**`` spans levels) to characterized logic models.
+    Nested instances inside a matched scope inherit the outer scope's model.
 
-    Every result holds the circuit's unknowns. Its `record` names the instances whose
-    detail the results keep besides, by path or by patterns written as scopes are, where
-    a pattern after ``!`` takes back what the patterns before it named, the last that
-    matches an instance deciding, as in a ``.gitignore``: ``["X1/**", "!X1/bias/**"]``
-    records every instance within ``X1`` but its bias network, ``["**"]`` every
-    instance, and ``[]``, as when the record is left out, none. A device recorded keeps
-    its terminals' currents and charges, its derivatives and its variables; a component
-    instance or a logic device recorded keeps its terminals' currents and charges, each
-    the sum of the device terminals behind it. An analysis that records
-    ([`Recorded`][jolty.plan.Recorded]) and names a record of its own keeps that one
-    in place of the plan's, and an operating point and a transient also record the
-    instances rated for a current or a power, whose ratings the checks hold them to.
+    Every analysis records circuit unknowns, while `record` selects additional devices
+    using gitignore-style patterns where ``!`` excludes earlier matches and the last
+    match wins. For example, ``["X1/**", "!X1/bias/**"]`` records ``X1`` excluding its
+    bias network, ``["**"]`` records every instance, and ``[]`` or `None` records none.
+    Recorded primitive devices store terminal currents, charges, derivatives, and state
+    variables, while recorded components and logic devices sum terminal currents and
+    charges across enclosed devices. Any [`Recorded`][jolty.plan.Recorded] analysis
+    specifying a local `record` overrides the plan setting; operating points and
+    transients always record current- or power-rated instances for rating checks.
     """
 
     analyses: Annotated[
@@ -1726,28 +1712,31 @@ class Plan:
     ] = None
 
     def process_at(self, corner: Corner | None = None) -> str | None:
-        """The process corner of the plan's own run, or of `corner`'s.
+        """Returns the active process corner for nominal execution or for `corner`.
 
-        None stands for the typical corner of the kit of each foundry's device.
+        Returns `None` to indicate each foundry kit's typical process corner.
         """
         if corner is not None and corner.process is not None:
             return corner.process
         return self.process
 
     def temperature_at(self, corner: Corner | None = None) -> Quantity | None:
-        """The temperature of the plan's own run, or of `corner`'s; None for 27 °C."""
+        """Returns the active temperature for nominal execution or for `corner`.
+
+        Returns `None` to indicate the default 27 °C simulation temperature.
+        """
         if corner is not None and corner.temperature is not None:
             return corner.temperature
         return self.temperature
 
 
 def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
-    """Frequencies from `start` to `stop`, `per_decade` of them spaced evenly a decade.
+    """Generates logarithmically spaced frequencies from `start` to `stop`.
 
-    The `k`th of `n` is `start · r^k`, with `r = (stop / start)^(1/n)`, computed in
-    decimal arithmetic to `DECADE_DIGITS` digits, step after step, and only then rounded
-    to the nearest float, so that every platform finds the same frequencies, where its
-    own `log10` and `pow` round differently.
+    Spans `per_decade` points per decade using `start · r^k` with
+    `r = (stop / start)^(1/n)`. Steps compute sequentially in `DECADE_DIGITS`-digit
+    decimal arithmetic before rounding to the nearest float so results match across
+    platforms regardless of native `log10` or `pow` rounding.
 
     Examples:
         >>> from jolty.units import Hz
@@ -1774,7 +1763,7 @@ def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
 
 
 def linear(start: Quantity, stop: Quantity, points: int) -> list[Quantity]:
-    """`points` quantities evenly spaced from `start` to `stop`, both included.
+    """Generates `points` evenly spaced quantities from `start` to `stop` inclusive.
 
     Examples:
         >>> from jolty.units import V

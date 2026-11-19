@@ -1,19 +1,20 @@
 # Copyright 2026 Maxence Faldor
-"""Schematic layout: where each instance of a component goes, and how its nets run.
+"""Schematic layout for component instances, port flags, and routed signal nets.
 
-The layout follows the conventions engineers read. Signal flows left to right: each
-instance takes a column by its distance from the sources, or from the component's first
-signal port when it has none, and a two-terminal device between two signal nets lies
-across its column, its earlier net on the left. A device between a signal net and the
-ground hangs below the net, and one between a signal net and a supply stands above it.
-Ground and supply nets draw no wires: a symbol marks each of their pins.
+Layout follows standard schematic conventions with signal flow from left to right.
+Each instance is placed in a column according to its graph distance from independent
+sources, or from the first signal port when no sources exist. Two-terminal devices
+between two signal nets lie horizontally across their column with the earlier net on
+the left. Devices between a signal net and ground hang below the net, while devices
+between a signal net and a supply stand above the net. Ground and supply nets draw no
+wires and instead display a rail symbol at each pin.
 
-Every other net is routed on a grid, pin by pin, by an A* search that charges for each
-step, each bend and each crossing. Wires of two nets may cross at right angles, never
-run along each other or meet at a point, so a wire touches only its own net. A net the
-router cannot route gets a label at each pin instead, as a draftsman would draw it.
+All other nets are routed pin by pin on an integer grid using A* search that penalizes
+each step, bend, and crossing. Wires from distinct nets may cross at right angles but
+never run collinearly or share an endpoint, keeping every wire isolated to a single
+net. Any net the router cannot connect receives a net label at each pin.
 
-Coordinates are grid units, one pin pitch each, with y growing upward.
+Coordinates use grid units equal to one pin pitch, with the y-axis increasing upward.
 
 Examples:
     >>> from jolty import Builder, Role, circuit, component, devices
@@ -47,26 +48,25 @@ from typing import Final
 from jolty import ir
 
 type Point = tuple[int, int]
-"""A point of the grid."""
+"""Grid coordinate pair ``(x, y)`` in pin-pitch units."""
 
 type Segment = tuple[Point, Point]
-"""A straight, horizontal or vertical piece of wire."""
+"""Straight horizontal or vertical wire segment between two grid points."""
 
 _COLUMN_GAP: Final = 5
-"""Grid units between the widest symbols of neighboring columns, for wires to run."""
+"""Grid units between the widest symbols of neighboring columns for wire routing."""
 
 _ROW_GAP: Final = 4
-"""Grid units between the lowest pin of a row and the highest of the next, for the
-rails' symbols and for wires to run."""
+"""Grid units between adjacent rows for rail symbols and horizontal wire routing."""
 
 _LANE_GAP: Final = 2
-"""Grid units between the widest symbols of neighboring lanes of a column."""
+"""Grid units between the widest symbols of neighboring lanes within a column."""
 
 _FLAG_GAP: Final = 4
-"""Grid units between the outermost pins and the port flags beyond them."""
+"""Grid units between the outermost pins and port flags at sheet edges."""
 
 _MARGIN: Final = 4
-"""Grid units around the drawing where wires may run."""
+"""Grid units reserved around the schematic boundary for wire routing."""
 
 _STEP: Final = 1
 _BEND: Final = 3
@@ -75,14 +75,14 @@ _CROSSING: Final = 4
 
 @dataclass(frozen=True, slots=True)
 class Shape:
-    """A symbol's geometry in its own frame: its pins, and what its body covers.
+    """Symbol geometry in local coordinates, specifying pin positions and body bounds.
 
-    The frame is that of the symbol upright, with its first terminal at the top.
+    Local coordinates represent the symbol upright with its first terminal at the top.
     """
 
     pins: Mapping[str, Point]
     body: tuple[Point, Point]
-    """The lower-left and upper-right corners of the body, which no wire crosses."""
+    """Lower-left and upper-right corners of the symbol body blocked from routing."""
 
 
 _TWO_TERMINAL: Final = {
@@ -93,7 +93,7 @@ _TWO_TERMINAL: Final = {
     "voltage_source": ("positive", "negative"),
     "current_source": ("positive", "negative"),
 }
-"""Each two-terminal model's terminals, the first at the top of the upright symbol."""
+"""Terminal pairs for each two-terminal device model, with the first terminal on top."""
 
 _CONTROLLED: Final = frozenset(
     {"voltage_controlled_voltage_source", "voltage_controlled_current_source"}
@@ -103,7 +103,7 @@ _SOURCES: Final = frozenset({"voltage_source", "current_source"})
 
 
 def _shape(instance: ir.Instance, circuit: ir.Circuit) -> Shape:
-    """The shape of the symbol that draws `instance`."""
+    """Builds the local symbol `Shape` representing `instance`."""
     match instance.of:
         case ir.DeviceOf(model=model) if model in _TWO_TERMINAL:
             top, bottom = _TWO_TERMINAL[model]
@@ -125,17 +125,16 @@ def _shape(instance: ir.Instance, circuit: ir.Circuit) -> Shape:
 
 
 _CHARACTER: Final = 0.2
-"""The width of a character of a box's labels, in grid units."""
+"""Estimated character width for box labels, in grid units."""
 
 
 def _box(ports: list[tuple[str, ir.Role]], name: str, instance: str) -> Shape:
-    """A box with signal ports on its sides, supplies on top and grounds below.
+    """Builds a box symbol with side signals, top supplies, and bottom grounds.
 
-    Inputs go on the left and outputs on the right, and other signals fill the sides in
-    turn, the left first, to balance them. The box is wide enough to write the
-    component's function, and its arguments below it, between the names of its side
-    ports, and to write the instance's name between its upper-left corner and its first
-    supply.
+    Input ports go on the left, output ports on the right, and remaining signal ports
+    balance both sides starting on the left. The box width accommodates the component
+    title and arguments between side-port labels, as well as the instance name to the
+    left of the first supply pin.
     """
     inputs = [port for port, role in ports if role is ir.Role.INPUT]
     outputs = [port for port, role in ports if role is ir.Role.OUTPUT]
@@ -165,7 +164,7 @@ def _box(ports: list[tuple[str, ir.Role]], name: str, instance: str) -> Shape:
 
 
 def split_name(name: str) -> tuple[str, str]:
-    """A component's function and its arguments, from its name.
+    """Splits a component `name` into its base function name and formatted arguments.
 
     Examples:
         >>> split_name("divider[ratio=0.5,load=1000.0]")
@@ -179,16 +178,15 @@ def split_name(name: str) -> tuple[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Orientation:
-    """How a symbol stands on the sheet, from upright with its first terminal on top."""
+    """Symbol rotation and vertical flip relative to the upright reference frame."""
 
     turns: int = 0
-    """Quarter turns counterclockwise: 1 lays a two-terminal symbol across with its
-    first terminal on the left."""
+    """Counterclockwise quarter turns; 1 places the first terminal on the left."""
     flipped: bool = False
-    """Whether the symbol is flipped upside down before it turns."""
+    """Flag indicating a vertical flip applied before quarter-turn rotation."""
 
     def apply[N: (int, float)](self, point: tuple[N, N]) -> tuple[N, N]:
-        """Where `point` of the upright symbol goes."""
+        """Transforms a local symbol `point` by flip and rotation."""
         x, y = (point[0], -point[1]) if self.flipped else point
         match self.turns % 4:
             case 0:
@@ -203,7 +201,7 @@ class Orientation:
 
 @dataclass(frozen=True, slots=True)
 class Placed:
-    """An instance placed on the sheet."""
+    """Component or device instance placed on the schematic grid."""
 
     name: str
     instance: ir.Instance
@@ -213,16 +211,16 @@ class Placed:
     column: int
 
     def at[N: (int, float)](self, point: tuple[N, N]) -> tuple[N, N]:
-        """Where `point` of the symbol's own frame lands on the sheet."""
+        """Transforms a local symbol `point` into schematic sheet coordinates."""
         x, y = self.orientation.apply(point)
         return self.origin[0] + x, self.origin[1] + y
 
     def pin(self, terminal: str) -> Point:
-        """Where `terminal`'s pin is on the sheet."""
+        """Returns the schematic sheet coordinates of the `terminal` pin."""
         return self.at(self.shape.pins[terminal])
 
     def body(self) -> tuple[Point, Point]:
-        """The lower-left and upper-right corners of the body on the sheet."""
+        """Returns the lower-left and upper-right body corners on the sheet."""
         corners = [self.at(corner) for corner in self.shape.body]
         xs, ys = [x for x, _ in corners], [y for _, y in corners]
         return (min(xs), min(ys)), (max(xs), max(ys))
@@ -230,17 +228,17 @@ class Placed:
 
 @dataclass(frozen=True, slots=True)
 class Flag:
-    """A signal port of the drawn component, at the edge of the sheet."""
+    """Signal port flag placed at the left or right edge of the schematic sheet."""
 
     name: str
     point: Point
     side: int
-    """-1 on the left, pointing in; 1 on the right, pointing out."""
+    """Horizontal edge indicator: -1 for left (input) or 1 for right (output)."""
 
 
 @dataclass(slots=True)
 class Net:
-    """A net as drawn: its pins, and its wires or, failing them, its labels."""
+    """Routed or labeled schematic net with pins, wire segments, and junctions."""
 
     name: str
     role: ir.Role
@@ -248,12 +246,12 @@ class Net:
     segments: list[Segment] = field(default_factory=list)
     junctions: list[Point] = field(default_factory=list)
     labeled: bool = False
-    """Whether the router found no wiring, so each pin carries the net's name."""
+    """Flag indicating that routing failed and each pin displays a net label."""
 
 
 @dataclass(frozen=True, slots=True)
 class Layout:
-    """A component laid out: its instances, its port flags and its nets."""
+    """Completed schematic layout containing placed instances, port flags, and nets."""
 
     component: str
     instances: tuple[Placed, ...]
@@ -261,7 +259,7 @@ class Layout:
     nets: tuple[Net, ...]
 
     def bounds(self) -> tuple[Point, Point]:
-        """The lower-left and upper-right corners of everything drawn."""
+        """Returns lower-left and upper-right corners bounding all drawn elements."""
         points = [point for net in self.nets for point in net.pins]
         points += [flag.point for flag in self.flags]
         for placed in self.instances:
@@ -274,10 +272,10 @@ class Layout:
 
 
 def layout(circuit: ir.Circuit, name: str) -> Layout:
-    """The layout of the component `name` of `circuit`.
+    """Computes the schematic `Layout` for component `name` in `circuit`.
 
     Raises:
-        KeyError: When the circuit has no component named `name`.
+        KeyError: When `circuit` contains no component named `name`.
     """
     component = circuit.components[name]
     roles = _roles(circuit, component)
@@ -292,11 +290,11 @@ def layout(circuit: ir.Circuit, name: str) -> Layout:
 
 
 def _roles(circuit: ir.Circuit, component: ir.Component) -> dict[str, ir.Role]:
-    """The role each net of `component` plays, by name, which sets how it is drawn.
+    """Determines the electrical role of each net in `component` for layout styling.
 
-    A port of the component sets its net's role, an input or an output a signal. Any
-    other net is a ground when a port of a component placed in it is a ground on that
-    net, else a supply when one is a supply there, and else a signal.
+    Declared component ports assign their net roles, with inputs and outputs treated as
+    signal nets. Any remaining net is classified as ground if connected to a ground
+    port, otherwise supply if connected to a supply port, and signal otherwise.
     """
     found: dict[str, set[ir.Role]] = {}
     for instance in component.instances:
@@ -314,9 +312,9 @@ def _roles(circuit: ir.Circuit, component: ir.Component) -> dict[str, ir.Role]:
 
 
 def _rail(roles: set[ir.Role]) -> ir.Role:
-    """The role a net plays for the ports on it: ground, then supply, then signal.
+    """Reduces a set of port roles to the net layout role: ground, supply, or signal.
 
-    A signal's direction plays no part.
+    Signal direction (input or output) is normalized to a generic signal role.
     """
     for role in (ir.Role.GROUND, ir.Role.SUPPLY):
         if role in roles:
@@ -329,12 +327,11 @@ def _signal_nets(instance: ir.Instance, roles: Mapping[str, ir.Role]) -> set[str
 
 
 def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str, int]:
-    """Each instance's column: its distance, in shared signal nets, from the start.
+    """Assigns each instance a left-to-right column index by signal-net graph distance.
 
-    Signal starts at the independent sources; in a component without them, at the
-    instances on its input ports, or else on its first signal port, its input by
-    convention; failing those, at its first instance. The search starts again from the
-    first instance it has not reached.
+    Breadth-first traversal starts from independent sources, falling back to instances
+    on input ports, then instances on the first signal port, and finally the first
+    instance. Disconnected subgraphs restart traversal from the next unreached instance.
     """
     instances = component.instances
     on_net: dict[str, list[str]] = {}
@@ -384,14 +381,13 @@ def _rows(
     roles: Mapping[str, ir.Role],
     columns: Mapping[str, int],
 ) -> dict[str, int]:
-    """Each instance's row within its column, ordered to keep wires short.
+    """Orders instances into vertical rows within each column to minimize wire length.
 
-    Instances start in placement order, then each column sorts by the mean row of the
-    other instances on its signal nets, net by net, a few times over: an instance that
-    shares two nets with another is pulled toward it twice. An instance that shares no
-    signal net, such as a supply's source, sinks to the bottom of its column. Each net
-    keeps the sum of its instances' rows, so a sweep reads each pin a bounded number of
-    times beside sorting each column.
+    Instances start in placement order and undergo four barycenter sweeps across
+    columns. Each column sorts instances by the mean row of connected neighbors across
+    shared signal nets, weighting multiple shared nets proportionally. Instances with no
+    shared signal nets, such as supply sources, sink to the bottom of their column.
+    Running row sums per net keep each sweep linear in pin count aside from sorting.
     """
     nets = {instance.name: _signal_nets(instance, roles) for instance in instances}
     stacks: dict[int, list[str]] = {}
@@ -408,7 +404,7 @@ def _rows(
             counts[net] = counts.get(net, 0) + 1
 
     def barycenter(name: str) -> tuple[bool, float]:
-        """An instance's sort key: whether it is alone, then its neighbors' mean row."""
+        """Computes the sort key pairing isolation status with neighbors' mean row."""
         others = sum(counts[net] - 1 for net in nets[name])
         if not others:
             return True, rows[name]
@@ -432,12 +428,12 @@ def _place(
     columns: Mapping[str, int],
     rows: Mapping[str, int],
 ) -> tuple[Placed, ...]:
-    """Places every instance: its column, its row and lane in it, and its orientation.
+    """Places every instance with its column, row, lane, origin, and orientation.
 
-    Within a column, devices that hang from the same signal net to a rail, one after
-    the other, share a row side by side, each in a lane of its own, so their net runs
-    straight across them. Every instance stands on its row's line, level across the
-    columns, and rows lie as far apart as their symbols need.
+    Within a column, consecutive devices hanging from the same signal net to a rail
+    share a row in adjacent lanes so the signal net runs horizontally across them. Every
+    instance aligns to its row baseline across columns, and row spacing accommodates the
+    tallest symbols above and below each baseline.
     """
     earliest: dict[str, int] = {}
     for instance in instances:
@@ -497,7 +493,7 @@ def _lines(
     extents: Mapping[str, tuple[Point, Point]],
     anchors: Mapping[str, int],
 ) -> list[int]:
-    """The height of each row's line, the rows spaced by what stands above and below."""
+    """Computes vertical row baseline coordinates from symbol extents and anchors."""
     above: dict[int, int] = {}
     below: dict[int, int] = {}
     for stack in stacks:
@@ -518,10 +514,10 @@ def _anchor(
     orientation: Orientation,
     roles: Mapping[str, ir.Role],
 ) -> int:
-    """The height, in its oriented symbol's frame, at which an instance meets its line.
+    """Computes the local y-offset where an oriented instance aligns to its baseline.
 
-    A device that hangs from a signal net meets it at its pin on that net, any other
-    upright device at its top, and anything else at its center.
+    A rail-hanging device aligns at its signal-net pin, any other upright device aligns
+    at its top extent, and all other instances align at their vertical center.
     """
     hanging = _hanging(instance, roles)
     if hanging is not None:
@@ -536,7 +532,7 @@ def _anchor(
 
 
 def _hanging(instance: ir.Instance, roles: Mapping[str, ir.Role]) -> str | None:
-    """The signal net a two-terminal device hangs from to a rail, if it does."""
+    """Returns the signal net when a two-terminal device connects signal to rail."""
     if (
         not isinstance(instance.of, ir.DeviceOf)
         or instance.of.model not in _TWO_TERMINAL
@@ -554,7 +550,7 @@ def _width(extent: tuple[Point, Point]) -> int:
 
 
 def _extent(symbol: Shape, orientation: Orientation) -> tuple[Point, Point]:
-    """The lower-left and upper-right corners of a symbol's pins and body, oriented."""
+    """Computes oriented lower-left and upper-right bounding corners of `symbol`."""
     points = [
         orientation.apply(point) for point in [*symbol.pins.values(), *symbol.body]
     ]
@@ -565,12 +561,12 @@ def _extent(symbol: Shape, orientation: Orientation) -> tuple[Point, Point]:
 def _orientation(
     instance: ir.Instance, roles: Mapping[str, ir.Role], earliest: Mapping[str, int]
 ) -> Orientation:
-    """How a device stands: upright on a rail, across between two signals.
+    """Determines the schematic orientation for `instance` from its terminal roles.
 
-    A device keeps a terminal on the ground at its bottom and one on a supply at its
-    top: a two-terminal device turns over, and a controlled source flips upside down to
-    keep its control leads on its left. An independent source stands upright. Any other
-    two-terminal device lies across, its terminal on the earlier net on the left.
+    Ground terminals stay at the bottom and supply terminals stay at the top:
+    two-terminal devices rotate 180 degrees, whereas controlled sources flip vertically
+    to keep control leads on the left. Independent sources remain upright, and all other
+    two-terminal devices lie horizontally with the earlier signal net on the left.
     """
     if not isinstance(instance.of, ir.DeviceOf):
         return Orientation()
@@ -589,18 +585,19 @@ def _orientation(
 
 
 def _inverted(top: ir.Role, bottom: ir.Role) -> bool:
-    """Whether a symbol with these roles on its top and bottom is upside down."""
+    """Returns whether top and bottom terminal roles require inverting the symbol."""
     return top is ir.Role.GROUND or bottom is ir.Role.SUPPLY
 
 
 def _flags(
     component: ir.Component, placed: tuple[Placed, ...], roles: Mapping[str, ir.Role]
 ) -> tuple[Flag, ...]:
-    """A flag for each signal port: on the left for an input, on the right otherwise.
+    """Builds edge port flags for signal ports, placing inputs left and outputs right.
 
-    A port declared an input or an output is one; any other signal port is an input
-    when its net reaches no further than the first half of the columns. Its flag stands
-    level with its net's outermost pin on its side, below any flag already there.
+    Explicit input and output roles determine side placement directly, while undirected
+    signal ports go on the left unless their net extends past the horizontal midpoint.
+    Each flag aligns vertically with its net's outermost pin on that side, stepping
+    downward to avoid overlap with earlier flags.
     """
     pins: dict[str, list[tuple[Point, int]]] = {}
     for item in placed:
@@ -656,12 +653,12 @@ def _nets(
 
 
 type _Heading = tuple[int, int] | None
-"""The direction a search last stepped in, or None at its start."""
+"""Last grid step direction during routing search, or `None` at search start."""
 
 type _State = tuple[Point, _Heading]
 
 type _Edge = tuple[Point, Point]
-"""An undirected grid step between two adjacent points, endpoints ordered."""
+"""Undirected grid step between two adjacent points, stored with ordered endpoints."""
 
 
 def _edge(first: Point, second: Point) -> _Edge:
@@ -672,23 +669,22 @@ def _edge(first: Point, second: Point) -> _Edge:
 _DIRECTIONS: Final = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 _JOINED: Final = 3
-"""Wires of a net meeting at a point that make it a junction."""
+"""Minimum incident wire count that turns a non-pin grid point into a junction."""
 
 _JOINED_AT_PIN: Final = 2
-"""Wires of a net meeting at one of its pins that make the pin a junction."""
+"""Minimum incident wire count that turns a pin grid point into a junction."""
 
 
 class _Router:
-    """Routes nets on a grid, keeping each net's wires apart from every other's.
+    """Grid-based A* wire router that keeps distinct nets electrically isolated.
 
-    The grid knows what occupies each point and step: the bodies of symbols, the pins of
-    every net, the steps each net's wires take, the points a wire runs straight through,
-    where other nets may cross it, and the points where a wire bends, branches or ends,
-    which no other net may touch.
+    The routing grid tracks blocked symbol bodies, net pin locations, and claimed wire
+    segments. Straight wire interiors allow orthogonal crossings by other nets, whereas
+    bends, junctions, and endpoints remain exclusive to the owning net.
     """
 
     def __init__(self, nets: Iterable[Net], placed: Iterable[Placed]) -> None:
-        """Prepares a grid around the pins of `nets` and the bodies of `placed`."""
+        """Prepares a routing grid around `nets` pins and `placed` symbol bodies."""
         nets, placed = list(nets), list(placed)
         self.blocked: set[Point] = set()
         corners: list[Point] = [pin for net in nets for pin in net.pins]
@@ -711,7 +707,7 @@ class _Router:
         self.ends: dict[Point, str] = {}
 
     def route(self, net: Net) -> None:
-        """Connects every pin of `net` to its first, or labels the net if it cannot."""
+        """Connects all pins of `net` on the grid, or labels `net` if unroutable."""
         ordered = sorted(set(net.pins))
         tree = {ordered[0]}
         paths: list[list[Point]] = []
@@ -729,10 +725,10 @@ class _Router:
         net.junctions = _junctions(paths, set(net.pins))
 
     def _search(self, name: str, tree: set[Point], pin: Point) -> list[Point] | None:
-        """The cheapest path for the net `name` from any point of its `tree` to `pin`.
+        """Finds the lowest-cost grid path for `name` from any point in `tree` to `pin`.
 
-        The search leaves from the whole tree for the one pin, so its estimate, the
-        distance to the pin, costs the same at each point however large the tree grows.
+        Multi-source A* starts simultaneously from the entire connected `tree`, so the
+        Manhattan heuristic to `pin` stays constant-time regardless of tree size.
         """
 
         def estimate(point: Point) -> int:
@@ -781,13 +777,13 @@ class _Router:
     def _directions(
         self, name: str, point: Point, heading: _Heading
     ) -> Iterable[tuple[int, int]]:
-        """The directions a path may leave `point` in: straight on when crossing."""
+        """Returns step directions from `point`, continuing straight at crossings."""
         if heading is not None and self._crosses(name, point):
             return (heading,)
         return _DIRECTIONS
 
     def _crosses(self, name: str, point: Point) -> bool:
-        """Whether `point` is on a wire of another net, which a path may only cross."""
+        """Returns whether `point` lies on a straight wire of another net."""
         return point in self.through and self.through[point][0] != name
 
     def _open(
@@ -798,7 +794,7 @@ class _Router:
         direction: tuple[int, int],
         pin: Point,
     ) -> bool:
-        """Whether the net `name` may step from `point` to `following`."""
+        """Returns whether net `name` may step from `point` onto `following`."""
         x, y = following
         if not (self.low[0] <= x <= self.high[0] and self.low[1] <= y <= self.high[1]):
             return False
@@ -813,17 +809,17 @@ class _Router:
     def _may_cross(
         self, name: str, point: Point, direction: tuple[int, int], pin: Point
     ) -> bool:
-        """Whether a step in `direction` onto `point` runs along no other wire."""
+        """Returns whether stepping in `direction` onto `point` avoids wire overlap."""
         if not self._crosses(name, point):
             return True
         way = "h" if direction[1] == 0 else "v"
         return self.through[point][1] != way and point != pin
 
     def _claim(self, name: str, path: list[Point]) -> None:
-        """Claims `path` for the net `name`.
+        """Claims grid edges and points along `path` for net `name`.
 
-        A point the path runs straight through, where no wire of the net was before, is
-        one other nets may cross; any other point of the path is the net's alone.
+        Fresh straight interior points remain crossable by orthogonal nets, while bends,
+        branch points, and endpoints are marked exclusive to `name`.
         """
         for first, second in itertools.pairwise(path):
             self.steps[_edge(first, second)] = name
@@ -846,7 +842,7 @@ class _Router:
                 self.ends[point] = name
 
     def _release(self, name: str, path: list[Point]) -> None:
-        """Frees what `path` claimed for the net `name`, which is labeled instead."""
+        """Releases grid edges and points claimed by `path` when `name` uses labels."""
         for first, second in itertools.pairwise(path):
             edge = _edge(first, second)
             if self.steps.get(edge) == name:
@@ -862,7 +858,7 @@ class _Router:
 
 
 def _route(nets: Mapping[str, Net], placed: tuple[Placed, ...]) -> None:
-    """Routes every signal net with two pins or more, the smallest spans first."""
+    """Routes every multi-pin signal net in order of increasing Manhattan span."""
     router = _Router(nets.values(), placed)
     routable = [
         net
@@ -888,7 +884,7 @@ def _path(previous: Mapping[_State, _State], state: _State) -> list[Point]:
 
 
 def _segments(paths: list[list[Point]]) -> list[Segment]:
-    """The straight pieces of `paths`, each from bend to bend."""
+    """Merges collinear steps of `paths` into straight bend-to-bend wire segments."""
     segments: list[Segment] = []
     for path in paths:
         start = path[0]
@@ -902,7 +898,7 @@ def _segments(paths: list[list[Point]]) -> list[Segment]:
 
 
 def _junctions(paths: list[list[Point]], pins: set[Point]) -> list[Point]:
-    """Where three wires of a net meet, or two meet at one of its pins."""
+    """Returns sorted grid points where three wires meet, or two meet at a pin."""
     degree: dict[Point, int] = {}
     for path in paths:
         for first, second in itertools.pairwise(path):

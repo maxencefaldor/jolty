@@ -1,24 +1,24 @@
 # Copyright 2026 Maxence Faldor
-"""Fidelity: logic models characterized from components' circuits, and their contracts.
+"""Logic cell characterization from component circuits and contract verification.
 
-A plan's fidelity maps scopes, patterns of instance paths, to
-[`Characterized`][jolty.plan.Characterized] settings. Each component instance a scope
-matches is simulated as a logic cell characterized from its component's own circuit,
-as a standard cell library characterizes its cells:
+Plan fidelity maps instance-path patterns (scopes) to
+[`Characterized`][jolty.plan.Characterized] settings. Each matched component instance
+is simulated as a logic cell characterized from its underlying circuit, mirroring
+standard-cell library characterization:
 
-- its truth tables, from an operating point at each combination of its inputs;
-- each input's capacitance, from a small-signal response at each combination;
-- for each change of an input that changes an output, the output's delay and
-  transition, from transients over a grid of input transitions and output loads.
+- Truth tables come from DC operating points across all input combinations.
+- Input capacitances come from small-signal AC responses averaged across states.
+- Delays and transitions come from transient sweeps over input slews and output loads.
 
-The grid's scale is the cell's own: its loads are fanouts of its mean input capacitance,
-and its transitions multiples of its outputs' mean transition at a fanout of one. A
-second grid, between the first's points, measures the error of interpolating it.
+Characterization grid scales are derived per cell. Loads are fanout multiples of the
+cell's mean input capacitance, and input transitions are multiples of the mean fanout-1
+output transition time. A secondary midpoint grid measures bilinear interpolation error
+between primary grid points.
 
-Spot checks keep each model honest: each runs the plan again with one sampled instance
-at its circuit's own fidelity, and compares its outputs' changes with the model's. Any
-change further apart than the model's measured error, plus the scope's tolerance of its
-mean delay, violates the contract, and the report says where.
+Spot checks validate each characterized model by re-running the plan with one sampled
+instance restored to its circuit-level implementation and comparing output transitions.
+Any transition differing by more than the measured interpolation error plus the scope's
+relative delay tolerance violates the contract and is reported with details.
 """
 
 import itertools
@@ -41,67 +41,80 @@ from jolty.specs import Verdict
 from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity, format_si
 
 LEVEL_MARGIN: Final = 0.1
-"""How far from its rail, as a fraction of the supply, an output may settle and still
-hold a logic level."""
+"""Maximum normalized distance from a supply rail that still qualifies as a valid logic
+level."""
 
 _PROBE_FREQUENCY: Final = 1.0
-"""The frequency, in hertz, at which an input's capacitance is read: low enough that a
-gate's input is a pure capacitance."""
+"""Small-signal AC probe frequency in hertz used to measure purely capacitive gate
+input impedance."""
 
 _WINDOW: Final = 40.0
-"""How many time constants of the cell's drive a transient waits for an output to
-settle, before it doubles its window."""
+"""Initial transient simulation window expressed as multiples of the cell drive time
+constant."""
 
 _ATTEMPTS: Final = 8
-"""How many times a transient doubles its window before the output is taken never to
-settle."""
+"""Maximum number of window doublings attempted before declaring an output
+unsettled."""
 
 _STEPS: Final = 20
-"""The fewest time steps a transient takes across the faster of an input's edge and the
-output's time constant."""
+"""Minimum number of transient time steps across the faster of the input slew and
+output time constant."""
 
 
 class Arc(ir.FrozenModel):
-    """One timing arc: how an output follows one input changing from one combination.
+    """Single timing arc capturing an output response to one input transition.
 
-    Its tables span the grid of input transitions and output loads.
+    Delay and transition tables span the 2D grid of input slews and capacitive output
+    loads.
     """
 
     input: str
-    before: str = Field(description="Every input's level before the change.")
+    before: str = Field(description="Logic levels of all inputs before the transition.")
     output: str
     delay: tuple[tuple[float, ...], ...] = Field(
-        description="The delay, in seconds: a row per transition, a column per load."
+        description="Propagation delay in seconds, indexed by input slew row and load "
+        "column."
     )
     transition: tuple[tuple[float, ...], ...] = Field(
-        description="The output's transition, in seconds, laid out as the delay."
+        description="Output transition time in seconds, indexed like delay."
     )
 
 
 class Characterization(ir.FrozenModel):
-    """A component characterized as a logic cell."""
+    """Logic cell model characterized from a component's circuit implementation."""
 
     component: str
-    supply: float = Field(description="The supply it was characterized at, in volts.")
-    temperature: float = Field(description="The temperature, in kelvins.")
+    supply: float = Field(
+        description="Supply voltage used for characterization, in volts."
+    )
+    temperature: float = Field(description="Characterization temperature in kelvins.")
     inputs: tuple[str, ...]
-    tables: dict[str, str] = Field(description="Each output's truth table.")
+    tables: dict[str, str] = Field(
+        description="Mapping from output name to truth table."
+    )
     supply_port: str
     ground_port: str
-    input_capacitances: tuple[float, ...] = Field(description="In farads.")
-    slews: tuple[float, ...] = Field(description="The transitions, in seconds.")
-    loads: tuple[float, ...] = Field(description="The loads, in farads.")
+    input_capacitances: tuple[float, ...] = Field(
+        description="Mean small-signal capacitance of each input port, in farads."
+    )
+    slews: tuple[float, ...] = Field(
+        description="Characterization input slew grid, in seconds."
+    )
+    loads: tuple[float, ...] = Field(
+        description="Characterization output load grid, in farads."
+    )
     arcs: tuple[Arc, ...]
     delay_error: float = Field(
-        description="The largest error of an interpolated delay, measured between the "
-        "grid's points, in seconds."
+        description="Maximum interpolated delay error measured at grid midpoints, in "
+        "seconds."
     )
     transition_error: float = Field(
-        description="The largest error of an interpolated transition, in seconds."
+        description="Maximum interpolated transition error measured at grid midpoints, "
+        "in seconds."
     )
 
     def device(self) -> devices.Device:
-        """The logic cell, whose terminals are the component's ports."""
+        """Builds a characterized ``logic_cell`` device matching the component ports."""
         parameters: dict[str, JsonValue] = {
             "inputs": list(self.inputs),
             "outputs": [
@@ -124,16 +137,17 @@ class Characterization(ir.FrozenModel):
         return devices.device("logic_cell", parameters)
 
     def mean_delay(self) -> float:
-        """The mean of every arc's delays, in seconds."""
+        """Computes the mean propagation delay across all timing arcs, in seconds."""
         delays = [value for arc in self.arcs for row in arc.delay for value in row]
         return float(np.mean(delays)) if delays else 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class _Cell:
-    """A component on a test bench, its supply and its inputs held by sources.
+    """Component mounted on a characterization test bench with driven supply and inputs.
 
-    Each output is loaded by a capacitor, or held by a source.
+    Each output is connected either to a capacitive load or to a fixed DC voltage
+    source.
     """
 
     built: ir.Circuit
@@ -151,13 +165,14 @@ class _Cell:
         loads: Sequence[float] = (),
         held: Mapping[int, float] | None = None,
     ) -> Simulation:
-        """The bench elaborated, its inputs at `drives`, its outputs loaded or held.
+        """Builds an elaborated bench simulation with driven inputs and output loads.
 
-        Each input follows its waveform of `drives`, and each output is loaded by its
-        capacitance of `loads`, none unless given, or held at its voltage of `held`.
+        Each input follows the corresponding waveform in `drives`. Each output is loaded
+        by the capacitance in `loads` (defaulting to zero) unless held at a DC voltage
+        by `held`.
 
         Raises:
-            CharacterizationError: When the bench does not elaborate.
+            CharacterizationError: If the test-bench circuit fails to elaborate.
         """
         held = dict[int, float]() if held is None else held
 
@@ -218,7 +233,7 @@ class _Cell:
             raise CharacterizationError(message) from None
 
     def levels(self, row: int) -> tuple[float, ...]:
-        """Each input's voltage at `row`, the first input its most significant bit."""
+        """Returns input voltages for truth-table `row`, with the first input as MSB."""
         count = len(self.inputs)
         return tuple(
             self.supply * (row >> (count - 1 - index) & 1) for index in range(count)
@@ -226,7 +241,7 @@ class _Cell:
 
 
 def _subtree(built: ir.Circuit, name: str) -> list[str]:
-    """`name` and every component it places, however deep."""
+    """Collects `name` and every nested subcomponent regardless of hierarchy depth."""
     found: list[str] = []
     seen: set[str] = set()
     pending: deque[str] = deque([name])
@@ -247,11 +262,11 @@ def _subtree(built: ir.Circuit, name: str) -> list[str]:
 def _cell(
     built: ir.Circuit, name: str, settings: Characterized, temperature: Quantity | None
 ) -> _Cell:
-    """The component `name` of `built` on its test bench.
+    """Creates a characterization test bench for component `name` in `built`.
 
     Raises:
-        CharacterizationError: When its ports are not inputs, outputs, one supply and
-            one ground.
+        CharacterizationError: If component ports do not consist solely of inputs, at
+            least one output, one supply, and one ground.
     """
     ports = built.components[name].ports
     by_role = {
@@ -283,10 +298,11 @@ def _dc(level: float) -> JsonValue:
 
 
 def _tables(cell: _Cell) -> list[list[bool]]:
-    """Each output's level at each row of the inputs.
+    """Computes boolean truth-table rows for every output of `cell`.
 
     Raises:
-        CharacterizationError: When an output settles away from both rails.
+        CharacterizationError: If any output settles outside the valid logic rail
+            margins.
     """
     tables: list[list[bool]] = [[] for _ in cell.outputs]
     for row in range(1 << len(cell.inputs)):
@@ -312,10 +328,10 @@ def _tables(cell: _Cell) -> list[list[bool]]:
 
 
 def _strength(cell: _Cell, tables: list[list[bool]]) -> float:
-    """The weakest current an output drives into the opposite rail, in amperes.
+    """Computes the minimum short-circuit drive current across all outputs, in amperes.
 
     Raises:
-        CharacterizationError: When an output drives no current.
+        CharacterizationError: If any output drives zero current into the opposite rail.
     """
     weakest = math.inf
     for row in range(1 << len(cell.inputs)):
@@ -331,9 +347,9 @@ def _strength(cell: _Cell, tables: list[list[bool]]) -> float:
 
 
 def _capacitances(cell: _Cell) -> tuple[float, ...]:
-    """Each input's capacitance, in farads.
+    """Measures the mean small-signal input capacitance of each input port, in farads.
 
-    It is the input's mean small-signal capacitance over every row of the inputs.
+    Each value averages the 1 Hz AC capacitive susceptance across every input state.
     """
     rows = 1 << len(cell.inputs)
     sums = [0.0] * len(cell.inputs)
@@ -349,11 +365,10 @@ def _capacitances(cell: _Cell) -> tuple[float, ...]:
 
 @dataclass(frozen=True, slots=True)
 class _Edge:
-    """An output's change: its delay and its transition.
+    """Measured output transition recording propagation delay and transition time.
 
-    The delay runs from the input's crossing of half the supply to the output's, and
-    the transition is the time an edge at the output's rate there takes to swing the
-    supply.
+    Delay spans from the input half-supply crossing to the output half-supply crossing,
+    and transition time is the full-supply swing duration at the output crossing slope.
     """
 
     delay: float
@@ -362,7 +377,7 @@ class _Edge:
 
 @dataclass(frozen=True, slots=True)
 class _Timer:
-    """Measures a cell's arcs, by its drive's resistance and its own capacitance."""
+    """Timing arc measurer parameterized by cell drive resistance and capacitance."""
 
     cell: _Cell
     tables: list[list[bool]]
@@ -370,12 +385,14 @@ class _Timer:
     capacitance: float
 
     def edges(self, row: int, pin: int, slew: float, load: float) -> dict[int, _Edge]:
-        """How each output that changes follows input `pin` changing from `row`.
+        """Measures output transitions caused by toggling input `pin` from state `row`.
 
-        The input's edge takes `slew`, and every output is loaded by `load`.
+        The input switches with transition time `slew` while every output drives
+        capacitance `load`.
 
         Raises:
-            CharacterizationError: When an output never settles at its new level.
+            CharacterizationError: If any changing output fails to settle within the
+                maximum transient window.
         """
         cell = self.cell
         after = row ^ 1 << (len(cell.inputs) - 1 - pin)
@@ -428,9 +445,10 @@ class _Timer:
 def _edge(
     waveforms: results.TransientResult, index: int, *, rising: bool, supply: float
 ) -> _Edge | None:
-    """Output `index`'s last crossing of half the supply toward its new level.
+    """Extracts the final half-supply crossing of output `index` toward its target rail.
 
-    It is the time and the transition, or None when the output does not settle there.
+    Returns the crossing time and transition duration, or ``None`` if the output does
+    not settle to the target logic level.
     """
     voltage = waveforms.voltage(f"output_{index}")
     final = voltage[-1] / supply
@@ -450,15 +468,17 @@ def _edge(
 def characterize(
     built: ir.Circuit, name: str, settings: Characterized, temperature: Quantity | None
 ) -> Characterization:
-    """The component `name` of `built` characterized as a logic cell.
+    """Characterizes component `name` in `built` as a timing-annotated logic cell.
 
-    It is characterized with `settings`, its devices at `temperature`, 27 °C unless
-    given.
+    Args:
+        built: Circuit containing the component definition to characterize.
+        name: Name of the component within `built`.
+        settings: Supply voltage, slew multipliers, and load fanouts for the grid.
+        temperature: Simulation temperature, defaulting to 27 °C when ``None``.
 
     Raises:
-        CharacterizationError: When its ports are not inputs, outputs, one supply and
-            one ground, an output settles away from both rails, or its inputs have no
-            capacitance to scale its loads.
+        CharacterizationError: If component ports are incompatible, an output fails to
+            settle to a valid rail, or inputs have zero capacitance.
     """
     cell = _cell(built, name, settings, temperature)
     tables = _tables(cell)
@@ -517,9 +537,9 @@ def _measure(
     slews: Sequence[float],
     loads: Sequence[float],
 ) -> list[Arc]:
-    """The arcs of `change`, an input and the row it changes from.
+    """Measures timing arcs for a `(pin, row)` transition across `slews` and `loads`.
 
-    There is an arc for each output that changes.
+    Returns one [`Arc`][jolty.fidelity.Arc] for each output that changes state.
     """
     pin, row = change
     grid = [[timer.edges(row, pin, slew, load) for load in loads] for slew in slews]
@@ -546,10 +566,10 @@ def _errors(
     loads: Sequence[float],
     measured: Sequence[Sequence[Arc]],
 ) -> tuple[float, float]:
-    """The largest errors of the interpolated delay and transition.
+    """Computes maximum bilinear interpolation errors for delay and transition time.
 
-    They are measured between the grid's points: at the midpoints of its transitions
-    and of its loads.
+    Errors are evaluated at the midpoint of every adjacent slew and load cell on the
+    characterization grid.
     """
     middles = [
         ((a + b) / 2, (c + d) / 2)
@@ -579,13 +599,13 @@ def _interpolate(
     row: float,
     column: float,
 ) -> float:
-    """`table` at `(row, column)`, bilinear between its points as the engine's."""
+    """Interpolates `table` bilinearly at `(row, column)` matching the engine lookup."""
     by_row = [float(np.interp(column, columns, line)) for line in table]
     return float(np.interp(row, rows, by_row))
 
 
 def instances(built: ir.Circuit) -> list[tuple[str, str]]:
-    """Every component instance of `built`, outer ones first: its path and component."""
+    """Collects component instances in `built` breadth-first as `(path, component)`."""
     return [
         (path, instance.of.component)
         for path, instance in built.walk(breadth_first=True)
@@ -596,12 +616,12 @@ def instances(built: ir.Circuit) -> list[tuple[str, str]]:
 def scopes(
     built: ir.Circuit, fidelity: Mapping[str, Characterized]
 ) -> dict[str, tuple[str, str]]:
-    """The component instances `fidelity`'s scopes match, the outermost only.
+    """Resolves outermost component instances matched by each scope in `fidelity`.
 
-    Each path maps to its scope and its component.
+    Returns a mapping from instance path to its matched `(scope, component)` pair.
 
     Raises:
-        PlanError: When any scope matches no component instance.
+        PlanError: If any scope matches no component instance in `built`.
     """
     matched: dict[str, tuple[str, str]] = {}
     found = instances(built)
@@ -632,35 +652,34 @@ def scopes(
 
 
 type Cache = dict[tuple[str, Characterized, float], Characterization]
-"""Characterizations already made: by component, settings and temperature in kelvins."""
+"""Cache of logic cell characterizations keyed by `(component, settings, kelvins)`."""
 
 
 @dataclass(frozen=True, slots=True)
 class Fidelity:
-    """The fidelity of one circuit at one temperature.
+    """Resolved fidelity substitutions and cached elaborations for one circuit.
 
-    It holds each instance a scope matches, and the characterization of its component
-    that stands in for it. Its simulations, as many as a Monte Carlo analysis runs,
-    share the circuit elaborated once with the models standing in, as
-    [`Elaborated`][jolty.simulate.Elaborated] describes.
+    Stores every scope-matched component instance alongside its characterized logic
+    model. Simulations sharing an opened-instance configuration reuse a single
+    [`Elaborated`][jolty.simulate.Elaborated] circuit across Monte Carlo runs.
     """
 
     built: ir.Circuit
     temperature: Quantity | None
     matched: dict[str, tuple[str, str]]
-    """Each instance's scope and component, by path."""
+    """Mapping from matched instance path to its `(scope, component)` pair."""
     models: dict[str, Characterization]
-    """Each component's characterization, by name."""
+    """Mapping from component name to its characterized logic cell model."""
     process: str | None = None
-    """The process corner of a foundry's devices, its kit's typical unless given."""
+    """Foundry process corner name, defaulting to the kit's typical corner when
+    ``None``."""
     elaborated: dict[str | None, Elaborated] = field(
         default_factory=dict, compare=False, repr=False
     )
-    """The circuit elaborated with the models, by the instance left at its circuit's own
-    fidelity, if any, once a simulation first asks for it."""
+    """Cache of elaborated circuits keyed by the instance path kept at full fidelity."""
 
     def substitutes(self, opened: str | None = None) -> dict[str, devices.Device]:
-        """The models that stand in for the instances, but for `opened`."""
+        """Returns logic-cell devices for every matched path except `opened`."""
         return {
             path: self.models[component].device()
             for path, (_, component) in self.matched.items()
@@ -670,7 +689,7 @@ class Fidelity:
     def overrides(
         self, sampled: Mapping[str, Mapping[str, float]]
     ) -> dict[str, Mapping[str, float]]:
-        """The parameters of `sampled` that a model does not stand in for."""
+        """Returns parameter overrides from `sampled` outside modeled instances."""
         return {
             path: parameters
             for path, parameters in sampled.items()
@@ -683,15 +702,15 @@ class Fidelity:
         opened: str | None = None,
         mismatch: int | None = None,
     ) -> Simulation:
-        """The circuit elaborated with the models, but for `opened`, and `overrides`.
+        """Creates a simulation using characterized models except for `opened`.
 
-        The circuit is elaborated once for every simulation with the same `opened`, each
-        of which makes its devices again from the numbers `overrides` gives. A foundry's
-        devices draw their kit's mismatch from the seed `mismatch`.
+        Elaboration is cached per `opened` value, while parameter `overrides` rebuild
+        device instances for each run. Foundry devices sample process mismatch using
+        `mismatch` as the random seed.
 
         Raises:
-            ElaborationError: When the circuit does not elaborate with the models, or
-                with the numbers `overrides` gives.
+            ElaborationError: If the substituted circuit or overridden parameters fail
+                to elaborate.
         """
         shared = self.elaborated.get(opened)
         if shared is None:
@@ -714,13 +733,20 @@ def resolve(
     cache: Cache,
     process: str | None = None,
 ) -> Fidelity:
-    """The fidelity `plan` chooses for `built` at `temperature` and `process`.
+    """Resolves `plan` fidelity settings for `built` at `temperature` and `process`.
 
-    Each component its scopes match is characterized, unless `cache` holds it.
+    Matched components are characterized on demand and stored in `cache` for reuse.
+
+    Args:
+        built: Circuit whose component instances are matched against fidelity scopes.
+        plan: Analysis plan defining fidelity scopes and characterization settings.
+        temperature: Simulation temperature used during characterization.
+        cache: Mutable cache reusing characterizations across runs.
+        process: Optional foundry process corner name.
 
     Raises:
-        JoltyError: When a scope matches no component instance.
-        CharacterizationError: When a component cannot be characterized.
+        JoltyError: If a fidelity scope matches no component instance.
+        CharacterizationError: If a matched component cannot be characterized.
     """
     matched = scopes(built, plan.fidelity)
     models: dict[str, Characterization] = {}
@@ -734,22 +760,28 @@ def resolve(
 
 
 class CharacterizedModel(ir.FrozenModel):
-    """A component characterized as a logic cell, as a report states it."""
+    """Report summary for a single characterized component model."""
 
     component: str
-    instances: tuple[str, ...] = Field(description="The paths it stands in for.")
-    arcs: int = Field(description="Its timing arcs.")
+    instances: tuple[str, ...] = Field(
+        description="Instance paths substituted by this characterized model."
+    )
+    arcs: int = Field(description="Number of characterized timing arcs.")
     slews: tuple[float, float] = Field(
-        description="The least and the most input transition, in seconds."
+        description="Minimum and maximum characterized input slew, in seconds."
     )
     loads: tuple[float, float] = Field(
-        description="The least and the most load, in farads."
+        description="Minimum and maximum characterized output load, in farads."
     )
-    delay_error: float = Field(description="In seconds.")
-    transition_error: float = Field(description="In seconds.")
+    delay_error: float = Field(
+        description="Maximum interpolated delay error, in seconds."
+    )
+    transition_error: float = Field(
+        description="Maximum interpolated transition error, in seconds."
+    )
 
     def describe(self) -> str:
-        """The model as text."""
+        """Formats the characterized model summary as human-readable text."""
         listed = ", ".join(self.instances)
         return (
             f"{self.component}: a logic cell of {self.arcs} arcs for {listed}, over "
@@ -762,25 +794,25 @@ class CharacterizedModel(ir.FrozenModel):
 
 
 class Contract(ir.FrozenModel):
-    """A spot check: whether an instance's model agrees with its circuit."""
+    """Spot-check contract comparing a characterized instance model with its circuit."""
 
     instance: str
     component: str
     allowed: float = Field(
-        description="How far apart, in seconds, the model's and the circuit's changes "
-        "may lie."
+        description="Maximum allowed timing discrepancy between model and circuit, in "
+        "seconds."
     )
     divergences: tuple[str, ...] = Field(
-        description="Where the model and the circuit diverge; empty when they agree."
+        description="Observed model-versus-circuit mismatches, empty when passing."
     )
 
     @property
     def held(self) -> bool:
-        """Whether the model agrees with its circuit."""
+        """Indicator of whether the characterized model agrees with its circuit."""
         return not self.divergences
 
     def describe(self) -> str:
-        """The spot check as text."""
+        """Formats the spot-check contract outcome as human-readable text."""
         if self.held:
             return (
                 f"{self.instance}: its model agrees with its circuit within "
@@ -795,13 +827,13 @@ _UNITS: Final = {"input transition": "s", "load": "F", "supply": "V"}
 
 
 class Outside(ir.FrozenModel):
-    """An analysis that used a model outside its domain."""
+    """Record of an analysis exercising a characterized model outside its domain."""
 
     analysis: str
     excursion: Excursion
 
     def describe(self) -> str:
-        """The fact as text, at the rule outside-validity's level."""
+        """Formats the out-of-domain warning for the ``outside-validity`` rule."""
         found = self.excursion
         unit = _UNITS[found.bound]
         times = "once" if found.count == 1 else f"{found.count} times"
@@ -815,14 +847,16 @@ class Outside(ir.FrozenModel):
 
 
 class Dependence(ir.FrozenModel):
-    """A requirement whose verdict changes when an instance runs as its circuit."""
+    """Requirement whose verdict flips when a modeled instance runs at full fidelity."""
 
     instance: str
-    modeled: Verdict = Field(description="The verdict with every model.")
-    exact: Verdict = Field(description="The verdict with the instance's circuit.")
+    modeled: Verdict = Field(description="Requirement verdict with all models active.")
+    exact: Verdict = Field(
+        description="Requirement verdict with the instance restored to its circuit."
+    )
 
     def describe(self) -> str:
-        """The fact as text, at the rule fidelity-dependence's level."""
+        """Formats the verdict change warning for the ``fidelity-dependence`` rule."""
         return (
             f"warn[fidelity-dependence]: {self.modeled.requirement}: "
             f"{self.modeled.status}{_reading(self.modeled)} with every model, "
@@ -832,7 +866,7 @@ class Dependence(ir.FrozenModel):
 
 
 def _reading(verdict: Verdict) -> str:
-    """What a verdict read, as a clause, or nothing when it read nothing."""
+    """Formats a verdict's measured value as a clause, or returns an empty string."""
     if verdict.value is None or verdict.unit is None:
         return ""
     return f", reading {format_si(verdict.value, verdict.unit)},"
@@ -841,10 +875,10 @@ def _reading(verdict: Verdict) -> str:
 def dependences(
     instance: str, modeled: Sequence[Verdict], exact: Sequence[Verdict]
 ) -> list[Dependence]:
-    """The requirements whose verdict differs between `modeled` and `exact`.
+    """Collects requirements whose verdict differs between `modeled` and `exact`.
 
-    `modeled` holds the verdicts with every model, and `exact` those with `instance` at
-    its circuit's fidelity.
+    Compares `modeled` verdicts (with all models active) against `exact` verdicts
+    (with `instance` simulated at full circuit fidelity).
     """
     return [
         Dependence(instance=instance, modeled=first, exact=second)
@@ -854,27 +888,28 @@ def dependences(
 
 
 class FidelityReport(ir.FrozenModel):
-    """The models a plan's fidelity chose, its spot checks, and what they found."""
+    """Summary of characterized models, spot-check contracts, and fidelity warnings."""
 
     models: tuple[CharacterizedModel, ...]
     contracts: tuple[Contract, ...]
     dependences: tuple[Dependence, ...] = Field(
         default=(),
-        description="The requirements whose verdict changes when a spot-checked "
-        "instance runs at its circuit's fidelity.",
+        description="Requirements whose verdict changed when a spot-checked instance "
+        "ran at full circuit fidelity.",
     )
     outside: tuple[Outside, ...] = Field(
         default=(),
-        description="Where the plan's analyses used a model outside its domain.",
+        description="Analyses that exercised a characterized model outside its "
+        "characterization grid.",
     )
 
     @property
     def ok(self) -> bool:
-        """Whether every model agrees with its circuit where a spot check looked."""
+        """Indicator of whether every spot-checked model agrees with its circuit."""
         return all(contract.held for contract in self.contracts)
 
     def describe(self) -> str:
-        """The report as text."""
+        """Formats the complete fidelity report as human-readable text."""
         lines = ["fidelity:"]
         lines.extend(f"  {model.describe()}" for model in self.models)
         lines.extend(
@@ -887,7 +922,7 @@ class FidelityReport(ir.FrozenModel):
 
 
 def models(fidelity: Fidelity) -> tuple[CharacterizedModel, ...]:
-    """Each characterized component, as a report states it."""
+    """Builds report summaries for every characterized component in `fidelity`."""
     found = []
     for component, model in fidelity.models.items():
         paths = tuple(
@@ -908,7 +943,7 @@ def models(fidelity: Fidelity) -> tuple[CharacterizedModel, ...]:
 
 
 def sampled(fidelity: Fidelity, plan: Plan) -> list[str]:
-    """The instances each scope's spot checks run, drawn with its seed."""
+    """Selects spot-check instance paths deterministically for each scope in `plan`."""
     chosen: list[str] = []
     for scope, settings in plan.fidelity.items():
         paths = [
@@ -930,15 +965,19 @@ def contract(
     modeled: Mapping[str, AnalysisResult],
     opened: Mapping[str, AnalysisResult],
 ) -> Contract:
-    """The spot check of the instance at `path`.
+    """Evaluates the spot-check contract for the instance at `path`.
 
-    It compares the instance's outputs in `opened`, the plan's results with it at its
-    circuit's fidelity, with those in `modeled`.
+    Compares output behavior in `opened` (with `path` restored to full circuit
+    fidelity) against `modeled` results. Transient outputs require matching transition
+    levels and order within the measured delay error plus the scope's tolerance of the
+    mean delay. Operating-point and DC-sweep outputs require identical logic levels.
 
-    Over a transient, each output's changes must reach the same levels in the same
-    order, each within the model's measured error, plus the scope's tolerance of its
-    mean delay; at an operating point and over a sweep, each output must hold the same
-    levels.
+    Args:
+        fidelity: Resolved fidelity mapping and characterized models.
+        plan: Analysis plan supplying scope timing tolerances.
+        path: Hierarchical path of the spot-checked component instance.
+        modeled: Analysis results run with all characterized models substituted.
+        opened: Analysis results run with `path` restored to its circuit.
     """
     scope, component = fidelity.matched[path]
     model = fidelity.models[component]
@@ -979,9 +1018,9 @@ def contract(
 
 
 def _outputs(built: ir.Circuit, path: str) -> list[tuple[str, str]]:
-    """Each output port of the instance at `path`, and the path of its net.
+    """Resolves each output port of the instance at `path` to its outermost net path.
 
-    The net's path is the engine's: in the outermost component it reaches.
+    Each returned net path matches the top-most hierarchical component the net reaches.
     """
     *parents, own = path.split("/")
     names = [built.top]
@@ -1006,10 +1045,10 @@ def _outputs(built: ir.Circuit, path: str) -> list[tuple[str, str]]:
 
 
 def _component(instance: ir.Instance) -> str:
-    """The component `instance` is an instance of.
+    """Returns the component name referenced by `instance`.
 
     Raises:
-        JoltyError: When it is a device.
+        JoltyError: If `instance` is a primitive device rather than a component.
     """
     if isinstance(instance.of, ir.ComponentOf):
         return instance.of.component
@@ -1018,7 +1057,7 @@ def _component(instance: ir.Instance) -> str:
 
 
 def _placed(built: ir.Circuit, component: str, name: str) -> ir.Instance:
-    """The instance `name` that `component` places."""
+    """Retrieves child instance `name` inside `component` of `built`."""
     found = built.components[component].instance(name)
     if found is None:
         message = f"{component} places no instance `{name}`"
@@ -1029,10 +1068,10 @@ def _placed(built: ir.Circuit, component: str, name: str) -> ir.Instance:
 def _changes(
     result: results.TransientResult, net: str, supply: float
 ) -> list[tuple[float, float]]:
-    """`net`'s level at time zero, then each change: its time and the new level.
+    """Extracts the initial logic level and subsequent transition times for `net`.
 
-    A logic net's levels are its own; an electrical net's level is 1 above half the
-    supply.
+    Logic nets use their recorded discrete levels directly, while electrical nets treat
+    voltages above half `supply` as logic high.
     """
     if net in result.nets:
         trace = result.logic_level(net)
@@ -1048,7 +1087,7 @@ def _changes(
 
 
 def _levels(result: AnalysisResult, net: str, supply: float) -> list[float]:
-    """`net`'s level at an operating point, or at each level of a sweep."""
+    """Extracts logic levels of `net` at an operating point or across a DC sweep."""
     match result:
         case results.OperatingPointResult() | results.DcSweepResult() if (
             net in result.nets
@@ -1063,7 +1102,7 @@ def _levels(result: AnalysisResult, net: str, supply: float) -> list[float]:
 def _differs(
     what: str, modeled: Sequence[float], circuit: Sequence[float]
 ) -> list[str]:
-    """Where `modeled`'s levels and `circuit`'s differ, at the first such point."""
+    """Finds the first logic-level mismatch between `modeled` and `circuit` outputs."""
     for index, (model, own) in enumerate(zip(modeled, circuit, strict=True)):
         if devices.format_logic_level(model) != devices.format_logic_level(own):
             at = "" if len(modeled) == 1 else f" at level {index + 1} of the sweep"
@@ -1082,9 +1121,10 @@ def _diverges(
     circuit: Sequence[tuple[float, float]],
     allowed: float,
 ) -> Iterable[str]:
-    """Where `modeled`'s changes and `circuit`'s first differ.
+    """Yields the first timing or level divergence between `modeled` and `circuit`.
 
-    They differ in their levels, or in their times by more than `allowed`.
+    Transitions diverge when logic levels disagree, crossing times differ by more than
+    `allowed`, or transition counts do not match.
     """
     for (model_time, model_level), (circuit_time, circuit_level) in zip(
         modeled, circuit, strict=False

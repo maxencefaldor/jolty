@@ -1,33 +1,31 @@
 # Copyright 2026 Maxence Faldor
-"""Real parts: models of what makers sell, each with its number and its ratings.
+"""Real manufacturer part models with part numbers and datasheet ratings.
 
-Each function returns a device or a component that stands for one part: its model, the
-maker's part number, which a bill of materials prices it by, and the absolute maximum
-ratings of its datasheet, which a simulation holds every operating point and transient
-to. A rating of the power is at a case or an ambient of 25 °C, as its datasheet states,
-and the rating of the temperature bounds its junction's.
+Each factory builds a device or component tagged with its manufacturer part number for
+bill-of-materials pricing and absolute maximum datasheet ratings checked across
+operating points and transients. Power ratings apply at 25 °C case or ambient
+temperature as stated on each datasheet, and temperature ratings bound junction
+temperature.
 
-Each part takes ``heated``: heated, it runs at its junction's temperature, which a
-terminal or port ``thermal`` joins to a thermal net, and heats the net by the power it
-dissipates; see [`Device.heated`][jolty.devices.Device.heated]. A thermal resistance
-from that net to the ground, the ambient, then stands for its datasheet's junction to
-ambient, or a network of them for its case and heatsink.
+Passing ``heated=True`` enables self-heating through a ``thermal`` port or terminal
+that injects dissipated power into a thermal net; see
+[`Device.heated`][jolty.devices.Device.heated]. Connecting a thermal resistance from
+that net to ground models junction-to-ambient or heatsink thermal impedance.
 
-The small-signal parts take the SPICE parameters their makers publish:
+Small-signal parts use manufacturer-published SPICE parameters:
 
-- [`q2n3904`][jolty.parts.q2n3904], the NPN transistor, onsemi's;
-- [`q2n3906`][jolty.parts.q2n3906], the PNP transistor, onsemi's;
-- [`d1n4148`][jolty.parts.d1n4148], the signal diode, onsemi's.
+- [`q2n3904`][jolty.parts.q2n3904]: onsemi NPN small-signal transistor.
+- [`q2n3906`][jolty.parts.q2n3906]: onsemi PNP small-signal transistor.
+- [`d1n4148`][jolty.parts.d1n4148]: onsemi small-signal silicon diode.
 
-The power MOSFETs' SPICE models carry licences that forbid redistributing them, so each
-is instead fitted, by one stated recipe, to the figures its
-[datasheet][jolty.parts.Datasheet] states, which are facts anyone may use; see
-[`power_mosfet`][jolty.parts.power_mosfet]:
+Power MOSFET models are fitted by a documented recipe to public
+[datasheet][jolty.parts.Datasheet] figures rather than redistributing licensed vendor
+SPICE models; see [`power_mosfet`][jolty.parts.power_mosfet]:
 
-- [`irf511`][jolty.parts.irf511], 80 V and 5.6 A, n-channel;
-- [`irf9230`][jolty.parts.irf9230], 200 V and 6.5 A, p-channel;
-- [`irfz44`][jolty.parts.irfz44], 60 V and 50 A, n-channel;
-- [`mtp50p03hdl`][jolty.parts.mtp50p03hdl], 30 V and 50 A, logic-level p-channel.
+- [`irf511`][jolty.parts.irf511]: 80 V, 5.6 A n-channel power MOSFET.
+- [`irf9230`][jolty.parts.irf9230]: 200 V, 6.5 A p-channel power MOSFET.
+- [`irfz44`][jolty.parts.irfz44]: 60 V, 50 A n-channel power MOSFET.
+- [`mtp50p03hdl`][jolty.parts.mtp50p03hdl]: 30 V, 50 A logic-level p-channel MOSFET.
 
 Examples:
     >>> transistor = q2n3904()
@@ -47,12 +45,11 @@ from jolty.units import A, F, V, W, celsius, m, nA, ns, ohm, pF, ps
 
 
 def q2n3904(*, heated: bool = False) -> devices.Device:
-    """A 2N3904, the small-signal NPN transistor, with its maker's SPICE parameters.
+    """Returns a 2N3904 NPN transistor using onsemi SPICE parameters.
 
-    Rated as onsemi's datasheet states: 40 V from collector to emitter, 60 V from
-    collector to base and 6 V from emitter to base, 200 mA into the collector, 625 mW
-    at an ambient of 25 °C, and a junction from -55 °C to 150 °C, which 200 K/W join
-    to the ambient.
+    Datasheet ratings are 40 V collector-emitter, 60 V collector-base, 6 V
+    emitter-base, 200 mA collector current, and 625 mW at 25 °C ambient. Junction
+    temperature spans -55 °C to 150 °C with 200 K/W thermal resistance to ambient.
     """
     return (
         _heated(
@@ -92,12 +89,11 @@ def q2n3904(*, heated: bool = False) -> devices.Device:
 
 
 def q2n3906(*, heated: bool = False) -> devices.Device:
-    """A 2N3906, the small-signal PNP transistor, with its maker's SPICE parameters.
+    """Returns a 2N3906 PNP transistor using onsemi SPICE parameters.
 
-    Rated as onsemi's datasheet states: 40 V from emitter to collector and from base
-    to collector, 5 V from base to emitter, 200 mA out of the collector, 625 mW at an
-    ambient of 25 °C, and a junction from -55 °C to 150 °C, which 200 K/W join to the
-    ambient.
+    Datasheet ratings are 40 V emitter-collector and base-collector, 5 V base-emitter,
+    200 mA collector current, and 625 mW at 25 °C ambient. Junction temperature spans
+    -55 °C to 150 °C with 200 K/W thermal resistance to ambient.
     """
     return (
         _heated(
@@ -136,11 +132,11 @@ def q2n3906(*, heated: bool = False) -> devices.Device:
 
 
 def d1n4148(*, heated: bool = False) -> devices.Device:
-    """A 1N4148, the small-signal silicon diode, with its maker's SPICE parameters.
+    """Returns a 1N4148 small-signal silicon diode using onsemi SPICE parameters.
 
-    Rated as onsemi's datasheet states: 100 V of repetitive reverse voltage, 300 mA of
-    forward current, 500 mW at an ambient of 25 °C, and a junction from -55 °C to
-    175 °C, which 300 K/W join to the ambient.
+    Datasheet ratings are 100 V repetitive reverse voltage, 300 mA forward current,
+    and 500 mW at 25 °C ambient. Junction temperature spans -55 °C to 175 °C with
+    300 K/W thermal resistance to ambient.
     """
     return (
         _heated(
@@ -163,75 +159,73 @@ def d1n4148(*, heated: bool = False) -> devices.Device:
 
 
 def _heated(device: devices.Device, *, heated: bool) -> devices.Device:
-    """`device`, [heated][jolty.devices.Device.heated] if `heated`."""
+    """Returns `device` with [heating][jolty.devices.Device.heated] when `heated`."""
     return device.heated() if heated else device
 
 
-# The power MOSFETs.
+# Power MOSFET models.
 
 SATURATION_CURRENT: Final = 10e-12
-"""A fitted body diode's saturation current, in amperes."""
+"""Saturation current of a fitted power MOSFET body diode, in amperes."""
 CHANNEL_JUNCTIONS: Final = 1e-80
-"""The saturation current of a fitted channel's own junctions, in amperes: so small
-that they carry nothing below the body diode's drop."""
+"""Negligible saturation current (in amperes) suppressing intrinsic channel diodes."""
 THERMAL_VOLTAGE: Final = (
     _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE
 )
-"""The thermal voltage at 27 °C, in volts."""
+"""Thermal voltage at 27 °C, in volts."""
 JUNCTION_POTENTIAL: Final = 0.7
-"""A fitted body diode's junction potential, in volts, with a grading coefficient of
-0.5."""
+"""Built-in junction potential (in volts) of a fitted body diode at grading 0.5."""
 MIN_JUNCTION_TEMPERATURE: Final = -55.0
-"""The minimum junction temperature every sheet here states, in degrees Celsius."""
+"""Minimum rated junction temperature across built-in power MOSFET sheets, in °C."""
 
 
 @dataclass(frozen=True, slots=True)
 class Datasheet:
-    """What a power MOSFET's datasheet states at 25 °C, its electrical values positive.
+    """Power MOSFET datasheet parameters specified at 25 °C as positive magnitudes.
 
-    Voltages and currents are magnitudes, whichever the channel. The absolute maximum
-    ratings bound the drain over the source, the gate over the source either way, the
-    current through the drain as the channel conducts it, the power at a case of
-    25 °C, and the junction's temperature.
+    Voltages and currents are stored as positive magnitudes for both n-channel and
+    p-channel parts. Absolute maximum ratings bound drain-source voltage, bipolar
+    gate-source voltage, continuous drain current, 25 °C case power dissipation, and
+    junction temperature.
     """
 
     part_number: str
-    """The maker's part number."""
+    """Manufacturer part number."""
     channel: Literal["n", "p"]
     threshold: float
-    """VGS(th), in volts: typical, or the middle of its range."""
+    """Gate-source threshold voltage VGS(th) in volts (typical or range midpoint)."""
     on_resistance: float
-    """RDS(on), typical where stated, in ohms, ..."""
+    """Typical drain-source on-resistance RDS(on) in ohms."""
     on_gate: float
-    """... at this gate-source voltage, in volts, ..."""
+    """Gate-source voltage in volts used for the RDS(on) measurement."""
     on_current: float
-    """... and this drain current, in amperes."""
+    """Drain current in amperes used for the RDS(on) measurement."""
     transconductance: float
-    """The least gfs, in siemens, ..."""
+    """Minimum forward transconductance gfs in siemens."""
     transconductance_current: float
-    """... at this drain current, in amperes, in saturation."""
+    """Saturation drain current in amperes for the gfs measurement."""
     input_capacitance: float
-    """Ciss, typical, in farads, ..."""
+    """Typical input capacitance Ciss in farads."""
     output_capacitance: float
-    """Coss, typical, in farads, ..."""
+    """Typical output capacitance Coss in farads."""
     reverse_capacitance: float
-    """Crss, typical, in farads, ..."""
+    """Typical reverse transfer capacitance Crss in farads."""
     capacitance_voltage: float
-    """... at this drain-source voltage, in volts, the gate at the source."""
+    """Drain-source voltage in volts for capacitance measurements at VGS = 0 V."""
     diode_drop: float
-    """VSD, typical where stated, in volts, ..."""
+    """Body-diode forward voltage drop VSD in volts."""
     diode_current: float
-    """... at this source-drain current, in amperes."""
+    """Source-drain current in amperes for the VSD measurement."""
     drain_source_voltage: float
-    """VDSS, the most drain-source voltage, in volts."""
+    """Maximum rated drain-source voltage VDSS in volts."""
     gate_source_voltage: float
-    """VGS, the most gate-source voltage either way, in volts."""
+    """Maximum rated bipolar gate-source voltage VGS in volts."""
     drain_current: float
-    """ID, the most continuous drain current at a case of 25 °C, in amperes."""
+    """Maximum continuous drain current ID at 25 °C case temperature, in amperes."""
     power: float
-    """PD, the most power at a case of 25 °C, in watts."""
+    """Maximum power dissipation PD at 25 °C case temperature, in watts."""
     junction_temperature: float
-    """TJ's most, in degrees Celsius; its least is -55 °C for each sheet here."""
+    """Maximum rated junction temperature TJ in °C (minimum is -55 °C)."""
 
 
 IRF511: Final = Datasheet(
@@ -255,7 +249,7 @@ IRF511: Final = Datasheet(
     power=43.0,
     junction_temperature=175.0,
 )
-"""80 V, 5.6 A, n-channel: Harris's IRF510-IRF513 datasheet, gfs Vishay's IRF510's."""
+"""80 V, 5.6 A n-channel datasheet (Harris IRF510-IRF513; gfs from Vishay IRF510)."""
 
 IRF9230: Final = Datasheet(
     part_number="IRF9230",
@@ -278,7 +272,7 @@ IRF9230: Final = Datasheet(
     power=75.0,
     junction_temperature=150.0,
 )
-"""200 V, 6.5 A, p-channel: Intersil's IRF9230-IRF9233 datasheet; diode drop its max."""
+"""200 V, 6.5 A p-channel datasheet (Intersil IRF9230-IRF9233; maximum diode drop)."""
 
 IRFZ44: Final = Datasheet(
     part_number="IRFZ44",
@@ -301,7 +295,7 @@ IRFZ44: Final = Datasheet(
     power=150.0,
     junction_temperature=175.0,
 )
-"""60 V, 50 A, n-channel: Vishay's IRFZ44 datasheet; on-resistance and drop its max."""
+"""60 V, 50 A n-channel datasheet (Vishay IRFZ44; maximum on-resistance and drop)."""
 
 MTP50P03HDL: Final = Datasheet(
     part_number="MTP50P03HDL",
@@ -324,61 +318,56 @@ MTP50P03HDL: Final = Datasheet(
     power=125.0,
     junction_temperature=150.0,
 )
-"""30 V, 50 A, logic-level p-channel: onsemi's MTP50P03HDL datasheet."""
+"""30 V, 50 A logic-level p-channel datasheet (onsemi MTP50P03HDL)."""
 
 
 def irf511(*, heated: bool = False) -> Component:
-    """An IRF511, fitted to [its datasheet][jolty.parts.IRF511]."""
+    """Returns an IRF511 power MOSFET fitted to [its datasheet][jolty.parts.IRF511]."""
     return power_mosfet(IRF511, heated=heated)
 
 
 def irf9230(*, heated: bool = False) -> Component:
-    """An IRF9230, fitted to [its datasheet][jolty.parts.IRF9230]."""
+    """Returns an IRF9230 MOSFET fitted to [its datasheet][jolty.parts.IRF9230]."""
     return power_mosfet(IRF9230, heated=heated)
 
 
 def irfz44(*, heated: bool = False) -> Component:
-    """An IRFZ44, fitted to [its datasheet][jolty.parts.IRFZ44]."""
+    """Returns an IRFZ44 MOSFET fitted to [its datasheet][jolty.parts.IRFZ44]."""
     return power_mosfet(IRFZ44, heated=heated)
 
 
 def mtp50p03hdl(*, heated: bool = False) -> Component:
-    """An MTP50P03HDL, fitted to [its datasheet][jolty.parts.MTP50P03HDL]."""
+    """Returns an MTP50P03HDL MOSFET fitted to [its sheet][jolty.parts.MTP50P03HDL]."""
     return power_mosfet(MTP50P03HDL, heated=heated)
 
 
 def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
-    """The power MOSFET `sheet` states: fitted to it, numbered, and rated as it states.
+    """Builds a numbered, rated power MOSFET component fitted to `sheet`.
 
-    Its ports are ``drain``, ``gate`` and ``source``, and ``thermal`` where `heated`,
-    the junction both its channel and its body diode heat. Its model is fitted to the
-    sheet by one recipe:
+    Exposed ports are ``drain``, ``gate``, and ``source``, plus ``thermal`` when
+    `heated` is true so both the channel and body diode heat the same junction. The
+    model fits `sheet` with three components:
 
-    - the channel is SPICE's level 1 square law, its threshold the sheet's, and its
-      transconductance parameter the larger of the one that gives the stated
-      on-resistance at the stated gate voltage and drain current and the one that
-      gives the least transconductance stated; where the latter is larger, a drain
-      resistance takes up the on-resistance its channel leaves;
-    - the gate-drain capacitance is the reverse transfer capacitance, the gate-source
-      capacitance the input capacitance less it, both as overlaps, so constant;
-    - the body diode joins the source to the drain, in place of the channel's own
-      junctions, whose saturation current of 1e-80 A leaves them no current below the
-      diode's drop, its junction capacitance the output capacitance less the reverse
-      transfer capacitance at the voltage the sheet states them at, and its series
-      resistance the one that gives the stated forward drop at the stated current,
-      from a saturation current of 10 pA.
+    - The channel uses SPICE level 1 with the datasheet threshold. Transconductance
+      `β` takes the larger of the RDS(on) fit and the minimum `gfs` fit; when `gfs`
+      dominates, series drain resistance supplies the residual RDS(on).
 
-    So it reproduces the sheet's threshold, on-resistance, capacitances and diode drop
-    at the points the sheet states them, and a transconductance above the sheet's
-    minimum. The square law leaves out what bends a power MOSFET's curves away from
-    those points: the mobility's fall at high gate voltages, velocity saturation, the
-    gate-drain capacitance's fall with the drain voltage, and self-heating. Its channel
-    is also symmetric, as level 1 is: with the gate at the source and the drain driven
-    beyond the source by more than the threshold, the channel turns on as though drain
-    and source had swapped, and shares the reverse current with the body diode, which
-    in a real transistor carries it alone, its body tied to its source. Vendors' level-1
-    and level-3 models share this. Of the four here, only the MTP50P03HDL's stated
-    diode drop, 2.39 V, lies beyond its threshold.
+    - Constant overlap capacitances model gate-drain (`Crss`) and gate-source
+      (`Ciss - Crss`).
+
+    - An explicit body diode spans source to drain while intrinsic channel diodes use
+      1e-80 A saturation current. Zero-bias junction capacitance matches `Coss - Crss`
+      at the measurement voltage, and series resistance matches the stated forward drop
+      from 10 pA saturation current.
+
+    The fitted component reproduces threshold, RDS(on), capacitances, and body-diode
+    drop at the datasheet test points while meeting minimum `gfs`. Level-1 equations
+    omit high-field mobility degradation, velocity saturation, nonlinear gate-drain
+    capacitance, and self-heating without a thermal network. Level-1 symmetry causes
+    the channel to conduct in reverse alongside the body diode when the drain exceeds
+    the source beyond threshold at VGS = 0, matching standard vendor level-1 and
+    level-3 subcircuits. Among the built-in parts, only MTP50P03HDL has a stated diode
+    drop (2.39 V) above its threshold.
     """
     n = sheet.channel == "n"
     drain_source = sheet.drain_source_voltage * V
@@ -412,51 +401,50 @@ def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
 
 
 def transconductance_parameter(sheet: Datasheet) -> float:
-    """The square law's `kp · w / l`, in A/V², of the MOSFET fitted to `sheet`.
+    """Computes the square-law `kp · w / l` parameter (A/V²) fitted to `sheet`.
 
-    It is the larger of the one whose channel alone gives the stated on-resistance,
-    below saturation, where `id = β · vds · (vov - vds / 2)` at the stated gate
-    voltage's overdrive `vov`, and the one that gives the least transconductance,
-    `√(2 · β · id)` in saturation at its stated current.
+    Selects the larger of two candidates: the linear-region `β` matching RDS(on) via
+    `id = β · vds · (vov - vds / 2)` at overdrive `vov`, and the saturation `β`
+    matching minimum transconductance `√(2 · β · id)`.
     """
     return max(_channel(sheet, sheet.on_resistance * sheet.on_current), _least(sheet))
 
 
 def drain_resistance(sheet: Datasheet) -> float:
-    """The drain resistance, in ohms, taking up the on-resistance the channel leaves.
+    """Computes the extra series drain resistance (ohms) needed beyond channel RDS(on).
 
-    It is zero where the channel alone gives the on-resistance, as it does unless the
-    least transconductance asks for a larger `β`.
+    Returns zero when the channel alone achieves RDS(on), and returns the residual
+    resistance when minimum transconductance requires a larger `β`.
     """
     beta = _least(sheet)
     if beta <= _channel(sheet, sheet.on_resistance * sheet.on_current):
         return 0.0
     overdrive = sheet.on_gate - sheet.threshold
-    # The channel's drop at the stated current: the root of id = β · v · (vov - v / 2).
+    # Channel voltage drop at the stated current: root of id = β · v · (vov - v / 2).
     drop = overdrive - math.sqrt(overdrive**2 - 2 * sheet.on_current / beta)
     return sheet.on_resistance - drop / sheet.on_current
 
 
 def diode_resistance(sheet: Datasheet) -> float:
-    """The body diode's series resistance, in ohms, that gives the stated drop."""
+    """Computes the body-diode series resistance (ohms) matching the datasheet drop."""
     junction = THERMAL_VOLTAGE * math.log1p(sheet.diode_current / SATURATION_CURRENT)
     return (sheet.diode_drop - junction) / sheet.diode_current
 
 
 def _channel(sheet: Datasheet, drop: float) -> float:
-    """The `β` whose channel drops `drop` at the stated on-current and gate voltage."""
+    """Computes the channel `β` producing voltage `drop` at the on-resistance point."""
     overdrive = sheet.on_gate - sheet.threshold
     return sheet.on_current / (drop * (overdrive - drop / 2))
 
 
 def _least(sheet: Datasheet) -> float:
-    """The `β` that gives the least transconductance stated."""
+    """Computes the minimum `β` required to match the datasheet transconductance."""
     return sheet.transconductance**2 / (2 * sheet.transconductance_current)
 
 
 @component
 def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None:
-    """The model [`power_mosfet`][jolty.parts.power_mosfet] fits to `sheet`, unrated."""
+    """Builds the unrated power MOSFET subcircuit fitted to `sheet`."""
     drain, gate, source = (c.port(name) for name in ("drain", "gate", "source"))
     sign = 1.0 if sheet.channel == "n" else -1.0
     resistance = drain_resistance(sheet)

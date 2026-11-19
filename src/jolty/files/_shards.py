@@ -21,22 +21,22 @@ from jolty.specs import Measure, MeasureError, Reading, Requirement, Specs
 from jolty.units import Quantity
 
 _SHARD_VERSION: Final = 3
-"""The version of the shard file's format that jolty writes and reads."""
+"""Shard archive format version supported for reading and writing."""
 
 
 @dataclass(frozen=True, slots=True)
 class Shard:
-    """The samples from `start` up to `stop` of a plan's Monte Carlo analysis, run.
+    """Simulated Monte Carlo slice from `start` (inclusive) to `stop` (exclusive).
 
-    The analysis draws `samples` samples from its `seed`, each of the circuit's
-    `toleranced` parameters and the kit's mismatch of its `mismatched` foundry's
-    devices, and runs them at the plan's own conditions, then at its `corners`, by
-    name. `conditions` holds the batch of the shard's samples at each, row 0 its
-    sample `start`, or None where the circuit does not elaborate. `analyses` names
-    every analysis of the plan, and `specs` are those its samples were measured
-    against, if any, each requirement's measure the batch's measure at its
-    place. Shards of one run of the analysis share their `digest`, which
-    [`jolty.shards`][jolty.shards] makes.
+    The full analysis draws `samples` samples from `seed`, varying the circuit's
+    `toleranced` parameters and mismatch across `mismatched` foundry devices. Each
+    sample runs at the nominal plan conditions and then at each named corner in
+    `corners`. The `conditions` tuple stores one batch result per condition (row 0
+    corresponds to sample `start`), or `None` when the circuit fails to elaborate. The
+    `analyses` tuple lists every analysis in the plan. When `specs` is present, each
+    requirement's measure corresponds to the batch measure at the same index. Shards
+    belonging to the same analysis run share the `digest` computed by
+    [`jolty.shards`][jolty.shards].
     """
 
     start: int
@@ -153,10 +153,11 @@ def save_shard(path: Path, shard: Shard) -> None:
 
 
 def load_shard(path: Path) -> Shard:
-    """Reads the shard file at `path`.
+    """Reads the shard archive at `path`.
 
     Raises:
-        JoltyError: When the file is not a jolty shard file of this version.
+        JoltyError: When `path` is not a valid jolty shard archive of the supported
+            format version.
     """
     unreadable = f"{path} is not a jolty shard file of version {_SHARD_VERSION}"
     with open_validated(path, _Shard, unreadable) as (header, data):

@@ -1,11 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Structural checks: facts about a circuit's topology, found before any analysis.
+"""Structural and post-simulation circuit checks and diagnostic reporting.
 
-The engine checks every rule on an elaborated circuit, such as a node with no DC path
-to the ground or a loop of voltage sources, and returns a diagnostic for each fact it
-finds, naming the instances and nets involved. A check then reports each diagnostic at
-its rule's level: `error` when the fact surely breaks the circuit, `warn` when it may,
-and `ignore` to leave it out. Settings and options set levels over the rules' defaults.
+The engine evaluates structural rules on an elaborated circuit, such as missing DC
+paths to ground or voltage-source loops, and emits diagnostics naming the affected
+instances and nets. Each diagnostic is reported at the configured level for its rule:
+`error`, `warn`, or `ignore`. Settings and CLI options override rule defaults.
 
 Examples:
     >>> rules()["no-dc-path"].level
@@ -26,7 +25,7 @@ from jolty.settings import ALL, Level
 
 @dataclass(frozen=True, slots=True)
 class Rule:
-    """One fact a check can state: its name, its default level, and its condition."""
+    """Metadata for a single check rule: name, default level, and condition."""
 
     name: str
     level: Level
@@ -43,7 +42,7 @@ LOW_PHASE_MARGIN: Final = Rule(
 )
 
 MIN_PHASE_MARGIN: Final = 45.0
-"""The phase margin, in degrees, below which low-phase-margin states a loop's."""
+"""Minimum phase margin in degrees before low-phase-margin triggers."""
 
 LOW_GAIN_MARGIN: Final = Rule(
     "low-gain-margin",
@@ -54,7 +53,7 @@ LOW_GAIN_MARGIN: Final = Rule(
 )
 
 MIN_GAIN_MARGIN: Final = 6.0
-"""The gain margin, in decibels, below which low-gain-margin states a loop's."""
+"""Minimum gain margin in decibels before low-gain-margin triggers."""
 
 OVER_RATING: Final = Rule(
     "over-rating",
@@ -77,18 +76,18 @@ NEAR_RATING: Final = Rule(
 )
 
 DERATING_FACTOR: Final = 0.8
-"""The fraction of a rating past which near-rating states a stress."""
+"""Fraction of a stress rating threshold beyond which near-rating triggers."""
 
 ON_RESULTS: Final = (LOW_PHASE_MARGIN, LOW_GAIN_MARGIN, OVER_RATING, NEAR_RATING)
-"""The rules on analyses' results, which a simulation checks once it has them."""
+"""Post-simulation check rules evaluated on analysis results."""
 
 
 @cache
 def rules() -> dict[str, Rule]:
-    """Every rule, by name, in the order a check reports them.
+    """Returns all check rules keyed by name in reporting order.
 
-    The engine's come first: on the circuit's structure, and at its operating point.
-    Those on analyses' results follow.
+    Engine rules covering circuit topology and operating-point checks appear first,
+    followed by post-simulation rules evaluated on analysis results.
     """
     engine = {
         name: Rule(name, Level(level), condition)
@@ -98,16 +97,16 @@ def rules() -> dict[str, Rule]:
 
 
 class Location(ir.FrozenModel):
-    """An instance a diagnostic names, and the script line that placed it."""
+    """Circuit instance referenced by a diagnostic along with its source location."""
 
-    path: str = Field(description="The instance's path, such as 'X1/C1'.")
+    path: str = Field(description="Hierarchical path of the instance, such as 'X1/C1'.")
     source_location: ir.SourceLocation | None = Field(
-        default=None, description="The script line that placed it."
+        default=None, description="Build-script source line that placed the instance."
     )
 
     @override
     def __str__(self) -> str:
-        """The path, then the script line, such as ``X1/C1, filter.py:12 in rc()``."""
+        """Formats the path followed by optional script source line."""
         return (
             self.path
             if self.source_location is None
@@ -116,38 +115,46 @@ class Location(ir.FrozenModel):
 
 
 class Diagnostic(ir.FrozenModel):
-    """One fact a rule states about a circuit."""
+    """Single rule violation reported for a circuit."""
 
-    rule: str = Field(description="The rule's name, such as 'no-dc-path'.")
-    level: Level = Field(description="'error' or 'warn'.")
-    message: str = Field(description="What is true, naming instances and nets.")
-    instances: tuple[Location, ...] = Field(description="The instances involved.")
-    nets: tuple[str, ...] = Field(description="The nets involved, by path.")
+    rule: str = Field(description="Name of the triggered rule, such as 'no-dc-path'.")
+    level: Level = Field(description="Severity level: 'error' or 'warn'.")
+    message: str = Field(
+        description="Factual description naming the affected instances and nets."
+    )
+    instances: tuple[Location, ...] = Field(
+        description="Circuit instances involved in the diagnostic."
+    )
+    nets: tuple[str, ...] = Field(
+        description="Hierarchical paths of the nets involved in the diagnostic."
+    )
 
     def describe(self) -> str:
-        """The diagnostic in a compiler's form, one instance per line."""
+        """Formats the diagnostic in compiler style with one instance per line."""
         lines = [f"{self.level}[{self.rule}]: {self.message}"]
         lines.extend(f"  = {instance}" for instance in self.instances)
         return "\n".join(lines)
 
 
 class CheckReport(ir.FrozenModel):
-    """What a check found: its diagnostics, errors first, and how many of each level."""
+    """Summary of check diagnostics ordered errors-first with severity counts."""
 
     diagnostics: tuple[Diagnostic, ...] = Field(
-        description="The diagnostics, errors first, up to the configured limit."
+        description="Reported diagnostics, errors first, up to the configured limit."
     )
-    errors: int = Field(description="Diagnostics at the level error.")
-    warnings: int = Field(description="Diagnostics at the level warn.")
-    unlisted: int = Field(description="Diagnostics past the limit, left out.")
+    errors: int = Field(description="Total count of error-level diagnostics.")
+    warnings: int = Field(description="Total count of warning-level diagnostics.")
+    unlisted: int = Field(
+        description="Count of omitted diagnostics beyond the configured limit."
+    )
 
     @property
     def ok(self) -> bool:
-        """Whether the check found no error."""
+        """Pass status indicating that zero error-level diagnostics were reported."""
         return self.errors == 0
 
     def describe(self) -> str:
-        """The report as text: each diagnostic, then the counts."""
+        """Formats all listed diagnostics followed by summary severity counts."""
         counts = f"{_plural(self.errors, 'error')}, {_plural(self.warnings, 'warning')}"
         if self.unlisted:
             counts += f" ({self.unlisted} not listed)"
@@ -157,10 +164,10 @@ class CheckReport(ir.FrozenModel):
 
 
 def problem(found: _core.Problem) -> str:
-    """A problem the engine `found`, in a compiler's form.
+    """Formats an engine elaboration problem `found` in compiler style.
 
-    The form is what is wrong, then the instance and the script line that placed it, if
-    the problem is about one.
+    Output starts with the error message and appends the instance path and script
+    source line when available.
 
     Examples:
         >>> source = {"file": "amp.py", "line": 9, "function": "amp"}
@@ -179,7 +186,7 @@ def problem(found: _core.Problem) -> str:
 
 
 def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
-    """The diagnostics the engine `found`, each at its rule's default level."""
+    """Converts raw engine diagnostics `found` into models with default levels."""
     known = rules()
     return tuple(
         Diagnostic(
@@ -212,13 +219,15 @@ def levels(
     warn: Iterable[str] = (),
     ignore: Iterable[str] = (),
 ) -> dict[str, Level]:
-    """The level of every rule: its default, then the configured levels, then options.
+    """Resolves the effective severity level for every check rule.
 
-    In `configured`, as in each option, ``all`` sets every rule, and a rule's own entry
-    overrides it.
+    Resolution applies rule defaults first, then `configured` settings, then CLI
+    options. The ``all`` wildcard applies to every rule and is overridden by explicit
+    rule entries in the same layer.
 
     Raises:
-        JoltyError: When a name is no rule, or the options give a rule two levels.
+        JoltyError: When a name matches no rule or CLI options assign conflicting
+            levels to the same rule.
     """
     known = rules()
     chosen = {name: rule.level for name, rule in known.items()}
@@ -251,7 +260,7 @@ def _apply(
 def report(
     diagnostics: Iterable[Diagnostic], chosen: Mapping[str, Level], limit: int
 ) -> CheckReport:
-    """The report of `diagnostics` at the `chosen` levels, listing `limit` of them."""
+    """Builds a `CheckReport` from `diagnostics` using `chosen` levels up to `limit`."""
     leveled = [
         diagnostic.model_copy(update={"level": chosen[diagnostic.rule]})
         for diagnostic in diagnostics

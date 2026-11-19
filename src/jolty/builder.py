@@ -1,12 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""Write circuits as Python: components, their ports, what they place and how it joins.
+"""Python circuit builder for components, ports, placements, and net connections.
 
-A component is a function decorated with [`component`][jolty.builder.component]. It
-receives a [`Builder`][jolty.builder.Builder], declares ports, places devices and other
-components, and connects their terminals. Calling the decorated function with its
-parameters returns a [`Component`][jolty.builder.Component], which another component
-places, or [`circuit`][jolty.builder.circuit] turns into the circuit format with it at
-the top.
+A component is a function decorated with [`component`][jolty.builder.component]. The
+decorated function receives a [`Builder`][jolty.builder.Builder] to declare ports,
+place devices or child components, and connect terminals. Calling the decorated
+function returns a [`Component`][jolty.builder.Component] that another component can
+place or that [`circuit`][jolty.builder.circuit] converts into a top-level circuit IR.
 
 Examples:
     >>> from jolty import devices
@@ -43,40 +42,40 @@ from jolty.ir import Role
 from jolty.units import Quantity
 
 _NAME: Final = re.compile(r"[A-Za-z0-9_+\-]+")
-"""Ids and net names: no dot, which joins an instance to its terminal, and no slash."""
+"""Valid pattern for instance and net names, excluding dots and slashes."""
 
 
 @dataclass(frozen=True, slots=True)
 class Terminal:
-    """A terminal of a placed instance."""
+    """Terminal of a placed instance."""
 
     instance: str
     name: str
 
     @override
     def __str__(self) -> str:
-        """The instance and terminal, such as ``R1.a``."""
+        """Formats the terminal as ``<instance>.<name>``, such as ``R1.a``."""
         return f"{self.instance}.{self.name}"
 
 
 @dataclass(frozen=True, slots=True)
 class Net:
-    """A named net of the component being built: a port, or a net named on purpose."""
+    """Named net of a component: either a port or an explicitly declared net."""
 
     name: str
 
     @override
     def __str__(self) -> str:
-        """The net's name."""
+        """Returns the net name."""
         return self.name
 
 
 type Connectable = Terminal | Net
-"""Anything a connection joins."""
+"""Endpoint that a net connection can join."""
 
 
 class Placed:
-    """A placed device or component, whose terminals are its attributes.
+    """Placed device or component whose terminals are exposed as attributes.
 
     Examples:
         >>> from jolty import devices
@@ -89,27 +88,27 @@ class Placed:
     __slots__ = ("_name", "_terminals")
 
     def __init__(self, name: str, terminals: tuple[str, ...]) -> None:
-        """Holds the instance's `name` and the names of its `terminals`."""
+        """Stores the instance `name` and its valid `terminals`."""
         self._name = name
         self._terminals = terminals
 
     @property
     def name(self) -> str:
-        """The instance's name."""
+        """Name of the placed instance."""
         return self._name
 
     def __getattr__(self, name: str) -> Terminal:
-        """The terminal called `name`."""
+        """Returns the terminal named `name`."""
         if name in self._terminals:
             return Terminal(self._name, name)
         message = (
             f"{self._name} has no terminal {name!r}; "
-            f"it has {', '.join(self._terminals)}"
+            f"available terminals: {', '.join(self._terminals)}"
         )
         raise AttributeError(message)
 
     def __getitem__(self, name: str) -> Terminal:
-        """The terminal called `name`, which may not be a Python identifier."""
+        """Returns the terminal named `name`, even when not a Python identifier."""
         try:
             return self.__getattr__(name)
         except AttributeError as error:
@@ -118,11 +117,11 @@ class Placed:
 
 @dataclass(frozen=True, eq=False)
 class Component:
-    """A built component: its name, its definition, and the components it places.
+    """Built component with its name, IR definition, and child components.
 
-    Like a device, it may state ratings, which a simulation checks at its ports, and
-    the number of the part it stands for, which a bill of materials prices as one part.
-    Each instance placed of it carries them.
+    A component can carry port stress ratings checked during simulation and a
+    manufacturer part number priced as a single item in a bill of materials. Every
+    placed instance of the component inherits those ratings and part number.
     """
 
     name: str
@@ -133,7 +132,7 @@ class Component:
 
     @property
     def ports(self) -> tuple[str, ...]:
-        """Its ports' names, in the order it declares them."""
+        """Port names of the component in declaration order."""
         return tuple(port.name for port in self.definition.ports)
 
     def rated(
@@ -144,18 +143,17 @@ class Component:
         minimum: Quantity | None = None,
         terminals: Sequence[str] | None = None,
     ) -> Component:
-        """The component, with a rating its maker states on one of its `stress`es.
+        """Returns a copy of the component with an added port stress rating.
 
-        The rating is of its ports, as [`Device.rated`][jolty.devices.Device.rated]
-        describes: its power is what it dissipates, all its electrical ports' currents
-        times their voltages, and its temperature the simulation's, raised by the
-        thermal net its port ``thermal`` joins, if it has one.
+        Ratings follow [`Device.rated`][jolty.devices.Device.rated] semantics: power
+        is total electrical port dissipation, and temperature is ambient plus the
+        ``thermal`` port net rise when present.
 
         Raises:
-            DimensionError: When a bound is not a voltage, a current, a power or a
-                temperature as the stress is.
-            ValueError: When the terminals are not its ports, or not as many as the
-                stress needs, or the bounds are none or out of order.
+            DimensionError: When a bound does not match the physical dimension of
+                `stress`.
+            ValueError: When `terminals` are not component ports, have the wrong
+                count for `stress`, or have missing or inverted bounds.
         """
         rating = rate(
             self.ports, stress, maximum=maximum, minimum=minimum, terminals=terminals
@@ -163,15 +161,15 @@ class Component:
         return replace(self, ratings=(*self.ratings, rating))
 
     def numbered(self, part: str) -> Component:
-        """The component, standing for the one part its maker numbers `part`.
+        """Returns a copy of the component tagged with manufacturer part number `part`.
 
         Raises:
-            ValueError: When the number is empty or spaced at either end.
+            ValueError: When `part` is empty or has leading or trailing whitespace.
         """
         return replace(self, part=ir.part_number(part))
 
     def built_as(self, other: Component) -> bool:
-        """Whether `other` is this component, but for its ratings and its number."""
+        """Returns whether `other` matches this component except ratings and part."""
         return other is self or (
             other.name == self.name
             and other.definition == self.definition
@@ -191,10 +189,10 @@ class _Placement:
 
 
 class Builder:
-    """What a component function builds with: ports, placements and connections."""
+    """Mutable builder for ports, placements, and net connections in a component."""
 
     def __init__(self, name: str) -> None:
-        """Starts the component called `name`, with nothing in it."""
+        """Initializes an empty builder for the component named `name`."""
         self._name = name
         self._ports: dict[str, Role] = {}
         self._named: set[str] = set()
@@ -204,32 +202,32 @@ class Builder:
         self._root_names: dict[Connectable, str] = {}
 
     def port(self, name: str, role: Role = Role.SIGNAL) -> Net:
-        """Declares the port `name`, the net of that name seen from outside.
+        """Declares external port `name` with the given `role`.
 
         Raises:
-            BuildError: When the name is invalid or already declared.
+            BuildError: When `name` is invalid or already declared.
         """
         self._declare(name, "port")
         self._ports[name] = role
         return Net(name)
 
     def net(self, name: str) -> Net:
-        """Declares the net `name`, so connections can join it by name.
+        """Declares internal net `name` so connections can reference it by name.
 
         Raises:
-            BuildError: When the name is invalid or already declared.
+            BuildError: When `name` is invalid or already declared.
         """
         self._declare(name, "net")
         return Net(name)
 
     def place(self, item: Device | Component, *, name: str) -> Placed:
-        """Places a device or a component as the instance `name`.
+        """Places a device or component as instance `name`.
 
-        The instance records the line of the build script that placed it.
+        The placed instance records the build-script source line that placed it.
 
         Raises:
-            BuildError: When the name is invalid or already taken in this component, or
-                another component of the same name is placed in it.
+            BuildError: When `name` is invalid or already used in this component, or
+                when another distinct component already uses the same name.
         """
         _check_name(name, "an instance name")
         if name in self._placements:
@@ -261,14 +259,14 @@ class Builder:
         return Placed(name, placement.terminals)
 
     def connect(self, *points: Connectable, name: str | None = None) -> None:
-        """Joins `points` into one net, and declares it as the net `name` if given.
+        """Joins `points` into one net and optionally declares it as `name`.
 
-        Later connections join a named net as ``Net(name)``.
+        Subsequent connections can reference a named net with ``Net(name)``.
 
         Raises:
             BuildError: When a point does not belong to this component, the
-                connection would join two nets that have different names, or `name`
-                is invalid or already declared.
+                connection joins two differently named nets, or `name` is invalid or
+                already declared.
         """
         joined = [*points, self.net(name)] if name is not None else list(points)
         for point in joined:
@@ -277,7 +275,7 @@ class Builder:
             self._join(joined[0], point)
 
     def finish(self) -> Component:
-        """The component as built."""
+        """Returns the finalized component built from all declared items."""
         nets: dict[Connectable, str] = {}
         instances = []
         for id, placement in self._placements.items():
@@ -346,22 +344,22 @@ class Builder:
 
 
 class ComponentFunction[**P](Protocol):
-    """A function that builds a component: it takes a builder, then its parameters."""
+    """Protocol for a component builder function taking a builder and parameters."""
 
     __name__: str
 
     def __call__(self, c: Builder, /, *args: P.args, **kwargs: P.kwargs) -> None:
-        """Builds the component with `c`."""
+        """Populates the component definition using builder `c`."""
         ...
 
 
 def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
-    """Turns a function that builds into a factory of components.
+    """Wraps a component builder function into a memoized component factory.
 
-    The factory takes the function's parameters after the builder. Each set of
-    arguments builds one component, named after the function and those arguments, such
-    as ``rc_filter[resistance=1kΩ]``; calling it again with arguments of the same name
-    returns the same component.
+    The factory accepts the parameters following the builder argument. Each unique
+    argument set builds a component named after the function and formatted arguments,
+    such as ``rc_filter[resistance=1kΩ]``. Repeated calls with identical formatted
+    arguments return the cached component.
     """
     signature = inspect.signature(function)
     built: dict[str, Component] = {}
@@ -383,10 +381,10 @@ def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
 
 
 def circuit(top: Component) -> ir.Circuit:
-    """The circuit with `top` at the top of its hierarchy.
+    """Builds a circuit IR with `top` as the top-level component.
 
     Raises:
-        BuildError: When two different components share a name.
+        BuildError: When two distinct components share the same name.
     """
     components: dict[str, Component] = {}
     pending = [top]
@@ -410,11 +408,11 @@ def _check_name(name: str, what: str) -> None:
 
 
 def _format(value: object) -> str:
-    """An argument as a component's name writes it, without whitespace.
+    """Formats an argument value without whitespace for component names.
 
-    A quantity is written to 15 significant digits with its SI prefix, a number or a
-    short string as in Python, and anything else, such as a device, as its type and a
-    digest of its value, so distinct arguments name distinct components.
+    Quantities format to 15 significant digits with an SI prefix, while scalars and
+    short strings use Python repr. Any other value, such as a device, formats as its
+    type name plus a digest so distinct arguments produce distinct component names.
 
     Examples:
         >>> from jolty.units import kohm
@@ -438,14 +436,15 @@ def _format(value: object) -> str:
 
 
 def _digest(value: object) -> str:
-    """Eight hexadecimal digits of the SHA-256 of `value`'s representation."""
+    """Returns eight hexadecimal digits of the SHA-256 digest of ``repr(value)``."""
     return hashlib.sha256(repr(value).encode()).hexdigest()[:8]
 
 
 def caller() -> ir.SourceLocation | None:
-    """The script line that called the function calling this, such as a method.
+    """Returns the script source location that invoked the calling function.
 
-    Its file is relative to the working directory when it lies within it.
+    The recorded file path is relative to the working directory when located inside
+    that directory.
     """
     frame = inspect.currentframe()
     line = frame.f_back.f_back if frame and frame.f_back else None
@@ -460,9 +459,9 @@ def caller() -> ir.SourceLocation | None:
 
 @functools.cache
 def _script_path(filename: str, directory: Path) -> str:
-    """The script `filename`, relative to `directory` when it lies within it.
+    """Returns `filename` relative to `directory` when located inside `directory`.
 
-    A script places many instances, so each file is resolved once per directory.
+    Caching avoids resolving the same script path repeatedly for every placement.
     """
     path = Path(filename)
     with contextlib.suppress(ValueError):

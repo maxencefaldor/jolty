@@ -1,29 +1,25 @@
 # Copyright 2026 Maxence Faldor
-"""The results of analyses, read by net and by instance.
+"""Analysis result containers providing access by net name and instance path.
 
-Every result holds the circuit's unknowns: node voltages, named by net path such as
-``out`` or ``amplifier/mid``, and branch currents and other internal unknowns, named by
-instance path and label such as ``V1:current``. ``voltage`` and ``current`` read them by
-name. It holds the levels of the circuit's logic nets too, which ``logic_level`` reads
-by name: 0, 1, or NaN for an unknown level.
+Every analysis result stores circuit unknowns: node voltages named by net path (such
+as ``out`` or ``amplifier/mid``), and branch currents or internal unknowns named by
+instance path and label (such as ``V1:current``). The ``voltage`` and ``current``
+methods look up unknowns by name. Results also store logic net levels accessed through
+``logic_level`` as 0, 1, or NaN for an unknown level.
 
-It holds what its [`Recording`][jolty.results.Recording] says of the instances its
-plan's or its analysis's ``record`` names. For a device: the current into each terminal,
-and the charge the terminal holds, which ``current`` and ``charge`` read by instance and
-terminal, such as ``X1/R1`` and ``a``; its own small-signal model, the derivative of
-each of its equations with respect to each of its unknowns, which ``conductance`` and
-``capacitance`` read; and the variables it computes on its way, such as a transistor's
-threshold voltage, which ``variable`` reads. For a component instance or a logic device:
-its terminals' currents and charges, such as ``X1`` and ``vdd``, each the sum of the
-device terminals behind it.
+Results also include data described by their [`Recording`][jolty.results.Recording]
+for instances matched by the plan or analysis ``record`` patterns. For primitive
+devices, recorded data covers terminal currents and charges (via ``current`` and
+``charge``), small-signal derivatives (via ``conductance`` and ``capacitance``), and
+internal model variables such as threshold voltage (via ``variable``). For component
+instances and logic devices, recorded terminal currents and charges sum the underlying
+device terminals.
 
-Each result states where its analysis used logic devices outside the domains their
-timing was measured over, its ``excursions``, as the engine watched it.
+Watched analyses record logic-device timing-domain excursions in ``excursions``.
 
-A [`BatchResult`][jolty.results.BatchResult] holds what many runs of one circuit found
-as columns, one row per run: the values each run took, whether each analysis ended,
-what each measure read, and the values of some unknowns at every point of an
-analysis.
+A [`BatchResult`][jolty.results.BatchResult] stores tabular data across multiple runs
+of one circuit, with one row per run. Columns hold sampled parameter values, analysis
+completion flags, evaluated measures, and optional per-point unknown traces.
 """
 
 import functools
@@ -46,7 +42,7 @@ type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
 
 type Plain = Literal["dB", "°", "%", ""]
-"""The unit of a measure that reads a plain number: none for a ratio."""
+"""Unit string for a dimensionless measure, with an empty string for a plain ratio."""
 
 
 def _none() -> Real:
@@ -64,15 +60,14 @@ def _no_phasors() -> Complex:
 def column(
     unknowns: tuple[Unknown, ...], name: str, nature: Nature | None = None
 ) -> int:
-    """The column of the unknown `name` in the values of a result over `unknowns`.
+    """Returns the column index of unknown `name` in `unknowns`.
 
-    The column is found in a dictionary of the unknowns by name, made the first time
-    one of them is read and kept for the last four tuples of unknowns read, each a
-    circuit's that its results share.
+    Lookup uses an identity-keyed dictionary cached for the four most recently
+    accessed `unknowns` tuples shared across results of a circuit.
 
     Raises:
-        KeyError: When no unknown has that name, the message suggesting the closest
-            names, or when `nature` is given and the unknown is not of it.
+        KeyError: If no unknown matches `name` (suggesting close matches) or if
+            `nature` is given and differs from the unknown's physical quantity.
     """
     index = _columns(_Same(unknowns)).get(name)
     if index is None:
@@ -88,10 +83,10 @@ def column(
 
 @dataclass(frozen=True, slots=True, eq=False)
 class _Same:
-    """The unknowns of one circuit, the same object only equal to itself.
+    """Identity-equality wrapper around a circuit's `unknowns` tuple.
 
-    It keys `_columns` by identity, which compares in constant time where the tuple
-    would compare and hash every unknown.
+    Wrapping the tuple lets `_columns` cache lookups by object identity in constant
+    time instead of hashing and comparing every unknown.
     """
 
     unknowns: tuple[Unknown, ...]
@@ -107,42 +102,40 @@ class _Same:
 
 @functools.lru_cache(maxsize=4)
 def _columns(same: _Same) -> dict[str, int]:
-    """The column of each unknown, by name."""
+    """Builds a mapping from unknown name to column index for `same.unknowns`."""
     return {unknown.name: index for index, unknown in enumerate(same.unknowns)}
 
 
 @dataclass(frozen=True, slots=True)
 class RecordedDevice:
-    """A device whose terminals, derivatives and variables a result recorded.
+    """Metadata for a device whose terminals, derivatives, or variables were recorded.
 
-    A transistor whose region alone it recorded has no terminal and no internal
-    unknown, and of its variables its ``region`` and its `margins` alone.
+    A transistor recorded only for operating-region reporting has empty `terminals`
+    and `internals`, and records only its ``region`` and `margins` variables.
     """
 
     path: str
-    """Its path, such as ``X1/M1``."""
+    """Hierarchical instance path of the recorded device, such as ``X1/M1``."""
     terminals: tuple[str, ...]
-    """Its terminals' names, such as ``drain``, in their order among its unknowns."""
+    """Terminal names such as ``drain``, ordered as they appear in device unknowns."""
     internals: tuple[str, ...] = ()
-    """Its internal unknowns, by name, such as ``X1/M1:drain``, after its terminals."""
+    """Internal unknown names such as ``X1/M1:drain``, following device terminals."""
     variables: tuple[str, ...] = ()
-    """Its variables' names, such as ``threshold_voltage``."""
+    """Recorded internal model variable names, such as ``threshold_voltage``."""
     regions: tuple[str, ...] = ()
-    """The regions of operation its model's equations distinguish, such as
-    ``saturated``, in the order its variable ``region`` numbers them from 0: none for a
-    device that is no transistor."""
+    """Operating region names such as ``saturated`` indexed from 0 by the ``region``
+    variable, or empty for non-transistor devices."""
     margins: tuple[str, ...] = ()
-    """Its variables that are its margins to the regions' boundaries, in volts, such as
-    ``saturation_margin``: each is zero on a boundary, where its model's equations
-    switch from one region to the next, changes sign across it, and is positive where
-    the transistor is on, or saturated, whatever its polarity: a p-channel's or a PNP's
-    is an n-channel's or an NPN's at its voltages reversed."""
+    """Variable names for operating-region boundary margins in volts, such as
+    ``saturation_margin``. Each margin is zero on a region boundary, changes sign
+    across the boundary, and is positive when on or saturated regardless of device
+    polarity."""
 
     @property
     def unknowns(self) -> tuple[str, ...]:
-        """Its unknowns as its derivatives name them, terminals then internal ones.
+        """Device unknown names in derivative order, terminals before internals.
 
-        A terminal is named by the device's path and its own name, such as
+        Each terminal is qualified by device path and terminal name, such as
         ``X1/M1.drain``.
         """
         return (
@@ -153,24 +146,24 @@ class RecordedDevice:
 
 @dataclass(frozen=True, slots=True)
 class _Index:
-    """The columns of a recording, by name."""
+    """Name-to-column lookup tables derived from a `Recording`."""
 
     terminals: tuple[str, ...]
-    """The name of each column of the currents."""
+    """Column names of the recorded terminal current and charge arrays."""
     columns: dict[str, int]
-    """The column of the currents of each terminal, by name."""
+    """Mapping from qualified terminal name to column index."""
     unknowns: dict[str, tuple[int, int]]
-    """Each device unknown's device and its index among the device's, by name."""
+    """Mapping from device unknown name to ``(device_index, local_unknown_index)``."""
     blocks: tuple[tuple[int, int], ...]
-    """Each device's first column of the derivatives, and its number of unknowns."""
+    """Starting derivative column offset and unknown count for each recorded device."""
     variables: dict[tuple[str, str], int]
-    """The column of each variable, by device and name."""
+    """Mapping from ``(device_path, variable_name)`` to variable column index."""
     devices: dict[str, RecordedDevice]
-    """The devices, by path."""
+    """Recorded devices keyed by hierarchical instance path."""
 
     @classmethod
     def from_recording(cls, recording: Recording) -> _Index:
-        """The columns of `recording`."""
+        """Builds column lookup tables from `recording`."""
         terminals = (
             *(
                 f"{device.path}.{terminal}"
@@ -206,15 +199,14 @@ class _Index:
 
 @dataclass(frozen=True, slots=True)
 class Recording:
-    """What a result recorded of the devices beside the unknowns, and where.
+    """Schema describing recorded device arrays and their column layout in a result.
 
-    A result's `currents` and `charges` have a column for each terminal of each of
-    `devices`, in order, then one for each of `summed_terminals`, each the sum of the
-    device terminals behind it; its `conductances` and `capacitances` have one for each
-    pair of each device's unknowns, its terminals then its internal unknowns, row by
-    row; and its `variables` one for each of each device's variables. Each is found by
-    name in a dictionary, made the first time one is read. A simulation records what the
-    plan's or the analysis's ``record`` names (see [`Plan`][jolty.plan.Plan]).
+    Recorded `currents` and `charges` arrays have one column per terminal of each
+    device in `devices`, followed by each entry in `summed_terminals`. Recorded
+    `conductances` and `capacitances` arrays store row-major derivative blocks over
+    each device's terminals and internal unknowns. Recorded `variables` arrays store
+    one column per variable of each device. Lookup tables are built lazily on first
+    access, covering instances matched by ``record`` in [`Plan`][jolty.plan.Plan].
 
     Examples:
         >>> recording = Recording((RecordedDevice("R1", ("a", "b")),), ("X1.p",))
@@ -225,35 +217,31 @@ class Recording:
     """
 
     devices: tuple[RecordedDevice, ...] = ()
-    """The devices recorded, in order."""
+    """Recorded primitive devices in column order."""
     summed_terminals: tuple[str, ...] = ()
-    """The terminals recorded of component instances and logic devices, such as
-    ``X1.vdd``, in order."""
+    """Recorded component-instance and logic-device terminals such as ``X1.vdd``."""
     thermal: frozenset[str] = frozenset()
-    """The thermal terminals among the devices' and the summed terminals', such as
-    ``Q1.thermal``: each one's current is the heat flowing into it, in watts."""
+    """Qualified thermal terminal names such as ``Q1.thermal``, whose currents
+    represent heat flow in watts."""
     _index: list[_Index] = field(
         default_factory=list, init=False, repr=False, compare=False
     )
 
     @property
     def terminals(self) -> tuple[str, ...]:
-        """The name of each column of the currents and charges, such as ``X1/R1.a``."""
+        """Column names of recorded currents and charges, such as ``X1/R1.a``."""
         return self._columns().terminals
 
     def find(self, instance: str, terminal: str) -> int | None:
-        """The column of the currents and charges of `terminal` of `instance`.
-
-        None when the result recorded no such terminal.
-        """
+        """Returns the column index for `terminal` on `instance`, or None."""
         return self._columns().columns.get(f"{instance}.{terminal}")
 
     def terminal(self, instance: str, terminal: str) -> int:
-        """The column of the currents and charges of `terminal` of `instance`.
+        """Returns the column index for `terminal` currents and charges on `instance`.
 
         Raises:
-            KeyError: When the result recorded no such terminal; the message suggests
-                the closest names and how to record it.
+            KeyError: If the terminal was not recorded, suggesting close names and how
+                to enable recording.
         """
         found = self.find(instance, terminal)
         if found is None:
@@ -264,16 +252,14 @@ class Recording:
         return found
 
     def derivative(self, equation: str, unknown: str) -> int:
-        """The column of the derivatives of `equation` with respect to `unknown`.
+        """Returns the column index for derivatives of `equation` by `unknown`.
 
-        Both are unknowns of one device: a terminal, such as ``M1.drain``, for the
-        current into it and the voltage at it, or an internal unknown, such as
-        ``M1:drain``, for its equation and its value.
+        Both arguments name unknowns of a single device: either a terminal such as
+        ``M1.drain`` or an internal unknown such as ``M1:drain``.
 
         Raises:
-            KeyError: When the result recorded no device with both unknowns; the
-                message suggests the closest names and how to record the device, its
-                path what comes before the last ``.`` or ``:`` of the name.
+            KeyError: If no single recorded device owns both unknowns, suggesting close
+                names and how to record the device.
         """
         index = self._columns()
         found = []
@@ -294,11 +280,11 @@ class Recording:
         return start + row * size + column
 
     def variable(self, instance: str, name: str) -> int:
-        """The column of the variable `name` of the device `instance`.
+        """Returns the column index for variable `name` on device `instance`.
 
         Raises:
-            KeyError: When the result recorded no such variable; the message suggests
-                the closest names and how to record it.
+            KeyError: If the variable was not recorded, suggesting close names and how
+                to enable recording.
         """
         index = self._columns()
         found = index.variables.get((instance, name))
@@ -310,11 +296,11 @@ class Recording:
         return found
 
     def regions(self, instance: str) -> tuple[str, ...]:
-        """The regions of operation the model of the device `instance` distinguishes.
+        """Returns the operating region names defined by the model of `instance`.
 
         Raises:
-            KeyError: When the result recorded no such device, suggesting the closest
-                and how to record it, or its model distinguishes no regions.
+            KeyError: If `instance` was not recorded or its device model defines no
+                operating regions.
         """
         index = self._columns()
         device = index.devices.get(instance)
@@ -327,7 +313,7 @@ class Recording:
         return device.regions
 
     def _holds(self, instance: str) -> bool:
-        """Whether the result recorded the device or the terminals at `instance`."""
+        """Returns whether `instance` or any summed terminal on it was recorded."""
         prefix = f"{instance}."
         return instance in self._columns().devices or any(
             summed_terminal.startswith(prefix)
@@ -343,14 +329,13 @@ class Recording:
 def _unrecorded(
     what: str, names: Iterable[str], name: str, instance: str, *, recorded: bool
 ) -> Never:
-    """Raises the error of reading `what` of the instance at `instance`.
+    """Raises a `KeyError` describing an unrecorded lookup `what` on `instance`.
 
-    The result did not record `what`, though it `recorded` the instance when the name
-    is mistaken.
+    When `recorded` is true, the error notes that `instance` was recorded but lacks
+    `what`. Otherwise the error explains how to add `instance` to ``record``.
 
     Raises:
-        KeyError: Suggesting the closest of the recorded `names` to `name` and, when
-            the result did not record the instance, how to record it or every instance.
+        KeyError: Always raised with close matches from `names` and recording details.
     """
     close = close_names(list(names), name)
     if recorded:
@@ -365,7 +350,7 @@ def _unrecorded(
 
 
 class RecordedValues(TypedDict):
-    """What the recorded devices did, as fields of a point, a sweep or a transient."""
+    """Typed mapping of recorded device arrays shared across result dataclasses."""
 
     recording: Recording
     currents: Real
@@ -376,20 +361,19 @@ class RecordedValues(TypedDict):
 
 
 def net_column(nets: tuple[str, ...], name: str) -> int:
-    """The column of the logic net `name` in the levels of a result over `nets`.
+    """Returns the column index of logic net `name` in `nets`.
 
     Raises:
-        KeyError: When no logic net has that name; the message suggests the closest.
+        KeyError: If `name` is not in `nets`, suggesting close matches.
     """
     return _find(list(nets), name, "the circuit has no logic net")
 
 
 def _find(names: list[str], name: str, missing: str) -> int:
-    """The index of `name` among `names`.
+    """Returns the index of `name` in `names`.
 
     Raises:
-        KeyError: Saying `missing`, such as "the circuit has no unknown", named `name`,
-            and the closest names.
+        KeyError: If `name` is absent, formatting `missing`, `name`, and close matches.
     """
     if name in names:
         return names.index(name)
@@ -399,7 +383,7 @@ def _find(names: list[str], name: str, missing: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class LogicTrace:
-    """A logic net's level over time: its level at time zero, then at each change.
+    """Piecewise-constant logic net level over time, starting at time zero.
 
     Examples:
         >>> trace = LogicTrace(np.array([0.0, 2e-9]), np.array([0.0, 1.0]))
@@ -411,7 +395,7 @@ class LogicTrace:
     levels: Real
 
     def at(self, times: Real) -> Real:
-        """The level at each of `times`: that of the last change at or before it."""
+        """Evaluates the logic level at each point in `times` via step interpolation."""
         indices = np.searchsorted(self.times, times, side="right") - 1
         return self.levels[np.maximum(indices, 0)]
 
@@ -421,38 +405,44 @@ def _current(instance: str) -> str:
 
 
 class Excursion(ir.FrozenModel):
-    """A logic device used outside its domain, where its timing was never measured."""
+    """Record of a logic device operated outside its characterized timing domain."""
 
-    instance: str = Field(description="The device's path.")
+    instance: str = Field(description="Instance path of the logic device.")
     bound: Literal["input transition", "load", "supply"] = Field(
-        description="What left the domain."
+        description="Characterized timing parameter that exceeded its domain."
     )
-    minimum: float = Field(description="The domain's minimum, in SI base units.")
-    maximum: float = Field(description="The domain's maximum.")
-    value: float = Field(description="The value furthest outside it.")
+    minimum: float = Field(
+        description="Lower bound of the characterized domain, in SI base units."
+    )
+    maximum: float = Field(
+        description="Upper bound of the characterized domain, in SI base units."
+    )
+    value: float = Field(
+        description="Observed value farthest outside the characterized domain."
+    )
     time: float = Field(
-        description="When it first left, in seconds; zero at an operating point."
+        description="First simulation time of the excursion in seconds, or zero at "
+        "an operating point."
     )
-    count: int = Field(description="How many times it was read outside.")
+    count: int = Field(description="Number of evaluations observed outside the domain.")
 
 
 @dataclass(frozen=True, slots=True)
 class _Watched:
-    """A result of an analysis that the engine watches for logic devices' domains."""
+    """Base mixin for analysis results that track logic-device domain excursions."""
 
     excursions: tuple[Excursion, ...] | None = field(default=None, kw_only=True)
-    """Where the analysis used logic devices outside their domains, each device and
-    bound once, as [`Simulation.run`][jolty.simulate.Simulation.run] watched it, and as
-    a results file keeps it. None where no run watched it: a run of a batch, a run in
-    ngspice, and a result within another's, such as a response's operating point, whose
-    analysis's result states them."""
+    """Logic-device timing-domain excursions observed during
+    [`Simulation.run`][jolty.simulate.Simulation.run] and preserved in results
+    archives, deduplicated per device and bound. Value is None for unwatched runs
+    such as batch runs, ngspice runs, or nested sub-results."""
 
 
 class _Unknowns[T]:
-    """A result's unknowns and its recorded terminals' currents, read by name.
+    """Mixin providing named access to circuit unknowns and recorded terminal currents.
 
-    A reading is one number of an operating point, or one per row of a result of many,
-    such as a sweep's levels, a transient's times or a response's frequencies.
+    Lookups return a scalar for an operating point or a one-dimensional array across
+    sweep values, frequencies, or time points.
     """
 
     __slots__ = ()
@@ -463,14 +453,14 @@ class _Unknowns[T]:
     currents: npt.NDArray[Any]
 
     def _read(self, values: npt.NDArray[Any]) -> T:
-        """`values`, a number or a column, as a reading."""
+        """Converts raw scalar or array `values` into the concrete reading type `T`."""
         raise NotImplementedError
 
     def _unknown(self, name: str, nature: Nature | None = None) -> T:
         return self._read(self.values[..., column(self.unknowns, name, nature)])
 
     def voltage(self, net: str, reference: str | None = None) -> T:
-        """The voltage of `net`, relative to `reference` or to ground."""
+        """Returns the voltage of `net` relative to `reference` or ground."""
         values = self.values[..., column(self.unknowns, net, "voltage")]
         if reference is not None:
             values = (
@@ -479,24 +469,24 @@ class _Unknowns[T]:
         return self._read(values)
 
     def rise(self, net: str) -> T:
-        """The temperature of the thermal net `net` above the ambient, in kelvins."""
+        """Returns the temperature rise of thermal `net` above ambient, in kelvins."""
         return self._unknown(net, "temperature")
 
     def state(self, name: str) -> T:
-        """The device's state `name`, such as a memristor's ``M1:state``."""
+        """Returns the internal device state `name`, such as ``M1:state``."""
         return self._unknown(name, "state")
 
     def current(self, instance: str, terminal: str | None = None) -> T:
-        """The current into `terminal` of `instance`.
+        """Returns the current into `terminal` of `instance`, or its branch current.
 
-        The instance is a device, a component instance or a logic device, which the
-        result recorded; into a thermal terminal, the current is the heat flowing in, in
-        watts. Without a terminal, the current through `instance`, a source or an
-        inductor, in its direction, which every result holds.
+        When `terminal` is given, returns the recorded current entering that terminal
+        on a device, component instance, or logic device (or heat flow in watts for a
+        thermal terminal). When `terminal` is None, returns the branch current through
+        a source or inductor.
 
         Raises:
-            KeyError: When the result holds no such current; the message suggests the
-                closest names, and how to record a terminal.
+            KeyError: If the requested current is unavailable, suggesting close names
+                and how to record terminals.
         """
         if terminal is None:
             return self._unknown(_current(instance))
@@ -506,10 +496,10 @@ class _Unknowns[T]:
 
 
 class _Devices[T](_Unknowns[T]):
-    """A result's unknowns, and its devices' charges, derivatives and variables, read.
+    """Mixin providing named access to unknowns and recorded device quantities.
 
-    Each is read by name, as `_Unknowns` reads an unknown, from what the result
-    recorded.
+    Subclasses extend `_Unknowns` with recorded terminal charges, small-signal
+    derivatives, and internal device variables.
     """
 
     __slots__ = ()
@@ -520,98 +510,94 @@ class _Devices[T](_Unknowns[T]):
     variables: npt.NDArray[Any]
 
     def charge(self, instance: str, terminal: str) -> T:
-        """The charge `terminal` of `instance` holds.
+        """Returns the recorded charge stored on `terminal` of `instance`.
 
         Raises:
-            KeyError: When the result recorded no such terminal.
+            KeyError: If `terminal` of `instance` was not recorded.
         """
         return self._read(
             self.charges[..., self.recording.terminal(instance, terminal)]
         )
 
     def conductance(self, equation: str, unknown: str) -> T:
-        """The derivative of a device's `equation`'s residual with respect to `unknown`.
+        """Returns the residual derivative of `equation` with respect to `unknown`.
 
-        For two terminals, such as ``M1.drain`` and ``M1.gate``, it is the change of the
-        current into the first with the voltage at the second.
+        For two terminals such as ``M1.drain`` and ``M1.gate``, the conductance is the
+        partial derivative of current entering the first terminal with respect to
+        voltage at the second.
 
         Raises:
-            KeyError: When the result recorded no device with both unknowns.
+            KeyError: If no recorded device owns both unknowns.
         """
         index = self.recording.derivative(equation, unknown)
         return self._read(self.conductances[..., index])
 
     def capacitance(self, equation: str, unknown: str) -> T:
-        """The derivative of a device's `equation`'s charge with respect to `unknown`.
+        """Returns the charge derivative of `equation` with respect to `unknown`.
 
-        For two terminals, it is the change of the first's charge with the voltage at
-        the second.
+        For two terminals, the capacitance is the partial derivative of charge on the
+        first terminal with respect to voltage at the second.
 
         Raises:
-            KeyError: When the result recorded no device with both unknowns.
+            KeyError: If no recorded device owns both unknowns.
         """
         index = self.recording.derivative(equation, unknown)
         return self._read(self.capacitances[..., index])
 
     def variable(self, instance: str, name: str) -> T:
-        """The variable `name` of the device `instance`, such as a threshold voltage.
+        """Returns the recorded internal variable `name` of `instance`.
 
         Raises:
-            KeyError: When the result recorded no such variable.
+            KeyError: If variable `name` of `instance` was not recorded.
         """
         return self._read(self.variables[..., self.recording.variable(instance, name)])
 
 
 @dataclass(frozen=True, slots=True)
 class OperatingPointResult(_Devices[float], _Watched):
-    """A DC solution, the strategy that found it, and its Newton iterations."""
+    """DC operating-point solution, solver strategy, and Newton iteration count."""
 
     unknowns: tuple[Unknown, ...]
     values: Real
     strategy: str
-    """How the engine found it: ``direct``, Newton iteration alone, or the aid that
-    found it where Newton iteration failed, ``gmin_stepping``,
-    ``junction_gmin_stepping``, ``source_stepping`` or ``pseudo_transient``, tried in
-    that order; ``ngspice`` for ngspice's."""
+    """Convergence strategy that found the operating point: ``direct``,
+    ``gmin_stepping``, ``junction_gmin_stepping``, ``source_stepping``,
+    ``pseudo_transient``, or ``ngspice``."""
     iterations: int | None = None
-    """The Newton iterations that found it: the strategy's that found it, and those of
-    every strategy tried before it and of each solve again as the logic settled with
-    it, as solving it afresh runs them, whatever the simulation remembered; None for
-    ngspice's, which it does not count."""
+    """Total Newton iterations across the converging strategy, earlier fallback
+    strategies, and logic-settling re-solves, or None for ngspice runs that do not
+    report iteration counts."""
     nets: tuple[str, ...] = ()
-    """The logic nets, in the order of `logic`."""
+    """Logic net names ordered to match `logic`."""
     logic: Real = field(default_factory=_none)
-    """Each logic net's level."""
+    """Logic level of each digital net at the operating point."""
     recording: Recording = field(default_factory=Recording)
-    """What the result recorded of the devices, and where its arrays hold each."""
+    """Schema of recorded device quantities and their column offsets."""
     currents: Real = field(default_factory=_none)
-    """The current into each recorded terminal, in amperes."""
+    """Current entering each recorded terminal, in amperes (or watts if thermal)."""
     charges: Real = field(default_factory=_none)
-    """The charge each recorded terminal holds, in coulombs."""
+    """Charge stored on each recorded terminal, in coulombs."""
     conductances: Real = field(default_factory=_none)
-    """The derivative of each recorded equation's residual with respect to each unknown
-    of its device."""
+    """Recorded residual derivatives with respect to device unknowns."""
     capacitances: Real = field(default_factory=_none)
-    """The derivative of each recorded equation's charge with respect to each unknown
-    of its device."""
+    """Recorded charge derivatives with respect to device unknowns."""
     variables: Real = field(default_factory=_none)
-    """Each recorded variable's value, in SI base units."""
+    """Recorded internal device variable values, in SI base units."""
 
     def logic_level(self, net: str) -> float:
-        """The level of the logic net `net`: 0, 1, or NaN when unknown."""
+        """Returns the logic level of `net`: 0, 1, or NaN when unknown."""
         return float(self.logic[net_column(self.nets, net)])
 
     def region(self, instance: str) -> str:
-        """The region of operation of the transistor `instance`, such as ``saturated``.
+        """Returns the operating region of transistor `instance`, such as ``saturated``.
 
-        Its model's equations say what it is, numbering it among its recorded device's
-        `regions` with its variable ``region``; its margins to the regions' boundaries
-        are variables too, which the device's `margins` names, such as
-        ``variable("M1", "saturation_margin")``.
+        The operating region is decoded from the device's recorded ``region`` variable
+        using its `regions` table. Boundary margins are available through ``variable``,
+        such as ``variable("M1", "saturation_margin")``.
 
         Raises:
-            KeyError: When the result recorded no such device, or its model
-                distinguishes no regions.
+            KeyError: If `instance` was not recorded or its model defines no operating
+                regions.
         """
         regions = self.recording.regions(instance)
         return regions[int(self.variable(instance, _core.REGION))]
@@ -623,7 +609,7 @@ class OperatingPointResult(_Devices[float], _Watched):
 
 @dataclass(frozen=True, slots=True)
 class OperatingPointsResult(_Watched):
-    """Every DC solution a search found, the operating point first.
+    """Collection of all DC solutions found by a search, operating point first.
 
     Examples:
         >>> unknowns = (Unknown("q", "voltage"),)
@@ -642,55 +628,55 @@ class OperatingPointsResult(_Watched):
     points: tuple[OperatingPointResult, ...]
 
     def voltages(self, net: str) -> Real:
-        """The voltage of `net` at each solution, in the order found."""
+        """Returns the voltage of `net` at each DC solution in discovery order."""
         index = column(self.unknowns, net, "voltage")
         return np.array([float(point.values[index]) for point in self.points])
 
 
 @dataclass(frozen=True, slots=True)
 class DcSweepResult(_Devices[Real], _Watched):
-    """The operating points of a DC sweep, one row per level of its source.
+    """Operating-point results across a DC sweep, with one row per swept value.
 
-    A sweep of a parameter of a device names it, and its levels are the parameter's
-    values, in SI base units.
+    When sweeping a device parameter, `parameter` names the swept parameter and `swept`
+    holds its values in SI base units.
     """
 
     unknowns: tuple[Unknown, ...]
     source: str
-    """The path of the swept instance, such as ``V1``."""
+    """Instance path of the swept source or device, such as ``V1``."""
     nature: Nature | None
-    """Whether the levels are voltages or currents; None for a parameter's."""
+    """Physical quantity of swept levels (voltage or current), or None for parameter
+    sweeps."""
     swept: Real
     values: Real
     nets: tuple[str, ...] = ()
-    """The logic nets, in the order of `logic`'s columns."""
+    """Logic net names ordered to match the columns of `logic`."""
     logic: Real = field(default_factory=_no_rows)
-    """Each logic net's level at each level of the source, one row per level."""
+    """Logic net levels across the sweep, with one row per swept value."""
     recording: Recording = field(default_factory=Recording)
-    """What the result recorded of the devices, and where its arrays hold each."""
+    """Schema of recorded device quantities and their column offsets."""
     currents: Real = field(default_factory=_no_rows)
-    """The current into each recorded terminal at each level, one row per level."""
+    """Recorded terminal currents across the sweep, one row per swept value."""
     charges: Real = field(default_factory=_no_rows)
-    """The charge each recorded terminal holds at each level, one row per level."""
+    """Recorded terminal charges across the sweep, one row per swept value."""
     conductances: Real = field(default_factory=_no_rows)
-    """Each recorded derivative of a residual at each level, one row per level."""
+    """Recorded residual derivatives across the sweep, one row per swept value."""
     capacitances: Real = field(default_factory=_no_rows)
-    """Each recorded derivative of a charge at each level, one row per level."""
+    """Recorded charge derivatives across the sweep, one row per swept value."""
     variables: Real = field(default_factory=_no_rows)
-    """Each recorded variable's value at each level, one row per level."""
+    """Recorded internal variable values across the sweep, one row per swept value."""
     parameter: str | None = None
-    """The parameter swept, by its path among the instance's, such as ``resistance``;
-    None for a source's level."""
+    """Dot-separated name of the swept device parameter such as ``resistance``, or None
+    when sweeping a source value."""
     strategies: tuple[str, ...] = ()
-    """How the engine found the operating point at each level, as an operating point's
-    `strategy` says; empty for ngspice's, which does not say."""
+    """Solver strategy that found each sweep point, or an empty tuple for ngspice runs
+    that do not report strategies."""
     iterations: tuple[int, ...] = ()
-    """The Newton iterations that found the operating point at each level, from the
-    level before it, as an operating point's `iterations` counts them; empty for
-    ngspice's, which it does not count."""
+    """Newton iteration count at each sweep point using continuation, or an empty tuple
+    for ngspice runs that do not report counts."""
 
     def logic_level(self, net: str) -> Real:
-        """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
+        """Returns the logic level of `net` across sweep points: 0, 1, or NaN."""
         return self.logic[:, net_column(self.nets, net)]
 
     @override
@@ -700,18 +686,18 @@ class DcSweepResult(_Devices[Real], _Watched):
 
 @dataclass(frozen=True, slots=True)
 class AcResult(_Unknowns[Complex], _Watched):
-    """A small-signal response: phasors per unit excitation, one row per frequency."""
+    """Small-signal AC response storing phasors per unit excitation per frequency."""
 
     unknowns: tuple[Unknown, ...]
     source: str
-    """The path of the excited source, such as ``V1``."""
+    """Instance path of the excited AC source, such as ``V1``."""
     frequencies: Real
     values: Complex
     operating_point: OperatingPointResult
     recording: Recording = field(default_factory=Recording)
-    """What the result recorded of the devices, and where its currents hold each."""
+    """Schema of recorded device quantities and their current column offsets."""
     currents: Complex = field(default_factory=_no_phasors)
-    """The phasor of the current into each recorded terminal, one row per frequency."""
+    """Phasors of currents entering each recorded terminal, one row per frequency."""
 
     @override
     def _read(self, values: Complex) -> Complex:
@@ -720,26 +706,26 @@ class AcResult(_Unknowns[Complex], _Watched):
 
 @dataclass(frozen=True, slots=True)
 class Work:
-    """The work an analysis did: its Newton iterations and its sparse solver's."""
+    """Solver work counters for Newton iterations and sparse matrix factorizations."""
 
     iterations: int
-    """Every Newton iteration: those of the operating point it solved, unless the
-    simulation took the one it remembered, and those of every step it tried."""
+    """Total Newton iterations across the initial operating point (unless reused from
+    cache) and all attempted time steps."""
     factorizations: int
-    """Factorizations that searched for every pivot: the simulation's first, and any
-    after a matrix the solver could not factor."""
+    """Full sparse factorizations with pivot search, including the initial solve and
+    recoveries after singular matrices."""
     refactorizations: int
-    """Factorizations that kept every pivot of the last, with no search."""
+    """Sparse factorizations reusing all pivot selections from the previous solve."""
     fallbacks: int
-    """Factorizations that kept the last's pivots up to one their matrix made too small,
-    and searched for the pivots from that one on."""
+    """Sparse factorizations that reused pivots until encountering an undersized pivot
+    and then switched to pivot search."""
     reuses: int
-    """Factorizations given the very matrix factored last, which kept its factors."""
+    """Cached sparse factorizations reused directly for an unchanged matrix."""
 
 
 @dataclass(frozen=True, slots=True)
 class Profile:
-    """Where an analysis spent its time, in seconds, each span in one activity.
+    """Wall-clock time breakdown of an analysis across solver phases, in seconds.
 
     Examples:
         >>> Profile(0.1, 0.4, 0.1, 0.2, 0.1, 0.05, 0.03, 0.02).total
@@ -747,29 +733,28 @@ class Profile:
     """
 
     preparing: float
-    """Checking the options, making again the devices the analysis records, and
-    gathering the sources' breakpoints."""
+    """Time spent validating options, preparing recorded devices, and gathering source
+    breakpoints."""
     evaluating: float
-    """Evaluating the devices."""
+    """Time spent evaluating device models."""
     assembling: float
-    """Turning what the devices contributed into each Newton iteration's matrix and
-    right-hand side, and judging its residuals against their tolerances."""
+    """Time spent assembling Newton Jacobian matrices and right-hand sides and checking
+    residual tolerances."""
     factoring: float
-    """Factoring matrices."""
+    """Time spent factoring sparse matrices."""
     solving: float
-    """Solving with the factors."""
+    """Time spent performing triangular solves with factored matrices."""
     step_control: float
-    """Judging each step by its error, choosing the next, and finding the events a step
-    lands on."""
+    """Time spent estimating local truncation error, selecting step sizes, and locating
+    step events."""
     recording: float
-    """Reading the recorded devices at each point kept."""
+    """Time spent collecting recorded device data at accepted output points."""
     other: float
-    """Everything else, such as Newton iteration's updates and the tests of their
-    steps."""
+    """Remaining analysis time, including Newton step updates and convergence tests."""
 
     @property
     def total(self) -> float:
-        """The whole time: the sum of every activity's."""
+        """Total elapsed analysis time across all profiled phases, in seconds."""
         return (
             self.preparing
             + self.evaluating
@@ -784,21 +769,20 @@ class Profile:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ChargeLeak:
-    """Each equation's converged residual integrated over a transient's steps.
+    """Converged equation residuals integrated over accepted transient steps.
 
-    In the order of the result's `unknowns` (Kundert and Clifford, "Achieving
-    Accurate Results with a Circuit Simulator", IEEE CICC 1993): coulombs
-    (``A·s``) for electrical nodes and displacement equations, webers (``V·s``)
-    for branch current equations, joules (``W·s``) for thermal nets, and state
-    units for device state equations.
+    Entries follow the order of the result `unknowns` (Kundert and Clifford, "Achieving
+    Accurate Results with a Circuit Simulator", IEEE CICC 1993). Units are coulombs
+    (``A·s``) for electrical nodes and displacement equations, webers (``V·s``) for
+    branch currents, joules (``W·s``) for thermal nets, and state units for device
+    states.
 
     At every accepted step, Newton iteration stops with residual
-    ``r_n = f(x_n, t_n) + dq/dt``. Integrating ``r_n`` by the step's own
-    integration formula (backward Euler, trapezoidal or Gear2) yields the step
-    increment ``Δℓ_n`` so that on any closed node or cutset whose static
-    currents sum to zero, ``q(T) - q(0)`` equals the sum of `signed` to
-    floating-point rounding, and the charge excursion at every intermediate
-    accepted time stays within the sum of `absolute`.
+    ``r_n = f(x_n, t_n) + dq/dt``. Integrating ``r_n`` with the step integration
+    formula (backward Euler, trapezoidal, or Gear2) gives step increment ``Δℓ_n``. On
+    any closed node or cutset with zero static current sum, ``q(T) - q(0)`` matches the
+    sum of `signed` to floating-point rounding, and intermediate charge excursions stay
+    within the sum of `absolute`.
 
     Examples:
         >>> leak = ChargeLeak(np.array([-1e-18]), np.array([2e-18]))
@@ -807,31 +791,29 @@ class ChargeLeak:
     """
 
     signed: Real
-    """The signed integral ``∑ Δℓ_n`` for each unknown: the net charge, flux or
-    energy the solver's nonzero residual added over the transient."""
+    """Signed integral ``∑ Δℓ_n`` for each unknown, representing the net charge, flux,
+    or energy introduced by nonzero solver residuals."""
     absolute: Real
-    """The cumulative absolute integral ``∑ |Δℓ_n|`` for each unknown: the sum
-    of step leak magnitudes without cancellation, bounding the excursion at
-    every intermediate accepted time."""
+    """Cumulative absolute integral ``∑ |Δℓ_n|`` for each unknown without cancellation,
+    bounding excursions at every intermediate accepted time."""
 
     __hash__: ClassVar[None] = None
 
     def __post_init__(self) -> None:
-        """Validate that `signed` and `absolute` are 1D arrays of equal length.
+        """Validates that `signed` and `absolute` are 1D arrays of equal length.
 
         Raises:
-            ValueError: When either array is not one-dimensional, or when their
-                lengths differ.
+            ValueError: If either array is not one-dimensional or their lengths differ.
         """
         if self.signed.ndim != 1 or self.absolute.ndim != 1:
             message = (
-                "charge leak arrays must be one-dimensional, not shapes "
+                "charge leak arrays are one-dimensional, not shapes "
                 f"{self.signed.shape} and {self.absolute.shape}"
             )
             raise ValueError(message)
         if self.signed.shape != self.absolute.shape:
             message = (
-                "signed and absolute charge leak arrays must have the same length, "
+                "signed and absolute charge leak arrays have equal length, "
                 f"not {self.signed.shape[0]} and {self.absolute.shape[0]}"
             )
             raise ValueError(message)
@@ -847,73 +829,71 @@ class ChargeLeak:
 
 @dataclass(frozen=True, slots=True)
 class Statistics:
-    """How a transient analysis went."""
+    """Execution statistics and diagnostics for a transient analysis."""
 
     initial: str | None
-    """How its operating point was found, such as ``direct``, or None for a transient
-    that starts from its initial conditions alone."""
+    """Operating-point strategy such as ``direct``, or None when starting directly from
+    initial conditions."""
     accepted: int
     rejected: int
-    """Steps rejected for their error, or for Newton iteration that did not converge."""
+    """Number of steps rejected due to truncation error or Newton non-convergence."""
     landed: int
-    """Steps tried again shorter to land on an event within them: a detector's crossing,
-    a logic driver's change or a device's jump."""
+    """Number of steps shortened to land on detector crossings, logic transitions, or
+    device discontinuities."""
     iterations: int
-    """The Newton iterations of the accepted steps."""
+    """Total Newton iterations across all accepted time steps."""
     work: Work | None = None
-    """The work the engine did, its operating point's included, and for a periodic
-    steady state every period's; None for ngspice's, which it does not count. Unlike
-    the results, it depends on what the simulation ran before: on an operating point it
-    remembers, and on the pivots its sparse solver kept."""
+    """Solver work counters including the operating point and all periodic steady-state
+    periods, or None for ngspice runs. Unlike simulation waveforms, work counts depend
+    on prior cached operating points and solver pivots."""
     profile: Profile | None = None
-    """Where the engine's time went, when the options' ``profile`` is on."""
+    """Phase timing breakdown when profiling is enabled in options, or None."""
     charge_leak: ChargeLeak | None = None
-    """Each equation's converged residual integrated over the transient's accepted
-    steps, in the order of the result's `unknowns`; None for ngspice's, which does
-    not compute it."""
+    """Integrated converged residuals across accepted steps in `unknowns` order, or
+    None for ngspice runs."""
 
 
 @dataclass(frozen=True, slots=True)
 class TransientResult(_Devices[Real], _Watched):
-    """The waveforms of a transient analysis, one row per accepted time point."""
+    """Time-domain transient waveforms, with one row per accepted time point."""
 
     unknowns: tuple[Unknown, ...]
     times: Real
     values: Real
     statistics: Statistics
     nets: tuple[str, ...] = ()
-    """The logic nets, in the order of `logic`."""
+    """Logic net names ordered to match `logic`."""
     logic: tuple[LogicTrace, ...] = ()
-    """Each logic net's level over time."""
+    """Piecewise-constant logic traces for each digital net."""
     recording: Recording = field(default_factory=Recording)
-    """What the result recorded of the devices, and where its arrays hold each."""
+    """Schema of recorded device quantities and their column offsets."""
     currents: Real = field(default_factory=_no_rows)
-    """The current into each recorded terminal at each time, one row per time; it
-    includes its charge's derivative, by the step's integration formula."""
+    """Recorded terminal currents at each time point, including integrated charge
+    derivatives from the step formula."""
     charges: Real = field(default_factory=_no_rows)
-    """The charge each recorded terminal holds at each time, one row per time."""
+    """Recorded terminal charges at each time point, one row per time point."""
     conductances: Real = field(default_factory=_no_rows)
-    """Each recorded derivative of a residual at each time, one row per time."""
+    """Recorded residual derivatives at each time point, one row per time point."""
     capacitances: Real = field(default_factory=_no_rows)
-    """Each recorded derivative of a charge at each time, one row per time."""
+    """Recorded charge derivatives at each time point, one row per time point."""
     variables: Real = field(default_factory=_no_rows)
-    """Each recorded variable's value at each time, one row per time."""
+    """Recorded internal variable values at each time point, one row per time point."""
 
     def logic_level(self, net: str) -> LogicTrace:
-        """The level of the logic net `net` over time."""
+        """Returns the logic trace of `net` over simulation time."""
         return self.logic[net_column(self.nets, net)]
 
     def charge_leak(self, unknown: str, *, absolute: bool = False) -> float:
-        """The integrated residual of `unknown` over the transient.
+        """Returns the integrated residual of `unknown` over the transient.
 
-        Returns the signed net integral by default, or the cumulative absolute
-        integral when `absolute` is true. The unit is coulombs for an electrical
-        node, webers (``V·s``) for a branch current, joules for a thermal net,
-        and state units for a device state.
+        Returns the signed net integral by default, or the cumulative absolute integral
+        when `absolute` is true. Units are coulombs for electrical nodes, webers
+        (``V·s``) for branch currents, joules for thermal nets, and state units for
+        device states.
 
         Raises:
-            KeyError: When the circuit has no unknown named `unknown`, or when
-                the result holds no charge leak (such as one simulated by ngspice).
+            KeyError: If `unknown` is absent from the circuit or the result contains no
+                charge leak data (such as an ngspice run).
         """
         leak = self.statistics.charge_leak
         if leak is None:
@@ -929,24 +909,23 @@ class TransientResult(_Devices[Real], _Watched):
 
 @dataclass(frozen=True, slots=True)
 class PeriodicSteadyStateResult(TransientResult):
-    """One period of a periodic steady state, from the state the circuit repeats.
+    """Waveforms over one steady-state period starting from the periodic orbit.
 
-    Its times run from zero to the period. Its statistics count the period's own steps,
-    and the work of every period shooting simulated, of the operating point and of an
-    oscillator's settling.
+    Sample times span from zero to `period`. Statistics record step counts for the
+    final steady-state period and total work across all shooting periods, the operating
+    point, and oscillator settling.
     """
 
     period: float = field(kw_only=True)
-    """The period, in seconds: the analysis's, or an oscillator's, which it found."""
+    """Steady-state period in seconds, either specified or solved for an oscillator."""
     periods: int = field(kw_only=True)
-    """The periods shooting simulated to find the steady state, the last the one
-    returned."""
+    """Total shooting periods simulated to converge, with the final period returned."""
 
 
 type DifferentiatedResult = (
     OperatingPointResult | DcSweepResult | AcResult | TransientResult
 )
-"""A result that a sensitivity or mismatch analysis can differentiate."""
+"""Analysis result types supported by sensitivity and mismatch analyses."""
 
 DIFFERENTIATED_TYPES: Final = (
     OperatingPointResult,
@@ -959,28 +938,27 @@ DIFFERENTIATED_TYPES: Final = (
 
 @dataclass(frozen=True, slots=True)
 class Parameter:
-    """One number of the parameters of a device instance."""
+    """Scalar numeric parameter of a device instance."""
 
     instance: str
-    """The device's path, such as ``X1/R1``."""
+    """Hierarchical instance path of the device, such as ``X1/R1``."""
     name: str
-    """The parameter's name, its keys joined by dots within an object and a list's
-    entries keyed by their index from 0, such as ``resistance`` or ``waveform.dc``."""
+    """Dot-separated parameter path such as ``resistance`` or ``waveform.dc``, using
+    zero-based indices for list entries."""
     value: float
-    """Its value, in SI base units."""
+    """Nominal parameter value, in SI base units."""
 
 
 @dataclass(frozen=True, slots=True)
 class SensitivityResult(_Watched):
-    """Sensitivities: each output's derivative with respect to each parameter.
+    """First-order derivatives of selected outputs with respect to circuit parameters.
 
-    `derivatives` has one row per output and one column per parameter, in SI base
-    units, at an operating point. Along a DC sweep, over a response or over time, it has
-    one such matrix per level, frequency or time of `result`, first, as `result`'s own
-    values have one row per point; a response's are the derivatives of its phasors, and
-    a periodic steady state's are at each point's fraction of the period. For an
-    oscillator's periodic steady state, `period_derivatives` holds its period's
-    derivative with respect to each parameter.
+    At an operating point, `derivatives` has one row per output and one column per
+    parameter in SI base units. For DC sweeps, AC responses, and transients, a leading
+    axis indexes each point of `result`. AC sensitivities differentiate complex
+    phasors, while periodic steady-state sensitivities evaluate at each point's
+    fraction of the period. For oscillator periodic steady states, `period_derivatives`
+    stores derivatives of the oscillation period with respect to each parameter.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -1001,25 +979,26 @@ class SensitivityResult(_Watched):
 
     unknowns: tuple[Unknown, ...]
     outputs: tuple[str, ...]
-    """The unknowns differentiated, by name, in the order of `derivatives`' rows."""
+    """Differentiated unknown names matching the rows of `derivatives`."""
     parameters: tuple[Parameter, ...]
-    """Every parameter, in the order of `derivatives`' columns."""
+    """Differentiated parameters matching the columns of `derivatives`."""
     derivatives: Real | Complex
     result: DifferentiatedResult
-    """The result of the analysis differentiated."""
+    """Underlying analysis result that was differentiated."""
     period_derivatives: Real | None = None
-    """For an oscillator's periodic steady state, its period's derivative with respect
-    to each parameter, in their order; None otherwise."""
+    """Derivatives of an oscillator period with respect to each parameter in order, or
+    None for non-oscillator analyses."""
 
     def derivative(
         self, output: str, instance: str, parameter: str
     ) -> float | Real | Complex:
-        """The derivative of `output` with respect to `parameter` of `instance`.
+        """Returns the derivative of `output` with respect to `parameter` on `instance`.
 
-        It is one number at an operating point, and one per point of `result` otherwise.
+        Returns a scalar at an operating point, or an array indexed by points of
+        `result` for multi-point analyses.
 
         Raises:
-            KeyError: When the analysis has no such output or parameter.
+            KeyError: If `output` or `(instance, parameter)` is not in the analysis.
         """
         found = self.derivatives[
             ..., self._row(output), self._column(instance, parameter)
@@ -1027,13 +1006,14 @@ class SensitivityResult(_Watched):
         return float(found) if found.ndim == 0 else found
 
     def period_derivative(self, instance: str, parameter: str) -> float:
-        """The derivative of an oscillator's period with respect to `parameter`.
+        """Returns the derivative of an oscillator period with respect to `parameter`.
 
-        The parameter is `instance`'s, and the derivative in seconds per its SI unit.
+        The parameter belongs to `instance`, and the derivative is in seconds per
+        parameter SI unit.
 
         Raises:
-            KeyError: When the analysis has no such parameter, or differentiates no
-                oscillator's period.
+            KeyError: If the parameter is absent or the analysis does not differentiate
+                an oscillator period.
         """
         if self.period_derivatives is None:
             message = "the analysis differentiates no oscillator's period"
@@ -1046,9 +1026,10 @@ class SensitivityResult(_Watched):
         return _find(labels, f"{instance} {parameter}", missing)
 
     def gradient(self, output: str) -> Real | Complex:
-        """The derivative of `output` with respect to each parameter, in their order.
+        """Returns derivatives of `output` with respect to all parameters in order.
 
-        It is one per point of `result`, first, but at an operating point.
+        Returns a 1D array at an operating point, or a 2D array with a leading point
+        axis matching `result` for multi-point analyses.
         """
         return self.derivatives[..., self._row(output), :]
 
@@ -1057,24 +1038,24 @@ class SensitivityResult(_Watched):
 
 
 type PhasorPart = Literal["magnitude", "phase"]
-"""What of a response's phasor a mismatch analysis spreads: its magnitude, or its phase,
-in radians."""
+"""Component of a complex AC phasor analyzed for mismatch: magnitude or phase in
+radians."""
 
 
 @dataclass(frozen=True, slots=True)
 class MismatchResult(_Watched):
-    """How far each output spreads, to first order, with each random variable.
+    """First-order statistical spread of outputs across independent random variables.
 
-    `derivatives` holds each output's derivative with respect to each of
-    `random_variables`, laid out as a sensitivity's are by parameter: one row per output
-    and one column per random variable at an operating point, and one such matrix per
-    point of `result` otherwise, a response's the derivatives of its phasors. A random
-    variable's contribution to an output is its derivative times its standard
-    deviation; the random variables are drawn apart from one another, so to first order
-    the output's standard deviation is the root of the sum of its contributions squared,
-    and each random variable's share of its variance its contribution's square over that
-    sum. A response's phasor spreads in magnitude and in phase, each to first order of
-    its phasor's: `part` chooses which, as a response's results need one.
+    The `derivatives` array stores partial derivatives of each output with respect to
+    `random_variables`, using the same layout as `SensitivityResult`. At an operating
+    point, rows index outputs and columns index random variables; multi-point analyses
+    add a leading point axis, with complex phasor derivatives for AC responses.
+
+    Each random variable contributes its derivative multiplied by its standard
+    deviation. Independent random variables combine in quadrature: first-order output
+    standard deviation equals the root sum of squared contributions, and each variance
+    share equals its squared contribution divided by total variance. For AC responses,
+    `part` selects first-order spread of either phasor magnitude or phase.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -1102,28 +1083,27 @@ class MismatchResult(_Watched):
 
     unknowns: tuple[Unknown, ...]
     outputs: tuple[str, ...]
-    """The unknowns spread, by name, in the order of `derivatives`' rows."""
+    """Analyzed output unknown names matching the rows of `derivatives`."""
     random_variables: tuple[ir.RandomVariable, ...]
-    """Every random variable, in the order of `derivatives`' columns: the circuit's
-    tolerances', each part's own then each lot's, in the order of the toleranced
-    numbers, then those the analysis was given."""
+    """Random variables matching the columns of `derivatives`: per-part tolerances,
+    shared lot tolerances, and explicit analysis random variables."""
     derivatives: Real | Complex
     result: DifferentiatedResult
-    """The result of the analysis differentiated."""
+    """Underlying analysis result that was differentiated."""
     period_derivatives: Real | None = None
-    """For an oscillator's periodic steady state, its period's derivative with respect
-    to each random variable, in their order; None otherwise."""
+    """Derivatives of an oscillator period with respect to each random variable in
+    order, or None for non-oscillator analyses."""
 
     def contributions(self, output: str, part: PhasorPart | None = None) -> Real:
-        """Each random variable's contribution to `output`, in their order.
+        """Returns each random variable's first-order contribution to `output` in order.
 
-        It is one row at an operating point, and one per point of `result` otherwise;
-        of a response, `part` of its phasor's.
+        Returns a 1D array at an operating point, or a 2D array indexed by points of
+        `result` otherwise. For AC responses, `part` selects phasor magnitude or phase.
 
         Raises:
-            KeyError: When the analysis has no such output.
-            ValueError: When `part` is given for a result of real values, or not for a
-                response's.
+            KeyError: If `output` is not in the analysis.
+            ValueError: If `part` is supplied for a real-valued analysis or omitted for
+                an AC response.
         """
         deviations = np.array(
             [variable.standard_deviation for variable in self.random_variables]
@@ -1147,24 +1127,24 @@ class MismatchResult(_Watched):
     def standard_deviation(
         self, output: str, part: PhasorPart | None = None
     ) -> float | Real:
-        """The standard deviation of `output`, to first order.
+        """Returns the first-order standard deviation of `output`.
 
-        It is one number at an operating point, and one per point of `result` otherwise;
-        of a response, `part` of its phasor's.
+        Returns a scalar at an operating point, or an array indexed by points of
+        `result` otherwise. For AC responses, `part` selects phasor magnitude or phase.
 
         Raises:
-            KeyError: When the analysis has no such output.
-            ValueError: When `part` is given for a result of real values, or not for a
-                response's.
+            KeyError: If `output` is not in the analysis.
+            ValueError: If `part` is supplied for a real-valued analysis or omitted for
+                an AC response.
         """
         found = np.sqrt(np.sum(self.contributions(output, part) ** 2, axis=-1))
         return float(found) if found.ndim == 0 else found
 
     def period_standard_deviation(self) -> float:
-        """The standard deviation of an oscillator's period, to first order, in seconds.
+        """Returns the first-order oscillator period standard deviation, in seconds.
 
         Raises:
-            KeyError: When the analysis differentiates no oscillator's period.
+            KeyError: If the analysis does not differentiate an oscillator period.
         """
         if self.period_derivatives is None:
             message = "the analysis differentiates no oscillator's period"
@@ -1175,16 +1155,16 @@ class MismatchResult(_Watched):
         return float(np.sqrt(np.sum((self.period_derivatives * deviations) ** 2)))
 
     def shares(self, output: str, part: PhasorPart | None = None) -> Real:
-        """Each random variable's share of the variance of `output`, in their order.
+        """Returns each random variable's share of the variance of `output` in order.
 
-        It is one row at an operating point, and one per point of `result` otherwise;
-        of a response, `part` of its phasor's. A point where the output does not spread
-        shares nothing.
+        Returns a 1D array at an operating point, or a 2D array indexed by points of
+        `result` otherwise. For AC responses, `part` selects phasor magnitude or phase.
+        Points with zero variance return zero shares.
 
         Raises:
-            KeyError: When the analysis has no such output.
-            ValueError: When `part` is given for a result of real values, or not for a
-                response's.
+            KeyError: If `output` is not in the analysis.
+            ValueError: If `part` is supplied for a real-valued analysis or omitted for
+                an AC response.
         """
         squares = self.contributions(output, part) ** 2
         variance = np.sum(squares, axis=-1, keepdims=True)
@@ -1198,40 +1178,40 @@ class MismatchResult(_Watched):
 
 @dataclass(frozen=True, slots=True)
 class StabilityResult(_Watched):
-    """The loop gain through a probe, at each frequency.
+    """Loop gain measured through a stability probe across frequencies.
 
-    Negative feedback makes it positive at low frequencies; the specs' `phase_margin`,
-    `gain_margin` and `crossover` read how far it stays from -1.
+    Negative feedback yields positive loop gain at low frequencies. Stability measures
+    `phase_margin`, `gain_margin`, and `crossover` evaluate proximity to -1.
     """
 
     unknowns: tuple[Unknown, ...]
     probe: str
-    """The path of the probe the loop is broken at, such as ``VP``."""
+    """Instance path of the stability probe breaking the loop, such as ``VP``."""
     frequencies: Real
     gains: Complex
-    """The loop gain at each frequency."""
+    """Complex loop gain at each frequency in `frequencies`."""
     operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
 class TransferFunctionResult(_Watched):
-    """The small-signal transfer function at DC from a source to an output.
+    """DC small-signal transfer function from an input source to an output unknown.
 
-    The `gain` is the output per unit of the source's level, in volts or amperes of
-    output per volt or ampere of input; the `input_resistance` is what the source sees,
-    and the `output_resistance` what the output sees with the source at its level, each
-    in ohms and infinite where no current can flow.
+    The `gain` field gives small-signal output per unit input level in volts or
+    amperes. The `input_resistance` field is the resistance seen by the source in ohms.
+    The `output_resistance` field is the resistance seen at the output port with the
+    source fixed, or infinity when no current flows.
     """
 
     unknowns: tuple[Unknown, ...]
     source: str
-    """The path of the input source, such as ``V1``."""
+    """Instance path of the input source, such as ``V1``."""
     input: Nature
-    """What the source's level is: ``voltage`` or ``current``."""
+    """Physical quantity of the input source: ``voltage`` or ``current``."""
     output: str
-    """The output: a net, such as ``out``, or a voltage source's current."""
+    """Output unknown name, such as net ``out`` or a voltage-source current."""
     reference: str | None
-    """The net the output voltage is taken over, or None for the ground."""
+    """Reference net for a differential output voltage, or None for ground."""
     gain: float
     input_resistance: float
     output_resistance: float
@@ -1240,35 +1220,37 @@ class TransferFunctionResult(_Watched):
 
 @dataclass(frozen=True, slots=True)
 class NoiseSource:
-    """One noise source of a device."""
+    """Identifier for a single noise mechanism within a device instance."""
 
     instance: str
-    """The device's path, such as ``X1/Q1``."""
+    """Instance path of the device, such as ``X1/Q1``."""
     name: str
-    """What makes the noise, such as ``thermal``, ``collector shot`` or ``flicker``."""
+    """Noise mechanism name, such as ``thermal``, ``collector shot``, or
+    ``flicker``."""
 
 
 @dataclass(frozen=True, slots=True)
 class NoiseInput:
-    """The independent source a noise analysis refers its output's noise back to."""
+    """Input source metadata and transfer gains used for input-referred noise."""
 
     source: str
-    """The source's path, such as ``V1``."""
+    """Instance path of the input source, such as ``V1``."""
     nature: Nature
-    """What the source's level is."""
+    """Physical quantity of the input source level."""
     gains: Complex
-    """The gain from the source's level to the output at each frequency."""
+    """Complex transfer gain from the input source to the output at each frequency."""
 
 
 @dataclass(frozen=True, slots=True)
 class NoiseResult(_Watched):
-    """The noise at an output, at each frequency.
+    """Output noise spectral density and per-source contributions across frequencies.
 
-    `densities` are the output's one-sided noise power densities, in V²/Hz for a
-    voltage and A²/Hz for a current, and `contributions` what each of `sources` adds to
-    them, one row per source. Given an input, ``referred`` divides them by the gain's
-    square, as the input's own noise would be. ``rms`` integrates a density over a
-    band, as a power law between frequencies, as SPICE does.
+    The `densities` array stores one-sided output noise power spectral densities in
+    V²/Hz for voltage outputs or A²/Hz for current outputs, and `contributions` stores
+    one row per entry in `sources`. When an input source is configured, ``referred``
+    divides output densities by squared transfer gain to yield equivalent input noise.
+    The ``rms`` method integrates noise density over a frequency band using SPICE
+    power-law interpolation between frequencies.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -1294,11 +1276,11 @@ class NoiseResult(_Watched):
 
     unknowns: tuple[Unknown, ...]
     output: str
-    """The output's unknown, by name."""
+    """Name of the output unknown."""
     reference: str | None
-    """The node the output voltage is taken over; the ground if None."""
+    """Reference net for a differential output voltage, or None for ground."""
     nature: Nature
-    """What the output is."""
+    """Physical quantity of the output unknown."""
     frequencies: Real
     densities: Real
     sources: tuple[NoiseSource, ...]
@@ -1307,13 +1289,13 @@ class NoiseResult(_Watched):
     operating_point: OperatingPointResult
 
     def referred(self) -> Real:
-        """The noise referred to the input at each frequency, in V²/Hz or A²/Hz.
+        """Returns input-referred noise power spectral density at each frequency.
 
-        It is the output's density over the gain's square, in the unit of the source's
-        level squared per hertz.
+        Values equal output noise density divided by squared transfer gain, in V²/Hz or
+        A²/Hz matching the input source quantity.
 
         Raises:
-            ValueError: When the analysis named no source to refer its noise to.
+            ValueError: If the noise analysis specified no input source.
         """
         if self.input is None:
             message = "the noise analysis named no source to refer its noise to"
@@ -1324,12 +1306,13 @@ class NoiseResult(_Watched):
         )
 
     def contribution(self, instance: str, name: str | None = None) -> Real:
-        """What the noise of `instance`, or its source `name`, adds at each frequency.
+        """Returns noise power spectral density contributed by `instance`.
 
-        It is in the unit of the output's densities.
+        When `name` is provided, only that noise mechanism is returned; otherwise all
+        noise mechanisms of `instance` are summed in the unit of `densities`.
 
         Raises:
-            KeyError: When the instance makes no such noise.
+            KeyError: If `instance` has no matching noise source.
         """
         rows = [
             index
@@ -1343,13 +1326,13 @@ class NoiseResult(_Watched):
         return self.contributions[rows].sum(axis=0)
 
     def density(self, at: float, *, referred: bool = False) -> float:
-        """The density at the frequency `at`, in hertz.
+        """Returns the interpolated noise spectral density at frequency `at`, in hertz.
 
-        It is a power law between the frequencies around it.
+        Interpolation uses a power law between neighboring frequency points.
 
         Raises:
-            ValueError: When the frequency does not lie within the frequencies, or the
-                analysis named no source to refer its noise to.
+            ValueError: If `at` lies outside `frequencies`, or if `referred` is true
+                with no input source configured.
         """
         densities = self.referred() if referred else self.densities
         try:
@@ -1376,14 +1359,15 @@ class NoiseResult(_Watched):
         *,
         referred: bool = False,
     ) -> float:
-        """The RMS noise from `start` to `stop`, in hertz, by default every frequency.
+        """Returns integrated RMS noise from `start` to `stop` hertz.
 
-        It is the square root of the density integrated over the band, in volts or
-        amperes, the density a power law between frequencies, as SPICE integrates it.
+        When `start` or `stop` is omitted, integration covers the full frequency span
+        using power-law interpolation and returns the square root of integrated noise
+        power in volts or amperes.
 
         Raises:
-            ValueError: When the band does not lie within the frequencies, or is
-                empty, or the analysis named no source to refer its noise to.
+            ValueError: If the frequency band is empty or out of bounds, or if
+                `referred` is true with no input source configured.
         """
         densities = self.referred() if referred else self.densities
         return math.sqrt(integrate(self.frequencies, densities, start, stop))
@@ -1393,7 +1377,7 @@ _UNSPECTRAL: Final[dict[str, str]] = {
     "empty": "a spectrum of no frequencies has no density",
     "mismatch": "a spectrum holds a density at each frequency",
 }
-"""Why frequencies and densities make no spectrum, by the engine's reason."""
+"""Mapping from engine spectral error reason codes to user-facing error messages."""
 
 
 def integrate(
@@ -1402,9 +1386,10 @@ def integrate(
     start: float | None = None,
     stop: float | None = None,
 ) -> float:
-    """The integral of `densities` from `start` to `stop`, by default every frequency.
+    """Integrates noise power `densities` from `start` to `stop` hertz.
 
-    The density is a power law between `frequencies`, as SPICE integrates noise.
+    When `start` or `stop` is omitted, integration spans all of `frequencies` using
+    SPICE power-law interpolation between adjacent points.
 
     Examples:
         >>> integrate(np.array([1.0, 10.0]), np.array([1.0, 0.1]))
@@ -1413,7 +1398,7 @@ def integrate(
         180
 
     Raises:
-        ValueError: When the band does not lie within the frequencies, or is empty.
+        ValueError: If the integration band is empty or outside `frequencies`.
     """
     try:
         return _core.integrate(
@@ -1436,14 +1421,14 @@ def integrate(
 
 @dataclass(frozen=True, slots=True)
 class PoleZeroResult(_Watched):
-    """The poles of the linearized circuit, and the zeros of a transfer function.
+    """Poles of the linearized circuit and optional transfer-function zeros.
 
-    The circuit is linearized at its operating point, and the transfer function is from
-    a source to an output, given both. Each is a complex frequency `s`, in radians per
-    second, by increasing magnitude, a conjugate pair's member above the real axis
-    first; a pole in the right half-plane, with a positive real part, grows.
-    ``natural_frequencies`` and ``dampings`` read them as a frequency and a damping
-    ratio, as a second-order section's are written.
+    The circuit is linearized at `operating_point`, and zeros are computed when both
+    `source` and `output` are specified. Roots are complex frequencies ``s`` in radians
+    per second sorted by increasing magnitude, with the upper-half-plane member of each
+    conjugate pair listed first. Poles with positive real parts grow in time. The
+    ``natural_frequencies`` and ``dampings`` functions convert roots to natural
+    frequencies and damping ratios.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -1467,26 +1452,27 @@ class PoleZeroResult(_Watched):
     unknowns: tuple[Unknown, ...]
     poles: Complex
     zeros: Complex | None
-    """The zeros, given a source and an output."""
+    """Transfer-function zeros when both `source` and `output` are given, or None."""
     source: str | None
-    """The path of the source the transfer function is from."""
+    """Instance path of the transfer-function input source, or None."""
     output: str | None
-    """The output the transfer function is to."""
+    """Name of the transfer-function output unknown, or None."""
     reference: str | None
-    """The node the output voltage is taken over; the ground if None."""
+    """Reference net for a differential output voltage, or None for ground."""
     operating_point: OperatingPointResult
 
 
 def natural_frequencies(roots: Complex) -> Real:
-    """The natural frequency of each of `roots`, its magnitude over 2π, in hertz."""
+    """Computes natural frequencies of `roots` in hertz as magnitude divided by 2π."""
     return _core.natural_frequencies(np.asarray(roots, dtype=np.complex128))
 
 
 def dampings(roots: Complex) -> Real:
-    """The damping ratio of each of `roots`, minus its real part over its magnitude.
+    """Computes damping ratios of `roots` as negated real part divided by magnitude.
 
-    It is 1 for a real root in the left half-plane, between 0 and 1 for a conjugate pair
-    that rings, and negative in the right half-plane; NaN at the origin.
+    The damping ratio is 1 for left-half-plane real roots, between 0 and 1 for
+    underdamped conjugate pairs, negative in the right half-plane, and NaN at the
+    origin.
     """
     return _core.dampings(np.asarray(roots, dtype=np.complex128))
 
@@ -1505,7 +1491,7 @@ type AnalysisResult = (
     | PoleZeroResult
     | TransferFunctionResult
 )
-"""The result of any analysis."""
+"""Union of all analysis result types."""
 
 _RESULT_KIND_MAP: dict[type[object], str] = {
     OperatingPointResult: "an operating point",
@@ -1523,16 +1509,16 @@ _RESULT_KIND_MAP: dict[type[object], str] = {
 }
 
 RESULT_KINDS: Final[Mapping[type[object], str]] = MappingProxyType(_RESULT_KIND_MAP)
-"""Each kind of analysis result as human-readable messages name it."""
+"""Human-readable label for each analysis result type."""
 
 
 def result_kind(result: AnalysisResult) -> str:
-    """What kind of analysis result `result` is, in words."""
+    """Returns the human-readable analysis kind label for `result`."""
     return RESULT_KINDS.get(type(result), type(result).__name__)
 
 
 def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
-    """The swept values, frequencies, or times along which `result` varies."""
+    """Returns the sweep values, frequencies, or time axis array of `result`."""
     match result:
         case DcSweepResult():
             return result.swept
@@ -1543,7 +1529,7 @@ def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
 
 
 def nets_of(result: AnalysisResult) -> tuple[str, ...]:
-    """The logic nets recorded by `result`, or an empty tuple when it holds none."""
+    """Returns the logic net names recorded by `result`, or an empty tuple."""
     if isinstance(result, OperatingPointResult | DcSweepResult | TransientResult):
         return result.nets
     return ()
@@ -1551,36 +1537,36 @@ def nets_of(result: AnalysisResult) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class Traces:
-    """The values of some unknowns at each point of one analysis, over a batch's runs.
+    """Selected unknown values recorded across runs at every point of one analysis.
 
-    `values` has one row per run, one column per point, then one entry per unknown:
-    not a number where the run did not end the analysis. The points are an operating
-    point's one, a DC sweep's levels, a response's frequencies, whose values are
-    phasors, or the times a transient names, interpolated linearly between the times
-    it accepted, so exact at each it stepped onto.
+    The `values` array has shape ``(runs, points, unknowns)`` and stores NaN for runs
+    where the analysis failed. Axis points correspond to an operating point, DC sweep
+    levels, AC frequencies (with complex phasors), or requested transient times
+    linearly interpolated between accepted steps.
     """
 
     analysis: str
-    """The analysis, by name."""
+    """Name of the traced analysis."""
     along: Literal["point", "swept", "frequency", "time"]
-    """What the points are."""
+    """Independent axis kind for the traced points."""
     axis: Real
-    """Each point: a level, a frequency or a time; none at an operating point."""
+    """Coordinate array along the sweep, frequency, or time axis; empty for DC."""
     unknowns: tuple[Unknown, ...]
-    """The unknowns traced, in the order of `values`' last axis."""
+    """Traced unknowns ordered to match the last axis of `values`."""
     values: Real | Complex
     source: str | None = None
-    """The swept or excited source, or the swept instance, of a sweep or a response."""
+    """Swept or excited instance path for a DC sweep or AC response, or None."""
     nature: Nature | None = None
-    """Whether a sweep's levels are voltages or currents; None for a parameter's."""
+    """Physical quantity of sweep levels (voltage or current), or None for parameter
+    sweeps."""
     parameter: str | None = None
-    """The parameter a sweep steps, if any."""
+    """Swept parameter name for a parameter DC sweep, or None."""
 
     def values_of(self, name: str) -> Real | Complex:
-        """The values of the unknown `name`, one row per run, one column per point.
+        """Returns traced values for unknown `name` shaped ``(runs, points)``.
 
         Raises:
-            KeyError: When the batch traced no unknown of that name.
+            KeyError: If unknown `name` was not traced by the batch.
         """
         names = [unknown.name for unknown in self.unknowns]
         return self.values[:, :, _find(names, name, "the batch traced no unknown")]
@@ -1588,32 +1574,32 @@ class Traces:
 
 @dataclass(frozen=True, slots=True)
 class Run:
-    """What one run of a batch found, as a function given to the batch reads it."""
+    """Per-run results, errors, and elaboration problems passed to a batch callback."""
 
     index: int
-    """The run's index among the variants' runs."""
+    """Zero-based index of the run within the batch."""
     results: dict[str, AnalysisResult]
-    """The result of each analysis that ended, by name."""
+    """Mapping from analysis name to result for each analysis that completed."""
     errors: dict[str, str]
-    """Why each analysis that did not end failed, by name."""
+    """Mapping from analysis name to error message for each failed analysis."""
     problems: tuple[str, ...] = ()
-    """The problems the run's values make, which no analysis runs past."""
+    """Elaboration errors that prevented analyses from running on this run."""
 
 
 @dataclass(frozen=True, slots=True)
 class BatchResult:
-    """What many runs of one circuit found, as columns: one row per run, in order.
+    """Tabular results across multiple runs of one circuit, with one row per run.
 
-    Each run took the `values` of the `parameters` its variants vary, each named as
-    ``X1/R1 resistance``, or ``temperature``, in kelvins, and ran the `analyses` in
-    order; `ended` says whether each analysis of each run ended. `measured` holds what
-    each of the `measures` read on each run, in its unit among `units`, and not a
-    number where it read none, `causes` then indexing `reasons`, the words that say why,
-    each once, in the order the cells first name them, row by row, and -1 where it read
-    a number. `traces` holds the unknowns a batch traced along its analyses. Every row
-    is a pure function of its run's index, whatever the threads, and the reasons a
-    function of the rows, so the rows of a range of runs, and the runs of results joined
-    one after another, hold what a batch of those runs alone holds.
+    Each run applies `values` for `parameters` (such as ``X1/R1 resistance`` or
+    ``temperature`` in kelvins) and executes `analyses` in order, recording completion
+    status in `ended`. The `measured` array stores evaluated `measures` in `units`,
+    using NaN when evaluation fails. For failed cells, `causes` indexes deduplicated
+    failure messages in `reasons` in row-major first-appearance order, and stores -1
+    for valid numbers.
+
+    The `traces` tuple stores selected unknown waveforms across runs. Each row depends
+    only on its run index regardless of thread scheduling, so slicing with `rows` and
+    concatenating with `joined` match running those subsets directly.
     """
 
     analyses: tuple[str, ...]
@@ -1621,24 +1607,24 @@ class BatchResult:
     values: Real
     ended: npt.NDArray[np.bool_]
     measures: tuple[str, ...]
-    """Each measure, as its requirement names it, such as ``out in op``."""
+    """Evaluated measure names as defined by requirements, such as ``out in op``."""
     units: tuple[Dimension | Plain | None, ...]
-    """The unit of each measure's values, ``dB``, ``°``, ``%`` or ``""`` for a
-    plain number, or None where it read none."""
+    """Unit for each measure column (``dB``, ``°``, ``%``, ``""`` for plain ratios, or
+    None if never evaluated)."""
     measured: Real
     causes: npt.NDArray[np.int32]
     reasons: tuple[str, ...]
     problems: dict[int, tuple[str, ...]] = field(default_factory=dict)
-    """The problems the values of each run that made some made, by the run's index."""
+    """Elaboration problems per failed run, keyed by zero-based run index."""
     errors: dict[int, dict[str, str]] = field(default_factory=dict)
-    """Why each analysis that failed on a run failed, by the run's index then name."""
+    """Failed analysis error messages keyed by run index and analysis name."""
     traces: tuple[Traces, ...] = ()
 
     def __post_init__(self) -> None:
-        """Keeps each reason once, in the order the cells of `causes` first name them.
+        """Deduplicates `reasons` and renumbers `causes` in first-appearance order.
 
         Raises:
-            ValueError: When a cause names no reason.
+            ValueError: If any entry in `causes` references an out-of-range reason.
         """
         causes, reasons = _canonical(self.causes, self.reasons)
         object.__setattr__(self, "causes", causes)
@@ -1646,16 +1632,16 @@ class BatchResult:
 
     @property
     def runs(self) -> int:
-        """The number of runs."""
+        """Total number of runs stored in the batch result."""
         return int(self.values.shape[0])
 
     @property
     def failed(self) -> npt.NDArray[np.bool_]:
-        """Whether each run failed: its values made problems, or an analysis failed."""
+        """Boolean array marking runs with elaboration problems or failed analyses."""
         return ~self.ended.all(axis=1)
 
     def failure(self, run: int) -> str | None:
-        """Why the run `run` failed, in words; None when it did not."""
+        """Returns the formatted failure summary for `run`, or None if `run` passed."""
         if run in self.problems:
             return "\n\n".join(self.problems[run])
         if run in self.errors:
@@ -1665,31 +1651,29 @@ class BatchResult:
         return None
 
     def reason(self, run: int, measure: int) -> str | None:
-        """Why the measure at `measure` read nothing on `run`, if it did not."""
+        """Returns the failure reason for `measure` on `run`, or None if valid."""
         cause = int(self.causes[run, measure])
         return None if cause < 0 else self.reasons[cause]
 
     def parameter(self, name: str) -> Real:
-        """The values of the parameter `name`, such as ``R1 resistance``, one per run.
+        """Returns the array of values for parameter `name` across all runs.
 
         Raises:
-            KeyError: When the variants vary no such parameter.
+            KeyError: If `name` is not among the varied `parameters`.
         """
         found = _find(list(self.parameters), name, "the variants vary no parameter")
         return self.values[:, found]
 
     @staticmethod
     def joined(parts: Sequence[BatchResult]) -> BatchResult:
-        """The runs of `parts`, one after another, as one result: the inverse of `rows`.
+        """Concatenates runs from `parts` in order into a single `BatchResult`.
 
-        Each part's runs follow the part's before it, each measure in the unit its
-        parts read it in, and its reasons are those of every part.
+        Concatenation acts as the inverse of `rows`, preserving run order, reconciling
+        measure units, and merging deduplicated failure reasons across all parts.
 
         Raises:
-            ValueError: When there is no part; or the parts ran other analyses, varied
-                other numbers, read other measures or traced other unknowns or
-                points, naming the first part that differs from the first, by its place;
-                or read a measure in other units, naming them.
+            ValueError: If `parts` is empty, if parts differ in analyses, parameters,
+                measures, or trace layout, or if parts disagree on a measure's unit.
         """
         if not parts:
             message = "a batch joins one part or more"
@@ -1752,7 +1736,7 @@ class BatchResult:
         )
 
     def rows(self, start: int, stop: int) -> BatchResult:
-        """The runs from `start` up to `stop`, from 0, as a result of their own."""
+        """Returns a new `BatchResult` containing runs from `start` up to `stop`."""
 
         def kept[T](found: dict[int, T]) -> dict[int, T]:
             return {
@@ -1783,12 +1767,12 @@ class BatchResult:
 def _canonical(
     causes: npt.NDArray[np.int32], reasons: tuple[str, ...]
 ) -> tuple[npt.NDArray[np.int32], tuple[str, ...]]:
-    """`reasons`, each text once, in the order the cells of `causes` first name them.
+    """Deduplicates `reasons` in first-appearance order and remaps `causes`.
 
-    Returns `causes` renumbered with them, unchanged when they already are.
+    Returns `(causes, reasons)` unchanged when already canonical.
 
     Raises:
-        ValueError: When a cause names no reason.
+        ValueError: If any entry in `causes` indexes outside `reasons`.
     """
     named = causes.ravel()
     named = named[named >= 0]
@@ -1802,12 +1786,12 @@ def _canonical(
         table[old] = texts.setdefault(reasons[old], len(texts))
     if tuple(texts) == reasons and bool((table[:-1] == np.arange(len(reasons))).all()):
         return causes, reasons
-    # A cause of -1 reads the table's last entry, -1 too.
+    # A sentinel cause of -1 indexes the final table entry, which is also -1.
     return table[causes], tuple(texts)
 
 
 def _alike(traces: tuple[Traces, ...], other: tuple[Traces, ...]) -> bool:
-    """Whether `other` traces the unknowns `traces` does, along the same points."""
+    """Returns whether `traces` and `other` share identical metadata and axis arrays."""
     return len(traces) == len(other) and all(
         (one.analysis, one.along, one.unknowns, one.source, one.nature, one.parameter)
         == (
@@ -1826,10 +1810,10 @@ def _alike(traces: tuple[Traces, ...], other: tuple[Traces, ...]) -> bool:
 def _unit_of(
     measure: str, units: Sequence[Dimension | Plain | None]
 ) -> Dimension | Plain | None:
-    """The one unit among `units` of the parts that read `measure`, if any read it.
+    """Returns the unique non-None unit in `units` for `measure`, or None.
 
     Raises:
-        ValueError: When parts read it in different units.
+        ValueError: If parts report conflicting units for `measure`.
     """
     read = list(dict.fromkeys(unit for unit in units if unit is not None))
     if len(read) > 1:

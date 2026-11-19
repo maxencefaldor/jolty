@@ -36,13 +36,12 @@ _PREFIXES: Final = {
 
 
 type Exponent = int | Fraction
-"""The power of a base unit: whole, or a fraction, as hertz's in a noise density's
-V/√Hz."""
+"""Exponent of an SI base unit (integer or `Fraction`, as in V/√Hz)."""
 
 
 @dataclass(frozen=True, slots=True)
 class Dimension:
-    """The exponents of the SI base units kilogram, meter, second, ampere and kelvin."""
+    """Exponents of the SI base units kilogram, meter, second, ampere, and kelvin."""
 
     kilogram: Exponent = 0
     meter: Exponent = 0
@@ -54,22 +53,22 @@ class Dimension:
         return (self.kilogram, self.meter, self.second, self.ampere, self.kelvin)
 
     def __mul__(self, other: Dimension) -> Dimension:
-        """The dimension of a product."""
+        """Returns the product of two dimensions."""
         exponents = zip(self._exponents(), other._exponents(), strict=True)
         return Dimension(*(a + b for a, b in exponents))
 
     def __truediv__(self, other: Dimension) -> Dimension:
-        """The dimension of a quotient."""
+        """Returns the quotient of two dimensions."""
         exponents = zip(self._exponents(), other._exponents(), strict=True)
         return Dimension(*(a - b for a, b in exponents))
 
     def __pow__(self, power: Exponent) -> Dimension:
-        """The dimension of a power."""
+        """Returns this dimension raised to `power`."""
         return Dimension(*(exponent * power for exponent in self._exponents()))
 
     @override
     def __str__(self) -> str:
-        """The unit's symbol, such as ``Ω`` or ``V⁻¹``, else a product of base units.
+        """Formats the named unit symbol (``Ω``, ``V⁻¹``) or a base-unit product.
 
         Examples:
             >>> str(VOLTAGE), str(DIMENSIONLESS / VOLTAGE), str(LENGTH * TIME)
@@ -130,23 +129,23 @@ _SYMBOLS: Final = {
     VOLTAGE / FREQUENCY ** Fraction(1, 2): "V/\N{SQUARE ROOT}Hz",
     CURRENT / FREQUENCY ** Fraction(1, 2): "A/\N{SQUARE ROOT}Hz",
 }
-"""The symbol of each named unit, to which an SI prefix binds."""
+"""Mapping from named dimensions to their SI unit symbols."""
 
 
 @dataclass(frozen=True, slots=True)
 class Quantity:
-    """A value in SI base units and its dimension."""
+    """Physical value stored in SI base units paired with its dimension."""
 
     value: float
     dimension: Dimension
 
     def to(self, dimension: Dimension, name: str) -> float:
-        """The value in SI base units, once its dimension is checked and it is finite.
+        """Validates dimension and finiteness and returns the scalar SI value.
 
         Raises:
-            DimensionError: When the quantity has another dimension than `dimension`;
-                the message names `name`, the expected unit and the given quantity.
-            ValueError: When the value is infinite or not a number.
+            DimensionError: When the quantity dimension differs from `dimension`;
+                the message names `name`, the expected unit, and the given quantity.
+            ValueError: When the numeric value is infinite or NaN.
         """
         if self.dimension != dimension:
             message = f"{name} takes a quantity in {dimension}, not {self}"
@@ -154,30 +153,30 @@ class Quantity:
         return finite(self.value, name)
 
     def __mul__(self, other: float | Quantity) -> Quantity:
-        """The product, whose dimension is the product of the dimensions."""
+        """Returns the product of this quantity and scalar or quantity `other`."""
         if isinstance(other, Quantity):
             return Quantity(self.value * other.value, self.dimension * other.dimension)
         return Quantity(self.value * other, self.dimension)
 
     def __rmul__(self, other: float) -> Quantity:
-        """The product of a number and the quantity."""
+        """Returns the product of scalar `other` and this quantity."""
         return Quantity(other * self.value, self.dimension)
 
     def __truediv__(self, other: float | Quantity) -> Quantity:
-        """The quotient, whose dimension is the quotient of the dimensions."""
+        """Returns the quotient of this quantity and scalar or quantity `other`."""
         if isinstance(other, Quantity):
             return Quantity(self.value / other.value, self.dimension / other.dimension)
         return Quantity(self.value / other, self.dimension)
 
     def __rtruediv__(self, other: float) -> Quantity:
-        """The quotient of a number by the quantity, as a frequency from a period."""
+        """Returns the quotient of scalar `other` divided by this quantity."""
         return Quantity(other / self.value, DIMENSIONLESS / self.dimension)
 
     def compact(self) -> str:
-        """The quantity to 15 significant digits, with an SI prefix and no space.
+        """Formats the quantity to 15 significant digits with an SI prefix, no space.
 
-        Fifteen digits keep every digit a script writes and drop the noise of binary
-        arithmetic, so a name written from the quantity reads as the script does.
+        Fifteen significant digits preserve script literals while eliminating binary
+        floating-point noise in generated component names.
 
         Examples:
             >>> (1.00001 * kohm).compact(), (4.7 * nF).compact(), (0.02 / V).compact()
@@ -197,7 +196,7 @@ class Quantity:
         return f"{mantissa:f}{_PREFIXES[exponent]}{symbol}"
 
     def __pow__(self, power: Exponent) -> Quantity:
-        """The quantity raised to a whole or fractional `power`, as volts squared.
+        """Returns this quantity raised to whole or fractional `power`.
 
         Examples:
             >>> str(1 * mA / V**2)
@@ -208,15 +207,15 @@ class Quantity:
         return Quantity(math.pow(self.value, power), self.dimension**power)
 
     def __add__(self, other: Quantity) -> Quantity:
-        """The sum of two quantities of the same dimension."""
+        """Returns the sum of two quantities with matching dimensions."""
         return Quantity(self.value + self._same(other, "add"), self.dimension)
 
     def __sub__(self, other: Quantity) -> Quantity:
-        """The difference of two quantities of the same dimension."""
+        """Returns the difference of two quantities with matching dimensions."""
         return Quantity(self.value - self._same(other, "subtract"), self.dimension)
 
     def __neg__(self) -> Quantity:
-        """The opposite quantity."""
+        """Returns the negated quantity."""
         return Quantity(-self.value, self.dimension)
 
     def _same(self, other: Quantity, verb: str) -> float:
@@ -227,10 +226,10 @@ class Quantity:
 
     @override
     def __str__(self) -> str:
-        """The value with an SI prefix and the unit's symbol, such as ``4.7 kΩ``.
+        """Formats the quantity with an SI prefix and unit symbol, such as ``4.7 kΩ``.
 
-        A unit without a symbol of its own takes no prefix, which would bind to its
-        first factor alone, and a plain number none either, which would read as a unit.
+        Compound units without a dedicated symbol omit prefixes to avoid binding only
+        to the first factor, and dimensionless values print as plain numbers.
 
         Examples:
             >>> str(0.02 / V), str(0.3 * V / V)
@@ -244,11 +243,11 @@ class Quantity:
 
 
 ZERO_CELSIUS: Final = 273.15
-"""0 °C, in kelvins."""
+"""Zero degrees Celsius expressed in kelvins (273.15 K)."""
 
 
 def celsius(degrees: float) -> Quantity:
-    """The temperature of `degrees` Celsius, in kelvins.
+    """Converts `degrees` Celsius into a temperature `Quantity` in kelvins.
 
     Examples:
         >>> celsius(27).value
@@ -258,19 +257,19 @@ def celsius(degrees: float) -> Quantity:
 
 
 def finite(value: float, name: str) -> float:
-    """`value`, after checking it is finite.
+    """Validates that `value` is finite and returns `value`.
 
     Raises:
-        ValueError: When `value` is infinite or not a number; the message names `name`.
+        ValueError: When `value` is infinite or NaN; the message names `name`.
     """
     if not math.isfinite(value):
-        message = f"{name} must be finite, not {value}"
+        message = f"{name} is finite, not {value}"
         raise ValueError(message)
     return value
 
 
 def format_si(value: float, symbol: str) -> str:
-    """`value` to four significant digits, with the SI prefix that puts it in [1, 1000).
+    """Formats `value` to four significant digits with an SI prefix in [1, 1000).
 
     Examples:
         >>> format_si(4700.0, "Ω")
@@ -342,4 +341,4 @@ K: Final = Quantity(1.0, TEMPERATURE)
 J: Final = Quantity(1.0, ENERGY)
 mJ: Final = Quantity(1e-3, ENERGY)
 rtHz: Final = Hz ** Fraction(1, 2)
-"""The square root of a hertz, the unit of a noise density such as ``4 * nV / rtHz``."""
+"""Square root of hertz, used for noise densities such as ``4 * nV / rtHz``."""

@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""Waveforms: the level of an independent source over time.
+"""Time-varying waveforms for independent voltage and current sources.
 
-Levels are voltages for a voltage source and currents for a current source; the source
-checks them as it reads the waveform. Every analysis but a transient one reads the level
-at time zero.
+Levels represent voltages for voltage sources and currents for current sources; each
+source validates physical dimensions when accepting a waveform. Every non-transient
+analysis evaluates the waveform at time zero.
 
 Examples:
     >>> from jolty.units import V, ns, us
@@ -22,18 +22,18 @@ from jolty.units import FREQUENCY, TIME, Dimension, Quantity, finite
 
 @dataclass(frozen=True, slots=True)
 class Dc:
-    """A constant level."""
+    """Constant DC source level."""
 
     value: Quantity
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The waveform in the circuit format, checked against `dimension`."""
+        """Serializes the DC waveform to IR JSON after checking `dimension`."""
         return {"dc": self.value.to(dimension, "a DC level")}
 
 
 @dataclass(frozen=True, slots=True)
 class Pulse:
-    """A trapezoidal pulse from `initial` to `pulsed` and back, once or every period."""
+    """Trapezoidal pulse switching between `initial` and `pulsed`."""
 
     initial: Quantity
     pulsed: Quantity
@@ -44,7 +44,7 @@ class Pulse:
     period: Quantity | None = None
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The waveform in the circuit format, checked against `dimension`."""
+        """Serializes the pulse waveform to IR JSON after checking `dimension`."""
         pulse: dict[str, JsonValue] = {
             "initial": self.initial.to(dimension, "a pulse's initial level"),
             "pulsed": self.pulsed.to(dimension, "a pulse's pulsed level"),
@@ -60,11 +60,12 @@ class Pulse:
 
 @dataclass(frozen=True, slots=True)
 class Sine:
-    """A sine wave around `offset`, starting after `delay` and decaying at `damping`.
+    """Damped sinusoidal waveform oscillating around `offset` after `delay`.
 
-    Its level is ``offset + amplitude·exp(-damping·t')·sin(2π·frequency·t' + phase)``,
-    where ``t'`` is the time since the delay; before the delay it holds its level at
-    ``t' = 0``. The phase is in radians.
+    The waveform evaluates
+    ``offset + amplitude·exp(-damping·t')·sin(2π·frequency·t' + phase)`` where ``t'``
+    is elapsed time since `delay` and `phase` is in radians. Prior to `delay`, output
+    holds its value at ``t' = 0``.
     """
 
     offset: Quantity
@@ -75,7 +76,7 @@ class Sine:
     phase: float = 0.0
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The waveform in the circuit format, checked against `dimension`."""
+        """Serializes the sine waveform to IR JSON after checking `dimension`."""
         return {
             "sine": {
                 "offset": self.offset.to(dimension, "a sine's offset"),
@@ -90,12 +91,12 @@ class Sine:
 
 @dataclass(frozen=True, slots=True)
 class Piecewise:
-    """Straight lines through ``(time, level)`` points, held before and after them."""
+    """Piecewise-linear waveform through ``(time, level)`` pairs with clamped ends."""
 
     points: Sequence[tuple[Quantity, Quantity]]
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The waveform in the circuit format, checked against `dimension`."""
+        """Serializes the piecewise waveform to IR JSON after checking `dimension`."""
         points: list[JsonValue] = [
             [time.to(TIME, "a point's time"), value.to(dimension, "a point's level")]
             for time, value in self.points
@@ -105,12 +106,12 @@ class Piecewise:
 
 @dataclass(frozen=True, slots=True)
 class Exponential:
-    """A rise from `initial` toward `pulsed` after `rise_delay`, and a fall back after.
+    """SPICE ``EXP`` waveform rising toward `pulsed` then decaying back to `initial`.
 
-    Its level, SPICE's ``EXP``, holds `initial` until the rise delay, then rises as
-    ``initial + (pulsed - initial)·(1 - exp(-(t - rise_delay)/rise_time_constant))``,
-    and from `fall_delay`, at or after the rise delay, adds the fall back toward
-    `initial`, ``(initial - pulsed)·(1 - exp(-(t - fall_delay)/fall_time_constant))``.
+    Output holds `initial` until `rise_delay`, then adds
+    ``(pulsed - initial)·(1 - exp(-(t - rise_delay)/rise_time_constant))``. Starting
+    at `fall_delay` (at or after `rise_delay`), output adds
+    ``(initial - pulsed)·(1 - exp(-(t - fall_delay)/fall_time_constant))``.
     """
 
     initial: Quantity
@@ -121,7 +122,7 @@ class Exponential:
     rise_delay: Quantity = field(default_factory=lambda: Quantity(0.0, TIME))
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """The waveform in the circuit format, checked against `dimension`."""
+        """Serializes the exponential waveform to IR JSON checking `dimension`."""
         return {
             "exponential": {
                 "initial": self.initial.to(dimension, "an exponential's initial level"),
@@ -139,4 +140,4 @@ class Exponential:
 
 
 type Waveform = Dc | Pulse | Sine | Piecewise | Exponential
-"""Any waveform."""
+"""Union of all supported independent-source waveform types."""

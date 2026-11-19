@@ -1,25 +1,24 @@
 # Copyright 2026 Maxence Faldor
-"""Analyses of circuits that hold a foundry's devices, run in ngspice with its models.
+"""Foundry-device circuit analyses executed in ngspice with process design kit models.
 
-The engine solves no foundry's device, such as a SKY130 transistor, so
-[`Simulation`][jolty.simulate.Simulation] runs each analysis of a circuit that holds one
-here. The circuit is written as a SPICE netlist, ngspice reads its kit's model library
-at a process corner, and runs the analysis at the simulation's temperature with the
-plan's options, the others at SPICE's defaults, which are the engine's. The vectors it
-writes become a result of the same kind, whose unknowns are the circuit's nets and the
-currents of its sources and inductors, as jolty names them: a device's own unknowns,
-and its terminals' currents, ngspice keeps to itself.
+The native engine does not solve foundry devices such as SKY130 transistors, so
+[`Simulation`][jolty.simulate.Simulation] dispatches circuits containing foundry devices
+to this module. Each circuit is exported as a SPICE netlist, loaded with the kit model
+library at the requested process corner, and simulated at the configured temperature and
+plan options. Output vectors are converted into standard jolty results containing net
+voltages and source or inductor currents. Internal device unknowns and individual
+terminal currents are not exported by ngspice.
 
-An operating point, a DC sweep in even steps, a small-signal response, a transient and
-the noise at a voltage run this way. ngspice steps a transient where it chooses, and
-lands on the times the analysis names only where its steps do. It names each source of
-noise its own way, such as ``id`` for a transistor's channel and ``1overf`` for its
-flicker noise, and refers noise to a source of its own choosing when the analysis names
-none, which the result then leaves out. Any other analysis of such a circuit fails, and
-says so.
+Supported analyses are operating point, evenly spaced DC sweep, small-signal AC
+response, transient, and voltage noise. During transient runs, ngspice chooses adaptive
+time steps and hits requested times only when a step lands on them. Noise sources use
+ngspice naming conventions such as ``id`` for channel thermal noise and ``1overf`` for
+flicker noise. When a noise analysis omits an input reference source, ngspice selects an
+internal reference source whose input-referred data the result omits. Unsupported
+analyses raise a simulation error.
 
-Given a seed, ngspice draws the kit's mismatch, each transistor's parameters apart from
-the others', as a Monte Carlo sample of the process does; the same seed draws the same.
+When a mismatch seed is provided, ngspice samples per-instance device mismatch
+parameters reproducibly for that seed.
 """
 
 import re
@@ -47,7 +46,7 @@ from jolty.spice import export, ngspice, sky130
 from jolty.units import FREQUENCY, TIME, Quantity
 
 STRATEGY: Final = "ngspice"
-"""The strategy of an operating point ngspice found."""
+"""Operating-point strategy name recorded for ngspice solutions."""
 
 SPICE_OPTIONS: Final = {
     "relative_tolerance": "reltol",
@@ -59,18 +58,18 @@ SPICE_OPTIONS: Final = {
     "max_transient_iterations": "itl4",
     "truncation_tolerance": "trtol",
 }
-"""ngspice's ``.options`` name of each option of [`Options`][jolty.plan.Options] it
-reads alike, by the option's name."""
+"""Mapping from [`Options`][jolty.plan.Options] field names to ngspice ``.options``
+parameter names."""
 
 _METHODS: Final = {
     "trapezoidal": "method=trap",
     "gear2": "method=gear maxord=2",
     "backward_euler": "method=gear maxord=1",
 }
-"""ngspice's options for each integration method."""
+"""Mapping from integration method names to ngspice ``.options`` clauses."""
 
 _EVEN: Final = 1e-9
-"""How far, as a fraction of a step, a DC sweep's levels may lie from even steps."""
+"""Maximum relative deviation allowed from uniform step spacing in a DC sweep."""
 
 
 def run(
@@ -80,13 +79,20 @@ def run(
     conditions: Conditions,
     unknowns: Sequence[results.Unknown],
 ) -> results.AnalysisResult:
-    """Runs `analysis` of `circuit` in ngspice, with `options`, at `conditions`.
+    """Executes `analysis` on `circuit` in ngspice with `options` and `conditions`.
 
-    The result holds those of `unknowns` that ngspice names.
+    The returned result contains all unknowns from `unknowns` that ngspice exports.
+
+    Args:
+        circuit: Circuit containing one or more foundry devices.
+        analysis: Supported analysis specification to execute.
+        options: Solver tolerance, iteration, and nodeset options.
+        conditions: Temperature, process corner, mismatch seed, and parameter overrides.
+        unknowns: Circuit unknowns requested for extraction from ngspice output.
 
     Raises:
-        SimulationError: When ngspice does not run the analysis, or cannot read the
-            circuit, saying why.
+        SimulationError: If ngspice does not support the analysis, fails to run, or
+            cannot read the netlist.
     """
     try:
         return _Deck.from_circuit(circuit, analysis, options, conditions, unknowns).run(
@@ -100,14 +106,14 @@ def run(
 
 @dataclass(frozen=True, slots=True)
 class _Deck:
-    """A circuit flattened into its devices, as ngspice runs one of its analyses."""
+    """Flattened circuit deck prepared for ngspice execution."""
 
     flat: ir.Circuit
     paths: Mapping[str, str]
-    """Each device's path, by its id in `flat`."""
+    """Mapping from flattened device name in `flat` to original hierarchical path."""
     lines: list[str]
     read: list[tuple[results.Unknown, str]]
-    """Each unknown ngspice names, and the name of its vector."""
+    """Sequence of supported unknowns paired with their ngspice vector names."""
     running: ngspice.Running
 
     @classmethod
@@ -119,11 +125,11 @@ class _Deck:
         conditions: Conditions,
         unknowns: Sequence[results.Unknown],
     ) -> _Deck:
-        """The deck of `analysis` of `circuit`, which excites the source it reads.
+        """Builds an ngspice deck for `analysis` on `circuit`, exciting any AC source.
 
         Raises:
-            SimulationError: When the kit has no such process corner, or the analysis
-                names no independent source where it names one.
+            SimulationError: If the process corner is invalid or an analysis references
+                a missing or non-independent source.
         """
         kit = sky130.running(
             conditions.process, mismatched=conditions.mismatch is not None
@@ -155,7 +161,7 @@ class _Deck:
         )
 
     def runs(self, commands: Sequence[str]) -> tuple[ngspice.Result, ...]:
-        """The plot of each of `commands`, run in turn in one ngspice."""
+        """Executes `commands` sequentially in a single ngspice invocation."""
         return ngspice.runs(self.lines, commands, **self.running)
 
     def unknowns(self) -> tuple[results.Unknown, ...]:
@@ -226,7 +232,7 @@ class _Deck:
             if transient.max_step is None
             else transient.max_step.to(TIME, "a transient's longest step")
         )
-        # ngspice's `uic` starts the transient from its initial conditions alone.
+        # The ngspice `uic` flag starts the transient from initial conditions alone.
         start = "" if transient.operating_point else " uic"
         steps = f"tran {longest!r} {stop!r} 0 {longest!r}{start}"
         (raw,) = self.runs((f"{steps}\nrusage traniter accept rejected",))
@@ -245,18 +251,18 @@ class _Deck:
                 initial=STRATEGY if transient.operating_point else None,
                 accepted=counted["accepted"][0],
                 rejected=counted["rejected"][0],
-                # ngspice steps across an event rather than landing on it.
+                # Adaptive ngspice time stepping crosses events instead of landing.
                 landed=0,
                 iterations=counted["iterations"][0],
             ),
         )
 
     def noise(self, noise: Noise) -> results.NoiseResult:
-        """The noise at a voltage, each device's sources apart, referred to a source.
+        """Computes voltage noise density, per-device contributions, and input noise.
 
         Raises:
-            SimulationError: When the output is not a voltage, or the circuit holds no
-                independent source to refer its noise to.
+            SimulationError: If the noise output is not a voltage or the circuit
+                contains no independent source for input referral.
         """
         output = self.output(noise)
         frequencies = _frequencies(noise.frequencies)
@@ -300,10 +306,10 @@ class _Deck:
         )
 
     def output(self, noise: Noise) -> str:
-        """The output of `noise` as ngspice names it, ``v(out)`` or ``v(out,ref)``.
+        """Formats the `noise` output for ngspice as ``v(out)`` or ``v(out,ref)``.
 
         Raises:
-            SimulationError: When the output is not a voltage.
+            SimulationError: If the noise output does not refer to a voltage node.
         """
         named = {unknown.name: vector for unknown, vector in self.read}
         nodes = [noise.output, *([] if noise.reference is None else [noise.reference])]
@@ -319,11 +325,11 @@ class _Deck:
     def contributions(
         self, spectra: Sequence[ngspice.Result]
     ) -> tuple[tuple[results.NoiseSource, ...], results.Real]:
-        """Each device's sources of noise that add any, and what each adds.
+        """Extracts nonzero per-device noise sources and their spectral contributions.
 
         Raises:
-            SimulationError: When ngspice names noise of a device the netlist does not
-                hold.
+            SimulationError: If ngspice reports noise for a device absent from the
+                netlist.
         """
         devices = sorted(
             _devices(self.flat, self.paths).items(), key=lambda pair: -len(pair[0])
@@ -372,10 +378,10 @@ def _index_flat[T](entries: Iterable[tuple[str, T]], what: str) -> dict[str, T]:
 def _flattened(
     circuit: ir.Circuit, overrides: Mapping[str, Mapping[str, float]]
 ) -> tuple[ir.Circuit, dict[str, str]]:
-    """`circuit` flattened into its devices, with the parameters `overrides` replaces.
+    """Flattens `circuit` into devices with parameter `overrides` applied.
 
-    Each device's id is its path, its ids joined by underscores, as a netlist writes
-    it; the mapping gives each device's path by that id.
+    Returns the flattened circuit and a mapping from underscore-joined flattened device
+    identifiers back to their original hierarchical paths.
     """
     flat = export.flatten(circuit)
     paths = _index_flat(
@@ -403,7 +409,7 @@ def _flattened(
 
 
 def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
-    """Each device's path, by the name ngspice gives it in its noise's vectors."""
+    """Maps each ngspice noise-vector device name to its original hierarchical path."""
     named = {}
     for instance in flat.components[flat.top].instances:
         element = export.element(instance).lower()
@@ -419,7 +425,7 @@ def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
 
 
 def _replaced(found: JsonValue, keys: Sequence[str], value: float) -> JsonValue:
-    """`found` with `value` at the path of `keys` within it."""
+    """Returns a copy of `found` with `value` written at nested path `keys`."""
     if not keys:
         return value
     key, *rest = keys
@@ -437,7 +443,7 @@ def _replaced(found: JsonValue, keys: Sequence[str], value: float) -> JsonValue:
 def _readable(
     circuit: ir.Circuit, unknowns: Sequence[results.Unknown]
 ) -> list[tuple[results.Unknown, str]]:
-    """Each of `unknowns` that ngspice names, and the name of its vector."""
+    """Pairs each ngspice-readable unknown from `unknowns` with its vector name."""
     read = []
     for unknown in unknowns:
         try:
@@ -448,7 +454,7 @@ def _readable(
 
 
 def _options(options: Options, analysis: Analysis) -> str:
-    """The options line ngspice reads: the plan's options, and a transient's method."""
+    """Builds the ngspice ``.options`` line from `options` and any transient method."""
     given = [
         f"{SPICE_OPTIONS[name]}={value!r}"
         for name, value in ((name, getattr(options, name)) for name in SPICE_OPTIONS)
@@ -462,19 +468,19 @@ def _options(options: Options, analysis: Analysis) -> str:
 def _table(
     raw: ngspice.Result, read: Sequence[tuple[results.Unknown, str]]
 ) -> results.Real:
-    """The real values of each of `read`'s vectors, a column each."""
+    """Extracts the real values of each vector in `read` as columns of a 2D array."""
     return np.column_stack([raw.real(vector) for _, vector in read]).reshape(
         -1, len(read)
     )
 
 
 def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Nature]:
-    """The independent source at `path` in the flattened circuit `flat`, and its level.
+    """Resolves the independent source at `path` in `flat` and its electrical nature.
 
-    Its level is a voltage or a current.
+    The returned nature is ``"voltage"`` or ``"current"``.
 
     Raises:
-        SimulationError: When no independent source is at `path`.
+        SimulationError: If `path` does not refer to an independent source.
     """
     found = flat.components[flat.top].instance(path.replace("/", "_"))
     match found:
@@ -489,17 +495,17 @@ def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Nature]:
 def _sweep(
     flat: ir.Circuit, sweep: DcSweep
 ) -> tuple[str, results.Real, results.Nature]:
-    """The command ngspice runs `sweep` by, its levels, and whether they are voltages.
+    """Builds the ngspice ``dc`` command, swept levels, and source nature for `sweep`.
 
     Raises:
-        SimulationError: When the swept instance is no independent source, or the
-            levels do not rise or fall in even steps, as ngspice sweeps a source.
+        SimulationError: If the swept instance is not an independent source or the
+            sweep values are not uniformly spaced.
     """
     found, nature = _source(flat, sweep.source)
     dimension = unknowns.DIMENSIONS[nature]
     given = [level.to(dimension, "a sweep level") for level in sweep.values]
     levels = np.array(given)
-    if len(levels) < 2:  # noqa: PLR2004 - a sweep's first and last levels
+    if len(levels) < 2:  # noqa: PLR2004 - minimum two sweep endpoints
         message = "ngspice sweeps a source through two levels or more"
         raise SimulationError(message)
     first, last = given[0], given[-1]
@@ -517,12 +523,12 @@ _STATISTICS: Final = {
     "accepted": re.compile(r"Accepted timepoints\s*=\s*(\d+)"),
     "rejected": re.compile(r"Rejected timepoints\s*=\s*(\d+)"),
 }
-"""What ngspice's ``rusage`` prints of a transient: its Newton iterations, and the time
-points it accepted and rejected."""
+"""Regular expressions parsing ngspice ``rusage`` transient iteration and timepoint
+counts."""
 
 
 def _excited(flat: ir.Circuit, analysis: Analysis) -> str | None:
-    """The id of the source a small-signal response or a noise analysis excites."""
+    """Returns the flattened source name excited by an AC or noise analysis, if any."""
     match analysis:
         case Ac():
             return _source(flat, analysis.source)[0].name
@@ -532,11 +538,11 @@ def _excited(flat: ir.Circuit, analysis: Analysis) -> str | None:
 
 
 def _referred(flat: ir.Circuit, noise: Noise) -> ir.Instance:
-    """The independent source `noise` is referred to: its own, or the circuit's first.
+    """Returns the reference source for `noise`, or the circuit's first source.
 
     Raises:
-        SimulationError: When the analysis names no independent source, or names none
-            and the circuit holds none.
+        SimulationError: If the named source is not independent, or if `noise` omits a
+            source and the circuit contains no independent sources.
     """
     if noise.source is not None:
         return _source(flat, noise.source)[0]
@@ -565,14 +571,14 @@ def _frequencies(given: Sequence[Quantity]) -> list[float]:
 
 
 def _points(analysis: str, frequencies: Sequence[float]) -> list[str]:
-    """A small-signal command of `analysis` at each of `frequencies`, in turn."""
+    """Builds single-frequency ngspice commands for `analysis` over `frequencies`."""
     return [
         f"{analysis} lin 1 {frequency!r} {frequency!r}" for frequency in frequencies
     ]
 
 
 def _difference(output: str) -> tuple[str, str]:
-    """The vectors whose difference is the voltage ``v(out,reference)`` names."""
+    """Splits a ``v(out)`` or ``v(out,ref)`` expression into vector names."""
     nodes = output.removeprefix("v(").removesuffix(")").split(",")
     first, *rest = nodes
     return f"v({first})", f"v({rest[0]})" if rest else ""

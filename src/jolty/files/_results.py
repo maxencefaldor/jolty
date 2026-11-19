@@ -31,13 +31,13 @@ HEADER: Final = "header"
 """Archive entry holding the JSON header of a results, batch, or shard file."""
 
 _EPOCH: Final = (1980, 1, 1, 0, 0, 0)
-"""The date a ZIP archive's entries carry: the earliest it can, the same every time."""
+"""Fixed earliest ZIP timestamp written to archive entries for deterministic output."""
 
 _PACKAGE: Final = Path(__file__).resolve().parent.parent
-"""jolty's own directory, whose modules and engine a build is."""
+"""Root directory of the jolty package containing Python modules and engine binary."""
 
 _RESULTS_VERSION: Final = 20
-"""The version of the results file's format that jolty writes and reads."""
+"""Version of the jolty results archive format read and written by this release."""
 
 _ARCHIVE_ERRORS: Final = (
     ValueError,
@@ -62,10 +62,10 @@ LOAD_ERRORS: Final = (
 """Exceptions raised when decoding arrays or header metadata from a corrupt archive."""
 
 _RECORDED: Final = ("currents", "charges", "conductances", "capacitances", "variables")
-"""The arrays of what the recorded devices did, by the names of their fields."""
+"""Field names of the recorded device arrays stored in a results archive."""
 
 _TRANSFER_LENGTH: Final = 3
-"""Scalars stored in a transfer function array: gain, input and output resistance."""
+"""Number of scalars in a transfer function array: gain, input and output resistance."""
 
 
 class _Archive(Mapping[str, np.ndarray]):
@@ -168,12 +168,12 @@ def open_validated[M: BaseModel](
 
 
 def circuit_digest(circuit: ir.Circuit) -> str:
-    """A SHA-256 digest, in hexadecimal, of what a simulation reads of `circuit`.
+    """Returns a hexadecimal SHA-256 digest of simulation-relevant data in `circuit`.
 
-    It digests the circuit in the circuit format without each instance's
-    [`SourceLocation`][jolty.ir.SourceLocation], the script line that placed it, which
-    names where a problem lies and which no simulation reads: the same circuit built by
-    scripts in two places, or on two machines, digests alike.
+    The digest hashes the serialized circuit without instance
+    [`SourceLocation`][jolty.ir.SourceLocation] metadata, which only identifies script
+    lines for diagnostics and does not affect simulation. Equivalent circuits built
+    from different script paths or machines produce the same digest.
 
     Examples:
         >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, SourceLocation
@@ -202,11 +202,11 @@ def circuit_digest(circuit: ir.Circuit) -> str:
 
 @functools.cache
 def build() -> str:
-    """A SHA-256 digest of jolty's build: its engine, its Python modules and the Python.
+    """Returns a hexadecimal SHA-256 digest of the jolty build and Python runtime.
 
-    It digests the bytes of the engine's library and of every module of the package, by
-    their paths within it, and the interpreter's version, since a measure a script
-    writes computes in Python.
+    The digest covers the compiled engine library, the relative paths and contents of
+    every Python module in the package, and the Python interpreter version used to
+    evaluate script-defined measures.
     """
     digester = hashlib.sha256(Path(_core.__file__).read_bytes())
     for module in sorted(_PACKAGE.rglob("*.py")):
@@ -217,11 +217,11 @@ def build() -> str:
 
 
 def platform() -> str:
-    """The platform: the one Python was built for, and the C library's version.
+    """Returns the Python build platform identifier and C library version.
 
-    The engine's ``exp``, ``ln`` and ``pow`` come from the platform's C library: glibc
-    on most Linux systems, whose version names it, and the system's own on macOS and
-    Windows, whose versions name it.
+    Elementary functions such as ``exp``, ``ln``, and ``pow`` come from the platform C
+    library, reported as the glibc version on most Linux systems or the operating
+    system version on macOS and Windows.
 
     Examples:
         >>> platform() != ""
@@ -358,37 +358,39 @@ def plan_digest(plan: Plan) -> str:
 
 
 class Provenance(ir.FrozenModel):
-    """Where results come from, as a results file states it.
+    """Provenance metadata recorded in a results archive.
 
-    The jolty, the build and the platform that simulated them, and the circuit and the
-    plan they are of, by their digests. Every results file states it, and
-    [`load_results`][jolty.files.load_results] given a circuit refuses a file whose
-    results are of another.
+    Provenance identifies the jolty version, build digest, and platform that produced
+    the results, along with optional digests of the simulated circuit and plan. Every
+    results archive stores provenance, and [`load_results`][jolty.files.load_results]
+    rejects archives whose circuit digest does not match a supplied circuit.
     """
 
-    jolty: str = Field(description="jolty's version.")
+    jolty: str = Field(description="Version of jolty that produced the results.")
     build: str = Field(
-        description="The [`build`][jolty.files.build] that simulated them."
+        description="Output of [`build`][jolty.files.build] for the jolty build that "
+        "produced the results."
     )
     platform: str = Field(
-        description="The [`platform`][jolty.files.platform] they were simulated on."
+        description="Output of [`platform`][jolty.files.platform] for the machine that "
+        "produced the results."
     )
     circuit: str | None = Field(
         default=None,
-        description="The [`circuit_digest`][jolty.files.circuit_digest] of the circuit "
-        "they are of, when it was given.",
+        description="Output of [`circuit_digest`][jolty.files.circuit_digest] for the "
+        "simulated circuit, or null if omitted.",
     )
     plan: str | None = Field(
         default=None,
-        description="The [`plan_digest`][jolty.files.plan_digest] of the plan they are "
-        "of, when it was given.",
+        description="Output of [`plan_digest`][jolty.files.plan_digest] for the "
+        "simulated plan, or null if omitted.",
     )
 
     @classmethod
     def from_circuit_and_plan(
         cls, circuit: ir.Circuit | None = None, plan: Plan | None = None
     ) -> Self:
-        """The provenance of results of `circuit` and `plan`, simulated here and now.
+        """Builds provenance metadata for `circuit` and `plan` on the current host.
 
         Examples:
             >>> Provenance.from_circuit_and_plan().circuit is None
@@ -452,7 +454,7 @@ class _Statistics(ir.FrozenModel):
     profile: results.Profile | None = None
     charge_leak: bool = Field(
         default=False,
-        description="Whether the arrays hold each unknown's integrated residual.",
+        description="Flag indicating whether the archive stores integrated residuals.",
     )
 
     @classmethod
@@ -500,7 +502,7 @@ class _DifferentiatedEntry(ir.FrozenModel):
     outputs: tuple[str, ...]
     period: bool = Field(
         default=False,
-        description="Whether the arrays hold an oscillator's period's derivatives.",
+        description="Flag indicating whether the archive stores period derivatives.",
     )
     result: _Entry
 
@@ -595,13 +597,12 @@ class _Header(ir.FrozenModel):
     analyses: dict[str, _Entry]
     excursions: dict[str, tuple[results.Excursion, ...]] = Field(
         default_factory=dict,
-        description="Where each analysis the engine watched used logic devices outside "
-        "their domains, by its name.",
+        description="Recorded logic-device domain excursions keyed by analysis name.",
     )
 
 
 class _Format(BaseModel):
-    """A results file's format and version, whatever else its header holds."""
+    """Format identifier and schema version parsed from a results archive header."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -616,13 +617,13 @@ def save_results(
     circuit: ir.Circuit | None = None,
     plan: Plan | None = None,
 ) -> None:
-    """Writes the results of `analyses`, by name, to `path`, of `circuit` and `plan`.
+    """Writes the named analysis results in `analyses` to a results archive at `path`.
 
-    The file states their [`Provenance`][jolty.files.Provenance]: this jolty, its
-    build and the platform, and the digests of `circuit` and `plan` when they are given.
+    The archive records [`Provenance`][jolty.files.Provenance] containing the jolty
+    version, build digest, platform, and optional digests for `circuit` and `plan`.
 
     Raises:
-        ValueError: When the analyses are of different circuits, or none is given.
+        ValueError: If `analyses` is empty or contains results from different circuits.
     """
     circuits = {_names(result) for result in analyses.values()}
     if len(circuits) != 1:
@@ -649,14 +650,14 @@ def save_results(
 def load_results(
     path: Path, *, circuit: ir.Circuit | None = None
 ) -> dict[str, results.AnalysisResult]:
-    """Reads the results file at `path`: the results of each analysis, by name.
+    """Reads the named analysis results from the jolty results archive at `path`.
 
-    Given the `circuit` they are to be of, it refuses a file whose
-    [`Provenance`][jolty.files.Provenance] names another circuit.
+    When `circuit` is supplied, archives whose [`Provenance`][jolty.files.Provenance]
+    records a different circuit digest are rejected.
 
     Raises:
-        JoltyError: When the file is not a jolty results file, or one in another
-            version of the format, or its results are of a circuit other than `circuit`.
+        JoltyError: If `path` is not a valid jolty results archive, uses an
+            unsupported format version, or records results for a different circuit.
     """
     unreadable = f"{path} is not a jolty results file"
     with open_archive(path, unreadable) as data:
@@ -664,9 +665,9 @@ def load_results(
         of = header.provenance.circuit
         if circuit is not None and of is not None and of != circuit_digest(circuit):
             message = (
-                f"{path} holds the results of another circuit than the one given: "
-                f"its circuit's digest is {of[:12]}, the one given's "
-                f"{circuit_digest(circuit)[:12]}; simulate the circuit again"
+                f"{path} contains the results of another circuit than the one given: "
+                f"file digest is {of[:12]}, expected digest is "
+                f"{circuit_digest(circuit)[:12]}"
             )
             raise JoltyError(message)
         loader = _Loader(data, header)
@@ -688,11 +689,11 @@ def load_results(
 
 
 def load_provenance(path: Path) -> Provenance:
-    """The [`Provenance`][jolty.files.Provenance] the results file at `path` states.
+    """Reads the [`Provenance`][jolty.files.Provenance] metadata from `path`.
 
     Raises:
-        JoltyError: When the file is not a jolty results file, or one in another
-            version of the format.
+        JoltyError: If `path` is not a valid jolty results archive or uses an
+            unsupported format version.
     """
     with open_archive(path, f"{path} is not a jolty results file") as data:
         return _header(path, data).provenance
@@ -715,13 +716,13 @@ def _unreadable(path: Path, text: str) -> JoltyError:
     if found_version == _RESULTS_VERSION:
         return JoltyError(f"{path} is not a jolty results file")
     return JoltyError(
-        f"{path} holds results in version {found_version} of the format, which jolty "
-        f"reads no more; simulate again to write them in version {_RESULTS_VERSION}"
+        f"{path} contains results in version {found_version} of the format, which "
+        f"jolty reads no longer; current format version is {_RESULTS_VERSION}"
     )
 
 
 class _Saver:
-    """Collects arrays and deduplicates recordings while saving one results file."""
+    """Archive writer state collecting arrays and deduplicating recordings."""
 
     def __init__(self) -> None:
         self.arrays: dict[str, np.ndarray] = {}
@@ -919,7 +920,7 @@ class _Saver:
 
 
 class _Loader:
-    """Decodes analysis results from one `.npz` archive and its validated header."""
+    """Archive reader decoding analysis results from an `.npz` file and header."""
 
     def __init__(self, data: Mapping[str, np.ndarray], header: _Header) -> None:
         self.data = data
@@ -1193,7 +1194,7 @@ def _names(
 def _traces(
     data: Mapping[str, np.ndarray], name: str
 ) -> tuple[results.LogicTrace, ...]:
-    """The logic traces of the transient `name`, stored end to end in `data`."""
+    """Reconstructs logic traces for transient `name` from packed arrays in `data`."""
     counts = data[f"{name}.logic.counts"]
     if (
         counts.ndim != 1

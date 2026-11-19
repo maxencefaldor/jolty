@@ -1,10 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""The devices a build script places, each a model, its terminals and its parameters.
+"""Primitive device constructors defining models, terminals, and validated parameters.
 
-Each function checks the dimension of every parameter it reads, so a capacitance
-passed where a resistance belongs fails on the line that passed it. Parameters left out
-take the engine's defaults, which the reference's models page lists with every
-parameter of every model.
+Each constructor checks the physical dimension of every parameter at call time, so
+passing a capacitance where a resistance is expected fails immediately. Omitted
+parameters use the engine defaults documented on the reference models page.
 
 Examples:
     >>> from jolty.units import kohm
@@ -46,11 +45,11 @@ from jolty.waveforms import Dc, Waveform
 
 @dataclass(frozen=True, slots=True)
 class Device:
-    """A device ready to place: its model's name, its terminals and its parameters.
+    """Placeable device specification storing model name, terminals, and SI parameters.
 
-    Some parameters may have a tolerance, which Monte Carlo analyses sample, and the
-    device may state ratings, which a simulation checks, and the number of the part it
-    stands for, which a bill of materials prices.
+    Device parameters may carry statistical tolerances for Monte Carlo sampling.
+    Devices may also declare operating-limit ratings checked during simulation and a
+    manufacturer part number for bill-of-materials pricing.
     """
 
     model: str
@@ -67,14 +66,14 @@ class Device:
         distribution: ir.Distribution = "uniform",
         lot: ir.Lot | None = None,
     ) -> Device:
-        """The device, `parameter` given a `relative` tolerance, such as 0.01 for 1 %.
+        """Returns a copy of the device with a `relative` tolerance on `parameter`.
 
-        The parameter is named by [path][jolty.ir.parameter], so ``waveform.dc`` is a
-        source's DC level, and values spread by their
-        [distribution][jolty.ir.Distribution]: evenly or normally within the tolerance,
-        or in the logarithm within a factor of ``1 + relative``. Monte Carlo analyses
-        sample them, scaled by the factor of the `lot` the part comes from, if any,
-        which every part in the lot shares.
+        The `parameter` argument uses dotted [path][jolty.ir.parameter] notation (such
+        as ``waveform.dc`` for a source DC level), with `relative` expressed as a
+        fraction (such as 0.01 for 1 %). Sampled values follow
+        [`Distribution`][jolty.ir.Distribution]: uniform or normal within the
+        tolerance, or log-uniform within a factor of ``1 + relative``. Monte Carlo
+        analyses multiply sampled values by any shared `lot` factor.
 
         Examples:
             >>> from jolty.units import V
@@ -83,8 +82,8 @@ class Device:
             0.05
 
         Raises:
-            ValueError: When the device gives the parameter no number, or its
-                distribution does not take the tolerance.
+            ValueError: If `parameter` does not resolve to a numeric value, or if
+                `distribution` rejects the tolerance.
         """
         match ir.parameter(self.parameters, parameter):
             case float() | int():
@@ -103,17 +102,18 @@ class Device:
         minimum: Quantity | None = None,
         terminals: Sequence[str] | None = None,
     ) -> Device:
-        """The device, with a rating its maker states on one of its `stress`es.
+        """Returns a copy of the device with an operating limit on `stress`.
 
-        A voltage is of the first of its two `terminals` over the second, a current is
-        into its one terminal, and the power and the temperature name none; a voltage
-        is of the device's first two terminals by default, in order, and a current into
-        its first. The power is what its electrical terminals take, and the temperature
-        the simulation's, raised by its thermal net's where it is
-        [heated][jolty.devices.Device.heated]. A rating bounds its stress from above,
-        from below or both: a capacitor rated 50 V either way takes
-        ``maximum=50 * V, minimum=-50 * V``. A simulation checks every rating at the
-        operating point and over a transient.
+        Voltage ratings measure the first terminal minus the second (defaulting to the
+        first two terminals), while current ratings measure current into one terminal
+        (defaulting to the first). Power and temperature ratings take no terminals.
+        Electrical power equals total power entering electrical terminals, and device
+        temperature equals simulation temperature plus any thermal net rise when
+        [heated][jolty.devices.Device.heated].
+
+        Ratings enforce `maximum`, `minimum`, or both bounds (for example,
+        ``maximum=50 * V, minimum=-50 * V`` for a 50 V bipolar capacitor). Simulations
+        check every rating at the operating point and throughout transient runs.
 
         Examples:
             >>> from jolty.units import V, W, celsius, kohm, uF
@@ -125,10 +125,10 @@ class Device:
             448.15
 
         Raises:
-            DimensionError: When a bound is not a voltage, a current, a power or a
-                temperature as the stress is.
-            ValueError: When the terminals are not the device's, or not as many as the
-                stress needs, or the bounds are none or out of order.
+            DimensionError: If a bound does not match the physical dimension of
+                `stress`.
+            ValueError: If `terminals` are invalid for the device or `stress`, or if
+                bounds are missing or inverted.
         """
         rating = rate(
             self.terminals,
@@ -140,21 +140,21 @@ class Device:
         return replace(self, ratings=(*self.ratings, rating))
 
     def heated(self) -> Device:
-        """The device, heated by the power it dissipates.
+        """Returns a copy of the device enabled for self-heating power dissipation.
 
-        A terminal ``thermal`` joins it to a thermal net, or to the ground, the ambient.
-        The device runs at the simulation's temperature raised by that net's, and the
-        power its electrical terminals take, each one's voltage times the current into
-        it, flows into the net as heat. A resistor, a diode, a JFET, a bipolar
-        transistor, a VBIC, a MOSFET, a VDMOS, a BSIM3, and a BSIM4 heat.
+        Self-heating adds a ``thermal`` terminal connecting to a thermal net or to
+        ambient ground. The device operates at the simulation temperature plus the
+        thermal net temperature rise, injecting total dissipated electrical power into
+        that thermal net. Supported models are resistors, diodes, JFETs, bipolar
+        transistors, VBICs, MOSFETs, VDMOS devices, BSIM3, and BSIM4.
 
         Examples:
             >>> diode().heated().terminals
             ('anode', 'cathode', 'thermal')
 
         Raises:
-            ValueError: When the device's model does not heat, or the engine cannot
-                read its parameters.
+            ValueError: If the device model does not support self-heating or has
+                invalid parameters.
         """
         _core.terminals(self.model, json.dumps(self.parameters))
         parameters: dict[str, JsonValue] = {**self.parameters, "thermal": True}
@@ -166,12 +166,14 @@ class Device:
         return replace(self, terminals=tuple(terminals), parameters=parameters)
 
     def held_at(self, temperature: Quantity) -> Device:
-        """The device, held at `temperature` whatever the simulation's.
+        """Returns a copy of the device held at an absolute `temperature`.
 
-        Its parameters scale to it as they scale to the simulation's, as SPICE's
-        ``TEMP`` and PSpice's ``T_ABS`` hold a device, and a heated device warms from
-        it: a resistor held at 0 K makes no noise, while a junction needs a temperature
-        above 0 K. It is no parameter that sensitivities differentiate.
+        Temperature-dependent model parameters scale to `temperature` independently of
+        the global simulation temperature, matching SPICE ``TEMP`` and PSpice ``T_ABS``.
+        Heated devices accumulate thermal net rise above this base temperature.
+        Resistors held at 0 K generate zero thermal noise, whereas semiconductor
+        junctions require temperatures above 0 K. Device temperature overrides are not
+        differentiated by sensitivity analyses.
 
         Examples:
             >>> from jolty.units import celsius, kohm
@@ -179,9 +181,9 @@ class Device:
             358.15
 
         Raises:
-            DimensionError: When `temperature` is not one.
-            ValueError: When it lies below 0 K, or the device is a logic device, whose
-                timing holds whatever its temperature.
+            DimensionError: If `temperature` does not have temperature dimension.
+            ValueError: If `temperature` is below 0 K or the device is a logic model
+                whose timing ignores temperature.
         """
         kelvins = temperature.to(TEMPERATURE, "a device's own temperature")
         if kelvins < 0:
@@ -192,11 +194,12 @@ class Device:
         return self._surrounded("temperature", kelvins)
 
     def warmer_by(self, offset: Quantity) -> Device:
-        """The device, `offset` warmer than the simulation, or cooler where negative.
+        """Returns a copy of the device offset in temperature by `offset`.
 
-        It is as [`held_at`][jolty.devices.Device.held_at] holds it, but follows the
-        simulation's temperature, as SPICE's ``DTEMP`` and PSpice's ``T_REL_GLOBAL``
-        do.
+        Positive offsets warm the device relative to the simulation temperature and
+        negative offsets cool it, matching SPICE ``DTEMP`` and PSpice ``T_REL_GLOBAL``.
+        Scaling semantics match [`held_at`][jolty.devices.Device.held_at] while
+        tracking changes in global simulation temperature.
 
         Examples:
             >>> from jolty.units import K, kohm
@@ -204,18 +207,18 @@ class Device:
             20.0
 
         Raises:
-            DimensionError: When `offset` is not a temperature.
-            ValueError: When the device is a logic device, whose timing holds whatever
-                its temperature.
+            DimensionError: If `offset` does not have temperature dimension.
+            ValueError: If the device is a logic model whose timing ignores
+                temperature.
         """
         kelvins = offset.to(TEMPERATURE, "a device's temperature offset")
         return self._surrounded("temperature_offset", finite(kelvins, "offset"))
 
     def _surrounded(self, key: str, kelvins: float) -> Device:
-        """The device at a temperature of its own, `kelvins` as `key` gives it.
+        """Returns a copy of the device with temperature `key` set to `kelvins`.
 
         Raises:
-            ValueError: When the device's model takes no temperature of its own.
+            ValueError: If the device model does not support per-instance temperatures.
         """
         kept = {
             name: value
@@ -232,14 +235,14 @@ class Device:
         return replace(self, parameters=parameters)
 
     def numbered(self, part: str) -> Device:
-        """The device, standing for the part its maker numbers `part`.
+        """Returns a copy of the device tagged with manufacturer part number `part`.
 
         Examples:
             >>> diode().numbered("1N4148").part
             '1N4148'
 
         Raises:
-            ValueError: When the number is empty or spaced at either end.
+            ValueError: If `part` is empty or has leading or trailing whitespace.
         """
         return replace(self, part=ir.part_number(part))
 
@@ -252,15 +255,15 @@ def rate(
     minimum: Quantity | None,
     terminals: Sequence[str] | None,
 ) -> ir.Rating:
-    """A rating of the `stress` of a device or a component whose terminals are `own`.
+    """Creates a `stress` rating for a device or component with terminals `own`.
 
-    It is as [`Device.rated`][jolty.devices.Device.rated] describes.
+    Rating rules and default terminal selection match
+    [`Device.rated`][jolty.devices.Device.rated].
 
     Raises:
-        DimensionError: When a bound is not a voltage, a current, a power or a
-            temperature as the stress is.
-        ValueError: When the terminals are not `own`, or not as many as the stress
-            needs, or the bounds are none or out of order.
+        DimensionError: If a bound does not match the physical dimension of `stress`.
+        ValueError: If `terminals` are not in `own`, have the wrong count for `stress`,
+            or have missing or inverted bounds.
     """
     dimension, defaults = {
         "voltage": (VOLTAGE, own[:2]),
@@ -289,36 +292,36 @@ def rate(
 
 
 PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE
-"""The dimension of a linear temperature coefficient, K⁻¹."""
+"""Dimension of a linear temperature coefficient, K⁻¹."""
 
 PER_KELVIN_SQUARED: Final = DIMENSIONLESS / TEMPERATURE**2
-"""The dimension of a quadratic temperature coefficient, K⁻²."""
+"""Dimension of a quadratic temperature coefficient, K⁻²."""
 
 PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
-"""The dimension of a linear voltage coefficient or channel-length modulation, V⁻¹."""
+"""Dimension of a linear voltage coefficient or channel-length modulation, V⁻¹."""
 
 PER_VOLT_SQUARED: Final = DIMENSIONLESS / VOLTAGE**2
-"""The dimension of a quadratic voltage coefficient, V⁻²."""
+"""Dimension of a quadratic voltage coefficient, V⁻²."""
 
 TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
-"""The dimension of a field-effect transistor's transconductance parameter, A/V²."""
+"""Dimension of a field-effect transistor transconductance parameter, A/V²."""
 
 MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
-"""The dimension of a carrier mobility, m²/(V·s)."""
+"""Dimension of carrier mobility, m²/(V·s)."""
 
 VOLTS_PER_KELVIN: Final = VOLTAGE / TEMPERATURE
-"""The dimension of a voltage's temperature coefficient, V/K."""
+"""Dimension of a voltage temperature coefficient, V/K."""
 
 type _ParameterKind = Dimension | str | None
 
 
 def _exponent(doubled: int) -> Exponent:
-    """One SI base exponent from the doubled integer the engine exports."""
+    """Decodes an SI base exponent from the doubled integer exported by the engine."""
     return doubled // 2 if doubled % 2 == 0 else Fraction(doubled, 2)
 
 
 def _dimension(exponents: tuple[int, int, int, int, int]) -> Dimension:
-    """A dimension from the five doubled SI base exponents the engine exports."""
+    """Decodes a dimension from five doubled SI base exponents from the engine."""
     kilogram, meter, second, ampere, kelvin = exponents
     return Dimension(
         kilogram=_exponent(kilogram),
@@ -331,7 +334,7 @@ def _dimension(exponents: tuple[int, int, int, int, int]) -> Dimension:
 
 @functools.cache
 def _model_kinds(model: str) -> Mapping[str, _ParameterKind]:
-    """The parameter kinds the engine declares for `model`, decoded to dimensions."""
+    """Returns parameter kinds declared by the engine for `model` as dimensions."""
     return {
         name: _dimension(raw) if isinstance(raw, tuple) else raw
         for name, raw in _core.parameter_dimensions(model).items()
@@ -339,11 +342,12 @@ def _model_kinds(model: str) -> Mapping[str, _ParameterKind]:
 
 
 def _quantity(value: object, dimension: Dimension, name: str) -> float:
-    """The SI value of `value`, once checked as a quantity of `dimension`.
+    """Converts `value` to SI base units after verifying `dimension`.
 
     Raises:
-        DimensionError: When `value` is not a quantity of `dimension`.
-        ValueError: When its value is not finite.
+        DimensionError: If `value` is not a [`Quantity`][jolty.units.Quantity] with
+            `dimension`.
+        ValueError: If the numeric value is not finite.
     """
     if not isinstance(value, Quantity):
         message = f"{name} takes a quantity in {dimension}, not {value!r}"
@@ -357,12 +361,12 @@ def _parameter_value(
     kind: _ParameterKind,
     conditional: Mapping[str, Dimension] | None,
 ) -> JsonValue:
-    """One checked parameter value in SI base units for the engine.
+    """Validates and converts one parameter value to SI base units for the engine.
 
     Raises:
-        DimensionError: When a quantity or plain number has the wrong kind or dimension.
-        TypeError: When a choice parameter is not a string, an integer or a boolean.
-        ValueError: When a numeric value is not finite or a conditional tag has no
+        DimensionError: If a quantity or plain number has the wrong kind or dimension.
+        TypeError: If a choice parameter is not a string, integer, or boolean.
+        ValueError: If a numeric value is not finite or a conditional tag has no
             resolved dimension.
     """
     if kind == "choice":
@@ -391,12 +395,12 @@ def _device(
     card: Mapping[str, Quantity | float] | None = None,
     card_dimension: Callable[[str], Dimension | None] | None = None,
 ) -> Device:
-    """A device of `model`, each parameter in `values` checked against the engine.
+    """Builds a device of `model` after validating `values` against engine metadata.
 
     Raises:
-        DimensionError: When a parameter has the wrong dimension or kind.
-        TypeError: When a choice parameter is not a string, an integer or a boolean.
-        ValueError: When a value is not finite, or the engine cannot read the device.
+        DimensionError: If a parameter has the wrong dimension or kind.
+        TypeError: If a choice parameter is not a string, integer, or boolean.
+        ValueError: If a value is not finite or the engine rejects the device.
     """
     kinds = _model_kinds(model)
     parameters: dict[str, JsonValue] = {
@@ -409,7 +413,7 @@ def _device(
     return device(model, parameters)
 
 
-def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and noise
+def resistor(  # noqa: PLR0913 - resistor value, tolerance, drift, and noise
     resistance: Quantity,
     *,
     tolerance: float | None = None,
@@ -422,22 +426,20 @@ def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and nois
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> Device:
-    """A resistor between terminals ``a`` and ``b``.
+    """Creates a resistor between terminals ``a`` and ``b``.
 
-    A tolerance, such as 0.01 for 1 %, spreads its resistance evenly within it, as Monte
-    Carlo analyses sample it. Its resistance drifts with temperature, by
-    ``1 + tc1 · ΔT + tc2 · ΔT²`` from its value at the nominal temperature, with the
-    linear and quadratic temperature coefficients. An exponential temperature
-    coefficient, in percent per kelvin as SPICE's ``TCE``, drifts it by
-    ``1.01^(tce · ΔT)`` instead.
+    When `tolerance` is given (such as 0.01 for 1 %), Monte Carlo analyses sample the
+    resistance uniformly within that fraction. Linear and quadratic temperature
+    coefficients scale resistance from `nominal_temperature` by
+    ``1 + tc1 · ΔT + tc2 · ΔT²``. An `exponential_temperature_coefficient` in percent
+    per kelvin (SPICE ``TCE``) instead scales resistance by ``1.01^(tce · ΔT)``.
 
-    Its resistance also changes with the voltage ``v`` from ``a`` to ``b``, by
-    ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients;
-    where they bend it below zero, it is negative there, as in ngspice.
+    Linear and quadratic voltage coefficients scale resistance with terminal voltage
+    ``v`` from ``a`` to ``b`` by ``1 + vc1 · v + vc2 · v²``. Negative effective
+    resistances produced by large voltage coefficients are preserved, matching ngspice.
 
-    Beside its thermal noise, with a flicker coefficient ``KF``, its current ``I`` makes
-    flicker noise of ``KF · |I|^AF / f`` A²/Hz across it, ``AF`` the flicker exponent,
-    as ngspice's resistor makes it.
+    In addition to thermal noise, a flicker coefficient ``KF`` adds flicker noise of
+    ``KF · |I|^AF / f`` A²/Hz from resistor current ``I`` with exponent ``AF``.
 
     Examples:
         >>> from jolty.units import K, V, kohm
@@ -452,7 +454,7 @@ def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and nois
     return made if tolerance is None else made.toleranced("resistance", tolerance)
 
 
-def capacitor(  # noqa: PLR0913 - the value, its tolerance, its drift and its curvature
+def capacitor(  # noqa: PLR0913 - capacitance, tolerance, drift, and curvature
     capacitance: Quantity,
     *,
     tolerance: float | None = None,
@@ -462,12 +464,12 @@ def capacitor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cu
     voltage_coefficient: Quantity | None = None,
     quadratic_voltage_coefficient: Quantity | None = None,
 ) -> Device:
-    """A capacitor between terminals ``a`` and ``b``.
+    """Creates a capacitor between terminals ``a`` and ``b``.
 
-    Its capacitance drifts with temperature, and spreads within its tolerance, as a
-    resistor's resistance does. It also changes with the voltage ``v`` from ``a`` to
-    ``b``, by ``1 + vc1 · v + vc2 · v²``, and its charge is that capacitance's integral
-    from 0 V.
+    Capacitance temperature drift and Monte Carlo tolerance scaling match
+    [`resistor`][jolty.devices.resistor]. Voltage coefficients scale capacitance with
+    terminal voltage ``v`` from ``a`` to ``b`` by ``1 + vc1 · v + vc2 · v²``, and
+    stored charge equals the integral of that capacitance from 0 V.
     """
     values = locals()
     values.pop("tolerance")
@@ -483,11 +485,11 @@ def inductor(
     quadratic_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
 ) -> Device:
-    """A linear inductor between terminals ``a`` and ``b``.
+    """Creates a linear inductor between terminals ``a`` and ``b``.
 
-    Its current, from ``a`` through the inductor to ``b``, is the unknown ``current``.
-    Its inductance drifts with temperature, and spreads within its tolerance, as a
-    resistor's resistance does.
+    Branch current flowing from ``a`` through the inductor to ``b`` is exposed as the
+    unknown ``current``. Inductance temperature drift and Monte Carlo tolerance scaling
+    match [`resistor`][jolty.devices.resistor].
     """
     values = locals()
     values.pop("tolerance")
@@ -498,16 +500,18 @@ def inductor(
 def coupled_inductors(
     windings: Sequence[Device], couplings: Mapping[tuple[int, int], float]
 ) -> Device:
-    """Inductors whose fluxes link, as a transformer's windings or a choke's.
+    """Creates magnetically coupled inductors such as transformer or choke windings.
 
-    Each winding is an [`inductor`][jolty.devices.inductor], with its tolerance and
-    drift; winding ``k``, from 1, joins terminals ``a{k}`` and ``b{k}``, and its
-    current, from ``a{k}`` through it to ``b{k}``, is the unknown ``current{k}``.
-    `couplings` gives the coefficient that links two windings, by their numbers, from -1
-    to 1: their mutual inductance is the coefficient times the root of their
-    inductances' product, and currents into both ``a`` terminals add their fluxes where
-    it is positive, as SPICE's ``K`` couples its inductors' first nodes. There are at
-    least two windings, and a pair is coupled once at most.
+    Each entry in `windings` is an [`inductor`][jolty.devices.inductor] retaining its
+    tolerance and temperature drift. Winding ``k`` (1-indexed) connects terminals
+    ``a{k}`` and ``b{k}``, with branch current from ``a{k}`` to ``b{k}`` exposed as
+    ``current{k}``.
+
+    The `couplings` mapping specifies pairwise coupling coefficients in ``[-1, 1]`` by
+    1-based winding indices. Mutual inductance equals the coefficient times the square
+    root of the two inductances' product. Positive coupling adds flux for currents
+    entering both ``a`` terminals, matching SPICE ``K`` elements. At least two windings
+    are required, and each pair may be coupled at most once.
 
     Examples:
         >>> from jolty.units import mH
@@ -518,9 +522,9 @@ def coupled_inductors(
         ('a1', 'b1', 'a2', 'b2')
 
     Raises:
-        ValueError: When a winding is no inductor, states ratings or a part number, or
-            runs at a temperature of its own, which the coupled inductors take as a
-            whole, as [`held_at`][jolty.devices.Device.held_at] sets it.
+        ValueError: If a winding is not a plain inductor, declares ratings or a part
+            number, or sets an individual temperature instead of applying
+            [`held_at`][jolty.devices.Device.held_at] to the coupled device as a whole.
     """
     tolerances: dict[str, ir.Tolerance] = {}
     for number, winding in enumerate(windings, start=1):
@@ -550,14 +554,13 @@ def coupled_inductors(
 
 
 def transmission_line(characteristic_impedance: Quantity, delay: Quantity) -> Device:
-    """A lossless transmission line, SPICE's ``T``, whose waves cross it in `delay`.
+    """Creates a lossless transmission line (SPICE ``T``) with propagation `delay`.
 
-    Port ``k``, 1 or 2, joins ``positive{k}`` and ``negative{k}``, and its current,
-    from ``positive{k}`` into the line and out at ``negative{k}``, is the unknown
-    ``current{k}``. Each port is a voltage behind the `characteristic_impedance`, the
-    wave that left the other port a delay before: at DC a short through from port to
-    port, and in AC the delay's phase, ``e^{-jωτ}``. A transient steps onto each corner
-    of its waveforms as it arrives at the other port.
+    Port ``k`` (1 or 2) connects ``positive{k}`` and ``negative{k}``, with port current
+    exposed as ``current{k}``. Each port presents `characteristic_impedance` in series
+    with the wave launched from the opposite port one `delay` earlier. The line acts as
+    a DC short between ports and introduces phase shift ``e^{-jωτ}`` in AC analyses.
+    Transient stepping lands on waveform corners as they arrive at the opposite port.
 
     Examples:
         >>> from jolty.units import ns, ohm
@@ -569,12 +572,12 @@ def transmission_line(characteristic_impedance: Quantity, delay: Quantity) -> De
 
 
 def thermal_resistance(resistance: Quantity) -> Device:
-    """A thermal resistance between thermal terminals ``a`` and ``b``, in K/W.
+    """Creates a thermal resistance between thermal terminals ``a`` and ``b``, in K/W.
 
-    Heat flows through it from the hotter terminal to the colder at their difference
-    over its resistance, as current flows through a resistor. A thermal terminal joins
-    a thermal net, whose unknown is its temperature above the ambient, or the ground,
-    which is the ambient itself.
+    Heat flows from the hotter terminal to the colder terminal at the temperature
+    difference divided by `resistance`, analogous to electrical resistance. Each
+    thermal terminal connects either to a thermal net (solving for temperature rise
+    above ambient) or to ground representing ambient temperature.
 
     Examples:
         >>> from jolty.units import K, W
@@ -588,10 +591,10 @@ def thermal_resistance(resistance: Quantity) -> Device:
 
 
 def thermal_capacitance(capacitance: Quantity) -> Device:
-    """A heat capacity between thermal terminals ``a`` and ``b``, in J/K.
+    """Creates a thermal capacitance between thermal terminals ``a`` and ``b``, in J/K.
 
-    It stores heat in proportion to their difference, as a capacitor stores charge, so
-    it sets how fast a thermal net's temperature follows the heat into it.
+    Stored thermal energy scales linearly with the terminal temperature difference,
+    controlling how quickly a thermal net responds to injected heat flow.
     """
     return device(
         "thermal_capacitance",
@@ -600,20 +603,21 @@ def thermal_capacitance(capacitance: Quantity) -> Device:
 
 
 def heat_source(power: Quantity) -> Device:
-    """A constant heat flow, in watts, from thermal terminal ``a`` into ``b``.
+    """Creates a constant heat source driving `power` (watts) from ``a`` into ``b``.
 
-    It drives heat as a current source drives current: a part beside the circuit,
-    heating the board under it.
+    Heat sources drive thermal power into a thermal network just as current sources
+    drive electrical current, modeling external heat dissipation into a substrate or
+    board.
     """
     return device("heat_source", {"power": power.to(POWER, "heat flow")})
 
 
 def voltage_source(waveform: Waveform | Quantity) -> Device:
-    """An independent voltage source, ``positive`` minus ``negative`` at its level.
+    """Creates an independent voltage source holding ``positive`` minus ``negative``.
 
-    A quantity is a constant level. The source's current, from ``positive`` through
-    the source to ``negative``, is the unknown ``current``: negative while it delivers
-    power.
+    Passing a [`Quantity`][jolty.units.Quantity] creates a constant DC level. Branch
+    current from ``positive`` through the source to ``negative`` is exposed as
+    ``current``, taking negative values while supplying power.
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(VOLTAGE)}
@@ -621,10 +625,11 @@ def voltage_source(waveform: Waveform | Quantity) -> Device:
 
 
 def current_source(waveform: Waveform | Quantity) -> Device:
-    """An independent current source, driving its level from ``positive`` to the other.
+    """Creates an independent current source driving ``positive`` to ``negative``.
 
-    The current flows through the source from ``positive`` to ``negative``, so it enters
-    the circuit at the ``negative`` terminal. A quantity is a constant level.
+    Current flows internally from ``positive`` to ``negative``, exiting into the
+    circuit at ``negative``. Passing a [`Quantity`][jolty.units.Quantity] creates a
+    constant DC level.
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(CURRENT)}
@@ -632,61 +637,61 @@ def current_source(waveform: Waveform | Quantity) -> Device:
 
 
 def voltage_controlled_voltage_source(gain: float) -> Device:
-    """A source holding ``positive`` minus ``negative`` at `gain` times a voltage.
+    """Creates a voltage-controlled voltage source with output scaling `gain`.
 
-    That control voltage is ``control_positive`` minus ``control_negative``, and the
-    control terminals draw no current.
+    Output voltage ``positive`` minus ``negative`` equals `gain` times the control
+    voltage ``control_positive`` minus ``control_negative``. Control terminals draw
+    zero current.
     """
     return _device("voltage_controlled_voltage_source", locals())
 
 
 def voltage_controlled_current_source(transconductance: Quantity) -> Device:
-    """A source driving `transconductance` times the control voltage through itself.
+    """Creates a voltage-controlled current source with scaling `transconductance`.
 
-    The current flows from ``positive`` through the source to ``negative``; the control
-    voltage is ``control_positive`` minus ``control_negative``.
+    Output current flows from ``positive`` through the source to ``negative`` at
+    `transconductance` times the control voltage ``control_positive`` minus
+    ``control_negative``.
     """
     return _device("voltage_controlled_current_source", locals())
 
 
 def current_controlled_current_source(gain: float) -> Device:
-    """A source driving `gain` times a sensed current through itself.
+    """Creates a current-controlled current source with current scaling `gain`.
 
-    The control port, from ``control_positive`` to ``control_negative``, is a short
-    circuit that senses the current through it, the unknown ``control``; placed in
-    series with a branch, it senses that branch's current. The output current flows
-    from ``positive`` through the source to ``negative``.
+    The control port from ``control_positive`` to ``control_negative`` acts as a
+    zero-volt short circuit exposing sensed branch current as ``control``. Output
+    current flows from ``positive`` through the source to ``negative`` at `gain` times
+    that sensed current.
     """
     return _device("current_controlled_current_source", locals())
 
 
 def current_controlled_voltage_source(transresistance: Quantity) -> Device:
-    """A source holding its output at `transresistance` times a sensed current.
+    """Creates a current-controlled voltage source with scaling `transresistance`.
 
-    The control port, from ``control_positive`` to ``control_negative``, is a short
-    circuit that senses the current through it, the unknown ``control``. The output,
-    ``positive`` minus ``negative``, is held at the transresistance times that current;
-    its current, from ``positive`` through the source to ``negative``, is the unknown
-    ``current``, as a voltage source's is.
+    The control port from ``control_positive`` to ``control_negative`` acts as a
+    zero-volt short circuit exposing sensed current as ``control``. Output voltage
+    ``positive`` minus ``negative`` equals `transresistance` times that current, and
+    output branch current is exposed as ``current``.
     """
     return _device("current_controlled_voltage_source", locals())
 
 
 def behavioral_voltage_source(expression: str) -> Device:
-    """A source holding its output, ``positive`` minus ``negative``, at `expression`.
+    """Creates a behavioral voltage source driving ``positive`` minus ``negative``.
 
-    The expression reads voltages and currents in SI units: ``v(a)`` is the voltage
-    of terminal ``a``, ``v(a, b)`` that of ``a`` over ``b``, ``i(p)`` the current
-    through the sensing port ``p``, and ``time`` the time. Its terminals are
-    ``positive`` and ``negative``, then each terminal it reads, then ``p_positive`` and
-    ``p_negative`` for each port ``p``: a short circuit whose current, from
-    ``p_positive`` to ``p_negative``, is the unknown ``p``. The source's own current,
-    from ``positive`` through the source to ``negative``, is the unknown ``current``.
-    The reference's expressions page gives the language, its operators and its
+    The `expression` evaluates in SI units: ``v(a)`` reads node voltage ``a``,
+    ``v(a, b)`` reads differential voltage ``a`` minus ``b``, ``i(p)`` reads sensing
+    port current ``p``, and ``time`` reads simulation time. Terminals are ordered as
+    ``positive``, ``negative``, each referenced voltage terminal, and ``p_positive``
+    followed by ``p_negative`` for each short-circuit sensing port ``p`` (exposing
+    unknown ``p``). Output branch current from ``positive`` to ``negative`` is exposed
+    as ``current``. Refer to the expressions reference page for operators and
     functions.
 
     Raises:
-        ValueError: When `expression` is not an expression.
+        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
 
     Examples:
         >>> behavioral_voltage_source("1e5 * v(inp, inn)").terminals
@@ -696,12 +701,13 @@ def behavioral_voltage_source(expression: str) -> Device:
 
 
 def behavioral_current_source(expression: str) -> Device:
-    """A source driving `expression` from ``positive`` through itself to ``negative``.
+    """Creates a behavioral current source driving `expression` across its terminals.
 
-    The expression and the terminals are a behavioral voltage source's.
+    Expression syntax and terminal ordering match
+    [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source].
 
     Raises:
-        ValueError: When `expression` is not an expression.
+        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
 
     Examples:
         >>> behavioral_current_source("limit(1e-3 * v(c), -1e-3, 1e-3)").terminals
@@ -711,15 +717,16 @@ def behavioral_current_source(expression: str) -> Device:
 
 
 def behavioral_capacitor(expression: str) -> Device:
-    """A capacitor whose charge, on ``positive`` against ``negative``, is `expression`.
+    """Creates a charge-conserving behavioral capacitor defined by `expression`.
 
-    The expression, in coulombs, and the terminals are a behavioral voltage source's.
-    The capacitor's current, from ``positive`` through it to ``negative``, is the
-    charge's rate of change, and its capacitances are the expression's exact
-    derivatives; its charge is a function of what it reads, so it conserves charge.
+    Expression syntax (in coulombs) and terminal ordering match
+    [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source]. Capacitor
+    current from ``positive`` through the device to ``negative`` equals the time
+    derivative of charge using exact symbolic derivatives, conserving charge across
+    all operating points.
 
     Raises:
-        ValueError: When `expression` is not an expression.
+        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
 
     Examples:
         >>> behavioral_capacitor("1e-12 * tanh(v(positive, negative))").terminals
@@ -735,12 +742,12 @@ def voltage_controlled_switch(
     on_voltage: Quantity | None = None,
     off_voltage: Quantity | None = None,
 ) -> Device:
-    """A switch between ``positive`` and ``negative``, in PSpice's model.
+    """Creates a PSpice voltage-controlled switch across ``positive`` and ``negative``.
 
-    The voltage of ``control_positive`` over ``control_negative`` moves its resistance
-    smoothly, logarithmically, from the off resistance at the off voltage to the on
-    resistance at the on voltage; beyond either, the resistance holds. The control
-    terminals draw no current. Parameters left out take PSpice's defaults.
+    Control voltage ``control_positive`` minus ``control_negative`` interpolates
+    resistance logarithmically between `off_resistance` at `off_voltage` and
+    `on_resistance` at `on_voltage`, clamping outside that range. Control terminals
+    draw zero current, and omitted parameters use PSpice defaults.
     """
     return _device("voltage_controlled_switch", locals())
 
@@ -752,13 +759,13 @@ def current_controlled_switch(
     on_current: Quantity | None = None,
     off_current: Quantity | None = None,
 ) -> Device:
-    """A switch between ``positive`` and ``negative`` that a current moves, as PSpice's.
+    """Creates a PSpice current-controlled switch across ``positive`` and ``negative``.
 
-    Its control port, from ``control_positive`` to ``control_negative``, is a short
-    circuit whose current, the unknown ``control``, moves the resistance as a
-    [`voltage_controlled_switch`][jolty.devices.voltage_controlled_switch]'s voltage
-    does, from the off resistance at the off current to the on resistance at the on
-    current. Parameters left out take PSpice's defaults.
+    The control port from ``control_positive`` to ``control_negative`` acts as a short
+    circuit whose sensed current ``control`` interpolates resistance logarithmically
+    from `off_resistance` at `off_current` to `on_resistance` at `on_current`, matching
+    [`voltage_controlled_switch`][jolty.devices.voltage_controlled_switch]. Omitted
+    parameters use PSpice defaults.
     """
     return _device("current_controlled_switch", locals())
 
@@ -771,15 +778,14 @@ def photocell(
     dark_resistance: Quantity | None = None,
     response_time: Quantity | None = None,
 ) -> Device:
-    """A photocell, a light-dependent resistor, between ``a`` and ``b``.
+    """Creates a light-dependent resistor (photocell) between ``a`` and ``b``.
 
-    The voltage of ``light_positive`` over ``light_negative`` is the illuminance on the
-    cell, 1 V for each lux, and those terminals draw no current. Its resistance is
-    `resistance` at the reference `illuminance`, in lux, as datasheets state it, and
-    falls as the illuminance to the power `gamma`, in parallel with its dark
-    resistance. With a response time, its conductance follows the light with that time
-    constant, as a cadmium sulphide cell's does, over milliseconds; without one, at
-    once.
+    Control voltage ``light_positive`` minus ``light_negative`` represents illuminance
+    at 1 V per lux with zero control current. Cell resistance equals `resistance` at
+    the reference `illuminance` (in lux) and scales with illuminance to the power
+    `gamma`, placed in parallel with `dark_resistance`. When `response_time` is
+    specified, conductance tracks light changes with that first-order time constant;
+    otherwise conductance responds instantaneously.
 
     Examples:
         >>> from jolty.units import kohm, ms
@@ -790,7 +796,7 @@ def photocell(
     return _device("photocell", locals())
 
 
-def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates and exponents
+def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM model parameters
     *,
     on_resistance: Quantity,
     off_resistance: Quantity,
@@ -804,16 +810,18 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates a
     state: float | None = None,
     window: float | None = None,
 ) -> Device:
-    """A voltage-controlled memristor between ``positive`` and ``negative``, VTEAM's.
+    """Creates a VTEAM voltage-controlled memristor between its two terminals.
 
-    Its resistance follows its state by its `law`, from `on_resistance` at a state of 0
-    to `off_resistance` at 1. A voltage of ``positive`` over ``negative`` above
-    `off_voltage` moves the state toward off at `off_rate` times ``(v/v_off - 1)`` to
-    the power `off_exponent`, and one below `on_voltage`, a negative voltage, toward on
-    at `on_rate` times ``(v/v_on - 1)`` to the power `on_exponent`; between them, the
-    state holds. Each rate is the state's speed at twice its threshold, in full ranges
-    per second. A `window`, a fraction of the range, slows the state at either bound,
-    which it never passes. It is made in `state`.
+    Device resistance follows internal state according to `law`, spanning
+    `on_resistance` at state 0 to `off_resistance` at state 1. Voltage ``positive``
+    minus ``negative`` above `off_voltage` drives state toward 1 at rate
+    ``off_rate · (v/v_off - 1)^off_exponent``. Negative voltage below `on_voltage`
+    drives state toward 0 at rate ``on_rate · (v/v_on - 1)^on_exponent``, while
+    voltages between thresholds hold the state constant.
+
+    Each rate specifies state velocity in full ranges per second at twice its
+    threshold. A fractional `window` slows state evolution near 0 and 1 without
+    crossing either bound, starting from initial `state`.
 
     Examples:
         >>> from jolty.units import V, kohm, s
@@ -831,7 +839,7 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates a
     return _device("voltage_controlled_memristor", locals())
 
 
-def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, law and state
+def current_controlled_memristor(  # noqa: PLR0913 - HP memristor parameters
     *,
     on_resistance: Quantity,
     off_resistance: Quantity,
@@ -840,14 +848,14 @@ def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, la
     state: float | None = None,
     window: float | None = None,
 ) -> Device:
-    """A current-controlled memristor between ``positive`` and ``negative``, HP's.
+    """Creates an HP current-controlled memristor across ``positive`` and ``negative``.
 
-    Its resistance follows its state by its `law`, from `on_resistance` at a state of 0
-    to `off_resistance` at 1. The state moves with the charge through it, from
-    ``positive`` to ``negative`` toward off, by the charge over `charge`, the charge
-    that carries it across its whole range, as the dopants of HP's titanium dioxide
-    cell drift. A `window`, a fraction of the range, slows the state at either bound,
-    which it never passes. It is made in `state`.
+    Device resistance follows internal state according to `law`, spanning
+    `on_resistance` at state 0 to `off_resistance` at state 1. Current from ``positive``
+    to ``negative`` moves state toward 1 in proportion to integrated charge divided by
+    `charge`, modeling dopant drift across the full device length. A fractional
+    `window` slows state motion near 0 and 1 without crossing either bound, starting
+    from initial `state`.
 
     Examples:
         >>> from jolty.units import kohm, ohm, uC
@@ -860,7 +868,7 @@ def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, la
     return _device("current_controlled_memristor", locals())
 
 
-def diode(  # noqa: PLR0913 - ngspice's junction diode has fifty parameters
+def diode(  # noqa: PLR0913 - ngspice junction diode model parameters
     *,
     saturation_current: Quantity | None = None,
     emission_coefficient: float | None = None,
@@ -911,39 +919,38 @@ def diode(  # noqa: PLR0913 - ngspice's junction diode has fifty parameters
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> Device:
-    """A junction diode from ``anode`` to ``cathode``, in the SPICE model of ngspice 47.
+    """Creates a junction diode from ``anode`` to ``cathode`` matching ngspice 47.
 
-    Parameters left out take ngspice's defaults. Its bottom junction carries the ideal
-    junction current, the recombination current given its saturation current, and the
-    tunneling current, softened by its knee currents; its sidewall junction carries its
-    own, beside the bottom junction, or behind a series resistance of its own given one.
-    Given a breakdown voltage, the reverse current grows exponentially beyond it, with
-    the breakdown current there and the breakdown emission coefficient, the emission
-    coefficient unless given.
+    Omitted parameters use ngspice defaults. The bottom junction conducts ideal
+    diffusion, recombination, and tunneling currents softened by knee currents. The
+    sidewall junction conducts in parallel with the bottom junction, or behind a
+    dedicated sidewall series resistance when specified. Above `breakdown_voltage`,
+    reverse current grows exponentially using `breakdown_current` and
+    `breakdown_emission_coefficient` (defaulting to `emission_coefficient`).
 
-    Away from the nominal temperature, the saturation currents scale with the energy
-    gap, constant or by Varshni's law at temperature model 2, SPICE's ``TLEV``; the
-    junction potentials and capacitances follow the band gap at capacitance temperature
-    model 0 and their own coefficients at 1, SPICE's ``TLEVC``; the breakdown voltage
-    falls by its temperature coefficient, in volts per kelvin at temperature model 0
-    and per kelvin, relative to itself, at 1 and 2; and the series resistances, the
-    transit time and the grading coefficient follow their coefficients, as in ngspice.
+    Away from `nominal_temperature`, saturation currents scale with the energy gap
+    (constant, or Varshni's law at `temperature_model` 2, matching SPICE ``TLEV``).
+    Junction potentials and capacitances follow the silicon band gap at
+    `capacitance_temperature_model` 0 (SPICE ``TLEVC``) and explicit coefficients at 1.
+    Breakdown voltage shifts with temperature in V/K at temperature model 0 and
+    relatively in 1/K at models 1 and 2. Series resistances, transit time, and grading
+    coefficients follow their explicit ngspice temperature coefficients.
 
-    Its series resistances make thermal noise and its junctions' currents shot noise;
-    with a flicker coefficient ``KF``, each junction's current ``I`` also makes flicker
-    noise of ``KF · |I|^AF / f`` A²/Hz, ``AF`` the flicker exponent, as SPICE models it.
+    Series resistances generate thermal noise and junction currents generate shot noise.
+    With flicker coefficient ``KF`` and exponent ``AF``, each junction current ``I``
+    adds flicker noise of ``KF · |I|^AF / f`` A²/Hz.
 
     Raises:
-        DimensionError: When a quantity has the wrong dimension, the breakdown voltage's
-            temperature coefficient's being volts per kelvin at temperature model 0 and
-            per kelvin at 1 and 2.
+        DimensionError: If a parameter has the wrong physical dimension; breakdown
+            voltage temperature coefficient requires V/K at temperature model 0 and 1/K
+            at models 1 and 2.
     """
     values = locals()
     breakdown = PER_KELVIN if temperature_model in {1, 2} else VOLTS_PER_KELVIN
     return _device("diode", values, conditional={"diode_tbv": breakdown})
 
 
-def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
+def jfet(  # noqa: PLR0913 - SPICE JFET model parameters
     *,
     channel: Literal["n", "p"] | None = None,
     threshold_voltage: Quantity | None = None,
@@ -965,23 +972,22 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> Device:
-    """A junction field-effect transistor between ``drain``, ``gate`` and ``source``.
+    """Creates a JFET across ``drain``, ``gate``, and ``source`` matching ngspice.
 
-    It follows the SPICE model with Sydney University's doping tail, as ngspice does:
-    two gate junctions, and a drain current that follows the square law above the
-    threshold voltage. Parameters left out take SPICE's defaults, and a doping tail of 1
-    is the plain square law. A drain or source resistance adds an internal node, the
-    unknown ``drain`` or ``source``.
+    The model implements SPICE JFET equations with the Sydney University doping tail
+    used in ngspice: two gate junctions and square-law drain conduction above threshold.
+    Omitted parameters use SPICE defaults, with `doping_tail` equal to 1 giving the
+    standard square law. Nonzero drain or source resistance adds internal node unknown
+    ``drain`` or ``source``.
 
-    Away from the nominal temperature, the gate junctions' saturation current scales
-    with the energy gap and the temperature exponent; their potential and capacitances
-    follow silicon's band gap; the threshold moves by its temperature coefficient and
-    the transconductance parameter scales by its temperature exponent, as in ngspice.
+    Away from `nominal_temperature`, gate-junction saturation current scales with the
+    energy gap and temperature exponent, while junction potential and capacitances
+    follow the silicon band gap. Threshold voltage shifts by its linear coefficient and
+    transconductance scales by its temperature exponent, matching ngspice.
 
-    Its resistances make thermal noise, and its channel thermal noise of
-    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, its drain current ``Id``
-    also makes flicker noise of ``KF · |Id|^AF / f`` A²/Hz, ``AF`` the flicker exponent,
-    as SPICE models it.
+    Series resistances generate thermal noise, and the channel produces thermal noise
+    of ``8kT · gm / 3`` A²/Hz. With flicker coefficient ``KF`` and exponent ``AF``,
+    drain current ``Id`` adds flicker noise of ``KF · |Id|^AF / f`` A²/Hz.
 
     Examples:
         >>> from jolty.units import V, mA
@@ -991,7 +997,7 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     return _device("jfet", locals())
 
 
-def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 parameters
+def bipolar_transistor(  # noqa: PLR0913 - Gummel-Poon BJT model parameters
     *,
     polarity: Literal["npn", "pnp"] | None = None,
     saturation_current: Quantity | None = None,
@@ -1099,40 +1105,39 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 paramete
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> Device:
-    """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
+    """Creates a Gummel-Poon BJT across ``collector``, ``base``, and ``emitter``.
 
-    It follows the Gummel-Poon model of SPICE, as ngspice does. Parameters left out take
-    SPICE's defaults, an Early voltage or a knee current left out infinite. A base,
-    collector or emitter resistance adds an internal node, the unknown ``base``,
-    ``collector`` or ``emitter``.
+    The model follows ngspice Gummel-Poon equations with SPICE defaults for omitted
+    parameters (infinite Early voltages and knee currents by default). Nonzero base,
+    collector, or emitter resistance adds internal node unknown ``base``, ``collector``,
+    or ``emitter``.
 
-    A transistor built ``vertical`` or ``lateral`` has a fourth terminal, ``substrate``,
-    joined by a junction to its collector if vertical or to its base if lateral. The
-    junction conducts the minimum conductance, and a diode's current with a substrate
-    saturation current; its depletion capacitance grows linearly in forward bias. The
-    substrate parameters need a substrate.
+    Setting `substrate` to ``"vertical"`` or ``"lateral"`` adds a fourth ``substrate``
+    terminal connected through a junction to the collector (vertical) or base
+    (lateral). The substrate junction conducts minimum conductance plus diode current
+    when `substrate_saturation_current` is nonzero, with depletion capacitance growing
+    linearly in forward bias. Substrate parameters require `substrate` to be set.
 
-    An ``excess_phase``, SPICE's ``PTF`` in degrees, delays the forward transport
-    current by ``PTF · π / 180 · TF`` through a second-order Bessel filter, as
-    ngspice's transient does, so the phase it adds at ``1 / (2π · TF)`` is nearly
-    ``PTF``; the filter's two unknowns are ``delayed_transport`` and
-    ``delayed_transport_slope``.
+    When `excess_phase` (SPICE ``PTF``, in degrees) is set, a second-order Bessel
+    filter delays forward transport current by ``PTF · π / 180 · TF``, adding
+    approximately ``PTF`` degrees of phase at ``1 / (2π · TF)``. The filter exposes
+    internal unknowns ``delayed_transport`` and ``delayed_transport_slope``.
 
-    Away from the nominal temperature, the saturation currents scale with the energy
-    gap and the temperature exponent; the betas scale by their temperature exponent,
-    ``(T/Tn)^XTB`` where ``temperature_model`` is 0, SPICE's ``TLEV``, and
-    ``1 + XTB · ΔT`` where it is 1; and the junctions' potentials and capacitances
-    follow silicon's band gap where ``capacitance_temperature_model``, ``TLEVC``, is 0,
-    and their own coefficients linearly where it is 1, as in ngspice. Each parameter
-    with a ``_temperature_coefficient`` and a ``_quadratic_temperature_coefficient``,
-    HSPICE's ``TRC1`` and ``TRC2`` and kin, scales by ``1 + c1 · ΔT + c2 · ΔT²``; a
-    beta given either scales by them instead of by its exponent.
-    ``high_injection_exponent``, SPICE's ``NKF``, bends the base charge's high
-    injection term, ``(1 + 4 · q2)^NKF``.
+    Away from `nominal_temperature`, saturation currents scale with energy gap and
+    temperature exponent. Forward and reverse betas scale by ``(T/Tn)^XTB`` at
+    ``temperature_model=0`` (SPICE ``TLEV``) and ``1 + XTB · ΔT`` at
+    ``temperature_model=1``. Junction potentials and capacitances follow silicon band
+    gap at ``capacitance_temperature_model=0`` (SPICE ``TLEVC``) and explicit linear
+    coefficients at model 1.
 
-    Its resistances make thermal noise, and its collector and base currents shot noise;
-    with a flicker coefficient ``KF``, its base current ``Ib`` also makes flicker noise
-    of ``KF · |Ib|^AF / f`` A²/Hz, ``AF`` the flicker exponent, as SPICE models it.
+    Parameters with linear and quadratic temperature coefficients (HSPICE ``TRC1`` and
+    ``TRC2`` family) scale by ``1 + c1 · ΔT + c2 · ΔT²``, overriding the beta exponent
+    when supplied on beta. The ``high_injection_exponent`` parameter (SPICE ``NKF``)
+    shapes the base-charge high-injection term ``(1 + 4 · q2)^NKF``.
+
+    Series resistances generate thermal noise, while collector and base currents
+    generate shot noise. With flicker coefficient ``KF`` and exponent ``AF``, base
+    current ``Ib`` adds flicker noise of ``KF · |Ib|^AF / f`` A²/Hz.
 
     Examples:
         >>> from jolty.units import V, fA
@@ -1147,7 +1152,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 paramete
     return _device("bipolar_transistor", locals())
 
 
-def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
+def vbic(  # noqa: PLR0913 - VBIC 1.2 model parameters
     *,
     polarity: Literal["npn", "pnp"] | None = None,
     extrinsic_collector_resistance: Quantity | None = None,
@@ -1253,41 +1258,35 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     breakdown_voltage_quadratic_temperature_coefficient: Quantity | None = None,
     breakdown_emission_temperature_coefficient: Quantity | None = None,
 ) -> Device:
-    """A bipolar transistor of integrated circuits, VBIC 1.2, between four terminals.
+    """Creates a four-terminal VBIC 1.2 bipolar transistor matching ngspice 47.
 
-    It follows the vertical bipolar inter-company model as ngspice 47 implements it,
-    between ``collector``, ``base``, ``emitter`` and ``substrate`` (McAndrew et al.,
-    "VBIC95, the vertical bipolar inter-company model", IEEE Journal of Solid-State
-    Circuits, 1996, as the VBIC 1.2 definition extends it). Beside the Gummel-Poon
-    transistor's transport current, Early effect, high injection and junction charges,
-    it models the parasitic substrate transistor from the extrinsic base to the
-    substrate, the weak avalanche of the base-collector junction, the quasi-saturation
-    of the intrinsic collector by Kull's model, the base-emitter breakdown, the
-    reach-through of the base-collector junction, and capacitances smoothed at the
-    junctions' potentials. Parameters left out take ngspice's defaults, an Early
-    voltage, a knee current, the epitaxial saturation voltage and the transit time's
-    voltage infinite.
+    The model implements the vertical bipolar inter-company formulation (McAndrew et
+    al., IEEE JSSC 1996, extended to VBIC 1.2) across ``collector``, ``base``,
+    ``emitter``, and ``substrate``. In addition to Gummel-Poon transport, Early effect,
+    high injection, and junction charges, VBIC models the parasitic substrate
+    transistor, base-collector weak avalanche, and Kull quasi-saturation. VBIC also
+    includes base-emitter breakdown, base-collector reach-through, and smoothed
+    junction capacitances. Omitted parameters use ngspice defaults, with infinite Early
+    voltages, knee currents, epitaxial saturation voltage, and transit-time voltage.
 
-    The extrinsic collector, extrinsic base, emitter and substrate resistances add the
-    internal unknowns ``collector``, ``base``, ``emitter`` and ``substrate``; the
-    intrinsic collector, the intrinsic base and the parasitic base are internal unknowns
-    always, and an excess-phase delay adds ``transport_filter`` and
-    ``delayed_transport``, the network that delays the forward transport current.
+    Extrinsic collector, extrinsic base, emitter, and substrate resistances add
+    internal unknowns ``collector``, ``base``, ``emitter``, and ``substrate``. The
+    intrinsic collector, intrinsic base, and parasitic base nodes are always present as
+    internal unknowns. Excess-phase delay adds ``transport_filter`` and
+    ``delayed_transport`` for the transport-delay network.
 
-    Away from the nominal temperature, its saturation currents scale by their activation
-    energies and temperature exponents, its resistances, forward knee current and epi
-    saturation voltage by their exponents, its potentials and capacitances with the
-    intrinsic carrier concentration, and its emission coefficients, avalanche and
-    breakdown by their coefficients, as ngspice's VBIC scales them; its thermal voltage
-    takes VBIC's own constants. A heated transistor runs at its thermal net's
-    temperature, as VBIC's self-heating does, its thermal resistance and capacitance
-    thermal elements on that net.
+    Away from `nominal_temperature`, saturation currents scale by activation energies
+    and temperature exponents, while resistances, forward knee current, and epitaxial
+    saturation voltage scale by their exponents. Junction potentials and capacitances
+    scale with intrinsic carrier concentration, and emission, avalanche, and breakdown
+    parameters follow their coefficients using VBIC thermal-voltage constants. A heated
+    VBIC runs at its thermal net temperature, representing VBIC self-heating through
+    external thermal elements.
 
-    Its resistances make thermal noise, the intrinsic ones at their slopes; its
-    transport current, its intrinsic base-emitter current and the parasitic transistor's
-    base-emitter and transport currents make shot noise; and with a flicker coefficient
-    ``KFN``, both base-emitter currents ``Ib`` make flicker noise of ``KFN · |Ib|^AFN /
-    f^BFN`` A²/Hz, as ngspice models them.
+    Extrinsic and intrinsic resistances generate thermal noise (intrinsic resistances
+    at their local slopes). Transport, intrinsic base-emitter, and parasitic currents
+    generate shot noise. With flicker coefficient ``KFN``, base-emitter currents ``Ib``
+    add flicker noise of ``KFN · |Ib|^AFN / f^BFN`` A²/Hz.
 
     Examples:
         >>> from jolty.units import V, fA, ohm
@@ -1303,7 +1302,7 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     return _device("vbic", locals())
 
 
-def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
+def mosfet(  # noqa: PLR0913 - SPICE level 1 and 3 MOSFET parameters
     *,
     level: Literal[1, 3] | None = None,
     channel: Literal["n", "p"] | None = None,
@@ -1358,43 +1357,41 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     width_adjustment: Quantity | None = None,
     threshold_adjustment: Quantity | None = None,
 ) -> Device:
-    """A MOSFET between ``drain``, ``gate``, ``source`` and ``bulk``.
+    """Creates a SPICE level 1 or level 3 MOSFET with four terminals.
 
-    It follows SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate
-    capacitances, as ngspice does. Above the threshold, the drain current is
-    ``kp · w / (l - 2 · ld) · (1 + lambda · vds)`` times ``(vgs - von)² / 2`` in
-    saturation and ``vds · (vgs - von - vds / 2)`` below it, where the threshold
-    ``von = vto + gamma · (√(phi - vbs) - √phi)`` rises with the body effect. Two
-    junctions join the bulk to the drain and the source. Parameters left out take
-    SPICE's defaults. An oxide thickness gives the gate Meyer's capacitances; with a
-    substrate doping, it derives the threshold, the body effect and the surface
-    potential left out, as SPICE derives them. The body effect is a number of
-    square-root volts.
+    Terminals are ``drain``, ``gate``, ``source``, and ``bulk``. At ``level=1``
+    (default), the transistor follows the Shichman-Hodges square law with Meyer gate
+    capacitances, matching ngspice. The effective threshold voltage is
+    ``von = vto + gamma · (√(phi - vbs) - √phi)``. Above threshold, channel prefactor
+    ``kp · w / (l - 2 · ld) · (1 + lambda · vds)`` drives the drain current. Drain
+    current multiplies that prefactor by ``(vgs - von)² / 2`` in saturation and by
+    ``vds · (vgs - von - vds / 2)`` in triode. Bulk-drain and bulk-source junctions
+    connect the body to the diffusions.
 
-    Away from the nominal temperature, the transconductance parameter and the mobility
-    fall as the temperature to the power -1.5, the surface potential follows silicon's
-    band gap and the threshold with it, and the junctions' saturation currents,
-    potential and capacitances follow the band gap too, as in ngspice.
+    Omitted parameters use SPICE defaults, with `body_effect` specified in square-root
+    volts. Supplying `oxide_thickness` enables Meyer gate capacitances; combining
+    `oxide_thickness` with `substrate_doping` derives omitted threshold voltage, body
+    effect, and surface potential. Away from `nominal_temperature`, transconductance
+    and mobility scale as ``T^-1.5``, while surface potential, threshold voltage, and
+    junction parameters follow the silicon band gap.
 
-    At ``level=3``, the channel follows SPICE's semi-empirical law of short channels
-    instead, and the parameters from ``max_drift_velocity`` on, level 3's alone, model
-    velocity saturation, short and narrow channels' thresholds, the drain's static
-    feedback, the gate field's degradation of the mobility, the channel's shortening in
-    saturation, weak inversion, and the mask's adjustments to the channel. A level 3
-    transistor has no channel-length modulation, an oxide 0.1 µm thick unless given, and
-    a sidewall grading coefficient of 0.33.
+    At ``level=3``, channel conduction uses the SPICE semi-empirical short-channel
+    model. Level-3-only parameters from `max_drift_velocity` onward model velocity
+    saturation, short- and narrow-channel threshold shifts, drain-induced barrier
+    lowering, mobility degradation, channel-length shortening, weak inversion, and mask
+    adjustments. Level-3 MOSFETs disable channel-length modulation and default to
+    0.1 µm oxide thickness and 0.33 sidewall grading.
 
-    A drain or source resistance adds an internal node, the unknown ``drain`` or
-    ``source``. Meyer's capacitances add three currents of the transistor's own, the
-    displacement currents through the whole oxide towards the source, the drain and the
-    bulk: ``gate_source_displacement``, ``gate_drain_displacement`` and
+    Nonzero drain or source resistance adds internal node unknown ``drain`` or
+    ``source``. Meyer gate capacitances add three displacement-current unknowns:
+    ``gate_source_displacement``, ``gate_drain_displacement``, and
     ``gate_bulk_displacement``.
 
-    Its resistances make thermal noise, and its channel thermal noise of
-    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, its drain current ``Id``
-    also makes flicker noise of ``KF · |Id|^AF / (f · W · Leff · Cox²)`` A²/Hz over its
-    effective gate, the widths of its parallel copies summed, with an oxide 0.1 µm thick
-    unless given, ``AF`` the flicker exponent, as ngspice models it.
+    Series resistances produce thermal noise, and the channel generates thermal noise
+    of ``8kT · gm / 3`` A²/Hz. With flicker coefficient ``KF`` and exponent ``AF``,
+    drain current ``Id`` adds flicker noise of ``KF · |Id|^AF / (f · W · Leff · Cox²)``
+    A²/Hz. Gate area sums parallel multiplier widths and assumes a 0.1 µm oxide
+    thickness when omitted.
 
     Examples:
         >>> from jolty.units import nm, um
@@ -1404,7 +1401,7 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     return _device("mosfet", locals())
 
 
-def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
+def vdmos(  # noqa: PLR0913 - ngspice VDMOS model parameters
     *,
     channel: Literal["n", "p"] | None = None,
     multiplier: float | None = None,
@@ -1456,28 +1453,31 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> Device:
-    """A vertical power MOSFET between ``drain``, ``gate`` and ``source``: VDMOS.
+    """Creates a VDMOS power MOSFET across ``drain``, ``gate``, and ``source``.
 
-    It follows ngspice's VDMOS model, which reads the power MOSFETs' cards of LTspice:
-    Shichman and Hodges's square law without a body effect, its overdrive softened below
-    the threshold by the subthreshold slope, the mobility degraded by the gate's field,
-    and given both quasi-saturation parameters, a drain resistance that grows with the
-    drain voltage. The gate holds a constant capacitance to the source and one to the
-    drain that runs from its minimum, far below the drain, to its maximum, far above
-    it. A body diode with parameters of its own, its breakdown the transistor's, joins
-    the source to the drain. Parameters left out take ngspice's defaults, an IRF540's
-    or an IRF9540's where ngspice takes them from one.
+    The model implements ngspice VDMOS equations compatible with LTspice power MOSFET
+    cards. Conduction follows the Shichman-Hodges square law without body effect,
+    softened below threshold by `subthreshold_slope` and degraded by gate-field
+    mobility modulation. Supplying both quasi-saturation parameters adds a
+    drain-voltage-dependent drain resistance.
 
-    Away from the nominal temperature, the transconductance parameter scales by its
-    temperature exponent, the threshold, the subthreshold slope and the resistances by
-    their temperature coefficients, and the body diode as a diode does, as in ngspice.
+    Gate capacitances include a fixed gate-source capacitance and a voltage-dependent
+    gate-drain capacitance transitioning smoothly between its minimum and maximum
+    values. An integrated body diode with dedicated junction parameters and shared
+    breakdown connects ``source`` to ``drain``. Omitted parameters use ngspice defaults
+    based on IRF540 and IRF9540 devices.
 
-    A drain, source, gate or body resistance adds an internal node, the unknown
-    ``drain``, ``source``, ``gate`` or ``body_diode``. The drain and source resistances
-    make thermal noise, and the channel thermal noise of ``8kT · gm / 3`` A²/Hz; with a
-    flicker coefficient ``KF``, its drain current ``Id`` also makes flicker noise of
-    ``KF · |Id|^AF / (f · Cox²)`` A²/Hz, ``Cox`` an oxide's of 0.1 µm per area, as
-    ngspice models it.
+    Away from `nominal_temperature`, transconductance scales by its temperature
+    exponent, while threshold voltage, subthreshold slope, and resistances follow their
+    temperature coefficients. The body diode follows standard diode temperature scaling
+    matching ngspice.
+
+    Nonzero drain, source, gate, or body resistance adds internal unknown ``drain``,
+    ``source``, ``gate``, or ``body_diode``. Drain and source resistances generate
+    thermal noise, and the channel generates thermal noise of ``8kT · gm / 3`` A²/Hz.
+    With flicker coefficient ``KF`` and exponent ``AF``, drain current ``Id`` adds
+    flicker noise of ``KF · |Id|^AF / (f · Cox²)`` A²/Hz using a 0.1 µm reference
+    oxide capacitance per unit area.
 
     Examples:
         >>> from jolty.units import V, ohm
@@ -1487,7 +1487,7 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
     return _device("vdmos", locals())
 
 
-def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selectors
+def bsim3(  # noqa: PLR0913 - instance geometry and BSIM3 model selectors
     *,
     channel: Literal["n", "p"] | None = None,
     width: Quantity | None = None,
@@ -1509,34 +1509,30 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
     nominal_temperature: Quantity | None = None,
     card: Mapping[str, Quantity | float] | None = None,
 ) -> Device:
-    """A MOSFET in BSIM3v3.3 between ``drain``, ``gate``, ``source`` and ``bulk``.
+    """Creates a BSIM3v3.3 MOSFET across ``drain``, ``gate``, ``source``, and ``bulk``.
 
-    It follows the BSIM3v3.3 model of short channels (W. Liu, X. Xi and others, UC
-    Berkeley, 2005), SPICE's level 8 and 49, as ngspice 47 implements it. The keywords
-    before `card` are the instance's: its drawn geometry, its diffusions, a shift of
-    its threshold and a factor of its mobility, then the card's models of the mobility,
-    the charges and the noise, whether its sizes are checked and clamped, and the
-    drain's share of the channel's charge. Each entry of `card` is a parameter of the
-    BSIM3v3.3 manual by its name, such as ``vth0``, ``tox`` or ``lvth0``, in SI units:
-    a quantity where it has a dimension, as
-    [`bsim3_dimension`][jolty.devices.bsim3_dimension] says, and a number where it has
-    none. Parameters left out take ngspice's defaults.
+    The model follows BSIM3v3.3 short-channel equations (Liu, Xi et al., UC Berkeley,
+    2005; SPICE levels 8 and 49) as implemented in ngspice 47. Keyword arguments before
+    `card` configure drawn instance geometry, diffusion dimensions, threshold shift,
+    mobility multiplier, model selectors, parameter clamping, and charge partitioning.
+    Each `card` entry maps a BSIM3v3.3 manual name (such as ``vth0``, ``tox``, or
+    ``lvth0``) to an SI [`Quantity`][jolty.units.Quantity] matching
+    [`bsim3_dimension`][jolty.devices.bsim3_dimension] or a plain float. Omitted
+    parameters use ngspice defaults.
 
-    The drain current folds in the threshold's short-channel, narrow-width and
-    drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
-    degradation by the gate field, velocity saturation, the output resistance's
-    channel-length modulation, barrier lowering and substrate current, and the source
-    and drain resistance ``rdsw``, that of a channel 1 µm wide; the impact ionization's
-    substrate current flows into the bulk. The charges under the gate follow
-    `capacitance_model`, the overlaps' charges beside them, and two diodes join the bulk
-    to the drain and the source. A binned card's ``l``, ``w`` and ``p`` dependences are
-    on the reciprocal of the effective length, width and their product in meters, not
-    micrometers, and every parameter scales with the temperature as ngspice scales it. A
-    sheet resistance ``rsh`` adds an internal node behind the drain and the source, the
-    unknowns ``drain`` and ``source``.
+    Drain current incorporates short-channel, narrow-width, and DIBL threshold terms,
+    poly-gate depletion, field mobility degradation, velocity saturation, output
+    conductance effects, and normalized source-drain resistance ``rdsw``. Impact
+    ionization current flows into the bulk. Gate charges follow `capacitance_model`
+    alongside overlap capacitances and bulk-drain and bulk-source diodes.
 
-    Its sheet resistances make thermal noise, and its channel the thermal and flicker
-    noise of `noise_model`: SPICE2's or BSIM3's.
+    Binned card terms prefixed with ``l``, ``w``, and ``p`` scale with reciprocal
+    effective length, width, and length-width product in meters rather than
+    micrometers. All parameters scale with temperature matching ngspice. Nonzero sheet
+    resistance ``rsh`` adds internal node unknowns ``drain`` and ``source``.
+
+    Sheet resistances generate thermal noise, while the channel produces thermal and
+    flicker noise selected by `noise_model` (SPICE2 or BSIM3 formulations).
 
     Examples:
         >>> from jolty.units import V, nm, um
@@ -1549,9 +1545,8 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
         (7.6e-09, -0.02)
 
     Raises:
-        DimensionError: When a parameter has the wrong dimension.
-        ValueError: When BSIM3 has no parameter of a name in `card`, or a value is not
-            finite.
+        DimensionError: If a parameter has the wrong physical dimension.
+        ValueError: If `card` names an unknown BSIM3 parameter or a non-finite value.
     """
     values = locals()
     values.pop("card")
@@ -1564,7 +1559,7 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
 
 
 def _bsim3_card() -> dict[str, Dimension | Literal["uc"] | None]:
-    """The BSIM3 card parameters and their dimensions, derived from the engine."""
+    """Derives BSIM3 card parameter names and SI dimensions from the engine."""
     excluded = inspect.signature(bsim3).parameters
     card: dict[str, Dimension | Literal["uc"] | None] = {}
     for name, kind in _model_kinds("bsim3").items():
@@ -1582,28 +1577,30 @@ def _bsim3_card() -> dict[str, Dimension | Literal["uc"] | None]:
 
 
 BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = _bsim3_card()
-"""The parameters of a BSIM3 card, by the BSIM3v3.3 manual's names, and the dimension of
-each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
-``lln``, and ``"uc"`` for ``uc`` and ``uc1``, whose unit follows ``mobility_model``."""
+"""Mapping from BSIM3v3.3 card parameter names to expected SI dimensions.
+
+Plain numeric parameters map to ``None`` (such as ``ll``, whose unit depends on
+``lln``). Parameters ``uc`` and ``uc1`` map to ``"uc"`` because their dimension depends
+on ``mobility_model``."""
 
 BSIM3_BINNED: Final = frozenset(_core.binned_parameters("bsim3"))
-"""The BSIM3 parameters that bin: each has a length, a width and an area dependence,
-its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
+"""BSIM3 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
+meters or square meters."""
 
 
 def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension | None:
-    """The dimension of BSIM3's parameter `name`, ``None`` for a plain number.
+    """Returns the expected SI dimension of BSIM3 parameter `name`, or ``None``.
 
-    A binned dependence's is its parameter's times meters, or square meters for the
-    area's, and ``uc``'s and ``uc1``'s per square volt times meters, or per volt at
-    `mobility_model` 3.
+    Binned prefixes multiply the base parameter dimension by meters (``l``, ``w``) or
+    square meters (``p``). Parameters ``uc`` and ``uc1`` use meters per square volt by
+    default, or inverse volts when `mobility_model` is 3.
 
     Examples:
         >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
         (True, None)
 
     Raises:
-        ValueError: When BSIM3 has no parameter `name`.
+        ValueError: If BSIM3 defines no parameter named `name`.
     """
     dimension, extent = _bsim_parameter("BSIM3", name, BSIM3_CARD, BSIM3_BINNED)
     if dimension == "uc":
@@ -1614,14 +1611,14 @@ def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension |
 def _bsim_parameter[T](
     model: str, name: str, card: Mapping[str, T], binned: frozenset[str]
 ) -> tuple[T, Dimension]:
-    """The entry in `card` of `model`'s parameter `name`, and its extent.
+    """Resolves the `card` entry and binning extent for parameter `name` in `model`.
 
-    The entry is the parameter's own, or that of the parameter it is a length, width or
-    area dependence of; the extent is what its dimension is times, meters or square
-    meters for a dependence.
+    Direct parameters return their matching `card` entry and dimensionless extent.
+    Binned ``l``, ``w``, or ``p`` prefixed parameters return the base parameter entry
+    with length or area extent.
 
     Raises:
-        ValueError: When `model` has no parameter `name`.
+        ValueError: If `model` defines no parameter named `name`.
     """
     if name in card:
         return card[name], DIMENSIONLESS
@@ -1633,7 +1630,7 @@ def _bsim_parameter[T](
 
 
 def _extended(dimension: Dimension | None, extent: Dimension) -> Dimension | None:
-    """`dimension` times `extent`, ``None`` for a plain number."""
+    """Multiplies `dimension` by `extent`, returning ``None`` for plain floats."""
     if dimension is None:
         return None if extent == DIMENSIONLESS else extent
     return dimension * extent
@@ -1644,12 +1641,12 @@ def _card(
     card: Mapping[str, Quantity | float],
     dimension_of: Callable[[str], Dimension | None],
 ) -> None:
-    """Adds each entry of a model's `card` to `parameters`, its dimension checked.
+    """Validates and merges BSIM `card` entries into `parameters` in SI base units.
 
     Raises:
-        DimensionError: When a parameter has the wrong dimension.
-        ValueError: When the model has no parameter of a name in `card`, or a value is
-            not finite.
+        DimensionError: If a parameter has the wrong physical dimension.
+        ValueError: If `card` names an unknown parameter or contains a non-finite
+            value.
     """
     for name, value in card.items():
         dimension = dimension_of(name)
@@ -1668,7 +1665,7 @@ def _card(
                 raise DimensionError(message)
 
 
-def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selectors
+def bsim4(  # noqa: PLR0913 - instance geometry and BSIM4 model selectors
     *,
     channel: Literal["n", "p"] | None = None,
     width: Quantity | None = None,
@@ -1697,42 +1694,35 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     nominal_temperature: Quantity | None = None,
     card: Mapping[str, Quantity | float] | None = None,
 ) -> Device:
-    """A MOSFET in BSIM4.5 between ``drain``, ``gate``, ``source`` and ``bulk``.
+    """Creates a BSIM4.5 MOSFET across ``drain``, ``gate``, ``source``, and ``bulk``.
 
-    It follows the BSIM4.5.0 model of short channels (X. Xi, M. Dunga and others, UC
-    Berkeley, 2005), SPICE's level 14 and 54 of version 4.5, as ngspice 47 runs it, in
-    the modes SKY130's and GF180MCU's cards select. The keywords before `card` are the
-    instance's: its drawn geometry and fingers, its diffusions, the distances that set
-    the stress of its length of diffusion, a shift of its threshold and a factor of its
-    mobility, then the card's body, gate, and drain and source resistances' models, its
-    perimeter and noise models, whether its sizes are checked and clamped, and the
-    drain's share of the channel's charge. Each entry of `card` is a parameter of the
-    BSIM4.5 manual by its name, such as ``vth0``, ``toxe`` or ``lvth0``, in SI units:
-    a quantity where it has a dimension, as
-    [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number where it has
-    none. Parameters left out take ngspice's defaults.
+    The model follows BSIM4.5.0 short-channel equations (Xi, Dunga et al., UC Berkeley,
+    2005; SPICE levels 14 and 54) matching ngspice 47 for SKY130 and GF180MCU modes.
+    Keyword arguments before `card` configure instance geometry, finger count,
+    diffusions, length-of-diffusion stress distances, threshold and mobility shifts,
+    resistance and noise model selectors, clamping, and charge partitioning. Each
+    `card` entry maps a BSIM4.5 manual name to an SI [`Quantity`][jolty.units.Quantity]
+    matching [`bsim4_dimension`][jolty.devices.bsim4_dimension] or a plain float.
+    Omitted parameters use ngspice defaults.
 
-    The drain current folds in the threshold's short-channel, narrow-width, pocket and
-    barrier lowering terms, the poly gate's depletion, the mobility's degradation,
-    velocity saturation and overshoot, the source end's velocity limit, the output
-    resistance's terms and the source and drain resistance ``rdsw``; the impact
-    ionization's substrate current and the gate-induced leakages flow into the body,
-    and two diodes, with their trap-assisted tunneling, join it to the drain and the
-    source. A binned card's ``l``, ``w`` and ``p`` dependences are on the reciprocal of
-    the effective length, width and their product in meters, not micrometers, and
-    every parameter scales with the temperature as ngspice scales it. A sheet
-    resistance ``rsh`` adds an internal node behind the drain and the source where
-    ``drain_squares`` or ``source_squares`` is positive, and ``body_resistance_model``
-    1 three under the channel and the junctions. ``gate_resistance_model`` 1 to 3 puts
-    the gate electrode's resistance of ``rshg`` before the channel's gate, at 2 in
-    series with the channel's bias-dependent intrinsic-input resistance of ``xrcrg1``
-    and ``xrcrg2``, and at 3 with that resistance after a node in the middle of the
-    gate, which the overlaps' charges lie on. The charges under the gate follow
-    ``capmod`` 2, beside the overlaps' and the junctions'.
+    Drain current models short-channel, narrow-width, pocket-implant, and DIBL
+    threshold terms, poly-gate depletion, mobility degradation, velocity saturation and
+    overshoot, source velocity limit, output conductance, and ``rdsw``. Impact
+    ionization and gate-induced leakage currents flow into the body, while two diodes
+    with trap-assisted tunneling connect the body to drain and source. Gate charges
+    use ``capmod`` 2 alongside overlap and junction capacitances.
 
-    Its resistances make thermal noise, and its channel the thermal noise of
-    `thermal_noise_model`, ``tnoimod``, the charge-based or the holistic one, and the
-    flicker noise of `flicker_noise_model`, ``fnoimod``, SPICE2's or BSIM4's.
+    Binned ``l``, ``w``, and ``p`` parameters scale with reciprocal effective length,
+    width, and area in meters, with full ngspice temperature scaling. Positive
+    `drain_squares` or `source_squares` with sheet resistance ``rsh`` adds internal
+    drain or source nodes, and ``body_resistance_model=1`` adds three substrate nodes.
+    Settings ``gate_resistance_model`` 1 through 3 insert gate-electrode resistance
+    ``rshg``, adding intrinsic input resistance (``xrcrg1``, ``xrcrg2``) in series at
+    mode 2 or after a mid-gate overlap node at mode 3.
+
+    Resistances produce thermal noise. Channel thermal noise follows
+    `thermal_noise_model` (``tnoimod``, charge-based or holistic), while flicker noise
+    follows `flicker_noise_model` (``fnoimod``, SPICE2 or BSIM4).
 
     Examples:
         >>> from jolty.units import V, nm, um
@@ -1745,9 +1735,8 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
         (4e-09, -0.02)
 
     Raises:
-        DimensionError: When a parameter has the wrong dimension.
-        ValueError: When BSIM4 has no parameter of a name in `card`, or a value is not
-            finite.
+        DimensionError: If a parameter has the wrong physical dimension.
+        ValueError: If `card` names an unknown BSIM4 parameter or a non-finite value.
     """
     values = locals()
     values.pop("card")
@@ -1755,7 +1744,7 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
 
 
 def _bsim4_card() -> dict[str, Dimension | None]:
-    """The BSIM4 card parameters and their dimensions, derived from the engine."""
+    """Derives BSIM4 card parameter names and SI dimensions from the engine."""
     excluded = inspect.signature(bsim4).parameters
     card: dict[str, Dimension | None] = {}
     for name, kind in _model_kinds("bsim4").items():
@@ -1771,36 +1760,37 @@ def _bsim4_card() -> dict[str, Dimension | None]:
 
 
 BSIM4_CARD: Final[Mapping[str, Dimension | None]] = _bsim4_card()
-"""The parameters of a BSIM4 card, by the BSIM4.5 manual's names, and the dimension of
-each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
-``lln``, or for one in the manual's own units, as the gate tunneling's ``aigc``."""
+"""Mapping from BSIM4.5 card parameter names to expected SI dimensions.
+
+Plain numeric parameters map to ``None``, including exponent-dependent parameters such
+as ``ll`` and manual-unit gate tunneling parameters such as ``aigc``."""
 
 BSIM4_BINNED: Final = frozenset(_core.binned_parameters("bsim4"))
-"""The BSIM4 parameters that bin: each has a length, a width and an area dependence,
-its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
+"""BSIM4 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
+meters or square meters."""
 
 
 def bsim4_dimension(name: str) -> Dimension | None:
-    """The dimension of BSIM4's parameter `name`, ``None`` for a plain number.
+    """Returns the expected SI dimension of BSIM4 parameter `name`, or ``None``.
 
-    A binned dependence's is its parameter's times meters, or square meters for the
-    area's.
+    Binned prefixes multiply the base parameter dimension by meters (``l``, ``w``) or
+    square meters (``p``).
 
     Examples:
         >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
         (True, None)
 
     Raises:
-        ValueError: When BSIM4 has no parameter `name`.
+        ValueError: If BSIM4 defines no parameter named `name`.
     """
     return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
 
 
 type LogicLevel = Literal[0, 1] | None
-"""A logic level: 0, 1, or None for an unknown level."""
+"""Digital logic level: 0, 1, or ``None`` for an unknown state."""
 
 type Gate = Literal["and", "or", "nand", "nor", "xor", "xnor", "not", "buffer"]
-"""The function of a logic gate."""
+"""Supported standard logic gate function names."""
 
 _GATES: Final[dict[str, Callable[[Sequence[bool]], bool]]] = {
     "and": all,
@@ -1814,7 +1804,7 @@ _GATES: Final[dict[str, Callable[[Sequence[bool]], bool]]] = {
 }
 
 
-def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical pins
+def logic_cell(  # noqa: PLR0913 - logic function, timing, and electrical pins
     inputs: Sequence[str],
     outputs: Mapping[str, str | Callable[..., bool]],
     *,
@@ -1825,25 +1815,22 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
     input_capacitance: Quantity | None = None,
     threshold: float | None = None,
 ) -> Device:
-    """A combinational logic cell: each output a function of the inputs.
+    """Creates a combinational logic cell mapping boolean inputs to outputs.
 
-    Each output is its truth table, a ``0`` or a ``1`` for each row of the inputs, the
-    first input the most significant bit, so a NAND of ``a`` and ``b`` is ``"1110"``;
-    or a function of the inputs' levels as booleans, such as ``lambda a, b: not (a and
-    b)``. An output fed unknown inputs is known only when every level they could take
-    gives it the same level.
+    Each entry in `outputs` provides either a truth-table string of ``0`` and ``1``
+    characters (with the first input as MSB, such as ``"1110"`` for NAND) or a boolean
+    callable over input levels. Unknown inputs propagate an unknown output unless every
+    possible binary completion produces the same output level.
 
-    An output reaches a new level `rise` after an input changes when it rises, and
-    `fall` when it falls, `rise` unless given, and its edges take `transition` to swing
-    from ground to supply. Its delay is inertial: a pulse at the inputs shorter than
-    the delay never reaches it.
+    Rising outputs switch after `rise` and falling outputs after `fall` (defaulting to
+    `rise`), with edges taking `transition` to cross between rails. Propagation delay
+    is inertial, filtering out input pulses shorter than the delay.
 
-    The cell's pins join logic nets, which an event scheduler simulates. An
-    `electrical` cell has the terminals ``supply`` and ``ground`` too, and its pins may
-    join electrical nets: each input then reads its net against `threshold` of the
-    supply, from ground, and loads it with `input_capacitance`, zero unless given, and
-    each output drives its net between ground and supply in a ramp, crossing half the
-    supply when its level changes.
+    Pure logic cells connect to event-driven logic nets. Setting `electrical=True` adds
+    ``supply`` and ``ground`` terminals so pins may join electrical nets. Electrical
+    inputs compare node voltages against `threshold` of supply and present
+    `input_capacitance` (defaulting to zero), while electrical outputs drive ramped
+    waveforms crossing half supply at transition times.
 
     Examples:
         >>> from jolty.units import ps
@@ -1857,9 +1844,10 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
         (('a', 'b', 'y'), [{'name': 'y', 'table': '1110'}])
 
     Raises:
-        DimensionError: When a delay, the transition or the capacitance is not one.
-        ValueError: When a capacitance or a threshold is given to a cell that is not
-            electrical, or the engine cannot read the cell.
+        DimensionError: If `rise`, `fall`, `transition`, or `input_capacitance` has the
+            wrong physical dimension.
+        ValueError: If `input_capacitance` or `threshold` is passed with
+            ``electrical=False``, or if the engine rejects the cell.
     """
     tables: list[JsonValue] = [
         {"name": name, "table": _table(function, len(inputs))}
@@ -1892,7 +1880,7 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
 
 
 def _table(function: str | Callable[..., bool], inputs: int) -> str:
-    """The truth table of `function`: a table, or a function of `inputs` levels."""
+    """Builds a truth-table string from a literal table or a boolean callable."""
     if isinstance(function, str):
         return function
     rows = (
@@ -1902,7 +1890,7 @@ def _table(function: str | Callable[..., bool], inputs: int) -> str:
     return "".join("1" if function(*row) else "0" for row in rows)
 
 
-def logic_gate(  # noqa: PLR0913 - a logic cell's parameters
+def logic_gate(  # noqa: PLR0913 - logic cell gate parameters
     gate: Gate,
     inputs: int = 2,
     *,
@@ -1913,10 +1901,11 @@ def logic_gate(  # noqa: PLR0913 - a logic cell's parameters
     input_capacitance: Quantity | None = None,
     threshold: float | None = None,
 ) -> Device:
-    """A logic gate of `gate`'s function, a [`logic_cell`][jolty.devices.logic_cell].
+    """Creates a standard [`logic_cell`][jolty.devices.logic_cell] implementing `gate`.
 
-    Its inputs are ``a``, ``b`` and on, `inputs` of them, or one for ``not`` and
-    ``buffer``, and its output is ``y``. The other parameters are a logic cell's.
+    Input terminals are named sequentially from ``a`` (count given by `inputs`, or 1
+    for ``not`` and ``buffer``), and the output terminal is ``y``. All timing and
+    electrical options forward directly to [`logic_cell`][jolty.devices.logic_cell].
 
     Examples:
         >>> from jolty.units import ps
@@ -1944,11 +1933,11 @@ def logic_source(
     *,
     transition: Quantity,
 ) -> Device:
-    """A logic source: one output, ``output``, at `initial`, then at each of `changes`.
+    """Creates a piecewise-event logic source driving terminal ``output``.
 
-    Each change is a time and the level from then on, in time order; each edge takes
-    `transition` to swing from ground to supply, and crosses half the supply at its
-    time.
+    Output starts at `initial` and transitions at each time-ordered `(time, level)`
+    pair in `changes`. Each edge ramps between ground and supply over `transition`,
+    crossing half supply at the scheduled event time.
 
     Examples:
         >>> from jolty.units import ns, ps
@@ -1968,9 +1957,9 @@ def logic_source(
 
 
 def format_logic_level(level: LogicLevel | float) -> str:
-    """A logic level as the engine writes it: ``0``, ``1`` or ``x``.
+    """Formats a logic level as an engine character: ``0``, ``1``, or ``x``.
 
-    A result holds a level as a number, NaN where it is unknown.
+    Simulation results store numeric logic levels using NaN for unknown states.
 
     Examples:
         >>> [format_logic_level(level) for level in (0, 1, None, 1.0, math.nan)]
@@ -1982,15 +1971,14 @@ def format_logic_level(level: LogicLevel | float) -> str:
 
 
 def device(model: str, parameters: dict[str, JsonValue]) -> Device:
-    """A device of `model` with `parameters`, and the terminals the engine gives it.
+    """Creates a device of `model` with raw SI `parameters` and resolved terminals.
 
-    The parameters are numbers in SI base units. The functions above check each
-    parameter's dimension; this one takes numbers as they are, for devices read from
-    elsewhere, such as a SPICE library.
+    Unlike the typed constructors above, this low-level helper accepts raw SI base-unit
+    values without dimension checking, supporting imported models such as SPICE
+    libraries.
 
     Raises:
-        ValueError: When no model is named `model`, or the engine cannot read the
-            parameters.
+        ValueError: If `model` is unknown or the engine rejects `parameters`.
     """
     terminals = _core.terminals(model, json.dumps(parameters))
     return Device(model, tuple(terminals), parameters)

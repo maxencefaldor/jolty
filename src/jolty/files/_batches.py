@@ -14,28 +14,28 @@ from jolty.files._results import open_validated, write_archive
 from jolty.units import Dimension
 
 _ARRAYS: Final = ("values", "ended", "measured", "causes")
-"""The arrays of a batch's result that every batch has."""
+"""Core array names present in every serialized batch result."""
 
 _BATCHES_VERSION: Final = 4
-"""The version of the batch file's format that jolty writes and reads."""
+"""Batch archive format version supported for reading and writing."""
 
 _TABLE_DIMENSIONS: Final = 2
 """Expected dimensionality of a batch's 2-D sample-by-column arrays."""
 
 type Exponents = tuple[str, str, str, str, str]
-"""A dimension's exponents of the base units, as fractions."""
+"""SI base-unit exponents of a physical dimension, encoded as fraction strings."""
 
 type EncodedUnit = Exponents | results.Plain | None
-"""A measure's unit: a dimension's exponents, a plain unit, or none."""
+"""Serialized unit of a measure: base-unit exponents, plain unit string, or `None`."""
 
 
 @dataclass(frozen=True, slots=True)
 class Batch:
-    """A batch of runs as a batch file holds it, with the requirements it measured.
+    """Serialized batch of runs paired with requirement descriptions and bounds.
 
-    Each of its measures is a requirement's, which `requirements` states in words,
-    bounded by the `bounds` of each, its least and its most value, in SI base units,
-    None for a bound it does not state.
+    Each measure in `result` corresponds to the human-readable requirement at the same
+    index in `requirements`. Each entry in `bounds` gives the minimum and maximum limits
+    for that requirement in SI base units, using `None` for any omitted bound.
     """
 
     result: results.BatchResult
@@ -44,7 +44,7 @@ class Batch:
 
 
 def exponents_of(dimension: Dimension) -> Exponents:
-    """The exponents of `dimension`, as a file's header holds them."""
+    """Encodes SI base-unit exponents of `dimension` as fraction strings for headers."""
     kilogram, meter, second, ampere, kelvin = (
         str(Fraction(exponent))
         for exponent in (
@@ -59,7 +59,7 @@ def exponents_of(dimension: Dimension) -> Exponents:
 
 
 def of_exponents(exponents: Exponents) -> Dimension:
-    """The dimension whose exponents a file's header holds as `exponents`."""
+    """Decodes fraction-string base-unit `exponents` into a `Dimension`."""
     fractions = [Fraction(exponent) for exponent in exponents]
     return Dimension(
         *(
@@ -116,7 +116,7 @@ def _column_fields(found: results.BatchResult) -> _ColumnFields:
 
 
 class Columns(ir.FrozenModel):
-    """What a batch or shard file's header holds of a batch result besides arrays."""
+    """JSON-serializable header metadata describing a batch result alongside arrays."""
 
     analyses: tuple[str, ...]
     parameters: tuple[str, ...]
@@ -129,11 +129,11 @@ class Columns(ir.FrozenModel):
 
     @classmethod
     def from_batch(cls, found: results.BatchResult) -> Columns:
-        """What the header holds of `found`."""
+        """Builds a `Columns` header record from a `BatchResult`."""
         return cls(**_column_fields(found))
 
     def result(self, name: str, data: Mapping[str, np.ndarray]) -> results.BatchResult:
-        """The result whose arrays `data` holds under keys that start with `name`."""
+        """Reconstructs a `BatchResult` from arrays stored under `name` in `data`."""
         values, ended = data[f"{name}.values"], data[f"{name}.ended"]
         measured, causes = data[f"{name}.measured"], data[f"{name}.causes"]
         if values.ndim != _TABLE_DIMENSIONS:
@@ -184,7 +184,7 @@ class Columns(ir.FrozenModel):
 
 
 def batch_arrays(name: str, found: results.BatchResult) -> dict[str, np.ndarray]:
-    """The arrays of `found`, under keys that start with `name`."""
+    """Collects the NumPy arrays of `found` under archive keys prefixed with `name`."""
     arrays = {f"{name}.{key}": getattr(found, key) for key in _ARRAYS}
     for index, traces in enumerate(found.traces):
         arrays[f"{name}.traces.{index}"] = traces.values
@@ -204,7 +204,7 @@ class _Batches(ir.FrozenModel):
 
 
 def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
-    """Writes `batches`, by name, to `path`."""
+    """Writes named `batches` to a `.npz` batch archive at `path`."""
     arrays: dict[str, np.ndarray] = {}
     entries = {}
     for name, batch in batches.items():
@@ -218,10 +218,11 @@ def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
 
 
 def load_batches(path: Path) -> dict[str, Batch]:
-    """Reads the batch file at `path`: each batch, by name.
+    """Reads named batches from the batch archive at `path`.
 
     Raises:
-        JoltyError: When the file is not a jolty batch file of this version.
+        JoltyError: When `path` is not a valid jolty batch archive of the supported
+            format version.
     """
     unreadable = f"{path} is not a jolty batch file of version {_BATCHES_VERSION}"
     with open_validated(path, _Batches, unreadable) as (header, data):

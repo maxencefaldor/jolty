@@ -1,16 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""The canonical circuit format, as the engine reads it.
+"""Canonical circuit intermediate representation read by the simulation engine.
 
-A [`Circuit`][jolty.ir.Circuit] is a set of named components and the name of the top
-one. Build scripts never write this format by hand: [`jolty.builder`][jolty.builder]
-produces it, and the engine validates and elaborates it. Parameter values are numbers in
-SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance],
-each naming its parameter by [path][jolty.ir.parameter], so that it may reach into an
-object, as ``waveform.dc`` names a source's DC value. A device may also state
-[`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses. A
-[`RandomVariable`][jolty.ir.RandomVariable], a number a sample draws at random and the
-parameters it moves, is no part of a circuit, but what its tolerances and a process
-kit's statistical functions make.
+A [`Circuit`][jolty.ir.Circuit] holds named component definitions and the top-level
+component name. Build scripts construct circuits through
+[`jolty.builder`][jolty.builder], and the engine validates and elaborates the IR.
+
+Parameter values use SI base units, and devices can attach
+[`Tolerance`][jolty.ir.Tolerance] entries addressed by [path][jolty.ir.parameter] (such
+as ``waveform.dc``) and [`Rating`][jolty.ir.Rating] stress limits. A
+[`RandomVariable`][jolty.ir.RandomVariable] represents a Monte Carlo draw and its
+parameter derivatives produced by tolerances or foundry statistical functions.
 """
 
 from collections import deque
@@ -28,7 +27,7 @@ from pydantic import (
 )
 
 SEPARATOR: Final = "/"
-"""What separates the levels of a path, such as ``X1/R1``, which no name holds."""
+"""Path separator between hierarchy levels (such as ``X1/R1``), forbidden in names."""
 
 
 class FrozenModel(BaseModel):
@@ -38,7 +37,7 @@ class FrozenModel(BaseModel):
 
 
 class Role(StrEnum):
-    """What a port carries: a signal, in both directions or one, a supply or ground."""
+    """Electrical or functional role of a component port."""
 
     SIGNAL = "signal"
     INPUT = "input"
@@ -48,26 +47,26 @@ class Role(StrEnum):
 
 
 class Port(FrozenModel):
-    """A net a component exposes, under the name of the net inside it."""
+    """External net exposed by a component under an internal net name."""
 
     name: str
     role: Role
 
 
 class DeviceOf(FrozenModel):
-    """What a device instance is: a device of the named model."""
+    """Reference identifying an instance as a primitive device of `model`."""
 
     model: str
 
 
 class ComponentOf(FrozenModel):
-    """What a component instance is: an instance of the named component."""
+    """Reference identifying an instance as an instantiation of `component`."""
 
     component: str
 
 
 class SourceLocation(FrozenModel):
-    """The line of a build script that placed an instance."""
+    """Build-script source location that placed an instance."""
 
     file: str
     line: int
@@ -75,7 +74,7 @@ class SourceLocation(FrozenModel):
 
     @override
     def __str__(self) -> str:
-        """The line, such as ``filter.py:12 in low_pass()``."""
+        """Formats the source location, such as ``filter.py:12 in low_pass()``."""
         within = (
             "at module level"
             if self.function in {None, "<module>"}
@@ -85,90 +84,84 @@ class SourceLocation(FrozenModel):
 
 
 type Distribution = Literal["uniform", "normal", "log_uniform", "log_normal"]
-"""How values spread within a tolerance.
+"""Statistical distribution describing how parameter values spread within a tolerance.
 
-A value lies off its nominal one by a factor: ``1 + d``, with ``d`` evenly within a
-``uniform`` tolerance or normally within a ``normal`` one, the tolerance three standard
-deviations; or ``(1 + relative) ** u``, with ``u`` evenly within 1 of 0 for
-``log_uniform`` or normally for ``log_normal``, 1 three standard deviations, as an
-exponential's argument spreads, such as a saturation current's when the junction voltage
-it sets does.
+Linear tolerances scale the nominal value by ``1 + d``, where ``d`` is uniform over the
+tolerance range (``uniform``) or normal with the tolerance at three standard deviations
+(``normal``). Logarithmic tolerances scale by ``(1 + relative) ** u``, with ``u``
+uniform on ``[-1, 1]`` (``log_uniform``) or normal with ``1`` at three standard
+deviations (``log_normal``), modeling exponential parameters such as saturation
+currents.
 """
 
 
 class _Spread(FrozenModel):
-    """A tolerance and how values spread within it."""
+    """Base tolerance specification combining relative spread and distribution."""
 
     relative: float = Field(ge=0, allow_inf_nan=False)
     distribution: Distribution = "uniform"
 
     @model_validator(mode="after")
     def _taken(self) -> Self:
-        """Holds a linear spread below 1, so that no value reaches 0."""
+        """Validates that linear tolerances stay below 1 so values remain positive."""
         if self.relative >= 1 and not self.distribution.startswith("log"):
             message = (
-                f"a {self.distribution} tolerance needs to be below 1, not "
-                f"{self.relative}; only a logarithmic one may exceed it"
+                f"a {self.distribution} tolerance is below 1, not "
+                f"{self.relative}; only a logarithmic tolerance may exceed 1"
             )
             raise ValueError(message)
         return self
 
 
 class Lot(_Spread):
-    """A spread that the parts of one lot share.
+    """Shared manufacturing spread applied across all parts from the same lot.
 
-    As parts from one reel or one die drift together, each parameter of theirs takes
-    one factor from the lot per sample, which scales each part's own. A lot is known by
-    its name wherever in the hierarchy a part names it, and spreads each parameter one
-    way.
+    Parts from one reel or die drift together by sharing one per-sample lot factor that
+    scales each individual part factor. Matching lot names anywhere in the hierarchy
+    share a single draw per parameter.
     """
 
     name: str
 
 
 class Tolerance(_Spread):
-    """How far a parameter's value may lie from its nominal one, relative to it.
+    """Relative spread of a parameter value around its nominal value.
 
-    A part's own factor is drawn apart from every other part's; one in a `lot` is scaled
-    by the lot's too.
+    Each part draws an independent per-instance factor; parts assigned to a `lot` also
+    multiply by the shared lot factor.
     """
 
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 
 class RandomVariable(FrozenModel):
-    """A number a Monte Carlo sample draws at random, and how it moves the devices.
+    """Monte Carlo random draw and the parameter derivatives driven by that draw.
 
-    A part's tolerance draws one for its own factor and one for its lot's, and a process
-    kit's statistical function, such as ``agauss``, one per placement and call. It is
-    not part of a circuit: a mismatch analysis
-    ([`Mismatch`][jolty.plan.Mismatch]) makes the tolerances' from the circuit and takes
-    a kit's from the plan, as its reader finds them
+    Each tolerance draws a per-instance factor and an optional lot factor, while
+    foundry statistical functions such as ``agauss`` draw once per placement and call.
+    A mismatch analysis ([`Mismatch`][jolty.plan.Mismatch]) builds tolerance variables
+    from the circuit and reads foundry variables from the plan
     ([`Library.random_variables`][jolty.spice.Library.random_variables]).
     """
 
     instance: str | None = None
-    """The path of the instance that draws it: the part whose tolerance it is, or the
-    placement whose definitions call a kit's statistical function; None for a lot's."""
+    """Path of the owning instance or statistical placement, or ``None`` for a lot."""
     lot: str | None = None
-    """The name of the lot whose shared spread it is, if it is one."""
+    """Name of the shared lot when this variable represents a lot draw."""
     name: str
-    """What it is within its instance or lot: the parameter a tolerance spreads, such as
-    ``resistance``, or which call of a statistical function it is, such as ``vth0#0``,
-    its definition's name and its place among the calls the definition makes."""
+    """Identifier within the instance or lot, such as ``resistance`` or ``vth0#0``."""
     mean: float = Field(allow_inf_nan=False)
-    """Its mean, which the circuit's parameters are at."""
+    """Mean value of the random variable at the nominal circuit operating point."""
     standard_deviation: float = Field(ge=0, allow_inf_nan=False)
     derivatives: Mapping[str, Mapping[str, float]]
-    """The derivative of each number it moves with respect to it, by the device's path,
-    then by the number's path among its parameters, in SI base units per unit of it."""
+    """Parameter derivatives keyed by device path and parameter path in SI units."""
 
 
 def part_number(number: str) -> str:
-    """`number`, if it is a maker's part number: not empty, nor spaced at either end.
+    """Validates and returns manufacturer part number `number`.
 
     Raises:
-        ValueError: When it is empty or begins or ends with whitespace.
+        ValueError: When `number` is empty or has leading or trailing whitespace.
     """
     if not number or number.strip() != number:
         message = f"a part number is neither empty nor spaced at either end: {number!r}"
@@ -177,25 +170,26 @@ def part_number(number: str) -> str:
 
 
 type PartNumber = Annotated[str, AfterValidator(part_number)]
-"""A maker's part number, such as ``2N3904``."""
+"""Validated manufacturer part number, such as ``2N3904``."""
 
 
 type Stress = Literal["voltage", "current", "power", "temperature"]
-"""What a rating limits: the voltage of one terminal over another, the current into a
-terminal, the power a part dissipates, the sum over its electrical terminals of each
-one's voltage times the current into it, or the part's temperature, the simulation's
-raised by its thermal net's where it heats, the net its terminal ``thermal`` joins."""
+"""Electrical or thermal stress quantity constrained by a rating.
+
+Supported stresses are terminal-pair voltage, terminal input current, total electrical
+power dissipation, and device temperature (ambient plus the ``thermal`` net rise for
+heated devices)."""
 
 _TERMINALS: dict[str, int] = {"voltage": 2, "current": 1, "power": 0, "temperature": 0}
 
 
 class Rating(FrozenModel):
-    """A limit a part's maker states on one of its stresses, which a simulation checks.
+    """Manufacturer stress limit checked across simulation operating points and time.
 
-    The terminals are two for a voltage, the first's over the second's, one for a
-    current, into it, and none for the power or the temperature. A rating bounds its
-    stress from above, from below or both, in SI base units; a power's only from above,
-    and above 0, and a temperature's in kelvins, above 0.
+    Voltage ratings require two terminals (first minus second), current ratings require
+    one terminal (current into the terminal), and power or temperature ratings require
+    zero terminals. Bounds use SI base units: power bounds only a positive maximum, and
+    temperature bounds are positive kelvins.
     """
 
     stress: Stress
@@ -211,7 +205,7 @@ class Rating(FrozenModel):
 
     @model_validator(mode="after")
     def _bounded(self) -> Self:
-        """Holds the terminals to the stress, and the bounds in order."""
+        """Validates terminal count and bound ordering for the rating stress type."""
         needed = _TERMINALS[self.stress]
         if len(self.terminals) != needed or len(set(self.terminals)) != needed:
             message = (
@@ -246,7 +240,7 @@ class Rating(FrozenModel):
 
 
 class Instance(FrozenModel):
-    """One placed device or component, and the net each of its terminals joins."""
+    """Placed device or child component together with its net connections."""
 
     name: str
     of: DeviceOf | ComponentOf
@@ -262,28 +256,28 @@ class Instance(FrozenModel):
         default=None,
         exclude_if=lambda part: part is None,
         description=(
-            "The maker's number of the part the instance stands for, if any: a "
-            "component instance so numbered is that one part, whatever it places."
+            "Manufacturer part number for the instance; a numbered component prices "
+            "as a single part regardless of internal placements."
         ),
     )
     source_location: SourceLocation | None = None
 
 
 class Component(FrozenModel):
-    """A component's ports and the instances it places."""
+    """Component definition holding external ports and placed child instances."""
 
     ports: tuple[Port, ...] = ()
     instances: tuple[Instance, ...] = ()
 
     def instance(self, name: str) -> Instance | None:
-        """The instance `name`, or None when the component places none by that name."""
+        """Returns the placed instance named `name`, or ``None`` if absent."""
         return next(
             (instance for instance in self.instances if instance.name == name), None
         )
 
 
 class Circuit(FrozenModel):
-    """A circuit: every component, and the one at the top of the hierarchy."""
+    """Complete circuit IR containing all component definitions and the top name."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
     version: Literal[5] = 5
@@ -291,7 +285,7 @@ class Circuit(FrozenModel):
     components: dict[str, Component]
 
     def find(self, path: str) -> Instance | None:
-        """The instance at `path`, such as ``X1/R1``, or None when there is none."""
+        """Returns the instance at hierarchical `path` (such as ``X1/R1``), or None."""
         component = self.components.get(self.top)
         found = None
         for name in path.split(SEPARATOR):
@@ -306,7 +300,7 @@ class Circuit(FrozenModel):
         return found
 
     def ground_port(self, component: str | None = None) -> str | None:
-        """The ground port of `component`, or of the top component when omitted."""
+        """Returns the ground port name of `component`, defaulting to the top."""
         found = self.components.get(self.top if component is None else component)
         if found is None:
             return None
@@ -375,17 +369,17 @@ class Circuit(FrozenModel):
 def _descend_into(
     instance: Instance, descend: Callable[[Instance], bool] | None
 ) -> str | None:
-    """The inner component name when `walk` descends into `instance`, else None."""
+    """Returns the child component name if `walk` descends into `instance`."""
     if isinstance(instance.of, ComponentOf) and (descend is None or descend(instance)):
         return instance.of.component
     return None
 
 
 def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | None:
-    """The value at `path` among `parameters`, or None when none is there.
+    """Returns the value at dotted `path` within `parameters`, or None if missing.
 
-    A path is a parameter's name, or its keys joined by dots within an object and a
-    list's entries keyed by their index from 0, as sensitivities name parameters.
+    Path segments traverse mapping keys and zero-based list indices, matching the
+    parameter-path format used by sensitivity analyses.
 
     Examples:
         >>> parameter({"waveform": {"dc": 5.0}}, "waveform.dc")
@@ -411,9 +405,9 @@ def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | Non
 
 
 def numbers(parameters: Mapping[str, JsonValue]) -> dict[str, float]:
-    """Every number among `parameters`, in the order they are written, by its path.
+    """Collects all numeric entries in `parameters` keyed by dotted path in order.
 
-    A path is as [`parameter`][jolty.ir.parameter] reads it; a flag is no number.
+    Path formatting matches [`parameter`][jolty.ir.parameter]; booleans are excluded.
 
     Examples:
         >>> numbers({"resistance": 1e3, "waveform": {"dc": 5, "on": True}})

@@ -1,20 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Components written as KiCad netlists, from which KiCad lays out their boards.
+"""KiCad PCB netlist export for components built from catalog parts.
 
-[`netlist`][jolty.kicad.netlist] writes the component at an instance, or the top, as the
-footprints of the parts its [bill of materials][jolty.catalog.bill] takes and the nets
-that join their pads, a file KiCad's PCB editor imports. Each part states its footprint,
-as KiCad's libraries name it, and the pads each terminal or port of its instance joins;
-a resistor, a capacitor or an inductor whose part states no pins joins ``a`` to pad 1
-and ``b`` to pad 2, as KiCad's two-pad footprints number them. An instance whose every
-terminal is on a thermal net, such as a thermal resistance, has no footprint, and a
-terminal on a thermal net, such as a heated transistor's ``thermal``, joins no pad.
+[`netlist`][jolty.kicad.netlist] exports a component as footprints and pad-level nets
+compatible with the KiCad PCB editor using parts chosen by
+[`jolty.catalog.bill`][jolty.catalog.bill]. Each catalog part defines a KiCad library
+footprint and terminal-to-pad mapping; two-terminal resistors, capacitors, and
+inductors default ``a`` to pad 1 and ``b`` to pad 2 when pins are omitted. Purely
+thermal instances produce no footprint, and terminals on thermal nets map to no pad.
 
-The component is elaborated alone, so it has a ground port, whose name its ground net
-takes. Each other port's net takes the port's name, and each net inside its path, such
-as ``X1/mid``. A footprint's reference designator is its device's letter, R, C, L, T, D
-or Q, or U for any other part, numbered in the bill's order; its fields name the
-instance it builds, by its path in the component, and its maker's number.
+Export elaborates the target component standalone, requiring a ground port that names
+the ground net. Other port nets use their port names, while internal nets use
+hierarchical paths such as ``X1/mid``. Reference designators follow IEEE 315 device
+prefixes (R, C, L, T, D, Q, or U) numbered in bill order, with fields recording the
+instance path and manufacturer part number.
 """
 
 import uuid
@@ -45,46 +43,48 @@ PREFIXES: Final[Mapping[str, str]] = {
     "bsim4": "Q",
     "vbic": "Q",
 }
-"""The prefix of the reference designator of each device's part, the letter IEEE 315
-gives it; any other part's is U."""
+"""Mapping from device model to IEEE 315 reference designator prefix (default U)."""
 
 TWO_PADS: Final[Mapping[str, tuple[str, ...]]] = {"a": ("1",), "b": ("2",)}
-"""The pads of a resistor, a capacitor or an inductor whose part states no pins."""
+"""Default two-pad mapping for passives whose catalog part omits explicit pins."""
 
 _NAMESPACE: Final = uuid.UUID("21d190f3-3f5d-4c5c-a8d6-37c2b6468bba")
-"""The namespace of the identifiers jolty gives footprints, from their instances' paths,
-so a footprint keeps its identifier from one netlist of a component to the next."""
+"""UUIDv5 namespace for deterministic footprint timestamps derived from paths."""
 
 
 class Node(ir.FrozenModel):
-    """A footprint's pad, on a net."""
+    """Single footprint pad connection attached to a net."""
 
-    reference: str = Field(description="The footprint's designator, such as R1.")
-    pad: str = Field(description="The pad's number in the footprint, such as 1.")
+    reference: str = Field(
+        description="Reference designator of the footprint, such as R1."
+    )
+    pad: str = Field(description="Pad identifier on the footprint, such as 1.")
     terminals: tuple[str, ...] = Field(
-        description="The terminals or ports of the instance it joins, such as base."
+        description="Instance terminal or port names mapped to this pad, such as base."
     )
 
 
 class Net(ir.FrozenModel):
-    """A net, and the pads it joins."""
+    """Named board net listing all connected footprint pads."""
 
     name: str
     nodes: tuple[Node, ...]
 
 
 class Footprint(ir.FrozenModel):
-    """The footprint of the part that builds an instance."""
+    """Board footprint representing the catalog part for one circuit instance."""
 
-    reference: str = Field(description="Its reference designator, such as R1.")
+    reference: str = Field(
+        description="Reference designator assigned to the footprint, such as R1."
+    )
     instance: str = Field(
-        description="The path of the instance it builds, in the component written."
+        description="Hierarchical path of the instance inside the exported component."
     )
     part: catalog.Part
 
     @property
     def value(self) -> str:
-        """Its part's value and unit, such as 4.7 kΩ, or else its maker's number."""
+        """Formatted nominal part value (such as 4.7 kΩ), or part number."""
         part = self.part
         if part.kind is not None and part.value is not None:
             return format_si(part.value, catalog.SYMBOLS[part.kind])
@@ -92,13 +92,15 @@ class Footprint(ir.FrozenModel):
 
 
 class Netlist(ir.FrozenModel):
-    """The footprints of a component's parts, and the nets that join their pads."""
+    """KiCad board netlist containing footprints and pad-level nets."""
 
     footprints: tuple[Footprint, ...]
-    nets: tuple[Net, ...] = Field(description="Its nets, in order of their names.")
+    nets: tuple[Net, ...] = Field(
+        description="Board nets sorted alphabetically by name."
+    )
 
     def text(self) -> str:
-        """The netlist in KiCad's S-expression format, version E."""
+        """Formats the netlist as a KiCad version-E S-expression string."""
         written = _List(
             "export",
             (
@@ -117,11 +119,11 @@ class Netlist(ir.FrozenModel):
         return "\n".join(written.lines("")) + "\n"
 
     def save(self, path: Path) -> None:
-        """Writes the netlist to `path`, as KiCad's PCB editor imports it."""
+        """Writes the formatted KiCad netlist to `path`."""
         path.write_text(self.text(), encoding="utf-8")
 
     def describe(self) -> str:
-        """The netlist as text: its size, then a line per footprint."""
+        """Formats a plain-text summary of netlist counts and footprints."""
         head = f"{len(self.footprints)} footprints on {len(self.nets)} nets"
         rows = [
             f"  {each.reference}: {each.instance}, {each.value}, {each.part.footprint}"
@@ -131,15 +133,14 @@ class Netlist(ir.FrozenModel):
 
 
 def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> Netlist:
-    """The KiCad netlist of the component at `instance`, the top by default.
+    """Builds a KiCad netlist for the component at `instance` (top level by default).
 
     Raises:
-        JoltyError: When no component instance is at `instance`.
-        NetlistError: When the component has no ground port, or an instance cannot be
-            written: no part of `parts` builds it, or its part states no footprint, or
-            its part's pins name a terminal it lacks or one on a thermal net, leave out
-            one on an electrical net, or put a pad on two nets. It names every one.
-        ElaborationError: When the component does not elaborate alone.
+        JoltyError: When no component instance exists at `instance`.
+        NetlistError: When the component lacks a ground port, or when any instance
+            lacks a matching part, footprint, or valid electrical pin mapping.
+            The exception lists every problem found.
+        ElaborationError: When the target component fails standalone elaboration.
     """
     component = _component_at(circuit, instance)
     alone = circuit.model_copy(update={"top": component})
@@ -185,10 +186,10 @@ def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> 
 
 
 def _component_at(circuit: ir.Circuit, instance: str) -> str:
-    """The component the instance at `instance` places, or the top for the empty path.
+    """Resolves the component definition name at `instance`, or top when empty.
 
     Raises:
-        JoltyError: When no component instance is at `instance`.
+        JoltyError: When no component instance exists at `instance`.
     """
     if not instance:
         return circuit.top
@@ -201,18 +202,18 @@ def _component_at(circuit: ir.Circuit, instance: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Reached:
-    """Where the terminals of an elaborated component are."""
+    """Elaborated net lookup helper for terminals inside a standalone component."""
 
     simulation: Simulation
-    """The component elaborated alone."""
+    """Standalone elaboration of the exported component."""
     ground: str
-    """The name of its ground net."""
+    """Name of the component ground net."""
 
     def net(self, path: str, terminal: str) -> str:
-        """The name of the net `terminal` of the instance at `path` is on.
+        """Returns the net name connected to `terminal` on the instance at `path`.
 
         Raises:
-            KeyError: When the instance has no such terminal on a net.
+            KeyError: When the instance terminal is not connected to any net.
         """
         found = self.simulation.joined(path, terminal)
         if found is None:
@@ -221,7 +222,7 @@ class _Reached:
         return self.ground if found.node is None else found.node
 
     def thermal(self, path: str, terminal: str) -> bool:
-        """Whether `terminal` of the instance at `path` is on a thermal net."""
+        """Returns whether `terminal` on the instance at `path` is on a thermal net."""
         found = self.simulation.joined(path, terminal)
         return found is not None and found.thermal
 
@@ -229,9 +230,9 @@ class _Reached:
 def _pads(
     path: str, placed: ir.Instance, part: catalog.Part, reached: _Reached
 ) -> dict[str, tuple[str, tuple[str, ...]]] | list[str]:
-    """Each pad of `part`, which builds `placed` at `path`, its net and its terminals.
+    """Maps each pad of `part` for `placed` at `path` to its net and terminal names.
 
-    Or why its pads cannot be found: every problem of its part's footprint and pins.
+    Returns a list of error strings when footprint or pin definitions are invalid.
     """
     electrical = [
         terminal for terminal in placed.terminals if not reached.thermal(path, terminal)
@@ -256,7 +257,7 @@ def _pads(
 
 
 def _pins(placed: ir.Instance, part: catalog.Part) -> catalog.Pins | None:
-    """The pins of `part`, or two pads for a resistor, capacitor or inductor's."""
+    """Returns explicit pins for `part`, or default two-pad pins for passive devices."""
     if part.pins is not None:
         return part.pins
     if isinstance(placed.of, ir.DeviceOf) and placed.of.model in catalog.VALUED:
@@ -267,10 +268,10 @@ def _pins(placed: ir.Instance, part: catalog.Part) -> catalog.Pins | None:
 def _unpinned(
     placed: ir.Instance, pins: catalog.Pins, electrical: Iterable[str]
 ) -> list[str]:
-    """What is wrong with `pins` for the terminals of `placed`.
+    """Validates `pins` against the terminals of `placed` and its `electrical` subset.
 
-    The pins name a terminal it lacks or one on a thermal net, or leave out one of
-    `electrical`, its terminals on no thermal net.
+    Reports unknown terminals, thermal terminals assigned to pads, and omitted
+    electrical terminals.
     """
     problems = []
     for terminal in pins:
@@ -290,16 +291,16 @@ def _unpinned(
 
 @dataclass(frozen=True, slots=True)
 class _List:
-    """An S-expression: a keyword, then its items, each a string or a list."""
+    """S-expression node consisting of a keyword and string or nested list items."""
 
     keyword: str
     items: tuple[str | _List, ...]
 
     def lines(self, indent: str) -> list[str]:
-        """The list written from `indent`, as lines.
+        """Formats the S-expression as indented lines starting from `indent`.
 
-        It takes one line when no item holds a list; otherwise its keyword and strings
-        take the first, and each list lines of its own, one level deeper.
+        Flat expressions stay on one line; nested expressions place the keyword and
+        string atoms on the first line and indent each child list by two spaces.
         """
         if all(isinstance(item, str) or item.flat() for item in self.items):
             return [indent + self.inline()]
@@ -317,11 +318,11 @@ class _List:
         return lines
 
     def flat(self) -> bool:
-        """Whether every item is a string."""
+        """Returns whether every item in the S-expression is a string atom."""
         return all(isinstance(item, str) for item in self.items)
 
     def inline(self) -> str:
-        """The list on one line."""
+        """Formats the S-expression onto a single line."""
         items = (
             _quoted(item) if isinstance(item, str) else item.inline()
             for item in self.items
@@ -330,7 +331,7 @@ class _List:
 
 
 def _quoted(text: str) -> str:
-    """`text` as a quoted string, its backslashes and quotes escaped."""
+    """Returns `text` wrapped in double quotes with escaped quotes and newlines."""
     escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     return f'"{escaped}"'
 

@@ -15,9 +15,7 @@ from typing import Final, Literal
 from jolty.units import CURRENT, DIMENSIONLESS, TEMPERATURE, VOLTAGE, Dimension
 
 type Nature = Literal["voltage", "current", "temperature", "state"]
-"""What an unknown is: a node's voltage, a branch's current, a thermal net's
-temperature above the ambient, in kelvins, or a device's dimensionless state, such as a
-memristor's."""
+"""Physical nature of an unknown: voltage, current, temperature rise, or state."""
 
 DIMENSIONS: Final[Mapping[Nature, Dimension]] = MappingProxyType(
     {
@@ -27,7 +25,7 @@ DIMENSIONS: Final[Mapping[Nature, Dimension]] = MappingProxyType(
         "state": DIMENSIONLESS,
     }
 )
-"""The physical dimension of each unknown nature."""
+"""Physical dimension of each unknown nature."""
 
 SYMBOLS: Final[Mapping[Nature, str]] = MappingProxyType(
     {
@@ -37,14 +35,14 @@ SYMBOLS: Final[Mapping[Nature, str]] = MappingProxyType(
         "state": "",
     }
 )
-"""The SI base unit symbol of each unknown nature, empty for a dimensionless state."""
+"""SI base unit symbol of each unknown nature (empty for dimensionless states)."""
 
 MAX_SERIES: Final = 8
 """Default maximum number of unknowns returned by `default_traces`."""
 
 
 def parse_nature(name: str) -> Nature:
-    """The unknown nature named `name`, or ``"state"`` when none matches."""
+    """Parses `name` into a known unknown nature, defaulting to ``"state"``."""
     match name:
         case "voltage" | "current" | "temperature":
             return name
@@ -54,7 +52,7 @@ def parse_nature(name: str) -> Nature:
 
 @dataclass(frozen=True, slots=True)
 class Unknown:
-    """An unknown solved for: a voltage, a current, a temperature or a state."""
+    """Named circuit unknown solved for: voltage, current, temperature, or state."""
 
     name: str
     nature: Nature

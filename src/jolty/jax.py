@@ -1,24 +1,24 @@
 # Copyright 2026 Maxence Faldor
-"""Run and differentiate circuits inside JAX (`jit`, `grad`, `vjp`, `vmap`).
+"""JAX integration for circuit simulation and differentiation (`jit`, `grad`, `vmap`).
 
-[`function`][jolty.jax.function] wraps a circuit's analysis as a JAX function of a
-nested mapping of parameters, the same mapping
-[`jolty.function`][jolty.simulate.function] takes, to a dictionary of outputs. Each
-call runs as a batch of [`Function.batch`][jolty.simulate.Function.batch], inside
-`jax.pure_callback`, on the CPU outside XLA's compiled code, so `jax.vmap` maps to one
-batch of the engine across its threads, and a mapped call finds, row by row, the bits
-of an unmapped one. Its reverse mode, registered with `jax.custom_vjp`, is
-[`Function.batch_vjp`][jolty.simulate.Function.batch_vjp]'s pullback: one transposed
-solve at each point of a run however many the parameters, for operating points, DC
-sweeps, small-signal responses, transients and periodic steady states.
+[`function`][jolty.jax.function] wraps a circuit analysis as a JAX callable taking the
+same nested parameter mapping as [`jolty.function`][jolty.simulate.function] and
+returning a dictionary of output arrays. Each invocation runs through
+[`Function.batch`][jolty.simulate.Function.batch] inside `jax.pure_callback` on the CPU
+so `jax.vmap` maps directly to a multithreaded engine batch with bit-exact results.
 
-The forward pass of a derivative keeps its runs' pullbacks for the backward pass that
-follows, the most recent `saved_pullbacks` forward passes' of each function; a
-backward pass whose pullbacks are no longer kept runs its forward pass again, which
-finds the same bits. Only the first order of reverse mode is supported: `jax.jvp` and
-derivatives of derivatives, such as `jax.hessian`, are refused.
+Reverse-mode differentiation uses `jax.custom_vjp` backed by
+[`Function.batch_vjp`][jolty.simulate.Function.batch_vjp], requiring one transposed
+solve per analysis point regardless of parameter count. Supported analyses are
+operating points, DC sweeps, small-signal responses, transients, and periodic steady
+states.
 
-Install the optional extra with ``pip install 'jolty[jax]'`` to use this module.
+Forward passes cache pullbacks for the most recent `saved_pullbacks` calls per
+function; evicted entries recompute the forward pass bit-identically during the
+backward pass. Only first-order reverse mode is supported (`jax.jvp` and higher-order
+derivatives such as `jax.hessian` are rejected).
+
+Optional installation requires ``pip install 'jolty[jax]'``.
 
 Examples:
     >>> import jax
@@ -77,27 +77,26 @@ from jolty.plan import Ac, Options, PeriodicSteadyState, Transient
 from jolty.simulate import PERIOD, BatchPullback, Differentiable, Function
 
 type JaxParameters = Mapping[str, Mapping[str, ArrayLike]]
-"""Parameters by instance path, then by parameter path, each a real scalar, in SI."""
+"""Nested mapping of instance path to parameter path and real scalar SI value."""
 
 type JaxOutputs = dict[str, jax.Array]
-"""Each output of a JAX-wrapped analysis, by its name."""
+"""Dictionary mapping each output name of a JAX-wrapped analysis to a JAX array."""
 
 type _Name = tuple[str, str]
-"""A parameter, as its instance's path and its own."""
+"""Parameter identifier pairing an instance path with a parameter path."""
 
 type _Structure = tuple[tuple[str, tuple[str, ...]], ...]
-"""The parameters a call names: each instance's path, with its parameters' paths, both
-sorted, an instance named with none among them."""
+"""Canonical sorted tuple of instance paths and their sorted parameter-path tuples."""
 
 _HANDLE_INTEGERS: Final = 2
-"""The integers of a run's handle on its pullback: its forward pass's key, its row."""
+"""Number of integer fields in a pullback handle: forward-pass key and row index."""
 
 
 @dataclass(frozen=True, slots=True)
 class _Dtypes:
-    """The dtypes JAX computes in, those of 64 bits with `jax_enable_x64`, else 32.
+    """Active JAX dtypes (64-bit when `jax_enable_x64` is enabled, else 32-bit).
 
-    The real numbers', the outputs', complex over frequency, and the handles'.
+    Stores the real scalar dtype, output dtype (complex for AC), and handle dtype.
     """
 
     real: np.dtype
@@ -106,7 +105,7 @@ class _Dtypes:
 
 
 class _Saved:
-    """The pullbacks of the latest forward passes, up to `max_entries`."""
+    """Bounded LRU cache storing pullbacks from the most recent forward passes."""
 
     def __init__(self, max_entries: int) -> None:
         self._max_entries = max_entries
@@ -115,9 +114,9 @@ class _Saved:
         self._lock = threading.Lock()
 
     def keep(self, pullback: BatchPullback, bound: int) -> int:
-        """Keeps `pullback`, the oldest dropped past `max_entries`, and gives its key.
+        """Stores `pullback`, evicts old entries past `max_entries`, and returns a key.
 
-        The key is below `bound`, the largest a handle's integers hold.
+        Returned keys wrap modulo `bound` to fit within the handle integer dtype.
         """
         with self._lock:
             key = next(self._keys) % bound
@@ -128,18 +127,17 @@ class _Saved:
             return key
 
     def get(self, key: int) -> BatchPullback | None:
-        """The pullback kept at `key`, if it still is."""
+        """Returns the cached pullback for `key`, or ``None`` if evicted."""
         with self._lock:
             return self._kept.get(key)
 
 
 def _static(target: Function) -> None:
-    """Checks that each output of `target`'s batches has a fixed number of points.
+    """Validates that every output batch from `target` has a static point count.
 
     Raises:
-        ValueError: For a transient or a driven periodic steady state without
-            breakpoints, the times its outputs are read at, or for a circuit of a
-            foundry's devices, which the engine does not run.
+        ValueError: When a transient or driven periodic steady state omits
+            breakpoints, or when the circuit contains foundry devices.
     """
     analysis = target.analysis
     driven = isinstance(analysis, Transient) or (
@@ -147,8 +145,8 @@ def _static(target: Function) -> None:
     )
     if driven and not analysis.breakpoints:
         message = (
-            f"a JAX {type(analysis).__name__} reads its outputs at its `breakpoints`, "
-            "so it needs some"
+            f"a JAX {type(analysis).__name__} requires non-empty `breakpoints` to "
+            "sample outputs"
         )
         raise ValueError(message)
     if target.elaborated.simulator().foundry_devices:
@@ -159,12 +157,12 @@ def _static(target: Function) -> None:
 
 
 def _flatten(parameters: JaxParameters) -> tuple[_Structure, list[jax.Array]]:
-    """The structure of `parameters`, and each parameter's scalar, in its order.
+    """Extracts the canonical structure and flat scalar list from `parameters`.
 
     Raises:
         TypeError: When `parameters` is not a two-level mapping of strings to real
-            scalars, `bool` and `complex` refused.
-        ValueError: When a parameter is not a scalar.
+            scalars (`bool` and `complex` are rejected).
+        ValueError: When any parameter leaf is not a scalar.
     """
     if not isinstance(parameters, Mapping):
         message = f"parameters are a mapping, not {type(parameters).__name__}"
@@ -197,13 +195,13 @@ def _flatten(parameters: JaxParameters) -> tuple[_Structure, list[jax.Array]]:
 
 
 def _rows(theta: npt.ArrayLike) -> tuple[npt.NDArray[np.float64], tuple[int, ...]]:
-    """The rows of a batch of parameter vectors, a row per run, and its batch shape."""
+    """Reshapes a batched parameter array into a 2-D row matrix and batch shape."""
     array = np.asarray(theta, dtype=np.float64)
     shape = array.shape[:-1]
     return array.reshape(math.prod(shape), array.shape[-1]), shape
 
 
-def _pulled(  # noqa: PLR0913 - a backward pass reads its forward pass's whole state
+def _pulled(  # noqa: PLR0913 - backward pass reads full forward-pass state
     target: Function,
     names: tuple[_Name, ...],
     saved: _Saved,
@@ -212,10 +210,10 @@ def _pulled(  # noqa: PLR0913 - a backward pass reads its forward pass's whole s
     held: npt.NDArray[np.integer],
     cotangent: Mapping[str, npt.NDArray[np.generic]],
 ) -> npt.NDArray[np.float64]:
-    """Each row's value of `cotangent` on each parameter of `names`, row by parameter.
+    """Computes parameter gradients by pulling `cotangent` back across every row.
 
-    Row `i`, the parameters `rows[i]`, holds the handle `held[i]` on its pullback; the
-    rows of a forward pass whose pullback is no longer kept run it again, as one batch.
+    Each row `rows[i]` references a cached pullback through `held[i]`. Rows whose
+    forward-pass pullback was evicted re-run the forward pass together as one batch.
     """
     pulled = np.zeros((len(rows), len(names)))
     for key in np.unique(held[:, 0]):
@@ -237,10 +235,10 @@ def _runner(
     dtypes: _Dtypes,
     saved: _Saved,
 ) -> jax.custom_vjp[JaxOutputs]:
-    """The `custom_vjp` function of the parameter vector of `names` to the outputs.
+    """Builds the `jax.custom_vjp` callable mapping a parameter vector to outputs.
 
-    `jax.pure_callback` returns what its callback does, shaped as its specification
-    says, which its type does not state, so each call's result is cast to it.
+    Outputs from `jax.pure_callback` match the declared `ShapeDtypeStruct` layout and
+    are explicitly cast to satisfy static type checking.
     """
     shapes = {
         name: jax.ShapeDtypeStruct((target.points,), dtypes.output)
@@ -318,31 +316,30 @@ def function(
     *,
     saved_pullbacks: int = 16,
 ) -> Callable[[JaxParameters], JaxOutputs]:
-    """A JAX function that runs and differentiates `analysis` of a circuit.
+    """Wraps a circuit `analysis` as a differentiable JAX function.
 
-    It takes a mapping ``{instance: {parameter: value}}`` of real scalars, as
-    [`jolty.function`][jolty.simulate.function] does, and gives each output, by its
-    name, at the analysis's [`points`][jolty.simulate.Function.points]: an operating
-    point's one, a DC sweep's levels, a response's frequencies, in complex phasors, and
-    a transient's or a driven periodic steady state's `breakpoints`, which it needs; an
-    oscillator's outputs hold no point, and its period, a scalar, is under
-    [`PERIOD`][jolty.simulate.PERIOD]. Over frequency, a real loss's cotangent on the
-    phasors is JAX's own, and the gradient the real part of their pullback.
+    The returned callable accepts ``{instance: {parameter: value}}`` mappings of real
+    scalars matching [`jolty.function`][jolty.simulate.function] and returns outputs at
+    [`Function.points`][jolty.simulate.Function.points]. Output points correspond to
+    one operating point, DC sweep levels, AC complex phasor frequencies, or transient
+    and driven periodic steady-state `breakpoints`. Autonomous oscillators return
+    zero-point outputs plus a scalar period under [`PERIOD`][jolty.simulate.PERIOD].
+    For AC analyses, gradients take the real part of the pullback with respect to JAX
+    complex cotangents.
 
-    It runs under `jax.jit`, `jax.grad`, `jax.value_and_grad`, `jax.vjp`,
-    `jax.jacrev`, `jax.remat` and `jax.vmap`, empty and nested batches included, in
-    `float64` with `jax_enable_x64` and in `float32` without, and runs each call,
-    mapped or not, as one batch of [`Function.batch`][jolty.simulate.Function.batch].
-    A derivative's forward pass keeps its runs' pullbacks for its backward pass, the
-    latest `saved_pullbacks` forward passes' at most, and else runs it again. An
-    exception of the engine within a call reaches the caller as JAX's callbacks raise
-    it, its name and message kept.
+    The callable supports `jax.jit`, `jax.grad`, `jax.value_and_grad`, `jax.vjp`,
+    `jax.jacrev`, `jax.remat`, and `jax.vmap` (including empty and nested batches).
+    Computation uses `float64` when `jax_enable_x64` is enabled and `float32`
+    otherwise, dispatching each call as one
+    [`Function.batch`][jolty.simulate.Function.batch]. Forward passes cache up to
+    `saved_pullbacks` pullbacks before recomputing on backward passes, and engine
+    exceptions propagate through JAX callbacks with their original type and message.
 
     Raises:
-        ElaborationError: When the circuit does not elaborate, or, at the first call
-            with them, naming every parameter its devices do not write.
-        ValueError: For a circuit of a foundry's devices, or a transient or a driven
-            periodic steady state without breakpoints.
+        ElaborationError: When the circuit fails to elaborate or the first call
+            references parameters not present on circuit devices.
+        ValueError: When the circuit contains foundry devices or a transient or driven
+            periodic steady state omits `breakpoints`.
     """
     target = Function(circuit_or_top, analysis, options)
     _static(target)
