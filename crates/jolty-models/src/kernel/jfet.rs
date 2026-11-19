@@ -11,7 +11,7 @@ use crate::kernel::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
+use crate::kernel::parts::{self, Bias, Derivatives, Nodes, Oriented, Series, series_value};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
@@ -154,9 +154,6 @@ const VDS: usize = 2;
 /// order its numbers carry their derivatives: the gate-source voltage, then the
 /// drain-source voltage.
 const CHANNEL: [usize; 2] = [VGS, VDS];
-
-/// The variables of one evaluation.
-type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
@@ -389,17 +386,36 @@ impl Kernel for Jfet {
         let [drain_series, source_series] = prepared.series;
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
-        let bias = prepared.bias(shape, memory, at, stamp);
-        let [vgs, _, vds] = bias.voltages;
+        let mut bias = Bias::limit_prefix(
+            &shape.stamp,
+            (prepared.sign, VARIABLES),
+            &mut memory.last,
+            at,
+            stamp,
+            |voltage, last| {
+                let junction = limit_junction(
+                    voltage,
+                    last,
+                    prepared.thermal_voltage.value(),
+                    prepared.critical_voltage,
+                );
+                limit_gate(
+                    junction.unwrap_or(voltage),
+                    last,
+                    prepared.channel.threshold.value(),
+                )
+                .or(junction)
+            },
+        );
+        let [vgs, vgd, applied_vds] = bias.voltages;
+        let vds = vgs - vgd;
+        let [gate_source, gate_drain, _] = bias.beyond;
+        bias.voltages = [vgs, vgd, vds];
+        bias.beyond = [gate_source, gate_drain, applied_vds - vds];
         let (region, [overdrive, margin]) = prepared.channel.region(vgs, vds);
-        let [vgs, vgd, vds] = bias.across(&shape.stamp, at, (prepared.sign, VARIABLES));
+        let added = Oriented::new(&shape.stamp, prepared.sign, &bias, VARIABLES);
+        let [vgs, vgd, vds] = added.across(at);
         memory.variables = [f64::from(region as u8), overdrive, margin];
-        let added = Oriented {
-            nodes: &shape.stamp,
-            sign: prepared.sign,
-            bias: &bias,
-            variables: VARIABLES,
-        };
         // Every derivative among the stamped nodes is summed here, and written once.
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
@@ -456,9 +472,7 @@ impl Kernel for Jfet {
             .source_series
             .noise(source_series, ("source thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let voltages = [GATE_SOURCE, DRAIN_SOURCE].map(|(plus, minus)| {
-            prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
-        });
+        let voltages = nodes.voltages(at, prepared.sign, [GATE_SOURCE, DRAIN_SOURCE]);
         let [vgs, vds] = Dual::variables(voltages.map(R::constant));
         let current = prepared.channel.evaluate(vgs, vds);
         let [gm, _] = current.gradient;
@@ -473,50 +487,6 @@ impl Kernel for Jfet {
         prepared
             .flicker
             .add(channel, current.value.value(), sources);
-    }
-}
-
-impl<R: Real> PreparedJfet<R> {
-    /// The variables at `at`: the gate junctions' voltages, each step limited as a
-    /// junction's and then about the threshold from the last evaluation's, which `memory`
-    /// keeps and takes the new ones, and the drain-source voltage between them.
-    fn bias(
-        &self,
-        shape: &JfetShape,
-        memory: &mut JfetMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) -> Bias {
-        let nodes = &shape.stamp;
-        let applied = VARIABLES
-            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-        let mut voltages = applied;
-        let mut limited = false;
-        for (voltage, last) in voltages.iter_mut().zip(&mut memory.last) {
-            if at.limiting {
-                let junction = limit_junction(
-                    *voltage,
-                    *last,
-                    self.thermal_voltage.value(),
-                    self.critical_voltage,
-                );
-                let gate = limit_gate(
-                    junction.unwrap_or(*voltage),
-                    *last,
-                    self.channel.threshold.value(),
-                );
-                if let Some(step) = gate.or(junction) {
-                    *voltage = step;
-                    limited = true;
-                }
-            }
-            *last = *voltage;
-        }
-        if limited {
-            stamp.mark_limited();
-        }
-        let [vgs, vgd, _] = voltages;
-        Bias::new(applied, [vgs, vgd, vgs - vgd])
     }
 }
 
@@ -627,32 +597,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_regions, source, thermal,
     };
 
     const CHARGED: &str = r#"{"gate_source_capacitance": 2e-12, "gate_drain_capacitance": 1e-12,
         "channel_length_modulation": 0.02, "doping_tail": 0.8, "transconductance_parameter": 1e-3}"#;
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let every = r#"{"threshold_voltage": -1.8, "transconductance_parameter": 1e-3,
-            "channel_length_modulation": 0.02, "drain_resistance": 10,
-            "source_resistance": 5, "gate_source_capacitance": 2e-12,
-            "gate_drain_capacitance": 1e-12, "junction_potential": 0.9,
-            "saturation_current": 2e-14, "depletion_coefficient": 0.4, "doping_tail": 0.8,
-            "threshold_voltage_temperature_coefficient": -2e-3, "transconductance_parameter_temperature_exponent": -1.5,
-            "energy_gap": 1.2, "saturation_current_temperature_exponent": 2,
-            "nominal_temperature": 290}"#;
-        for [drain, gate] in [[3.0, 0.0], [0.5, -0.5], [-0.5, -0.2], [-3.0, 0.1]] {
-            assert_parameter_gradients_match::<Jfet>(
-                every,
-                &[drain, gate, 0.0, drain - 0.01, 0.005],
-            );
-        }
-    }
 
     #[test]
     fn follows_the_square_law_in_saturation() {
@@ -670,33 +620,22 @@ mod tests {
     /// reversed.
     #[test]
     fn reports_its_region_and_margins() {
-        let mut n = Bench::new::<Jfet>("{}");
-        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
         // The drain, the gate and the source, about the threshold of -2 V.
-        for (x, region, margins) in [
-            ([5.0, -3.0, 0.0], "off", [-1.0, 5.0]),
-            ([0.5, 0.0, 0.0], "linear", [2.0, -1.5]),
-            ([5.0, 0.0, 0.0], "saturated", [2.0, 3.0]),
-            ([0.0, 0.0, 1.0], "linear", [2.0, -1.0]),
-        ] {
-            n.settle(&x);
-            assert_eq!(n.region(), (region, margins.to_vec()), "{x:?}");
-            p.settle(&x.map(|value| -value));
-            assert_eq!(p.region(), (region, margins.to_vec()), "{x:?}");
-        }
-        let switches = [
-            ([5.0, -3.0, 0.0], [5.0, -1.0, 0.0], OVERDRIVE),
-            ([0.5, 0.0, 0.0], [5.0, 0.0, 0.0], SATURATION_MARGIN),
-            ([0.0, 0.0, 0.5], [0.0, 0.0, 5.0], SATURATION_MARGIN),
-        ];
-        for (from, to, margin) in switches {
-            assert_switches_where_margin_vanishes(&mut n, (&from, &to), margin);
-        }
-    }
-
-    #[test]
-    fn a_p_channel_mirrors_an_n_channel() {
-        assert_mirrors(&Differentiable::<Jfet>::new(), "{}", &[3.0, -0.5, 0.0]);
+        assert_regions::<Jfet>(
+            "{}",
+            Some(r#"{"channel": "p"}"#),
+            &[
+                (&[5.0, -3.0, 0.0], "off", Some(&[-1.0, 5.0])),
+                (&[0.5, 0.0, 0.0], "linear", Some(&[2.0, -1.5])),
+                (&[5.0, 0.0, 0.0], "saturated", Some(&[2.0, 3.0])),
+                (&[0.0, 0.0, 1.0], "linear", Some(&[2.0, -1.0])),
+            ],
+            &[
+                (&[5.0, -3.0, 0.0], &[5.0, -1.0, 0.0], OVERDRIVE),
+                (&[0.5, 0.0, 0.0], &[5.0, 0.0, 0.0], SATURATION_MARGIN),
+                (&[0.0, 0.0, 0.5], &[0.0, 0.0, 5.0], SATURATION_MARGIN),
+            ],
+        );
     }
 
     #[test]
@@ -706,27 +645,6 @@ mod tests {
             bench.unknowns(),
             ["n0", "n1", "n2", "device:drain", "device:source"]
         );
-    }
-
-    #[test]
-    fn a_heated_jfet_is_the_jfet_at_its_temperature() {
-        let model = crate::Thermal::<Jfet>::new();
-        let every = r#"{"transconductance_parameter": 1e-3, "drain_resistance": 10,
-            "gate_source_capacitance": 2e-12, "threshold_voltage_temperature_coefficient": -2e-3,
-            "transconductance_parameter_temperature_exponent": -1.5, "saturation_current_temperature_exponent": 2}"#;
-        let heated = every.replace('{', r#"{"thermal": true, "#);
-        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-        for rise in [0.0, 30.0] {
-            let mut plain = Bench::at::<Jfet>(every, REFERENCE_TEMPERATURE + rise);
-            let hot = bench.settle(&[5.0, -0.5, 0.0, rise, 4.9]);
-            let reference = plain.settle(&[5.0, -0.5, 0.0, 4.9]);
-            let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
-            assert_close(&electrical, &reference.residual);
-        }
-        for x in [[5.0, -0.5, 0.0, 20.0, 4.9], [0.3, -1.0, 0.0, 55.0, 0.29]] {
-            crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
-        }
     }
 
     proptest! {

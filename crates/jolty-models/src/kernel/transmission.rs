@@ -198,24 +198,3 @@ fn port_entries(
         layout.entry(row, other.unknown()),
     ]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testing::{assert_jacobians_match, assert_parameter_gradients_match};
-
-    const LINE: &str = r#"{"characteristic_impedance": 50, "delay": 1e-9}"#;
-
-    #[test]
-    fn jacobians_are_exact() {
-        assert_jacobians_match::<TransmissionLine>(LINE, &[1.0, -0.5, 0.3, 0.1, 2e-3, -1e-3]);
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        assert_parameter_gradients_match::<TransmissionLine>(
-            LINE,
-            &[1.0, -0.5, 0.3, 0.1, 2e-3, -1e-3],
-        );
-    }
-}

@@ -242,6 +242,10 @@ impl BehavioralShape {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
+        // A voltage source's own branch: its voltage, less the expression's value below.
+        if let Some(branch) = &self.branch {
+            branch.add(at, stamp, branch.voltage(at));
+        }
         let Some(room) = &mut memory.0 else { return };
         self.read(at, &mut room.values);
         if !at.limiting {
@@ -405,6 +409,107 @@ impl BehavioralShape {
 /// The local indices of a behavioral source's output terminals, `positive` and `negative`.
 const OUTPUT: [usize; 2] = [0, 1];
 
+/// How a behavioral kernel drives its output terminals.
+#[derive(Debug, Clone, Copy)]
+enum OutputKind {
+    Current,
+    Voltage,
+    Charge,
+}
+
+impl OutputKind {
+    /// The kind of branch connecting the output terminals.
+    const fn branch(self) -> BranchKind {
+        match self {
+            Self::Current => BranchKind::CurrentSource,
+            Self::Voltage => BranchKind::VoltageSource,
+            Self::Charge => BranchKind::Capacitive,
+        }
+    }
+
+    /// Lays out the shape of a behavioral kernel of this output kind.
+    fn shape(self, behavior: &Behavior, layout: &mut Layout) -> BehavioralShape {
+        let [positive, negative] = OUTPUT;
+        let rows = || vec![(positive, 1.0), (negative, -1.0)];
+        let output = match self {
+            Self::Current => (rows(), false, None),
+            Self::Voltage => {
+                let branch = CurrentBranch::new(layout, "current", OUTPUT);
+                (vec![(branch.unknown(), -1.0)], false, Some(branch))
+            }
+            Self::Charge => (rows(), true, None),
+        };
+        BehavioralShape::new(behavior, layout, output)
+    }
+}
+
+/// Expands `impl Kernel` for a behavioral device kernel.
+macro_rules! behavioral_kernel {
+    (
+        kernel: $kernel:ty,
+        name: $name:literal,
+        kind: $kind:expr,
+    ) => {
+        impl Kernel for $kernel {
+            const NAME: &'static str = $name;
+            type Parameters<R: Real> = BehavioralParameters;
+            type Shape = BehavioralShape;
+            type Prepared<R: Real> = Expression;
+            type Memory = BehavioralMemory;
+
+            fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
+                parameters.expression.interface($kind.branch())
+            }
+
+            fn prepare<R: Real>(
+                parameters: &BehavioralParameters,
+                _: R,
+            ) -> Result<Expression, ParameterError> {
+                Ok(parameters.expression.expression.clone())
+            }
+
+            fn layout<R: Real>(
+                parameters: &BehavioralParameters,
+                _: &Expression,
+                layout: &mut Layout,
+            ) -> Result<BehavioralShape, ParameterError> {
+                Ok($kind.shape(&parameters.expression, layout))
+            }
+
+            fn memory<R: Real>(
+                shape: &BehavioralShape,
+                expression: &Expression,
+            ) -> BehavioralMemory {
+                shape.memory(expression)
+            }
+
+            fn evaluate<R: Real>(
+                shape: &BehavioralShape,
+                expression: &Expression,
+                memory: &mut BehavioralMemory,
+                at: &Local<'_>,
+                stamp: &mut Stamp<'_, R>,
+            ) {
+                shape.add(expression, memory, at, stamp);
+            }
+
+            fn choices<R: Real>(
+                shape: &BehavioralShape,
+                expression: &Expression,
+                memory: &mut BehavioralMemory,
+                at: &Local<'_>,
+                found: &mut Vec<Choice>,
+            ) {
+                shape.choices(expression, memory, at, found);
+            }
+
+            fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
+                shape.reads_time()
+            }
+        }
+    };
+}
+
 /// A current source whose current follows an expression of the voltages and currents it
 /// reads: see [`Behavior`].
 ///
@@ -412,65 +517,10 @@ const OUTPUT: [usize; 2] = [0, 1];
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralCurrentSource;
 
-impl Kernel for BehavioralCurrentSource {
-    const NAME: &'static str = "behavioral_current_source";
-    type Parameters<R: Real> = BehavioralParameters;
-    type Shape = BehavioralShape;
-    type Prepared<R: Real> = Expression;
-    type Memory = BehavioralMemory;
-
-    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
-        parameters.expression.interface(BranchKind::CurrentSource)
-    }
-
-    fn prepare<R: Real>(
-        parameters: &BehavioralParameters,
-        _: R,
-    ) -> Result<Expression, ParameterError> {
-        Ok(parameters.expression.expression.clone())
-    }
-
-    fn layout<R: Real>(
-        parameters: &BehavioralParameters,
-        _: &Expression,
-        layout: &mut Layout,
-    ) -> Result<BehavioralShape, ParameterError> {
-        let [positive, negative] = OUTPUT;
-        let rows = vec![(positive, 1.0), (negative, -1.0)];
-        Ok(BehavioralShape::new(
-            &parameters.expression,
-            layout,
-            (rows, false, None),
-        ))
-    }
-
-    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
-        shape.memory(expression)
-    }
-
-    fn evaluate<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) {
-        shape.add(expression, memory, at, stamp);
-    }
-
-    fn choices<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        found: &mut Vec<Choice>,
-    ) {
-        shape.choices(expression, memory, at, found);
-    }
-
-    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
-        shape.reads_time()
-    }
+behavioral_kernel! {
+    kernel: BehavioralCurrentSource,
+    name: "behavioral_current_source",
+    kind: OutputKind::Current,
 }
 
 /// A voltage source whose voltage follows an expression of the voltages and currents it
@@ -481,69 +531,10 @@ impl Kernel for BehavioralCurrentSource {
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralVoltageSource;
 
-impl Kernel for BehavioralVoltageSource {
-    const NAME: &'static str = "behavioral_voltage_source";
-    type Parameters<R: Real> = BehavioralParameters;
-    type Shape = BehavioralShape;
-    type Prepared<R: Real> = Expression;
-    type Memory = BehavioralMemory;
-
-    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
-        parameters.expression.interface(BranchKind::VoltageSource)
-    }
-
-    fn prepare<R: Real>(
-        parameters: &BehavioralParameters,
-        _: R,
-    ) -> Result<Expression, ParameterError> {
-        Ok(parameters.expression.expression.clone())
-    }
-
-    fn layout<R: Real>(
-        parameters: &BehavioralParameters,
-        _: &Expression,
-        layout: &mut Layout,
-    ) -> Result<BehavioralShape, ParameterError> {
-        let branch = CurrentBranch::new(layout, "current", OUTPUT);
-        let rows = vec![(branch.unknown(), -1.0)];
-        Ok(BehavioralShape::new(
-            &parameters.expression,
-            layout,
-            (rows, false, Some(branch)),
-        ))
-    }
-
-    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
-        shape.memory(expression)
-    }
-
-    fn evaluate<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) {
-        // The branch's voltage, less the expression's value, which the shape adds itself.
-        if let Some(branch) = &shape.branch {
-            branch.add(at, stamp, branch.voltage(at));
-        }
-        shape.add(expression, memory, at, stamp);
-    }
-
-    fn choices<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        found: &mut Vec<Choice>,
-    ) {
-        shape.choices(expression, memory, at, found);
-    }
-
-    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
-        shape.reads_time()
-    }
+behavioral_kernel! {
+    kernel: BehavioralVoltageSource,
+    name: "behavioral_voltage_source",
+    kind: OutputKind::Voltage,
 }
 
 /// A capacitor whose charge follows an expression of the voltages and currents it reads:
@@ -556,65 +547,10 @@ impl Kernel for BehavioralVoltageSource {
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralCapacitor;
 
-impl Kernel for BehavioralCapacitor {
-    const NAME: &'static str = "behavioral_capacitor";
-    type Parameters<R: Real> = BehavioralParameters;
-    type Shape = BehavioralShape;
-    type Prepared<R: Real> = Expression;
-    type Memory = BehavioralMemory;
-
-    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
-        parameters.expression.interface(BranchKind::Capacitive)
-    }
-
-    fn prepare<R: Real>(
-        parameters: &BehavioralParameters,
-        _: R,
-    ) -> Result<Expression, ParameterError> {
-        Ok(parameters.expression.expression.clone())
-    }
-
-    fn layout<R: Real>(
-        parameters: &BehavioralParameters,
-        _: &Expression,
-        layout: &mut Layout,
-    ) -> Result<BehavioralShape, ParameterError> {
-        let [positive, negative] = OUTPUT;
-        let rows = vec![(positive, 1.0), (negative, -1.0)];
-        Ok(BehavioralShape::new(
-            &parameters.expression,
-            layout,
-            (rows, true, None),
-        ))
-    }
-
-    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
-        shape.memory(expression)
-    }
-
-    fn evaluate<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) {
-        shape.add(expression, memory, at, stamp);
-    }
-
-    fn choices<R: Real>(
-        shape: &BehavioralShape,
-        expression: &Expression,
-        memory: &mut BehavioralMemory,
-        at: &Local<'_>,
-        found: &mut Vec<Choice>,
-    ) {
-        shape.choices(expression, memory, at, found);
-    }
-
-    fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
-        shape.reads_time()
-    }
+behavioral_kernel! {
+    kernel: BehavioralCapacitor,
+    name: "behavioral_capacitor",
+    kind: OutputKind::Charge,
 }
 
 #[cfg(test)]

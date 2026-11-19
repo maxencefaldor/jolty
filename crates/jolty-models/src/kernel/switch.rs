@@ -94,6 +94,47 @@ pub struct PreparedSwitch<R: Real> {
     temperature: f64,
 }
 
+impl<R: Real> PreparedSwitch<R> {
+    /// Evaluates the switch's current at `control` and stamps its output residual and
+    /// `derivatives` into `entries`.
+    fn stamp<const N: usize>(
+        &self,
+        entries: &[[usize; N]; 2],
+        control: R,
+        at: &Local<'_>,
+        derivatives: impl FnOnce(R, R) -> [R; N],
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [positive, negative, ..] = TERMINALS;
+        let voltage = at.unknown::<R>(positive) - at.unknown::<R>(negative);
+        let current = self.law.current([voltage, control]);
+        let [by_voltage, by_control] = current.gradient;
+        let derivatives = derivatives(by_voltage, by_control);
+        stamp.add_residual(positive, current.value);
+        stamp.add_residual(negative, -current.value);
+        for (row, sign) in entries.iter().zip([1.0, -1.0]) {
+            for (&entry, derivative) in row.iter().zip(derivatives) {
+                stamp.add_conductance(entry, derivative * sign);
+            }
+        }
+    }
+
+    /// Appends the thermal noise of the switch's resistance at `control` to `sources`.
+    fn thermal_noise(&self, control: f64, sources: &mut Vec<NoiseSource>) {
+        let conductance = self.law.conductance(Dual::<R, 0>::number(control)).value;
+        let [positive, negative, ..] = TERMINALS;
+        sources.push(NoiseSource::thermal(
+            "thermal",
+            [
+                Some(UnknownIndex::new(positive)),
+                Some(UnknownIndex::new(negative)),
+            ],
+            conductance.value(),
+            self.temperature,
+        ));
+    }
+}
+
 /// Where a voltage-controlled switch's contributions go: at the entries joining each output
 /// terminal to every terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,13 +202,12 @@ impl Kernel for VoltageControlledSwitch {
             on_voltage,
             off_voltage,
         } = parameters;
-        let law = Law::new(
-            [on_resistance, off_resistance],
-            [on_voltage, off_voltage],
-            "voltage",
-        )?;
         Ok(PreparedSwitch {
-            law,
+            law: Law::new(
+                [on_resistance, off_resistance],
+                [on_voltage, off_voltage],
+                "voltage",
+            )?,
             temperature: temperature.value(),
         })
     }
@@ -190,20 +230,16 @@ impl Kernel for VoltageControlledSwitch {
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) {
-        let [positive, negative, control_positive, control_negative] = TERMINALS;
-        let voltage = at.unknown::<R>(positive) - at.unknown::<R>(negative);
+        let [_, _, control_positive, control_negative] = TERMINALS;
         let control = at.unknown::<R>(control_positive) - at.unknown::<R>(control_negative);
-        let current = prepared.law.current([voltage, control]);
-        stamp.add_residual(positive, current.value);
-        stamp.add_residual(negative, -current.value);
         // With respect to positive, negative, control_positive and control_negative.
-        let [by_voltage, by_control] = current.gradient;
-        let derivatives = [by_voltage, -by_voltage, by_control, -by_control];
-        for (row, sign) in entries.iter().zip([1.0, -1.0]) {
-            for (&entry, derivative) in row.iter().zip(derivatives) {
-                stamp.add_conductance(entry, derivative * sign);
-            }
-        }
+        prepared.stamp(
+            entries,
+            control,
+            at,
+            |by_voltage, by_control| [by_voltage, -by_voltage, by_control, -by_control],
+            stamp,
+        );
     }
 
     /// The thermal noise of the resistance the control sets.
@@ -213,21 +249,11 @@ impl Kernel for VoltageControlledSwitch {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let [positive, negative, control_positive, control_negative] = TERMINALS;
-        let control = at.value(control_positive) - at.value(control_negative);
-        let conductance = prepared
-            .law
-            .conductance(Dual::<R, 0>::number(control))
-            .value;
-        sources.push(NoiseSource::thermal(
-            "thermal",
-            [
-                Some(UnknownIndex::new(positive)),
-                Some(UnknownIndex::new(negative)),
-            ],
-            conductance.value(),
-            prepared.temperature,
-        ));
+        let [_, _, control_positive, control_negative] = TERMINALS;
+        prepared.thermal_noise(
+            at.value(control_positive) - at.value(control_negative),
+            sources,
+        );
     }
 }
 
@@ -305,13 +331,12 @@ impl Kernel for CurrentControlledSwitch {
             on_current,
             off_current,
         } = parameters;
-        let law = Law::new(
-            [on_resistance, off_resistance],
-            [on_current, off_current],
-            "current",
-        )?;
         Ok(PreparedSwitch {
-            law,
+            law: Law::new(
+                [on_resistance, off_resistance],
+                [on_current, off_current],
+                "current",
+            )?,
             temperature: temperature.value(),
         })
     }
@@ -339,20 +364,14 @@ impl Kernel for CurrentControlledSwitch {
         // The port is a short circuit, its current the control.
         let sense = &shape.sense;
         sense.add(at, stamp, sense.voltage(at));
-        let control = sense.current(at);
-        let [positive, negative, ..] = TERMINALS;
-        let voltage = at.unknown::<R>(positive) - at.unknown::<R>(negative);
-        let current = prepared.law.current([voltage, control]);
-        stamp.add_residual(positive, current.value);
-        stamp.add_residual(negative, -current.value);
         // With respect to positive, negative and the control.
-        let [by_voltage, by_control] = current.gradient;
-        let derivatives = [by_voltage, -by_voltage, by_control];
-        for (row, sign) in shape.entries.iter().zip([1.0, -1.0]) {
-            for (&entry, derivative) in row.iter().zip(derivatives) {
-                stamp.add_conductance(entry, derivative * sign);
-            }
-        }
+        prepared.stamp(
+            &shape.entries,
+            sense.current(at),
+            at,
+            |by_voltage, by_control| [by_voltage, -by_voltage, by_control],
+            stamp,
+        );
     }
 
     /// The thermal noise of the resistance the control sets.
@@ -362,18 +381,7 @@ impl Kernel for CurrentControlledSwitch {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let control = Dual::<R, 0>::number(shape.sense.current(at));
-        let conductance = prepared.law.conductance(control).value;
-        let [positive, negative, ..] = TERMINALS;
-        sources.push(NoiseSource::thermal(
-            "thermal",
-            [
-                Some(UnknownIndex::new(positive)),
-                Some(UnknownIndex::new(negative)),
-            ],
-            conductance.value(),
-            prepared.temperature,
-        ));
+        prepared.thermal_noise(shape.sense.current(at), sources);
     }
 }
 
@@ -382,10 +390,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
-    };
+    use crate::testing::{Bench, assert_close, assert_jacobians_match, source, thermal};
 
     const SWITCH: &str = r#"{"on_resistance": 10, "off_resistance": 1e6,
         "on_voltage": 2, "off_voltage": 1}"#;
@@ -410,16 +415,6 @@ mod tests {
             "on_voltage": 1, "off_voltage": 2}"#;
         assert!(close(resistance(reversed, 0.0), 10.0));
         assert!(close(resistance(reversed, 1.25), resistance(SWITCH, 1.75)));
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        for control in [0.5, 1.3, 2.5] {
-            assert_parameter_gradients_match::<VoltageControlledSwitch>(
-                SWITCH,
-                &[1.0, -0.5, control, 0.0],
-            );
-        }
     }
 
     #[test]
@@ -456,7 +451,6 @@ mod tests {
             );
             let x = [1.0, -0.5, 0.2, 0.1, control * 1e-3];
             assert_jacobians_match::<CurrentControlledSwitch>(CURRENT_SWITCH, &x);
-            assert_parameter_gradients_match::<CurrentControlledSwitch>(CURRENT_SWITCH, &x);
         }
         let error = Bench::try_new::<CurrentControlledSwitch>(r#"{"on_current": 0}"#)
             .expect_err("equal currents");

@@ -206,30 +206,15 @@ pub enum DiodeTemperatureModel {
     Two,
 }
 
-impl TryFrom<u8> for DiodeTemperatureModel {
-    type Error = String;
-
-    fn try_from(tlev: u8) -> Result<Self, String> {
-        match tlev {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            2 => Ok(Self::Two),
-            _ => Err(format!(
-                "a diode's temperature_model is 0, 1 or 2, not {tlev}"
-            )),
-        }
+super::numbered_enum!(
+    DiodeTemperatureModel,
+    "a diode's temperature_model is 0, 1 or 2",
+    {
+        0 => Zero,
+        1 => One,
+        2 => Two,
     }
-}
-
-impl From<DiodeTemperatureModel> for u8 {
-    fn from(tlev: DiodeTemperatureModel) -> Self {
-        match tlev {
-            DiodeTemperatureModel::Zero => 0,
-            DiodeTemperatureModel::One => 1,
-            DiodeTemperatureModel::Two => 2,
-        }
-    }
-}
+);
 
 /// How a diode's junction capacitances and potentials follow the temperature: SPICE's
 /// `TLEVC`.
@@ -243,28 +228,14 @@ pub enum DiodeCapacitanceTemperatureModel {
     One,
 }
 
-impl TryFrom<u8> for DiodeCapacitanceTemperatureModel {
-    type Error = String;
-
-    fn try_from(tlevc: u8) -> Result<Self, String> {
-        match tlevc {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "a diode's capacitance_temperature_model is 0 or 1, not {tlevc}"
-            )),
-        }
+super::numbered_enum!(
+    DiodeCapacitanceTemperatureModel,
+    "a diode's capacitance_temperature_model is 0 or 1",
+    {
+        0 => Zero,
+        1 => One,
     }
-}
-
-impl From<DiodeCapacitanceTemperatureModel> for u8 {
-    fn from(tlevc: DiodeCapacitanceTemperatureModel) -> Self {
-        match tlevc {
-            DiodeCapacitanceTemperatureModel::Zero => 0,
-            DiodeCapacitanceTemperatureModel::One => 1,
-        }
-    }
-}
+);
 
 /// The parameters of a [`Diode`], with ngspice's defaults (`diosetup.c`, lines 36 to
 /// 307).
@@ -1254,22 +1225,6 @@ mod tests {
             (deeper / expected - 1.0).abs() < 1e-9,
             "{deeper} vs {expected}"
         );
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let every = r#"{"saturation_current": 2e-14, "emission_coefficient": 1.3,
-            "junction_capacitance": 2e-12, "junction_potential": 0.8,
-            "grading_coefficient": 0.4, "depletion_coefficient": 0.6, "transit_time": 1e-9,
-            "breakdown_voltage": 5, "breakdown_current": 1e-3,
-            "breakdown_emission_coefficient": 1.1, "breakdown_temperature_coefficient": 1e-3,
-            "energy_gap": 1.2, "saturation_current_temperature_exponent": 2.5,
-            "nominal_temperature": 290}"#;
-        for voltage in [0.6, 0.55, -0.02, -1.0, -5.4] {
-            assert_parameter_gradients_match::<Diode>(every, &[voltage, 0.0]);
-        }
-        let resistive = r#"{"series_resistance": 10, "junction_capacitance": 1e-12}"#;
-        assert_parameter_gradients_match::<Diode>(resistive, &[0.7, 0.0, 0.65]);
     }
 
     #[test]

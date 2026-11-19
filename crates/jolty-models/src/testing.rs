@@ -27,7 +27,7 @@ mod cases;
 mod laws;
 
 #[cfg(test)]
-pub(crate) use laws::assert_mirrors;
+pub(crate) use laws::assert_symmetric_at;
 
 use crate::{
     BOLTZMANN, Binding, Contributions, Differentiable, Gradient, Groups, Input, Kernel, Model,
@@ -938,6 +938,105 @@ pub(crate) fn assert_switches_where_margin_vanishes(
         below.abs() < 1e-12 && above.abs() < 1e-12,
         "{margin} at the switch: {below}, {above}"
     );
+}
+
+/// Checks that `K` with `parameters` reports each expected region (and, when given, exact
+/// margins) at each point in `points`, that its optional `mirror` reports the same at each
+/// negated point, and that each `(from, to, margin)` in `switches` crosses the boundary
+/// where `margin` vanishes.
+pub(crate) fn assert_regions<K: Kernel>(
+    parameters: &str,
+    mirror: Option<&str>,
+    points: &[(&[f64], &str, Option<&[f64]>)],
+    switches: &[(&[f64], &[f64], &str)],
+)
+where
+    K::Parameters<f64>: DeserializeOwned + Serialize + JsonSchema,
+{
+    let mut bench = Bench::new::<K>(parameters);
+    let mut opposite = mirror.map(Bench::new::<K>);
+    for &(x, region, margins) in points {
+        bench.settle(x);
+        let (found_region, found_margins) = bench.region();
+        assert_eq!(found_region, region, "{x:?}");
+        if let Some(expected) = margins {
+            assert_eq!(found_margins, expected, "{x:?}");
+        }
+        if let Some(opposite_bench) = &mut opposite {
+            let reflected: Vec<f64> = x.iter().map(|value| -value).collect();
+            opposite_bench.settle(&reflected);
+            let (mirror_region, mirror_margins) = opposite_bench.region();
+            assert_eq!(mirror_region, region, "mirror at {x:?}");
+            assert_close(&found_margins, &mirror_margins);
+        }
+    }
+    for &(from, to, margin) in switches {
+        assert_switches_where_margin_vanishes(&mut bench, (from, to), margin);
+    }
+}
+
+/// Checks that the linearized 2x2 submatrix at `[first, second]` of `evaluation`, driven by
+/// `[drive_first, drive_second]` into those rows, responds at `output` (0 or 1) as the
+/// second-order Bessel filter `3 / (s² · delay² + 3 · s · delay + 3)` at each angular
+/// frequency in `omegas`.
+pub(crate) fn assert_bessel_filter(
+    evaluation: &Evaluation,
+    [first, second]: [usize; 2],
+    [drive_first, drive_second]: [f64; 2],
+    output: usize,
+    delay: f64,
+    omegas: [f64; 3],
+) {
+    let multiply = |left: (f64, f64), right: (f64, f64)| {
+        (
+            left.0 * right.0 - left.1 * right.1,
+            left.0 * right.1 + left.1 * right.0,
+        )
+    };
+    let divide = |left: (f64, f64), right: (f64, f64)| {
+        let norm = right.0 * right.0 + right.1 * right.1;
+        (
+            (left.0 * right.0 + left.1 * right.1) / norm,
+            (left.1 * right.0 - left.0 * right.1) / norm,
+        )
+    };
+    for omega in omegas {
+        let entry = |row: usize, column: usize| {
+            (
+                evaluation.conductance[row][column],
+                omega * evaluation.capacitance[row][column],
+            )
+        };
+        let [a, b, c, d] = [
+            entry(first, first),
+            entry(first, second),
+            entry(second, first),
+            entry(second, second),
+        ];
+        let (diag, off) = (multiply(a, d), multiply(b, c));
+        let determinant = (diag.0 - off.0, diag.1 - off.1);
+        let numerator = if output == 0 {
+            (
+                d.0 * drive_first - b.0 * drive_second,
+                d.1 * drive_first - b.1 * drive_second,
+            )
+        } else {
+            (
+                a.0 * drive_second - c.0 * drive_first,
+                a.1 * drive_second - c.1 * drive_first,
+            )
+        };
+        let response = divide(numerator, determinant);
+        let omega_delay = omega * delay;
+        let expected = divide(
+            (3.0, 0.0),
+            (3.0 - omega_delay * omega_delay, 3.0 * omega_delay),
+        );
+        assert!(
+            (response.0 - expected.0).abs() < 1e-12 && (response.1 - expected.1).abs() < 1e-12,
+            "{response:?} vs {expected:?} at {omega}"
+        );
+    }
 }
 
 /// Whether a JSON schema describes a real number (`"number"`) or an integer (`"integer"`).

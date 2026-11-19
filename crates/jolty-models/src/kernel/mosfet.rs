@@ -15,7 +15,7 @@ use crate::kernel::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_channel, limit_junction,
 };
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
+use crate::kernel::parts::{self, Bias, Derivatives, Nodes, Oriented, Series, series_value};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
@@ -48,28 +48,14 @@ pub enum ModelLevel {
     Three,
 }
 
-impl TryFrom<u8> for ModelLevel {
-    type Error = String;
-
-    fn try_from(level: u8) -> Result<Self, String> {
-        match level {
-            1 => Ok(Self::One),
-            3 => Ok(Self::Three),
-            _ => Err(format!(
-                "jolty models MOSFETs of level 1 and 3, not {level}"
-            )),
-        }
+super::numbered_enum!(
+    ModelLevel,
+    "jolty models MOSFETs of level 1 and 3",
+    {
+        1 => One,
+        3 => Three,
     }
-}
-
-impl From<ModelLevel> for u8 {
-    fn from(level: ModelLevel) -> Self {
-        match level {
-            ModelLevel::One => 1,
-            ModelLevel::Three => 3,
-        }
-    }
-}
+);
 
 /// The material of a MOSFET's gate, which sets its work function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -775,13 +761,9 @@ impl Displacement {
     }
 }
 
-/// The gate-source, drain-source and bulk-source voltages of one evaluation, oriented as an
-/// n-channel's.
-type Bias = parts::Bias<3>;
-
 /// The voltage of the stamped node `plus` over `minus` in `bias`, as evaluated and as far
 /// as the applied one lies beyond it.
-fn across(bias: &Bias, (plus, minus): (usize, usize)) -> parts::Bias<1> {
+fn across(bias: &Bias<3>, (plus, minus): (usize, usize)) -> Bias<1> {
     // Each voltage of `bias` is a node's over the inner source.
     let over_source = |values: [f64; 3], node: usize| {
         VARIABLES
@@ -791,7 +773,7 @@ fn across(bias: &Bias, (plus, minus): (usize, usize)) -> parts::Bias<1> {
             .unwrap_or(0.0)
     };
     let between = |values: [f64; 3]| over_source(values, plus) - over_source(values, minus);
-    parts::Bias {
+    Bias {
         voltages: [between(bias.voltages)],
         beyond: [between(bias.beyond)],
     }
@@ -929,9 +911,18 @@ impl Kernel for Mosfet {
         let [drain_series, source_series] = prepared.series;
         shape.drain_series.add(drain_series, at, stamp);
         shape.source_series.add(source_series, at, stamp);
-        let bias = prepared.bias(shape, memory, at, stamp);
         let sign = prepared.sign;
-        let [vgs, vds, vbs] = Dual::variables(bias.across(&shape.stamp, at, (sign, VARIABLES)));
+        let threshold = memory.threshold.unwrap_or(prepared.threshold);
+        let bias = Bias::limit(
+            &shape.stamp,
+            (sign, VARIABLES),
+            &mut memory.last,
+            at,
+            stamp,
+            |applied, previous| prepared.limit(applied, previous, threshold),
+        );
+        let added = Oriented::new(&shape.stamp, sign, &bias, VARIABLES);
+        let [vgs, vds, vbs] = Dual::variables(added.across(at));
         let conduction = prepared.channel.evaluate([vgs, vds, vbs]);
         let threshold = conduction.threshold.value.value();
         memory.threshold = Some(threshold);
@@ -946,12 +937,6 @@ impl Kernel for Mosfet {
             overdrive,
             margin,
         ];
-        let added = Oriented {
-            nodes: &shape.stamp,
-            sign,
-            bias: &bias,
-            variables: VARIABLES,
-        };
         // Every derivative among the stamped nodes is summed here, and written once.
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
@@ -962,12 +947,7 @@ impl Kernel for Mosfet {
         let [drain, source] = &prepared.junctions;
         for (pair, junction) in [((BULK, INNER_DRAIN), drain), ((BULK, INNER_SOURCE), source)] {
             let pair_bias = across(&bias, pair);
-            let added = Oriented {
-                nodes: &shape.stamp,
-                sign,
-                bias: &pair_bias,
-                variables: [pair],
-            };
+            let added = Oriented::new(&shape.stamp, sign, &pair_bias, [pair]);
             let [voltage] = Dual::variables(added.across(at));
             let (current, charge) = junction.evaluate(voltage, at.gmin);
             added.add_current(stamp, sums, pair, current);
@@ -980,12 +960,7 @@ impl Kernel for Mosfet {
             ((GATE, BULK), bulk_overlap),
         ] {
             let pair_bias = across(&bias, pair);
-            let added = Oriented {
-                nodes: &shape.stamp,
-                sign,
-                bias: &pair_bias,
-                variables: [pair],
-            };
+            let added = Oriented::new(&shape.stamp, sign, &pair_bias, [pair]);
             let [voltage] = Dual::variables(added.across(at));
             added.add_charge(stamp, sums, pair, voltage.scale(overlap));
         }
@@ -1050,9 +1025,7 @@ impl Kernel for Mosfet {
             .source_series
             .noise(source_series, ("source thermal", temperature), sources);
         let stamp = &shape.stamp;
-        let voltages = VARIABLES.map(|(plus, minus)| {
-            prepared.sign * (stamp.voltage(at, plus) - stamp.voltage(at, minus))
-        });
+        let voltages = stamp.voltages(at, prepared.sign, VARIABLES);
         let current = prepared
             .channel
             .evaluate(Dual::variables(voltages.map(R::constant)))
@@ -1366,35 +1339,13 @@ impl<R: Real> MosfetParameters<R> {
 }
 
 impl<R: Real> PreparedMosfet<R> {
-    /// The terminal voltages at `at`, limited from the last evaluation's, which `memory`
-    /// keeps and takes the new ones.
-    fn bias(
-        &self,
-        shape: &MosfetShape,
-        memory: &mut MosfetMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) -> Bias {
-        let nodes = &shape.stamp;
-        let applied = VARIABLES
-            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-        let limited = self.limit(applied, memory).filter(|_| at.limiting);
-        if limited.is_some() {
-            stamp.mark_limited();
-        }
-        let voltages = limited.unwrap_or(applied);
-        memory.last = voltages;
-        Bias::new(applied, voltages)
-    }
-
-    /// The `applied` gate-source, drain-source and bulk-source voltages limited from the
-    /// last evaluation's, which `memory` keeps, as SPICE limits them: the gate's step around
-    /// the threshold and the drain's, from whichever end acts as the source, then the step
-    /// of the junction with it. Returns `None` when no step needs limiting.
-    fn limit(&self, applied: [f64; 3], memory: &MosfetMemory) -> Option<[f64; 3]> {
+    /// The `applied` gate-source, drain-source and bulk-source voltages limited from
+    /// `previous` around `threshold`, as SPICE limits them: the gate's step around the
+    /// threshold and the drain's, from whichever end acts as the source, then the step of
+    /// the junction with it. Returns `None` when no step needs limiting.
+    fn limit(&self, applied: [f64; 3], previous: [f64; 3], threshold: f64) -> Option<[f64; 3]> {
         let [applied_gate, applied_drain, applied_vbs] = applied;
-        let [previous_gate, previous_drain, previous_bulk] = memory.last;
-        let threshold = memory.threshold.unwrap_or(self.threshold);
+        let [previous_gate, previous_drain, previous_bulk] = previous;
         let ([vgs, vds], mut limited) = limit_channel(
             [applied_gate, applied_drain],
             [previous_gate, previous_drain],
@@ -1433,11 +1384,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Input;
     use crate::testing::{
-        Bench, Evaluation, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, Evaluation, assert_close, assert_jacobians_match, assert_regions,
+        assert_symmetric_at, source, thermal,
     };
-    use crate::{Differentiable, Input};
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
         "body_effect": 0.5, "channel_length_modulation": 0.02, "width": 10e-6,
@@ -1507,23 +1458,9 @@ mod tests {
         assert_eq!(values[2..5], [0.0; 3], "no oxide, no Meyer capacitance");
 
         let mut n = Bench::new::<Mosfet>(CHARGED);
-        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
-        let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
-        let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
-        n.settle(&x);
-        p.settle(&mirrored);
-        let (n_values, p_values) = (n.variables(), p.variables());
+        n.settle(&[3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4]);
+        let n_values = n.variables();
         assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
-        let polar = [true, true, false, false, false, false, false, false];
-        for (index, ((n_value, p_value), polar)) in
-            n_values.iter().zip(&p_values).zip(polar).enumerate()
-        {
-            let mirrored = if polar { -p_value } else { *p_value };
-            assert!(
-                (n_value - mirrored).abs() <= 1e-15 * n_value.abs(),
-                "{index}"
-            );
-        }
     }
 
     /// A level 1 transistor is off at or below its threshold, saturated with its drain at
@@ -1534,31 +1471,26 @@ mod tests {
     #[test]
     fn reports_its_region_and_margins() {
         let parameters = r#"{"threshold_voltage": 1, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<Mosfet>(parameters);
-        let mut p = Bench::new::<Mosfet>(&parameters.replace(": 1,", ": -1, \"channel\": \"p\","));
+        let mirror = parameters.replace(": 1,", r#": -1, "channel": "p","#);
         // The drain, the gate, the source and the bulk.
-        for (x, region, margins) in [
-            ([3.0, 0.5, 0.0, 0.0], "off", [-0.5, 3.0]),
-            ([3.0, 2.0, 0.0, 0.0], "saturated", [1.0, 2.0]),
-            ([0.5, 3.0, 0.0, 0.0], "linear", [2.0, -1.5]),
-            ([0.0, 5.0, 3.0, 0.0], "linear", [4.0, -1.0]),
-        ] {
-            bench.settle(&x);
-            assert_eq!(bench.region(), (region, margins.to_vec()), "{x:?}");
-            p.settle(&x.map(|value| -value));
-            assert_eq!(p.region(), (region, margins.to_vec()), "{x:?}");
-        }
-        let switches = [
-            ([3.0, 0.5, 0.0, 0.0], [3.0, 1.5, 0.0, 0.0], OVERDRIVE),
-            (
-                [0.5, 2.0, 0.0, 0.0],
-                [2.0, 2.0, 0.0, 0.0],
-                SATURATION_MARGIN,
-            ),
-        ];
-        for (from, to, margin) in switches {
-            assert_switches_where_margin_vanishes(&mut bench, (&from, &to), margin);
-        }
+        assert_regions::<Mosfet>(
+            parameters,
+            Some(&mirror),
+            &[
+                (&[3.0, 0.5, 0.0, 0.0], "off", Some(&[-0.5, 3.0])),
+                (&[3.0, 2.0, 0.0, 0.0], "saturated", Some(&[1.0, 2.0])),
+                (&[0.5, 3.0, 0.0, 0.0], "linear", Some(&[2.0, -1.5])),
+                (&[0.0, 5.0, 3.0, 0.0], "linear", Some(&[4.0, -1.0])),
+            ],
+            &[
+                (&[3.0, 0.5, 0.0, 0.0], &[3.0, 1.5, 0.0, 0.0], OVERDRIVE),
+                (
+                    &[0.5, 2.0, 0.0, 0.0],
+                    &[2.0, 2.0, 0.0, 0.0],
+                    SATURATION_MARGIN,
+                ),
+            ],
+        );
     }
 
     /// A level 3 transistor is off at or below its threshold, or in weak inversion below it
@@ -1569,33 +1501,24 @@ mod tests {
         let parameters = r#"{"level": 3, "threshold_voltage": 1, "saturation_current": 1e-30}"#;
         let weak = parameters.replace('}', r#", "fast_surface_state_density": 1e15}"#);
         for (parameters, below) in [(parameters, "off"), (weak.as_str(), "weak_inversion")] {
-            let mut bench = Bench::new::<Mosfet>(parameters);
-            for (x, region) in [
-                ([3.0, 0.5, 0.0, 0.0], below),
-                ([3.0, 2.0, 0.0, 0.0], "saturated"),
-                ([0.2, 3.0, 0.0, 0.0], "linear"),
-            ] {
-                bench.settle(&x);
-                assert_eq!(bench.region().0, region, "{parameters} at {x:?}");
-            }
-            let switches = [
-                ([3.0, 0.5, 0.0, 0.0], [3.0, 2.0, 0.0, 0.0], OVERDRIVE),
-                (
-                    [0.2, 3.0, 0.0, 0.0],
-                    [3.0, 3.0, 0.0, 0.0],
-                    SATURATION_MARGIN,
-                ),
-            ];
-            for (from, to, margin) in switches {
-                assert_switches_where_margin_vanishes(&mut bench, (&from, &to), margin);
-            }
+            assert_regions::<Mosfet>(
+                parameters,
+                None,
+                &[
+                    (&[3.0, 0.5, 0.0, 0.0], below, None),
+                    (&[3.0, 2.0, 0.0, 0.0], "saturated", None),
+                    (&[0.2, 3.0, 0.0, 0.0], "linear", None),
+                ],
+                &[
+                    (&[3.0, 0.5, 0.0, 0.0], &[3.0, 2.0, 0.0, 0.0], OVERDRIVE),
+                    (
+                        &[0.2, 3.0, 0.0, 0.0],
+                        &[3.0, 3.0, 0.0, 0.0],
+                        SATURATION_MARGIN,
+                    ),
+                ],
+            );
         }
-    }
-
-    #[test]
-    fn a_p_channel_mirrors_an_n_channel() {
-        let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
-        assert_mirrors(&Differentiable::<Mosfet>::new(), CHARGED, &x);
     }
 
     #[test]
@@ -1661,82 +1584,6 @@ mod tests {
             error(r#"{"bottom_grading": 1}"#),
             "bottom_grading must be at least 0 and below 1, not 1.0"
         );
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let temperature = r#""nominal_temperature": 290, "junction_potential": 0.75,
-            "saturation_current": 2e-14, "bottom_grading": 0.45, "sidewall_grading": 0.35,
-            "depletion_coefficient": 0.45, "multiplier": 2, "#;
-        let level_one = CHARGED.replace('{', &format!("{{{temperature}"));
-        let resistive =
-            level_one.replace('{', r#"{"drain_resistance": 50, "source_resistance": 20, "#);
-        let derived = r#"{"substrate_doping": 1e22, "oxide_thickness": 2e-8,
-            "surface_state_density": 1e14, "surface_mobility": 0.05, "width": 10e-6,
-            "length": 2e-6, "sheet_resistance": 10, "drain_squares": 2, "source_squares": 3,
-            "saturation_current_density": 1e-4, "drain_area": 2e-11, "source_area": 3e-11,
-            "nominal_temperature": 290}"#;
-        let level_three = r#"{"level": 3, "threshold_voltage": 0.7, "body_effect": 0.4,
-            "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
-            "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
-            "static_feedback": 0.5, "narrow_width_factor": 0.8, "mobility_modulation": 0.1,
-            "saturation_field_factor": 0.3, "fast_surface_state_density": 1e15,
-            "threshold_adjustment": 0.05, "max_drift_velocity": 1.5e5,
-            "width_narrowing": 1e-7, "length_adjustment": 1e-8, "width_adjustment": 2e-8,
-            "nominal_temperature": 290}"#;
-        for [drain, gate, bulk] in [
-            [3.0, 2.0, -0.5],
-            [0.3, 2.5, -0.2],
-            [-1.0, 1.5, -1.5],
-            [2.0, 0.2, -0.1],
-        ] {
-            let x = [drain, gate, 0.0, bulk, 1e-4, 2e-4, -1e-4];
-            let inner = [drain, gate, 0.0, bulk, 0.9 * drain, 0.01, 1e-4, 2e-4, -1e-4];
-            assert_parameter_gradients_match::<Mosfet>(&level_one, &x);
-            assert_parameter_gradients_match::<Mosfet>(derived, &inner);
-            assert_parameter_gradients_match::<Mosfet>(level_three, &x);
-            assert_parameter_gradients_match::<Mosfet>(&resistive, &inner);
-        }
-    }
-
-    #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
-        let model = crate::Thermal::<Mosfet>::new();
-        let level_one = CHARGED.replace(
-            '{',
-            r#"{"nominal_temperature": 290, "saturation_current": 2e-14, "#,
-        );
-        let derived = r#"{"substrate_doping": 1e22, "oxide_thickness": 2e-8,
-            "surface_state_density": 1e14, "surface_mobility": 0.05, "width": 10e-6,
-            "length": 2e-6, "saturation_current_density": 1e-4, "drain_area": 2e-11,
-            "source_area": 3e-11, "nominal_temperature": 290}"#;
-        let level_three = r#"{"level": 3, "threshold_voltage": 0.7, "body_effect": 0.4,
-            "width": 20e-6, "length": 2e-6, "oxide_thickness": 3e-8,
-            "substrate_doping": 1e22, "junction_depth": 3e-7, "static_feedback": 0.5,
-            "mobility_modulation": 0.1, "max_drift_velocity": 1.5e5}"#;
-        for every in [level_one.as_str(), derived, level_three] {
-            for every in [every.to_owned(), p_channel(every)] {
-                let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
-                let heated = every.replace('{', r#"{"thermal": true, "#);
-                let mut bench =
-                    Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-                for rise in [0.0, 40.0] {
-                    let mut plain = Bench::at::<Mosfet>(&every, REFERENCE_TEMPERATURE + rise);
-                    let [d, g, b] = [3.0, 2.0, -0.5].map(|v| sign * v);
-                    let hot = bench.settle(&[d, g, 0.0, b, rise, 1e-4, 2e-4, -1e-4]);
-                    let reference = plain.settle(&[d, g, 0.0, b, 1e-4, 2e-4, -1e-4]);
-                    let electrical = [0, 1, 2, 3, 5, 6, 7].map(|row| hot.residual[row]);
-                    assert_close(&electrical, &reference.residual);
-                }
-                for [d, g, b, rise] in [[3.0, 2.0, -0.5, 20.0], [0.3, 2.5, -0.2, 60.0]] {
-                    let x = [sign * d, sign * g, 0.0, sign * b, rise, 1e-4, 2e-4, -1e-4];
-                    crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-                    crate::testing::assert_model_parameter_gradients_match(
-                        &model, &heated, &x, None,
-                    );
-                }
-            }
-        }
     }
 
     proptest! {
@@ -1855,79 +1702,6 @@ mod tests {
         bench.evaluate_with(&input)
     }
 
-    /// Asserts that a single evaluation at equal drain and source voltages is symmetric
-    /// under `swap` across residuals, charges, conductances, and capacitances, within
-    /// `1024 · f64::EPSILON` of each quantity's scale (Higham 2002, §3.1, matching
-    /// `testing::laws::ROUNDING`).
-    fn assert_symmetric_at_zero_vds(
-        evaluation: &Evaluation,
-        x: &[f64],
-        swap: &[usize],
-        label: &str,
-    ) {
-        const ROUNDING: f64 = 1024.0;
-        let residual_scale = evaluation.scale.iter().copied().fold(0.0_f64, f64::max);
-        let charge_scale = evaluation
-            .charge
-            .iter()
-            .zip(&evaluation.capacitance)
-            .map(|(&charge, row)| {
-                let linear: f64 = row
-                    .iter()
-                    .zip(x)
-                    .map(|(&entry, &value)| (entry * value).abs())
-                    .sum();
-                charge.abs() + linear
-            })
-            .fold(0.0_f64, f64::max);
-        let matrix_max = |matrix: &[Vec<f64>]| {
-            matrix
-                .iter()
-                .flatten()
-                .fold(0.0_f64, |most, &entry| most.max(entry.abs()))
-        };
-        let mut worst_residual = 0.0_f64;
-        let mut worst_charge = 0.0_f64;
-        let mut worst_conductance = 0.0_f64;
-        let mut worst_capacitance = 0.0_f64;
-        for (row, &swapped_row) in swap.iter().enumerate() {
-            worst_residual = worst_residual
-                .max((evaluation.residual[row] - evaluation.residual[swapped_row]).abs());
-            worst_charge =
-                worst_charge.max((evaluation.charge[row] - evaluation.charge[swapped_row]).abs());
-            for (column, &swapped_column) in swap.iter().enumerate() {
-                worst_conductance = worst_conductance.max(
-                    (evaluation.conductance[row][column]
-                        - evaluation.conductance[swapped_row][swapped_column])
-                        .abs(),
-                );
-                worst_capacitance = worst_capacitance.max(
-                    (evaluation.capacitance[row][column]
-                        - evaluation.capacitance[swapped_row][swapped_column])
-                        .abs(),
-                );
-            }
-        }
-        assert!(
-            worst_residual <= ROUNDING * f64::EPSILON * residual_scale,
-            "{label}: residual diff {worst_residual:e} of {residual_scale:e}"
-        );
-        assert!(
-            worst_charge <= ROUNDING * f64::EPSILON * charge_scale,
-            "{label}: charge diff {worst_charge:e} of {charge_scale:e}"
-        );
-        let conductance_scale = matrix_max(&evaluation.conductance);
-        assert!(
-            worst_conductance <= ROUNDING * f64::EPSILON * conductance_scale,
-            "{label}: conductance diff {worst_conductance:e} of {conductance_scale:e}"
-        );
-        let capacitance_scale = matrix_max(&evaluation.capacitance);
-        assert!(
-            worst_capacitance <= ROUNDING * f64::EPSILON * capacitance_scale,
-            "{label}: capacitance diff {worst_capacitance:e} of {capacitance_scale:e}"
-        );
-    }
-
     /// At `vds = 0`, both level 1 and level 3 MOSFETs swap drain and source cleanly across
     /// every region when displacement currents are zero (`w = 0`), including with symmetric
     /// drain and source series resistances.
@@ -1936,30 +1710,24 @@ mod tests {
         const SWAP_SEVEN: [usize; 7] = [2, 1, 0, 3, 5, 4, 6];
         const SWAP_NINE: [usize; 9] = [2, 1, 0, 3, 5, 4, 7, 6, 8];
 
+        let level_three = r#""level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
+            "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+            "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+            "static_feedback": 0.5, "narrow_width_factor": 0.8,
+            "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
+            "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
+            "drain_area": 2e-11, "source_area": 2e-11,
+            "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10"#;
         let cards = [
-            ("level 1 oxide", r#"{"oxide_thickness": 2e-8}"#),
-            ("level 3 default", r#"{"level": 3}"#),
+            ("level 1 oxide", r#"{"oxide_thickness": 2e-8}"#.to_owned()),
+            ("level 3 default", r#"{"level": 3}"#.to_owned()),
             (
                 "level 3 drift",
-                r#"{"level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
-                    "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
-                    "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
-                    "static_feedback": 0.5, "narrow_width_factor": 0.8,
-                    "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
-                    "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
-                    "max_drift_velocity": 1.5e5, "drain_area": 2e-11, "source_area": 2e-11,
-                    "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10}"#,
+                format!(r#"{{{level_three}, "max_drift_velocity": 1.5e5}}"#),
             ),
             (
                 "level 3 no drift",
-                r#"{"level": 3, "threshold_voltage": 0.8, "body_effect": 0.5,
-                    "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
-                    "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
-                    "static_feedback": 0.5, "narrow_width_factor": 0.8,
-                    "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
-                    "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
-                    "max_drift_velocity": 0.0, "drain_area": 2e-11, "source_area": 2e-11,
-                    "gate_source_overlap": 3e-10, "gate_drain_overlap": 3e-10}"#,
+                format!(r#"{{{level_three}, "max_drift_velocity": 0.0}}"#),
             ),
         ];
         let biases = [
@@ -1974,15 +1742,14 @@ mod tests {
             (2.0, 0.2),
         ];
         for (label, card) in cards {
-            let mut bench = Bench::new::<Mosfet>(card);
+            let mut bench = Bench::new::<Mosfet>(&card);
             for (gate_voltage, bulk_voltage) in biases {
                 let point = [0.0, gate_voltage, 0.0, bulk_voltage, 0.0, 0.0, 0.0];
-                let evaluation = unlimited(&mut bench, &point);
-                assert_symmetric_at_zero_vds(&evaluation, &point, &SWAP_SEVEN, label);
+                assert_symmetric_at(&mut bench, &point, &SWAP_SEVEN, label);
             }
         }
         let resistive = r#"{"level": 3, "drain_resistance": 10, "source_resistance": 10}"#;
-        let mut resistive_bench = Bench::new::<Mosfet>(resistive);
+        let mut bench = Bench::new::<Mosfet>(resistive);
         for (gate_voltage, bulk_voltage) in biases {
             for inner_voltage in [0.0, 0.01] {
                 let point = [
@@ -1996,8 +1763,7 @@ mod tests {
                     0.0,
                     0.0,
                 ];
-                let evaluation = unlimited(&mut resistive_bench, &point);
-                assert_symmetric_at_zero_vds(&evaluation, &point, &SWAP_NINE, "level 3 resistive");
+                assert_symmetric_at(&mut bench, &point, &SWAP_NINE, "level 3 resistive");
             }
         }
     }

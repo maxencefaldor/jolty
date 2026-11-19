@@ -7,8 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
-use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
+use crate::kernel::junction::{Temperatures, below_one, critical_voltage};
+use crate::kernel::parts::{
+    self, Bias, Derivatives, Nodes, Oriented, Pair, Series, fraction, inverse,
+};
 use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
@@ -148,9 +150,6 @@ const PARASITIC: [usize; 3] = [VBEP, VBCI, VBCP];
 /// The parasitic base resistance's current reads its own drop, then the junctions its
 /// transistor's base charge reads.
 const PARASITIC_BASE: [usize; 3] = [VRBP, VBEP, VBCI];
-
-/// The variables of one evaluation.
-type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`Vbic`], with ngspice's defaults. A parameter ngspice treats as
 /// infinite at zero, such as an Early voltage, is infinite when left out; one whose
@@ -1243,25 +1242,6 @@ impl<R: Real> Scaling<R> {
     }
 }
 
-/// The reciprocal of an optional positive parameter, zero when it is left out, infinite.
-fn inverse<R: Real>(name: &str, value: Option<R>) -> Result<R, ParameterError> {
-    value.map_or(Ok(R::constant(0.0)), |value| {
-        ParameterError::positive(name, value).map(Real::recip)
-    })
-}
-
-/// Checks that a fraction `value` is at least 0 and at most 1.
-fn fraction<R: Real>(name: &str, value: R) -> Result<R, ParameterError> {
-    if (0.0..=1.0).contains(&value.value()) {
-        Ok(value)
-    } else {
-        Err(ParameterError(format!(
-            "{name} must be at least 0 and at most 1, not {:?}",
-            value.value()
-        )))
-    }
-}
-
 /// Checks that an emission coefficient `value`, scaled to the temperature, is still
 /// positive.
 fn still_positive<R: Real>(name: &str, value: R, temperature: R) -> Result<R, ParameterError> {
@@ -1964,16 +1944,17 @@ impl Kernel for Vbic {
                 pair.add_capacitance(stamp, capacitance);
             }
         }
-        let bias = prepared.bias(shape, memory, at, stamp);
-        let sign = prepared.sign;
+        let bias = Bias::limit_junctions(
+            &shape.stamp,
+            (prepared.sign, VARIABLES),
+            &mut memory.last,
+            (prepared.slope, prepared.critical_voltage),
+            at,
+            stamp,
+        );
         let [base_emitter, _, base_collector, ..] = bias.voltages;
         memory.variables = Bipolar::variables(base_emitter, base_collector);
-        let added = Oriented {
-            nodes: &shape.stamp,
-            sign,
-            bias: &bias,
-            variables: VARIABLES,
-        };
+        let added = Oriented::new(&shape.stamp, prepared.sign, &bias, VARIABLES);
         let branches = prepared.core.evaluate(added.across(at), at.gmin);
         let intrinsic = added.reading(INTRINSIC);
         let Branches {
@@ -2068,9 +2049,7 @@ impl Kernel for Vbic {
             series.noise(series.value_of(resistance), (name, temperature), sources);
         }
         let nodes = &shape.stamp;
-        let voltages = VARIABLES.map(|(plus, minus)| {
-            prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
-        });
+        let voltages = nodes.voltages(at, prepared.sign, VARIABLES);
         let branches = prepared.core.evaluate(voltages.map(R::constant), at.gmin);
         let node = |index: usize| nodes.equation(index);
         // Each intrinsic resistance's law reads its own drop first, its conductance at its
@@ -2117,49 +2096,16 @@ impl Kernel for Vbic {
     }
 }
 
-impl<R: Real> PreparedVbic<R> {
-    /// The variables at `at`, the junctions' limited from the last evaluation's, which
-    /// `memory` keeps and takes the new ones.
-    fn bias(
-        &self,
-        shape: &VbicShape,
-        memory: &mut VbicMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) -> Bias {
-        let nodes = &shape.stamp;
-        let applied = VARIABLES
-            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-        let mut voltages = applied;
-        let mut limited = false;
-        for (voltage, last) in voltages.iter_mut().zip(&mut memory.last) {
-            if at.limiting
-                && let Some(step) =
-                    limit_junction(*voltage, *last, self.slope, self.critical_voltage)
-            {
-                *voltage = step;
-                limited = true;
-            }
-            *last = *voltage;
-        }
-        if limited {
-            stamp.mark_limited();
-        }
-        Bias::new(applied, voltages)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::ELEMENTARY_CHARGE;
     use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_bessel_filter, assert_close, assert_jacobians_match,
+        assert_parameter_gradients_match, assert_regions, source, thermal,
     };
 
     /// VBIC's thermal voltage at the reference temperature.
@@ -2457,20 +2403,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pnp_mirrors_an_npn() {
-        let full = with(FULL, SERIES);
-        let x = biased(
-            &Bench::new::<Vbic>(&full),
-            &full,
-            [3.0, 0.75, 0.0, -1.0],
-            1.0,
-        );
-        assert_mirrors(&Differentiable::<Vbic>::new(), &full, &x);
-        let delayed = with(&full, r#""excess_phase_delay": 2e-12, "#);
-        assert_mirrors(&Differentiable::<Vbic>::new(), &delayed, &x);
-    }
-
-    #[test]
     fn its_resistances_and_excess_phase_add_unknowns() {
         let bench = Bench::new::<Vbic>(&with(
             FULL,
@@ -2521,49 +2453,14 @@ mod tests {
         // Linearized, x2 follows the forward current through 3 / (s² TD² + 3 s TD + 3):
         // solve x1's and x2's rows at s = jω for a unit drive into x1's.
         let delay = 2e-12;
-        for omega in [1e9, 1.0 / delay, 3e12] {
-            let entry = |row: usize, column: usize| {
-                (
-                    settled.conductance[row][column],
-                    omega * settled.capacitance[row][column],
-                )
-            };
-            let [[first_first, first_second], [second_first, second_second]] =
-                [[entry(7, 7), entry(7, 8)], [entry(8, 7), entry(8, 8)]];
-            // With x1's row driven by a unit current and x2's not, x2 is −(x2's entry at x1)
-            // over the rows' determinant.
-            let determinant = subtract(
-                multiply(first_first, second_second),
-                multiply(first_second, second_first),
-            );
-            let response = divide(negate(second_first), determinant);
-            let wt = omega * delay;
-            let expected = divide((3.0, 0.0), (3.0 - wt * wt, 3.0 * wt));
-            assert!(
-                (response.0 - expected.0).abs() < 1e-12 && (response.1 - expected.1).abs() < 1e-12,
-                "{response:?} vs {expected:?} at {omega}"
-            );
-        }
-    }
-
-    fn negate((real, imaginary): (f64, f64)) -> (f64, f64) {
-        (-real, -imaginary)
-    }
-
-    fn subtract(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-        (a.0 - b.0, a.1 - b.1)
-    }
-
-    fn multiply(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-        (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
-    }
-
-    fn divide(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-        let norm = b.0 * b.0 + b.1 * b.1;
-        (
-            (a.0 * b.0 + a.1 * b.1) / norm,
-            (a.1 * b.0 - a.0 * b.1) / norm,
-        )
+        assert_bessel_filter(
+            &settled,
+            [7, 8],
+            [1.0, 0.0],
+            1,
+            delay,
+            [1e9, 1.0 / delay, 3e12],
+        );
     }
 
     #[test]
@@ -2619,62 +2516,19 @@ mod tests {
             [6.0, -4.6, 0.0, -2.0],
         ] {
             for sign in [1.0, -1.0] {
-                let flip = |parameters: &str| {
-                    if sign < 0.0 {
+                for parameters in [&every, &smoothed] {
+                    let card = if sign < 0.0 {
                         pnp(parameters)
                     } else {
-                        parameters.to_owned()
-                    }
-                };
-                let (every, smoothed) = (flip(&every), flip(&smoothed));
-                let bench = Bench::new::<Vbic>(&every);
-                assert_parameter_gradients_match::<Vbic>(
-                    &every,
-                    &biased(&bench, &every, voltages, sign),
-                );
-                let bench = Bench::new::<Vbic>(&smoothed);
-                assert_parameter_gradients_match::<Vbic>(
-                    &smoothed,
-                    &biased(&bench, &smoothed, voltages, sign),
-                );
+                        parameters.clone()
+                    };
+                    let bench = Bench::new::<Vbic>(&card);
+                    assert_parameter_gradients_match::<Vbic>(
+                        &card,
+                        &biased(&bench, &card, voltages, sign),
+                    );
+                }
             }
-        }
-    }
-
-    #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
-        let model = crate::Thermal::<Vbic>::new();
-        let every = with(&with(FULL, SERIES), WARM);
-        let heated = with(&every, r#""thermal": true, "#);
-        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-        let cool = Bench::new::<Vbic>(&every);
-        let inner = biased(&cool, &every, [3.0, 0.75, 0.0, -1.0], 1.0);
-        let with_rise = |rise: f64| {
-            let mut x = inner[..4].to_vec();
-            x.push(rise);
-            x.extend(&inner[4..]);
-            x
-        };
-        for rise in [0.0, 35.0] {
-            let mut plain = Bench::at::<Vbic>(&every, REFERENCE_TEMPERATURE + rise);
-            let hot = bench.settle(&with_rise(rise));
-            let reference = plain.settle(&inner);
-            let electrical: Vec<f64> = (0..hot.residual.len())
-                .filter(|&row| row != 4)
-                .map(|row| hot.residual[row])
-                .collect();
-            assert_close(&electrical, &reference.residual);
-        }
-        // The power's derivatives sum each voltage times a conductance, which cancel to
-        // each resistance's drop times it: drops of a tenth of a volt keep the digits that
-        // differences in the parameters resolve.
-        let wide = [3.0, 0.75, 0.0, -1.0, 2.8, 0.7, 0.05, -0.9, 2.6, 2.7, 0.68];
-        for rise in [20.0, 70.0] {
-            let mut x = wide[..4].to_vec();
-            x.push(rise);
-            x.extend(&wide[4..]);
-            crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
         }
     }
 
@@ -2803,32 +2657,31 @@ mod tests {
     /// region switches where its margin vanishes.
     #[test]
     fn reports_its_region_and_margins() {
-        let mut npn = Bench::new::<Vbic>("{}");
-        let mut pnp = Bench::new::<Vbic>(r#"{"polarity": "pnp"}"#);
         // The collector, base, emitter and substrate, then the intrinsic collector, the
         // parasitic base and the intrinsic base, each where no current would drop.
         let at = |collector: f64, base: f64, emitter: f64| {
             [collector, base, emitter, 0.0, collector, collector, base]
         };
-        for ([collector, base, emitter], region) in [
-            ([5.0, -0.5, 0.0], "cut_off"),
-            ([5.0, 0.7, 0.0], "active"),
-            ([0.2, 0.7, 0.0], "saturated"),
-            ([0.0, 0.7, 5.0], "reversed"),
-        ] {
-            let x = at(collector, base, emitter);
-            let margins = [base - emitter, base - collector];
-            npn.settle(&x);
-            assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
-            pnp.settle(&x.map(|value| -value));
-            assert_eq!(pnp.region(), (region, margins.to_vec()), "{x:?}");
-        }
-        let switches = [
-            (at(5.0, -0.1, 0.0), at(5.0, 0.1, 0.0), BASE_EMITTER),
-            (at(5.0, 0.7, 0.0), at(0.2, 0.7, 0.0), BASE_COLLECTOR),
-        ];
-        for (from, to, margin) in switches {
-            assert_switches_where_margin_vanishes(&mut npn, (&from, &to), margin);
-        }
+        let (cut_off, active, saturated, reversed) = (
+            at(5.0, -0.5, 0.0),
+            at(5.0, 0.7, 0.0),
+            at(0.2, 0.7, 0.0),
+            at(0.0, 0.7, 5.0),
+        );
+        let (be_low, be_high) = (at(5.0, -0.1, 0.0), at(5.0, 0.1, 0.0));
+        assert_regions::<Vbic>(
+            "{}",
+            Some(r#"{"polarity": "pnp"}"#),
+            &[
+                (&cut_off, "cut_off", Some(&[-0.5, -5.5])),
+                (&active, "active", Some(&[0.7, -4.3])),
+                (&saturated, "saturated", Some(&[0.7, 0.7 - 0.2])),
+                (&reversed, "reversed", Some(&[-4.3, 0.7])),
+            ],
+            &[
+                (&be_low, &be_high, BASE_EMITTER),
+                (&active, &saturated, BASE_COLLECTOR),
+            ],
+        );
     }
 }

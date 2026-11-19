@@ -6,7 +6,8 @@
 
 use super::{Layout, Local, Stamp};
 use crate::kernel::dual::Dual;
-use crate::{Nature, NoiseSource, Real, UnknownIndex};
+use crate::kernel::junction::limit_junction;
+use crate::{Nature, NoiseSource, ParameterError, Real, UnknownIndex};
 
 /// The resistance below which a resistance carries its current as an unknown, in ohms.
 ///
@@ -63,6 +64,16 @@ impl<const N: usize> Nodes<N> {
     /// The voltage of the node at `index`.
     pub(crate) fn voltage(&self, at: &Local<'_>, index: usize) -> f64 {
         at.value(self.node(index))
+    }
+
+    /// The voltages across each pair `(plus, minus)` of `pairs`, turned by `sign`.
+    pub(crate) fn voltages<const K: usize>(
+        &self,
+        at: &Local<'_>,
+        sign: f64,
+        pairs: [(usize, usize); K],
+    ) -> [f64; K] {
+        pairs.map(|(plus, minus)| sign * (self.voltage(at, plus) - self.voltage(at, minus)))
     }
 
     /// The voltage of the node at `index`, its unknown, as a number of `R`, which moves as
@@ -467,6 +478,25 @@ pub(crate) fn write_variables(kept: &[f64], values: &mut [f64]) {
     }
 }
 
+/// The reciprocal of an optional positive parameter, zero when it is left out, infinite.
+pub(crate) fn inverse<R: Real>(name: &str, value: Option<R>) -> Result<R, ParameterError> {
+    value.map_or(Ok(R::constant(0.0)), |value| {
+        ParameterError::positive(name, value).map(Real::recip)
+    })
+}
+
+/// Checks that a fraction `value` is at least 0 and at most 1.
+pub(crate) fn fraction<R: Real>(name: &str, value: R) -> Result<R, ParameterError> {
+    if (0.0..=1.0).contains(&value.value()) {
+        Ok(value)
+    } else {
+        Err(ParameterError(format!(
+            "{name} must be at least 0 and at most 1, not {:?}",
+            value.value()
+        )))
+    }
+}
+
 /// The number a series `resistance` stamps with: its conductance where it is a conductance,
 /// its resistance where its current is an unknown, and nothing without one.
 pub(crate) fn series_value<R: Real>(resistance: R) -> R {
@@ -500,6 +530,74 @@ impl<const N: usize> Bias<N> {
         Self { voltages, beyond }
     }
 
+    /// Measures the voltages across `pairs` of `nodes`, turned by `sign`, passes them and
+    /// `last` to `limit` when step limiting is active, updates `last`, marks `stamp` if
+    /// any step was limited, and returns the resulting [`Bias`].
+    pub(crate) fn limit<R: Real, const M: usize>(
+        nodes: &Nodes<M>,
+        (sign, pairs): (f64, [(usize, usize); N]),
+        last: &mut [f64; N],
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+        limit: impl FnOnce([f64; N], [f64; N]) -> Option<[f64; N]>,
+    ) -> Self {
+        let applied = nodes.voltages(at, sign, pairs);
+        let limited = at.limiting.then(|| limit(applied, *last)).flatten();
+        let voltages = if let Some(limited) = limited {
+            stamp.mark_limited();
+            limited
+        } else {
+            applied
+        };
+        *last = voltages;
+        Self::new(applied, voltages)
+    }
+
+    /// Measures the voltages across `pairs` of `nodes`, turned by `sign`, limits the first
+    /// `L` of them elementwise with `limit` against `last` when step limiting is active,
+    /// updates `last`, marks `stamp` if any step was limited, and returns the resulting
+    /// [`Bias`].
+    pub(crate) fn limit_prefix<R: Real, const M: usize, const L: usize>(
+        nodes: &Nodes<M>,
+        (sign, pairs): (f64, [(usize, usize); N]),
+        last: &mut [f64; L],
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+        mut limit: impl FnMut(f64, f64) -> Option<f64>,
+    ) -> Self {
+        let applied = nodes.voltages(at, sign, pairs);
+        let mut voltages = applied;
+        let mut limited = false;
+        for (voltage, previous) in voltages.iter_mut().zip(last) {
+            if at.limiting
+                && let Some(step) = limit(*voltage, *previous)
+            {
+                *voltage = step;
+                limited = true;
+            }
+            *previous = *voltage;
+        }
+        if limited {
+            stamp.mark_limited();
+        }
+        Self::new(applied, voltages)
+    }
+
+    /// As [`Bias::limit_prefix`], limiting the first `L` voltages as pn junctions of
+    /// exponential `slope` and `critical_voltage`.
+    pub(crate) fn limit_junctions<R: Real, const M: usize, const L: usize>(
+        nodes: &Nodes<M>,
+        oriented: (f64, [(usize, usize); N]),
+        last: &mut [f64; L],
+        (slope, critical_voltage): (f64, f64),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) -> Self {
+        Self::limit_prefix(nodes, oriented, last, at, stamp, |voltage, previous| {
+            limit_junction(voltage, previous, slope, critical_voltage)
+        })
+    }
+
     /// The voltages evaluated at, each across its pair of `nodes` of `pairs`, turned by
     /// `sign`, as numbers of `R` that move as the voltages across them do when a twin
     /// seeds their unknowns.
@@ -527,6 +625,24 @@ pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
     pub(crate) sign: f64,
     pub(crate) bias: &'a Bias<N>,
     pub(crate) variables: [(usize, usize); N],
+}
+
+impl<'a, const M: usize, const N: usize> Oriented<'a, M, N> {
+    /// What a transistor adds across `nodes`, oriented by `sign`, at `bias` over
+    /// `variables`.
+    pub(crate) const fn new(
+        nodes: &'a Nodes<M>,
+        sign: f64,
+        bias: &'a Bias<N>,
+        variables: [(usize, usize); N],
+    ) -> Self {
+        Self {
+            nodes,
+            sign,
+            bias,
+            variables,
+        }
+    }
 }
 
 impl<const M: usize, const N: usize> Oriented<'_, M, N> {

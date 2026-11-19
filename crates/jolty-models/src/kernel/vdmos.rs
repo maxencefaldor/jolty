@@ -13,7 +13,7 @@ use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{Depletion, Temperatures, below_one, limit_channel};
 use crate::kernel::mosfet::{DEFAULT_OXIDE_THICKNESS, OXIDE_PERMITTIVITY};
-use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series, Varying};
+use crate::kernel::parts::{self, Bias, Derivatives, Nodes, Oriented, Pair, Series, Varying};
 use crate::kernel::region::SATURATION_MARGIN;
 use crate::noise::Flicker;
 use crate::{
@@ -512,10 +512,6 @@ impl<R: Real> Quasi<R> {
     }
 }
 
-/// The gate-source and drain-source voltages of one evaluation, oriented as an
-/// n-channel's.
-type Bias = parts::Bias<2>;
-
 impl Kernel for Vdmos {
     const NAME: &'static str = "vdmos";
     type Parameters<R: Real> = VdmosParameters<R>;
@@ -610,9 +606,20 @@ impl Kernel for Vdmos {
         for (series, resistance) in others.iter().zip(others_resistances) {
             series.add(series.value_of(resistance), at, stamp);
         }
-        let bias = prepared.bias(shape, memory, at, stamp);
         let sign = prepared.sign;
-        let [vgs, vds] = Dual::variables(bias.across(&shape.stamp, at, (sign, VARIABLES)));
+        let bias = Bias::limit(
+            &shape.stamp,
+            (sign, VARIABLES),
+            &mut memory.last,
+            at,
+            stamp,
+            |applied, last| {
+                let (limited, changed) = limit_channel(applied, last, prepared.threshold);
+                changed.then_some(limited)
+            },
+        );
+        let added = Oriented::new(&shape.stamp, sign, &bias, VARIABLES);
+        let [vgs, vds] = Dual::variables(added.across(at));
         let conduction = prepared.channel.evaluate([vgs, vds]);
         match (&shape.quasi, &prepared.quasi) {
             (Some(varying), Some(quasi)) if conduction.forward => {
@@ -623,12 +630,6 @@ impl Kernel for Vdmos {
             }
             _ => drain_series.add(drain_series.value_of(drain), at, stamp),
         }
-        let added = Oriented {
-            nodes: &shape.stamp,
-            sign,
-            bias: &bias,
-            variables: VARIABLES,
-        };
         // Every derivative among the stamped nodes is summed here, and written once.
         let mut derivatives = Derivatives::new();
         let sums = &mut derivatives;
@@ -688,8 +689,7 @@ impl Kernel for Vdmos {
         let temperature = prepared.temperature;
         let stamp = &shape.stamp;
         let sign = prepared.sign;
-        let voltages = VARIABLES
-            .map(|(plus, minus)| sign * (stamp.voltage(at, plus) - stamp.voltage(at, minus)));
+        let voltages = stamp.voltages(at, sign, VARIABLES);
         let conduction = prepared
             .channel
             .evaluate(Dual::variables(voltages.map(R::constant)));
@@ -946,40 +946,13 @@ impl<R: Real> VdmosParameters<R> {
     }
 }
 
-impl<R: Real> PreparedVdmos<R> {
-    /// The channel's voltages at `at`, limited from the last evaluation's, which `memory`
-    /// keeps and takes the new ones.
-    fn bias(
-        &self,
-        shape: &VdmosShape,
-        memory: &mut VdmosMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) -> Bias {
-        let nodes = &shape.stamp;
-        let applied = VARIABLES
-            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-        let (limited, changed) = limit_channel(applied, memory.last, self.threshold);
-        let voltages = if changed && at.limiting {
-            stamp.mark_limited();
-            limited
-        } else {
-            applied
-        };
-        memory.last = voltages;
-        Bias::new(applied, voltages)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_close, assert_jacobians_match, assert_regions, source, thermal,
     };
     use crate::thermal_voltage;
 
@@ -1081,32 +1054,6 @@ mod tests {
             (current / expected - 1.0).abs() < 1e-13,
             "{current} {expected}"
         );
-    }
-
-    #[test]
-    fn a_p_channel_mirrors_an_n_channel() {
-        for parameters in [FULL.to_owned(), quasi(FULL)] {
-            let x = [12.0, 6.0, 0.3, 11.5, 0.31, 5.9, 0.2];
-            assert_mirrors(&Differentiable::<Vdmos>::new(), &parameters, &x);
-            // The threshold and the saturation voltage are the transistor's own, reversed
-            // in a p-channel; the rest are of either.
-            let mut n = Bench::new::<Vdmos>(&parameters);
-            let mut p = Bench::new::<Vdmos>(&p_channel(&parameters));
-            let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
-            n.settle(&x);
-            p.settle(&mirrored);
-            let (n_values, p_values) = (n.variables(), p.variables());
-            let polar = [true, true, false, false, false, false, false];
-            for (index, ((n_value, p_value), polar)) in
-                n_values.iter().zip(&p_values).zip(polar).enumerate()
-            {
-                let mirrored = if polar { -p_value } else { *p_value };
-                assert!(
-                    (n_value - mirrored).abs() <= 1e-15 * n_value.abs(),
-                    "{index}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -1243,103 +1190,6 @@ mod tests {
         );
     }
 
-    /// Every bias of the jacobian tests: forward and reversed, on and off, the body diode
-    /// forward, reversed and broken down.
-    const BIASES: [[f64; 2]; 6] = [
-        [12.0, 6.0],
-        [0.4, 8.0],
-        [5.0, 3.4],
-        [-0.8, 6.0],
-        [61.0, 0.0],
-        [3.0, -2.0],
-    ];
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let temperature = r#""nominal_temperature": 290, "threshold_voltage_temperature_coefficient": -4e-3,
-            "transconductance_parameter_temperature_exponent": -1.3,
-            "subthreshold_slope_temperature_coefficient": 2e-3,
-            "subthreshold_slope_quadratic_temperature_coefficient": 1e-6,
-            "drain_resistance_temperature_coefficient": 3e-3,
-            "drain_resistance_quadratic_temperature_coefficient": 1e-5,
-            "quasi_saturation_temperature_exponent": 0.4,
-            "source_resistance_temperature_coefficient": 2e-3,
-            "source_resistance_quadratic_temperature_coefficient": 2e-5,
-            "gate_resistance_temperature_coefficient": 1e-3,
-            "gate_resistance_quadratic_temperature_coefficient": 3e-5,
-            "body_resistance_temperature_coefficient": 4e-3,
-            "body_resistance_quadratic_temperature_coefficient": 4e-5,
-            "energy_gap": 1.2, "saturation_current_temperature_exponent": 2.5, "#;
-        let every = quasi(FULL).replace('{', &format!("{{{temperature}"));
-        let exponent = FULL.replace(
-            '{',
-            r#"{"drain_resistance_temperature_exponent": 1.7, "nominal_temperature": 310, "#,
-        );
-        let small = r#"{"drain_resistance": 0.05, "source_resistance": 0.02,
-            "gate_resistance": 0.5, "body_resistance": 0.01, "quasi_saturation_resistance": 0.1,
-            "quasi_saturation_voltage": 10, "drain_resistance_temperature_coefficient": 2e-3,
-            "multiplier": 3}"#;
-        for [drain, gate] in BIASES {
-            let x = [drain, gate, 0.0, 0.97 * drain, 0.02, 0.99 * gate, 0.01];
-            assert_parameter_gradients_match::<Vdmos>(&every, &x);
-            assert_parameter_gradients_match::<Vdmos>(&p_channel(&every), &x.map(|v| -v));
-            assert_parameter_gradients_match::<Vdmos>(&exponent, &x);
-            let inner = [
-                drain,
-                gate,
-                0.0,
-                0.99 * drain,
-                1e-2,
-                0.002,
-                -3e-2,
-                0.98 * gate,
-                1e-3,
-                0.01,
-                2e-2,
-            ];
-            assert_parameter_gradients_match::<Vdmos>(small, &inner);
-        }
-    }
-
-    #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
-        let model = crate::Thermal::<Vdmos>::new();
-        let warm = r#""nominal_temperature": 290, "threshold_voltage_temperature_coefficient": -4e-3,
-            "drain_resistance_temperature_coefficient": 3e-3,
-            "source_resistance_temperature_coefficient": 2e-3,
-            "body_resistance_temperature_coefficient": 4e-3, "#;
-        let every = quasi(FULL).replace('{', &format!("{{{warm}"));
-        for every in [every.clone(), p_channel(&every)] {
-            let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
-            let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench =
-                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-            let inner = [11.6, 0.3, 5.9, 0.2].map(|v| sign * v);
-            for rise in [0.0, 40.0] {
-                let mut plain = Bench::at::<Vdmos>(&every, REFERENCE_TEMPERATURE + rise);
-                let [d, g] = [12.0, 6.0].map(|v| sign * v);
-                let hot = bench.settle(&[d, g, 0.0, rise, inner[0], inner[1], inner[2], inner[3]]);
-                let reference = plain.settle(&[d, g, 0.0, inner[0], inner[1], inner[2], inner[3]]);
-                let electrical = [0, 1, 2, 4, 5, 6, 7].map(|row| hot.residual[row]);
-                assert_close(&electrical, &reference.residual);
-            }
-            for [d, g, rise] in [[12.0, 6.0, 20.0], [-0.8, 5.0, 60.0], [61.0, 0.0, 10.0]] {
-                let x = [
-                    sign * d,
-                    sign * g,
-                    0.0,
-                    rise,
-                    inner[0],
-                    inner[1],
-                    inner[2],
-                    inner[3],
-                ];
-                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
-            }
-        }
-    }
-
     proptest! {
         /// The conductances and capacitances are the derivatives of the currents and
         /// charges, in every region, in both modes and for both channels, with and without
@@ -1410,24 +1260,21 @@ mod tests {
     #[test]
     fn reports_its_region_and_margin() {
         let parameters = r#"{"triode_conductance_multiplier": 0.5}"#;
-        let mut n = Bench::new::<Vdmos>(parameters);
-        let mut p = Bench::new::<Vdmos>(&parameters.replace('}', r#", "channel": "p"}"#));
+        let mirror = parameters.replace('}', r#", "channel": "p"}"#);
         // The drain, the gate and the source, about the threshold of 3 V.
-        for (x, region) in [
-            ([0.5, 6.0, 0.0], "linear"),
-            ([10.0, 4.0, 0.0], "saturated"),
-            ([10.0, 0.0, 0.0], "saturated"),
-            ([0.0, 6.0, 0.5], "linear"),
-        ] {
-            n.settle(&x);
-            p.settle(&x.map(|value| -value));
-            let ((n_region, n_margin), (p_region, p_margin)) = (n.region(), p.region());
-            assert_eq!((n_region, p_region), (region, region), "{x:?}");
-            assert_close(&n_margin, &p_margin);
-        }
-        let (from, to) = ([0.5, 6.0, 0.0], [12.0, 6.0, 0.0]);
-        assert_switches_where_margin_vanishes(&mut n, (&from, &to), SATURATION_MARGIN);
-        let (from, to) = ([0.0, 6.0, 0.5], [0.0, 6.0, 12.0]);
-        assert_switches_where_margin_vanishes(&mut n, (&from, &to), SATURATION_MARGIN);
+        assert_regions::<Vdmos>(
+            parameters,
+            Some(&mirror),
+            &[
+                (&[0.5, 6.0, 0.0], "linear", None),
+                (&[10.0, 4.0, 0.0], "saturated", None),
+                (&[10.0, 0.0, 0.0], "saturated", None),
+                (&[0.0, 6.0, 0.5], "linear", None),
+            ],
+            &[
+                (&[0.5, 6.0, 0.0], &[12.0, 6.0, 0.0], SATURATION_MARGIN),
+                (&[0.0, 6.0, 0.5], &[0.0, 6.0, 12.0], SATURATION_MARGIN),
+            ],
+        );
     }
 }

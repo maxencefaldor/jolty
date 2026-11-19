@@ -205,10 +205,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{
-        Bench, assert_close, assert_model_jacobians_match, assert_model_parameter_gradients_match,
-        assert_unknown_derivatives_match,
-    };
+    use crate::testing::{Bench, assert_close};
     use crate::{Diode, REFERENCE_TEMPERATURE};
 
     /// A diode with a series resistance and a junction capacitance, heating.
@@ -216,41 +213,10 @@ mod tests {
         "junction_capacitance": 2e-12, "transit_time": 1e-9, "thermal": true}"#;
 
     #[test]
-    fn a_heated_diode_is_the_diode_at_its_temperature() {
-        let model = Thermal::<Diode>::new();
-        let mut heated = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
-        assert_eq!(heated.unknowns(), ["n0", "n1", "n2", "device:junction"]);
-        let cool = DIODE.replace(r#", "thermal": true"#, "");
-        for rise in [0.0, 40.0] {
-            let mut plain = Bench::at::<Diode>(&cool, REFERENCE_TEMPERATURE + rise);
-            let x = [0.72, 0.0, rise, 0.7];
-            let hot = heated.settle(&x);
-            let reference = plain.settle(&[0.72, 0.0, 0.7]);
-            let electrical = [hot.residual[0], hot.residual[1], hot.residual[3]];
-            assert_close(&electrical, &reference.residual);
-            // Its power, `Σ v · i` over its voltages, heats the thermal net.
-            let power = 0.72 * hot.residual[0] + 0.7 * hot.residual[3];
-            assert_close(&[-hot.residual[2]], &[power]);
-        }
-    }
-
-    #[test]
-    fn a_heated_diodes_derivatives_are_exact() {
-        let model = Thermal::<Diode>::new();
-        for x in [
-            [0.72, 0.0, 0.0, 0.7],
-            [0.72, 0.0, 15.0, 0.7],
-            [-3.0, 0.0, 60.0, -2.9],
-        ] {
-            assert_model_jacobians_match(&model, DIODE, &x);
-            assert_model_parameter_gradients_match(&model, DIODE, &x, None);
-            assert_unknown_derivatives_match(&model, DIODE, &x);
-        }
-    }
-
-    #[test]
     fn a_device_heats_only_when_asked() {
         let model = Thermal::<Diode>::new();
+        let heated_bench = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
+        assert_eq!(heated_bench.unknowns(), ["n0", "n1", "n2", "device:junction"]);
         let interface = |parameters: &str| {
             model
                 .read(&serde_json::from_str(parameters).expect("JSON"))

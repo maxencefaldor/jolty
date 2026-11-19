@@ -23,6 +23,35 @@ const CONTROL_POSITIVE: usize = 2;
 /// The local index of its terminal `control_negative`.
 const CONTROL_NEGATIVE: usize = 3;
 
+/// Expands the shared [`Kernel`] items of a linear controlled source inside its `impl Kernel`.
+macro_rules! controlled_common {
+    (
+        name: $name:literal,
+        parameters: $parameters:ident,
+        field: $field:ident,
+        shape: $shape:ty,
+        branches: $branches:expr,
+    ) => {
+        const NAME: &'static str = $name;
+        type Parameters<R: Real> = $parameters<R>;
+        type Shape = $shape;
+        type Prepared<R: Real> = R;
+        type Memory = ();
+
+        fn interface<R: Real>(_: &$parameters<R>) -> Interface {
+            Interface::new(CONTROLLED_TERMINALS, $branches)
+        }
+
+        fn prepare<R: Real>(parameters: &$parameters<R>, _: R) -> Result<R, ParameterError> {
+            Ok(parameters.$field)
+        }
+
+        fn linear(_: &$shape, _: &f64) -> bool {
+            true
+        }
+    };
+}
+
 /// A voltage-controlled voltage source.
 ///
 /// It holds `v_positive − v_negative = gain · (v_control_positive − v_control_negative)`. Its
@@ -49,24 +78,12 @@ pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
 }
 
 impl Kernel for VoltageControlledVoltageSource {
-    const NAME: &'static str = "voltage_controlled_voltage_source";
-    type Parameters<R: Real> = VoltageControlledVoltageSourceParameters<R>;
-    type Shape = VoltageControlledVoltageSourceShape;
-    type Prepared<R: Real> = R;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &VoltageControlledVoltageSourceParameters<R>) -> Interface {
-        Interface::new(
-            CONTROLLED_TERMINALS,
-            &[Branch::new(0, 1, BranchKind::VoltageSource)],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &VoltageControlledVoltageSourceParameters<R>,
-        _: R,
-    ) -> Result<R, ParameterError> {
-        Ok(parameters.gain)
+    controlled_common! {
+        name: "voltage_controlled_voltage_source",
+        parameters: VoltageControlledVoltageSourceParameters,
+        field: gain,
+        shape: VoltageControlledVoltageSourceShape,
+        branches: &[Branch::new(0, 1, BranchKind::VoltageSource)],
     }
 
     fn layout<R: Real>(
@@ -81,10 +98,6 @@ impl Kernel for VoltageControlledVoltageSource {
             layout.entry(row, CONTROL_NEGATIVE),
         ];
         Ok(VoltageControlledVoltageSourceShape { branch, entries })
-    }
-
-    fn linear(_: &VoltageControlledVoltageSourceShape, _: &f64) -> bool {
-        true
     }
 
     fn evaluate<R: Real>(
@@ -125,24 +138,12 @@ pub struct VoltageControlledCurrentSourceParameters<R: Real = f64> {
 }
 
 impl Kernel for VoltageControlledCurrentSource {
-    const NAME: &'static str = "voltage_controlled_current_source";
-    type Parameters<R: Real> = VoltageControlledCurrentSourceParameters<R>;
-    type Shape = ControlledCurrentShape;
-    type Prepared<R: Real> = R;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &VoltageControlledCurrentSourceParameters<R>) -> Interface {
-        Interface::new(
-            CONTROLLED_TERMINALS,
-            &[Branch::new(0, 1, BranchKind::CurrentSource)],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &VoltageControlledCurrentSourceParameters<R>,
-        _: R,
-    ) -> Result<R, ParameterError> {
-        Ok(parameters.transconductance)
+    controlled_common! {
+        name: "voltage_controlled_current_source",
+        parameters: VoltageControlledCurrentSourceParameters,
+        field: transconductance,
+        shape: ControlledCurrentShape,
+        branches: &[Branch::new(0, 1, BranchKind::CurrentSource)],
     }
 
     fn layout<R: Real>(
@@ -156,10 +157,6 @@ impl Kernel for VoltageControlledCurrentSource {
             layout.entry(NEGATIVE, CONTROL_POSITIVE),
             layout.entry(NEGATIVE, CONTROL_NEGATIVE),
         ]))
-    }
-
-    fn linear(_: &ControlledCurrentShape, _: &f64) -> bool {
-        true
     }
 
     fn evaluate<R: Real>(
@@ -219,27 +216,15 @@ fn add_sense<R: Real>(sense: &CurrentBranch, at: &Local<'_>, stamp: &mut Stamp<'
 }
 
 impl Kernel for CurrentControlledCurrentSource {
-    const NAME: &'static str = "current_controlled_current_source";
-    type Parameters<R: Real> = CurrentControlledCurrentSourceParameters<R>;
-    type Shape = CurrentControlledCurrentSourceShape;
-    type Prepared<R: Real> = R;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &CurrentControlledCurrentSourceParameters<R>) -> Interface {
-        Interface::new(
-            CONTROLLED_TERMINALS,
-            &[
-                Branch::new(0, 1, BranchKind::CurrentSource),
-                Branch::new(2, 3, BranchKind::VoltageSource),
-            ],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &CurrentControlledCurrentSourceParameters<R>,
-        _: R,
-    ) -> Result<R, ParameterError> {
-        Ok(parameters.gain)
+    controlled_common! {
+        name: "current_controlled_current_source",
+        parameters: CurrentControlledCurrentSourceParameters,
+        field: gain,
+        shape: CurrentControlledCurrentSourceShape,
+        branches: &[
+            Branch::new(0, 1, BranchKind::CurrentSource),
+            Branch::new(2, 3, BranchKind::VoltageSource),
+        ],
     }
 
     fn layout<R: Real>(
@@ -254,10 +239,6 @@ impl Kernel for CurrentControlledCurrentSource {
             layout.entry(NEGATIVE, control),
         ];
         Ok(CurrentControlledCurrentSourceShape { sense, entries })
-    }
-
-    fn linear(_: &CurrentControlledCurrentSourceShape, _: &f64) -> bool {
-        true
     }
 
     fn evaluate<R: Real>(
@@ -305,27 +286,15 @@ pub struct CurrentControlledVoltageSourceParameters<R: Real = f64> {
 }
 
 impl Kernel for CurrentControlledVoltageSource {
-    const NAME: &'static str = "current_controlled_voltage_source";
-    type Parameters<R: Real> = CurrentControlledVoltageSourceParameters<R>;
-    type Shape = SensedVoltageShape;
-    type Prepared<R: Real> = R;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &CurrentControlledVoltageSourceParameters<R>) -> Interface {
-        Interface::new(
-            CONTROLLED_TERMINALS,
-            &[
-                Branch::new(0, 1, BranchKind::VoltageSource),
-                Branch::new(2, 3, BranchKind::VoltageSource),
-            ],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &CurrentControlledVoltageSourceParameters<R>,
-        _: R,
-    ) -> Result<R, ParameterError> {
-        Ok(parameters.transresistance)
+    controlled_common! {
+        name: "current_controlled_voltage_source",
+        parameters: CurrentControlledVoltageSourceParameters,
+        field: transresistance,
+        shape: SensedVoltageShape,
+        branches: &[
+            Branch::new(0, 1, BranchKind::VoltageSource),
+            Branch::new(2, 3, BranchKind::VoltageSource),
+        ],
     }
 
     fn layout<R: Real>(
@@ -341,10 +310,6 @@ impl Kernel for CurrentControlledVoltageSource {
             branch,
             entry,
         })
-    }
-
-    fn linear(_: &SensedVoltageShape, _: &f64) -> bool {
-        true
     }
 
     fn evaluate<R: Real>(
@@ -366,47 +331,6 @@ impl Kernel for CurrentControlledVoltageSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{assert_jacobians_match, assert_parameter_gradients_match};
-
-    #[test]
-    fn jacobians_match_finite_differences() {
-        assert_jacobians_match::<VoltageControlledVoltageSource>(
-            r#"{"gain": 10}"#,
-            &[1.0, -0.5, 0.3, 0.1, 1e-3],
-        );
-        assert_jacobians_match::<VoltageControlledCurrentSource>(
-            r#"{"transconductance": 0.02}"#,
-            &[1.0, -0.5, 0.3, 0.1],
-        );
-        assert_jacobians_match::<CurrentControlledCurrentSource>(
-            r#"{"gain": 50}"#,
-            &[1.0, -0.5, 0.3, 0.1, 2e-3],
-        );
-        assert_jacobians_match::<CurrentControlledVoltageSource>(
-            r#"{"transresistance": 1000}"#,
-            &[1.0, -0.5, 0.3, 0.1, 2e-3, -1e-3],
-        );
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        assert_parameter_gradients_match::<VoltageControlledVoltageSource>(
-            r#"{"gain": 10}"#,
-            &[1.0, -0.5, 0.3, 0.1, 1e-3],
-        );
-        assert_parameter_gradients_match::<VoltageControlledCurrentSource>(
-            r#"{"transconductance": 0.02}"#,
-            &[1.0, -0.5, 0.3, 0.1],
-        );
-        assert_parameter_gradients_match::<CurrentControlledCurrentSource>(
-            r#"{"gain": 50}"#,
-            &[1.0, -0.5, 0.3, 0.1, 2e-3],
-        );
-        assert_parameter_gradients_match::<CurrentControlledVoltageSource>(
-            r#"{"transresistance": 1000}"#,
-            &[1.0, -0.5, 0.3, 0.1, 2e-3, -1e-3],
-        );
-    }
 
     #[test]
     fn a_control_port_senses_its_current_and_holds_no_voltage() {

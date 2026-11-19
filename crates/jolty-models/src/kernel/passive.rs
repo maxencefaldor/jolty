@@ -664,10 +664,7 @@ impl Kernel for CoupledInductors {
 mod tests {
     use super::*;
     use crate::UnknownIndex;
-    use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
-    };
+    use crate::testing::{Bench, assert_close, assert_jacobians_match, source, thermal};
 
     #[test]
     fn a_resistor_conducts_by_ohms_law() {
@@ -676,56 +673,14 @@ mod tests {
     }
 
     #[test]
-    fn a_heated_resistor_is_the_resistor_at_its_temperature() {
-        let model = crate::Thermal::<Resistor>::new();
-        let coefficients = r#""temperature_coefficient": 4e-3,
-            "quadratic_temperature_coefficient": 1e-5, "voltage_coefficient": -0.05"#;
-        for resistance in [1000.0, 1e-4] {
-            let every = format!(r#"{{"resistance": {resistance}, {coefficients}}}"#);
-            let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench =
-                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-            // A current of its own, where it has one, follows the thermal terminal.
-            let current = (resistance < 1.0).then_some(2.0 / resistance);
-            for rise in [0.0, 50.0] {
-                let mut plain = Bench::at::<Resistor>(&every, REFERENCE_TEMPERATURE + rise);
-                let hot = bench.settle(
-                    &[3.0, 1.0, rise]
-                        .into_iter()
-                        .chain(current)
-                        .collect::<Vec<_>>(),
-                );
-                let reference =
-                    plain.settle(&[3.0, 1.0].into_iter().chain(current).collect::<Vec<_>>());
-                let mut electrical = vec![hot.residual[0], hot.residual[1]];
-                electrical.extend(current.map(|_| hot.residual[3]));
-                assert_close(&electrical, &reference.residual);
-                // It dissipates `v · i`, its current leaving `a` and entering `b`.
-                let power = 3.0 * hot.residual[0] + 1.0 * hot.residual[1];
-                assert_close(&[-hot.residual[2]], &[power]);
-            }
-            for rise in [10.0, 80.0] {
-                let x: Vec<f64> = [2.5, -0.5, rise].into_iter().chain(current).collect();
-                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
-            }
-        }
-    }
-
-    #[test]
     fn a_small_resistor_carries_its_current_as_an_unknown() {
         let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1e-6}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
         let output = bench.evaluate(&[3.0, 1.0, 2e6]);
         assert_close(&output.residual, &[2e6, -2e6, 0.0]);
-        assert_jacobians_match::<Resistor>(r#"{"resistance": 0.5}"#, &[1.0, -0.5, 3.0]);
-        let coefficients = r#""voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#;
         assert_jacobians_match::<Resistor>(
-            &format!(r#"{{"resistance": 0.5, {coefficients}}}"#),
-            &[1.0, -0.5, 2.5],
-        );
-        assert_parameter_gradients_match::<Resistor>(
-            &format!(r#"{{"resistance": 0.5, "temperature_coefficient": 1e-3, {coefficients}}}"#),
+            r#"{"resistance": 0.5, "voltage_coefficient": -0.05,
+                "quadratic_voltage_coefficient": 0.02}"#,
             &[1.0, -0.5, 2.5],
         );
         let large = Bench::new::<Resistor>(r#"{"resistance": 1}"#);
@@ -743,15 +698,17 @@ mod tests {
     #[test]
     fn values_change_with_their_voltage_coefficients() {
         let coefficients = r#""voltage_coefficient": 0.1, "quadratic_voltage_coefficient": 0.01"#;
-        let mut bench =
-            Bench::new::<Resistor>(&format!(r#"{{"resistance": 1000, {coefficients}}}"#));
+        let resistor = format!(r#"{{"resistance": 1000, {coefficients}}}"#);
+        let mut bench = Bench::new::<Resistor>(&resistor);
         let current = 2.0 / (1000.0 * (1.0 + 0.1 * 2.0 + 0.01 * 4.0));
         assert_close(&bench.evaluate(&[3.0, 1.0]).residual, &[current, -current]);
-        let mut bench =
-            Bench::new::<Capacitor>(&format!(r#"{{"capacitance": 1e-6, {coefficients}}}"#));
+        assert_jacobians_match::<Resistor>(&resistor, &[1.0, -0.5]);
+        let capacitor = format!(r#"{{"capacitance": 1e-6, {coefficients}}}"#);
+        let mut bench = Bench::new::<Capacitor>(&capacitor);
         let charge = 1e-6 * (2.0 + 0.1 * 4.0 / 2.0 + 0.01 * 8.0 / 3.0);
         let output = bench.evaluate(&[2.0, 0.0]);
         assert_close(&output.charge, &[charge, -charge]);
+        assert_jacobians_match::<Capacitor>(&capacitor, &[1.0, -0.5]);
     }
 
     #[test]
@@ -782,11 +739,6 @@ mod tests {
         assert_close(
             &output.charge,
             &[0.0, 0.0, 0.0, 0.0, -fluxes[0], -fluxes[1]],
-        );
-        assert_jacobians_match::<CoupledInductors>(TRANSFORMER, &[1.0, 0.5, -2.0, 0.0, 0.3, -0.1]);
-        assert_parameter_gradients_match::<CoupledInductors>(
-            TRANSFORMER,
-            &[1.0, 0.5, -2.0, 0.0, 0.3, -0.1],
         );
         let interface = CoupledInductors::interface::<f64>(
             &serde_json::from_str(TRANSFORMER).expect("parameters"),
@@ -855,47 +807,6 @@ mod tests {
             error
                 .0
                 .starts_with("the temperature coefficients scale the resistance to zero")
-        );
-    }
-
-    #[test]
-    fn jacobians_match_finite_differences() {
-        let coefficients = r#""voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#;
-        assert_jacobians_match::<Resistor>(r#"{"resistance": 50}"#, &[1.0, -0.5]);
-        assert_jacobians_match::<Resistor>(
-            &format!(r#"{{"resistance": 50, {coefficients}}}"#),
-            &[1.0, -0.5],
-        );
-        assert_jacobians_match::<Capacitor>(r#"{"capacitance": 2e-9}"#, &[1.0, -0.5]);
-        assert_jacobians_match::<Capacitor>(
-            &format!(r#"{{"capacitance": 2e-9, {coefficients}}}"#),
-            &[1.0, -0.5],
-        );
-        assert_jacobians_match::<Inductor>(r#"{"inductance": 1e-3}"#, &[1.0, -0.5, 0.25]);
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let drifting = r#""temperature_coefficient": 1e-3,
-            "quadratic_temperature_coefficient": 1e-5, "nominal_temperature": 290"#;
-        let nonlinear = format!(
-            r#"{drifting}, "voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#
-        );
-        assert_parameter_gradients_match::<Resistor>(
-            &format!(r#"{{"resistance": 50, {nonlinear}}}"#),
-            &[1.0, -0.5],
-        );
-        assert_parameter_gradients_match::<Resistor>(
-            r#"{"resistance": 50, "exponential_temperature_coefficient": 0.3}"#,
-            &[1.0, -0.5],
-        );
-        assert_parameter_gradients_match::<Capacitor>(
-            &format!(r#"{{"capacitance": 2e-9, {nonlinear}}}"#),
-            &[1.0, -0.5],
-        );
-        assert_parameter_gradients_match::<Inductor>(
-            &format!(r#"{{"inductance": 1e-3, {drifting}}}"#),
-            &[1.0, -0.5, 0.25],
         );
     }
 

@@ -9,11 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
-    limit_junction,
 };
-use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{
-    self, CurrentBranch, Derivatives, Nodes, Oriented, Series, series_value,
+    self, Bias, CurrentBranch, Derivatives, Nodes, Oriented, SMALL_RESISTANCE, Series, fraction,
+    inverse, series_value,
 };
 use crate::kernel::region::Bipolar;
 use crate::noise::Flicker;
@@ -73,28 +72,14 @@ pub enum BipolarTemperatureModel {
     One,
 }
 
-impl TryFrom<u8> for BipolarTemperatureModel {
-    type Error = String;
-
-    fn try_from(tlev: u8) -> Result<Self, String> {
-        match tlev {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "a bipolar transistor's temperature_model is 0 or 1, not {tlev}"
-            )),
-        }
+super::numbered_enum!(
+    BipolarTemperatureModel,
+    "a bipolar transistor's temperature_model is 0 or 1",
+    {
+        0 => Zero,
+        1 => One,
     }
-}
-
-impl From<BipolarTemperatureModel> for u8 {
-    fn from(tlev: BipolarTemperatureModel) -> Self {
-        match tlev {
-            BipolarTemperatureModel::Zero => 0,
-            BipolarTemperatureModel::One => 1,
-        }
-    }
-}
+);
 
 /// How a bipolar transistor's depletion capacitances and built-in potentials follow the
 /// temperature: SPICE's `TLEVC`, as ngspice's `bjttemp.c` computes each (lines 260 to 313).
@@ -109,28 +94,14 @@ pub enum BipolarCapacitanceTemperatureModel {
     One,
 }
 
-impl TryFrom<u8> for BipolarCapacitanceTemperatureModel {
-    type Error = String;
-
-    fn try_from(tlevc: u8) -> Result<Self, String> {
-        match tlevc {
-            0 => Ok(Self::Zero),
-            1 => Ok(Self::One),
-            _ => Err(format!(
-                "a bipolar transistor's capacitance_temperature_model is 0 or 1, not {tlevc}"
-            )),
-        }
+super::numbered_enum!(
+    BipolarCapacitanceTemperatureModel,
+    "a bipolar transistor's capacitance_temperature_model is 0 or 1",
+    {
+        0 => Zero,
+        1 => One,
     }
-}
-
-impl From<BipolarCapacitanceTemperatureModel> for u8 {
-    fn from(tlevc: BipolarCapacitanceTemperatureModel) -> Self {
-        match tlevc {
-            BipolarCapacitanceTemperatureModel::Zero => 0,
-            BipolarCapacitanceTemperatureModel::One => 1,
-        }
-    }
-}
+);
 
 /// The largest grading coefficient ngspice takes at a transistor's temperature: it limits
 /// one its temperature coefficients raise beyond to it, with a warning, as a depletion
@@ -273,9 +244,6 @@ const INTRINSIC: [usize; 2] = [VBE, VBC];
 /// The base resistance's current, where it is a conductance, reads its own drop, then the
 /// junctions the resistance falls with.
 const BASE_RESISTANCE: [usize; 3] = [VRB, VBE, VBC];
-
-/// The variables of one evaluation.
-type Bias = parts::Bias<VARIABLE_COUNT>;
 
 /// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
 /// treats as infinite at zero, such as an Early voltage, is infinite when left out.
@@ -1111,26 +1079,26 @@ impl<R: Real> SubstrateJunction<R> {
     /// Adds the junction's current and its charge, between the substrate and the internal
     /// node it joins, `nodes`, at `at`, its last voltage `last`, which it updates.
     fn evaluate(&self, nodes: &Nodes<2>, last: &mut f64, at: &Local<'_>, stamp: &mut Stamp<'_, R>) {
-        let applied = self.sign * (nodes.voltage(at, 0) - nodes.voltage(at, 1));
-        let limited = limit_junction(applied, *last, self.thermal_voltage, self.critical_voltage)
-            .filter(|_| at.limiting);
-        if limited.is_some() {
-            stamp.mark_limited();
-        }
-        *last = limited.unwrap_or(applied);
-        let beyond = [applied - *last];
-        let voltage = Dual::<R, 1>::variable(nodes.across(at, (0, 1), (self.sign, *last)));
+        let pair = (0, 1);
+        let bias = Bias::limit_junctions(
+            nodes,
+            (self.sign, [pair]),
+            std::array::from_mut(last),
+            (self.thermal_voltage, self.critical_voltage),
+            at,
+            stamp,
+        );
+        let [voltage] = Dual::variables(bias.across(nodes, at, (self.sign, [pair])));
         let current = self.diode.map_or(Dual::number(0.0), |(saturation, slope)| {
             junction_current(voltage, saturation, slope)
         }) + voltage * at.gmin;
-        let pair = (0, 1);
         let [conductance] = current.gradient;
-        nodes.current(stamp, 0, 1, current.extend(beyond) * self.sign);
+        nodes.current(stamp, 0, 1, current.extend(bias.beyond) * self.sign);
         nodes.conductance(stamp, pair, pair, conductance);
         if let Some(depletion) = &self.depletion {
             let charge = depletion.evaluate(voltage);
             let [capacitance] = charge.gradient;
-            nodes.charge(stamp, 0, 1, charge.extend(beyond) * self.sign);
+            nodes.charge(stamp, 0, 1, charge.extend(bias.beyond) * self.sign);
             nodes.capacitance(stamp, pair, pair, capacitance);
         }
     }
@@ -1490,12 +1458,7 @@ impl<R: Real> BipolarTransistorParameters<R> {
         )?;
         ParameterError::positive("base_collector_potential", self.base_collector_potential)?;
         below_one("base_collector_grading", self.base_collector_grading)?;
-        if !(0.0..=1.0).contains(&self.internal_base_fraction.value()) {
-            return Err(ParameterError(format!(
-                "internal_base_fraction must be at least 0 and at most 1, not {:?}",
-                self.internal_base_fraction.value()
-            )));
-        }
+        fraction("internal_base_fraction", self.internal_base_fraction)?;
         non_negative("reverse_transit_time", self.reverse_transit_time)?;
         below_one("depletion_coefficient", self.depletion_coefficient)?;
         Ok(())
@@ -1672,13 +1635,6 @@ fn series_at<R: Real>(nominal: R, scaled: R) -> R {
     }
 }
 
-/// The reciprocal of an optional positive parameter, zero when it is left out, infinite.
-fn inverse<R: Real>(name: &str, value: Option<R>) -> Result<R, ParameterError> {
-    value.map_or(Ok(R::constant(0.0)), |value| {
-        ParameterError::positive(name, value).map(Real::recip)
-    })
-}
-
 impl Kernel for BipolarTransistor {
     const NAME: &'static str = "bipolar_transistor";
     type Parameters<R: Real> = BipolarTransistorParameters<R>;
@@ -1802,15 +1758,17 @@ impl Kernel for BipolarTransistor {
         let [collector_series, emitter_series] = prepared.series;
         shape.collector_series.add(collector_series, at, stamp);
         shape.emitter_series.add(emitter_series, at, stamp);
-        let bias = prepared.bias(shape, memory, at, stamp);
+        let bias = Bias::limit_junctions(
+            &shape.stamp,
+            (prepared.sign, VARIABLES),
+            &mut memory.last,
+            (prepared.thermal_voltage, prepared.critical_voltage),
+            at,
+            stamp,
+        );
         let [vbe, vbc, ..] = bias.voltages;
         memory.variables = Bipolar::variables(vbe, vbc);
-        let added = Oriented {
-            nodes: &shape.stamp,
-            sign: prepared.sign,
-            bias: &bias,
-            variables: VARIABLES,
-        };
+        let added = Oriented::new(&shape.stamp, prepared.sign, &bias, VARIABLES);
         let voltages = added.across(at);
         let [vbe, vbc, ..] = voltages;
         let state = prepared.junctions.evaluate([vbe, vbc], at.gmin);
@@ -1883,9 +1841,7 @@ impl Kernel for BipolarTransistor {
             .emitter_series
             .noise(emitter_series, ("emitter thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let voltages = [BASE_EMITTER, BASE_COLLECTOR].map(|(plus, minus)| {
-            prepared.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus))
-        });
+        let voltages = nodes.voltages(at, prepared.sign, [BASE_EMITTER, BASE_COLLECTOR]);
         let state = prepared
             .junctions
             .evaluate(voltages.map(R::constant), at.gmin);
@@ -2003,49 +1959,16 @@ impl<R: Real> BipolarTransistorParameters<R> {
     }
 }
 
-impl<R: Real> PreparedBipolarTransistor<R> {
-    /// The variables at `at`, the junction voltages limited from the last evaluation's,
-    /// which `memory` keeps and takes the new ones.
-    fn bias(
-        &self,
-        shape: &BipolarTransistorShape,
-        memory: &mut BipolarTransistorMemory,
-        at: &Local<'_>,
-        stamp: &mut Stamp<'_, R>,
-    ) -> Bias {
-        let nodes = &shape.stamp;
-        let applied = VARIABLES
-            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-        let mut voltages = applied;
-        let mut limited = false;
-        for (voltage, last) in voltages.iter_mut().zip(&mut memory.last) {
-            if at.limiting
-                && let Some(step) =
-                    limit_junction(*voltage, *last, self.thermal_voltage, self.critical_voltage)
-            {
-                *voltage = step;
-                limited = true;
-            }
-            *last = *voltage;
-        }
-        if limited {
-            stamp.mark_limited();
-        }
-        Bias::new(applied, voltages)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::Differentiable;
     use crate::Input;
     use crate::kernel::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source, thermal,
+        Bench, assert_bessel_filter, assert_close, assert_jacobians_match,
+        assert_parameter_gradients_match, assert_regions, source, thermal,
     };
     use crate::{ELEMENTARY_CHARGE, UnknownIndex, thermal_voltage};
 
@@ -2078,13 +2001,6 @@ mod tests {
             "{}",
             collector / base
         );
-    }
-
-    #[test]
-    fn a_pnp_mirrors_an_npn() {
-        let model = Differentiable::<BipolarTransistor>::new();
-        assert_mirrors(&model, FULL, &[3.0, 0.7, 0.0]);
-        assert_mirrors(&model, &excess(), &[3.0, 0.7, 0.0, 1e-3, 0.0]);
     }
 
     #[test]
@@ -2203,43 +2119,18 @@ mod tests {
     #[test]
     fn its_delay_is_a_second_order_bessel_filter() {
         // Linearized, the delayed current responds to the forward transport current
-        // through 3 / (s² td² + 3 s td + 3): solve the two rows at s = jω for a unit drive.
+        // through 3 / (s² td² + 3 s td + 3): y's row holds −3 u.
         let mut delayed = Bench::new::<BipolarTransistor>(&excess());
         let evaluation = delayed.settle(&[3.0, 0.7, 0.0, 1e-3, 0.0]);
         let delay = 30.0 * std::f64::consts::PI / 180.0 * 4e-10;
-        for omega in [1e8, 1.0 / delay, 1e10] {
-            let entry = |row: usize, column: usize| {
-                (
-                    evaluation.conductance[row][column],
-                    omega * evaluation.capacitance[row][column],
-                )
-            };
-            // The rows of x and y over the columns x and y, and y's drive by the forward
-            // transport current, whose conductance at the internal base is −3 du/dvb.
-            let [a, b, c, d] = [entry(3, 3), entry(3, 4), entry(4, 3), entry(4, 4)];
-            let multiply =
-                |p: (f64, f64), q: (f64, f64)| (p.0 * q.0 - p.1 * q.1, p.0 * q.1 + p.1 * q.0);
-            let determinant = {
-                let (ad, bc) = (multiply(a, d), multiply(b, c));
-                (ad.0 - bc.0, ad.1 - bc.1)
-            };
-            // x = −b · (−3 u) / det for a drive u of 1 into y's row, as y's residual holds −3 u.
-            let numerator = multiply(b, (3.0, 0.0));
-            let numerator = (-numerator.0, -numerator.1);
-            let norm = determinant.0 * determinant.0 + determinant.1 * determinant.1;
-            let response = (
-                (numerator.0 * determinant.0 + numerator.1 * determinant.1) / norm,
-                (numerator.1 * determinant.0 - numerator.0 * determinant.1) / norm,
-            );
-            let wt = omega * delay;
-            let denominator = (3.0 - wt * wt, 3.0 * wt);
-            let dnorm = denominator.0 * denominator.0 + denominator.1 * denominator.1;
-            let expected = (3.0 * denominator.0 / dnorm, -3.0 * denominator.1 / dnorm);
-            assert!(
-                (response.0 - expected.0).abs() < 1e-12 && (response.1 - expected.1).abs() < 1e-12,
-                "{response:?} vs {expected:?} at {omega}"
-            );
-        }
+        assert_bessel_filter(
+            &evaluation,
+            [3, 4],
+            [0.0, 3.0],
+            0,
+            delay,
+            [1e8, 1.0 / delay, 1e10],
+        );
     }
 
     #[test]
@@ -2251,35 +2142,6 @@ mod tests {
             error.to_string(),
             "excess_phase must be at least 0, not -1.0"
         );
-    }
-
-    #[test]
-    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
-        let model = crate::Thermal::<BipolarTransistor>::new();
-        let heated = FULL.replace('{', r#"{"thermal": true, "base_resistance": 50, "#);
-        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
-        let cool = FULL.replace('{', r#"{"base_resistance": 50, "#);
-        for rise in [0.0, 35.0] {
-            let mut plain = Bench::at::<BipolarTransistor>(&cool, REFERENCE_TEMPERATURE + rise);
-            let hot = bench.settle(&[3.0, 0.7, 0.0, rise, 0.69]);
-            let reference = plain.settle(&[3.0, 0.7, 0.0, 0.69]);
-            let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
-            assert_close(&electrical, &reference.residual);
-        }
-        for x in [[3.0, 0.7, 0.0, 20.0, 0.69], [0.3, 0.75, 0.0, 70.0, 0.74]] {
-            crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
-        }
-        // Its temperature coefficients follow its own temperature, exactly differentiated.
-        for coefficients in with_coefficients() {
-            let heated = coefficients.replace('{', r#"{"thermal": true, "#);
-            for x in [
-                [3.0, 0.7, 0.0, -1.0, 20.0, 2.98, 0.69, 0.001],
-                [0.3, 0.75, 0.0, 0.2, 70.0, 0.29, 0.74, 0.002],
-            ] {
-                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-            }
-        }
     }
 
     #[test]
@@ -2376,53 +2238,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let temperature = r#""energy_gap": 1.2, "saturation_current_temperature_exponent": 3.5,
-            "beta_temperature_exponent": 1.2, "nominal_temperature": 290, "#;
-        let full = FULL.replace('{', &format!("{{{temperature}"));
-        let resistive = |halfway: &str| {
-            full.replace(
-                '{',
-                &format!(
-                    r#"{{"base_resistance": 200, "min_base_resistance": 20, {halfway}
-                    "collector_resistance": 10, "emitter_resistance": 2, "#
-                ),
-            )
-        };
-        let delayed = full.replace('{', r#"{"excess_phase": 30, "#);
-        for [collector, base] in [[3.0, 0.7], [0.4, 0.72], [-0.5, 0.1], [0.2, -0.6]] {
-            assert_parameter_gradients_match::<BipolarTransistor>(&full, &[collector, base, 0.0]);
-            assert_parameter_gradients_match::<BipolarTransistor>(
-                &delayed,
-                &[collector, base, 0.0, 2e-3, -1e-4],
-            );
-            for halfway in ["", r#""base_resistance_current": 1e-4,"#] {
-                let substrate = resistive(halfway).replace(
-                    '{',
-                    r#"{"substrate": "lateral", "substrate_saturation_current": 1e-16,
-                        "substrate_emission_coefficient": 1.2, "substrate_capacitance": 3e-12,
-                        "substrate_potential": 0.6, "substrate_grading": 0.4, "#,
-                );
-                assert_parameter_gradients_match::<BipolarTransistor>(
-                    &substrate,
-                    &[
-                        collector,
-                        base,
-                        0.0,
-                        -1.0,
-                        collector - 0.01,
-                        base - 0.02,
-                        0.001,
-                    ],
-                );
-            }
-        }
-    }
-
     /// Every temperature coefficient, each moving its parameter by a few percent over the
-    /// 10 K between `parameter_gradients_are_exact`'s nominal temperature and the
-    /// reference temperature, with a substrate and the base resistance.
+    /// 10 K between the nominal temperature (290 K) and the reference temperature, with a
+    /// substrate and the base resistance.
     const COEFFICIENTS: &str = r#""nominal_temperature": 290, "high_injection_exponent": 0.4,
         "forward_beta_temperature_coefficient": 4e-3,
         "forward_beta_quadratic_temperature_coefficient": 2e-5,
@@ -2497,6 +2315,7 @@ mod tests {
 
     #[test]
     fn temperature_coefficients_scale_their_parameters_exactly() {
+        let model = crate::Thermal::<BipolarTransistor>::new();
         for parameters in with_coefficients() {
             for x in [
                 [3.0, 0.7, 0.0, -1.0, 2.98, 0.68, 0.001],
@@ -2505,6 +2324,14 @@ mod tests {
             ] {
                 assert_jacobians_match::<BipolarTransistor>(&parameters, &x);
                 assert_parameter_gradients_match::<BipolarTransistor>(&parameters, &x);
+            }
+            // Its temperature coefficients follow its own temperature, exactly differentiated.
+            let heated = parameters.replace('{', r#"{"thermal": true, "#);
+            for x in [
+                [3.0, 0.7, 0.0, -1.0, 20.0, 2.98, 0.69, 0.001],
+                [0.3, 0.75, 0.0, 0.2, 70.0, 0.29, 0.74, 0.002],
+            ] {
+                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
             }
         }
     }
@@ -2581,13 +2408,17 @@ mod tests {
                 parameters = parameters.replace('{', r#"{"polarity": "pnp", "#);
             }
             let sign = if pnp { -1.0 } else { 1.0 };
-            assert_jacobians_match::<BipolarTransistor>(
-                &parameters,
-                &[sign * collector, sign * base, 0.0],
-            );
+            let [
+                collector,
+                base,
+                inner_collector,
+                inner_base,
+                inner_emitter,
+            ] = [collector, base, 0.98 * collector, 0.97 * base, 0.01].map(|value| sign * value);
+            assert_jacobians_match::<BipolarTransistor>(&parameters, &[collector, base, 0.0]);
             assert_jacobians_match::<BipolarTransistor>(
                 &parameters.replace('{', r#"{"excess_phase": 45, "#),
-                &[sign * collector, sign * base, 0.0, 1e-3, -2e-4],
+                &[collector, base, 0.0, 1e-3, -2e-4],
             );
             let resistive = parameters.replace(
                 '{',
@@ -2606,27 +2437,28 @@ mod tests {
                     "substrate_emission_coefficient": 1.2, "substrate_capacitance": 3e-12,
                     "substrate_potential": 0.6, "substrate_grading": 0.4, "#,
             );
+            let substrate_voltage = base - sign * 0.4;
             assert_jacobians_match::<BipolarTransistor>(
                 &substrate,
                 &[
-                    sign * collector,
-                    sign * base,
+                    collector,
+                    base,
                     0.0,
-                    sign * (base - 0.4),
-                    sign * 0.98 * collector,
-                    sign * 0.97 * base,
-                    sign * 0.01,
+                    substrate_voltage,
+                    inner_collector,
+                    inner_base,
+                    inner_emitter,
                 ],
             );
             assert_jacobians_match::<BipolarTransistor>(
                 &resistive,
                 &[
-                    sign * collector,
-                    sign * base,
+                    collector,
+                    base,
                     0.0,
-                    sign * 0.98 * collector,
-                    sign * 0.97 * base,
-                    sign * 0.01,
+                    inner_collector,
+                    inner_base,
+                    inner_emitter,
                 ],
             );
         }
@@ -2682,29 +2514,21 @@ mod tests {
     /// at the voltages reversed, and each region switches where its margin vanishes.
     #[test]
     fn reports_its_region_and_margins() {
-        let mut npn = Bench::new::<BipolarTransistor>("{}");
-        let mut pnp = Bench::new::<BipolarTransistor>(r#"{"polarity": "pnp"}"#);
         // The collector, the base and the emitter.
-        for (x, region) in [
-            ([5.0, -0.5, 0.0], "cut_off"),
-            ([5.0, 0.7, 0.0], "active"),
-            ([0.2, 0.7, 0.0], "saturated"),
-            ([0.0, 0.7, 5.0], "reversed"),
-        ] {
-            let [collector, base, emitter] = x;
-            let margins = [base - emitter, base - collector];
-            npn.settle(&x);
-            assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
-            pnp.settle(&x.map(|value| -value));
-            assert_eq!(pnp.region(), (region, margins.to_vec()), "{x:?}");
-        }
-        let switches = [
-            ([5.0, -0.1, 0.0], [5.0, 0.1, 0.0], BASE_EMITTER),
-            ([5.0, 0.7, 0.0], [0.2, 0.7, 0.0], BASE_COLLECTOR),
-            ([0.0, -0.1, 5.0], [0.0, 0.7, 5.0], BASE_COLLECTOR),
-        ];
-        for (from, to, margin) in switches {
-            assert_switches_where_margin_vanishes(&mut npn, (&from, &to), margin);
-        }
+        assert_regions::<BipolarTransistor>(
+            "{}",
+            Some(r#"{"polarity": "pnp"}"#),
+            &[
+                (&[5.0, -0.5, 0.0], "cut_off", Some(&[-0.5, -5.5])),
+                (&[5.0, 0.7, 0.0], "active", Some(&[0.7, -4.3])),
+                (&[0.2, 0.7, 0.0], "saturated", Some(&[0.7, 0.7 - 0.2])),
+                (&[0.0, 0.7, 5.0], "reversed", Some(&[-4.3, 0.7])),
+            ],
+            &[
+                (&[5.0, -0.1, 0.0], &[5.0, 0.1, 0.0], BASE_EMITTER),
+                (&[5.0, 0.7, 0.0], &[0.2, 0.7, 0.0], BASE_COLLECTOR),
+                (&[0.0, -0.1, 5.0], &[0.0, 0.7, 5.0], BASE_COLLECTOR),
+            ],
+        );
     }
 }

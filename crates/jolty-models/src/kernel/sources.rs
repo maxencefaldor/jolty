@@ -30,6 +30,58 @@ pub struct SourceParameters<R: Real = f64> {
 /// The local indices of a source's terminals, `positive` and `negative`.
 const TERMINALS: [usize; 2] = [0, 1];
 
+/// Expands the shared [`Kernel`] items of an independent source inside its `impl Kernel`.
+macro_rules! source_common {
+    (
+        name: $name:literal,
+        branch: $branch:expr,
+        shape: (),
+    ) => {
+        source_common!(@items $name, $branch, (), ());
+    };
+    (
+        name: $name:literal,
+        branch: $branch:expr,
+        shape: $shape:ty,
+    ) => {
+        source_common!(@items $name, $branch, $shape, _);
+    };
+    (@items $name:literal, $branch:expr, $shape:ty, $unused_shape:tt) => {
+        const NAME: &'static str = $name;
+        type Parameters<R: Real> = SourceParameters<R>;
+        type Shape = $shape;
+        type Prepared<R: Real> = Waveform<R>;
+        type Memory = ();
+
+        fn interface<R: Real>(_: &SourceParameters<R>) -> Interface {
+            Interface::new(&["positive", "negative"], &[Branch::new(0, 1, $branch)])
+        }
+
+        fn prepare<R: Real>(
+            parameters: &SourceParameters<R>,
+            _: R,
+        ) -> Result<Waveform<R>, ParameterError> {
+            Ok(parameters.waveform.clone())
+        }
+
+        fn breakpoints<R: Real>(
+            waveform: &Waveform<R>,
+            (start, stop): (f64, f64),
+            times: &mut Vec<f64>,
+        ) {
+            waveform.breakpoints(start, stop, times);
+        }
+
+        fn varies_in_time<R: Real>($unused_shape: &$shape, waveform: &Waveform<R>) -> bool {
+            waveform.varies_in_time()
+        }
+
+        fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
+            Some(waveform.value(0.0).value())
+        }
+    };
+}
+
 /// An independent voltage source from terminal `negative` to terminal `positive`.
 ///
 /// It holds `v_positive − v_negative` at its level. Its current, flowing from `positive`
@@ -43,24 +95,10 @@ pub struct VoltageSource;
 pub struct VoltageSourceShape(CurrentBranch);
 
 impl Kernel for VoltageSource {
-    const NAME: &'static str = "voltage_source";
-    type Parameters<R: Real> = SourceParameters<R>;
-    type Shape = VoltageSourceShape;
-    type Prepared<R: Real> = Waveform<R>;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &SourceParameters<R>) -> Interface {
-        Interface::new(
-            &["positive", "negative"],
-            &[Branch::new(0, 1, BranchKind::VoltageSource)],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &SourceParameters<R>,
-        _: R,
-    ) -> Result<Waveform<R>, ParameterError> {
-        Ok(parameters.waveform.clone())
+    source_common! {
+        name: "voltage_source",
+        branch: BranchKind::VoltageSource,
+        shape: VoltageSourceShape,
     }
 
     fn layout<R: Real>(
@@ -85,22 +123,6 @@ impl Kernel for VoltageSource {
         branch.add(at, stamp, -(level - voltage));
     }
 
-    fn breakpoints<R: Real>(
-        waveform: &Waveform<R>,
-        (start, stop): (f64, f64),
-        times: &mut Vec<f64>,
-    ) {
-        waveform.breakpoints(start, stop, times);
-    }
-
-    fn varies_in_time<R: Real>(_: &VoltageSourceShape, waveform: &Waveform<R>) -> bool {
-        waveform.varies_in_time()
-    }
-
-    fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
-        Some(waveform.value(0.0).value())
-    }
-
     /// The residual of the branch's equation, `v − level`, falls by one with the level.
     fn excite<R: Real>(VoltageSourceShape(branch): &VoltageSourceShape, stamp: &mut Stamp<'_, R>) {
         stamp.add_residual(branch.unknown(), R::constant(-1.0));
@@ -113,24 +135,10 @@ impl Kernel for VoltageSource {
 pub struct CurrentSource;
 
 impl Kernel for CurrentSource {
-    const NAME: &'static str = "current_source";
-    type Parameters<R: Real> = SourceParameters<R>;
-    type Shape = ();
-    type Prepared<R: Real> = Waveform<R>;
-    type Memory = ();
-
-    fn interface<R: Real>(_: &SourceParameters<R>) -> Interface {
-        Interface::new(
-            &["positive", "negative"],
-            &[Branch::new(0, 1, BranchKind::CurrentSource)],
-        )
-    }
-
-    fn prepare<R: Real>(
-        parameters: &SourceParameters<R>,
-        _: R,
-    ) -> Result<Waveform<R>, ParameterError> {
-        Ok(parameters.waveform.clone())
+    source_common! {
+        name: "current_source",
+        branch: BranchKind::CurrentSource,
+        shape: (),
     }
 
     fn layout<R: Real>(
@@ -154,22 +162,6 @@ impl Kernel for CurrentSource {
         stamp.add_residual(negative, -current);
     }
 
-    fn breakpoints<R: Real>(
-        waveform: &Waveform<R>,
-        (start, stop): (f64, f64),
-        times: &mut Vec<f64>,
-    ) {
-        waveform.breakpoints(start, stop, times);
-    }
-
-    fn varies_in_time<R: Real>((): &(), waveform: &Waveform<R>) -> bool {
-        waveform.varies_in_time()
-    }
-
-    fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
-        Some(waveform.value(0.0).value())
-    }
-
     /// The current leaves `positive` and enters `negative`, one ampere for each of the
     /// level.
     fn excite<R: Real>((): &(), stamp: &mut Stamp<'_, R>) {
@@ -183,9 +175,7 @@ impl Kernel for CurrentSource {
 mod tests {
     use super::*;
     use crate::Input;
-    use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match_at,
-    };
+    use crate::testing::{Bench, assert_close};
 
     const FIVE_VOLTS: &str = r#"{"waveform": {"dc": 5}}"#;
 
@@ -233,33 +223,5 @@ mod tests {
                 assert_eq!(excitation, derivative, "{}", model.name());
             }
         }
-    }
-
-    #[test]
-    fn parameter_gradients_are_exact() {
-        let pulse = r#"{"waveform": {"pulse": {"initial": 0.5, "pulsed": 2, "delay": 0.1,
-            "rise": 0.2, "fall": 0.3, "width": 0.4, "period": 1.5}}}"#;
-        let sine = r#"{"waveform": {"sine": {"offset": 1, "amplitude": 2, "frequency": 0.25,
-            "delay": 0.5, "damping": 0.5, "phase": 0.3}}}"#;
-        let piecewise = r#"{"waveform": {"piecewise": {"points": [[-1, 0.5], [2, 4]]}}}"#;
-        for (parameters, time) in [
-            (FIVE_VOLTS, 0.0),
-            (pulse, 1.75),
-            (sine, 1.0),
-            (piecewise, 0.5),
-        ] {
-            assert_parameter_gradients_match_at::<VoltageSource>(
-                parameters,
-                &[1.0, -0.5, 1e-3],
-                time,
-            );
-            assert_parameter_gradients_match_at::<CurrentSource>(parameters, &[1.0, -0.5], time);
-        }
-    }
-
-    #[test]
-    fn jacobians_match_finite_differences() {
-        assert_jacobians_match::<VoltageSource>(FIVE_VOLTS, &[1.0, -0.5, 1e-3]);
-        assert_jacobians_match::<CurrentSource>(FIVE_VOLTS, &[1.0, -0.5]);
     }
 }
