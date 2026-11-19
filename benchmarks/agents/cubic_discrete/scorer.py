@@ -113,19 +113,19 @@ def measure(made: Component, board: Board) -> dict[str, float]:
         command = np.interp(times, waveforms.times, waveforms.voltage("command"))
         found.append(output - command**3)
     means = [float(np.mean(np.abs(error))) for error in found]
-    measurements = {
+    measures = {
         "mean absolute error": float(np.mean(means)),
         "hits": float(np.mean(np.abs(np.concatenate(found)) < HIT)),
     }
     names = ("rising ramp", "sine", "falling ramp", "constant")
     for name, mean, error in zip(names, means, found, strict=True):
-        measurements[f"{name} mean absolute error"] = mean
-        measurements[f"{name} maximum absolute error"] = float(np.max(np.abs(error)))
-    return measurements
+        measures[f"{name} mean absolute error"] = mean
+        measures[f"{name} maximum absolute error"] = float(np.max(np.abs(error)))
+    return measures
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measurements `found` fall short of the task, if they do."""
+    """Why the measures `found` fall short of the task, if they do."""
     mean = found["mean absolute error"]
     if mean <= PATENT:
         return []
@@ -150,7 +150,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             parts=("npn", "pnp"),
             allowed=ALLOWED,
             spread=discrete,
-            extra_measurements={
+            extra_measures={
                 "patent's mean absolute error": PATENT,
                 "evolved mean absolute error": EVOLVED,
             },

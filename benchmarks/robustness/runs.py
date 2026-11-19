@@ -104,7 +104,7 @@ def jolty(fixture: Fixture, timeout: float) -> FixtureRun:
         )
     except JoltyError as error:
         return FixtureRun(completed=False, message=f"the process failed: {error}")
-    return dataclasses.replace(FixtureRun.of(document), seconds=seconds)
+    return dataclasses.replace(FixtureRun.from_document(document), seconds=seconds)
 
 
 def reference(fixture: Fixture, timeout: float) -> Reference:

@@ -70,7 +70,7 @@ A port has no node of its own: it is the net it connects to outside.
 
 `jolty.circuit(top)` turns a top component into a circuit: the top and every component it places, by name.
 A script's `build()` returns the top component, and jolty calls `circuit` on it.
-The top component has exactly one ground port, the reference node of every voltage.
+The top component has exactly one ground port, the zero-volt reference of every voltage.
 
 ## Source locations
 

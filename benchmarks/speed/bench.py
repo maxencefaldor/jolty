@@ -50,7 +50,7 @@ in a directory of its own.
 dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
 every threshold at its break-even, in `alternated` rounds, and prints the speed-ups,
 attainable throughput against N independent single-thread copies run concurrently,
-peak resident memory of an isolated process for each row, and its results' fingerprint,
+peak resident memory of an isolated process for each row, and its results' digest,
 which must be the same on every number of threads; it runs the 50,000 inverters' chain
 so only with ``--largest``, and else once with the defaults. Pass
 ``--no-concurrent-copies`` or ``--no-peak-memory`` to skip either probe.
@@ -235,21 +235,21 @@ FLAGGED: Final = 0.05
 """The relative change in a time a comparison must resolve, as AGENTS.md says: the
 change at which the two medians' intervals would separate (`Median.resolution`)."""
 
-FEWEST_RUNS: Final = 10
+MIN_RUNS: Final = 10
 """The fewest times the Python timing repeats a fixture: criterion's fewest samples."""
 
-FEWEST_SECONDS: Final = 5.0
+MIN_SECONDS: Final = 5.0
 """The least time the Python timing repeats a fixture for, as long as criterion
 measures each benchmark."""
 
-FEWEST_ROUNDS: Final = next(
+MIN_ROUNDS: Final = next(
     count for count in itertools.count(1) if rank(count) is not None
 )
 """The fewest rounds of compared works: the fewest runs whose median has an interval
 at `CONFIDENCE`, 6 at 95%, as `measuring.rank` derives."""
 
-MOST_ROUNDS: Final = 4 * FEWEST_ROUNDS
-"""The most rounds of compared works, once they have run for `FEWEST_SECONDS` each,
+MAX_ROUNDS: Final = 4 * MIN_ROUNDS
+"""The most rounds of compared works, once they have run for `MIN_SECONDS` each,
 unless ``--most-rounds`` says otherwise: four times the fewest, which about halves
 their medians' intervals, as an interval narrows with the square root of the runs. A
 comparison stopped there undecided says so."""
@@ -334,7 +334,7 @@ class Timing:
     peak_memory_bytes: int | None = None
 
     @classmethod
-    def of(
+    def from_samples(
         cls,
         runs: Sequence[Run],
         load: float,
@@ -482,14 +482,14 @@ class ThroughputEfficiency(BaseModel):
 class SpeedResults(Provenance):
     """A speed suite results file, compatible with earlier committed baselines.
 
-    Every field added after the initial baseline (`fingerprints`, `views`, `copies`,
+    Every field added after the initial baseline (`digests`, `views`, `copies`,
     and `TimingRecord.peak_memory_bytes`) defaults to empty or None so committed
     results files from earlier commits validate without migration.
     """
 
     timings: dict[str, TimingRecord] = Field(default_factory=dict)
     profiles: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
-    fingerprints: dict[str, dict[str, str]] = Field(default_factory=dict)
+    digests: dict[str, dict[str, str]] = Field(default_factory=dict)
     views: dict[str, JsonValue] = Field(default_factory=dict)
     copies: dict[str, dict[str, ConcurrentCopies]] = Field(default_factory=dict)
 
@@ -579,7 +579,7 @@ def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, f
     """What each run of `work` returned, and the load average as they began and ended.
 
     `work` runs once if `once`; else once to warm up, and then again until it has run
-    `FEWEST_RUNS` times and for `FEWEST_SECONDS`, as criterion measures a benchmark.
+    `MIN_RUNS` times and for `MIN_SECONDS`, as criterion measures a benchmark.
     """
     load = load_average()
     if once:
@@ -587,7 +587,7 @@ def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, f
     work()
     found: list[T] = []
     begun = time.perf_counter()
-    while len(found) < FEWEST_RUNS or time.perf_counter() - begun < FEWEST_SECONDS:
+    while len(found) < MIN_RUNS or time.perf_counter() - begun < MIN_SECONDS:
         found.append(work())
     return found, load, load_average()
 
@@ -595,7 +595,7 @@ def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, f
 def timed(work: Callable[[], Run], *, once: bool = False) -> Timing:
     """The timing of the runs of `work`, `repeated`."""
     found, load, load_after = repeated(work, once=once)
-    return Timing.of(found, load, load_after)
+    return Timing.from_samples(found, load, load_after)
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,7 +614,7 @@ class Rounds:
         return f"{len(self.loads)} rounds, load {min(seen):.2f} to {max(seen):.2f}"
 
 
-def alternated(works: Sequence[Callable[[], Run]], most: int) -> Rounds:
+def alternated(works: Sequence[Callable[[], Run]], max_rounds: int) -> Rounds:
     """Each of `works` run once a round, each round in the reverse order of the last.
 
     The rounds alternate their order so that no work always follows the same one: on
@@ -622,11 +622,11 @@ def alternated(works: Sequence[Callable[[], Run]], most: int) -> Rounds:
     always followed one on 64 threads, and 225 ms when it followed one on 2. Every work
     is compared with the first. A first round warms them up and is discarded, so that
     no cold run widens an interval; then the rounds go on until there are
-    `FEWEST_ROUNDS` of them and they have taken `FEWEST_SECONDS` for each work, and
+    `MIN_ROUNDS` of them and they have taken `MIN_SECONDS` for each work, and
     then until each comparison is decided, each work's median wall time `separated`
     from the first's or resolving a change of `FLAGGED` (`Median.resolution`), or there
-    are `most` rounds, where a comparison may stop undecided. A rule on the intervals,
-    never on the change, stops them, so stopping favours no verdict.
+    are `max_rounds` rounds, where a comparison may stop undecided. A rule on the
+    intervals, never on the change, stops them, so stopping favours no verdict.
     """
     for each in works:
         each()
@@ -636,11 +636,11 @@ def alternated(works: Sequence[Callable[[], Run]], most: int) -> Rounds:
 
     def pending() -> bool:
         count = len(loads)
-        if count < FEWEST_ROUNDS:
+        if count < MIN_ROUNDS:
             return True
-        if time.perf_counter() - begun < FEWEST_SECONDS * len(works):
+        if time.perf_counter() - begun < MIN_SECONDS * len(works):
             return True
-        if count >= most:
+        if count >= max_rounds:
             return False
         first = median([each.wall for each in runs[0]])
         return any(
@@ -656,7 +656,7 @@ def alternated(works: Sequence[Callable[[], Run]], most: int) -> Rounds:
         for index in order:
             runs[index].append(works[index]())
         loads.append((before, load_average()))
-    timings = [Timing.of(each, loads[0][0], loads[-1][1]) for each in runs]
+    timings = [Timing.from_samples(each, loads[0][0], loads[-1][1]) for each in runs]
     return Rounds(timings, loads)
 
 
@@ -738,7 +738,7 @@ def python(
         if scale and measure_memory:
             load_before = load_average()
             measured = probe(request)
-            timings[key] = Timing.of([measured], load_before, load_average())
+            timings[key] = Timing.from_samples([measured], load_before, load_average())
             continue
         measured_timing = timed(work(request, dict(found)), once=scale)
         if measure_memory:
@@ -1038,21 +1038,21 @@ class ScalingOptions:
 
 @dataclass(frozen=True, slots=True)
 class ScalingRow:
-    """One row of a `--scale` table: label, thread count, timing and fingerprint."""
+    """One row of a `--scale` table: label, thread count, timing and digest."""
 
     label: str
     threads: int | None
     timing: Timing
-    fingerprint: str
+    digest: str
     copies: ConcurrentCopies | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ScalingResult:
-    """The times, fingerprints, and concurrent-copies results of `scaling`."""
+    """The times, digests, and concurrent-copies results of `scaling`."""
 
     timings: dict[str, Timing]
-    fingerprints: dict[str, str]
+    digests: dict[str, str]
     copies: dict[str, ConcurrentCopies]
 
 
@@ -1153,7 +1153,7 @@ def format_scaling_table(name: str, summary: str, rows: Sequence[ScalingRow]) ->
                 ""
                 if index == 0
                 else decided(serial.wall_median(), row.timing.wall_median()),
-                row.fingerprint,
+                row.digest,
             ]
         )
         data_rows.append(cells)
@@ -1169,7 +1169,7 @@ def scaling(
     name: str,
     loaded: Loaded,
     counts: Sequence[int],
-    most: int,
+    max_rounds: int,
     options: ScalingOptions | None = None,
 ) -> ScalingResult:
     """The fixture `name` serially and spread on each of `counts`, `interleaved`.
@@ -1177,7 +1177,7 @@ def scaling(
     The serial run runs on one thread with no block of its matrix dissected, `serially`;
     each spread run takes the fixture's options, which leave every setting of its
     parallelism to its default, on a pool of so many threads; each is compared with the
-    serial run, in at most `most` rounds. When enabled in `options`, probes peak
+    serial run, in at most `max_rounds` rounds. When enabled in `options`, probes peak
     resident memory in fresh child processes and runs `N` independent single-thread
     copies concurrently for each `N` in `counts` to report attainable speed-up and
     throughput efficiency. Prints the table and returns a `ScalingResult`.
@@ -1198,7 +1198,7 @@ def scaling(
         on(1, functools.partial(run, loaded, alone_options)),
         *(on(count, functools.partial(run, loaded)) for count in counts),
     ]
-    measured, prints = interleaved(works, most)
+    measured, digests = interleaved(works, max_rounds)
     found = list(measured.timings)
     if chosen.peak_memory:
         print(f"probing peak memory of {name} in isolated processes", flush=True)
@@ -1233,32 +1233,32 @@ def scaling(
         for label, each in zip(labels[1:], found[1:], strict=True)
     }
     rows = [
-        ScalingRow(labels[0], None, found[0], prints[0]),
+        ScalingRow(labels[0], None, found[0], digests[0]),
         *(
             ScalingRow(
                 label,
                 count,
                 each,
-                fingerprinted,
+                digested,
                 copies_by_count.get(count),
             )
-            for label, count, each, fingerprinted in zip(
-                labels[1:], counts, found[1:], prints[1:], strict=True
+            for label, count, each, digested in zip(
+                labels[1:], counts, found[1:], digests[1:], strict=True
             )
         ),
     ]
     print(format_scaling_table(name, measured.summary(), rows))
-    alone = prints[0]
-    spread_prints = set(prints[1:])
+    alone = digests[0]
+    spread_digests = set(digests[1:])
     unknowns = alone_options.parallelism.max_unknowns_per_interior or 0
     interiors = plan.BREAK_EVENS["max_unknowns_per_interior"]
     dissectable = unknowns > min(each for each in interiors if each is not None)
-    if not dissectable and spread_prints != {alone}:
-        message = f"{name} found other bits spread: {', '.join(prints)}"
+    if not dissectable and spread_digests != {alone}:
+        message = f"{name} found other bits spread: {', '.join(digests)}"
         raise SystemExit(message)
     return ScalingResult(
         timings=timings,
-        fingerprints={"serial": alone, "spread": next(iter(spread_prints), alone)},
+        digests={"serial": alone, "spread": next(iter(spread_digests), alone)},
         copies={str(count): result for count, result in copies_by_count.items()},
     )
 
@@ -1530,7 +1530,7 @@ def spice_voltages(
 _MIN_CUBIC_POINTS: Final = 4
 """Minimum distinct grid points required for fourth-order cubic Hermite slopes."""
 
-_EXTREMUM_STEP_RATIO_LIMIT: Final = 4.0
+_MAX_EXTREMUM_STEP_RATIO: Final = 4.0
 """Maximum adjacent step-size ratio where smooth extrema relax monotonicity."""
 
 
@@ -1600,7 +1600,7 @@ def _limit_slopes(
     Monotone segments and flat shelves clamp to `[0, 3 * minmod(s_left, s_right)]`
     so sharp corners and step edges never overshoot. Smooth extrema where three
     adjacent divided-difference curvatures share sign (and adjacent steps stay within
-    `_EXTREMUM_STEP_RATIO_LIMIT`) relax within the local parabolic bounds so smooth
+    `_MAX_EXTREMUM_STEP_RATIO`) relax within the local parabolic bounds so smooth
     sine peaks reconstruct to fourth order instead of suffering linear chord sag.
     """
     limited = slopes.copy()
@@ -1637,7 +1637,7 @@ def _limit_slopes(
         np.maximum(upper_bound, 1.5 * upper_bound),
     )
     limited[1:-1] = np.where(
-        smooth & (step_ratio <= _EXTREMUM_STEP_RATIO_LIMIT),
+        smooth & (step_ratio <= _MAX_EXTREMUM_STEP_RATIO),
         smooth_slopes,
         monotone_slopes,
     )
@@ -1733,7 +1733,7 @@ def deviations(
 
 
 @dataclass(frozen=True, slots=True)
-class Ran:
+class TrialResult:
     """One run of a fixture's analyses in one simulator, and the voltages it found."""
 
     seconds: float
@@ -1752,7 +1752,7 @@ def ran(
     loaded: Loaded,
     nets: Sequence[str],
     timeout: float,
-) -> Ran:
+) -> TrialResult:
     """One run of the fixture's analyses by `runner`, at `view`'s options.
 
     jolty runs in this process; ngspice runs every analysis in one process, saving the
@@ -1769,15 +1769,15 @@ def ran(
         case Jolty():
             options = loaded.plan.options
             started = time.perf_counter()
-            analysed = runner.run(
+            analyzed = runner.run(
                 loaded.circuit, analyses, tightened(options) if matched else options
             )
             seconds = time.perf_counter() - started
             voltages = {
                 name: jolty_voltages(found, nets)
-                for name, found in analysed.found.items()
+                for name, found in analyzed.found.items()
             }
-            return Ran(seconds, analysed.analysis_seconds, voltages)
+            return TrialResult(seconds, analyzed.analysis_seconds, voltages)
         case Ngspice():
             vectors = {
                 net: export.vector(loaded.circuit, Unknown(net, "voltage"))
@@ -1801,7 +1801,7 @@ def ran(
                 name: spice_voltages(each, analysis, vectors)
                 for (name, analysis), each in zip(analyses.items(), found, strict=True)
             }
-            return Ran(seconds, float(stated.group(1)), voltages)
+            return TrialResult(seconds, float(stated.group(1)), voltages)
         case Xyce():
             vectors = {
                 net: export.vector(
@@ -1823,7 +1823,7 @@ def ran(
                 seconds += each.seconds
                 analysis_seconds += each.analysis_seconds
                 voltages[name] = spice_voltages(each, analysis, vectors)
-            return Ran(seconds, analysis_seconds, voltages)
+            return TrialResult(seconds, analysis_seconds, voltages)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1849,7 +1849,7 @@ class Cell:
 
 def cell(
     options: str,
-    work: Callable[[], Ran],
+    work: Callable[[], TrialResult],
     analyses: Mapping[str, Analysis],
     reference: Mapping[str, Voltages] | None,
     *,
@@ -1867,13 +1867,13 @@ def cell(
     except JoltyError as error:
         return Cell(options, load, load_average(), failed=stopped(str(error)))
     walls = tuple(each.seconds for each in found)
-    analysed = tuple(each.analysis_seconds for each in found)
+    analyzed = tuple(each.analysis_seconds for each in found)
     return Cell(
         options,
         load,
         load_after,
         Timing(statistics.median(walls), len(found), load, load_after, walls),
-        Timing(statistics.median(analysed), len(found), load, load_after, analysed),
+        Timing(statistics.median(analyzed), len(found), load, load_after, analyzed),
         {} if reference is None else deviations(analyses, reference, found[0].voltages),
     )
 
@@ -2100,20 +2100,20 @@ def against(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) 
     print(format_against_table(now, before, name))
 
 
-def fingerprint(found: Mapping[str, results.AnalysisResult]) -> str:
+def digest(found: Mapping[str, results.AnalysisResult]) -> str:
     """The first 16 hexadecimal digits of the SHA-256 of `found`'s arrays.
 
     The arrays of each analysis's result, by name, in order: the same digits for the
     same bits.
     """
-    digest = hashlib.sha256()
+    hasher = hashlib.sha256()
     for name, result in found.items():
-        digest.update(name.encode())
+        hasher.update(name.encode())
         for each in dataclasses.fields(result):
             value = getattr(result, each.name)
             if isinstance(value, np.ndarray):
-                digest.update(value.tobytes())
-    return digest.hexdigest()[:16]
+                hasher.update(value.tobytes())
+    return hasher.hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2219,24 +2219,26 @@ def on(
 
 
 def interleaved(
-    works: Sequence[Callable[[], dict[str, results.AnalysisResult]]], most: int
+    works: Sequence[Callable[[], dict[str, results.AnalysisResult]]], max_rounds: int
 ) -> tuple[Rounds, list[str]]:
     """Each of `works` timed in `alternated` rounds, and what each first found.
 
-    What each work found in its first run, which warms it up, is fingerprinted.
+    What each work found in its first run, which warms it up, is digested.
     """
-    prints: list[str | None] = [None for _ in works]
+    digests: list[str | None] = [None for _ in works]
 
     def remembered(index: int) -> Callable[[], Run]:
         def kept() -> None:
             found = works[index]()
-            if prints[index] is None:
-                prints[index] = fingerprint(found)
+            if digests[index] is None:
+                digests[index] = digest(found)
 
         return clocked(kept)
 
-    measured = alternated([remembered(index) for index in range(len(works))], most)
-    return measured, [found or "" for found in prints]
+    measured = alternated(
+        [remembered(index) for index in range(len(works))], max_rounds
+    )
+    return measured, [found or "" for found in digests]
 
 
 SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a decade"}
@@ -2274,13 +2276,13 @@ def sweep(
     script: str,
     sizes: Sequence[int],
     counts: Sequence[int],
-    most: int,
+    max_rounds: int,
 ) -> dict[str, Timing]:
     """The times of `script`'s circuits at `sizes`, serially and `threshold` set.
 
     Each circuit runs serially, on one thread with no threshold spreading its work, and
     with `threshold` set to spread it over each of `counts` threads, on so many, the
-    others `spreading_none`, `interleaved` in at most `most` rounds. The times are
+    others `spreading_none`, `interleaved` in at most `max_rounds` rounds. The times are
     printed as they are measured, each spread run's change against the serial run's
     marked by its verdict, and then the smallest size from which setting it pays on
     each count, and its break-even there: from which every spread run was `decided`
@@ -2313,15 +2315,15 @@ def sweep(
             spread = Parallelism(**none | {threshold.value: value})
             options = dataclasses.replace(at.loaded.plan.options, parallelism=spread)
             works.append(on(count, functools.partial(run, at.loaded, options)))
-        rounds, prints = interleaved(works, most)
+        rounds, digests = interleaved(works, max_rounds)
         found = rounds.timings
         # Interiors of other sizes order the factorization otherwise, so only the
         # other thresholds, which change no result, must find the serial run's bits.
         dissected = threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR
-        if not dissected and len(set(prints)) != 1:
+        if not dissected and len(set(digests)) != 1:
             message = (
                 f"{script} at {size} found other bits with {threshold} set: "
-                + ", ".join(prints)
+                + ", ".join(digests)
             )
             raise SystemExit(message)
         unset = found[0].seconds
@@ -2510,8 +2512,8 @@ class Bench(cli.CommandLine):
         description="Where --compare and --nightly keep each build's worktree.",
     )
     most_rounds: int = Field(
-        default=MOST_ROUNDS,
-        ge=FEWEST_ROUNDS,
+        default=MAX_ROUNDS,
+        ge=MIN_ROUNDS,
         description=(
             "The most rounds --compare, --nightly, --scale and --break-even run a "
             "comparison in before stopping it undecided."
@@ -2561,14 +2563,14 @@ def merged(  # noqa: PLR0913 - each section of a speed suite results file
     output: Path,
     timings: Mapping[str, Timing],
     profiles: Mapping[str, object] | None = None,
-    fingerprints: Mapping[str, object] | None = None,
+    digests: Mapping[str, object] | None = None,
     views: Mapping[str, object] | None = None,
     *,
     copies: Mapping[str, Mapping[str, ConcurrentCopies]] | None = None,
 ) -> dict[str, object]:
     """The results file `output`, with what this run measured added.
 
-    `timings`, `profiles`, `fingerprints`, `views` and `copies` each add to what the
+    `timings`, `profiles`, `digests`, `views` and `copies` each add to what the
     file holds of its kind, if anything: `views`, each cell of a view's table, by its
     view, its configuration and its fixture; `copies`, each fixture's concurrent-copy
     measurements by copy count.
@@ -2589,7 +2591,7 @@ def merged(  # noqa: PLR0913 - each section of a speed suite results file
         **provenance().model_dump(mode="json"),
         "timings": written,
         "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
-        "fingerprints": earlier.get("fingerprints", {}) | dict(fingerprints or {}),
+        "digests": earlier.get("digests", {}) | dict(digests or {}),
         "views": earlier.get("views", {}) | dict(views or {}),
         "copies": merged_copies,
     }
@@ -3001,7 +3003,7 @@ def measure(arguments: Bench) -> None:
     baseline_path = baseline(arguments.baseline)
     started = time.perf_counter()
     found_profiles: dict[str, dict[str, Profiled]] = {}
-    fingerprints: dict[str, dict[str, str]] = {}
+    digests: dict[str, dict[str, str]] = {}
     views: dict[str, object] = {}
     found_copies: dict[str, dict[str, ConcurrentCopies]] = {}
     if arguments.view is not None:
@@ -3031,7 +3033,7 @@ def measure(arguments: Bench) -> None:
                     scaling_options,
                 )
                 timings |= scaled.timings
-                fingerprints[name] = scaled.fingerprints
+                digests[name] = scaled.digests
                 if scaled.copies:
                     found_copies[name] = scaled.copies
             else:
@@ -3054,7 +3056,7 @@ def measure(arguments: Bench) -> None:
     }
     save(
         output,
-        merged(output, timings, profiled, fingerprints, views, copies=found_copies),
+        merged(output, timings, profiled, digests, views, copies=found_copies),
     )
     if baseline_path is not None and baseline_path.resolve() != output.resolve():
         before = {

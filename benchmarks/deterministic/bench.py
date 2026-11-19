@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Deterministic counts, precision digits and result fingerprints checked per platform.
+"""Deterministic counts, precision digits and result digests checked per platform.
 
 Records what is independent of machine load and wall-clock time at default options:
 
 - Every non-scale speed fixture (`bjt_amp`, `ac_wide`, `buck`, `inverter_chain_500`,
   `rc_mesh_100`): per-analysis Newton iterations, accepted/rejected/landed steps,
   factorizations, refactorizations, fallbacks, reuses, DC strategies and a SHA-256
-  fingerprint of the solved values.
+  digest of the solved values.
 - The 14 precision fixtures under 1,000 nodes (`rc_step`, `rc_ramp`, `rc_femto`,
   `rlc_step`, `lc_tank`, `diode`, `rlc_ac`, `rc_noise`, `butterworth_poles`,
   `rc_periodic`, `ladder_10`, `ladder_100`, `tree_10`, `tree_100`): solver counts
@@ -16,15 +16,15 @@ Because `libm` (`exp`, `ln`, `pow`) rounds differently across `glibc` versions a
 operating systems (`plans/accuracy.md` item 13), records are keyed by
 `platform_key()` (e.g. `linux-x86_64-glibc2.39`, `linux-x86_64-glibc2.27`,
 `darwin-arm64`). When the active platform has an exact recorded entry, every count,
-fingerprint and rounded digit must match exactly. On an unrecorded platform, linear
+digest and rounded digit must match exactly. On an unrecorded platform, linear
 and analytic fixtures are checked tightly while chaotic multi-step nonlinear fixtures
 (`buck`, `inverter_chain_500`) are checked within a bounded relative margin unless
 `--strict-platform` is enabled.
 
 Run from the repository root:
 
-    uv run python benchmarks/deterministic.py
-    uv run python benchmarks/deterministic.py --record
+    uv run python benchmarks/deterministic/bench.py
+    uv run python benchmarks/deterministic/bench.py --record
 """
 
 import hashlib
@@ -40,10 +40,10 @@ from typing import Final
 import numpy as np
 from pydantic import BaseModel, Field
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "precision"))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "speed"))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "speed" / "circuits"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "precision"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "speed"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "speed" / "circuits"))
 
 from fixtures import fixtures as precision_fixtures
 from suite import DEFAULTS, Prepared, Setting, run_jolty, score
@@ -51,14 +51,17 @@ from timing import load_fixture, planned
 
 from jolty import Simulation, cli, results
 
-BENCHMARKS: Final = Path(__file__).resolve().parent
-ROOT: Final = BENCHMARKS.parent
+BENCHMARKS: Final = Path(__file__).resolve().parents[1]
+ROOT: Final = Path(__file__).resolve().parents[2]
 PRECISION_DIRECTORY: Final = BENCHMARKS / "precision"
 SPEED_DIRECTORY: Final = BENCHMARKS / "speed"
 CIRCUITS_DIRECTORY: Final = SPEED_DIRECTORY / "circuits"
 
-BASELINE_PATH: Final = BENCHMARKS / "deterministic.json"
-"""Committed per-platform baseline of deterministic counts, digits and fingerprints."""
+BASELINE_PATH: Final = Path(__file__).resolve().with_name("baseline.json")
+"""Committed per-platform baseline of deterministic counts, digits and digests."""
+
+BASELINE_VERSION: Final = 2
+"""Schema version of the committed deterministic baseline JSON file."""
 
 PRECISION_NAMES: Final = (
     "rc_step",
@@ -118,38 +121,38 @@ def platform_key() -> str:
     return f"{system}-{machine}"
 
 
-def _result_fingerprint(result: results.AnalysisResult) -> str:
-    """Short SHA-256 fingerprint of an analysis result's numerical arrays."""
-    digest = hashlib.sha256()
-    digest.update(type(result).__name__.encode("utf-8"))
+def _result_digest(result: results.AnalysisResult) -> str:
+    """Short SHA-256 digest of an analysis result's numerical arrays."""
+    hasher = hashlib.sha256()
+    hasher.update(type(result).__name__.encode("utf-8"))
     match result:
         case results.OperatingPointResult(values=values):
-            digest.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
         case results.DcSweepResult(swept=swept, values=values):
-            digest.update(np.ascontiguousarray(swept, dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(swept, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
         case results.AcResult(frequencies=frequencies, values=values):
-            digest.update(np.ascontiguousarray(frequencies, dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(values, dtype=np.complex128).tobytes())
+            hasher.update(np.ascontiguousarray(frequencies, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(values, dtype=np.complex128).tobytes())
         case results.PeriodicSteadyStateResult(
             times=times, values=values, period=period
         ):
-            digest.update(np.array([period], dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(times, dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
+            hasher.update(np.array([period], dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(times, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
         case results.TransientResult(times=times, values=values):
-            digest.update(np.ascontiguousarray(times, dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(times, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(values, dtype=np.float64).tobytes())
         case results.NoiseResult(frequencies=frequencies, densities=densities):
-            digest.update(np.ascontiguousarray(frequencies, dtype=np.float64).tobytes())
-            digest.update(np.ascontiguousarray(densities, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(frequencies, dtype=np.float64).tobytes())
+            hasher.update(np.ascontiguousarray(densities, dtype=np.float64).tobytes())
         case results.PoleZeroResult(poles=poles, zeros=zeros):
-            digest.update(np.ascontiguousarray(poles, dtype=np.complex128).tobytes())
+            hasher.update(np.ascontiguousarray(poles, dtype=np.complex128).tobytes())
             if zeros is not None:
-                digest.update(
+                hasher.update(
                     np.ascontiguousarray(zeros, dtype=np.complex128).tobytes()
                 )
-    return digest.hexdigest()[:16]
+    return hasher.hexdigest()[:16]
 
 
 class AnalysisCounts(BaseModel):
@@ -167,7 +170,7 @@ class AnalysisCounts(BaseModel):
     fallbacks: int | None = None
     reuses: int | None = None
     periods: int | None = None
-    fingerprint: str
+    digest: str
 
 
 def _optional_int(value: int | None) -> int | None:
@@ -177,18 +180,18 @@ def _optional_int(value: int | None) -> int | None:
 
 def extract_counts(result: results.AnalysisResult) -> AnalysisCounts:
     """Reads every deterministic solver counter from `result`."""
-    fingerprint = _result_fingerprint(result)
+    digest = _result_digest(result)
     match result:
         case results.OperatingPointResult():
             return AnalysisCounts(
                 strategy=str(result.strategy),
                 iterations=_optional_int(result.iterations),
-                fingerprint=fingerprint,
+                digest=digest,
             )
         case results.DcSweepResult():
             return AnalysisCounts(
                 iterations=int(sum(result.iterations)),
-                fingerprint=fingerprint,
+                digest=digest,
             )
         case results.TransientResult() | results.PeriodicSteadyStateResult():
             statistics = result.statistics
@@ -210,16 +213,16 @@ def extract_counts(result: results.AnalysisResult) -> AnalysisCounts:
                 fallbacks=None if work is None else int(work.fallbacks),
                 reuses=None if work is None else int(work.reuses),
                 periods=periods,
-                fingerprint=fingerprint,
+                digest=digest,
             )
         case results.AcResult() | results.NoiseResult() | results.PoleZeroResult():
             operating_point = result.operating_point
             return AnalysisCounts(
                 strategy=str(operating_point.strategy),
                 iterations=_optional_int(operating_point.iterations),
-                fingerprint=fingerprint,
+                digest=digest,
             )
-    return AnalysisCounts(fingerprint=fingerprint)
+    return AnalysisCounts(digest=digest)
 
 
 class PrecisionRecord(BaseModel):
@@ -230,16 +233,16 @@ class PrecisionRecord(BaseModel):
 
 
 class PlatformRecord(BaseModel):
-    """Deterministic counts, digits and fingerprints recorded on one platform."""
+    """Deterministic counts, digits and digests recorded on one platform."""
 
     precision: dict[str, PrecisionRecord] = Field(default_factory=dict)
     speed: dict[str, dict[str, AnalysisCounts]] = Field(default_factory=dict)
 
 
 class DeterministicBaseline(BaseModel):
-    """Committed per-platform baseline file (`benchmarks/deterministic.json`)."""
+    """Committed per-platform baseline (`benchmarks/deterministic/baseline.json`)."""
 
-    version: int = 1
+    version: int = BASELINE_VERSION
     platforms: dict[str, PlatformRecord] = Field(default_factory=dict)
 
 
@@ -247,7 +250,7 @@ def measure_precision_fixture(name: str) -> PrecisionRecord:
     """Runs one small precision fixture at default options and scores its digits."""
     fixture = precision_fixtures()[name]
     setting = Setting("defaults", DEFAULTS["relative_tolerance"])
-    prepared = Prepared.of(fixture)
+    prepared = Prepared.from_fixture(fixture)
     measured = run_jolty(prepared, setting, 1)
     compared = fixture.compare(measured.found)
     digits = {
@@ -296,7 +299,7 @@ def measure_platform(
 def _compare_counts_exact(
     prefix: str, expected: AnalysisCounts, actual: AnalysisCounts
 ) -> list[str]:
-    """Compares every counter and fingerprint of one analysis strictly."""
+    """Compares every counter and digest of one analysis strictly."""
     differences: list[str] = []
     for field_name in AnalysisCounts.model_fields:
         before = getattr(expected, field_name)
@@ -408,7 +411,7 @@ def _compare_speed(
     *,
     exact: bool,
 ) -> list[str]:
-    """Compares speed fixture counts and fingerprints."""
+    """Compares speed fixture counts and digests."""
     differences: list[str] = []
     for name in sorted(set(expected) | set(actual)):
         if name not in expected:
@@ -496,7 +499,7 @@ def select_reference(
 
 
 class Deterministic(cli.CommandLine):
-    """Checks or records deterministic solver counts, digits and fingerprints."""
+    """Checks or records deterministic solver counts, digits and digests."""
 
     record: bool = Field(
         default=False,

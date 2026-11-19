@@ -111,7 +111,7 @@ Each session also keeps the runs of its simulator's command line by command, and
 It also holds the failure kinds, each from what is known, never read from words:
 
 - **How the session ended**, as the runner saw it and the agent reports it: finished, out of time (the runner stopped it at `--timeout` seconds), out of turns (`--turns`), out of budget (`--budget`, in US dollars), or errored, when the agent reports an error, exits with other than 0 or leaves no report.
-- **How the work fell short**, as its scorer found it: no deliverable (`missing`), a design that does not build or read (`unbuilt`), one the engine cannot elaborate (`unelaborated`), a rule's error (`rule`), a failed analysis (`analysis`), a requirement of the task not met (`spec`), which it names, such as a measurement, `parts`, `yield` or `cost`, or a scorer that could not judge (`scorer`).
+- **How the work fell short**, as its scorer found it: no deliverable (`missing`), a design that does not build or read (`unbuilt`), one the engine cannot elaborate (`unelaborated`), a rule's error (`rule`), a failed analysis (`analysis`), a requirement of the task not met (`spec`), which it names, such as a measure, `parts`, `yield` or `cost`, or a scorer that could not judge (`scorer`).
 - **The agent's last report**, its final message, beside its verdict.
 
 Each arm's summary on a task counts its sessions by how they ended, by each kind they fell short in, and by each spec.

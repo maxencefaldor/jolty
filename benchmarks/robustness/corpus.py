@@ -281,7 +281,7 @@ class FixtureRun:
         }
 
     @classmethod
-    def of(cls, document: Mapping[str, Any]) -> FixtureRun:
+    def from_document(cls, document: Mapping[str, Any]) -> FixtureRun:
         """The run a document of `to_json` holds."""
         return cls(
             completed=bool(document["completed"]),
@@ -312,7 +312,7 @@ class Reference:
 
 
 @dataclass(frozen=True, slots=True)
-class Outcome:
+class FixtureStatus:
     """A run of a fixture, judged."""
 
     status: Status
@@ -369,7 +369,7 @@ def which(
 
 def judge(
     fixture: Fixture, run: FixtureRun, reference: Reference, options: Options
-) -> Outcome:
+) -> FixtureStatus:
     """The outcome of `run` of `fixture`, against its `reference`, at its `options`."""
     expectation = fixture.expectation
     unfinished = _unfinished(expectation, run, options)
@@ -379,7 +379,7 @@ def judge(
         detail = "no reference" + (
             f": {reference.message}" if reference.message else ""
         )
-        return Outcome(Status.SOLVED, detail, run)
+        return FixtureStatus(Status.SOLVED, detail, run)
     if isinstance(expectation, Solutions):
         return _solutions(run, reference, options)
     (solutions,) = reference.points
@@ -389,21 +389,21 @@ def judge(
         status, detail = _settles(expectation, index, solutions)
     else:
         status, detail = _oscillates(index)
-    return Outcome(status, detail, run)
+    return FixtureStatus(status, detail, run)
 
 
 def _unfinished(
     expectation: Expectation, run: FixtureRun, options: Options
-) -> Outcome | None:
+) -> FixtureStatus | None:
     """The outcome of a run that did not finish, or of an impasse's; None otherwise."""
     if run.unsupported:
-        return Outcome(Status.UNSUPPORTED, run.message, run)
+        return FixtureStatus(Status.UNSUPPORTED, run.message, run)
     if run.timed_out:
-        return Outcome(Status.TIMED_OUT, run.message, run)
+        return FixtureStatus(Status.TIMED_OUT, run.message, run)
     if isinstance(expectation, Impasse):
         return _impasse(expectation, run, options)
     if not run.completed:
-        return Outcome(Status.FAILED, run.message, run)
+        return FixtureStatus(Status.FAILED, run.message, run)
     return None
 
 
@@ -430,7 +430,9 @@ def _settles(
     return Status.AGREED, expectation.expected
 
 
-def _solutions(run: FixtureRun, reference: Reference, options: Options) -> Outcome:
+def _solutions(
+    run: FixtureRun, reference: Reference, options: Options
+) -> FixtureStatus:
     """An operating point or a sweep, against every DC solution jolty finds."""
     found: list[int] = []
     for level, (values, solutions) in enumerate(
@@ -439,21 +441,23 @@ def _solutions(run: FixtureRun, reference: Reference, options: Options) -> Outco
         index = which(values, solutions, options)
         if index is None:
             where = "" if len(reference.points) == 1 else f" at level {level + 1}"
-            return Outcome(Status.DISAGREED, f"agrees with no DC solution{where}", run)
+            return FixtureStatus(
+                Status.DISAGREED, f"agrees with no DC solution{where}", run
+            )
         found.append(index)
     if len(reference.points) == 1:
         count = len(reference.points[0])
-        return Outcome(Status.AGREED, f"solution {found[0] + 1} of {count}", run)
+        return FixtureStatus(Status.AGREED, f"solution {found[0] + 1} of {count}", run)
     several = sum(len(solutions) > 1 for solutions in reference.points)
-    return Outcome(
+    return FixtureStatus(
         Status.AGREED, f"{len(found)} levels, {several} with several solutions", run
     )
 
 
-def _impasse(expectation: Impasse, run: FixtureRun, options: Options) -> Outcome:
+def _impasse(expectation: Impasse, run: FixtureRun, options: Options) -> FixtureStatus:
     """A transient that must stop at its impasse point."""
     if run.completed:
-        return Outcome(
+        return FixtureStatus(
             Status.DISAGREED,
             f"goes on past the impasse point at {expectation.time:.4g} s",
             run,
@@ -462,8 +466,8 @@ def _impasse(expectation: Impasse, run: FixtureRun, options: Options) -> Outcome
     if run.reached is not None and abs(run.reached - expectation.time) <= (
         relative * expectation.time
     ):
-        return Outcome(Status.AGREED, f"stops at {run.reached:.4g} s", run)
-    return Outcome(Status.FAILED, run.message, run)
+        return FixtureStatus(Status.AGREED, f"stops at {run.reached:.4g} s", run)
+    return FixtureStatus(Status.FAILED, run.message, run)
 
 
 type Runs = Callable[[Fixture, float], FixtureRun]
@@ -497,7 +501,7 @@ def wilsons(counts: Mapping[Status, int]) -> tuple[int, int, float, float] | Non
     return failed, supported, low, high
 
 
-def cell(outcome: Outcome) -> str:
+def cell(outcome: FixtureStatus) -> str:
     """A table's cell for `outcome`: the status, its analysis's time, its iterations.
 
     The time is the analyses' alone, as each simulator measured it: jolty's around
@@ -516,7 +520,7 @@ def cell(outcome: Outcome) -> str:
 def table(
     chosen: Sequence[Fixture],
     names: Sequence[str],
-    outcomes: Mapping[tuple[str, str], Outcome],
+    outcomes: Mapping[tuple[str, str], FixtureStatus],
 ) -> list[str]:
     """The Markdown table of `chosen` fixtures by simulator, and each one's rates."""
     fixture_rows = [
@@ -563,7 +567,7 @@ def table(
 def details(
     chosen: Sequence[Fixture],
     names: Sequence[str],
-    outcomes: Mapping[tuple[str, str], Outcome],
+    outcomes: Mapping[tuple[str, str], FixtureStatus],
 ) -> list[str]:
     """Each outcome's detail: which solution, or the message, and jolty's checks."""
     lines: list[str] = []
@@ -640,7 +644,7 @@ def measure(
         simulator for simulator, version in versions.items() if version is not None
     ]
     selected = [every[name] for name in wanted]
-    outcomes: dict[tuple[str, str], Outcome] = {}
+    outcomes: dict[tuple[str, str], FixtureStatus] = {}
     references: dict[str, Reference] = {}
     started = time.perf_counter()
     for fixture in selected:

@@ -77,7 +77,7 @@ type Levels = Mapping[str, float]
 
 
 @dataclass(frozen=True, slots=True)
-class Problem:
+class CircuitTask:
     """What one of AnalogCoder's problems is, and its ports besides the supply's."""
 
     kind: Kind
@@ -86,36 +86,36 @@ class Problem:
 
 
 PROBLEMS = {
-    1: Problem("amplifier", ("vin",)),
-    2: Problem("amplifier", ("vin",)),
-    3: Problem("amplifier", ("vin",)),
-    4: Problem("amplifier", ("vin", "vbias")),
-    5: Problem("amplifier", ("vin", "vbias")),
-    6: Problem("inverter", ("vin",)),
-    7: Problem("inverter", ("vin",)),
-    8: Problem("mirror", ("vbias",)),
-    9: Problem("amplifier", ("vin",)),
-    10: Problem("amplifier", ("vin",)),
-    11: Problem("opamp", ("vinp", "vinn", "vbias"), ("voutp", "vout")),
-    12: Problem("mirror", ("iref",), ("iout",)),
-    13: Problem("opamp", ("vinp", "vinn")),
-    14: Problem(
+    1: CircuitTask("amplifier", ("vin",)),
+    2: CircuitTask("amplifier", ("vin",)),
+    3: CircuitTask("amplifier", ("vin",)),
+    4: CircuitTask("amplifier", ("vin", "vbias")),
+    5: CircuitTask("amplifier", ("vin", "vbias")),
+    6: CircuitTask("inverter", ("vin",)),
+    7: CircuitTask("inverter", ("vin",)),
+    8: CircuitTask("mirror", ("vbias",)),
+    9: CircuitTask("amplifier", ("vin",)),
+    10: CircuitTask("amplifier", ("vin",)),
+    11: CircuitTask("opamp", ("vinp", "vinn", "vbias"), ("voutp", "vout")),
+    12: CircuitTask("mirror", ("iref",), ("iout",)),
+    13: CircuitTask("opamp", ("vinp", "vinn")),
+    14: CircuitTask(
         "opamp", ("vinp", "vinn", "vbias1", "vbias2", "vbias3"), ("voutp", "vout")
     ),
-    15: Problem(
+    15: CircuitTask(
         "opamp",
         ("vinp", "vinn", "vbias1", "vbias2", "vbias3", "vbias4"),
         ("voutp", "vout"),
     ),
-    16: Problem("oscillator", ()),
-    17: Problem("oscillator", ()),
-    18: Problem("integrator", ("vin",)),
-    19: Problem("differentiator", ("vin",)),
-    20: Problem("adder", ("vin1", "vin2")),
-    21: Problem("subtractor", ("vin1", "vin2")),
-    22: Problem("schmitt", ("vin",)),
-    23: Problem("vco", ("vin",)),
-    24: Problem("pll", ("clk_ref",), ("clk_p",)),
+    16: CircuitTask("oscillator", ()),
+    17: CircuitTask("oscillator", ()),
+    18: CircuitTask("integrator", ("vin",)),
+    19: CircuitTask("differentiator", ("vin",)),
+    20: CircuitTask("adder", ("vin1", "vin2")),
+    21: CircuitTask("subtractor", ("vin1", "vin2")),
+    22: CircuitTask("schmitt", ("vin",)),
+    23: CircuitTask("vco", ("vin",)),
+    24: CircuitTask("pll", ("clk_ref",), ("clk_p",)),
 }
 """Each problem by AnalogCoder's number; ``task.md`` describes them."""
 
@@ -125,7 +125,7 @@ SWITCHED_ON = Piecewise(((0 * s, 0 * V), (1 * us, SUPPLY * V)))
 """The supply of an oscillator, switched on over a microsecond."""
 RESOLUTION = 1e-6
 """The resolution, in volts, at which AnalogCoder read an operating point."""
-LEAST = 1e-5
+MIN_MAGNITUDE = 1e-5
 """The least drain current of an amplifier's or an op-amp's MOSFET, in amperes, and the
 least current of a current source."""
 GAIN = 1e-5
@@ -312,7 +312,7 @@ def driven(port: str, level: float) -> devices.Device:
     return devices.voltage_source(level * V)
 
 
-def held(problem: Problem, levels: Levels) -> dict[str, devices.Device]:
+def held(problem: CircuitTask, levels: Levels) -> dict[str, devices.Device]:
     """The sources that hold each of `problem`'s inputs at its level."""
     return {port: driven(port, levels[port]) for port in problem.inputs}
 
@@ -321,7 +321,7 @@ def held(problem: Problem, levels: Levels) -> dict[str, devices.Device]:
 def bench(
     c: Builder,
     made: Component,
-    problem: Problem,
+    problem: CircuitTask,
     drives: Mapping[str, devices.Device],
     load: float | None = None,
 ) -> None:
@@ -438,14 +438,14 @@ def structure(number: int, parts: list[Part]) -> list[str]:
 
 
 def amplifier(
-    number: int, made: Component, problem: Problem, levels: Levels
+    number: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
     """AnalogCoder's checks of an amplifier: its operating point, DC sweep and gain."""
     built = circuit(bench(made, problem, held(problem, levels)))
     simulation = Simulation(built)
     parts = designed(built)
     found = structure(number, parts)
-    found += misbiased(simulation.run(recorded(parts)), parts, LEAST)
+    found += misbiased(simulation.run(recorded(parts)), parts, MIN_MAGNITUDE)
     swept = simulation.run(DcSweep("VIN", linear(0 * V, SUPPLY * V, 501)))
     moved = float(np.ptp(swept.voltage("vout")))
     if moved < MOVES:
@@ -456,7 +456,7 @@ def amplifier(
     return found
 
 
-def inverter(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
+def inverter(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
     """AnalogCoder's check of an inverter: its output with its input at 0 and at 5 V."""
     drives = {"vin": driven("vin", 0.0)}
     swept = Simulation(circuit(bench(made, problem, drives))).run(
@@ -469,7 +469,7 @@ def inverter(_: int, made: Component, problem: Problem, __: Levels) -> list[str]
     return []
 
 
-def mirror(_: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
+def mirror(_: int, made: Component, problem: CircuitTask, levels: Levels) -> list[str]:
     """AnalogCoder's checks of a current source over loads, and of a mirror's input."""
     found: list[str] = []
     currents = []
@@ -484,8 +484,10 @@ def mirror(_: int, made: Component, problem: Problem, levels: Levels) -> list[st
     step = float(np.max(np.abs(np.diff(currents))))
     if step >= STEADY:
         found.append(f"its current changes by {step:.4g} A from one load to the next")
-    if min(currents) <= LEAST:
-        found.append(f"it carries {min(currents):.4g} A, not more than {LEAST:g}")
+    if min(currents) <= MIN_MAGNITUDE:
+        found.append(
+            f"it carries {min(currents):.4g} A, not more than {MIN_MAGNITUDE:g}"
+        )
     if "iref" in problem.inputs:
         drives = {"iref": driven("iref", REFERENCE)}
         built = circuit(bench(made, problem, drives, load=middle))
@@ -499,7 +501,9 @@ def mirror(_: int, made: Component, problem: Problem, levels: Levels) -> list[st
     return found
 
 
-def opamp(number: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
+def opamp(
+    number: int, made: Component, problem: CircuitTask, levels: Levels
+) -> list[str]:
     """AnalogCoder's checks of an op-amp: its operating point, and its gains at 100 Hz.
 
     The common-mode gain is the response to both inputs at once, and the differential
@@ -512,7 +516,7 @@ def opamp(number: int, made: Component, problem: Problem, levels: Levels) -> lis
     simulation = Simulation(built)
     parts = designed(built)
     found += structure(number, parts)
-    found += misbiased(simulation.run(recorded(parts)), parts, LEAST)
+    found += misbiased(simulation.run(recorded(parts)), parts, MIN_MAGNITUDE)
     plus, minus = (
         complex(simulation.run(Ac(source, [100 * Hz])).voltage("vout")[0])
         for source in ("VINP", "VINN")
@@ -574,7 +578,7 @@ def oscillation(times: Real, values: Real) -> float | str:
 
 def transient(
     made: Component,
-    problem: Problem,
+    problem: CircuitTask,
     drives: Mapping[str, devices.Device],
     analysis: Transient,
 ) -> tuple[Real, dict[str, Real]]:
@@ -594,7 +598,7 @@ def second_half(times: Real, values: Real) -> tuple[Real, Real]:
     return times[late], values[late]
 
 
-def oscillator(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
+def oscillator(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
     """AnalogCoder's check of an oscillator: a steady oscillation over 10 ms."""
     times, outputs = transient(
         made, problem, powered(), Transient(stop=10e-3 * s, max_step=1 * us)
@@ -612,7 +616,9 @@ def ramp(times: Real, values: Real) -> tuple[float, float]:
     return float(slope), fit
 
 
-def integrator(_: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
+def integrator(
+    _: int, made: Component, problem: CircuitTask, levels: Levels
+) -> list[str]:
     """AnalogCoder's check of an integrator: its ramps as its input steps by 0.5 V.
 
     The input rests at its level until 1 µs, then steps 0.5 V above it, and every 10 ms
@@ -655,7 +661,7 @@ def _sense(index: int) -> float:
 
 
 def differentiator(
-    _: int, made: Component, problem: Problem, levels: Levels
+    _: int, made: Component, problem: CircuitTask, levels: Levels
 ) -> list[str]:
     """AnalogCoder's check of a differentiator: a square wave from a triangle.
 
@@ -696,7 +702,7 @@ def differentiator(
     return found
 
 
-def adder(_: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
+def adder(_: int, made: Component, problem: CircuitTask, levels: Levels) -> list[str]:
     """AnalogCoder's check of an adder, whose output is the inputs' negated sum.
 
     The inputs and the output are measured from vin1's level: vin2 is held 0.125 V
@@ -711,7 +717,9 @@ def adder(_: int, made: Component, problem: Problem, levels: Levels) -> list[str
     return _tracked(swept.swept, swept.voltage("vout"), expected, rest, "vin1")
 
 
-def subtractor(_: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
+def subtractor(
+    _: int, made: Component, problem: CircuitTask, levels: Levels
+) -> list[str]:
     """AnalogCoder's check of a subtractor, whose output is vin2 less vin1.
 
     vin2 is held at its level, and vin1 swept from 2.25 V below it to 1.75 V below it,
@@ -744,7 +752,7 @@ def _tracked(
     ]
 
 
-def schmitt(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
+def schmitt(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
     """AnalogCoder's check of a non-inverting Schmitt trigger, swept up and down.
 
     Its input sweeps from 0 to 5 V and back in 100 mV steps, each operating point
@@ -778,7 +786,7 @@ def schmitt(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
     return found
 
 
-def vco(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
+def vco(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
     """The check of a voltage-controlled oscillator: its period at three controls.
 
     At each control level it runs 100 µs from its supply switched on, and must
@@ -804,7 +812,7 @@ def vco(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
     return [f"its periods, {listed} at vin = 3.25, 3.5 and 4 V, are not monotonic"]
 
 
-def pll(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
+def pll(_: int, made: Component, problem: CircuitTask, __: Levels) -> list[str]:
     """The check of a phase-locked loop: its output's period at two references.
 
     clk_ref is a 0 to 5 V clock, its edges 2% of its period and its pulse 48%, from
@@ -843,7 +851,7 @@ def pll(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
     return found
 
 
-type Check = Callable[[int, Component, Problem, Levels], list[str]]
+type Check = Callable[[int, Component, CircuitTask, Levels], list[str]]
 CHECKS: dict[Kind, Check] = {
     "amplifier": amplifier,
     "inverter": inverter,
@@ -861,7 +869,7 @@ CHECKS: dict[Kind, Check] = {
 """Each kind of problem's check."""
 
 
-def needed(problem: Problem) -> tuple[str, ...]:
+def needed(problem: CircuitTask) -> tuple[str, ...]:
     """The inputs of `problem` whose levels its design's ``LEVELS`` must give."""
     match problem.kind:
         case "amplifier" | "mirror" | "opamp":
@@ -969,13 +977,11 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         number: judge(loaded(task, work, number, arm, declared), number, given, arm)
         for number in PROBLEMS
     }
-    measurements = {"solved": float(sum(not found for found in failures.values()))}
-    measurements |= {
-        f"p{number}": float(not found) for number, found in failures.items()
-    }
+    measures = {"solved": float(sum(not found for found in failures.values()))}
+    measures |= {f"p{number}": float(not found) for number, found in failures.items()}
     shortfalls = tuple(
         shortfall.model_copy(update={"design": f"p{number}"})
         for number, found in failures.items()
         for shortfall in found
     )
-    return Verdict(met=not shortfalls, measurements=measurements, shortfalls=shortfalls)
+    return Verdict(met=not shortfalls, measures=measures, shortfalls=shortfalls)

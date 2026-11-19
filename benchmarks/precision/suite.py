@@ -190,7 +190,7 @@ class Prepared:
     unknowns: Mapping[str, results.Unknown]
 
     @classmethod
-    def of(cls, fixture: Fixture) -> Prepared:
+    def from_fixture(cls, fixture: Fixture) -> Prepared:
         """`fixture`, its circuit elaborated."""
         elaborated = Elaborated(fixture.top)
         unknowns = Simulation.from_elaborated(elaborated).unknowns
@@ -311,12 +311,12 @@ def run_ngspice(
     found = command(analysis, export.flatten(built))
     # The noise spectrum's densities squared, and its plot the one before the
     # integrated noise each run ends on.
-    analysed, after = (
+    analyzed, after = (
         (f"set sqrnoise\n{found}", ["setplot previous"])
         if isinstance(analysis, Noise)
         else (found, [])
     )
-    commands = "\n".join([*[f"{analysed}\nrusage all"] * repeats, *after])
+    commands = "\n".join([*[f"{analyzed}\nrusage all"] * repeats, *after])
     given = [
         f"{SPICE_NAMES[name]}={value!r}" for name, value in setting.tolerances().items()
     ]
@@ -584,7 +584,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
     started = time.perf_counter()
     for name in names or list(every):
         document.fixtures[name] = run(
-            Prepared.of(every[name]), simulators or installed, sweeps, repeats
+            Prepared.from_fixture(every[name]), simulators or installed, sweeps, repeats
         )
         save(output, document)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")

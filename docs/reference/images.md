@@ -12,4 +12,4 @@ Schematics show a circuit as engineers draw it, plots show what its analyses fou
 
 ::: jolty.viewer
     options:
-      members: [write_viewer, page, scene, FRAMES, THREE_VERSION]
+      members: [save_viewer, page, scene, FRAMES, THREE_VERSION]

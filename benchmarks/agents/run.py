@@ -354,7 +354,7 @@ def confinement(program: Program, prepared: Environment, work: Path) -> Sandbox 
 
 
 @dataclass(frozen=True, slots=True)
-class Outcome:
+class TaskResult:
     """How one agent's session on a task went, as the runner saw it, and its verdict."""
 
     exit_code: int
@@ -375,7 +375,7 @@ def session(
     work: Path,
     arm: Arm,
     timeout: float | None = None,
-) -> Outcome:
+) -> TaskResult:
     """Runs `program` of `arm` on `task` in `work`, keeps its transcript, and scores it.
 
     It runs in a sandbox wherever this platform has one, and `program` runs only in
@@ -418,7 +418,7 @@ def session(
         sandbox=within,
         timeout=timeout,
     )
-    return Outcome(
+    return TaskResult(
         process.returncode,
         seconds,
         timed_out,

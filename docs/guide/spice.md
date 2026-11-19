@@ -56,7 +56,7 @@ An element or a node whose name holds a `/`, as a flattened hierarchy writes the
 A bipolar transistor has a substrate, as in SPICE: the ground unless its instance names a fourth node, at its collector for an NPN and at its base for a PNP unless `SUBS` builds it otherwise.
 
 An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.
-The inductors that mutual inductances couple, directly or through one another, become one device of [coupled inductors](devices.md#coupled-inductors), its windings in the order the file writes them, which takes the id and the line of the first mutual inductance: `K1 L1 L2 0.99` gives `K1`, whose currents are `K1:current1` and `K1:current2`.
+The inductors that mutual inductances couple, directly or through one another, become one device of [coupled inductors](devices.md#coupled-inductors), its windings in the order the file writes them, which takes the name and the line of the first mutual inductance: `K1 L1 L2 0.99` gives `K1`, whose currents are `K1:current1` and `K1:current2`.
 A mutual inductance may name any number of inductors, as PSpice's does, each pair coupled by its coefficient; one with a magnetic core's model is an error.
 
 Temperature parameters become the devices' own: a model's `TNOM`, or PSpice's `T_MEASURED`, is its nominal temperature, and a resistor's, capacitor's or inductor's `TC=tc1,tc2`, `TC1`, `TC2` and `TCE` drift its value.

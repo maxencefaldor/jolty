@@ -131,13 +131,13 @@ The result's `points` hold an operating point per solution, and `voltages(net)` 
 ## Sensitivities
 
 Every analysis that solves for the unknowns, the operating point, a DC sweep, a small-signal response, a transient and a periodic steady state, is a function of the circuit's parameters, which jolty differentiates exactly.
-`jolty.function(circuit, analysis)` gives that function, `f(params)`, and `jolty.jvp` and `jolty.vjp` differentiate it as `jax.jvp` and `jax.vjp` differentiate a function.
-The parameters, `params`, are a nested dictionary of numbers of devices' parameters, by instance path, then by parameter path, in SI base units, as a simulation's overrides name them; those given are the ones differentiated, the circuit's others held.
+`jolty.function(circuit, analysis)` gives that function, `f(parameters)`, and `jolty.jvp` and `jolty.vjp` differentiate it as `jax.jvp` and `jax.vjp` differentiate a function.
+The `parameters` are a nested dictionary of numbers of devices' parameters, by instance path, then by parameter path, in SI base units, as a simulation's overrides name them; those given are the ones differentiated, the circuit's others held.
 A parameter path names a number of a device's parameters by its keys, such as `resistance`, or `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
-The outputs are a dictionary of each unknown's values over the analysis's points, by the unknown's name, such as `out` or `V1:current`: one value at the operating point, one per level, frequency, time or point of the period otherwise, phasors over frequency; an oscillator's periodic steady state adds its period, in seconds, under `jolty.simulate.PERIOD`.
+The outputs are a dictionary of each unknown's values over the analysis's points, by the unknown's name, such as `out` or `V1:current`: one value at the operating point, one per value, frequency, time or point of the period otherwise, phasors over frequency; an oscillator's periodic steady state adds its period, in seconds, under `jolty.simulate.PERIOD`.
 
-`jvp(f, params, tangents)` returns the outputs and their derivatives along `tangents`, which moves some of the parameters given, by the same keys: the JVP, a Jacobian-vector product, by the direct method, one solve at each point of the analysis.
-`vjp(f, params)` returns the outputs and a pullback, which takes a cotangent on the outputs, by the same keys, those it leaves out zero, and gives its value on each parameter given: the VJP, a vector-Jacobian product, by the adjoint method, one transposed solve at each point however many the parameters.
+`jvp(function, parameters, tangents)` returns the outputs and their derivatives along `tangents`, which moves some of the parameters given, by the same keys: the JVP, a Jacobian-vector product, by the direct method, one solve at each point of the analysis.
+`vjp(function, parameters)` returns the outputs and a pullback, which takes a cotangent on the outputs, by the same keys, those it leaves out zero, and gives its value on each parameter given: the VJP, a vector-Jacobian product, by the adjoint method, one transposed solve at each point however many the parameters.
 A scalar loss's derivatives with respect to the outputs are a cotangent, and its pullback is the loss's gradient, as here over a crossbar's weights:
 
 ```python
@@ -210,7 +210,7 @@ Each device's own derivatives with respect to its parameters, `∂F/∂p`, come 
 A VJP seeds each parameter on a direction of its own, a device's parameters eight to a twin; a JVP seeds each tangent on one direction of each device it moves, its components on that device's parameters, so that a tangent costs a device one direction however many of its parameters it moves.
 Each direction's numbers are those of a twin along it alone, bit for bit.
 The solution then moves by the implicit function theorem, `dx/dp = −J⁻¹ ∂F/∂p` with `J = ∂F/∂x`, which the JVP evaluates from the right and the VJP from the left, one factorization at each point serving every tangent and cotangent; the two are transposes of one linear map, and the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` holds to 7.4·10⁻¹⁶ of its terms at every analysis (`crates/jolty-engine/tests/sensitivity.rs`).
-At a DC point, `J` is the DC Jacobian, and a number a DC sweep holds moves nothing at its levels.
+At a DC point, `J` is the DC Jacobian, and a number a DC sweep holds moves nothing at its values.
 Over frequency, `G + jωC` moves with each parameter directly and through the operating point, both exact: every device reads its unknowns as dual numbers when a twin seeds them, so the JVP pushes directional second derivatives `(∂G/∂x · dx₀/dp, ∂C/∂x · dx₀/dp)` directly across nonlinear devices, and the VJP accumulates the frequency weights on the nonlinear devices' matrix entries and pulls them back through one transposed DC solve at the operating point per active cotangent regardless of parameter count; purely linear circuits skip the operating-point term altogether.
 Over time, the JVP carries each tangent's derivative of the solution from step to step through the same integration formula, each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985), and the VJP is its transpose step for step, the discrete adjoint, one backward pass through the steps the transient took for every cotangent at once; a derivative moves no step and no logic event.
 A transient's derivatives start from those of the state it starts from: the operating point's, its rows of the nets the initial conditions hold while it is solved replaced by theirs, which no parameter moves, or none for a transient from its initial conditions alone; an RC from `out` = 0 V meets the closed form `d out/dR = −(t/(R²C)) e^(−t/RC)` from either start.
@@ -227,7 +227,7 @@ A sensitivity analysis is the whole Jacobian of some outputs, each against every
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
-Given another analysis, it differentiates the outputs at each of its points instead: each level of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, each time of a transient, and each point of a periodic steady state's period, at its fraction of the period:
+Given another analysis, it differentiates the outputs at each of its points instead: each value of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, each time of a transient, and each point of a periodic steady state's period, at its fraction of the period:
 
 ```python
 Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})

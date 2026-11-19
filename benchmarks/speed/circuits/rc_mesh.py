@@ -1,7 +1,7 @@
 # Copyright 2026 Maxence Faldor
 """Square meshes of resistors and capacitors, the cost of the sparse solver's fill.
 
-Each node of an ``n`` by ``n`` grid has 1 pF to ground and 1 kΩ to each neighbour, and
+Each node of an ``n`` by ``n`` grid has 1 pF to ground and 1 kΩ to each neighbor, and
 the nodes of the bottom row 1 kΩ to ground besides. A pulse of 1 V, from 1 ns for 1 µs,
 into the top left corner spreads through the mesh, its time constant 1 ns. The fixtures
 ``rc_mesh_100`` and ``rc_mesh_300`` run 10 µs of meshes of 10,000 and 90,000 nodes,

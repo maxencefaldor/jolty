@@ -4,7 +4,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.builder
     options:
-      members: [component, circuit, Builder, Component, Placed, Terminal, Net, ComponentFunction]
+      members: [component, circuit, Builder, Component, Placed, Terminal, Net, Connectable, ComponentFunction]
 
 ::: jolty.devices
 
@@ -28,7 +28,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice.ngspice
     options:
-      members: [run, runs, execute, version, read, Executed, NgspiceTimeoutError, Running, Compatibility, Result, option_temperature, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS, NO_OPTIONS, VALUES]
+      members: [run, runs, execute, version, read, parse_raw, RawPlot, RawVariable, Executed, NgspiceTimeoutError, Running, Compatibility, Result, option_temperature, same_kelvins, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS, NO_OPTIONS, VALUES]
 
 ::: jolty.spice.xyce
     options:

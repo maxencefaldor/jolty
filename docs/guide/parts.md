@@ -100,10 +100,10 @@ The MCP server's `export_kicad_netlist` tool does the same, and `jolty.kicad.net
 ## Preferred values
 
 The E series of IEC 60063 space preferred values evenly on a log scale: E3 to E24 for tolerances from 40 % down to 5 %, E48 and E96 for 2 % and 1 %, and E192 for 0.5 % and better.
-`values(series, low, high)` lists a series' values between two bounds, and `neighbours(series, value)` the values nearest a value below and above it:
+`values(series, low, high)` lists a series' values between two bounds, and `neighbors(series, value)` the values nearest a value below and above it:
 
 ```python
-from jolty.catalog import neighbours
+from jolty.catalog import neighbors
 
-neighbours("E96", 1234.0)  # (1210.0, 1240.0)
+neighbors("E96", 1234.0)  # (1210.0, 1240.0)
 ```

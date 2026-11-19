@@ -445,7 +445,7 @@
       }
     }
   },
-  "fingerprints": {
+  "digests": {
     "rc_mesh_300": {
       "serial": "4998e669da8acfba",
       "spread": "40d3afc4e97cf08b"

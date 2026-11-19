@@ -30,6 +30,6 @@ A simulation runs a plan's analyses on a circuit, its results read by net and by
 
 ::: jolty.files
     options:
-      members: [load_results, save_results, load_provenance, Provenance, circuit_digest, plan_digest, build, platform, load_circuit, save_circuit, Batch, load_batches, save_batches, Shard, load_shard, save_shard, circuit_path, results_path, batches_path, shards_path, shard_name, merged_path, plot_path, schematic_path, netlist_path]
+      members: [load_results, save_results, load_raw, save_raw, RawAnalysisResult, load_provenance, Provenance, circuit_digest, plan_digest, build, platform, load_circuit, save_circuit, Batch, load_batches, save_batches, Shard, load_shard, save_shard, circuit_path, results_path, batches_path, shards_path, shard_name, merged_path, plot_path, schematic_path, netlist_path]
 
 ::: jolty.shards

@@ -119,7 +119,7 @@ class Entry:
     suite: str
     url: str
     commit: str
-    sha256: str
+    digest: str
     licence: str
     hard: str
 
@@ -254,9 +254,9 @@ class Deck:
     cards: Sequence[_Card] = field(repr=False)
 
     @classmethod
-    def of(cls, entry: Entry) -> Deck:
+    def from_entry(cls, entry: Entry) -> Deck:
         """The deck `entry` names, fetched and checked against its digest."""
-        path = fetch(entry.url, entry.sha256)
+        path = fetch(entry.url, entry.digest)
         return cls.read(entry, path.read_text(encoding="utf-8", errors="replace"))
 
     @classmethod
@@ -560,7 +560,7 @@ def fixtures() -> list[Fixture]:
     found: list[Fixture] = []
     for entry in manifest():
         try:
-            deck = Deck.of(entry)
+            deck = Deck.from_entry(entry)
         except JoltyError as error:
             raise SystemExit(str(error)) from None
         fixture_circuit = DeckCircuit(deck)

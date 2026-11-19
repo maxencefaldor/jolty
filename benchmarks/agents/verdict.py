@@ -45,7 +45,7 @@ class Shortfall(BaseModel):
     spec: str | None = Field(
         default=None,
         description="The requirement the design falls short of, for a shortfall of "
-        "the kind spec, such as a measurement's name, 'parts' or 'yield'.",
+        "the kind spec, such as a measure's name, 'parts' or 'yield'.",
     )
     design: str | None = Field(
         default=None,
@@ -64,7 +64,7 @@ class Verdict(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     met: bool = Field(description="Whether the work meets the task.")
-    measurements: dict[str, float] = Field(
+    measures: dict[str, float] = Field(
         default_factory=dict,
         description="What the scorer measured, by name, such as a cost or an error.",
     )

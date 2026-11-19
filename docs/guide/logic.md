@@ -78,7 +78,7 @@ Every result holds the logic nets' levels beside its unknowns, and `logic_level(
 
 ```python
 point.logic_level("carry")  # a float
-sweep.logic_level("carry")  # an array, one level per level of the source
+sweep.logic_level("carry")  # an array, one logic level per value of the source
 trace = waveforms.logic_level("carry")  # a LogicTrace
 changes = trace.times, trace.levels  # the level at time zero, then each change
 sampled = trace.at(times)  # the level at each of times

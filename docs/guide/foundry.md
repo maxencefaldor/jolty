@@ -34,7 +34,7 @@ A build elaborates the circuit and checks its structure as any other, through th
 ## Simulating in ngspice
 
 `jolty simulate` and `Simulation.run` hand each analysis of a circuit that holds a foundry's device to ngspice, which reads the kit's model library and runs it at the plan's temperature, with its options, in its HSPICE compatibility mode, as the kit asks.
-The circuit is written as a [SPICE netlist](spice.md#writing-spice), each transistor an instance of the kit's subcircuit, its sizes in micrometres, as the kit's library scales them, and its diffusions' areas, perimeters and squares estimated as the kit's xschem symbols estimate them, from a diffusion 0.29 µm long beside each finger.
+The circuit is written as a [SPICE netlist](spice.md#writing-spice), each transistor an instance of the kit's subcircuit, its sizes in micrometers, as the kit's library scales them, and its diffusions' areas, perimeters and squares estimated as the kit's xschem symbols estimate them, from a diffusion 0.29 µm long beside each finger.
 ngspice reads the whole library, which takes seconds, before each analysis.
 
 Its results are jolty's: reports, plots, specs and corners read them as they read the engine's.

@@ -18,7 +18,7 @@ _parts = runpy.run_path(str(Path(__file__).parent / "given" / "parts.py"))
 
 
 def nmos(width: float, length: float = 1.0) -> devices.Device:
-    """The given NMOS, `width` by `length` micrometres."""
+    """The given NMOS, `width` by `length` micrometers."""
     made = _parts["nmos"](width * um, length * um)
     if not isinstance(made, devices.Device):
         raise TypeError(made)
@@ -26,7 +26,7 @@ def nmos(width: float, length: float = 1.0) -> devices.Device:
 
 
 def pmos(width: float, length: float = 1.0) -> devices.Device:
-    """The given PMOS, `width` by `length` micrometres."""
+    """The given PMOS, `width` by `length` micrometers."""
     made = _parts["pmos"](width * um, length * um)
     if not isinstance(made, devices.Device):
         raise TypeError(made)
@@ -68,9 +68,11 @@ def capacitor(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> None
     two_terminal(c, id, made, a, b)
 
 
-def level(c: Builder, id: str, volts: float, net: Net, ground: Net) -> None:
+def dc_source(
+    circuit_builder: Builder, name: str, volts: float, net: Net, ground: Net
+) -> None:
     """A constant source holding `net` at `volts` over `ground`."""
-    two_terminal(c, id, devices.voltage_source(volts * V), net, ground)
+    two_terminal(circuit_builder, name, devices.voltage_source(volts * V), net, ground)
 
 
 def common_source(c: Builder) -> None:
@@ -174,7 +176,7 @@ def resistive_pair(c: Builder) -> None:
     """Problem 13: a differential pair with resistive loads and one output."""
     p = ports(c, "vinp", "vinn", "vout")
     tail, bias, other = c.net("tail"), c.net("bias"), c.net("other")
-    level(c, "VB", 1.0, bias, p["ground"])
+    dc_source(c, "VB", 1.0, bias, p["ground"])
     mosfet(c, "M1", (other, p["vinp"], tail), nmos(50))
     mosfet(c, "M2", (p["vout"], p["vinn"], tail), nmos(50))
     mosfet(c, "M3", (tail, bias, p["ground"]), nmos(100))
@@ -225,7 +227,7 @@ def opamp(c: Builder) -> None:
     """
     p = ports(c, "inp", "inn", "out")
     tail, near, far, bias = c.net("tail"), c.net("near"), c.net("far"), c.net("bias")
-    level(c, "VB", 0.7, bias, p["ground"])
+    dc_source(c, "VB", 0.7, bias, p["ground"])
     mosfet(c, "M1", (near, p["inn"], tail), nmos(50))
     mosfet(c, "M2", (far, p["inp"], tail), nmos(50))
     mosfet(c, "M3", (tail, bias, p["ground"]), nmos(100))
@@ -251,7 +253,7 @@ def phase_shift(c: Builder) -> None:
     """Problem 16: an inverting amplifier of gain 33 behind three RC sections."""
     p = ports(c, "vout")
     reference, inn = c.net("reference"), c.net("inn")
-    level(c, "VR", 2.5, reference, p["ground"])
+    dc_source(c, "VR", 2.5, reference, p["ground"])
     amplified(c, p, reference, inn, p["vout"])
     resistor(c, "RF", 330, inn, p["vout"])
     nodes = [p["vout"], c.net("n1"), c.net("n2"), c.net("n3")]
@@ -272,7 +274,7 @@ def wien(c: Builder) -> None:
         c.net("inn"),
         c.net("series"),
     )
-    level(c, "VR", 2.5, reference, p["ground"])
+    dc_source(c, "VR", 2.5, reference, p["ground"])
     amplified(c, p, inp, inn, p["vout"])
     resistor(c, "RS", 10, p["vout"], series)
     capacitor(c, "CS", devices.capacitor(1 * nF), series, inp)
@@ -286,7 +288,7 @@ def integrator(c: Builder) -> None:
     """Problem 18: R1 of 10 kΩ into Cf of 3 µF, 10 MΩ across Cf for its bias."""
     p = ports(c, "vin", "vout")
     reference, inn = c.net("reference"), c.net("inn")
-    level(c, "VR", 2.5, reference, p["ground"])
+    dc_source(c, "VR", 2.5, reference, p["ground"])
     amplified(c, p, reference, inn, p["vout"])
     resistor(c, "R1", 10, p["vin"], inn)
     capacitor(c, "CF", devices.capacitor(3 * uF), inn, p["vout"])
@@ -301,7 +303,7 @@ def differentiator(c: Builder) -> None:
     """
     p = ports(c, "vin", "vout")
     reference, inn, series = c.net("reference"), c.net("inn"), c.net("series")
-    level(c, "VR", 2.5, reference, p["ground"])
+    dc_source(c, "VR", 2.5, reference, p["ground"])
     amplified(c, p, reference, inn, p["vout"])
     capacitor(c, "C1", devices.capacitor(3 * uF), p["vin"], series)
     two_terminal(c, "RS", devices.resistor(100 * ohm), series, inn)
@@ -312,7 +314,7 @@ def adder(c: Builder) -> None:
     """Problem 20: an inverting adder of two 10 kΩ inputs around 2.5 V."""
     p = ports(c, "vin1", "vin2", "vout")
     reference, inn = c.net("reference"), c.net("inn")
-    level(c, "VR", 2.5, reference, p["ground"])
+    dc_source(c, "VR", 2.5, reference, p["ground"])
     amplified(c, p, reference, inn, p["vout"])
     resistor(c, "R1", 10, p["vin1"], inn)
     resistor(c, "R2", 10, p["vin2"], inn)

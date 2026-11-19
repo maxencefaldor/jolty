@@ -18,6 +18,7 @@ scripts/bench --coverage       # the coverage matrix: what each simulator offers
 | [Robustness](robustness/README.md) | Each simulator's outcome on hard circuits, jolty's own and third-party decks, and its failure rate | `robustness/own.py`, `robustness/decks.py`, `robustness/results`, outside the repository |
 | [Coverage](coverage/README.md) | What each simulator offers, each row of analyses, models, syntax and outputs a fixture that ran | `coverage/capabilities.py`, `coverage/coverage.json`, `coverage/matrix.md` |
 | [Agents](agents/README.md) | What an agent achieves on tasks of circuit design with jolty's tools, against ngspice's | `agents/`, run by its own scripts there |
+| Deterministic | Solver counts, precision digits and result digests per platform, checked in `scripts/check` | `deterministic/bench.py`, `deterministic/baseline.json` |
 
 Every suite runs a simulator by its runner of [`simulators.py`](simulators.py): jolty, ngspice with Sparse 1.3 and with KLU, and Xyce, serially or its parallel build on MPI ranks.
 Every suite writes its results through [`measuring.py`](measuring.py), headed by their provenance, the commit with its `-dirty` mark and the machine, to `<suite>/results/<commit>.json`.

@@ -169,10 +169,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
             read(waveforms.voltage("plus")) - read(waveforms.voltage("minus"))
         )
         errors.append(float(np.mean(np.abs(output - wanted))))
-    measurements = {"fitness": float(np.mean(np.divide(errors, PATENT)))}
-    measurements |= {
-        f"error {case}": error for case, error in enumerate(errors, start=1)
-    }
+    measures = {"fitness": float(np.mean(np.divide(errors, PATENT)))}
+    measures |= {f"error {case}": error for case, error in enumerate(errors, start=1)}
     for case, (plus, minus, level) in enumerate(SETTLING, start=1):
         inputs = (devices.voltage_source(plus * V), devices.voltage_source(minus * V))
         waveforms = board.simulation(
@@ -180,14 +178,14 @@ def measure(made: Component, board: Board) -> dict[str, float]:
         ).run(Transient(stop=50 * us, max_step=10 * ns, record=LOAD))
         late = waveforms.times >= SETTLED
         current = waveforms.current("RLOAD", "a")[late]
-        measurements[f"swing {case}"] = float(np.ptp(current))
+        measures[f"swing {case}"] = float(np.ptp(current))
         wanted = TRANSCONDUCTANCE * (plus - minus)
-        measurements[f"settled error {case}"] = abs(float(np.mean(current)) - wanted)
-    return measurements
+        measures[f"settled error {case}"] = abs(float(np.mean(current)) - wanted)
+    return measures
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measurements `found` fall short of the task, if they do."""
+    """Why the measures `found` fall short of the task, if they do."""
     reasons = []
     if found["fitness"] > 1:
         reason = f"the fitness is {found['fitness']:.4g}, more than the patent's 1"
@@ -226,7 +224,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             parts=("npn", "pnp"),
             allowed=ALLOWED,
             spread=discrete,
-            extra_measurements={
+            extra_measures={
                 **{
                     f"patent's error {case}": theirs
                     for case, theirs in enumerate(PATENT, start=1)

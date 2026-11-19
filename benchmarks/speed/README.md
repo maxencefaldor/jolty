@@ -42,7 +42,7 @@ Run a script from the repository root after changing it, such as `uv run python 
 | `buck` | A synchronous buck converter of level 1 MOSFETs at 500 kHz, from 12 V into 5 Ω: 2 ms | Many tiny time steps | the suite |
 | `inverter_chain_500` | 500 CMOS inverters of level 1 MOSFETs under a pulse: 40 ns | Device evaluation and Newton iteration | the suite |
 | `inverter_chain_5000`, `_50000` | The same chain of 5,000 and 50,000 inverters | The same, on one large circuit | `--scale` |
-| `rc_mesh_100` | A square mesh of 10,000 nodes, 1 kΩ between neighbours and 1 pF to ground, under a pulse: 10 µs | The sparse solver's fill | the suite |
+| `rc_mesh_100` | A square mesh of 10,000 nodes, 1 kΩ between neighbors and 1 pF to ground, under a pulse: 10 µs | The sparse solver's fill | the suite |
 | `rc_mesh_300` | The same mesh of 90,000 nodes | The same, on one large circuit | `--scale` |
 | `monte_carlo` | `bjt_amp`'s analyses on 100,000 samples of its resistors, each within 5% | Many runs of one circuit | the suite, its first 1,000 samples, in Rust as one batch and in Python; `--scale`, every one, in Python |
 
@@ -297,9 +297,9 @@ On 64 threads a chain's devices and its work on each unknown stay on one thread,
 
 `scripts/bench --scale` runs each large fixture serially, on one thread with no block of its matrix dissected, and with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each compared with the serial run.
 The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Max, so it runs them only with `--largest`, and else once at the defaults; `--threads` names other numbers of threads.
-It prints each run's time, its speed-up against the serial run and against the spread run on one thread, the makespan of N independent single-thread copies run concurrently with its attainable speed-up and throughput efficiency, each row's isolated peak resident memory, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
+It prints each run's time, its speed-up against the serial run and against the spread run on one thread, the makespan of N independent single-thread copies run concurrently with its attainable speed-up and throughput efficiency, each row's isolated peak resident memory, and its results' digest, the first 16 hexadecimal digits of the SHA-256 of their arrays.
 The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.
-The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, the fingerprints, each timing's optional `peak_memory_bytes`, and each fixture's concurrent-copy measurements under `copies`.
+The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, the digests, each timing's optional `peak_memory_bytes`, and each fixture's concurrent-copy measurements under `copies`.
 
 ### Peak memory and concurrent-copy efficiency
 
@@ -381,7 +381,7 @@ Large-circuit scaling on machine D (6 interleaved rounds, default parallelism):
 | `inverter_chain_5000` | 24 | 70.78 s [65.31, 89.90] | 3.54× | 3.17× | faster | `988bcd74633cb666` |
 | `inverter_chain_50000` | default (1 run) | 1,001 s (881.9 s profiled) | | | | |
 
-`inverter_chain_5000` produced the bit-identical result fingerprint `988bcd74633cb666` across every thread count; `rc_mesh_300` matched `4998e669da8acfba` serially and on 1 thread, and `40d3afc4e97cf08b` across 8, 16 and 24 threads (where nested dissection picks the same interior bound).
+`inverter_chain_5000` produced the bit-identical result digest `988bcd74633cb666` across every thread count; `rc_mesh_300` matched `4998e669da8acfba` serially and on 1 thread, and `40d3afc4e97cf08b` across 8, 16 and 24 threads (where nested dissection picks the same interior bound).
 
 Transient profile work counts on `430c75d` (machine D, glibc 2.27):
 

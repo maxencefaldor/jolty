@@ -154,7 +154,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measurements `found` fall short of the task, if they do."""
+    """Why the measures `found` fall short of the task, if they do."""
     reasons = []
     if found["difference gain error"] > GAIN:
         reason = (
@@ -197,7 +197,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             parts=("npn", "pnp"),
             allowed=ALLOWED,
             spread=discrete,
-            extra_measurements={
+            extra_measures={
                 f"evolved {name}": value for name, value in EVOLVED.items()
             },
         ),

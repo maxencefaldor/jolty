@@ -111,7 +111,7 @@ convention = "google"
 # The other suites, their fixtures' scripts and their runners run as scripts, outside
 # any package: the fixtures' numbers are their circuits, and the suites print what they
 # measured.
-"benchmarks/deterministic.py" = ["INP001", "PLR2004", "T201"]
+"benchmarks/deterministic/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/measuring.py" = ["INP001", "T201"]
 "benchmarks/simulators.py" = ["INP001"]
 "benchmarks/speed/**/*.py" = ["INP001", "PLR2004", "T201"]

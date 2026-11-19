@@ -47,7 +47,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         if not design.is_file():
             return Verdict(
                 met=False,
-                measurements={"baseline": baseline},
+                measures={"baseline": baseline},
                 shortfalls=(missing(f"there is no {work / design.name}"),),
             )
         try:
@@ -57,7 +57,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             # the script makes none: it fails, runs out of time or its process ends.
             return Verdict(
                 met=False,
-                measurements={"baseline": baseline},
+                measures={"baseline": baseline},
                 shortfalls=(unbuilt(f"the design does not build: {error}"),),
             )
     shortfalls = planned(result)
@@ -78,7 +78,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         shortfalls.append(unmet("cost", reason))
     return Verdict(
         met=not shortfalls,
-        measurements={"baseline": baseline, "cost": priced.total},
+        measures={"baseline": baseline, "cost": priced.total},
         shortfalls=tuple(shortfalls),
         report=result.describe(),
     )

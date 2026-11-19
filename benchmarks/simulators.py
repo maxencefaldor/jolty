@@ -86,7 +86,7 @@ class Jolty:
 
     def run(
         self, circuit: ir.Circuit, analyses: Mapping[str, Analysis], options: Options
-    ) -> Analysed:
+    ) -> Analyzed:
         """Elaborates `circuit`, and runs the `analyses` on it in turn, by name.
 
         Raises:
@@ -99,11 +99,11 @@ class Jolty:
             started = time.perf_counter()
             found[name] = simulation.run(analysis, options)
             analysis_seconds += time.perf_counter() - started
-        return Analysed(found, analysis_seconds)
+        return Analyzed(found, analysis_seconds)
 
 
 @dataclass(frozen=True, slots=True)
-class Analysed:
+class Analyzed:
     """What jolty found of a circuit's analyses, by name, and how long they took."""
 
     found: dict[str, results.AnalysisResult]
@@ -147,26 +147,26 @@ class Ngspice:
 
     def execute(
         self,
-        lines: Sequence[str],
+        deck: Sequence[str],
         control: Sequence[str],
         *,
         timeout: float | None = ngspice.TIMEOUT,
     ) -> ngspice.Executed:
-        """Runs the `control` commands on the netlist `lines`, in one ngspice.
+        """Runs the `control` commands on the netlist `deck`, in one ngspice.
 
-        The deck is the netlist, then its solver's options, then a control section of
-        the commands; it runs by `jolty.spice.ngspice.execute`, for at most `timeout`
+        The full deck is the netlist, then its solver's options, then a control section
+        of the commands; it runs by `jolty.spice.ngspice.execute`, for at most `timeout`
         seconds, or as long as it takes if None.
 
         Raises:
             JoltyError: As `jolty.spice.ngspice.execute` does.
         """
-        deck = [*lines, *self.options, ".control", *control, ".endc", ".end"]
-        return ngspice.execute(deck, timeout=timeout)
+        full_deck = [*deck, *self.options, ".control", *control, ".endc", ".end"]
+        return ngspice.execute(full_deck, timeout=timeout)
 
     def runs(
         self,
-        lines: list[str],
+        deck: list[str],
         analyses: Sequence[str],
         **running: Unpack[ngspice.Running],
     ) -> tuple[ngspice.Result, ...]:
@@ -179,7 +179,7 @@ class Ngspice:
             JoltyError: As `jolty.spice.ngspice.runs` does.
         """
         options = "\n".join([running.get("options", ngspice.OPTIONS), *self.options])
-        return ngspice.runs(lines, analyses, **(running | {"options": options}))
+        return ngspice.runs(deck, analyses, **(running | {"options": options}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,20 +203,20 @@ class Xyce:
 
     def run(
         self,
-        lines: list[str],
+        deck: list[str],
         analysis: str,
         *,
         printed: Sequence[str] | None = None,
         options: Sequence[str] = xyce.OPTIONS,
         timeout: float | None = xyce.TIMEOUT,
     ) -> xyce.Result:
-        """Runs one analysis of the deck `lines` by `jolty.spice.xyce.run`.
+        """Runs one analysis of `deck` by `jolty.spice.xyce.run`.
 
         Raises:
             JoltyError: As `jolty.spice.xyce.run` does.
         """
         return xyce.run(
-            lines,
+            deck,
             analysis,
             printed=printed,
             options=options,

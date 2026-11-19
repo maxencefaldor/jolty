@@ -100,15 +100,15 @@ def measure(
     The patent's are those in the board's corner.
     """
     found = errors(made, board)
-    measurements = {"score": float(np.mean(np.divide(found, patent[board.corner])))}
-    measurements |= {
+    measures = {"score": float(np.mean(np.divide(found, patent[board.corner])))}
+    measures |= {
         f"error {name}": error for name, error in zip(NAMES, found, strict=True)
     }
-    return measurements
+    return measures
 
 
 def shortfalls(found: dict[str, float]) -> list[Shortfall]:
-    """Why the measurements `found` fall short of the task, if they do."""
+    """Why the measures `found` fall short of the task, if they do."""
     if found["score"] <= 1:
         return []
     return [
@@ -132,7 +132,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             parts=("npn",),
             allowed=ALLOWED,
             spread=integrated,
-            extra_measurements={
+            extra_measures={
                 f"patent's error {name}": error
                 for name, error in zip(NAMES, patent[CORNERS[0]], strict=True)
             },

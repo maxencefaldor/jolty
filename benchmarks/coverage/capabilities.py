@@ -965,7 +965,7 @@ def sensitivities() -> list[Fixture]:
         return {n: complex(d) for n, d in zip(names, derivative, strict=True)}
 
     # dv/dR of the ramp response: v depends on τ = RC, so dv/dR = C·dv/dτ.
-    def d_tran(time: float) -> float:
+    def diode_transient(time: float) -> float:
         step = 1e-6 * RC_TAU
         return (
             1e-9
@@ -974,7 +974,7 @@ def sensitivities() -> list[Fixture]:
         )
 
     times = STEP_TIMES
-    tran_names = tuple(f"d(out)/d(r1)@{t!r}" for t in times)
+    transient_names = tuple(f"d(out)/d(r1)@{t!r}" for t in times)
 
     def over_time() -> Values:
         built = circuit(rc_step())
@@ -989,7 +989,7 @@ def sensitivities() -> list[Fixture]:
         trace = found.result.times
         return {
             n: complex(np.interp(t, trace, derivative))
-            for n, t in zip(tran_names, times, strict=True)
+            for n, t in zip(transient_names, times, strict=True)
         }
 
     return [
@@ -1048,7 +1048,10 @@ def sensitivities() -> list[Fixture]:
             category=Category.ANALYSIS,
             name="Sensitivities over time",
             known=Known(
-                values={n: d_tran(t) for n, t in zip(tran_names, times, strict=True)},
+                values={
+                    n: diode_transient(t)
+                    for n, t in zip(transient_names, times, strict=True)
+                },
                 source="closed form: the ramp response's derivative in its time "
                 "constant, by a central difference of 1e-6 of it",
                 tolerance=INTEGRATED,

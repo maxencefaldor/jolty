@@ -8,7 +8,7 @@ A report states facts, one section per analysis in the plan's order:
 
 - an operating point lists every unknown's value and every logic net's level, the strategy that found it and its Newton iterations, and each transistor's [region of operation](#regions-of-operation) with its margins to the regions' boundaries, those nearest a boundary first;
 - a search for operating points lists every unknown's value at each DC solution it found, the operating point first, and the Newton iterations that found each;
-- a DC sweep states the Newton iterations of all its levels, and how many levels each strategy but Newton iteration alone found;
+- a DC sweep states the Newton iterations of all its values, and how many values each strategy but Newton iteration alone found;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
 - a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
@@ -23,7 +23,7 @@ With `--output-format json`, the command prints the same report as data.
 ## Plots
 
 `jolty simulate` plots every analysis but operating points, searches for them and sensitivities beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
-A transient plots over time, a sweep along its source's levels, and a frequency response as a Bode plot, as is a loop gain, against 0 dB and -180°, where its margins are read; a noise analysis plots its output's noise density, with its noisiest sources', and the noise referred to its input on log axes; and a pole-zero analysis plots each pole and zero at its natural frequency and damping ratio, against the line at zero below which a pole grows:
+A transient plots over time, a sweep along its source's values, and a frequency response as a Bode plot, as is a loop gain, against 0 dB and -180°, where its margins are read; a noise analysis plots its output's noise density, with its noisiest sources', and the noise referred to its input on log axes; and a pole-zero analysis plots each pole and zero at its natural frequency and damping ratio, against the line at zero below which a pole grows:
 
 ![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.plot.png)
 
@@ -209,7 +209,7 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | Result | Arrays | Each value is |
 | --- | --- | --- |
 | `OperatingPointResult` | `values`, `currents`, `charges`, `conductances`, `capacitances`, `variables` | a float |
-| `DcSweepResult` | `swept`, and the operating point's arrays | one per level |
+| `DcSweepResult` | `swept`, and the operating point's arrays | one per value |
 | `AcResult` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
 | `TransientResult` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
 | `PeriodicSteadyStateResult` | a `TransientResult`'s over one period, its `period` and the `periods` shooting took | one per accepted time point of the period |
@@ -220,7 +220,7 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `PoleZeroResult` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
 An operating point's `strategy` says how the engine found it, by Newton iteration alone, `direct`, or by the aid that took over where it failed, and its `iterations` count the Newton iterations that found it: the strategy's that found it, those of every strategy tried before it, and those of each solve again as the logic settled with it, as solving it afresh runs them, whatever the simulation remembered.
-A DC sweep's `strategies` and `iterations` say the same of the operating point at each level, from the level before it.
+A DC sweep's `strategies` and `iterations` say the same of the operating point at each value, from the value before it.
 A transient's `statistics` count its steps, accepted, rejected or tried again to land on an event, and the Newton iterations of those accepted.
 Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
 With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.

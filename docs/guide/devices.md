@@ -674,7 +674,7 @@ Every parameter is optional:
 | `subthreshold_slope_temperature_coefficient`, `subthreshold_slope_quadratic_temperature_coefficient` | `TKSUBTHRES1`, `TKSUBTHRES2` | K⁻¹, K⁻² | 0 |
 | `drain_resistance_temperature_exponent` | `TEXP0` | none | none: the drain's coefficients |
 | `drain_resistance_temperature_coefficient`, `drain_resistance_quadratic_temperature_coefficient` | `TRD1`, `TRD2` | K⁻¹, K⁻² | 0 |
-| `quasi_saturation_temperature_exponent` | `TEXP1` | none | 0.3 |
+| `quasi_saturation_resistance_temperature_exponent` | `TEXP1` | none | 0.3 |
 | `source_resistance_temperature_coefficient`, `source_resistance_quadratic_temperature_coefficient` | `TRS1`, `TRS2` | K⁻¹, K⁻² | 0 |
 | `gate_resistance_temperature_coefficient`, `gate_resistance_quadratic_temperature_coefficient` | `TRG1`, `TRG2` | K⁻¹, K⁻² | 0 |
 | `body_resistance_temperature_coefficient`, `body_resistance_quadratic_temperature_coefficient` | `TRB1`, `TRB2` | K⁻¹, K⁻² | 0 |

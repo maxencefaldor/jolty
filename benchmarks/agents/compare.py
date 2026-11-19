@@ -36,7 +36,7 @@ holds every session, and for each task and arm:
   Wilson intervals, and of the medians.
 
 AnalogCoder's twenty-four problems are one task, met when all are; each of its sessions
-keeps the scorer's measurement of every problem.
+keeps the scorer's measure of every problem.
 
 The agents are ``claude``, Claude Code as run.py runs it, on the model ``--model``
 names, if any, and ``stub``, stub.py, which writes a known good design for nothing.
@@ -264,7 +264,7 @@ class Run(BaseModel):
     seconds: float = Field(description="The session's wall time, as the runner saw it.")
     ending: Ending
     met: bool = Field(description="Whether the work meets the task.")
-    measurements: dict[str, float] = Field(description="What the scorer measured.")
+    measures: dict[str, float] = Field(description="What the scorer measured.")
     shortfalls: tuple[Shortfall, ...] = Field(
         description="Why the work falls short, if it does, each of its kind."
     )
@@ -305,11 +305,11 @@ class Rate(BaseModel):
     met: int
     runs: int
     rate: float
-    low: float
-    high: float
+    lower: float
+    upper: float
 
     @classmethod
-    def of(cls, runs: Sequence[Run]) -> Rate:
+    def from_counts(cls, runs: Sequence[Run]) -> Rate:
         """The rate of `runs` that met their task.
 
         Raises:
@@ -319,8 +319,10 @@ class Rate(BaseModel):
             message = "a rate is of one run or more"
             raise ValueError(message)
         met = sum(run.met for run in runs)
-        low, high = wilson(met, len(runs))
-        return cls(met=met, runs=len(runs), rate=met / len(runs), low=low, high=high)
+        lower, upper = wilson(met, len(runs))
+        return cls(
+            met=met, runs=len(runs), rate=met / len(runs), lower=lower, upper=upper
+        )
 
 
 class Spread(BaseModel):
@@ -329,20 +331,20 @@ class Spread(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     median: float
-    least: float
-    greatest: float
+    minimum: float
+    maximum: float
     runs: int = Field(description="The sessions that state the quantity.")
 
     @classmethod
-    def of(cls, values: Sequence[float | None]) -> Spread | None:
+    def from_values(cls, values: Sequence[float | None]) -> Spread | None:
         """The spread of the `values` stated, or null when none is."""
         stated = [value for value in values if value is not None]
         if not stated:
             return None
         return cls(
             median=statistics.median(stated),
-            least=min(stated),
-            greatest=max(stated),
+            minimum=min(stated),
+            maximum=max(stated),
             runs=len(stated),
         )
 
@@ -368,15 +370,15 @@ class Summary(BaseModel):
     )
 
     @classmethod
-    def of(cls, runs: Sequence[Run]) -> Summary:
+    def from_runs(cls, runs: Sequence[Run]) -> Summary:
         """The summary of `runs`, one or more."""
         return cls(
-            success=Rate.of(runs),
-            turns=Spread.of([run.turns for run in runs]),
-            tool_calls=Spread.of([run.calls for run in runs]),
-            simulations=Spread.of([run.simulations.count for run in runs]),
-            seconds=Spread.of([run.seconds for run in runs]),
-            cost=Spread.of([run.cost for run in runs]),
+            success=Rate.from_counts(runs),
+            turns=Spread.from_values([run.turns for run in runs]),
+            tool_calls=Spread.from_values([run.calls for run in runs]),
+            simulations=Spread.from_values([run.simulations.count for run in runs]),
+            seconds=Spread.from_values([run.seconds for run in runs]),
+            cost=Spread.from_values([run.cost for run in runs]),
             endings=dict(sorted(Counter(run.ending for run in runs).items())),
             shortfalls=_tally(
                 {shortfall.kind for shortfall in run.shortfalls} for run in runs
@@ -410,8 +412,8 @@ class Difference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     success: float
-    low: float
-    high: float
+    lower: float
+    upper: float
     turns: float | None
     tool_calls: float | None
     simulations: float | None
@@ -419,17 +421,17 @@ class Difference(BaseModel):
     cost: float | None
 
     @classmethod
-    def of(cls, jolty: Summary, ngspice: Summary) -> Difference:
+    def from_rates(cls, jolty: Summary, ngspice: Summary) -> Difference:
         """`jolty`'s summary less `ngspice`'s."""
         first, second = jolty.success, ngspice.success
         difference = first.rate - second.rate
-        below = math.hypot(first.rate - first.low, second.high - second.rate)
-        above = math.hypot(first.high - first.rate, second.rate - second.low)
+        below = math.hypot(first.rate - first.lower, second.upper - second.rate)
+        above = math.hypot(first.upper - first.rate, second.rate - second.lower)
 
         return cls(
             success=difference,
-            low=max(-1.0, difference - below),
-            high=min(1.0, difference + above),
+            lower=max(-1.0, difference - below),
+            upper=min(1.0, difference + above),
             turns=_less(jolty.turns, ngspice.turns),
             tool_calls=_less(jolty.tool_calls, ngspice.tool_calls),
             simulations=_less(jolty.simulations, ngspice.simulations),
@@ -614,7 +616,7 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
                         seconds=ran.seconds,
                         ending=ending(ran.exit_code, told, timed_out=ran.timed_out),
                         met=ran.verdict.met,
-                        measurements=ran.verdict.measurements,
+                        measures=ran.verdict.measures,
                         shortfalls=ran.verdict.shortfalls,
                         report=None if told is None else told.report,
                         session=told,
@@ -639,7 +641,10 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
         tasks={
             name: _task([run for run in runs if run.task == name]) for name in tasks
         },
-        arms={arm: Rate.of([run for run in runs if run.arm == arm]) for arm in arms},
+        arms={
+            arm: Rate.from_counts([run for run in runs if run.arm == arm])
+            for arm in arms
+        },
         runs=runs,
     )
     path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -649,14 +654,14 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
 def _task(runs: Sequence[Run]) -> Task:
     """What `runs`, the sessions on one task, found."""
     summaries = {
-        arm: Summary.of([run for run in runs if run.arm == arm])
+        arm: Summary.from_runs([run for run in runs if run.arm == arm])
         for arm in Arm
         if any(run.arm == arm for run in runs)
     }
     both = Arm.JOLTY in summaries and Arm.NGSPICE in summaries
     return Task(
         arms=summaries,
-        difference=Difference.of(summaries[Arm.JOLTY], summaries[Arm.NGSPICE])
+        difference=Difference.from_rates(summaries[Arm.JOLTY], summaries[Arm.NGSPICE])
         if both
         else None,
     )

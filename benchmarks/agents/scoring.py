@@ -13,7 +13,7 @@ boards meet it in all of them.
 
 Each way a design falls short is a `verdict.Shortfall` of the kind its source makes it:
 a missing file, a script or netlist that does not build or read, an error jolty raises
-of its own kind, a part the task forbids, a measurement beyond its bound, a yield too
+of its own kind, a part the task forbids, a measure beyond its bound, a yield too
 low.
 """
 
@@ -599,21 +599,21 @@ def cornered(
 ) -> tuple[dict[str, float], list[Shortfall]]:
     """What `measure` finds on the exact design in every corner, and why it falls short.
 
-    It falls short in any corner where it falls short of the task. The measurements
+    It falls short in any corner where it falls short of the task. The measures
     are those in the nominal corner, then those in each other, named after it, such as
     ``at 0 °C with the supplies 5 % low: fitness``.
     """
-    measurements: dict[str, float] = {}
+    measures: dict[str, float] = {}
     reasons: list[Shortfall] = []
     for corner in CORNERS:
         found, short = judge(measure, shortfalls, Board(corner=corner))
         named = corner == NOMINAL
-        measurements |= {
+        measures |= {
             name if named else f"{corner.describe()}: {name}": value
             for name, value in found.items()
         }
         reasons += short if named else [_at(corner, each) for each in short]
-    return measurements, reasons
+    return measures, reasons
 
 
 def _at(corner: Corner, shortfall: Shortfall) -> Shortfall:
@@ -627,7 +627,7 @@ def tolerate(
 ) -> tuple[dict[str, float], list[Shortfall]]:
     """What `measure` finds on the boards of `built`, and why too few meet the task.
 
-    A board meets the task when it meets it in every corner. The measurements are the
+    A board meets the task when it meets it in every corner. The measures are the
     share of boards that do, ``yield``, and the median over the boards of each of
     `measure`'s in the nominal corner. Too few falls short of the spec ``yield``, with
     the first shortfall of the first board that falls short.
@@ -673,7 +673,7 @@ class DesignSpec:
     allowed: Iterable[str]
     spread: Spread
     stem: str = "design"
-    extra_measurements: Mapping[str, float] = field(default_factory=dict)
+    extra_measures: Mapping[str, float] = field(default_factory=dict)
 
 
 def score_design(task: Path, work: Path, arm: Arm, spec: DesignSpec) -> Verdict:
@@ -689,13 +689,11 @@ def score_design(task: Path, work: Path, arm: Arm, spec: DesignSpec) -> Verdict:
     def measured(board: Board) -> dict[str, float]:
         return spec.measure(made, board)
 
-    measurements, short = cornered(measured, spec.shortfalls)
+    measures, short = cornered(measured, spec.shortfalls)
     reasons += short
     if not reasons:
         spread, reasons = tolerate(built, measured, spec.shortfalls, spec.spread)
-        measurements |= spread
-    measurements |= spec.extra_measurements
-    measurements["devices"] = float(count_devices(built, "X1"))
-    return Verdict(
-        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
-    )
+        measures |= spread
+    measures |= spec.extra_measures
+    measures["devices"] = float(count_devices(built, "X1"))
+    return Verdict(met=not reasons, measures=measures, shortfalls=tuple(reasons))

@@ -598,7 +598,7 @@ def build(entry: Entry) -> Built:
             schematic.save(schematic.draw(circuit, "X1"), inner)
             images.insert(0, inner.name)
         viewer_path = DOCS / entry.folder / f"{entry.slug}.view.html"
-        viewer.write_viewer(
+        viewer.save_viewer(
             viewer_path,
             circuit,
             solved,

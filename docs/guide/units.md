@@ -5,7 +5,7 @@ Values in jolty carry their dimension, so a value in farads cannot go where ohms
 ## Quantities
 
 A script writes a value as a number times a unit, such as `10 * kohm` or `4.7 * uF`.
-The result is a `Quantity`: its value in SI base units and its `Dimension`, the exponents of the kilogram, metre, second, ampere and kelvin.
+The result is a `Quantity`: its value in SI base units and its `Dimension`, the exponents of the kilogram, meter, second, ampere and kelvin.
 
 Arithmetic combines dimensions, so `5 * V / (1 * kohm)` is a current, and `1 * kohm * (1 * uF)` is a time.
 Powers may be fractions, as a noise density's square root of a hertz is: `Hz ** Fraction(1, 2)` is `rtHz`.

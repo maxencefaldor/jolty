@@ -33,21 +33,21 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 
 | Measure | Reads | From |
 | --- | --- | --- |
-| `value(analysis, signal, at=None)` | the signal's value, interpolated `at` a time or a level | an operating point, a transient or a DC sweep |
+| `value(analysis, signal, at=None)` | the signal's value, interpolated `at` a time or a value | an operating point, a transient or a DC sweep |
 | `solutions(analysis)` | how many DC solutions were found, a plain number | a search for operating points |
 | `maximum`, `minimum`, `peak_to_peak`, `mean`, `rms` | the statistic over a window from `start` to `stop`, by default the whole axis | a transient or a DC sweep |
-| `rise_time(analysis, signal, low=0.1, high=0.9)` | the time from `low` to `high` of the signal's step, rising or falling | a transient |
+| `rise_time(analysis, signal, lower=0.1, upper=0.9)` | the time from `lower` to `upper` of the signal's step, rising or falling | a transient |
 | `overshoot(analysis, signal)` | how far the signal passes its final value, in percent of its step | a transient |
 | `settling_time(analysis, signal, band=0.02)` | the time until the signal stays within `band` of its step from its final value | a transient |
-| `crossing(analysis, signal, level, edge="either")` | the first time the signal crosses `level` | a transient |
-| `frequency(analysis, signal, level=None)` | how often the signal rises through `level`, by default the midpoint of its range | a transient |
+| `crossing(analysis, signal, threshold, edge="either")` | the first time the signal crosses `threshold` | a transient |
+| `frequency(analysis, signal, threshold=None)` | how often the signal rises through `threshold`, by default the midpoint of its range | a transient |
 | `distortion(analysis, signal, fundamental, harmonics=9)` | the total harmonic distortion in decibels, harmonics 2 to `harmonics` of the fundamental over its amplitude, over the last period before the window's stop, or every whole period of a window with a start | a transient |
-| `gain(analysis, output=None, at, over=None)` | the gain in decibels at a frequency, of `output` over `over` or per unit excitation | a small-signal response or a loop gain |
-| `phase(analysis, output=None, at, over=None)` | the phase in degrees at a frequency, unwrapped from the lowest frequency | a small-signal response or a loop gain |
-| `bandwidth(analysis, output=None, drop=3.0, over=None)` | the first frequency where the gain falls `drop` decibels below its gain at the lowest frequency | a small-signal response or a loop gain |
-| `crossover(analysis, output=None, over=None)` | the first frequency where the gain falls through 0 dB | a small-signal response or a loop gain |
-| `phase_margin(analysis, output=None, over=None)` | 180° plus the phase where the gain first falls through 0 dB | a small-signal response or a loop gain |
-| `gain_margin(analysis, output=None, over=None)` | minus the gain in decibels where the phase first falls through -180° | a small-signal response or a loop gain |
+| `gain(analysis, signal=None, at, over=None)` | the gain in decibels at a frequency, of `signal` over `over` or per unit excitation | a small-signal response or a loop gain |
+| `phase(analysis, signal=None, at, over=None)` | the phase in degrees at a frequency, unwrapped from the lowest frequency | a small-signal response or a loop gain |
+| `bandwidth(analysis, signal=None, drop=3.0, over=None)` | the first frequency where the gain falls `drop` decibels below its gain at the lowest frequency | a small-signal response or a loop gain |
+| `crossover(analysis, signal=None, over=None)` | the first frequency where the gain falls through 0 dB | a small-signal response or a loop gain |
+| `phase_margin(analysis, signal=None, over=None)` | 180° plus the phase where the gain first falls through 0 dB | a small-signal response or a loop gain |
+| `gain_margin(analysis, signal=None, over=None)` | minus the gain in decibels where the phase first falls through -180° | a small-signal response or a loop gain |
 | `noise_density(analysis, at, referred=False)` | the noise density at a frequency, in V/√Hz or A/√Hz, at the output or referred to the input | a noise analysis |
 | `integrated_noise(analysis, start=None, stop=None, referred=False)` | the RMS noise from `start` to `stop`, by default every frequency, at the output or referred to the input | a noise analysis |
 | `damping(analysis)` | the least damping ratio of the poles, a plain number: negative for a pole in the right half-plane | a pole-zero analysis |
@@ -56,7 +56,7 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 Every transient measure takes a window, `start` and `stop`.
 A step runs from the signal's value at the window's start to its value at the window's end, so a window ends once the signal settles.
 Values between the points of a result are interpolated linearly, and a small-signal response's over log frequency.
-A small-signal measure reads `output` in a response, and the loop gain itself in a stability analysis, without an output: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
+A small-signal measure reads `signal` in a response, and the loop gain itself in a stability analysis, without a signal: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
 A noise density is interpolated as a power law between frequencies, and its bound is in V/√Hz, such as `noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz`.
 
 ## Verdicts
