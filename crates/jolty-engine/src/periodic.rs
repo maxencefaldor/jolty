@@ -54,13 +54,13 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
-use jolty_numerics::integration::{Formula, Method};
+use jolty_numerics::integration::Method;
 use jolty_numerics::{Complex64, solve_in_range};
 use serde::Deserialize;
 
-use crate::newton::{NAMED_UNKNOWNS, add_product, step_matrix};
+use crate::newton::{NAMED_UNKNOWNS, factor_step_jacobian};
 use crate::options::NUMBERS_PER_GIB;
-use crate::transient::{Carried, STEPS_PER_RUN, Tangent};
+use crate::transient::{Carried, STEPS_PER_RUN, StepFormula, StepPoint, Tangent, TangentLinear};
 use crate::{
     OperatingPointResult, Options, SimulationError, Simulator, Strategy, Transient, TransientResult,
 };
@@ -133,7 +133,7 @@ pub(crate) struct Monodromy {
     stretch: Option<Stretch>,
     /// Each step's formula, and whether the integration restarts after it, in their order,
     /// for the derivatives with respect to the parameters to go through again.
-    steps: Vec<(Formula, bool)>,
+    steps: Vec<StepFormula>,
 }
 
 /// The derivatives with respect to an oscillator's period, every step's length a fixed
@@ -173,12 +173,35 @@ pub(crate) struct Shot {
     scale: f64,
 }
 
+/// The scaled shooting system `S⁻¹ (Φ − I) S` (bordered for an oscillator), with the
+/// unknown tolerances `S` and optional period scale `s_T`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ShootingSystem {
+    pub(crate) matrix: Vec<f64>,
+    pub(crate) tolerances: Vec<f64>,
+    pub(crate) scale: Option<f64>,
+}
+
+/// Whether shooting holds the period fixed or solves for an oscillator's free period.
+#[derive(Clone, Copy)]
+enum PeriodMode {
+    Forced(f64),
+    Free(f64),
+}
+
+/// Initial state, operating-point strategy, and period mode for [`Simulator::shoot`].
+struct ShootingStart {
+    values: Vec<f64>,
+    strategy: Strategy,
+    period: PeriodMode,
+}
+
 impl Shot {
     /// The system Newton's step solves, each unknown in units of its tolerance, by columns:
     /// `S⁻¹ (Φ − I) S`, bordered, for an oscillator, by the flow `c = S⁻¹ ∂φ/∂T s_T`, the
     /// period in units of its own scale `s_T`, as a column and as the phase condition's
     /// row; with the unknowns' tolerances `S` and an oscillator's period's scale.
-    pub(crate) fn system(self) -> (Vec<f64>, Vec<f64>, Option<f64>) {
+    pub(crate) fn system(self) -> ShootingSystem {
         let Self {
             monodromy,
             tolerances,
@@ -215,12 +238,16 @@ impl Shot {
             matrix.push(0.0);
             scale
         });
-        (matrix, tolerances, scale)
+        ShootingSystem {
+            matrix,
+            tolerances,
+            scale,
+        }
     }
 
     /// The steps the period took, each its formula and whether the integration restarts
     /// after it, in their order, leaving none.
-    pub(crate) fn take_steps(&mut self) -> Vec<(Formula, bool)> {
+    pub(crate) fn take_steps(&mut self) -> Vec<StepFormula> {
         std::mem::take(&mut self.monodromy.steps)
     }
 
@@ -320,40 +347,44 @@ impl Simulator {
         options.check()?;
         let reading = self.read_meter(options.profile);
         let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
-        let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        let dense = DENSE_MATRICES * size * size;
-        options.hold("periodic steady state", rows, dense)?;
+        let dense = options.hold_square("periodic steady state", rows, DENSE_MATRICES, 0)?;
         let period_options = Options {
             max_memory: options.max_memory - dense / NUMBERS_PER_GIB,
             ..options.clone()
         };
         let point = self.operating_point(options)?;
         let strategy = point.strategy;
-        let (start, period) = match analysis.period {
-            Some(period) => (point.values, period),
-            None => self.settled(analysis, &point, &period_options)?,
+        let (values, period) = match analysis.period {
+            Some(period) => (point.values, PeriodMode::Forced(period)),
+            None => {
+                let (values, period) = self.settled(analysis, &point, &period_options)?;
+                (values, PeriodMode::Free(period))
+            }
         };
-        let (mut found, shot) = self.shoot(
-            analysis,
-            (start, strategy),
-            (period, analysis.period.is_none()),
-            &period_options,
-        )?;
+        let initial = ShootingStart {
+            values,
+            strategy,
+            period,
+        };
+        let (mut found, shot) = self.shoot(analysis, initial, &period_options)?;
         let statistics = &mut found.waveforms.statistics;
         (statistics.work, statistics.profile) = self.metered_since(&reading);
         Ok((found, shot))
     }
 
-    /// The periods of `analysis` from `start` and how the operating point it came from
-    /// was found, the first `period` long, until one repeats, and what that one carried;
-    /// `oscillator` says whether the period is an unknown too.
+    /// The periods of `analysis` from `initial` until one repeats, and what that one carried.
     fn shoot(
         &mut self,
         analysis: &PeriodicSteadyState,
-        (mut start, strategy): (Vec<f64>, Strategy),
-        (mut period, oscillator): (f64, bool),
+        initial: ShootingStart,
         options: &Options,
     ) -> Result<(PeriodicSteadyStateResult, Shot), SimulationError> {
+        let mut start = initial.values;
+        let strategy = initial.strategy;
+        let (mut period, oscillator) = match initial.period {
+            PeriodMode::Forced(period) => (period, false),
+            PeriodMode::Free(period) => (period, true),
+        };
         let unknowns = start.len();
         let mut mismatches = Vec::new();
         let mut simulated = 0;
@@ -408,13 +439,13 @@ impl Simulator {
             if oscillator {
                 step.push(0.0);
             }
-            let (matrix, tolerances, scale) = shot.system();
-            solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))
+            let system = shot.system();
+            solve_in_range(&system.matrix, &mut step, (options.relative_tolerance, 1.0))
                 .map_err(|error| self.state.solver.name(error))?;
-            for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&tolerances) {
+            for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&system.tolerances) {
                 *value += step * tolerance;
             }
-            if let (Some(&stretched), Some(scale)) = (step.get(unknowns), scale) {
+            if let (Some(&stretched), Some(scale)) = (step.get(unknowns), system.scale) {
                 period += stretched * scale;
                 if period <= 0.0 {
                     break;
@@ -513,10 +544,7 @@ impl Simulator {
             .unknowns
             .iter()
             .zip(start.iter().zip(end))
-            .map(|(unknown, (start, end))| {
-                options.relative_tolerance * start.abs().max(end.abs())
-                    + options.value_tolerance(unknown.nature)
-            })
+            .map(|(unknown, (start, end))| options.unknown_tolerance(unknown.nature, *start, *end))
             .collect()
     }
 
@@ -529,7 +557,7 @@ impl Simulator {
         x: &[f64],
         options: &Options,
     ) {
-        self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
+        self.evaluate(x, Some(0.0), 1.0, options.gmin, false);
         let unknowns = x.len();
         let contributions = &self.state.workspace.contributions;
         let mut charges = vec![vec![0.0; unknowns]; unknowns];
@@ -558,73 +586,58 @@ impl Simulator {
     }
 
     /// Carries the derivatives with respect to the period's start over the step a
-    /// transient accepted at `time`, its solution `x`, by `formula`; `restarted` says
-    /// whether the integration restarts after it. Each column solves
+    /// transient accepted at `point` by `step`. Each column solves
     /// `(G + αC) ∂x/∂x₀ = −∂h/∂x₀`, where `h` is the part of the formula's `dq/dt` that the
     /// earlier points contribute, and an oscillator's derivative with respect to its period
     /// `(G + αC) ∂x/∂T = −∂h/∂T + (α q_{n+1} + β₀ q_n + β₁ q_{n-1}) / T`.
     pub(crate) fn advance_monodromy(
         &mut self,
         monodromy: &mut Monodromy,
-        (time, x): (f64, &[f64]),
-        (formula, restarted): (&Formula, bool),
+        point: StepPoint<'_>,
+        step: StepFormula,
         options: &Options,
     ) -> Result<(), SimulationError> {
-        monodromy.steps.push((*formula, restarted));
-        self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let inside = options.parallelism.inside(x.len());
-        let workspace = &mut self.state.workspace;
-        let contributions = &workspace.contributions;
-        step_matrix(
-            &mut workspace.jacobian,
-            contributions,
-            formula.alpha,
+        monodromy.steps.push(step);
+        self.evaluate(point.values, Some(point.time), 1.0, options.gmin, false);
+        let unknowns = point.values.len();
+        let inside = options.parallelism.inside(unknowns);
+        let mut factors = factor_step_jacobian(
+            &mut self.state.solver,
+            &mut self.state.workspace,
+            step.formula.alpha,
             inside,
-        );
-        let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
+        )?;
         let contributions = &self.state.workspace.contributions;
-        let pattern = &self.elaborated.pattern;
+        let linear = TangentLinear {
+            pattern: &self.elaborated.pattern,
+            capacitance: &contributions.capacitance,
+            step,
+            inside,
+        };
         for (tangent, at) in monodromy.tangents.iter_mut().zip(&mut monodromy.at) {
-            let history = tangent.history(formula);
-            let mut moved: Vec<f64> = history.iter().map(|term| -term).collect();
-            factors.solve(&mut moved)?;
-            let mut charge = vec![0.0; x.len()];
-            add_product(
-                pattern,
-                (&contributions.capacitance, &moved),
-                &mut charge,
-                inside,
-            );
-            tangent.advance(charge, &history, formula, restarted);
-            *at = moved;
+            let history = tangent.history(&step.formula);
+            let rhs = history.iter().map(|term| -term).collect();
+            *at = tangent.solve_step(&mut factors, linear, rhs, &history, vec![0.0; unknowns])?;
         }
         if let Some(stretch) = &mut monodromy.stretch {
             let charge = contributions.charge.clone();
-            let divided = stretch.charges.divided(&charge, formula);
+            let divided = stretch.charges.divided(&charge, &step.formula);
             let history: Vec<f64> = stretch
                 .tangent
-                .history(formula)
+                .history(&step.formula)
                 .iter()
                 .zip(&divided)
                 .map(|(term, divided)| term - divided / stretch.period)
                 .collect();
-            let mut moved: Vec<f64> = history.iter().map(|term| -term).collect();
-            factors.solve(&mut moved)?;
-            let mut moved_charge = vec![0.0; x.len()];
-            add_product(
-                pattern,
-                (&contributions.capacitance, &moved),
-                &mut moved_charge,
-                inside,
-            );
-            stretch
-                .tangent
-                .advance(moved_charge, &history, formula, restarted);
-            let charges_history = stretch.charges.history(formula);
-            stretch
-                .charges
-                .advance(charge, &charges_history, formula, restarted);
-            stretch.at = moved;
+            let rhs = history.iter().map(|term| -term).collect();
+            stretch.at = stretch.tangent.solve_step(
+                &mut factors,
+                linear,
+                rhs,
+                &history,
+                vec![0.0; unknowns],
+            )?;
+            stretch.charges.advance_plain(charge, step);
         }
         Ok(())
     }

@@ -25,10 +25,11 @@ use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::derivative::{
-    Cotangent, Forward, PERIODIC_SENSITIVITY, Saved, Start, float_count, points,
-    pull_period_numbers, units, waveforms_numbers,
+    Cotangent, Forward, PERIODIC_SENSITIVITY, Period, PeriodKind, PullPeriodBudget, Saved, Start,
+    Trajectory, points, units, waveforms_numbers,
 };
 use crate::elaborated::{Origin, Origins};
+use crate::options::float_count;
 use crate::periodic::DENSE_MATRICES;
 use crate::twins::Twins;
 use crate::{
@@ -217,36 +218,44 @@ impl Simulator {
             options.check()?;
             if parameters > 0 && (!kept.is_empty() || analysis.period.is_none()) {
                 let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
-                let rows_float = float_count(rows);
                 // Whichever direction shooting's converged step count later selects, the
                 // bordered solve holds at least `DENSE_MATRICES * rows^2` plus either
                 // `parameters * rows` columns (forward) or `rows^2` inverse columns
                 // (backward).
-                let columns = float_count(parameters.min(rows)) * rows_float;
-                let least = DENSE_MATRICES * rows_float * rows_float + columns;
-                options.hold(PERIODIC_SENSITIVITY, rows, least)?;
+                options.hold_square(
+                    PERIODIC_SENSITIVITY,
+                    rows,
+                    DENSE_MATRICES,
+                    parameters.min(rows),
+                )?;
             }
         }
         let (result, saved) = self.run_saving(of, options)?;
         let points = points(&result);
         if Self::cheaper_backward(of, kept.len(), parameters, points) {
-            return self.by_rows(twins, (result, saved), (&kept, points), options);
+            return self.by_rows(twins, result, saved, &kept, points, options);
         }
         // Over time or a period, more points than the least make the JVP the cheaper.
         let directions = units(parameters);
         let (forward, period_derivatives) = match (&saved, &result) {
             (Saved::Transient(start, steps), AnalysisResult::Transient(waveforms)) => {
                 let mut forward = Forward::new(twins, directions, kept, start.clone());
-                self.replay(&mut forward, (waveforms, steps), options)?;
+                let trajectory = Trajectory { waveforms, steps };
+                self.replay(&mut forward, trajectory, options)?;
                 (forward, None)
             }
             (Saved::Period(steps, system), AnalysisResult::PeriodicSteadyState(found)) => {
                 let forward = Forward::new(twins, directions, kept, Start::Held(None));
-                let mut forward = self.along_period((found, steps, system), forward, options)?;
+                let period_data = Period {
+                    found,
+                    steps,
+                    system,
+                };
+                let mut forward = self.along_period(period_data, forward, options)?;
                 let period = forward.stretch.take().map(|(_, derivatives)| derivatives);
                 (forward, period)
             }
-            _ => return self.by_rows(twins, (result, saved), (&kept, points), options),
+            _ => return self.by_rows(twins, result, saved, &kept, points, options),
         };
         Ok(Differentiation {
             twins: forward.twins,
@@ -291,12 +300,14 @@ impl Simulator {
     fn by_rows(
         &mut self,
         mut twins: Twins,
-        (result, saved): (AnalysisResult, Saved),
-        (kept, points): (&[usize], usize),
+        result: AnalysisResult,
+        saved: Saved,
+        kept: &[usize],
+        points: usize,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
         let unknowns = self.elaborated.unknowns.len();
-        let oscillator = matches!(&saved, Saved::Period(_, (_, _, Some(_))));
+        let oscillator = matches!(&saved, Saved::Period(_, system) if system.scale.is_some());
         let parameters = twins.len();
         if let AnalysisResult::Ac(response) = &result {
             let one = Complex64::new(1.0, 0.0);
@@ -309,25 +320,25 @@ impl Simulator {
                 result,
             });
         }
-        if let (
-            Saved::Period(_, (_, tolerances, scale)),
-            AnalysisResult::PeriodicSteadyState(found),
-        ) = (&saved, &result)
+        if let Saved::Period(_, system) = &saved
+            && let AnalysisResult::PeriodicSteadyState(found) = &result
             && ((!kept.is_empty() && points > 0) || oscillator)
         {
-            let rows = tolerances.len() + usize::from(scale.is_some());
+            let rows = system.tolerances.len() + usize::from(system.scale.is_some());
             let outputs_points = float_count(kept.len()) * float_count(points);
             let cotangent_count = outputs_points + if oscillator { 1.0 } else { 0.0 };
             let unit_rows_numbers = outputs_points * float_count(unknowns);
             let pulled_numbers = cotangent_count * float_count(parameters);
-            let needed = pull_period_numbers(
-                (unknowns, rows),
-                waveforms_numbers(&found.waveforms),
-                (cotangent_count, parameters),
-                oscillator,
-                unit_rows_numbers + pulled_numbers,
-            );
-            options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
+            PullPeriodBudget {
+                unknowns,
+                rows,
+                waveforms: waveforms_numbers(&found.waveforms),
+                cotangents: cotangent_count,
+                parameters,
+                kind: PeriodKind::from_scale(system.scale),
+                extra: unit_rows_numbers + pulled_numbers,
+            }
+            .check(options)?;
         }
         let mut cotangents = unit_rows(kept, points, unknowns, 1.0);
         if oscillator {
@@ -336,19 +347,7 @@ impl Simulator {
                 period: 1.0,
             });
         }
-        let mut pulled = vec![vec![0.0; parameters]; cotangents.len()];
-        let mut fold = |index: usize, terms: &[f64]| {
-            for (total, term) in pulled[index].iter_mut().zip(terms) {
-                *total += term;
-            }
-        };
-        self.pull(
-            &mut twins,
-            (&saved, &result),
-            &cotangents,
-            &mut fold,
-            options,
-        )?;
+        let mut pulled = self.pull_collected(&mut twins, &saved, &result, &cotangents, options)?;
         let period_derivatives = if oscillator { pulled.pop() } else { None };
         Ok(Differentiation {
             twins,
@@ -375,9 +374,9 @@ impl Simulator {
         options.parallelism.confined(|| {
             self.solvable()?;
             let point = self.operating_point(options)?;
-            self.evaluate(&point.values, None, (1.0, 2.0 * options.gmin), false);
+            self.evaluate(&point.values, None, 1.0, 2.0 * options.gmin, false);
             let doubled = self.state.workspace.contributions.residual.clone();
-            self.evaluate(&point.values, None, (1.0, options.gmin), false);
+            self.evaluate(&point.values, None, 1.0, options.gmin, false);
             let mut moves: Vec<f64> = self
                 .state
                 .workspace
@@ -479,12 +478,11 @@ fn by_point<T>(pulled: Vec<Vec<T>>, points: usize, outputs: usize) -> Vec<Vec<Ve
 mod tests {
     use std::collections::BTreeMap;
 
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use jolty_numerics::integration::Method;
 
     use super::{Derivatives, Differentiated, Sensitivity, by_point};
-    use crate::{Ac, Conditions, Options, PeriodicSteadyState, Simulator, Transient};
+    use crate::test_helpers::source_resistor_simulator;
+    use crate::{Ac, Options, PeriodicSteadyState, Simulator, Transient};
 
     #[test]
     fn by_point_preserves_point_count_when_outputs_is_empty() {
@@ -505,25 +503,7 @@ mod tests {
 
     #[test]
     fn empty_outputs_ac_sensitivity_retains_one_empty_entry_per_frequency() {
-        let circuit = Circuit::from_json(
-            r#"{
-                "format": "jolty-circuit", "version": 4, "top": "test",
-                "components": {"test": {
-                    "ports": [{"name": "0", "role": "ground"}],
-                    "instances": [
-                        {"name": "V1", "of": {"model": "voltage_source"},
-                         "parameters": {"waveform": {"dc": 1.0}},
-                         "terminals": {"positive": "in", "negative": "0"}},
-                        {"name": "R1", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 1000.0},
-                         "terminals": {"a": "in", "b": "0"}}
-                    ]
-                }}
-            }"#,
-        )
-        .expect("a valid circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates");
+        let mut simulator = source_resistor_simulator();
         let result = simulator
             .sensitivity(
                 &Sensitivity {

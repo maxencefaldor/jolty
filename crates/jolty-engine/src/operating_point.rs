@@ -20,7 +20,7 @@ use jolty_models::{Input, LogicLevel, Nature, UnknownIndex};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::logic::{Events, ExcursionKind, detected};
+use crate::logic::{Bounds, Events, ExcursionKind, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::solver::Solver;
 use crate::state::{Held, Warm};
@@ -188,10 +188,11 @@ impl Remembered {
     /// `solver` factors with, so that solving again would find it again.
     fn solved_under(
         &self,
-        (held, solver): (&BTreeMap<Held, f64>, &Solver<f64>),
+        held: &BTreeMap<Held, f64>,
+        solver: &Solver<f64>,
         options: &Options,
     ) -> bool {
-        self.solves_alike((held, solver), options) && self.options == read_at_dc(options)
+        self.solves_alike(held, solver, options) && self.options == read_at_dc(options)
     }
 
     /// Whether it solves the DC equations of the sources `held` and of `options` with the
@@ -199,7 +200,8 @@ impl Remembered {
     /// differ from those it was solved under only in where Newton iteration stops.
     fn solves_alike(
         &self,
-        (held, solver): (&BTreeMap<Held, f64>, &Solver<f64>),
+        held: &BTreeMap<Held, f64>,
+        solver: &Solver<f64>,
         options: &Options,
     ) -> bool {
         self.held == *held
@@ -319,7 +321,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<(Solved, OperatingPointResult), SimulationError> {
         if let Some(remembered) = &self.state.remembered
-            && remembered.solved_under((&self.state.held, &self.state.solver), options)
+            && remembered.solved_under(&self.state.held, &self.state.solver, options)
         {
             let (solved, mut point) = (remembered.solved.clone(), remembered.point.clone());
             // Restoring it evaluated every device there, its steps not limited.
@@ -359,9 +361,9 @@ impl Simulator {
                 self.elaborated.logic.drivers[driver].0,
                 self.state.events.driven()[driver],
             );
-            self.drive(element, (0.0, level, 0.0));
+            self.drive(element, 0.0, level, 0.0);
         }
-        self.evaluate(&values, None, (1.0, options.gmin), false);
+        self.evaluate(&values, None, 1.0, options.gmin, false);
     }
 
     /// The DC solution from zero, with every logic driver at its unknown level, that an
@@ -381,16 +383,16 @@ impl Simulator {
             .remembered
             .as_ref()
             .filter(|remembered| {
-                remembered.solves_alike((&self.state.held, &self.state.solver), options)
+                remembered.solves_alike(&self.state.held, &self.state.solver, options)
             })
             .map(|remembered| {
-                let same = remembered.solved_under((&self.state.held, &self.state.solver), options);
+                let same = remembered.solved_under(&self.state.held, &self.state.solver, options);
                 (same, remembered.solved.clone())
             });
         if let Some((true, solved)) = &start {
             // As the last iteration that solved it left them, a device that limits its
             // steps does so from there.
-            self.evaluate(&solved.values, None, (1.0, options.gmin), false);
+            self.evaluate(&solved.values, None, 1.0, options.gmin, false);
             return Ok(solved.clone());
         }
         self.state.solves += 1;
@@ -400,13 +402,7 @@ impl Simulator {
         {
             let taken = solved.iterations;
             let mut values = solved.values;
-            let direct = Mode::Dc {
-                source_scale: 1.0,
-                shunt: 0.0,
-                anchor: None,
-                deflated: &[],
-            };
-            if let Ok(more) = self.newton(&mut values, direct, options, left) {
+            if let Ok(more) = self.newton(&mut values, Mode::direct(&[]), options, left) {
                 return Ok(Solved {
                     values,
                     strategy: Strategy::Direct,
@@ -534,8 +530,7 @@ impl Simulator {
         let point = point?;
         for &(unknown, voltage) in &initial.fixed {
             let found = point.values[unknown.index()];
-            let tolerance = options.relative_tolerance * found.abs().max(voltage.abs())
-                + options.voltage_tolerance;
+            let tolerance = options.unknown_tolerance(Nature::Voltage, found, voltage);
             if (found - voltage).abs() > tolerance {
                 let name = &self.elaborated.unknowns[unknown.index()].name;
                 return Err(SimulationError::InvalidAnalysis(format!(
@@ -555,7 +550,7 @@ impl Simulator {
     fn solve_warm(&mut self, warm: Warm, options: &Options) -> Result<Solved, SimulationError> {
         let before = self.state.workspace.meter.iterations();
         let to = self.values.clone();
-        self.evaluate(&warm.solution, None, (1.0, options.gmin), false);
+        self.evaluate(&warm.solution, None, 1.0, options.gmin, false);
         let coordinates = self.coordinates(&warm.values, &to);
         let spans: Vec<(f64, f64)> = coordinates
             .iter()
@@ -736,12 +731,7 @@ impl Simulator {
                 starts.push(beside);
             }
         }
-        let direct = Mode::Dc {
-            source_scale: 1.0,
-            shunt: 0.0,
-            anchor: None,
-            deflated: known,
-        };
+        let direct = Mode::direct(known);
         for mut values in starts {
             if self
                 .newton(&mut values, direct, options, options.max_dc_iterations)
@@ -775,8 +765,7 @@ impl Simulator {
             .iter()
             .zip(first.iter().zip(second))
             .all(|(unknown, (a, b))| {
-                let tolerance = options.relative_tolerance * a.abs().max(b.abs())
-                    + options.value_tolerance(unknown.nature);
+                let tolerance = options.unknown_tolerance(unknown.nature, *a, *b);
                 (a - b).abs() <= DISTINCT * tolerance
             })
     }
@@ -787,7 +776,7 @@ impl Simulator {
         self.state.events = Events::new(&self.elaborated.logic);
         for index in 0..self.elaborated.logic.drivers.len() {
             let element = self.elaborated.logic.drivers[index].0;
-            self.drive(element, (0.0, LogicLevel::Unknown, 0.0));
+            self.drive(element, 0.0, LogicLevel::Unknown, 0.0);
         }
     }
 
@@ -799,7 +788,7 @@ impl Simulator {
         if self.elaborated.logic.drivers.is_empty() {
             return;
         }
-        self.evaluate(values, None, (1.0, options.gmin), true);
+        self.evaluate(values, None, 1.0, options.gmin, true);
         let omega = TAU * LOAD_FREQUENCY;
         let contributions = &self.state.workspace.contributions;
         let matrix: Vec<Complex64> = contributions
@@ -841,10 +830,13 @@ impl Simulator {
             };
             let voltage = input.value(supply) - input.value(ground);
             let slack = options.relative_tolerance * nominal;
-            let range = (nominal - slack, nominal + slack);
+            let bounds = Bounds {
+                minimum: nominal - slack,
+                maximum: nominal + slack,
+            };
             self.state
                 .events
-                .watch(index, ExcursionKind::Supply, voltage, range, time);
+                .watch(index, ExcursionKind::Supply, voltage, bounds, time);
         }
     }
 
@@ -891,7 +883,7 @@ impl Simulator {
             }
             for (driver, level) in changed {
                 let element = self.elaborated.logic.drivers[driver].0;
-                self.drive(element, (0.0, level, 0.0));
+                self.drive(element, 0.0, level, 0.0);
             }
             solved = self.solve_dc(solved.values, options)?;
             iterations += solved.iterations;
@@ -926,15 +918,19 @@ impl Simulator {
         deflated: &[Vec<f64>],
     ) -> Result<Solved, SimulationError> {
         let before = self.state.workspace.meter.iterations();
-        let mut values = guess.clone();
-        let direct = Mode::Dc {
-            source_scale: 1.0,
-            shunt: 0.0,
-            anchor: None,
-            deflated,
+        let finish = |simulator: &Self, values, strategy| Solved {
+            values,
+            strategy,
+            iterations: simulator.iterations_since(before),
+            from_guess: false,
         };
-        if let Ok(iterations) = self.newton(&mut values, direct, options, options.max_dc_iterations)
-        {
+        let mut values = guess.clone();
+        if let Ok(iterations) = self.newton(
+            &mut values,
+            Mode::direct(deflated),
+            options,
+            options.max_dc_iterations,
+        ) {
             return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
@@ -942,41 +938,22 @@ impl Simulator {
                 from_guess: true,
             });
         }
-        let mut values = guess.clone();
-        if self
-            .gmin_stepping(&mut values, options, deflated, Stepped::Shunt)
-            .is_ok()
-        {
-            return Ok(Solved {
-                values,
-                strategy: Strategy::GminStepping,
-                iterations: self.iterations_since(before),
-                from_guess: false,
-            });
+        for (stepped, strategy) in [
+            (Stepped::Shunt, Strategy::GminStepping),
+            (Stepped::Junctions, Strategy::JunctionGminStepping),
+        ] {
+            let mut values = guess.clone();
+            if self
+                .gmin_stepping(&mut values, options, deflated, stepped)
+                .is_ok()
+            {
+                return Ok(finish(self, values, strategy));
+            }
         }
-        let mut values = guess;
-        if self
-            .gmin_stepping(&mut values, options, deflated, Stepped::Junctions)
-            .is_ok()
-        {
-            return Ok(Solved {
-                values,
-                strategy: Strategy::JunctionGminStepping,
-                iterations: self.iterations_since(before),
-                from_guess: false,
-            });
-        }
-        let zero = vec![0.0; values.len()];
+        let zero = vec![0.0; guess.len()];
         let mut values = zero.clone();
         let stepping = match self.source_stepping(&mut values, options, deflated) {
-            Ok(()) => {
-                return Ok(Solved {
-                    values,
-                    strategy: Strategy::SourceStepping,
-                    iterations: self.iterations_since(before),
-                    from_guess: false,
-                });
-            }
+            Ok(()) => return Ok(finish(self, values, Strategy::SourceStepping)),
             Err(failure) => failure,
         };
         let stepped = values;
@@ -987,12 +964,7 @@ impl Simulator {
             stepping,
             self.pseudo_transient(&mut values, options, deflated),
         ) {
-            (_, Ok(())) => Ok(Solved {
-                values,
-                strategy: Strategy::PseudoTransient,
-                iterations: self.iterations_since(before),
-                from_guess: false,
-            }),
+            (_, Ok(())) => Ok(finish(self, values, Strategy::PseudoTransient)),
             (Failure::Solver(error), _) | (_, Err(Failure::Solver(error))) => Err(error),
             (Failure::Diverged, Err(Failure::Diverged)) => Err(SimulationError::NoOperatingPoint {
                 worst: self.furthest_from_converging(&stepped, options, NAMED_UNKNOWNS),
@@ -1064,16 +1036,14 @@ impl Simulator {
         match stepped {
             // The last stage solved the circuit as it is.
             Stepped::Junctions => Ok(()),
-            Stepped::Shunt => {
-                let direct = Mode::Dc {
-                    source_scale: 1.0,
-                    shunt: 0.0,
-                    anchor: None,
-                    deflated,
-                };
-                self.newton(values, direct, options, options.max_dc_iterations)
-                    .map(|_| ())
-            }
+            Stepped::Shunt => self
+                .newton(
+                    values,
+                    Mode::direct(deflated),
+                    options,
+                    options.max_dc_iterations,
+                )
+                .map(|_| ()),
         }
     }
 
@@ -1106,22 +1076,19 @@ impl Simulator {
                 Ok(iterations) => {
                     let settled = values.iter().zip(&last).zip(&self.elaborated.unknowns).all(
                         |((value, before), unknown)| {
-                            let magnitude = value.abs().max(before.abs());
                             (value - before).abs()
-                                <= options.relative_tolerance * magnitude
-                                    + options.value_tolerance(unknown.nature)
+                                <= options.unknown_tolerance(unknown.nature, *value, *before)
                         },
                     );
                     last.copy_from_slice(values);
                     if settled || held <= options.gmin {
-                        let direct = Mode::Dc {
-                            source_scale: 1.0,
-                            shunt: 0.0,
-                            anchor: None,
-                            deflated,
-                        };
                         return self
-                            .newton(values, direct, options, options.max_dc_iterations)
+                            .newton(
+                                values,
+                                Mode::direct(deflated),
+                                options,
+                                options.max_dc_iterations,
+                            )
                             .map(|_| ());
                     }
                     held /= if iterations < options.max_dc_iterations / 4 {
@@ -1187,22 +1154,20 @@ impl Simulator {
 
 #[cfg(test)]
 mod tests {
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use serde_json::json;
 
     use super::*;
-    use crate::Conditions;
+    use crate::test_helpers::{grounded_simulator, simulator_from_json};
 
     /// A node fed from 3 V through 1 kΩ, a negative conductance of 2 mS at it, and a
     /// diode each way from it to the ground: its current rises with its voltage through
     /// either diode and falls between them, so the solution from zero folds as the
     /// source ramps, and the operating point lies on D1's side, past the fold.
     fn folded() -> Simulator {
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "test",
-            "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                    "instances": [
+        grounded_simulator(
+            "test",
+            "0",
+            json!([
                 {"name": "V1", "of": {"model": "voltage_source"},
                  "parameters": {"waveform": {"dc": 3.0}},
                  "terminals": {"positive": "in", "negative": "0"}},
@@ -1216,11 +1181,8 @@ mod tests {
                  "terminals": {"anode": "x", "cathode": "0"}},
                 {"name": "D2", "of": {"model": "diode"}, "parameters": {},
                  "terminals": {"anode": "0", "cathode": "x"}},
-            ]}}
-        });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates")
+            ]),
+        )
     }
 
     #[test]
@@ -1245,10 +1207,7 @@ mod tests {
         // A random circuit of 47 devices, shrunk from one whose operating point every other
         // strategy missed: source stepping stops at a fold of its solutions, at 51 % of the
         // sources, as ngspice's does, which finds the point only by its transient instead.
-        let circuit = Circuit::from_json(include_str!("../tests/data/folded_sources.json"))
-            .expect("a circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates");
+        let mut simulator = simulator_from_json(include_str!("../tests/data/folded_sources.json"));
         let options = Options::default();
         let unknowns = simulator.elaborated.unknowns.len();
         let mut values = vec![0.0; unknowns];

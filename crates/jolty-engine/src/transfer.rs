@@ -15,9 +15,10 @@
 //! solves find infinite, such as a current source's own, is infinite, where ngspice writes
 //! 10²⁰ Ω.
 
-use jolty_models::Nature;
+use jolty_models::{Nature, UnknownIndex};
 use serde::Deserialize;
 
+use crate::ac::selector_vector;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A transfer function analysis: from an independent source to an output, at DC.
@@ -84,7 +85,7 @@ impl Simulator {
             let size = self.elaborated.unknowns.len();
             // Every right side and every index the solves read, before the factors borrow the
             // solver.
-            let mut driven = self.excitation(input, size);
+            let mut driven = self.excitation(input);
             // An independent source holds a voltage or drives a current.
             let seen = if self.source_nature(input) == Nature::Current {
                 Input::Current {
@@ -96,18 +97,9 @@ impl Simulator {
                 }
             };
             let mut probe = match output {
-                Output::Voltage { node, reference } => {
-                    let mut injected = vec![0.0; size];
-                    if let Some(node) = node {
-                        injected[node] += 1.0;
-                    }
-                    if let Some(reference) = reference {
-                        injected[reference] -= 1.0;
-                    }
-                    Some(injected)
-                }
+                Output::Voltage { node, reference } => Some(selector_vector(size, node, reference)),
                 Output::Current { device, .. } if device == input => None,
-                Output::Current { device, .. } => Some(self.excitation(device, size)),
+                Output::Current { device, .. } => Some(self.excitation(device)),
             };
             let mut factors = self
                 .state
@@ -145,10 +137,7 @@ impl Simulator {
         let (node, reference, nature) =
             self.measured(&analysis.output, analysis.reference.as_deref())?;
         match (nature, node) {
-            (Nature::Voltage, node) => Ok(Output::Voltage {
-                node: node.map(jolty_models::UnknownIndex::index),
-                reference: reference.map(jolty_models::UnknownIndex::index),
-            }),
+            (Nature::Voltage, node) => Ok(Output::Voltage { node, reference }),
             (Nature::Current, Some(unknown)) => {
                 let index = unknown.index();
                 // A device that adds no unknown of its own counts the same unknowns before
@@ -187,11 +176,8 @@ impl Simulator {
     }
 
     /// `−∂f/∂s` of the source at `device`: the right side of a solve it excites.
-    fn excitation(&self, device: usize, size: usize) -> Vec<f64> {
-        let mut excitation = vec![0.0; size];
-        self.state
-            .runs
-            .excite(&self.elaborated.groups, device, &mut excitation);
+    fn excitation(&self, device: usize) -> Vec<f64> {
+        let mut excitation = self.source_excitation(device);
         for value in &mut excitation {
             *value = -*value;
         }
@@ -207,7 +193,7 @@ impl Simulator {
                 .get(terminal)
                 .copied()
                 .flatten()
-                .map(jolty_models::UnknownIndex::index)
+                .map(UnknownIndex::index)
         })
     }
 }
@@ -243,8 +229,8 @@ impl Input {
 enum Output {
     /// A node voltage, over another node or the reference.
     Voltage {
-        node: Option<usize>,
-        reference: Option<usize>,
+        node: Option<UnknownIndex>,
+        reference: Option<UnknownIndex>,
     },
     /// The current through an independent voltage source, its branch unknown.
     Current { device: usize, branch: usize },
@@ -255,7 +241,7 @@ impl Output {
     fn read(self, x: &[f64]) -> f64 {
         match self {
             Self::Voltage { node, reference } => {
-                node.map_or(0.0, |at| x[at]) - reference.map_or(0.0, |at| x[at])
+                node.map_or(0.0, |at| x[at.index()]) - reference.map_or(0.0, |at| x[at.index()])
             }
             Self::Current { branch, .. } => x[branch],
         }

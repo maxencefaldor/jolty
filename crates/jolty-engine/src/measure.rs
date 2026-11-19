@@ -632,23 +632,23 @@ impl Measure {
             Self::PhaseMargin { transfer } => phase_margin(transfer, results),
             Self::GainMargin { transfer } => gain_margin(transfer, results),
             Self::Maximum { signal, window } => {
-                let (_, values) = windowed(signal, window, results, false)?;
+                let (_, values) = windowed(signal, window, results, Scope::Any)?;
                 Ok(arithmetic::maximum(&values))
             }
             Self::Minimum { signal, window } => {
-                let (_, values) = windowed(signal, window, results, false)?;
+                let (_, values) = windowed(signal, window, results, Scope::Any)?;
                 Ok(arithmetic::minimum(&values))
             }
             Self::PeakToPeak { signal, window } => {
-                let (_, values) = windowed(signal, window, results, false)?;
+                let (_, values) = windowed(signal, window, results, Scope::Any)?;
                 Ok(arithmetic::maximum(&values) - arithmetic::minimum(&values))
             }
             Self::Mean { signal, window } => {
-                let (points, values) = windowed(signal, window, results, false)?;
+                let (points, values) = windowed(signal, window, results, Scope::Any)?;
                 Ok(mean(&points, &values))
             }
             Self::Rms { signal, window } => {
-                let (points, values) = windowed(signal, window, results, false)?;
+                let (points, values) = windowed(signal, window, results, Scope::Any)?;
                 let squares: Vec<f64> = values.iter().map(|value| value * value).collect();
                 Ok(mean(&points, &squares).sqrt())
             }
@@ -657,7 +657,7 @@ impl Measure {
                 window,
                 low,
                 high,
-            } => rise_time(signal, window, (low, high), results),
+            } => rise_time(signal, window, low, high, results),
             Self::Overshoot { signal, window } => overshoot(signal, window, results),
             Self::SettlingTime {
                 signal,
@@ -670,7 +670,7 @@ impl Measure {
                 level,
                 edge,
             } => {
-                let (times, values) = windowed(signal, window, results, true)?;
+                let (times, values) = windowed(signal, window, results, Scope::Transient)?;
                 arithmetic::crossings(&times, &values, level, edge)
                     .next()
                     .ok_or(MeasureError::Uncrossed)
@@ -686,14 +686,13 @@ impl Measure {
                 fundamental,
                 harmonics,
             } => {
-                let (times, values) = windowed(signal, window, results, true)?;
-                distortion(
-                    &times,
-                    &values,
-                    fundamental,
-                    harmonics,
-                    window.start.is_some(),
-                )
+                let (times, values) = windowed(signal, window, results, Scope::Transient)?;
+                let span = if window.start.is_some() {
+                    PeriodSpan::Whole
+                } else {
+                    PeriodSpan::Last
+                };
+                distortion(&times, &values, fundamental, harmonics, span)
             }
             Self::NoiseDensity { at, referred } => {
                 let (frequencies, densities) = noise(results, referred)?;
@@ -770,11 +769,12 @@ fn gain_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, 
     Ok(-interpolated(inverted, &logarithms, &decibels(&transfer)))
 }
 
-/// The time `signal` takes to pass from the first to the second of `levels` of its step.
+/// The time `signal` takes to pass from `low` to `high` of its step.
 fn rise_time(
     signal: Signal,
     window: Window,
-    (low, high): (f64, f64),
+    low: f64,
+    high: f64,
     results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values, step) = stepped(signal, window, results)?;
@@ -843,7 +843,7 @@ fn frequency(
     level: Option<f64>,
     results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
-    let (times, values) = windowed(signal, window, results, true)?;
+    let (times, values) = windowed(signal, window, results, Scope::Transient)?;
     #[expect(
         clippy::manual_midpoint,
         reason = "numpy's `(max + min) / 2`, which overflows where `f64::midpoint` would not"
@@ -985,7 +985,7 @@ fn value(
             }
         }
         (AnalysisResult::DcSweep { .. } | AnalysisResult::Transient { .. }, Some(at)) => {
-            let (points, values) = traced(signal, results, false)?;
+            let (points, values) = traced(signal, results, Scope::Any)?;
             let point = Axis(&points).locate(at, Point::At)?;
             Ok(interpolated(point, &points, &values))
         }
@@ -993,16 +993,23 @@ fn value(
     }
 }
 
+/// Which sweep axes a trace-based measure accepts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Any,
+    Transient,
+}
+
 /// The points of a transient's or a sweep's axis, increasing from its first to its last if
-/// they fall, and the signal's values at each; a transient's alone if `transient`.
+/// they fall, and the signal's values at each; a transient's alone under [`Scope::Transient`].
 fn traced<'a>(
     signal: Signal,
     results: &AnalysisResult<'a>,
-    transient: bool,
+    scope: Scope,
 ) -> Result<(Cow<'a, [f64]>, Vec<f64>), MeasureError> {
     let (points, table) = match *results {
         AnalysisResult::Transient { times, values } => (times, values),
-        AnalysisResult::DcSweep { swept, values } if !transient => (swept, values),
+        AnalysisResult::DcSweep { swept, values } if scope == Scope::Any => (swept, values),
         _ => return Err(MeasureError::Kind),
     };
     let mut values = signal.trace(table)?;
@@ -1019,16 +1026,16 @@ fn traced<'a>(
     Ok((Cow::Borrowed(points), values))
 }
 
-/// The points of `window` on a transient's or a sweep's axis, a transient's alone if
-/// `transient`, and the signal's values at each: its ends, interpolated, and every point of
-/// the axis between them.
+/// The points of `window` on a transient's or a sweep's axis, a transient's alone under
+/// [`Scope::Transient`], and the signal's values at each: its ends, interpolated, and every
+/// point of the axis between them.
 fn windowed(
     signal: Signal,
     window: Window,
     results: &AnalysisResult<'_>,
-    transient: bool,
+    scope: Scope,
 ) -> Result<(Vec<f64>, Vec<f64>), MeasureError> {
-    let (points, values) = traced(signal, results, transient)?;
+    let (points, values) = traced(signal, results, scope)?;
     let axis = Axis(&points);
     let mut first = points[0];
     let mut last = points[points.len() - 1];
@@ -1058,7 +1065,7 @@ fn stepped(
     window: Window,
     results: &AnalysisResult<'_>,
 ) -> Result<(Vec<f64>, Vec<f64>, f64), MeasureError> {
-    let (times, values) = windowed(signal, window, results, true)?;
+    let (times, values) = windowed(signal, window, results, Scope::Transient)?;
     let step = values[values.len() - 1] - values[0];
     if step == 0.0 {
         return Err(MeasureError::Flat(values[0]));
@@ -1160,9 +1167,16 @@ fn poles<'a>(results: &AnalysisResult<'a>) -> Result<&'a [Complex64], MeasureErr
     }
 }
 
+/// How many periods of the fundamental frequency a distortion measure integrates over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PeriodSpan {
+    Last,
+    Whole,
+}
+
 /// The total harmonic distortion, in decibels, of `values`, given at `times`, at the
 /// `fundamental` frequency, harmonics 2 to `harmonics`: over the last period before the last
-/// time, or over every whole period of the times if `whole`.
+/// time, or over every whole period of the times under [`PeriodSpan::Whole`].
 ///
 /// The signal is sampled [`SAMPLES_PER_PERIOD`] times a period, interpolated, as SPICE's
 /// `.four` samples it, and each harmonic's amplitude is the magnitude of the discrete Fourier
@@ -1172,11 +1186,14 @@ fn distortion(
     values: &[f64],
     fundamental: f64,
     harmonics: usize,
-    whole: bool,
+    span_kind: PeriodSpan,
 ) -> Result<f64, MeasureError> {
     let span = (times[times.len() - 1] - times[0]) * fundamental;
     let stretched = span * (1.0 + ON_AXIS);
-    let periods = if whole { stretched.floor() } else { 1.0 };
+    let periods = match span_kind {
+        PeriodSpan::Whole => stretched.floor(),
+        PeriodSpan::Last => 1.0,
+    };
     if !(periods >= 1.0 && stretched >= periods) {
         return Err(MeasureError::Short);
     }

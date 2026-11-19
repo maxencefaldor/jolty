@@ -43,7 +43,8 @@ impl Check {
     pub(crate) fn compare_read(
         &mut self,
         elaborated: &Elaborated,
-        (runs, past): (&Runs, Option<&Past>),
+        runs: &Runs,
+        past: Option<&Past>,
         devices: impl Iterator<Item = usize>,
     ) {
         let Some((x, time, scale, gmin)) = &self.last else {
@@ -110,12 +111,19 @@ fn bound(terms: usize, magnitude: f64) -> f64 {
 /// A run's slab, as [`jolty_models::Runs::slab`] gives it.
 pub(crate) type Slab<'a> = ([&'a [f64]; 3], [&'a [f64]; 2]);
 
+/// The assembled evaluation output checked against one-by-one device evaluation.
+pub(crate) struct Evaluated<'a> {
+    pub(crate) input: &'a Input<'a>,
+    pub(crate) limited: bool,
+    pub(crate) assembled: &'a Contributions,
+    pub(crate) slab: Slab<'a>,
+}
+
 impl Check {
-    /// Compares `assembled`, the contributions the groups added from `slab`, with the
-    /// instances of `elaborated`'s groups evaluated at `input` each alone, from what
-    /// `alone`, the groups' run before the evaluation, holds, one by one in the order of
-    /// the circuit's devices, each one's local sums added as a device of its own adds
-    /// them; `limited` says whether the groups' evaluation limited a voltage.
+    /// Compares `evaluated`'s assembled contributions and slab with the instances of
+    /// `elaborated`'s groups evaluated at `evaluated.input` each alone, from what `alone`,
+    /// the groups' run before the evaluation, holds, one by one in the order of the circuit's
+    /// devices, each one's local sums added as a device of its own adds them.
     ///
     /// Both sum the same terms: each instance's contributions to the value, which its
     /// block of the slab holds. The groups add them one by one in the order of the groups,
@@ -125,9 +133,14 @@ impl Check {
         &mut self,
         elaborated: &Elaborated,
         alone: &mut Runs,
-        (input, limited): (&Input<'_>, bool),
-        (assembled, slab): (&Contributions, Slab<'_>),
+        evaluated: Evaluated<'_>,
     ) {
+        let Evaluated {
+            input,
+            limited,
+            assembled,
+            slab,
+        } = evaluated;
         let (sums, one_by_one) = alone_sums(elaborated, alone, input);
         assert_eq!(limited, one_by_one, "whether a voltage was limited");
         let bits = |values: &[f64]| {
@@ -518,7 +531,7 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
         points
             .iter()
             .map(|x| {
-                let limited = simulator.evaluate(x, Some(1e-9), (1.0, 1e-12), true);
+                let limited = simulator.evaluate(x, Some(1e-9), 1.0, 1e-12, true);
                 let contributions = &simulator.state.workspace.contributions;
                 format!("{limited} {contributions:?}")
             })
@@ -606,7 +619,7 @@ fn a_parallel_evaluation_of_a_star_of_linear_arms_is_the_serial_one_bit_for_bit(
         points
             .iter()
             .map(|x| {
-                let limited = simulator.evaluate(x, Some(1e-9), (1.0, 1e-12), true);
+                let limited = simulator.evaluate(x, Some(1e-9), 1.0, 1e-12, true);
                 let contributions = &simulator.state.workspace.contributions;
                 format!("{limited} {contributions:?}")
             })

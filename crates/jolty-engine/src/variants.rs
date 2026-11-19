@@ -607,30 +607,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn toleranced_rejects_self_and_mutual_cycles() {
-        let version = jolty_ir::VERSION;
-        let self_cycle = Circuit::from_json(
+    fn circuit_from_components(top: &str, components: serde_json::Value) -> Circuit {
+        Circuit::from_json(
             &serde_json::json!({
                 "format": "jolty-circuit",
-                "version": version,
-                "top": "top",
-                "components": {
-                    "top": {
-                        "instances": [
-                            {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
-                        ]
-                    },
-                    "stage": {
-                        "instances": [
-                            {"name": "Xloop", "of": {"component": "stage"}, "terminals": {}}
-                        ]
-                    }
-                }
+                "version": jolty_ir::VERSION,
+                "top": top,
+                "components": components,
             })
             .to_string(),
         )
-        .expect("valid JSON");
+        .expect("valid JSON")
+    }
+
+    #[test]
+    fn toleranced_rejects_self_and_mutual_cycles() {
+        let self_cycle = circuit_from_components(
+            "top",
+            serde_json::json!({
+                "top": {
+                    "instances": [
+                        {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
+                    ]
+                },
+                "stage": {
+                    "instances": [
+                        {"name": "Xloop", "of": {"component": "stage"}, "terminals": {}}
+                    ]
+                }
+            }),
+        );
         let error = toleranced(&self_cycle).expect_err("self-cycle must fail");
         assert_eq!(
             error,
@@ -644,27 +650,21 @@ mod tests {
             "component `stage` contains itself: stage -> stage"
         );
 
-        let mutual = Circuit::from_json(
-            &serde_json::json!({
-                "format": "jolty-circuit",
-                "version": version,
-                "top": "top",
-                "components": {
-                    "top": {
-                        "instances": [
-                            {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
-                        ]
-                    },
-                    "stage": {
-                        "instances": [
-                            {"name": "Xback", "of": {"component": "top"}, "terminals": {}}
-                        ]
-                    }
+        let mutual = circuit_from_components(
+            "top",
+            serde_json::json!({
+                "top": {
+                    "instances": [
+                        {"name": "X1", "of": {"component": "stage"}, "terminals": {}}
+                    ]
+                },
+                "stage": {
+                    "instances": [
+                        {"name": "Xback", "of": {"component": "top"}, "terminals": {}}
+                    ]
                 }
-            })
-            .to_string(),
-        )
-        .expect("valid JSON");
+            }),
+        );
         let error = toleranced(&mutual).expect_err("mutual cycle must fail");
         assert_eq!(
             error.to_string(),
@@ -674,38 +674,31 @@ mod tests {
 
     #[test]
     fn toleranced_walks_diamonds_and_deep_chains() {
-        let version = jolty_ir::VERSION;
         // Diamond DAG: a shared subcircuit placed twice emits both instance paths.
-        let diamond = Circuit::from_json(
-            &serde_json::json!({
-                "format": "jolty-circuit",
-                "version": version,
-                "top": "top",
-                "components": {
-                    "top": {
-                        "instances": [
-                            {"name": "X1", "of": {"component": "leaf"}, "terminals": {}},
-                            {"name": "X2", "of": {"component": "leaf"}, "terminals": {}}
-                        ]
-                    },
-                    "leaf": {
-                        "instances": [
-                            {
-                                "name": "R1",
-                                "of": {"model": "resistor"},
-                                "parameters": {"resistance": 1000.0},
-                                "terminals": {"a": "a", "b": "b"},
-                                "tolerances": {
-                                    "resistance": {"relative": 0.01, "distribution": "uniform"}
-                                }
+        let diamond = circuit_from_components(
+            "top",
+            serde_json::json!({
+                "top": {
+                    "instances": [
+                        {"name": "X1", "of": {"component": "leaf"}, "terminals": {}},
+                        {"name": "X2", "of": {"component": "leaf"}, "terminals": {}}
+                    ]
+                },
+                "leaf": {
+                    "instances": [
+                        {
+                            "name": "R1",
+                            "of": {"model": "resistor"},
+                            "parameters": {"resistance": 1000.0},
+                            "terminals": {"a": "a", "b": "b"},
+                            "tolerances": {
+                                "resistance": {"relative": 0.01, "distribution": "uniform"}
                             }
-                        ]
-                    }
+                        }
+                    ]
                 }
-            })
-            .to_string(),
-        )
-        .expect("valid JSON");
+            }),
+        );
         let items = toleranced(&diamond).expect("diamond DAG must succeed");
         let paths: Vec<&str> = items.iter().map(|item| item.instance.as_str()).collect();
         assert_eq!(paths, vec!["X1/R1", "X2/R1"]);
@@ -735,16 +728,7 @@ mod tests {
                 serde_json::json!({"instances": instances}),
             );
         }
-        let deep = Circuit::from_json(
-            &serde_json::json!({
-                "format": "jolty-circuit",
-                "version": version,
-                "top": "c0",
-                "components": components,
-            })
-            .to_string(),
-        )
-        .expect("valid JSON");
+        let deep = circuit_from_components("c0", serde_json::Value::Object(components));
         let items = toleranced(&deep).expect("deep chain must succeed");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].nominal.to_bits(), 50.0_f64.to_bits());

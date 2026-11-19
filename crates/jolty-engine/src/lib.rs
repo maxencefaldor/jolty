@@ -218,7 +218,10 @@ impl Simulator {
         library: &Library,
         conditions: &Conditions,
     ) -> Result<Self, ElaborationError> {
-        let replaced = (&conditions.substitutes, &conditions.overrides);
+        let replaced = elaborate::Replaced {
+            substitutes: &conditions.substitutes,
+            overrides: &conditions.overrides,
+        };
         let (elaborated, devices) =
             elaborate::elaborate(circuit, library, replaced, conditions.temperature)?;
         let state = State::new(&elaborated, devices, Vec::new(), conditions.temperature);
@@ -391,12 +394,14 @@ impl Simulator {
         self.elaborated.terminal(instance, terminal)
     }
 
-    /// Starts the logic driver at `element` among the devices on a `(time, level,
-    /// transition)` ramp; returns when the ramp ends.
+    /// Starts the logic driver at `element` among the devices on a ramp at `time` to
+    /// `level` over `transition`; returns when the ramp ends.
     fn drive(
         &mut self,
         element: usize,
-        (time, level, transition): (f64, LogicLevel, f64),
+        time: f64,
+        level: LogicLevel,
+        transition: f64,
     ) -> Option<f64> {
         let groups = &self.elaborated.groups;
         self.state
@@ -684,5 +689,54 @@ fn undetermined(unknowns: &[String]) -> String {
         String::new()
     } else {
         format!(", leaving {} undetermined", unknowns.join(", "))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use serde_json::{Value, json};
+
+    use crate::{Conditions, Simulator};
+
+    /// Parses a circuit from `json` and elaborates it with the standard library and defaults.
+    pub(crate) fn simulator_from_json(json: &str) -> Simulator {
+        let circuit = Circuit::from_json(json).expect("a valid circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates")
+    }
+
+    /// Elaborates a single-component grounded test circuit named `top` with ground `ground`
+    /// and `instances`.
+    pub(crate) fn grounded_simulator(top: &str, ground: &str, instances: Value) -> Simulator {
+        let document = json!({
+            "format": "jolty-circuit",
+            "version": jolty_ir::VERSION,
+            "top": top,
+            "components": {
+                top: {
+                    "ports": [{"name": ground, "role": "ground"}],
+                    "instances": instances,
+                }
+            }
+        });
+        simulator_from_json(&document.to_string())
+    }
+
+    /// A minimal 1 V DC source driving a 1 kΩ resistor to ground (`"0"`).
+    pub(crate) fn source_resistor_simulator() -> Simulator {
+        grounded_simulator(
+            "test",
+            "0",
+            json!([
+                {"name": "V1", "of": {"model": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 1.0}},
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"name": "R1", "of": {"model": "resistor"},
+                 "parameters": {"resistance": 1000.0},
+                 "terminals": {"a": "in", "b": "0"}}
+            ]),
+        )
     }
 }

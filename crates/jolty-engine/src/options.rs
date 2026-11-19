@@ -14,6 +14,16 @@ use crate::SimulationError;
 /// gibibyte (IEC 80000-13 binary prefix).
 pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
 
+/// `size` as a floating-point count of numbers for memory limits, where a 64-bit platform's
+/// `usize` exceeds `f64`'s 53-bit significand only at sizes far above any memory limit.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "memory-limit counts need only floating-point precision"
+)]
+pub(crate) fn float_count(size: usize) -> f64 {
+    size as f64
+}
+
 /// The break-evens of the thresholds of [`Parallelism`] that spread a kind of work in
 /// tasks: on each number of [`BreakEvens::threads`], the least size of a task from which
 /// spreading that work over every thread made a run faster than a serial one, on circuits
@@ -538,6 +548,12 @@ impl Options {
         }
     }
 
+    /// The convergence tolerance for an unknown of `nature` comparing `first` and `second`:
+    /// `relative_tolerance * max(|first|, |second|) + value_tolerance(nature)`.
+    pub(crate) fn unknown_tolerance(&self, nature: Nature, first: f64, second: f64) -> f64 {
+        self.relative_tolerance * first.abs().max(second.abs()) + self.value_tolerance(nature)
+    }
+
     /// Checks that `analysis`, whose dense matrices have `rows` rows, may hold `numbers`
     /// numbers at once.
     ///
@@ -556,6 +572,48 @@ impl Options {
                 analysis,
                 rows,
                 needed,
+                max_memory: self.max_memory,
+            });
+        }
+        Ok(())
+    }
+
+    /// Checks that `analysis`, holding `matrices` dense `rows × rows` matrices plus
+    /// `extra_columns` vectors of length `rows`, fits within `max_memory`, returning the
+    /// number of `f64` values held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `max_memory`.
+    pub(crate) fn hold_square(
+        &self,
+        analysis: &'static str,
+        rows: usize,
+        matrices: f64,
+        extra_columns: usize,
+    ) -> Result<f64, SimulationError> {
+        let size = float_count(rows);
+        let numbers = matrices * size * size + float_count(extra_columns) * size;
+        self.hold(analysis, rows, numbers)?;
+        Ok(numbers)
+    }
+
+    /// Checks that `held` transient result numbers fit within `max_memory`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::TooManyPoints`] when `held` exceeds
+    /// `max_memory * NUMBERS_PER_GIB`.
+    pub(crate) fn hold_points(
+        &self,
+        held: f64,
+        time: f64,
+        step: f64,
+    ) -> Result<(), SimulationError> {
+        if held > self.max_memory * NUMBERS_PER_GIB {
+            return Err(SimulationError::TooManyPoints {
+                time,
+                step,
                 max_memory: self.max_memory,
             });
         }

@@ -143,14 +143,15 @@ impl State {
         let temperature = elaborated.temperature_of(values);
         let patched = elaborated.patch(values)?;
         let mut runs = elaborated.groups.runs();
-        let changed = |device| changes(elaborated, (&patched, temperature), device, true);
         let swept = BTreeMap::new();
-        if !prepared(
+        let origins = Origins {
             elaborated,
-            (&mut runs, &patched, &swept),
+            patched: &patched,
+            swept: &swept,
             temperature,
-            changed,
-        )? {
+        };
+        let changed = |device| changes(&origins, device, Refresh::Always);
+        if !prepared(&mut runs, &origins, changed)? {
             return Ok(None);
         }
         // Every instance is prepared, so each starts from its initial memory.
@@ -179,16 +180,21 @@ impl State {
         // An instance keeps its numbers unless they or its temperature change.
         let moved = temperature.to_bits() != self.temperature.to_bits();
         let old = &self.patched;
-        let changed = |device| {
-            let again = moved || old.get(device).is_some_and(Option::is_some);
-            changes(elaborated, (&patched, temperature), device, again)
-        };
-        let replayed = prepared(
+        let origins = Origins {
             elaborated,
-            (&mut self.runs, &patched, &self.swept),
+            patched: &patched,
+            swept: &self.swept,
             temperature,
-            changed,
-        );
+        };
+        let changed = |device| {
+            let refresh = if moved || old.get(device).is_some_and(Option::is_some) {
+                Refresh::Always
+            } else {
+                Refresh::IfPatched
+            };
+            changes(&origins, device, refresh)
+        };
+        let replayed = prepared(&mut self.runs, &origins, changed);
         if !matches!(replayed, Ok(true)) {
             return replayed;
         }
@@ -196,17 +202,10 @@ impl State {
         self.runs.commit();
         self.runs.forget();
         self.temperature = temperature;
-        self.swept.clear();
         self.solver.reset();
         self.workspace.reset();
-        self.events.reset(&elaborated.logic);
-        self.observer.reset();
-        self.remembered = None;
-        self.held.clear();
-        self.forced.clear();
-        self.warm = None;
         self.solves = 0;
-        self.past = None;
+        self.forget(elaborated);
         Ok(true)
     }
 
@@ -277,20 +276,20 @@ impl State {
             }
         }
         let again: Vec<usize> = made.iter().map(|(index, _)| *index).collect();
-        let patched = &self.patched;
+        let origins = Origins {
+            elaborated,
+            patched: &self.patched,
+            swept: &self.swept,
+            temperature,
+        };
         let changed = |device: usize| {
             if again.binary_search(&device).is_ok() {
-                changes(elaborated, (patched, temperature), device, true)
+                changes(&origins, device, Refresh::Always)
             } else {
                 Changed::Nothing
             }
         };
-        let kept = prepared(
-            elaborated,
-            (&mut self.runs, &self.patched, &self.swept),
-            temperature,
-            changed,
-        );
+        let kept = prepared(&mut self.runs, &origins, changed);
         if !matches!(kept, Ok(true)) {
             for (index, origin) in previous {
                 self.patched[index] = origin;
@@ -319,22 +318,30 @@ impl State {
         device: usize,
     ) -> Result<bool, ElaborationError> {
         let swept = self.swept.contains_key(&device);
+        let origins = Origins {
+            elaborated,
+            patched: &self.patched,
+            swept: &self.swept,
+            temperature: self.temperature,
+        };
         let changed = |index: usize| match (index == device, swept) {
             (false, _) => Changed::Nothing,
             (true, true) => Changed::Parameters,
-            (true, false) => changes(elaborated, (&self.patched, self.temperature), index, true),
+            (true, false) => changes(&origins, index, Refresh::Always),
         };
-        let kept = prepared(
-            elaborated,
-            (&mut self.runs, &self.patched, &self.swept),
-            self.temperature,
-            changed,
-        )?;
+        let kept = prepared(&mut self.runs, &origins, changed)?;
         if kept {
             self.runs.commit();
         }
         Ok(kept)
     }
+}
+
+/// Whether an unpatched device should be prepared again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Refresh {
+    IfPatched,
+    Always,
 }
 
 /// Whether `a` and `b` replace the same numbers with the same bits.
@@ -345,24 +352,20 @@ fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
             .all(|((p, x), (q, y))| p == q && x.to_bits() == y.to_bits())
 }
 
-/// What has changed of the device at `device` of `elaborated` for a run whose values replace
-/// the numbers `patched` gives, at `temperature`: its parameters, when the values replace
-/// them or the device's group was made of others; else, when its numbers are `again`
-/// prepared, its parameters at another temperature than its group's, which may give it
-/// another shape, as a resistor's crossing 1 Ω does, and its numbers at its group's; and
-/// otherwise nothing.
-fn changes(
-    elaborated: &Elaborated,
-    (patched, temperature): (&[Option<Origin>], f64),
-    device: usize,
-    again: bool,
-) -> Changed {
-    let replaced = patched.get(device).is_some_and(Option::is_some);
-    let made_otherwise = elaborated
+/// What has changed of the device at `device` for `origins`: its parameters, when values
+/// replace them or the device's group was made of others; else, when `refresh` is
+/// [`Refresh::Always`], its parameters at another temperature than its group's, which may
+/// give it another shape, as a resistor's crossing 1 Ω does, and its numbers at its
+/// group's; and otherwise nothing.
+fn changes(origins: &Origins<'_>, device: usize, refresh: Refresh) -> Changed {
+    let replaced = origins.patched.get(device).is_some_and(Option::is_some);
+    let made_otherwise = origins
+        .elaborated
         .devices
         .get(device)
         .is_some_and(|placed| !placed.nominal());
-    let warmer = temperature.to_bits() != elaborated.temperature.to_bits();
+    let warmer = origins.temperature.to_bits() != origins.elaborated.temperature.to_bits();
+    let again = refresh == Refresh::Always;
     if replaced || made_otherwise || (again && warmer) {
         Changed::Parameters
     } else if again {
@@ -372,37 +375,29 @@ fn changes(
     }
 }
 
-/// Prepares, in `runs`, each instance of a kernel of `elaborated` whose device `changed`
-/// says has changed, for a run at `temperature`, from its origin of `swept`, of `patched`
-/// or its own, keeping the numbers apart until `runs` commits them. Returns whether each
+/// Prepares, in `runs`, each instance of a kernel whose device `changed` says has changed,
+/// from `origins`, keeping the numbers apart until `runs` commits them. Returns whether each
 /// has its group's kernel and shape.
 ///
 /// # Errors
 ///
 /// Returns the problem of each device whose parameters are out of range.
 fn prepared(
-    elaborated: &Elaborated,
-    (runs, patched, swept): (&mut Runs, &[Option<Origin>], &BTreeMap<usize, Origin>),
-    temperature: f64,
+    runs: &mut Runs,
+    origins: &Origins<'_>,
     changed: impl Fn(usize) -> Changed,
 ) -> Result<bool, ElaborationError> {
-    let origins = Origins {
-        elaborated,
-        patched,
-        swept,
-        temperature,
-    };
     runs.prepare(
-        &elaborated.groups,
+        &origins.elaborated.groups,
         |device| origins.of(device).kernel(),
-        temperature,
+        origins.temperature,
         changed,
     )
     .map_err(|problems| {
         let problems = problems.into_iter();
         ElaborationError::new(
             problems
-                .map(|(device, error)| elaborated.problem(device, error))
+                .map(|(device, error)| origins.elaborated.problem(device, error))
                 .collect(),
         )
     })

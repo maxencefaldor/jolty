@@ -148,6 +148,13 @@ pub(crate) struct Refinement<T> {
     scale: Vec<f64>,
 }
 
+/// Whether a linear solve operates on `A` or its transpose `Aᵀ`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Direct,
+    Transposed,
+}
+
 impl<'a, T: Scalar> Factors<'a, T> {
     /// Solves `A x = rhs` and leaves `x` in `rhs`.
     ///
@@ -167,7 +174,7 @@ impl<'a, T: Scalar> Factors<'a, T> {
     /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
     /// unknowns whose values are not.
     pub(crate) fn solve(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
-        self.refine(rhs, false)
+        self.refine(rhs, Side::Direct)
     }
 
     /// Solves the transposed system `Aᵀ x = rhs` and leaves `x` in `rhs`, refined as
@@ -178,16 +185,15 @@ impl<'a, T: Scalar> Factors<'a, T> {
     /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
     /// unknowns whose values are not.
     pub(crate) fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
-        self.refine(rhs, true)
+        self.refine(rhs, Side::Transposed)
     }
 
-    /// Solves `A x = rhs`, or `Aᵀ x = rhs` if `transposed`, then refines as
-    /// [`Factors::solve`] says.
-    fn refine(&mut self, rhs: &mut [T], transposed: bool) -> Result<(), SimulationError> {
+    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side`, then refines as [`Factors::solve`] says.
+    fn refine(&mut self, rhs: &mut [T], side: Side) -> Result<(), SimulationError> {
         let Some((matrix, pattern, work)) = self.refined.take() else {
-            return self.plain(rhs, transposed);
+            return self.plain(rhs, side);
         };
-        let refined = self.refine_with(matrix, &pattern, work, rhs, transposed);
+        let refined = self.refine_with(matrix, &pattern, work, rhs, side);
         self.refined = Some((matrix, pattern, work));
         refined
     }
@@ -200,24 +206,24 @@ impl<'a, T: Scalar> Factors<'a, T> {
         pattern: &Pattern,
         work: &mut Refinement<T>,
         rhs: &mut [T],
-        transposed: bool,
+        side: Side,
     ) -> Result<(), SimulationError> {
         work.given.clear();
         work.given.extend_from_slice(rhs);
-        self.plain(rhs, transposed)?;
+        self.plain(rhs, side)?;
         let mut error = backward_error(
             pattern,
             matrix,
             rhs,
             &work.given,
-            transposed,
+            side,
             &mut work.residual,
             &mut work.scale,
         );
         while error > f64::EPSILON {
             work.candidate.clear();
             work.candidate.extend_from_slice(&work.residual);
-            self.plain(&mut work.candidate, transposed)?;
+            self.plain(&mut work.candidate, side)?;
             for (value, correction) in work.candidate.iter_mut().zip(rhs.iter()) {
                 *value += *correction;
             }
@@ -226,7 +232,7 @@ impl<'a, T: Scalar> Factors<'a, T> {
                 matrix,
                 &work.candidate,
                 &work.given,
-                transposed,
+                side,
                 &mut work.left,
                 &mut work.scale,
             );
@@ -240,12 +246,11 @@ impl<'a, T: Scalar> Factors<'a, T> {
         Ok(())
     }
 
-    /// Solves `A x = rhs`, or `Aᵀ x = rhs` if `transposed`, with the factors alone.
-    fn plain(&mut self, rhs: &mut [T], transposed: bool) -> Result<(), SimulationError> {
-        let solved = if transposed {
-            self.lu.solve_transpose(rhs)
-        } else {
-            self.lu.solve(rhs)
+    /// Solves `A x = rhs` or `Aᵀ x = rhs` per `side`, with the factors alone.
+    fn plain(&mut self, rhs: &mut [T], side: Side) -> Result<(), SimulationError> {
+        let solved = match side {
+            Side::Direct => self.lu.solve(rhs),
+            Side::Transposed => self.lu.solve_transpose(rhs),
         };
         solved.map_err(|error| named(error, self.names))
     }
@@ -309,8 +314,8 @@ impl<T: Scalar> Shared<'_, T> {
     }
 }
 
-/// The componentwise backward error of `x` as a solution of `A x = b`, or `Aᵀ x = b` if
-/// `transposed`, `A` the stored `values` of `pattern`: `maxᵢ |rᵢ| / (|A| |x| + |b|)ᵢ`, the
+/// The componentwise backward error of `x` as a solution of `A x = b` or `Aᵀ x = b` per
+/// `side`, `A` the stored `values` of `pattern`: `maxᵢ |rᵢ| / (|A| |x| + |b|)ᵢ`, the
 /// residual `r = b − A x` left in `residual` and the denominators in `scale`. A row whose
 /// denominator is zero has a zero residual too, and counts for nothing. Each `|·|` is a
 /// number's [`Scalar::size`], a complex number's `|re| + |im|`, which bounds `|a x|` by
@@ -320,7 +325,7 @@ fn backward_error<T: Scalar>(
     values: &[T],
     x: &[T],
     b: &[T],
-    transposed: bool,
+    side: Side,
     residual: &mut Vec<T>,
     scale: &mut Vec<f64>,
 ) -> f64 {
@@ -330,10 +335,9 @@ fn backward_error<T: Scalar>(
     residual.extend_from_slice(b);
     for row in 0..x.len() {
         for &(slot, column) in pattern.row(row) {
-            let (to, from) = if transposed {
-                (column, row)
-            } else {
-                (row, column)
+            let (to, from) = match side {
+                Side::Direct => (row, column),
+                Side::Transposed => (column, row),
             };
             let term = values[slot] * x[from];
             residual[to] -= term;

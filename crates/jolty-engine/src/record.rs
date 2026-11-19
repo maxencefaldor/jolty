@@ -26,10 +26,10 @@ use std::ops::{Add, Range};
 
 use jolty_models::{Groups, REGION, Runs};
 use jolty_numerics::Complex64;
-use jolty_numerics::integration::Formula;
 
 use crate::elaborated::Elaborated;
 use crate::profile::Activity;
+use crate::transient::StepFormula;
 use crate::{Options, Placed, Record, SimulationError, Simulator};
 
 /// What the recorded devices did at one solution, laid out as [`Recording`] says.
@@ -231,7 +231,7 @@ impl Simulator {
     /// first, its steps not limited, when the observer records any.
     pub(crate) fn observe_dc(&mut self, x: &[f64], options: &Options) -> RecordedValues {
         if self.state.observer.records() {
-            self.evaluate(x, None, (1.0, options.gmin), false);
+            self.evaluate(x, None, 1.0, options.gmin, false);
         }
         self.observe_evaluated()
     }
@@ -250,8 +250,12 @@ impl Simulator {
         if let Some(check) = &mut self.state.check {
             let devices = self.state.observer.selection.evaluated.iter();
             let devices = devices.map(|&(device, _, _)| device);
-            let at = (&self.state.runs, self.state.past.as_ref());
-            check.compare_read(&self.elaborated, at, devices);
+            check.compare_read(
+                &self.elaborated,
+                &self.state.runs,
+                self.state.past.as_ref(),
+                devices,
+            );
         }
         self.state
             .observer
@@ -545,13 +549,8 @@ impl Observer {
     }
 
     /// What the recorded devices do at a point a transient accepted, as `read` reads them
-    /// there, the point solved by `formula`; `restart` when the integration begins afresh
-    /// from it.
-    pub(crate) fn step(
-        &mut self,
-        read: &Read,
-        (formula, restart): (&Formula, bool),
-    ) -> RecordedValues {
+    /// there, the point solved by `step`.
+    pub(crate) fn step(&mut self, read: &Read, step: StepFormula) -> RecordedValues {
         let history = &mut self.history;
         let derivative: Vec<f64> = read
             .charges
@@ -563,8 +562,10 @@ impl Observer {
                 } else {
                     history.before[index]
                 };
-                formula.alpha * charge
-                    + formula.history([history.last[index], before], history.derivative[index])
+                step.formula.alpha * charge
+                    + step
+                        .formula
+                        .history([history.last[index], before], history.derivative[index])
             })
             .collect();
         let currents: Vec<f64> = read
@@ -577,7 +578,7 @@ impl Observer {
         let history = &mut self.history;
         history.before = std::mem::replace(&mut history.last, read.charges.clone());
         history.derivative = derivative;
-        history.restarted = restart;
+        history.restarted = step.restarted;
         found
     }
 
@@ -689,12 +690,10 @@ impl Currents<'_> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use serde_json::json;
 
     use super::*;
-    use crate::Conditions;
+    use crate::test_helpers::simulator_from_json;
 
     /// A source driving a resistor into a MOSFET, inside a component instance `X1`.
     fn amplifier() -> Simulator {
@@ -720,9 +719,7 @@ mod tests {
                           "instances": [resistor, mosfet]}
             }
         });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates")
+        simulator_from_json(&document.to_string())
     }
 
     /// Options that record `record`.

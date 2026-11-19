@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use crate::elaborated::Elaborated;
 use crate::options::Inside;
 use crate::profile::{Activity, Meter};
+use crate::solver::{Factors, Solver};
 use crate::{Options, SimulationError, Simulator};
 
 /// How many roundings of the unknowns a residual may show and still count as zero.
@@ -44,10 +45,8 @@ pub(crate) fn rounding(resolution: f64) -> f64 {
 
 /// The step `step` of an unknown of `nature` that the step left at `value`, as a multiple
 /// of its tolerance.
-fn step_error((value, step): (f64, f64), nature: Nature, options: &Options) -> f64 {
-    let magnitude = value.abs().max((value - step).abs());
-    let absolute = options.value_tolerance(nature);
-    step.abs() / (options.relative_tolerance * magnitude + absolute)
+fn step_error(value: f64, step: f64, nature: Nature, options: &Options) -> f64 {
+    step.abs() / options.unknown_tolerance(nature, value, value - step)
 }
 
 /// Does `each` for every chunk of `values` and the index of its first value: for one chunk
@@ -80,7 +79,8 @@ pub(crate) fn each_chunk<T: Send>(
 fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
     planes: [&mut [f64]; N],
     inside: Option<Inside>,
-    (none, join): (R, impl Fn(R, R) -> R + Sync + Send),
+    none: R,
+    join: impl Fn(R, R) -> R + Sync + Send,
     each: impl Fn(usize, [&mut [f64]; N]) -> R + Sync,
 ) -> R {
     let Some(inside) = inside else {
@@ -192,12 +192,30 @@ pub(crate) fn step_matrix(
     });
 }
 
+/// Builds `G + αC` from `workspace.contributions` into `workspace.jacobian` and factors
+/// it with `solver`.
+pub(crate) fn factor_step_jacobian<'a>(
+    solver: &'a mut Solver<f64>,
+    workspace: &mut Workspace,
+    alpha: f64,
+    inside: Option<Inside>,
+) -> Result<Factors<'a, f64>, SimulationError> {
+    step_matrix(
+        &mut workspace.jacobian,
+        &workspace.contributions,
+        alpha,
+        inside,
+    );
+    solver.factor(&workspace.jacobian)
+}
+
 /// Adds to `into` the product of the matrix of `pattern` whose stored values are `values`
 /// and the vector `x`, each row's terms in the order of their columns, its rows split as
 /// `inside` says: the same bits however they are.
 pub(crate) fn add_product(
     pattern: &Pattern,
-    (values, x): (&[f64], &[f64]),
+    values: &[f64],
+    x: &[f64],
     into: &mut [f64],
     inside: Option<Inside>,
 ) {
@@ -340,6 +358,19 @@ pub(crate) enum Mode<'a> {
     },
 }
 
+impl<'a> Mode<'a> {
+    /// The plain DC equations `f(x) = 0` at full source scale, with no shunt or anchor,
+    /// deflated by `deflated`.
+    pub(crate) fn direct(deflated: &'a [Vec<f64>]) -> Self {
+        Self::Dc {
+            source_scale: 1.0,
+            shunt: 0.0,
+            anchor: None,
+            deflated,
+        }
+    }
+}
+
 /// Why a Newton iteration stopped without converging.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Failure {
@@ -363,7 +394,8 @@ impl Simulator {
         &mut self,
         x: &[f64],
         time: Option<f64>,
-        (source_scale, gmin): (f64, f64),
+        source_scale: f64,
+        gmin: f64,
         limiting: bool,
     ) -> bool {
         let previous = self.state.workspace.meter.enter(Activity::Evaluating);
@@ -389,8 +421,13 @@ impl Simulator {
         );
         #[cfg(test)]
         if let (Some(check), Some(mut alone)) = (&mut state.check, before) {
-            let assembled = (&state.workspace.contributions, state.runs.slab());
-            check.compare(&self.elaborated, &mut alone, (&input, limited), assembled);
+            let evaluated = crate::kernels::Evaluated {
+                input: &input,
+                limited,
+                assembled: &state.workspace.contributions,
+                slab: state.runs.slab(),
+            };
+            check.compare(&self.elaborated, &mut alone, evaluated);
         }
         state.workspace.meter.leave(previous);
         limited
@@ -444,7 +481,7 @@ impl Simulator {
                 return Err(Failure::Diverged);
             }
             let limiting = iteration > 0 || !afresh;
-            let limited = self.evaluate(x, time, (source_scale, options.gmin), limiting);
+            let limited = self.evaluate(x, time, source_scale, options.gmin, limiting);
             // The residuals are judged only once the last step was within tolerance and no
             // device limited its voltage.
             let judged = (stepped_within_tolerance && !limited).then_some(options);
@@ -605,7 +642,8 @@ impl Simulator {
         let within = each_chunk_of(
             [residual, scale, resolution, step],
             inside,
-            (true, |one, other| one && other),
+            true,
+            |one, other| one && other,
             |start, [residual, scale, resolution, step]| {
                 let mut within = true;
                 let rows = residual.iter_mut().zip(scale.iter_mut());
@@ -653,12 +691,12 @@ impl Simulator {
     /// split as `inside` says: the step is within tolerance when it is at most 1.
     fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> f64 {
         let (step, natures) = (&self.state.workspace.step, &self.elaborated.natures);
-        each_chunk_of([x], inside, (0.0, largest), |start, [chunk]| {
+        each_chunk_of([x], inside, 0.0, largest, |start, [chunk]| {
             let mut most = 0.0;
             for (offset, value) in chunk.iter_mut().enumerate() {
                 let index = start + offset;
                 *value += step[index];
-                let error = step_error((*value, step[index]), natures[index], options);
+                let error = step_error(*value, step[index], natures[index], options);
                 most = largest(most, error);
             }
             most
@@ -678,7 +716,7 @@ impl Simulator {
                     self.state.workspace.step[index],
                     self.elaborated.natures[index],
                 );
-                (step_error((x[index], step), nature, options), index)
+                (step_error(x[index], step, nature, options), index)
             })
             .collect();
         errors.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -697,13 +735,12 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use jolty_numerics::Work;
     use serde_json::{Value, json};
 
     use super::{Failure, Mode};
-    use crate::{Conditions, Method, Options, Simulator, Transient};
+    use crate::test_helpers::{grounded_simulator, simulator_from_json};
+    use crate::{Method, Options, Simulator, Transient};
 
     /// A simulator of a voltage source of `waveform` driving `stages` sections of 1 kΩ in
     /// series and 1 nF to the ground, with a diode from the last to the ground if `clamped`.
@@ -732,38 +769,24 @@ mod tests {
                 "terminals": {"anode": node(stages), "cathode": "ground"}
             }));
         }
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "ladder",
-            "components": {"ladder": {
-                "ports": [{"name": "ground", "role": "ground"}],
-                "instances": instances
-            }}
-        });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit")
+        grounded_simulator("ladder", "ground", Value::Array(instances))
     }
 
     /// A simulator of a behavioral current source of `expression` from `a` to the ground,
     /// which reads `v(a)` and the voltage of `c`, which a voltage source holds at 0 V.
     fn root(expression: &str) -> Simulator {
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "root",
-            "components": {"root": {
-                "ports": [{"name": "ground", "role": "ground"}],
-                "instances": [
-                    {"name": "V1", "of": {"model": "voltage_source"},
-                     "parameters": {"waveform": {"dc": 0.0}},
-                     "terminals": {"positive": "c", "negative": "ground"}},
-                    {"name": "B1", "of": {"model": "behavioral_current_source"},
-                     "parameters": {"expression": expression},
-                     "terminals": {"positive": "a", "negative": "ground", "a": "a", "c": "c"}}
-                ]
-            }}
-        });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit")
+        grounded_simulator(
+            "root",
+            "ground",
+            json!([
+                {"name": "V1", "of": {"model": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 0.0}},
+                 "terminals": {"positive": "c", "negative": "ground"}},
+                {"name": "B1", "of": {"model": "behavioral_current_source"},
+                 "parameters": {"expression": expression},
+                 "terminals": {"positive": "a", "negative": "ground", "a": "a", "c": "c"}}
+            ]),
+        )
     }
 
     /// A time step's Newton iteration on the circuit of `simulator`, from `a` at 1 V,
@@ -827,9 +850,7 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits");
         for (name, unknowns, factored) in [("inverter_chain_500", 3_504, 504), ("buck", 23, 13)] {
             let text = fs::read_to_string(circuits.join(format!("{name}.json"))).expect("a file");
-            let circuit = Circuit::from_json(&text).expect("a circuit");
-            let simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                .expect("an elaborated circuit");
+            let simulator = simulator_from_json(&text);
             let elaborated = &simulator.elaborated;
             assert_eq!(elaborated.unknowns.len(), unknowns, "{name}");
             let kept = elaborated.ordering.factored().dimension();

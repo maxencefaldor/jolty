@@ -53,10 +53,7 @@ impl Simulator {
             self.solvable()?;
             let index = self.source_index(&ac.source)?;
             let operating_point = self.linearize(&ac.frequencies, options)?;
-            let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
-            self.state
-                .runs
-                .excite(&self.elaborated.groups, index, &mut excitation);
+            let excitation = self.source_excitation(index);
             let currents =
                 self.state
                     .observer
@@ -118,7 +115,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<OperatingPointResult, SimulationError> {
         let operating_point = self.operating_point(options)?;
-        self.evaluate(&operating_point.values, None, (1.0, options.gmin), true);
+        self.evaluate(&operating_point.values, None, 1.0, options.gmin, true);
         Ok(operating_point)
     }
 
@@ -191,6 +188,15 @@ impl Simulator {
         Ok((found, base, nature))
     }
 
+    /// `∂f/∂s` of the independent source at `device`, with one entry per unknown.
+    pub(crate) fn source_excitation(&self, device: usize) -> Vec<f64> {
+        let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
+        self.state
+            .runs
+            .excite(&self.elaborated.groups, device, &mut excitation);
+        excitation
+    }
+
     /// The node or unknown named `name`: none for the reference node.
     fn node(&self, name: &str) -> Result<Option<UnknownIndex>, SimulationError> {
         if name == self.reference() {
@@ -200,6 +206,24 @@ impl Simulator {
             .map(Some)
             .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
     }
+}
+
+/// A vector of length `unknowns` with `+1` at `positive` and `−1` at `negative`.
+pub(crate) fn selector_vector<T>(
+    unknowns: usize,
+    positive: Option<UnknownIndex>,
+    negative: Option<UnknownIndex>,
+) -> Vec<T>
+where
+    T: Default + Clone + std::ops::AddAssign + From<f64>,
+{
+    let mut values = vec![T::default(); unknowns];
+    for (node, sign) in [(positive, 1.0), (negative, -1.0)] {
+        if let Some(unknown) = node {
+            values[unknown.index()] += T::from(sign);
+        }
+    }
+    values
 }
 
 /// What a small-signal analysis finds at one frequency, from the factors of `G + jωC`
@@ -238,13 +262,20 @@ pub(crate) fn over_frequencies<R: Send>(
     found.push(at(&mut first.factor(contributions, lowest)?, 0, lowest)?);
     let tasks = parallelism.tasks(rest.len());
     if tasks == 1 {
-        return FrequencyRun::from(first, (1, rest), contributions, at).finish(found);
+        let chunk = FrequencyChunk {
+            first: 1,
+            frequencies: rest,
+        };
+        return FrequencyRun::from(first, chunk, contributions, at).finish(found);
     }
     let size = rest.len().div_ceil(tasks);
-    let parts: Vec<(usize, &[f64])> = rest
+    let parts: Vec<FrequencyChunk<'_>> = rest
         .chunks(size)
         .enumerate()
-        .map(|(part, frequencies)| (1 + part * size, frequencies))
+        .map(|(part, frequencies)| FrequencyChunk {
+            first: 1 + part * size,
+            frequencies,
+        })
         .collect();
     // Where each run starts, none for where the first frequency left `first`, and its
     // results from there, once taken.
@@ -316,6 +347,13 @@ fn end_before<'a, R>(
         .map_or(first, |run| &run.end)
 }
 
+/// A contiguous slice of frequencies and the index of its first frequency.
+#[derive(Clone, Copy)]
+struct FrequencyChunk<'a> {
+    first: usize,
+    frequencies: &'a [f64],
+}
+
 /// What `at` found at a run of frequencies, from one linearization going through them in
 /// order: each frequency's, up to the first error, and the linearization as it ended.
 struct FrequencyRun<R> {
@@ -325,17 +363,16 @@ struct FrequencyRun<R> {
 }
 
 impl<R> FrequencyRun<R> {
-    /// `at` at each of `frequencies` in order, the first of them the frequency at `first`
-    /// among all of them, from `linearization`, up to the first error.
+    /// `at` at each frequency in `chunk` in order, from `linearization`, up to the first error.
     fn from(
         mut linearization: Linearization,
-        (first, frequencies): (usize, &[f64]),
+        chunk: FrequencyChunk<'_>,
         contributions: &Contributions,
         at: &At<'_, R>,
     ) -> Self {
-        let mut found = Vec::with_capacity(frequencies.len());
+        let mut found = Vec::with_capacity(chunk.frequencies.len());
         let mut error = None;
-        for (index, &frequency) in (first..).zip(frequencies) {
+        for (index, &frequency) in (chunk.first..).zip(chunk.frequencies) {
             match linearization
                 .factor(contributions, frequency)
                 .and_then(|mut factors| at(&mut factors, index, frequency))
@@ -432,32 +469,12 @@ impl Linearization {
 
 #[cfg(test)]
 mod tests {
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
-
-    use crate::{Ac, Conditions, Options, SimulationError, Simulator};
+    use crate::test_helpers::source_resistor_simulator;
+    use crate::{Ac, Options, SimulationError};
 
     #[test]
     fn ac_rejects_non_finite_and_negative_frequencies() {
-        let circuit = Circuit::from_json(
-            r#"{
-                "format": "jolty-circuit", "version": 4, "top": "test",
-                "components": {"test": {
-                    "ports": [{"name": "0", "role": "ground"}],
-                    "instances": [
-                        {"name": "V1", "of": {"model": "voltage_source"},
-                         "parameters": {"waveform": {"dc": 1.0}},
-                         "terminals": {"positive": "in", "negative": "0"}},
-                        {"name": "R1", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 1000.0},
-                         "terminals": {"a": "in", "b": "0"}}
-                    ]
-                }}
-            }"#,
-        )
-        .expect("a valid circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates");
+        let mut simulator = source_resistor_simulator();
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let result = simulator.ac(
                 &Ac {

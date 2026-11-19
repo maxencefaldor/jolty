@@ -35,6 +35,7 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::Deserialize;
 
+use crate::ac::selector_vector;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
@@ -200,23 +201,16 @@ impl Simulator {
             };
             options.check()?;
             self.undelayed(POLE_ZERO, INFINITELY_MANY_POLES)?;
-            self.pencils_fit(transfer.is_some(), options)?;
+            let rows = self.elaborated.unknowns.len() + usize::from(transfer.is_some());
+            options.hold_square(POLE_ZERO, rows, PENCIL_MATRICES, 0)?;
             let operating_point = self.linearized(options)?;
             let n = self.elaborated.unknowns.len();
             let (conductance, capacitance) = self.dense_pencil();
             let (poles, zeros) = if let Some((index, output, reference)) = transfer {
                 let poles =
                     roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
-                let mut level = vec![0.0; n];
-                self.state
-                    .runs
-                    .excite(&self.elaborated.groups, index, &mut level);
-                let mut read = vec![0.0; n];
-                for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                    if let Some(unknown) = node {
-                        read[unknown.index()] += sign;
-                    }
-                }
+                let level = self.source_excitation(index);
+                let read: Vec<f64> = selector_vector(n, output, reference);
                 let (g, c) = bordered(n, &conductance, &capacitance, &level, &read);
                 drop(conductance);
                 drop(capacitance);
@@ -267,7 +261,12 @@ impl Simulator {
             self.solvable()?;
             options.check()?;
             self.undelayed("search for growing modes", INFINITELY_MANY_POLES)?;
-            self.pencils_fit(false, options)?;
+            options.hold_square(
+                POLE_ZERO,
+                self.elaborated.unknowns.len(),
+                PENCIL_MATRICES,
+                0,
+            )?;
             self.linearized(options)?;
             let n = self.elaborated.unknowns.len();
             let (conductance, capacitance) = self.dense_pencil();
@@ -300,14 +299,6 @@ impl Simulator {
                 })
                 .collect()
         })
-    }
-
-    /// Checks that the dense pencils of a pole-zero analysis fit the options' `max_memory`,
-    /// `bordered` if it finds zeros too, its matrices a row larger.
-    fn pencils_fit(&self, bordered: bool, options: &Options) -> Result<(), SimulationError> {
-        let rows = self.elaborated.unknowns.len() + usize::from(bordered);
-        let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        options.hold(POLE_ZERO, rows, PENCIL_MATRICES * size * size)
     }
 
     /// The matrices `G` and `C` the workspace holds, dense in column-major order.

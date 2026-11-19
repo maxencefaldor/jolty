@@ -24,7 +24,9 @@ use jolty_models::{
 use jolty_numerics::{Condensation, Dissecting, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
-use crate::elaborate::{self, ElaborationError, ElaborationProblem, Location, SummedTerminal};
+use crate::elaborate::{
+    self, ElaborationError, ElaborationProblem, Location, Replaced, SummedTerminal,
+};
 use crate::logic::LogicSystem;
 use crate::values::{ParameterId, Table, Values, each_number, each_number_mut};
 use crate::{SimulationError, Substitute};
@@ -489,12 +491,13 @@ impl Elaborated {
         library: &Library,
         structure: &Structure,
     ) -> Result<Arc<Self>, ElaborationError> {
-        let (elaborated, _) = elaborate::elaborate(
-            circuit,
-            library,
-            (&structure.substitutes, &BTreeMap::new()),
-            REFERENCE_TEMPERATURE,
-        )?;
+        let empty_overrides = BTreeMap::new();
+        let replaced = Replaced {
+            substitutes: &structure.substitutes,
+            overrides: &empty_overrides,
+        };
+        let (elaborated, _) =
+            elaborate::elaborate(circuit, library, replaced, REFERENCE_TEMPERATURE)?;
         Ok(Arc::new(elaborated))
     }
 
@@ -502,7 +505,9 @@ impl Elaborated {
     /// `temperature`.
     pub(crate) fn assemble(
         bound: Bound,
-        (logic, summed_terminals, reference): (LogicSystem, Vec<SummedTerminal>, Name),
+        logic: LogicSystem,
+        summed_terminals: Vec<SummedTerminal>,
+        reference: Name,
         temperature: f64,
     ) -> (Self, Devices) {
         let elaborated = Self {

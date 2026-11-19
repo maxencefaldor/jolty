@@ -88,10 +88,7 @@ impl Simulator {
                 .unknown(&format!("{}:current", stability.probe))
                 .ok_or_else(not_a_probe)?;
             let unknowns = self.elaborated.unknowns.len();
-            let mut level = vec![0.0; unknowns];
-            self.state
-                .runs
-                .excite(&self.elaborated.groups, index, &mut level);
+            let level = self.source_excitation(index);
             let operating_point = self.linearize(&stability.frequencies, options)?;
             let gains = over_frequencies(
                 self.linearization(),

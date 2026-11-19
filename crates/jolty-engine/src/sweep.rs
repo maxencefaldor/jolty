@@ -266,12 +266,7 @@ impl Simulator {
         values: &mut Vec<f64>,
         options: &Options,
     ) -> bool {
-        let direct = Mode::Dc {
-            source_scale: 1.0,
-            shunt: 0.0,
-            anchor: None,
-            deflated: &[],
-        };
+        let direct = Mode::direct(&[]);
         let mut level: Vec<f64> = spans.iter().map(|&(from, _)| from).collect();
         // Each coordinate's increment is its span times the scale, a power of two, so as
         // exactly as doubling and halving the increment itself.

@@ -16,6 +16,7 @@ use jolty_models::{Change, Input, Logic, LogicLevel, Node, Pins, Stimulus};
 
 use crate::elaborate::Location;
 use crate::elaborated::Template;
+use crate::transient::StepPoint;
 
 /// One end of a logic net: a pin of a logic device, or a connect element in the analog
 /// circuit.
@@ -154,10 +155,25 @@ pub struct Excursion {
     pub count: usize,
 }
 
+/// An inclusive valid range `[minimum, maximum]` for a monitored quantity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Bounds {
+    pub(crate) minimum: f64,
+    pub(crate) maximum: f64,
+}
+
+impl Bounds {
+    fn from_pair((minimum, maximum): (f64, f64)) -> Self {
+        Self { minimum, maximum }
+    }
+}
+
 impl Excursion {
-    /// How far `value` lies outside `range`, zero within it.
-    fn outside(value: f64, (low, high): (f64, f64)) -> f64 {
-        (low - value).max(value - high).max(0.0)
+    /// How far `value` lies outside `bounds`, zero within them.
+    fn outside(value: f64, bounds: Bounds) -> f64 {
+        (bounds.minimum - value)
+            .max(value - bounds.maximum)
+            .max(0.0)
     }
 }
 
@@ -231,6 +247,13 @@ impl LogicSystem {
     }
 }
 
+/// Whether a scheduled logic change is an uncancelled stimulus or a cancellable reaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeKind {
+    Stimulus,
+    Reaction,
+}
+
 /// A change waiting in the queue.
 #[derive(Debug, Clone, Copy)]
 struct Scheduled {
@@ -239,8 +262,8 @@ struct Scheduled {
     drive: usize,
     level: LogicLevel,
     transition: f64,
-    /// Whether the change is a device's own, which inputs never cancel.
-    stimulus: bool,
+    /// Whether the change is a device's own stimulus, which inputs never cancel.
+    kind: ChangeKind,
 }
 
 impl PartialEq for Scheduled {
@@ -400,30 +423,30 @@ impl Events {
     }
 
     /// Records that `device` read `value` of `bound` at `time`, if it lies outside
-    /// `range`.
+    /// `bounds`.
     pub(crate) fn watch(
         &mut self,
         device: usize,
         bound: ExcursionKind,
         value: f64,
-        range: (f64, f64),
+        bounds: Bounds,
         time: f64,
     ) {
-        let outside = Excursion::outside(value, range);
+        let outside = Excursion::outside(value, bounds);
         if outside <= 0.0 {
             return;
         }
         let excursion = self.excursions.entry((device, bound)).or_insert(Excursion {
             device,
             bound,
-            minimum: range.0,
-            maximum: range.1,
+            minimum: bounds.minimum,
+            maximum: bounds.maximum,
             value,
             time,
             count: 0,
         });
         excursion.count += 1;
-        if outside > Excursion::outside(excursion.value, range) {
+        if outside > Excursion::outside(excursion.value, bounds) {
             excursion.value = value;
         }
     }
@@ -546,7 +569,7 @@ impl Events {
             } in &stimuli
             {
                 let drive = logic.output_drive(device, output);
-                self.push(time, drive, level, transition, true);
+                self.push(time, drive, level, transition, ChangeKind::Stimulus);
             }
         }
     }
@@ -557,7 +580,7 @@ impl Events {
         drive: usize,
         level: LogicLevel,
         transition: f64,
-        stimulus: bool,
+        kind: ChangeKind,
     ) {
         self.sequence += 1;
         self.queue.push(Reverse(Scheduled {
@@ -566,9 +589,9 @@ impl Events {
             drive,
             level,
             transition,
-            stimulus,
+            kind,
         }));
-        if !stimulus {
+        if kind == ChangeKind::Reaction {
             self.drives[drive].pending = Some((time, level, self.sequence));
         }
     }
@@ -600,7 +623,7 @@ impl Events {
                 drive,
                 crossing.level,
                 crossing.transition,
-                true,
+                ChangeKind::Stimulus,
             );
         }
     }
@@ -614,7 +637,7 @@ impl Events {
             }
             self.queue.pop();
             let state = &mut self.drives[next.drive];
-            if !next.stimulus {
+            if next.kind == ChangeKind::Reaction {
                 if state.pending.map(|(_, _, sequence)| sequence) != Some(next.sequence) {
                     continue;
                 }
@@ -676,7 +699,7 @@ impl Events {
                 device,
                 ExcursionKind::Transition,
                 change.slew,
-                domain.slews,
+                Bounds::from_pair(domain.slews),
                 time,
             );
         }
@@ -699,7 +722,7 @@ impl Events {
                     device,
                     ExcursionKind::Load,
                     self.loads[net],
-                    domain.loads,
+                    Bounds::from_pair(domain.loads),
                     time,
                 );
             }
@@ -722,7 +745,13 @@ impl Events {
                 // swing it has left to cross half the supply when the output changes.
                 at = leaves.max(time);
             }
-            self.push(at.max(time), drive, level, timing.transition, false);
+            self.push(
+                at.max(time),
+                drive,
+                level,
+                timing.transition,
+                ChangeKind::Reaction,
+            );
         }
     }
 
@@ -766,27 +795,27 @@ pub(crate) fn detected(margin: f64, held: LogicLevel) -> LogicLevel {
 }
 
 /// The crossing of the detector `detector`, whose connect element `sense` reads how far
-/// its input lies above its threshold at a state and its supply's swing there, between the
-/// solutions `before` at `start` and `after` at `end`, if its level changes from `held`.
+/// its input lies above its threshold at a state and its supply's swing there, between
+/// `start` and `end`, if its level changes from `held`.
 pub(crate) fn crossing(
     sense: impl Fn(&Input<'_>) -> Option<(f64, f64)>,
     detector: usize,
     held: LogicLevel,
-    (start, before): (f64, &[f64]),
-    (end, after): (f64, &[f64]),
+    start: StepPoint<'_>,
+    end: StepPoint<'_>,
 ) -> Option<Crossing> {
-    let (first, _) = sense(&Input::new(before, Some(start), 0.0))?;
-    let (last, swing) = sense(&Input::new(after, Some(end), 0.0))?;
+    let (first, _) = sense(&Input::new(start.values, Some(start.time), 0.0))?;
+    let (last, swing) = sense(&Input::new(end.values, Some(end.time), 0.0))?;
     let level = detected(last, held);
     if level == held {
         return None;
     }
-    let rate = (last - first) / (end - start);
+    let rate = (last - first) / (end.time - start.time);
     let fraction = first / (first - last);
     let time = if fraction.is_finite() {
-        start + (end - start) * fraction.clamp(0.0, 1.0)
+        start.time + (end.time - start.time) * fraction.clamp(0.0, 1.0)
     } else {
-        end
+        end.time
     };
     let swing = swing.abs();
     Some(Crossing {

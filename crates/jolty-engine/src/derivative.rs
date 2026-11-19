@@ -60,14 +60,15 @@
 use std::collections::BTreeMap;
 
 use jolty_models::UnknownIndex;
-use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, Pattern, solve_each_in_range};
+use jolty_numerics::{Complex64, Pattern, Scalar, solve_each_in_range};
 
 use crate::ac::over_frequencies;
-use crate::newton::{add_product, force_row, step_matrix};
-use crate::periodic::DENSE_MATRICES;
+use crate::newton::{add_product, factor_step_jacobian, force_row};
+use crate::options::{Parallelism, float_count};
+use crate::periodic::{DENSE_MATRICES, ShootingSystem};
 use crate::sensitivity::{Derivatives, Differentiated, Parameter};
-use crate::transient::{Carried, Tangent};
+use crate::solver::Factors;
+use crate::transient::{Carried, StepFormula, StepPoint, Tangent, TangentLinear};
 use crate::twins::{Part, Twins};
 use crate::{
     AcResult, AnalysisResult, DcSweep, DcSweepResult, Options, PeriodicSteadyStateResult,
@@ -162,21 +163,52 @@ pub(crate) enum Saved {
     DcSweep(DcSweep),
     /// The transient's start, and each step's formula and whether the integration
     /// restarts after it.
-    Transient(Start, Vec<(Formula, bool)>),
+    Transient(Start, Vec<StepFormula>),
     /// The converged period's steps, and shooting's bordered system.
-    Period(Vec<(Formula, bool)>, System),
+    Period(Vec<StepFormula>, ShootingSystem),
 }
 
-/// Shooting's bordered system, its unknowns' tolerances and its period's scale, as
-/// [`crate::periodic::Shot::system`] gives them.
-pub(crate) type System = (Vec<f64>, Vec<f64>, Option<f64>);
+/// A transient's waveforms together with the step formulas that produced them.
+#[derive(Clone, Copy)]
+pub(crate) struct Trajectory<'a> {
+    pub(crate) waveforms: &'a TransientResult,
+    pub(crate) steps: &'a [StepFormula],
+}
 
 /// A periodic steady state's period, the steps it took and its shooting's bordered system.
-pub(crate) type Period<'a> = (
-    &'a PeriodicSteadyStateResult,
-    &'a [(Formula, bool)],
-    &'a System,
-);
+#[derive(Clone, Copy)]
+pub(crate) struct Period<'a> {
+    pub(crate) found: &'a PeriodicSteadyStateResult,
+    pub(crate) steps: &'a [StepFormula],
+    pub(crate) system: &'a ShootingSystem,
+}
+
+/// Inputs shared across a transient backward adjoint pass and its start step.
+#[derive(Clone, Copy)]
+pub(crate) struct BackwardPass<'a> {
+    pub(crate) trajectory: Trajectory<'a>,
+    pub(crate) seeds: &'a [&'a BTreeMap<usize, Vec<f64>>],
+    pub(crate) start: &'a Start,
+    pub(crate) stretch: Option<f64>,
+}
+
+/// Whether a periodic steady state holds a fixed period or solves for a free oscillator period.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeriodKind {
+    Forced,
+    Free,
+}
+
+impl PeriodKind {
+    /// Returns [`Self::Free`] when shooting bordered the system with a period scale, else
+    /// [`Self::Forced`].
+    pub(crate) const fn from_scale(scale: Option<f64>) -> Self {
+        match scale {
+            Some(_) => Self::Free,
+            None => Self::Forced,
+        }
+    }
+}
 
 /// Where a transient's derivatives start.
 #[derive(Debug, Clone, PartialEq)]
@@ -186,12 +218,6 @@ pub(crate) enum Start {
     Solved(Vec<UnknownIndex>),
     /// At a state held, given: its derivatives along each direction, or none, zero.
     Held(Option<Vec<Vec<f64>>>),
-}
-
-/// `size` as a floating-point count, clamped at `u32::MAX`, matching shooting's dense-matrix
-/// memory accounting.
-pub(crate) fn float_count(size: usize) -> f64 {
-    f64::from(u32::try_from(size).unwrap_or(u32::MAX))
 }
 
 /// The total `f64` numbers held inside a transient's recorded waveforms and observations.
@@ -207,25 +233,60 @@ pub(crate) fn waveforms_numbers(waveforms: &TransientResult) -> f64 {
     values + observations
 }
 
+/// Size parameters for [`forward_period_numbers`].
+#[derive(Clone, Copy)]
+struct ForwardPeriodBudget {
+    unknowns: usize,
+    rows: usize,
+    points: usize,
+    waveforms: f64,
+    directions: usize,
+    kept: usize,
+    kind: PeriodKind,
+}
+
+/// Size parameters for [`PullPeriodBudget::check`].
+#[derive(Clone, Copy)]
+pub(crate) struct PullPeriodBudget {
+    pub(crate) unknowns: usize,
+    pub(crate) rows: usize,
+    pub(crate) waveforms: f64,
+    pub(crate) cotangents: f64,
+    pub(crate) parameters: usize,
+    pub(crate) kind: PeriodKind,
+    pub(crate) extra: f64,
+}
+
+impl PullPeriodBudget {
+    /// Checks that [`Simulator::pull_period`] together with caller buffers of `self.extra`
+    /// numbers fits within `options.max_memory`.
+    pub(crate) fn check(self, options: &Options) -> Result<(), SimulationError> {
+        options.hold(PERIODIC_SENSITIVITY, self.rows, pull_period_numbers(self))
+    }
+}
+
 /// The peak `f64` numbers held during [`Simulator::along_period`], across the bordered solve
 /// (`DENSE_MATRICES` square matrices plus `directions` columns) and the replay passes (the
 /// saved waveforms, the bordered matrix, each direction's three charge-history vectors and
 /// step solution, an oscillator's charge tangent, and the recorded output derivatives).
-fn forward_period_numbers(
-    (unknowns, rows): (usize, usize),
-    (points, waveforms): (usize, f64),
-    (directions, kept): (usize, usize),
-    oscillator: bool,
-) -> f64 {
+fn forward_period_numbers(budget: ForwardPeriodBudget) -> f64 {
+    let ForwardPeriodBudget {
+        unknowns,
+        rows,
+        points,
+        waveforms,
+        directions,
+        kept,
+        kind,
+    } = budget;
     let rows_float = float_count(rows);
     let unknowns_float = float_count(unknowns);
     let directions_float = float_count(directions);
     let solve_phase =
         DENSE_MATRICES * rows_float * rows_float + directions_float * rows_float + waveforms;
-    let charges = if oscillator {
-        3.0 * unknowns_float
-    } else {
-        0.0
+    let charges = match kind {
+        PeriodKind::Free => 3.0 * unknowns_float,
+        PeriodKind::Forced => 0.0,
     };
     let replay_phase = rows_float * rows_float
         + 4.0 * directions_float * unknowns_float
@@ -236,15 +297,18 @@ fn forward_period_numbers(
 }
 
 /// The peak `f64` numbers held during [`Simulator::pull_period`] together with caller buffers
-/// of `extra` numbers (`unit_rows` and `pulled` in `Simulator::by_rows`, or `found` in
+/// of `budget.extra` numbers (`unit_rows` and `pulled` in `Simulator::by_rows`, or `found` in
 /// [`Simulator::pull_back`]).
-pub(crate) fn pull_period_numbers(
-    (unknowns, rows): (usize, usize),
-    waveforms: f64,
-    (cotangents, parameters): (f64, usize),
-    oscillator: bool,
-    extra: f64,
-) -> f64 {
+fn pull_period_numbers(budget: PullPeriodBudget) -> f64 {
+    let PullPeriodBudget {
+        unknowns,
+        rows,
+        waveforms,
+        cotangents,
+        parameters,
+        kind,
+        extra,
+    } = budget;
     let rows_float = float_count(rows);
     let unknowns_float = float_count(unknowns);
     // During `solve_each_in_range(matrix, &mut map)`, `map` adds one `rows × rows` matrix
@@ -256,9 +320,11 @@ pub(crate) fn pull_period_numbers(
     // `onward`, `solution`, `shifted`), with `ended` adding 1 vector in the second pass;
     // `twins.dots` and its transpose hold up to `3 * cotangents * parameters` beside `6` (or
     // `7`) vectors of unknowns.
-    let step_vectors = if oscillator { 9.0 } else { 8.0 };
+    let (step_vectors, dot_vectors) = match kind {
+        PeriodKind::Free => (9.0, 7.0),
+        PeriodKind::Forced => (8.0, 6.0),
+    };
     let step_peak = step_vectors * cotangents * unknowns_float;
-    let dot_vectors = if oscillator { 7.0 } else { 6.0 };
     let dot_peak =
         dot_vectors * cotangents * unknowns_float + 3.0 * cotangents * float_count(parameters);
     let backward_phase = rows_float * rows_float + step_peak.max(dot_peak);
@@ -380,25 +446,39 @@ struct Adjoint {
     last: Option<usize>,
 }
 
+/// Per-cotangent vectors prepared for one backward adjoint step.
+struct StepAdjoint {
+    held: Vec<f64>,
+    onward: Vec<f64>,
+    solution: Vec<f64>,
+}
+
+/// Unknown-seeded twins of nonlinear devices and the sorted matrix slots they write to.
+struct NonlinearTwins<'a> {
+    twins: &'a mut [jolty_models::Twin],
+    slots: &'a [usize],
+}
+
 impl Adjoint {
-    /// Carries the derivatives back over the step `formula` took to a point where the
-    /// charges are `charge`, `restarted` saying whether the integration restarts after it,
-    /// from `held`, those with respect to the charges at the point, `onward`, what goes on
-    /// to the point before, and `solution`, the step's `λ`; while a period of length
-    /// `stretch` stretches, its terms too. Returns `μ − α λ`, which the charges' partial
-    /// derivatives take.
+    /// Carries the derivatives back over `step` to a point where the charges are `charge`,
+    /// from `vectors` (`held` with respect to the point's charges, `onward` going on to the
+    /// point before, and `solution` as the step's `λ`); while a period of length `stretch`
+    /// stretches, its terms too. Returns `μ − α λ`, which the charges' partial derivatives
+    /// take.
     fn step_back(
         &mut self,
-        (held, onward, solution): (&[f64], &[f64], &[f64]),
-        (formula, restarted, charge): (Formula, bool, &[f64]),
+        vectors: &StepAdjoint,
+        step: StepFormula,
+        charge: &[f64],
         stretch: Option<f64>,
     ) -> Vec<f64> {
+        let formula = step.formula;
         let mut through = std::mem::take(&mut self.rate);
-        add(&mut through, -1.0, solution);
+        add(&mut through, -1.0, &vectors.solution);
         if let (Some((stretch_charge, stretch_before)), Some(period)) = (&mut self.stretch, stretch)
         {
             let mut read = std::mem::take(stretch_charge);
-            let onward = if restarted {
+            let onward = if step.restarted {
                 add(&mut read, 1.0, stretch_before);
                 vec![0.0; read.len()]
             } else {
@@ -415,15 +495,15 @@ impl Adjoint {
                 .collect();
         }
         self.charge.clear();
-        self.charge.extend_from_slice(onward);
+        self.charge.extend_from_slice(&vectors.onward);
         add(&mut self.charge, formula.beta[0], &through);
         self.before = through
             .iter()
             .map(|value| formula.beta[1] * value)
             .collect();
         self.rate = through.iter().map(|value| formula.gamma * value).collect();
-        let mut moved = held.to_vec();
-        add(&mut moved, -formula.alpha, solution);
+        let mut moved = vectors.held.clone();
+        add(&mut moved, -formula.alpha, &vectors.solution);
         moved
     }
 }
@@ -545,32 +625,27 @@ impl Simulator {
                     )?))
                 }
                 (saved, result, Cotangents::Real(cotangents)) => {
-                    if let (
-                        Saved::Period(_, (_, tolerances, scale)),
-                        AnalysisResult::PeriodicSteadyState(steady),
-                    ) = (saved, result)
+                    if let Saved::Period(_, system) = saved
+                        && let AnalysisResult::PeriodicSteadyState(steady) = result
                         && !cotangents.is_empty()
                     {
-                        let unknowns = tolerances.len();
-                        let rows = unknowns + usize::from(scale.is_some());
+                        let unknowns = system.tolerances.len();
+                        let rows = unknowns + usize::from(system.scale.is_some());
                         let cotangent_count = float_count(cotangents.len());
                         let extra = cotangent_count * float_count(parameter_count);
-                        let needed = pull_period_numbers(
-                            (unknowns, rows),
-                            waveforms_numbers(&steady.waveforms),
-                            (cotangent_count, parameter_count),
-                            scale.is_some(),
+                        PullPeriodBudget {
+                            unknowns,
+                            rows,
+                            waveforms: waveforms_numbers(&steady.waveforms),
+                            cotangents: cotangent_count,
+                            parameters: parameter_count,
+                            kind: PeriodKind::from_scale(system.scale),
                             extra,
-                        );
-                        options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
-                    }
-                    let mut found = vec![vec![0.0; parameter_count]; cotangents.len()];
-                    let mut fold = |index: usize, terms: &[f64]| {
-                        for (total, term) in found[index].iter_mut().zip(terms) {
-                            *total += term;
                         }
-                    };
-                    self.pull(&mut twins, (saved, result), cotangents, &mut fold, options)?;
+                        .check(options)?;
+                    }
+                    let found =
+                        self.pull_collected(&mut twins, saved, result, cotangents, options)?;
                     Ok(ParameterCotangents::Real(found))
                 }
                 _ => Err(SimulationError::InvalidAnalysis(KINDS.to_owned())),
@@ -631,23 +706,9 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         let points = points(result);
         let unknowns = self.elaborated.unknowns.len();
-        let fits =
-            |at: usize, values: usize, finite: bool| at < points && values == unknowns && finite;
         let fit = match cotangents {
-            Cotangents::Real(each) => each.iter().all(|cotangent| {
-                cotangent.period.is_finite()
-                    && cotangent.points.iter().all(|(&at, values)| {
-                        let finite = values.iter().all(|value| value.is_finite());
-                        fits(at, values.len(), finite)
-                    })
-            }),
-            Cotangents::Complex(each) => each.iter().all(|cotangent| {
-                cotangent.period.is_finite()
-                    && cotangent.points.iter().all(|(&at, values)| {
-                        let finite = values.iter().all(|value| value.is_finite());
-                        fits(at, values.len(), finite)
-                    })
-            }),
+            Cotangents::Real(each) => cotangents_fit(each, points, unknowns),
+            Cotangents::Complex(each) => cotangents_fit(each, points, unknowns),
         };
         if fit {
             Ok(())
@@ -718,16 +779,23 @@ impl Simulator {
                 if !directions.is_empty() {
                     let rows =
                         self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
-                    let rows_float = float_count(rows);
-                    let dense = DENSE_MATRICES * rows_float * rows_float
-                        + float_count(directions.len()) * rows_float;
-                    options.hold(PERIODIC_SENSITIVITY, rows, dense)?;
+                    options.hold_square(
+                        PERIODIC_SENSITIVITY,
+                        rows,
+                        DENSE_MATRICES,
+                        directions.len(),
+                    )?;
                 }
                 let (found, mut shot) = self.shot_steady_state(analysis, options)?;
                 let steps = shot.take_steps();
                 let system = shot.system();
+                let period_data = Period {
+                    found: &found,
+                    steps: &steps,
+                    system: &system,
+                };
                 let forward = Forward::new(twins, directions, kept.to_vec(), Start::Held(None));
-                let forward = self.along_period((&found, &steps, &system), forward, options)?;
+                let forward = self.along_period(period_data, forward, options)?;
                 twins = forward.twins;
                 period = forward.stretch.map(|(_, derivatives)| derivatives);
                 (
@@ -830,59 +898,92 @@ impl Simulator {
         ))
     }
 
+    /// Pulls back `cotangents` on `result` (which left `saved`) to every twin, returning
+    /// accumulated sums by cotangent then twin.
+    pub(crate) fn pull_collected(
+        &mut self,
+        twins: &mut Twins,
+        saved: &Saved,
+        result: &AnalysisResult,
+        cotangents: &[Cotangent<f64>],
+        options: &Options,
+    ) -> Result<Vec<Vec<f64>>, SimulationError> {
+        let mut found = vec![vec![0.0; twins.len()]; cotangents.len()];
+        let mut fold = |index: usize, terms: &[f64]| {
+            for (total, term) in found[index].iter_mut().zip(terms) {
+                *total += term;
+            }
+        };
+        self.pull(twins, saved, result, cotangents, &mut fold, options)?;
+        Ok(found)
+    }
+
     /// The real cotangents `cotangents` of the analysis whose result is `result`, which
     /// left `saved`, pulled back to the twins: each term of each cotangent's values, by
     /// its index, to `fold`.
-    pub(crate) fn pull(
+    fn pull(
         &mut self,
         twins: &mut Twins,
-        (saved, result): (&Saved, &AnalysisResult),
+        saved: &Saved,
+        result: &AnalysisResult,
         cotangents: &[Cotangent<f64>],
         fold: Fold<'_>,
         options: &Options,
     ) -> Result<(), SimulationError> {
-        let seeds: Vec<&BTreeMap<usize, Vec<f64>>> = cotangents
-            .iter()
-            .map(|cotangent| &cotangent.points)
-            .collect();
+        let seeds = cotangent_seeds(cotangents);
         match (saved, result) {
             (Saved::Nothing, AnalysisResult::OperatingPoint(point)) => {
-                let at: Vec<(usize, &[f64])> = seeds
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, seed)| Some((index, seed.get(&0)?.as_slice())))
-                    .collect();
+                let at = seeds_at(&seeds, 0);
                 self.dc_cotangents(twins, &point.values, &at, fold, options)
             }
             (Saved::DcSweep(sweep), AnalysisResult::DcSweep(found)) => {
                 let mut level = 0;
                 self.along_levels(sweep, found, twins, |simulator, twins, x| {
-                    let at: Vec<(usize, &[f64])> = seeds
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, seed)| Some((index, seed.get(&level)?.as_slice())))
-                        .collect();
+                    let at = seeds_at(&seeds, level);
                     level += 1;
                     simulator.dc_cotangents(twins, x, &at, &mut *fold, options)
                 })?;
                 Ok(())
             }
             (Saved::Transient(start, steps), AnalysisResult::Transient(waveforms)) => {
-                self.backward(
-                    twins,
-                    (waveforms, steps),
-                    &seeds,
-                    (start, None),
-                    fold,
-                    options,
-                )?;
+                let pass = BackwardPass {
+                    trajectory: Trajectory { waveforms, steps },
+                    seeds: &seeds,
+                    start,
+                    stretch: None,
+                };
+                self.backward(twins, pass, fold, options)?;
                 Ok(())
             }
             (Saved::Period(steps, system), AnalysisResult::PeriodicSteadyState(found)) => {
-                self.pull_period(twins, (found, steps, system), cotangents, fold, options)
+                let period = Period {
+                    found,
+                    steps,
+                    system,
+                };
+                self.pull_period(twins, period, cotangents, fold, options)
             }
             _ => Err(SimulationError::InvalidAnalysis(KINDS.to_owned())),
         }
+    }
+
+    /// Factors the DC conductance matrix currently in the workspace, replacing the rows of
+    /// `forced` with `v − v₀ = 0` when non-empty.
+    fn factor_dc_forced(
+        &mut self,
+        forced: &[UnknownIndex],
+    ) -> Result<Factors<'_, f64>, SimulationError> {
+        if forced.is_empty() {
+            return self
+                .state
+                .solver
+                .factor(&self.state.workspace.contributions.conductance);
+        }
+        let mut matrix = self.state.workspace.contributions.conductance.clone();
+        for unknown in forced {
+            force_row(&self.elaborated, &mut matrix, unknown.index());
+        }
+        self.state.solver.factor(&matrix)
     }
 
     /// Each direction's derivative of the DC solution `x`, `−J⁻¹ Σ t_j ∂F/∂p_j`, by
@@ -896,19 +997,8 @@ impl Simulator {
         forced: &[UnknownIndex],
         options: &Options,
     ) -> Result<Vec<Vec<f64>>, SimulationError> {
-        self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut forced_matrix = None;
-        if !forced.is_empty() {
-            let mut matrix = self.state.workspace.contributions.conductance.clone();
-            for unknown in forced {
-                force_row(&self.elaborated, &mut matrix, unknown.index());
-            }
-            forced_matrix = Some(matrix);
-        }
-        let matrix = forced_matrix
-            .as_deref()
-            .unwrap_or(&self.state.workspace.contributions.conductance);
-        let factors = self.state.solver.factor(matrix)?;
+        self.evaluate(x, None, 1.0, options.gmin, false);
+        let factors = self.factor_dc_forced(forced)?;
         let shared = factors.shared();
         let parallelism = &options.parallelism;
         twins.evaluate(x, None, options.gmin, parallelism);
@@ -947,7 +1037,7 @@ impl Simulator {
         if at.is_empty() {
             return Ok(());
         }
-        self.evaluate(x, None, (1.0, options.gmin), false);
+        self.evaluate(x, None, 1.0, options.gmin, false);
         let factors = self
             .state
             .solver
@@ -1013,7 +1103,7 @@ impl Simulator {
         let operating = &response.operating_point.values;
         let nonlinear = self.nonlinear_devices();
         let biases = if nonlinear.is_empty() {
-            self.evaluate(operating, None, (1.0, options.gmin), false);
+            self.evaluate(operating, None, 1.0, options.gmin, false);
             twins.evaluate(operating, None, options.gmin, &options.parallelism);
             vec![Vec::new(); directions.len()]
         } else {
@@ -1080,7 +1170,7 @@ impl Simulator {
         }
         let operating = &response.operating_point.values;
         let parallelism = &options.parallelism;
-        self.evaluate(operating, None, (1.0, options.gmin), false);
+        self.evaluate(operating, None, 1.0, options.gmin, false);
         twins.evaluate(operating, None, options.gmin, parallelism);
         let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
         let found = {
@@ -1146,9 +1236,13 @@ impl Simulator {
             }
         }
         if !nonlinear_slots.is_empty() {
+            let nonlinear_twins = NonlinearTwins {
+                twins: &mut unknown_twins,
+                slots: &nonlinear_slots,
+            };
             self.add_operating_point_cotangents(
                 twins,
-                (&mut unknown_twins, &nonlinear_slots),
+                nonlinear_twins,
                 operating,
                 &weights,
                 &mut sums,
@@ -1159,12 +1253,12 @@ impl Simulator {
     }
 
     /// Adds to `sums` the operating-point share `+(J₀⁻ᵀ g)ᵀ ∂F₀/∂p` of each active
-    /// cotangent's `weights`, indexed by `nonlinear_slots`, in
+    /// cotangent's `weights`, indexed by `nonlinear.slots`, in
     /// [`Simulator::pull_frequencies`].
     fn add_operating_point_cotangents(
         &mut self,
         twins: &mut Twins,
-        (unknown_twins, nonlinear_slots): (&mut [jolty_models::Twin], &[usize]),
+        nonlinear: NonlinearTwins<'_>,
         operating: &[f64],
         weights: &[Option<(Vec<Complex64>, Vec<Complex64>)>],
         sums: &mut [Vec<Complex64>],
@@ -1172,8 +1266,8 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         let parallelism = &options.parallelism;
         let gradients = self.entries_cotangents(
-            unknown_twins,
-            nonlinear_slots,
+            nonlinear.twins,
+            nonlinear.slots,
             operating,
             weights,
             options.gmin,
@@ -1224,38 +1318,49 @@ impl Simulator {
         Ok(())
     }
 
-    /// Each direction's derivatives along the period `found`, which took `steps`, whose
-    /// shooting's bordered system is `system`: `forward`, carried over the period's steps
+    /// Each direction's derivatives along `period`: `forward`, carried over the period's steps
     /// once from the start held to the period's end, then again from the start's own
     /// derivatives, and with an oscillator's period's.
     pub(crate) fn along_period(
         &mut self,
-        (found, steps, system): Period<'_>,
+        period: Period<'_>,
         mut forward: Forward,
         options: &Options,
     ) -> Result<Forward, SimulationError> {
-        let (matrix, tolerances, scale) = system;
+        let Period {
+            found,
+            steps,
+            system,
+        } = period;
+        let ShootingSystem {
+            matrix,
+            tolerances,
+            scale,
+        } = system;
         if forward.directions.is_empty() {
             forward.found =
                 vec![vec![Vec::new(); forward.kept.len()]; found.waveforms.values.len()];
             forward.stretch = scale.map(|_| (found.period, Vec::new()));
             return Ok(forward);
         }
-        let waveforms = (&found.waveforms, steps);
+        let trajectory = Trajectory {
+            waveforms: &found.waveforms,
+            steps,
+        };
         let unknowns = self.elaborated.unknowns.len();
         let rows = unknowns + usize::from(scale.is_some());
-        let needed = forward_period_numbers(
-            (unknowns, rows),
-            (
-                found.waveforms.values.len(),
-                waveforms_numbers(&found.waveforms),
-            ),
-            (forward.directions.len(), forward.kept.len()),
-            scale.is_some(),
-        );
+        let needed = forward_period_numbers(ForwardPeriodBudget {
+            unknowns,
+            rows,
+            points: found.waveforms.values.len(),
+            waveforms: waveforms_numbers(&found.waveforms),
+            directions: forward.directions.len(),
+            kept: forward.kept.len(),
+            kind: PeriodKind::from_scale(*scale),
+        });
         options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
         forward.ends = Some(Vec::new());
-        self.replay(&mut forward, waveforms, options)?;
+        self.replay(&mut forward, trajectory, options)?;
         forward.tangents.clear();
         forward.tangents.shrink_to_fit();
         // (Φ − I) ẋ₀ + ∂φ/∂T Ṫ = −∂φ/∂p t, in shooting's units, bordered for an
@@ -1287,34 +1392,37 @@ impl Simulator {
             }
         }
         forward.start = Start::Held(Some(columns));
-        self.replay(&mut forward, waveforms, options)?;
+        self.replay(&mut forward, trajectory, options)?;
         Ok(forward)
     }
 
-    /// Carries `forward` over the points of `result`, which `steps` reached, as the
-    /// transient carried it when it took them.
+    /// Carries `forward` over the points of `trajectory`, as the transient carried it when it
+    /// took them.
     pub(crate) fn replay(
         &mut self,
         forward: &mut Forward,
-        (result, steps): (&TransientResult, &[(Formula, bool)]),
+        trajectory: Trajectory<'_>,
         options: &Options,
     ) -> Result<(), SimulationError> {
+        let result = trajectory.waveforms;
         self.start_forward(forward, &result.values[0], options)?;
-        for (point, (formula, restarted)) in steps.iter().enumerate() {
-            let at = (result.times[point + 1], result.values[point + 1].as_slice());
-            self.advance_forward(forward, at, (formula, *restarted), options)?;
+        for (point, &step) in trajectory.steps.iter().enumerate() {
+            let at = StepPoint {
+                time: result.times[point + 1],
+                values: &result.values[point + 1],
+            };
+            self.advance_forward(forward, at, step, options)?;
         }
         Ok(())
     }
 
-    /// The values on every twin of `cotangents` on the period `found`, which took
-    /// `steps`, whose shooting's bordered system is `system`, each term to `fold`: the
-    /// adjoint over the period, the start held, the transpose of the bordered solve, and
-    /// the adjoint over the period again from its end.
+    /// The values on every twin of `cotangents` on `period`, each term to `fold`: the adjoint
+    /// over the period, the start held, the transpose of the bordered solve, and the adjoint
+    /// over the period again from its end.
     fn pull_period(
         &mut self,
         twins: &mut Twins,
-        (found, steps, system): Period<'_>,
+        period: Period<'_>,
         cotangents: &[Cotangent<f64>],
         fold: Fold<'_>,
         options: &Options,
@@ -1322,25 +1430,42 @@ impl Simulator {
         if cotangents.is_empty() {
             return Ok(());
         }
-        let (matrix, tolerances, scale) = system;
+        let Period {
+            found,
+            steps,
+            system,
+        } = period;
+        let ShootingSystem {
+            matrix,
+            tolerances,
+            scale,
+        } = system;
         let unknowns = tolerances.len();
         let rows = unknowns + usize::from(scale.is_some());
-        let needed = pull_period_numbers(
-            (unknowns, rows),
-            waveforms_numbers(&found.waveforms),
-            (float_count(cotangents.len()), twins.len()),
-            scale.is_some(),
-            0.0,
-        );
-        options.hold(PERIODIC_SENSITIVITY, rows, needed)?;
-        let waveforms = (&found.waveforms, steps);
-        let seeds: Vec<&BTreeMap<usize, Vec<f64>>> = cotangents
-            .iter()
-            .map(|cotangent| &cotangent.points)
-            .collect();
+        PullPeriodBudget {
+            unknowns,
+            rows,
+            waveforms: waveforms_numbers(&found.waveforms),
+            cotangents: float_count(cotangents.len()),
+            parameters: twins.len(),
+            kind: PeriodKind::from_scale(*scale),
+            extra: 0.0,
+        }
+        .check(options)?;
+        let trajectory = Trajectory {
+            waveforms: &found.waveforms,
+            steps,
+        };
+        let seeds = cotangent_seeds(cotangents);
         let held = Start::Held(None);
         let stretch = scale.map(|_| found.period);
-        let ends = self.backward(twins, waveforms, &seeds, (&held, stretch), fold, options)?;
+        let first_pass = BackwardPass {
+            trajectory,
+            seeds: &seeds,
+            start: &held,
+            stretch,
+        };
+        let ends = self.backward(twins, first_pass, fold, options)?;
         // The bordered solve's map, column by column, whose transpose carries each
         // cotangent on the start and the period to the period's end.
         let mut map = units(rows);
@@ -1371,7 +1496,13 @@ impl Simulator {
             .collect();
         drop(map);
         let seeds: Vec<&BTreeMap<usize, Vec<f64>>> = ended.iter().collect();
-        self.backward(twins, waveforms, &seeds, (&held, None), fold, options)?;
+        let second_pass = BackwardPass {
+            trajectory,
+            seeds: &seeds,
+            start: &held,
+            stretch: None,
+        };
+        self.backward(twins, second_pass, fold, options)?;
         Ok(())
     }
 
@@ -1396,7 +1527,7 @@ impl Simulator {
         let at = forward.ends.is_none().then(|| forward.keep(&shifts));
         // A state that only time moves holds at the operating point, and has a charge
         // only once time passes.
-        self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
+        self.evaluate(x, Some(0.0), 1.0, options.gmin, false);
         forward.charges = forward
             .stretch
             .as_ref()
@@ -1411,7 +1542,8 @@ impl Simulator {
             let capacitances = &self.state.workspace.contributions.capacitance;
             add_product(
                 &self.elaborated.pattern,
-                (capacitances, moved),
+                capacitances,
+                moved,
                 &mut charge,
                 inside,
             );
@@ -1425,42 +1557,48 @@ impl Simulator {
         Ok(())
     }
 
-    /// Carries the direct method over the step a transient accepted at `time`, its solution
-    /// `x`, by `formula`; `restarted` says whether the integration restarts after it. While
-    /// an oscillator's period stretches, each direction's history also takes the charges'
+    /// Carries the direct method over the step a transient accepted at `point` by `step`.
+    /// While an oscillator's period stretches, each direction's history also takes the charges'
     /// terms the steps divide, `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, times `−Ṫ / T`.
     pub(crate) fn advance_forward(
         &mut self,
         forward: &mut Forward,
-        (time, x): (f64, &[f64]),
-        (formula, restarted): (&Formula, bool),
+        point: StepPoint<'_>,
+        step: StepFormula,
         options: &Options,
     ) -> Result<(), SimulationError> {
-        self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let inside = options.parallelism.inside(x.len());
-        let workspace = &mut self.state.workspace;
-        let contributions = &workspace.contributions;
-        step_matrix(
-            &mut workspace.jacobian,
-            contributions,
-            formula.alpha,
+        self.evaluate(point.values, Some(point.time), 1.0, options.gmin, false);
+        let unknowns = point.values.len();
+        let inside = options.parallelism.inside(unknowns);
+        let mut factors = factor_step_jacobian(
+            &mut self.state.solver,
+            &mut self.state.workspace,
+            step.formula.alpha,
             inside,
-        );
-        let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
-        let charge_now = &self.state.workspace.contributions.charge;
+        )?;
+        let contributions = &self.state.workspace.contributions;
         let stretched = match (&forward.stretch, &forward.charges) {
             (Some((period, derivatives)), Some(charges)) => {
-                let divided = charges.divided(charge_now, formula);
+                let divided = charges.divided(&contributions.charge, &step.formula);
                 Some((divided, period, derivatives))
             }
             _ => None,
         };
-        forward
-            .twins
-            .evaluate(x, Some(time), options.gmin, &options.parallelism);
+        forward.twins.evaluate(
+            point.values,
+            Some(point.time),
+            options.gmin,
+            &options.parallelism,
+        );
         if let Some(ends) = &mut forward.ends {
             ends.clear();
         }
+        let linear = TangentLinear {
+            pattern: &self.elaborated.pattern,
+            capacitance: &contributions.capacitance,
+            step,
+            inside,
+        };
         let mut solutions = Vec::with_capacity(forward.directions.len());
         for (index, (direction, tangent)) in forward
             .directions
@@ -1468,37 +1606,26 @@ impl Simulator {
             .zip(&mut forward.tangents)
             .enumerate()
         {
-            let residual = forward.twins.combined(direction, x.len(), Part::Residual);
-            let partial_charge = forward.twins.combined(direction, x.len(), Part::Charge);
-            let mut history = tangent.history(formula);
+            let residual = forward.twins.combined(direction, unknowns, Part::Residual);
+            let partial_charge = forward.twins.combined(direction, unknowns, Part::Charge);
+            let mut history = tangent.history(&step.formula);
             if let Some((divided, period, derivatives)) = &stretched {
                 let by = derivatives[index] / *period;
                 for (term, divided) in history.iter_mut().zip(divided) {
                     *term -= by * divided;
                 }
             }
-            let mut moved: Vec<f64> = residual
+            let rhs: Vec<f64> = residual
                 .iter()
                 .zip(&partial_charge)
                 .zip(&history)
-                .map(|((residual, charge), term)| -(residual + formula.alpha * charge + term))
+                .map(|((residual, charge), term)| -(residual + step.formula.alpha * charge + term))
                 .collect();
-            factors.solve(&mut moved)?;
-            let mut charge = partial_charge;
-            let capacitances = &self.state.workspace.contributions.capacitance;
-            add_product(
-                &self.elaborated.pattern,
-                (capacitances, &moved),
-                &mut charge,
-                inside,
-            );
-            tangent.advance(charge, &history, formula, restarted);
+            let moved = tangent.solve_step(&mut factors, linear, rhs, &history, partial_charge)?;
             solutions.push(moved);
         }
         if let Some(charges) = &mut forward.charges {
-            let history = charges.history(formula);
-            let charge = self.state.workspace.contributions.charge.clone();
-            charges.advance(charge, &history, formula, restarted);
+            charges.advance_plain(contributions.charge.clone(), step);
         }
         if forward.ends.is_some() {
             forward.ends = Some(solutions);
@@ -1508,13 +1635,13 @@ impl Simulator {
         Ok(())
     }
 
-    /// The adjoint method over the waveforms `result`, which `steps` reached after their
-    /// first point, from the last point back to the first, for every cotangent of `seeds`
-    /// at once, each a value on every unknown at the points where it is not zero: each
-    /// term of each one's value on every twin to `fold`, by its index. The derivatives
-    /// start at `start`; while an oscillator's period `stretch` stretches, each step's
-    /// charge terms scale with it. Returns, for each cotangent, its derivatives with
-    /// respect to the state held at the start, zero for a start solved, and to the period.
+    /// The adjoint method over `pass.trajectory` from the last point back to the first, for
+    /// every cotangent of `pass.seeds` at once, each a value on every unknown at the points
+    /// where it is not zero: each term of each one's value on every twin to `fold`, by its
+    /// index. The derivatives start at `pass.start`; while an oscillator's period
+    /// `pass.stretch` stretches, each step's charge terms scale with it. Returns, for each
+    /// cotangent, its derivatives with respect to the state held at the start, zero for a
+    /// start solved, and to the period.
     ///
     /// At the point `k`, where the cotangent is `c_k`, with `μ = λ_q + α λ_r`, and `+ λ_q'`
     /// where the integration restarts after the point:
@@ -1536,9 +1663,7 @@ impl Simulator {
     pub(crate) fn backward(
         &mut self,
         twins: &mut Twins,
-        (result, steps): (&TransientResult, &[(Formula, bool)]),
-        seeds: &[&BTreeMap<usize, Vec<f64>>],
-        (start, stretch): (&Start, Option<f64>),
+        pass: BackwardPass<'_>,
         fold: Fold<'_>,
         options: &Options,
     ) -> Result<Ends, SimulationError> {
@@ -1546,18 +1671,19 @@ impl Simulator {
         let gmin = options.gmin;
         let inside = options.parallelism.inside(dimension);
         let zeros = || vec![0.0; dimension];
-        let mut adjoints: Vec<Adjoint> = seeds
+        let mut adjoints: Vec<Adjoint> = pass
+            .seeds
             .iter()
             .map(|seed| Adjoint {
                 charge: zeros(),
                 before: zeros(),
                 rate: zeros(),
-                stretch: stretch.map(|_| (zeros(), zeros())),
+                stretch: pass.stretch.map(|_| (zeros(), zeros())),
                 period: 0.0,
                 last: seed.keys().next_back().copied(),
             })
             .collect();
-        for (point, &(formula, restarted)) in steps.iter().enumerate().rev() {
+        for (point, &step) in pass.trajectory.steps.iter().enumerate().rev() {
             let point = point + 1;
             let active: Vec<usize> = (0..adjoints.len())
                 .filter(|&index| adjoints[index].last.is_some_and(|last| last >= point))
@@ -1565,50 +1691,51 @@ impl Simulator {
             if active.is_empty() {
                 continue;
             }
-            let (time, x) = (result.times[point], &result.values[point]);
-            self.evaluate(x, Some(time), (1.0, gmin), false);
-            let workspace = &mut self.state.workspace;
-            let capacitance = &workspace.contributions.capacitance;
+            let (time, x) = (
+                pass.trajectory.waveforms.times[point],
+                &pass.trajectory.waveforms.values[point],
+            );
+            self.evaluate(x, Some(time), 1.0, gmin, false);
+            let capacitance = &self.state.workspace.contributions.capacitance;
             let mut solved = Vec::with_capacity(active.len());
             for &index in &active {
                 let adjoint = &mut adjoints[index];
                 // The derivative with respect to the charges at the point, all told, and
                 // what goes on to those at the point before it.
                 let mut held = std::mem::take(&mut adjoint.charge);
-                let onward = if restarted {
+                let onward = if step.restarted {
                     add(&mut held, 1.0, &adjoint.before);
                     zeros()
                 } else {
                     std::mem::replace(&mut adjoint.before, zeros())
                 };
-                add(&mut held, formula.alpha, &adjoint.rate);
+                add(&mut held, step.formula.alpha, &adjoint.rate);
                 let mut solution = zeros();
-                if let Some(values) = seeds[index].get(&point) {
+                if let Some(values) = pass.seeds[index].get(&point) {
                     add(&mut solution, 1.0, values);
                 }
                 add_transposed_product(&self.elaborated.pattern, capacitance, &held, &mut solution);
-                solved.push((held, onward, solution));
+                solved.push(StepAdjoint {
+                    held,
+                    onward,
+                    solution,
+                });
             }
-            step_matrix(
-                &mut workspace.jacobian,
-                &workspace.contributions,
-                formula.alpha,
+            let mut factors = factor_step_jacobian(
+                &mut self.state.solver,
+                &mut self.state.workspace,
+                step.formula.alpha,
                 inside,
-            );
-            let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
-            for (_, _, solution) in &mut solved {
-                factors.solve_transpose(solution)?;
+            )?;
+            for vectors in &mut solved {
+                factors.solve_transpose(&mut vectors.solution)?;
             }
             let charge = &self.state.workspace.contributions.charge;
             let mut shifted = Vec::with_capacity(active.len());
-            for (&index, (held, onward, solution)) in active.iter().zip(&solved) {
-                let stepped = (formula, restarted, charge.as_slice());
-                shifted.push(adjoints[index].step_back((held, onward, solution), stepped, stretch));
+            for (&index, vectors) in active.iter().zip(&solved) {
+                shifted.push(adjoints[index].step_back(vectors, step, charge, pass.stretch));
             }
-            let solutions: Vec<Vec<f64>> = solved
-                .into_iter()
-                .map(|(_, _, solution)| solution)
-                .collect();
+            let solutions: Vec<Vec<f64>> = solved.into_iter().map(|item| item.solution).collect();
             twins.evaluate(x, Some(time), gmin, &options.parallelism);
             let charged = twins.dots(Part::Charge, 1.0, &shifted, &options.parallelism);
             let charged = transposed(charged, active.len());
@@ -1619,44 +1746,28 @@ impl Simulator {
                 fold(index, resistive);
             }
         }
-        self.backward_start(
-            twins,
-            result,
-            seeds,
-            adjoints,
-            (start, stretch),
-            fold,
-            options,
-        )
+        self.backward_start(twins, pass, adjoints, fold, options)
     }
 
-    /// The adjoint method at a transient's start, the point `0` of `result`, from what
-    /// `adjoints` carried back to it, as [`Simulator::backward`] says.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the start reads the twins, the waveforms, the cotangents and what the \
-                  steps carried back, where the derivatives start, and the options, and \
-                  folds the terms, as the backward pass it ends does"
-    )]
+    /// The adjoint method at a transient's start, the point `0` of `pass.trajectory`, from
+    /// what `adjoints` carried back to it, as [`Simulator::backward`] says.
     fn backward_start(
         &mut self,
         twins: &mut Twins,
-        result: &TransientResult,
-        seeds: &[&BTreeMap<usize, Vec<f64>>],
+        pass: BackwardPass<'_>,
         adjoints: Vec<Adjoint>,
-        (start, stretch): (&Start, Option<f64>),
         fold: Fold<'_>,
         options: &Options,
     ) -> Result<Ends, SimulationError> {
         let gmin = options.gmin;
-        let x = &result.values[0];
-        self.evaluate(x, Some(0.0), (1.0, gmin), false);
+        let x = &pass.trajectory.waveforms.values[0];
+        self.evaluate(x, Some(0.0), 1.0, gmin, false);
         let capacitance = &self.state.workspace.contributions.capacitance;
         let charge = &self.state.workspace.contributions.charge;
         let mut held_all = Vec::with_capacity(adjoints.len());
         let mut solutions = Vec::with_capacity(adjoints.len());
         let mut periods = Vec::with_capacity(adjoints.len());
-        for (seed, adjoint) in seeds.iter().zip(adjoints) {
+        for (seed, adjoint) in pass.seeds.iter().zip(adjoints) {
             let mut held = adjoint.charge;
             add(&mut held, 1.0, &adjoint.before);
             let mut solution = vec![0.0; x.len()];
@@ -1665,7 +1776,7 @@ impl Simulator {
             }
             add_transposed_product(&self.elaborated.pattern, capacitance, &held, &mut solution);
             let mut period = adjoint.period;
-            if let (Some((mut read, before)), Some(stretched)) = (adjoint.stretch, stretch) {
+            if let (Some((mut read, before)), Some(stretched)) = (adjoint.stretch, pass.stretch) {
                 add(&mut read, 1.0, &before);
                 let dot: f64 = read.iter().zip(charge).map(|(a, q)| a * q).sum();
                 period -= dot / stretched;
@@ -1675,25 +1786,19 @@ impl Simulator {
             periods.push(period);
         }
         twins.evaluate(x, Some(0.0), gmin, &options.parallelism);
-        let charged = twins.dots(Part::Charge, 1.0, &held_all, &options.parallelism);
-        for (index, terms) in transposed(charged, seeds.len()).iter().enumerate() {
-            fold(index, terms);
-        }
-        let Start::Solved(forced) = start else {
+        fold_dots(
+            twins,
+            Part::Charge,
+            1.0,
+            &held_all,
+            &options.parallelism,
+            fold,
+        );
+        let Start::Solved(forced) = pass.start else {
             return Ok(solutions.into_iter().zip(periods).collect());
         };
-        self.evaluate(x, None, (1.0, gmin), false);
-        let mut factors = if forced.is_empty() {
-            self.state
-                .solver
-                .factor(&self.state.workspace.contributions.conductance)?
-        } else {
-            let mut matrix = self.state.workspace.contributions.conductance.clone();
-            for unknown in forced {
-                force_row(&self.elaborated, &mut matrix, unknown.index());
-            }
-            self.state.solver.factor(&matrix)?
-        };
+        self.evaluate(x, None, 1.0, gmin, false);
+        let mut factors = self.factor_dc_forced(forced)?;
         for solution in &mut solutions {
             factors.solve_transpose(solution)?;
             for unknown in forced {
@@ -1701,15 +1806,64 @@ impl Simulator {
             }
         }
         twins.evaluate(x, None, gmin, &options.parallelism);
-        let resistive = twins.dots(Part::Residual, -1.0, &solutions, &options.parallelism);
-        for (index, terms) in transposed(resistive, seeds.len()).iter().enumerate() {
-            fold(index, terms);
-        }
+        fold_dots(
+            twins,
+            Part::Residual,
+            -1.0,
+            &solutions,
+            &options.parallelism,
+            fold,
+        );
         let zeros = vec![0.0; x.len()];
         Ok(periods
             .into_iter()
             .map(|period| (zeros.clone(), period))
             .collect())
+    }
+}
+
+/// Checks that every cotangent in `cotangents` has a finite period and finite values of length
+/// `unknowns` at valid indices `< points`.
+fn cotangents_fit<T: Scalar>(cotangents: &[Cotangent<T>], points: usize, unknowns: usize) -> bool {
+    cotangents.iter().all(|cotangent| {
+        cotangent.period.is_finite()
+            && cotangent.points.iter().all(|(&at, values)| {
+                at < points
+                    && values.len() == unknowns
+                    && values.iter().copied().all(Scalar::is_finite)
+            })
+    })
+}
+
+/// Borrows each cotangent's point-seed map in order.
+fn cotangent_seeds(cotangents: &[Cotangent<f64>]) -> Vec<&BTreeMap<usize, Vec<f64>>> {
+    cotangents
+        .iter()
+        .map(|cotangent| &cotangent.points)
+        .collect()
+}
+
+/// Collects the active `(cotangent_index, values)` pairs present at `point`.
+fn seeds_at<'a>(seeds: &[&'a BTreeMap<usize, Vec<f64>>], point: usize) -> Vec<(usize, &'a [f64])> {
+    seeds
+        .iter()
+        .enumerate()
+        .filter_map(|(index, seed)| Some((index, seed.get(&point)?.as_slice())))
+        .collect()
+}
+
+/// Computes `sign * vectorsᵀ ∂(part)/∂p` across `twins` and folds each row into `fold`.
+fn fold_dots(
+    twins: &mut Twins,
+    part: Part,
+    sign: f64,
+    vectors: &[Vec<f64>],
+    parallelism: &Parallelism,
+    fold: Fold<'_>,
+) {
+    let by_twin = twins.dots(part, sign, vectors, parallelism);
+    for (index, terms) in transposed(by_twin, vectors.len()).iter().enumerate() {
+        fold(index, terms);
     }
 }
 
@@ -1745,39 +1899,32 @@ pub(crate) fn named_of(parameters: &[Parameter]) -> Vec<(String, String)> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use jolty_numerics::integration::Method;
+    use serde_json::json;
 
     use super::{Cotangent, Cotangents, ParameterCotangents};
-    use crate::{Ac, AnalysisResult, Conditions, Differentiated, Options, Simulator, Transient};
+    use crate::test_helpers::grounded_simulator;
+    use crate::{Ac, AnalysisResult, Differentiated, Options, Simulator, Transient};
 
     fn divider_simulator() -> Simulator {
-        let circuit = Circuit::from_json(
-            r#"{
-                "format": "jolty-circuit", "version": 4, "top": "test",
-                "components": {"test": {
-                    "ports": [{"name": "0", "role": "ground"}],
-                    "instances": [
-                        {"name": "V1", "of": {"model": "voltage_source"},
-                         "parameters": {"waveform": {"dc": 2.0}},
-                         "terminals": {"positive": "in", "negative": "0"}},
-                        {"name": "R1", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 1000.0},
-                         "terminals": {"a": "in", "b": "out"}},
-                        {"name": "R2", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 1000.0},
-                         "terminals": {"a": "out", "b": "0"}},
-                        {"name": "C1", "of": {"model": "capacitor"},
-                         "parameters": {"capacitance": 1e-9},
-                         "terminals": {"a": "out", "b": "0"}}
-                    ]
-                }}
-            }"#,
+        grounded_simulator(
+            "test",
+            "0",
+            json!([
+                {"name": "V1", "of": {"model": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 2.0}},
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"name": "R1", "of": {"model": "resistor"},
+                 "parameters": {"resistance": 1000.0},
+                 "terminals": {"a": "in", "b": "out"}},
+                {"name": "R2", "of": {"model": "resistor"},
+                 "parameters": {"resistance": 1000.0},
+                 "terminals": {"a": "out", "b": "0"}},
+                {"name": "C1", "of": {"model": "capacitor"},
+                 "parameters": {"capacitance": 1e-9},
+                 "terminals": {"a": "out", "b": "0"}}
+            ]),
         )
-        .expect("a valid circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates")
     }
 
     fn factor_calls(simulator: &Simulator) -> usize {

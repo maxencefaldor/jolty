@@ -373,6 +373,17 @@ pub struct Batch {
     structures: Mutex<Structures>,
 }
 
+/// Whether a run in a chain starts fresh or from the previous run's operating point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Cold,
+    Warm,
+}
+
+/// A simulator readied for one run of a batch, along with its restructured circuit when
+/// different from the batch's own.
+type Ready<'a> = Result<(&'a mut Simulator, Option<Arc<Restructured>>), ElaborationError>;
+
 /// What a thread keeps from one run to the next: a run of each structure it has met, by
 /// the structure's key, with the circuit of each structure other than the batch's own, and
 /// the structure of the run it ran last.
@@ -452,25 +463,19 @@ impl Batch {
             .iter()
             .map(|(_, options)| batched(options, range.end - range.start))
             .collect();
-        let chain = variants.chain().max(1);
-        let chains = range.start / chain..range.end.div_ceil(chain);
-        let summary = chains
-            .into_par_iter()
-            .map_init(Worker::default, |worker, chained| {
-                let mut summary = Summary::empty(measures);
-                let first = chained * chain;
-                let mut warm = false;
-                // The runs of the chain past the range's end are of no run within it.
-                for index in first..(first + chain).min(range.end) {
-                    let outcome = self.one(worker, variants.values(index), warm, &options);
-                    warm = outcome.problems.is_none();
-                    if range.contains(&index) {
+        let summary = self
+            .run_chains(
+                variants,
+                range,
+                || Summary::empty(measures),
+                |target, index, values, ready| {
+                    let outcome = self.one(values, ready, &options);
+                    if let Some(summary) = target {
                         summary.add(&outcome);
                         sink.accept(index, outcome);
                     }
-                }
-                summary
-            })
+                },
+            )
             .reduce(|| Summary::empty(measures), Summary::merge);
         Ok(summary)
     }
@@ -500,42 +505,70 @@ impl Batch {
             return Ok(Vec::new());
         }
         let options = batched(options, range.end - range.start);
-        let chain = variants.chain().max(1);
-        let chains = range.start / chain..range.end.div_ceil(chain);
-        let mapped: Vec<Vec<Mapped<T>>> = chains
-            .into_par_iter()
-            .map_init(Worker::default, |worker, chained| {
-                let first = chained * chain;
-                let mut found = Vec::new();
-                let mut warm = false;
-                for index in first..(first + chain).min(range.end) {
-                    let values = variants.values(index);
-                    let (structure, done) = match self.ready(worker, &values, warm) {
-                        Ok((simulator, structure)) => {
-                            (structure, Ok(work(index, simulator, &options)))
-                        }
-                        Err(problems) => (None, Err(problems)),
-                    };
-                    warm = done.is_ok();
-                    if range.contains(&index) {
-                        found.push(Mapped {
-                            values,
-                            structure,
-                            found: done,
-                        });
+        let mapped: Vec<Vec<Mapped<T>>> = self
+            .run_chains(variants, range, Vec::new, |target, index, values, ready| {
+                let (structure, found) = match ready {
+                    Ok((simulator, structure)) => {
+                        (structure, Ok(work(index, simulator, &options)))
                     }
+                    Err(problems) => (None, Err(problems)),
+                };
+                if let Some(collected) = target {
+                    collected.push(Mapped {
+                        values,
+                        structure,
+                        found,
+                    });
                 }
-                found
             })
             .collect();
         Ok(mapped.into_iter().flatten().collect())
     }
 
-    /// The outcome of one run at `values`, on a state `worker` keeps; `warm` when it starts
-    /// from the operating point of the run before it, in its chain. Each analysis runs
-    /// with its own `options`.
-    fn one(&self, worker: &mut Worker, values: Values, warm: bool, options: &[Options]) -> Run {
-        let (simulator, structure) = match self.ready(worker, &values, warm) {
+    /// Runs every chain covering `range` of `variants` in parallel, warm-starting each run
+    /// from the previous valid run in its chain, and yields each chain's accumulated value.
+    fn run_chains<'a, A>(
+        &'a self,
+        variants: &'a dyn Variants,
+        range: Range<u64>,
+        init: impl Fn() -> A + Send + Sync + 'a,
+        each: impl Fn(Option<&mut A>, u64, Values, Ready<'_>) + Send + Sync + 'a,
+    ) -> impl ParallelIterator<Item = A> + 'a
+    where
+        A: Send + 'a,
+    {
+        let chain = variants.chain().max(1);
+        let chains = range.start / chain..range.end.div_ceil(chain);
+        chains
+            .into_par_iter()
+            .map_init(Worker::default, move |worker, chained| {
+                let mut accumulator = init();
+                let first = chained * chain;
+                let mut start = Start::Cold;
+                // The runs of the chain past the range's end are of no run within it.
+                for index in first..(first + chain).min(range.end) {
+                    let values = variants.values(index);
+                    let ready = self.ready(worker, &values, start);
+                    start = if ready.is_ok() {
+                        Start::Warm
+                    } else {
+                        Start::Cold
+                    };
+                    each(
+                        range.contains(&index).then_some(&mut accumulator),
+                        index,
+                        values,
+                        ready,
+                    );
+                }
+                accumulator
+            })
+    }
+
+    /// The outcome of one run at `values` on a readied simulator. Each analysis runs with
+    /// its own `options`.
+    fn one(&self, values: Values, ready: Ready<'_>, options: &[Options]) -> Run {
+        let (simulator, structure) = match ready {
             Ok(ready) => ready,
             Err(problems) => {
                 return Run {
@@ -586,17 +619,13 @@ impl Batch {
 
     /// A run at `values`, of the circuit elaborated for their structure, and that circuit
     /// when it is not the batch's own: the last run of `worker` gone on from its operating
-    /// point when `warm` and it can, and else a run of the structure reset for them.
+    /// point when `start` is [`Start::Warm`] and it can, and else a run of the structure
+    /// reset for them.
     ///
     /// # Errors
     ///
     /// Returns the problems the values make, as the batch's circuit finds them.
-    fn ready<'a>(
-        &self,
-        worker: &'a mut Worker,
-        values: &Values,
-        warm: bool,
-    ) -> Result<(&'a mut Simulator, Option<Arc<Restructured>>), ElaborationError> {
+    fn ready<'a>(&self, worker: &'a mut Worker, values: &Values, start: Start) -> Ready<'a> {
         // The problems of the values as the batch's own circuit finds them, every one, so
         // that a run's message does not depend on the state its thread kept.
         let problems =
@@ -605,10 +634,9 @@ impl Batch {
         if let Some(last) = &worker.last
             && let Some((simulator, _)) = worker.simulators.get_mut(last)
         {
-            let gone_on = if warm {
-                simulator.advance(values.clone())
-            } else {
-                Ok(false)
+            let gone_on = match start {
+                Start::Warm => simulator.advance(values.clone()),
+                Start::Cold => Ok(false),
             };
             let ready = match gone_on {
                 Ok(false) => simulator.try_reset(values.clone()),

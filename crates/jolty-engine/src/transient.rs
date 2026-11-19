@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jolty_models::{Input, LogicLevel, Past};
+use jolty_numerics::Pattern;
 use jolty_numerics::integration::{
     CONSTANT_STEP, ErrorBound, Formula, Method, divided_difference, longest_at,
 };
@@ -13,11 +14,12 @@ use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{
     Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, each_chunk, pieces, step_matrix,
 };
-use crate::options::{Inside, NUMBERS_PER_GIB};
+use crate::options::{Inside, float_count};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
 use crate::record::{Observer, Read};
 use crate::ringing;
+use crate::solver::Factors;
 use crate::{
     Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError, Simulator,
     Strategy, Work,
@@ -239,19 +241,13 @@ impl LeakAccumulator {
         }
     }
 
-    /// Accumulates one accepted step solved with `formula` whose converged residual is
-    /// `residual`; `restarted` clears the previous-step history when integration restarts
+    /// Accumulates one accepted step solved with `step.formula` whose converged residual is
+    /// `residual`; `step.restarted` clears the previous-step history when integration restarts
     /// after a corner. Work across unknowns splits as `inside` says.
-    fn accumulate(
-        &mut self,
-        formula: &Formula,
-        residual: &[f64],
-        restarted: bool,
-        inside: Option<Inside>,
-    ) {
+    fn accumulate(&mut self, step: StepFormula, residual: &[f64], inside: Option<Inside>) {
         each_chunk(&mut self.states, inside, |start, chunk| {
             for (state, &current_residual) in chunk.iter_mut().zip(&residual[start..]) {
-                let increment = formula.integral_increment(
+                let increment = step.formula.integral_increment(
                     current_residual,
                     state.previous_residual,
                     state.previous_increment,
@@ -262,7 +258,7 @@ impl LeakAccumulator {
                     &mut state.absolute_compensation,
                     increment.abs(),
                 );
-                if restarted {
+                if step.restarted {
                     state.previous_residual = 0.0;
                     state.previous_increment = 0.0;
                 } else {
@@ -285,6 +281,29 @@ impl LeakAccumulator {
     }
 }
 
+/// A time point and its borrowed slice of unknown values or charges.
+#[derive(Clone, Copy)]
+pub(crate) struct StepPoint<'a> {
+    pub(crate) time: f64,
+    pub(crate) values: &'a [f64],
+}
+
+/// One accepted transient step's integration formula and whether integration restarts after it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StepFormula {
+    pub(crate) formula: Formula,
+    pub(crate) restarted: bool,
+}
+
+/// Linearized capacitance matrix and step context for advancing a [`Tangent`].
+#[derive(Clone, Copy)]
+pub(crate) struct TangentLinear<'a> {
+    pub(crate) pattern: &'a Pattern,
+    pub(crate) capacitance: &'a [f64],
+    pub(crate) step: StepFormula,
+    pub(crate) inside: Option<Inside>,
+}
+
 /// What a transient carries along its accepted steps besides its solution.
 pub(crate) enum Carried<'a> {
     /// Nothing.
@@ -296,7 +315,7 @@ pub(crate) enum Carried<'a> {
     Monodromy(&'a mut Monodromy),
     /// Each accepted step's formula, and whether the integration restarts after it, in
     /// their order, for the adjoint method to go back through.
-    Steps(&'a mut Vec<(Formula, bool)>),
+    Steps(&'a mut Vec<StepFormula>),
 }
 
 /// The charges' derivatives with respect to one variable at the points a transient accepted
@@ -349,24 +368,53 @@ impl Tangent {
             .collect()
     }
 
-    /// Moves on to the point `formula` stepped to, where the charges' derivatives are
-    /// `charge` and `history` is [`Tangent::history`]'s; `restarted` says whether the
+    /// Moves on to the point `step.formula` stepped to, where the charges' derivatives are
+    /// `charge` and `history` is [`Tangent::history`]'s; `step.restarted` says whether the
     /// integration restarts there.
-    pub(crate) fn advance(
-        &mut self,
-        charge: Vec<f64>,
-        history: &[f64],
-        formula: &Formula,
-        restarted: bool,
-    ) {
+    pub(crate) fn advance(&mut self, charge: Vec<f64>, history: &[f64], step: StepFormula) {
         self.rate = charge
             .iter()
             .zip(history)
-            .map(|(value, term)| formula.alpha * value + term)
+            .map(|(value, term)| step.formula.alpha * value + term)
             .collect();
         let last = std::mem::replace(&mut self.last, charge);
-        self.before = (!restarted).then_some(last);
+        self.before = (!step.restarted).then_some(last);
     }
+
+    /// Solves `(G + αC) dx = rhs` with `factors`, adds `C dx` into `charge`, advances this
+    /// tangent with `history` and `linear.step`, and returns `dx`.
+    pub(crate) fn solve_step(
+        &mut self,
+        factors: &mut Factors<'_, f64>,
+        linear: TangentLinear<'_>,
+        mut rhs: Vec<f64>,
+        history: &[f64],
+        mut charge: Vec<f64>,
+    ) -> Result<Vec<f64>, SimulationError> {
+        factors.solve(&mut rhs)?;
+        add_product(
+            linear.pattern,
+            linear.capacitance,
+            &rhs,
+            &mut charge,
+            linear.inside,
+        );
+        self.advance(charge, history, linear.step);
+        Ok(rhs)
+    }
+
+    /// Advances a plain charge history tangent using its own formula history.
+    pub(crate) fn advance_plain(&mut self, charge: Vec<f64>, step: StepFormula) {
+        let history = self.history(&step.formula);
+        self.advance(charge, &history, step);
+    }
+}
+
+/// Whether an accepted step extends the consecutive trapezoidal ringing window or resets it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RingingTrack {
+    Trapezoidal,
+    Reset,
 }
 
 /// The charges at the points accepted since the last breakpoint, and their derivative at the
@@ -392,22 +440,29 @@ impl History {
         self.derivative = derivative;
     }
 
-    /// Appends the point at `time`, keeping the last [`HISTORY`] points; `trapezoidal` says
+    /// Appends the point at `time`, keeping the last [`HISTORY`] points; `tracking` says
     /// whether the trapezoidal formula took its derivative, which a run of keeps.
-    fn accept(&mut self, time: f64, charge: Vec<f64>, derivative: Vec<f64>, trapezoidal: bool) {
+    fn accept(
+        &mut self,
+        time: f64,
+        charge: Vec<f64>,
+        derivative: Vec<f64>,
+        tracking: RingingTrack,
+    ) {
         let previous = std::mem::replace(&mut self.last, (time, charge));
         if self.earlier.len() == HISTORY - 1 {
             self.earlier.pop_front();
         }
         self.earlier.push_back(previous);
         let before = std::mem::replace(&mut self.derivative, derivative);
-        if trapezoidal {
-            if self.ringing.len() == RINGING {
-                self.ringing.pop_front();
+        match tracking {
+            RingingTrack::Trapezoidal => {
+                if self.ringing.len() == RINGING {
+                    self.ringing.pop_front();
+                }
+                self.ringing.push_back(before);
             }
-            self.ringing.push_back(before);
-        } else {
-            self.ringing.clear();
+            RingingTrack::Reset => self.ringing.clear(),
         }
     }
 
@@ -484,16 +539,23 @@ impl Breakpoints {
     }
 
     /// The first breakpoint after `time`, and the gap from it to the one after.
-    fn after(&mut self, time: f64) -> (f64, f64) {
+    fn after(&mut self, time: f64) -> NextBreakpoint {
         let passed = Self::key(time);
         while self.times.len() > 1 && self.times.first().is_some_and(|&key| key <= passed) {
             self.times.pop_first();
         }
         let mut ahead = self.times.iter().map(|&key| f64::from_bits(key));
-        let next = ahead.next().unwrap_or(f64::INFINITY);
-        let gap = ahead.next().map_or(f64::INFINITY, |after| after - next);
-        (next, gap)
+        let time = ahead.next().unwrap_or(f64::INFINITY);
+        let gap = ahead.next().map_or(f64::INFINITY, |after| after - time);
+        NextBreakpoint { time, gap }
     }
+}
+
+/// The next upcoming breakpoint and the gap from it to the one following.
+#[derive(Clone, Copy)]
+struct NextBreakpoint {
+    time: f64,
+    gap: f64,
 }
 
 /// What came of trying a step.
@@ -516,12 +578,10 @@ struct Point {
     time: f64,
     /// The solution there.
     x: Vec<f64>,
-    /// The formula of the step that reached it.
-    formula: Formula,
+    /// The formula and restart flag of the step that reached it.
+    step: StepFormula,
     /// The length of that step.
     length: f64,
-    /// Whether the integration restarts after it.
-    restarted: bool,
     /// What every recorded device did there.
     found: RecordedValues,
 }
@@ -600,6 +660,40 @@ struct Judgement {
     longest: f64,
 }
 
+/// Initial step-size bounds for a transient stepper.
+#[derive(Clone, Copy)]
+struct StepLimits {
+    longest: f64,
+    shortest: f64,
+    first: f64,
+}
+
+/// Control-flow and logic outputs of a judged step handed to [`Simulator::take`].
+struct StepTransition {
+    next: f64,
+    restart: Option<f64>,
+    commands: Vec<Command>,
+    logic: Option<Checkpoint>,
+}
+
+/// Accepted step data recorded into a [`Point`].
+struct AcceptedStep<'a> {
+    time: f64,
+    x: Vec<f64>,
+    step: StepFormula,
+    length: f64,
+    iterations: usize,
+    read: &'a Read,
+}
+
+/// Candidate end-of-step charges and derivatives tested for trapezoidal ringing.
+#[derive(Clone, Copy)]
+struct CandidatePoint<'a> {
+    time: f64,
+    charge: &'a [f64],
+    derivative: &'a [f64],
+}
+
 /// The state of a transient analysis between steps.
 struct Stepper {
     /// The method between breakpoints.
@@ -636,6 +730,8 @@ struct Stepper {
     /// The first step after the last corner, while it waits for the next to estimate its
     /// error; the stepper stands at its end.
     pending: Option<Pending>,
+    /// Stateful trapezoidal ringing detector caching ideal sources and saddle LU factors.
+    detector: ringing::Detector,
     /// The running residual integral of every accepted step so far.
     leak: LeakAccumulator,
     statistics: Statistics,
@@ -645,15 +741,16 @@ impl Stepper {
     /// Starts a transient stepper at time zero with initial solution `x` and `charge`.
     fn starting(
         method: Method,
-        (longest, shortest, first): (f64, f64, f64),
-        (x, charge): (Vec<f64>, Vec<f64>),
+        limits: StepLimits,
+        x: Vec<f64>,
+        charge: Vec<f64>,
         strategy: Option<Strategy>,
     ) -> Self {
         let unknowns = x.len();
         Self {
             method,
-            longest,
-            shortest,
+            longest: limits.longest,
+            shortest: limits.shortest,
             time: 0.0,
             resume: None,
             before: None,
@@ -663,11 +760,12 @@ impl Stepper {
                 derivative: vec![0.0; unknowns],
                 ringing: VecDeque::with_capacity(RINGING),
             },
-            next: first,
-            previous: first,
+            next: limits.first,
+            previous: limits.first,
             damp: false,
             terms: vec![0.0; unknowns],
             pending: None,
+            detector: ringing::Detector::default(),
             leak: LeakAccumulator::new(unknowns),
             statistics: Statistics::starting(strategy),
             x,
@@ -692,6 +790,30 @@ impl Stepper {
             }
         });
         predicted
+    }
+
+    /// Chooses the integration formula for a step of `length` and writes each unknown's
+    /// history term into `self.terms`, split as `inside` says.
+    fn prepare_formula(&mut self, length: f64, inside: Option<Inside>) -> (Method, Formula) {
+        // Backward Euler until the points since the last corner are enough to estimate the
+        // error of the transient's own method, so that every step but the first after a
+        // corner is judged by its own estimate, and the first by the second's.
+        let available = self.history.len() + 1;
+        let method = if self.damp || available < self.method.order() + 2 {
+            Method::BackwardEuler
+        } else {
+            self.method
+        };
+        let formula = Formula::new(method, length, self.previous);
+        let (last, before) = self.history.last_two();
+        let derivative = &self.history.derivative;
+        each_chunk(&mut self.terms, inside, |start, chunk| {
+            for (offset, term) in chunk.iter_mut().enumerate() {
+                let index = start + offset;
+                *term = formula.history([last[index], before[index]], derivative[index]);
+            }
+        });
+        (method, formula)
     }
 
     /// Whether an event at `time`, within a step from the last point to `end`, comes
@@ -835,25 +957,23 @@ impl Simulator {
         Ok(())
     }
 
-    /// Carries `carried` over the step accepted at `time`, its solution `x`, by `formula`;
-    /// `restarted` says whether the integration restarts after it.
+    /// Carries `carried` over the step accepted at `point` by `step`.
     fn advance_carried(
         &mut self,
         carried: &mut Carried<'_>,
-        (time, x): (f64, &[f64]),
-        (formula, restarted): (&Formula, bool),
+        point: StepPoint<'_>,
+        step: StepFormula,
         options: &Options,
     ) -> Result<(), SimulationError> {
-        let (at, formula) = ((time, x), (formula, restarted));
         match carried {
             Carried::Nothing => Ok(()),
             Carried::Steps(steps) => {
-                steps.push((*formula.0, formula.1));
+                steps.push(step);
                 Ok(())
             }
-            Carried::Forward(forward) => self.advance_forward(forward, at, formula, options),
+            Carried::Forward(forward) => self.advance_forward(forward, point, step, options),
             Carried::Monodromy(monodromy) => {
-                self.advance_monodromy(monodromy, at, formula, options)
+                self.advance_monodromy(monodromy, point, step, options)
             }
         }
     }
@@ -862,8 +982,7 @@ impl Simulator {
     /// recorded terminals' currents and charges and the recorded devices' derivatives and
     /// variables.
     pub(crate) fn point_width(&self) -> f64 {
-        let width = self.elaborated.unknowns.len() + self.state.observer.width();
-        f64::from(u32::try_from(width).unwrap_or(u32::MAX))
+        float_count(self.elaborated.unknowns.len() + self.state.observer.width())
     }
 
     /// Runs `transient` from `start`, a state of a circuit without logic and how the
@@ -895,14 +1014,7 @@ impl Simulator {
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let width = self.point_width();
-        let most_held = options.max_memory * NUMBERS_PER_GIB;
-        if transient.stop / longest * width > most_held {
-            return Err(SimulationError::TooManyPoints {
-                time: 0.0,
-                step: longest,
-                max_memory: options.max_memory,
-            });
-        }
+        options.hold_points(transient.stop / longest * width, 0.0, longest)?;
         let mut held = width;
         let mut observations = transient.breakpoints.clone();
         observations.sort_by(f64::total_cmp);
@@ -910,7 +1022,7 @@ impl Simulator {
             start.map_or_else(|| self.initial_state(transient, options), Ok)?;
         self.start_carried(&mut carried, &initial, options)?;
         let delays = self.start_past(&initial, transient.method);
-        self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
+        self.evaluate(&initial, Some(0.0), 1.0, options.gmin, true);
         let start = self.read_recorded();
         self.state
             .events
@@ -923,8 +1035,13 @@ impl Simulator {
         let charge = self.state.workspace.contributions.charge.clone();
         let mut stepper = Stepper::starting(
             transient.method,
-            (longest, shortest, first),
-            (initial, charge),
+            StepLimits {
+                longest,
+                shortest,
+                first,
+            },
+            initial,
+            charge,
             strategy,
         );
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
@@ -934,25 +1051,21 @@ impl Simulator {
             if let Some(change) = self.state.events.next_analog_change(&self.elaborated.logic) {
                 breakpoints.insert(change);
             }
-            let (breakpoint, gap) = breakpoints.after(stepper.time);
+            let breakpoint = breakpoints.after(stepper.time);
             let passed = observations.partition_point(|&time| time < stepper.time + shortest);
             let observation = observations.get(passed).copied().unwrap_or(f64::INFINITY);
-            match self.step_toward(&mut stepper, (breakpoint, gap), observation, options)? {
+            match self.step_toward(&mut stepper, breakpoint, observation, options)? {
                 Step::Accepted(points, settles) => {
                     for point in points {
-                        let at = (point.time, point.x.as_slice());
-                        let formula = (&point.formula, point.restarted);
-                        self.advance_carried(&mut carried, at, formula, options)?;
+                        let at = StepPoint {
+                            time: point.time,
+                            values: &point.x,
+                        };
+                        self.advance_carried(&mut carried, at, point.step, options)?;
                         self.watch_supplies(&point.x, point.time, options);
                         held += width;
-                        if held > most_held {
-                            return Err(SimulationError::TooManyPoints {
-                                time: point.time,
-                                step: point.length,
-                                max_memory: options.max_memory,
-                            });
-                        }
-                        self.passed(&mut breakpoints, (point.time, point.restarted), &delays);
+                        options.hold_points(held, point.time, point.length)?;
+                        self.passed(&mut breakpoints, point.time, point.step, &delays);
                         times.push(point.time);
                         values.push(point.x);
                         observed.push(&point.found);
@@ -996,7 +1109,7 @@ impl Simulator {
     }
 
     /// Moves the past the delay lines read on past the point accepted at `time`, and
-    /// adds the breakpoint each corner makes, where `restarted` says the integration
+    /// adds the breakpoint each corner makes, where `step.restarted` says the integration
     /// restarts: each of `delays` after it, where the corner arrives at a line's other
     /// port.
     ///
@@ -1005,14 +1118,15 @@ impl Simulator {
     fn passed(
         &mut self,
         breakpoints: &mut Breakpoints,
-        (time, restarted): (f64, bool),
+        time: f64,
+        step: StepFormula,
         delays: &[f64],
     ) {
         let (Some(past), Some(&longest)) = (&mut self.state.past, delays.last()) else {
             return;
         };
         past.forget_before(time - longest);
-        if restarted {
+        if step.restarted {
             for &delay in delays {
                 breakpoints.insert(time + delay);
             }
@@ -1027,9 +1141,9 @@ impl Simulator {
         found
     }
 
-    /// Tries one step toward `breakpoint`, landing on it when it is within reach; `gap` is the
-    /// time from it to the breakpoint after. A step lands on `observation` too, when it
-    /// comes first, without restarting the integration there.
+    /// Tries one step toward `breakpoint`, landing on it when it is within reach. A step
+    /// lands on `observation` too, when it comes first, without restarting the integration
+    /// there.
     ///
     /// An accepted step moves the logic on to its end, with the detectors' crossings within
     /// it. A step in which a detector crosses, a logic driver changes or a device's
@@ -1038,11 +1152,11 @@ impl Simulator {
     fn step_toward(
         &mut self,
         stepper: &mut Stepper,
-        (breakpoint, gap): (f64, f64),
+        breakpoint: NextBreakpoint,
         observation: f64,
         options: &Options,
     ) -> Result<Step, SimulationError> {
-        let target = breakpoint.min(observation);
+        let target = breakpoint.time.min(observation);
         let remaining = target - stepper.time;
         // The step grows from the last by its error, but never past the longest allowed,
         // whether it lands on its target or not.
@@ -1056,28 +1170,11 @@ impl Simulator {
         };
         // Only a breakpoint is a corner in the waveforms, after which the integration
         // restarts; an observation is a time like any other.
-        let corner = landing && target >= breakpoint;
-        // Backward Euler until the points since the last corner are enough to estimate the
-        // error of the transient's own method, so that every step but the first after a
-        // corner is judged by its own estimate, and the first by the second's.
-        let available = stepper.history.len() + 1;
-        let method = if stepper.damp || available < stepper.method.order() + 2 {
-            Method::BackwardEuler
-        } else {
-            stepper.method
-        };
-        let formula = Formula::new(method, length, stepper.previous);
+        let corner = landing && target >= breakpoint.time;
         // Each unknown's work is its own, spread as Newton iteration spreads its work on
         // each unknown.
         let inside = options.parallelism.inside(stepper.x.len());
-        let (last, before) = stepper.history.last_two();
-        let derivative = &stepper.history.derivative;
-        each_chunk(&mut stepper.terms, inside, |start, chunk| {
-            for (offset, term) in chunk.iter_mut().enumerate() {
-                let index = start + offset;
-                *term = formula.history([last[index], before[index]], derivative[index]);
-            }
-        });
+        let (method, formula) = stepper.prepare_formula(length, inside);
 
         let mut candidate = stepper
             .resume
@@ -1134,7 +1231,11 @@ impl Simulator {
         let first = stepper.history.len() == 1;
         let logic = first.then(|| self.state.events.checkpoint());
         let previous = self.state.workspace.meter.enter(Activity::StepControl);
-        let events = self.events_within(stepper, (end, &tried.x), options);
+        let end_point = StepPoint {
+            time: end,
+            values: &tried.x,
+        };
+        let events = self.events_within(stepper, end_point, options);
         self.state.workspace.meter.leave(previous);
         let (commands, jumped) = match events {
             Ok(found) => found,
@@ -1149,10 +1250,20 @@ impl Simulator {
         // waveforms. The step after it is a tenth of the step the error allowed before it,
         // as SPICE's saved step, or of the gap to the next breakpoint if shorter.
         let restart = (corner || !commands.is_empty() || jumped).then(|| {
-            let gap = if corner { gap } else { breakpoint - end };
+            let gap = if corner {
+                breakpoint.gap
+            } else {
+                breakpoint.time - end
+            };
             RESTART_FRACTION * reach.min(gap)
         });
-        Ok(self.take(stepper, tried, (next, restart), (commands, logic), options))
+        let transition = StepTransition {
+            next,
+            restart,
+            commands,
+            logic,
+        };
+        Ok(self.take(stepper, tried, transition, options))
     }
 
     /// Judges the step `tried` by its error, and the pending first step after the last
@@ -1164,7 +1275,10 @@ impl Simulator {
         tried: &Tried,
         options: &Options,
     ) -> Result<Option<f64>, SimulationError> {
-        let new = (tried.end, tried.charge.as_slice());
+        let new = StepPoint {
+            time: tried.end,
+            values: &tried.charge,
+        };
         if let Some(pending) = &stepper.pending {
             // The first step after the corner, by the curvature it shares with this one.
             let span = Span {
@@ -1208,16 +1322,13 @@ impl Simulator {
         Ok(Some(next))
     }
 
-    /// Takes the step `tried`, judged to allow a next step `next` long, and through the logic,
-    /// which drivers must follow `commands`: accepts it, with the pending first step after
-    /// the last corner, or holds it as that first step, the logic before it `logic`.
-    /// `restart`, the length of the step after it, says the integration restarts at its end.
+    /// Takes the step `tried` along `transition`: accepts it, with the pending first step
+    /// after the last corner, or holds it as that first step.
     fn take(
         &mut self,
         stepper: &mut Stepper,
         tried: Tried,
-        (next, restart): (f64, Option<f64>),
-        (commands, logic): (Vec<Command>, Option<Checkpoint>),
+        transition: StepTransition,
         options: &Options,
     ) -> Step {
         let Tried {
@@ -1235,17 +1346,12 @@ impl Simulator {
         let mut points = Vec::with_capacity(2);
         if let Some(pending) = stepper.pending.take() {
             // The first step after the corner, its error now estimated within tolerance.
-            let at = (stepper.time, stepper.x.clone());
-            let step = (pending.formula, pending.length, pending.iterations);
-            stepper
-                .leak
-                .accumulate(&pending.formula, &pending.residual, false, inside);
-            points.push(self.accept(stepper, at, step, (false, &pending.read)));
+            points.push(self.accept_pending(stepper, pending, inside));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
-        let settles = self.follow(&commands);
-        if restart.is_none()
-            && let Some(logic) = logic
+        let settles = self.follow(&transition.commands);
+        if transition.restart.is_none()
+            && let Some(logic) = transition.logic
         {
             stepper.pending = Some(Pending {
                 formula,
@@ -1265,40 +1371,47 @@ impl Simulator {
         } else {
             // A first step that ends at a corner has no point after it to estimate its
             // error from, and is accepted as SPICE accepts it.
-            let at = (end, stepper.x.clone());
-            let step = (formula, length, iterations);
-            stepper.leak.accumulate(
-                &formula,
-                &self.state.workspace.contributions.residual,
-                restart.is_some(),
-                inside,
-            );
-            points.push(self.accept(stepper, at, step, (restart.is_some(), &read)));
+            let step = StepFormula {
+                formula,
+                restarted: transition.restart.is_some(),
+            };
+            stepper
+                .leak
+                .accumulate(step, &self.state.workspace.contributions.residual, inside);
+            points.push(self.accept(
+                stepper,
+                AcceptedStep {
+                    time: end,
+                    x: stepper.x.clone(),
+                    step,
+                    length,
+                    iterations,
+                    read: &read,
+                },
+            ));
         }
         stepper.previous = length;
         stepper.time = end;
         if let Some(past) = &mut self.state.past {
-            past.push(end, &stepper.x, restart.is_some());
+            past.push(end, &stepper.x, transition.restart.is_some());
         }
-        if let Some(after_corner) = restart {
+        if let Some(after_corner) = transition.restart {
             stepper.before = None;
             stepper.history.restart(end, charge, derivative);
             stepper.damp = false;
             stepper.next = after_corner;
         } else {
-            let trapezoidal = method == Method::Trapezoidal;
-            let previous = self.state.workspace.meter.enter(Activity::StepControl);
-            stepper.damp = trapezoidal
-                && self.rings(
-                    &stepper.history,
-                    (end, &charge, &derivative),
-                    formula.alpha,
-                    options,
-                );
-            self.state.workspace.meter.leave(previous);
+            let candidate = CandidatePoint {
+                time: end,
+                charge: &charge,
+                derivative: &derivative,
+            };
+            let (damp, tracking) =
+                self.check_ringing(stepper, method, candidate, formula.alpha, options);
+            stepper.damp = damp;
             stepper.before = Some(last);
-            stepper.history.accept(end, charge, derivative, trapezoidal);
-            stepper.next = next;
+            stepper.history.accept(end, charge, derivative, tracking);
+            stepper.next = transition.next;
         }
         if points.is_empty() {
             Step::Pending
@@ -1307,25 +1420,69 @@ impl Simulator {
         }
     }
 
-    /// Accepts the point `(time, x)` that a step reached by `formula` over its length in so
-    /// many Newton iterations, where the recorded devices did what `read` read; `restarted`
-    /// when the integration begins afresh from it.
-    fn accept(
+    /// Accepts `pending`, the first step after a corner, once the following step validates it.
+    fn accept_pending(
         &mut self,
         stepper: &mut Stepper,
-        (time, x): (f64, Vec<f64>),
-        (formula, length, iterations): (Formula, f64, usize),
-        (restarted, read): (bool, &Read),
+        pending: Pending,
+        inside: Option<Inside>,
     ) -> Point {
+        let step = StepFormula {
+            formula: pending.formula,
+            restarted: false,
+        };
+        stepper.leak.accumulate(step, &pending.residual, inside);
+        self.accept(
+            stepper,
+            AcceptedStep {
+                time: stepper.time,
+                x: stepper.x.clone(),
+                step,
+                length: pending.length,
+                iterations: pending.iterations,
+                read: &pending.read,
+            },
+        )
+    }
+
+    /// Evaluates trapezoidal ringing at `candidate` and returns `(damp, tracking)`.
+    fn check_ringing(
+        &mut self,
+        stepper: &mut Stepper,
+        method: Method,
+        candidate: CandidatePoint<'_>,
+        alpha: f64,
+        options: &Options,
+    ) -> (bool, RingingTrack) {
+        let trapezoidal = method == Method::Trapezoidal;
+        let previous = self.state.workspace.meter.enter(Activity::StepControl);
+        let damp = trapezoidal
+            && self.rings(
+                &mut stepper.detector,
+                &stepper.history,
+                candidate,
+                alpha,
+                options,
+            );
+        self.state.workspace.meter.leave(previous);
+        let tracking = if trapezoidal {
+            RingingTrack::Trapezoidal
+        } else {
+            RingingTrack::Reset
+        };
+        (damp, tracking)
+    }
+
+    /// Accepts `accepted` into `stepper`'s statistics and records its device values.
+    fn accept(&mut self, stepper: &mut Stepper, accepted: AcceptedStep<'_>) -> Point {
         stepper.statistics.accepted += 1;
-        stepper.statistics.iterations += iterations;
-        let found = self.record(|observer| observer.step(read, (&formula, restarted)));
+        stepper.statistics.iterations += accepted.iterations;
+        let found = self.record(|observer| observer.step(accepted.read, accepted.step));
         Point {
-            time,
-            x,
-            formula,
-            length,
-            restarted,
+            time: accepted.time,
+            x: accepted.x,
+            step: accepted.step,
+            length: accepted.length,
             found,
         }
     }
@@ -1359,18 +1516,19 @@ impl Simulator {
         stepper.reject(next, || Rejection::Inaccurate(name.clone()))
     }
 
-    /// Whether the trapezoidal formula is numerically ringing at `(end, charge, derivative)`:
-    /// distinguishes genuine `(-1)^n` trapezoidal ringing (stiff real decaying modes with
-    /// `σ ≥ α = 2/h`, algebraic capacitor-voltage-source loop modes, and zero-capacitance
-    /// Meyer displacement unknowns) from real physical oscillations (single- or multi-mode
-    /// lossless LC tanks, coupled transformers, gyrators, and active harmonic oscillators).
+    /// Whether the trapezoidal formula is numerically ringing at `candidate`: distinguishes
+    /// genuine `(-1)^n` trapezoidal ringing (stiff real decaying modes with `σ ≥ α = 2/h`,
+    /// algebraic capacitor-voltage-source loop modes, and zero-capacitance Meyer displacement
+    /// unknowns) from real physical oscillations (single- or multi-mode lossless LC tanks,
+    /// coupled transformers, gyrators, and active harmonic oscillators).
     ///
     /// One step of backward Euler, needing no derivative, restarts a ringing derivative
     /// afresh while leaving physical lossless oscillations undamped.
     fn rings(
         &mut self,
+        detector: &mut ringing::Detector,
         history: &History,
-        (end, charge, derivative): (f64, &[f64], &[f64]),
+        candidate: CandidatePoint<'_>,
         alpha: f64,
         options: &Options,
     ) -> bool {
@@ -1382,23 +1540,23 @@ impl Simulator {
                 history.earlier[0].0,
                 history.earlier[1].0,
                 history.last.0,
-                end,
+                candidate.time,
             ],
             charges: [
                 history.earlier[0].1.as_slice(),
                 history.earlier[1].1.as_slice(),
                 history.last.1.as_slice(),
-                charge,
+                candidate.charge,
             ],
             derivatives: [
                 history.ringing[0].as_slice(),
                 history.ringing[1].as_slice(),
                 history.derivative.as_slice(),
-                derivative,
+                candidate.derivative,
             ],
             alpha,
         };
-        ringing::rings(
+        detector.rings(
             &self.elaborated.pattern,
             &self.elaborated.natures,
             &mut self.state.solver,
@@ -1408,23 +1566,23 @@ impl Simulator {
         )
     }
 
-    /// The events of a step from the stepper's last point to `end`, where the solution is
-    /// `after`: the changes the logic drivers must follow, and whether a device's
-    /// contribution jumps. An event early enough that the step should land on it returns
-    /// its time instead, leaving the logic where it was.
+    /// The events of a step from the stepper's last point to `end`: the changes the logic
+    /// drivers must follow, and whether a device's contribution jumps. An event early enough
+    /// that the step should land on it returns its time instead, leaving the logic where it
+    /// was.
     fn events_within(
         &mut self,
         stepper: &Stepper,
-        (end, after): (f64, &[f64]),
+        end: StepPoint<'_>,
         options: &Options,
     ) -> Result<(Vec<Command>, bool), f64> {
-        let jump = self.first_jump(stepper, (end, after));
+        let jump = self.first_jump(stepper, end);
         if let Some(time) = jump
-            && stepper.lands_before(time, end, options)
+            && stepper.lands_before(time, end.time, options)
         {
             return Err(time);
         }
-        let commands = self.advance_logic(stepper, (end, after), options)?;
+        let commands = self.advance_logic(stepper, end, options)?;
         // A jump closer to the step's start than the shortest step is the one the step
         // before landed on, where a strict comparison had not yet turned: the integration
         // restarted there, and the step already follows the jumped contribution.
@@ -1432,21 +1590,20 @@ impl Simulator {
         Ok((commands, jumped))
     }
 
-    /// The first time between the stepper's last point and `end`, where the solution is
-    /// `after`, at which a device's contribution jumps, if one does: where the earliest of
-    /// its choices that changed between the two points changes, located by linear
-    /// interpolation.
-    fn first_jump(&mut self, stepper: &Stepper, (end, after): (f64, &[f64])) -> Option<f64> {
+    /// The first time between the stepper's last point and `end` at which a device's
+    /// contribution jumps, if one does: where the earliest of its choices that changed
+    /// between the two points changes, located by linear interpolation.
+    fn first_jump(&mut self, stepper: &Stepper, end: StepPoint<'_>) -> Option<f64> {
         let start = stepper.time;
         let before = Input::new(&stepper.x, Some(start), 0.0);
-        let later = Input::new(after, Some(end), 0.0);
+        let later = Input::new(end.values, Some(end.time), 0.0);
         let groups = &self.elaborated.groups;
         let fraction = self.state.runs.first_jump(groups, (&before, &later))?;
-        Some(start + (end - start) * fraction)
+        Some(start + (end.time - start) * fraction)
     }
 
-    /// Moves the logic from the stepper's last point to `end`, where the solution is
-    /// `after`, and returns the changes the logic drivers must follow.
+    /// Moves the logic from the stepper's last point to `end`, and returns the changes the
+    /// logic drivers must follow.
     ///
     /// A detector's crossing earlier than the end, so that the step should land on it,
     /// returns its time instead; so does a change of a logic driver that early, leaving
@@ -1454,15 +1611,19 @@ impl Simulator {
     fn advance_logic(
         &mut self,
         stepper: &Stepper,
-        (end, after): (f64, &[f64]),
+        end: StepPoint<'_>,
         options: &Options,
     ) -> Result<Vec<Command>, f64> {
         let Self {
             elaborated, state, ..
         } = self;
         let (logic, events) = (&elaborated.logic, &mut state.events);
-        let early = |time: f64| stepper.lands_before(time, end, options);
+        let early = |time: f64| stepper.lands_before(time, end.time, options);
         let held = events.detector_levels(logic);
+        let start = StepPoint {
+            time: stepper.time,
+            values: &stepper.x,
+        };
         let crossings: Vec<Crossing> = logic
             .detectors
             .iter()
@@ -1472,8 +1633,8 @@ impl Simulator {
                     |input| state.runs.sense(&elaborated.groups, element, input),
                     detector,
                     held[detector],
-                    (stepper.time, &stepper.x),
-                    (end, after),
+                    start,
+                    end,
                 )
             })
             .collect();
@@ -1485,7 +1646,7 @@ impl Simulator {
         if let Some(first) = first {
             return Err(first);
         }
-        if crossings.is_empty() && !events.due(end) {
+        if crossings.is_empty() && !events.due(end.time) {
             return Ok(Vec::new());
         }
         // Without drivers, no change reaches back into the analog circuit, so the logic can
@@ -1493,7 +1654,7 @@ impl Simulator {
         // must change before the step ends.
         let checkpoint = (!logic.drivers.is_empty()).then(|| events.checkpoint());
         events.inject(logic, &crossings);
-        let commands = events.advance(logic, end);
+        let commands = events.advance(logic, end.time);
         let first = commands
             .iter()
             .map(|command| command.time)
@@ -1513,8 +1674,7 @@ impl Simulator {
         let mut settles = Vec::with_capacity(commands.len());
         for command in commands {
             let element = self.elaborated.logic.drivers[command.driver].0;
-            let ramp = (command.time, command.level, command.transition);
-            settles.extend(self.drive(element, ramp));
+            settles.extend(self.drive(element, command.time, command.level, command.transition));
         }
         settles
     }
@@ -1553,7 +1713,7 @@ impl Simulator {
         &mut self,
         method: Method,
         history: &History,
-        new: (f64, &[f64]),
+        new: StepPoint<'_>,
         span: &Span<'_>,
         options: &Options,
     ) -> Option<Judgement> {
@@ -1564,9 +1724,9 @@ impl Simulator {
         }
         // Each unknown's work is its own, spread as Newton iteration spreads its work on each
         // unknown.
-        let inside = options.parallelism.inside(new.1.len());
+        let inside = options.parallelism.inside(new.values.len());
         let mut differences = std::mem::take(&mut self.state.workspace.differences);
-        divided_differences((history, new), needed, inside, &mut differences);
+        divided_differences(history, new, needed, inside, &mut differences);
         self.filter(&mut differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
         let natures = &self.elaborated.natures;
@@ -1647,7 +1807,7 @@ impl Simulator {
             span.length
         };
         let longest = method.longest_common_step(previous, shortest_at_constant, |scales| {
-            shortest(&units, scales, inside)
+            shortest(&units, scales.0, scales.1, inside)
         });
         self.state.workspace.differences = differences;
         Some(Judgement { longest, ..worst })
@@ -1697,7 +1857,8 @@ impl Simulator {
         let capacitance = &contributions.capacitance;
         add_product(
             &self.elaborated.pattern,
-            (capacitance, moved),
+            capacitance,
+            moved,
             differences,
             inside,
         );
@@ -1707,7 +1868,8 @@ impl Simulator {
 /// Writes into `differences` each charge's divided difference over the last `needed`
 /// points: those of `history`, then `new`, its work on each unknown split as `inside` says.
 fn divided_differences(
-    (history, new): (&History, (f64, &[f64])),
+    history: &History,
+    new: StepPoint<'_>,
     needed: usize,
     inside: Option<Inside>,
     differences: &mut Vec<f64>,
@@ -1719,12 +1881,16 @@ fn divided_differences(
         .points()
         .skip(history.len() + 1 - needed)
         .map(|(time, charge)| (*time, charge.as_slice()));
-    for ((time, charge), (at, held)) in times.iter_mut().zip(&mut charges).zip(used.chain([new])) {
+    for ((time, charge), (at, held)) in times
+        .iter_mut()
+        .zip(&mut charges)
+        .zip(used.chain([(new.time, new.values)]))
+    {
         *time = at;
         *charge = held;
     }
     differences.clear();
-    differences.resize(new.1.len(), 0.0);
+    differences.resize(new.values.len(), 0.0);
     each_chunk(differences, inside, |start, chunk| {
         let mut samples = [0.0; HISTORY + 1];
         for (offset, difference) in chunk.iter_mut().enumerate() {
@@ -1748,10 +1914,19 @@ fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
     })
 }
 
-/// The shortest of the charges' longest steps at the scales `scales`, from their unit steps
-/// `units`, and the tolerance that holds it: on one thread, one charge after another; spread,
-/// by pieces, which find the same, as `least` is a total order.
-fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) -> (f64, ErrorBound) {
+/// A step length and the error bound that determines it, as [`longest_at`] returns.
+type StepBound = (f64, ErrorBound);
+
+/// The shortest of the charges' longest steps at `(charge_scale, current_scale)`, from their
+/// unit steps `units`, and the tolerance that holds it: on one thread, one charge after
+/// another; spread, by pieces, which find the same, as `least` is a total order.
+fn shortest(
+    units: &[(f64, f64)],
+    charge_scale: f64,
+    current_scale: f64,
+    inside: Option<Inside>,
+) -> StepBound {
+    let scales = (charge_scale, current_scale);
     let none = (f64::INFINITY, ErrorBound::Charge);
     if inside.is_none() {
         return units
@@ -1771,31 +1946,28 @@ fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) ->
 
 /// The shorter of two charges' longest steps, and the tolerance that holds it: the least by
 /// length, then by tolerance, so that the same is found however the pieces split the charges.
-fn least(a: (f64, ErrorBound), b: (f64, ErrorBound)) -> (f64, ErrorBound) {
-    if b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).is_lt() {
-        b
-    } else {
-        a
-    }
+fn least(first: StepBound, second: StepBound) -> StepBound {
+    let order = second.0.total_cmp(&first.0).then(second.1.cmp(&first.1));
+    if order.is_lt() { second } else { first }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use jolty_numerics::integration::{Formula, Method};
     use jolty_numerics::reduce;
     use rayon::ThreadPoolBuilder;
+    use serde_json::json;
 
-    use super::{Breakpoints, LeakAccumulator, neumaier_add};
+    use super::{Breakpoints, LeakAccumulator, NextBreakpoint, StepFormula, neumaier_add};
     use crate::options::{Inside, NUMBERS_PER_GIB};
-    use crate::{Conditions, Options, SimulationError, Simulator, Transient};
+    use crate::test_helpers::{grounded_simulator, source_resistor_simulator};
+    use crate::{Options, SimulationError, Transient};
 
     /// The bits of a breakpoint and of the gap after it, to compare them exactly.
-    fn bits((next, gap): (f64, f64)) -> (u64, u64) {
-        (next.to_bits(), gap.to_bits())
+    fn bits(breakpoint: NextBreakpoint) -> (u64, u64) {
+        (breakpoint.time.to_bits(), breakpoint.gap.to_bits())
     }
 
     /// The raw IEEE-754 bits of every value in `values`.
@@ -1811,11 +1983,23 @@ mod tests {
         breakpoints.insert(2.05);
         breakpoints.insert(2.95);
         breakpoints.insert(11.0);
-        assert_eq!(bits(breakpoints.after(0.5)), bits((1.0, 1.0)));
-        assert_eq!(bits(breakpoints.after(1.0)), bits((2.0, 1.0)));
-        assert_eq!(bits(breakpoints.after(2.5)), bits((3.0, 7.0)));
+        assert_eq!(
+            bits(breakpoints.after(0.5)),
+            (1.0_f64.to_bits(), 1.0_f64.to_bits())
+        );
+        assert_eq!(
+            bits(breakpoints.after(1.0)),
+            (2.0_f64.to_bits(), 1.0_f64.to_bits())
+        );
+        assert_eq!(
+            bits(breakpoints.after(2.5)),
+            (3.0_f64.to_bits(), 7.0_f64.to_bits())
+        );
         // The stop stays, however far past it the time asked for.
-        assert_eq!(bits(breakpoints.after(20.0)), bits((10.0, f64::INFINITY)));
+        assert_eq!(
+            bits(breakpoints.after(20.0)),
+            (10.0_f64.to_bits(), f64::INFINITY.to_bits())
+        );
         // A negative zero orders as zero, before every positive time.
         breakpoints.insert(-0.0);
         assert_eq!(breakpoints.first().to_bits(), 0.0_f64.to_bits());
@@ -1854,7 +2038,8 @@ mod tests {
                         sign * 1e-12 * scale
                     })
                     .collect();
-                accumulator.accumulate(&formula, &residuals, restarted, inside);
+                let step = StepFormula { formula, restarted };
+                accumulator.accumulate(step, &residuals, inside);
             }
             accumulator.finish()
         };
@@ -1876,25 +2061,7 @@ mod tests {
 
     #[test]
     fn transient_rejects_non_finite_stop_and_max_step() {
-        let circuit = Circuit::from_json(
-            r#"{
-                "format": "jolty-circuit", "version": 4, "top": "test",
-                "components": {"test": {
-                    "ports": [{"name": "0", "role": "ground"}],
-                    "instances": [
-                        {"name": "V1", "of": {"model": "voltage_source"},
-                         "parameters": {"waveform": {"dc": 1.0}},
-                         "terminals": {"positive": "in", "negative": "0"}},
-                        {"name": "R1", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 1000.0},
-                         "terminals": {"a": "in", "b": "0"}}
-                    ]
-                }}
-            }"#,
-        )
-        .expect("a valid circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates");
+        let mut simulator = source_resistor_simulator();
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1e-6] {
             let stop_result = simulator.transient(
                 &Transient {
@@ -1931,34 +2098,27 @@ mod tests {
 
     #[test]
     fn transient_clears_past_after_early_error() {
-        let circuit = Circuit::from_json(
-            r#"{
-                "format": "jolty-circuit", "version": 4, "top": "test",
-                "components": {"test": {
-                    "ports": [{"name": "0", "role": "ground"}],
-                    "instances": [
-                        {"name": "V1", "of": {"model": "voltage_source"},
-                         "parameters": {"waveform": {"pulse": {
-                             "initial": 0.0, "pulsed": 1.0, "delay": 0.5e-9,
-                             "rise": 0.2e-9, "fall": 0.2e-9, "width": 1.0}}},
-                         "terminals": {"positive": "in", "negative": "0"}},
-                        {"name": "R1", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 50.0},
-                         "terminals": {"a": "in", "b": "a"}},
-                        {"name": "T1", "of": {"model": "transmission_line"},
-                         "parameters": {"characteristic_impedance": 50.0, "delay": 1e-9},
-                         "terminals": {"positive1": "a", "negative1": "0",
-                                       "positive2": "b", "negative2": "0"}},
-                        {"name": "R2", "of": {"model": "resistor"},
-                         "parameters": {"resistance": 50.0},
-                         "terminals": {"a": "b", "b": "0"}}
-                    ]
-                }}
-            }"#,
-        )
-        .expect("a valid circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("the circuit elaborates");
+        let mut simulator = grounded_simulator(
+            "test",
+            "0",
+            json!([
+                {"name": "V1", "of": {"model": "voltage_source"},
+                 "parameters": {"waveform": {"pulse": {
+                     "initial": 0.0, "pulsed": 1.0, "delay": 0.5e-9,
+                     "rise": 0.2e-9, "fall": 0.2e-9, "width": 1.0}}},
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"name": "R1", "of": {"model": "resistor"},
+                 "parameters": {"resistance": 50.0},
+                 "terminals": {"a": "in", "b": "a"}},
+                {"name": "T1", "of": {"model": "transmission_line"},
+                 "parameters": {"characteristic_impedance": 50.0, "delay": 1e-9},
+                 "terminals": {"positive1": "a", "negative1": "0",
+                               "positive2": "b", "negative2": "0"}},
+                {"name": "R2", "of": {"model": "resistor"},
+                 "parameters": {"resistance": 50.0},
+                 "terminals": {"a": "b", "b": "0"}}
+            ]),
+        );
         let width = simulator.point_width();
         let options = Options {
             // Allow the pre-check (`stop / longest * width == width`) to pass so `start_past`

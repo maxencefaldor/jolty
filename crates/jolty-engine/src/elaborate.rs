@@ -306,10 +306,11 @@ impl std::error::Error for ElaborationError {}
 
 /// The models that stand in for component instances, by path, and the parameters that
 /// replace devices' own, by path.
-pub(crate) type Replaced<'a> = (
-    &'a BTreeMap<String, Substitute>,
-    &'a BTreeMap<String, Parameters>,
-);
+#[derive(Clone, Copy)]
+pub(crate) struct Replaced<'a> {
+    pub(crate) substitutes: &'a BTreeMap<String, Substitute>,
+    pub(crate) overrides: &'a BTreeMap<String, Parameters>,
+}
 
 /// Flattens `circuit` and binds each device to its unknowns at `temperature`, in kelvins,
 /// with the models that stand in for some component instances and the parameters that
@@ -318,7 +319,7 @@ pub(crate) type Replaced<'a> = (
 pub(crate) fn elaborate(
     circuit: &Circuit,
     library: &Library,
-    (substitutes, overrides): Replaced<'_>,
+    replaced: Replaced<'_>,
     temperature: f64,
 ) -> Result<(Elaborated, Devices), ElaborationError> {
     circuit.validate().map_err(|problems| {
@@ -347,9 +348,9 @@ pub(crate) fn elaborate(
     let mut walk = Walk {
         circuit,
         library,
-        overrides,
+        overrides: replaced.overrides,
         overridden: BTreeSet::new(),
-        substitutes,
+        substitutes: replaced.substitutes,
         substituted: BTreeSet::new(),
         nets: Vec::new(),
         named: HashMap::new(),
@@ -395,19 +396,20 @@ pub(crate) fn elaborate(
         ..
     } = elements;
     partition.index(&detected, &templates);
-    problems.extend(unclaimed(
-        (substitutes, overrides),
-        &substituted,
-        &overridden,
-    ));
+    problems.extend(unclaimed(replaced, &substituted, &overridden));
     // Without a single ground, a problem says so.
     let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
     };
     let bound = binder.finish()?;
     let summed_terminals = summed_terminals(&ports, &pins, &classes, &templates);
-    let parts = (partition, summed_terminals, ground.clone());
-    Ok(Elaborated::assemble(bound, parts, temperature))
+    Ok(Elaborated::assemble(
+        bound,
+        partition,
+        summed_terminals,
+        ground.clone(),
+        temperature,
+    ))
 }
 
 /// The terminals of every component instance and logic device on a node, electrical or
@@ -526,15 +528,17 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
 /// The problem of each substitute and override of `replaced` whose path the walk did not
 /// find: those it `stood_in` and `overridden`.
 fn unclaimed<'a>(
-    (substitutes, overrides): Replaced<'a>,
+    replaced: Replaced<'a>,
     stood_in: &'a BTreeSet<String>,
     overridden: &'a BTreeSet<String>,
 ) -> impl Iterator<Item = ElaborationProblem> + 'a {
-    let standing = substitutes
+    let standing = replaced
+        .substitutes
         .keys()
         .filter(|path| !stood_in.contains(path.as_str()))
         .map(|path| ElaborationProblem::UnknownSubstitute(path.clone()));
-    let unused = overrides
+    let unused = replaced
+        .overrides
         .keys()
         .filter(|path| !overridden.contains(path.as_str()))
         .map(|path| ElaborationProblem::UnknownOverride(path.clone()));
@@ -633,6 +637,16 @@ struct Elements<'a> {
     problems: &'a mut Vec<ElaborationProblem>,
 }
 
+/// A logic device pin crossing onto an electrical net through a connect element.
+enum CrossingPin {
+    Input {
+        end: Endpoint,
+        threshold: f64,
+        capacitance: f64,
+    },
+    Output { end: Endpoint },
+}
+
 impl Elements<'_> {
     /// Binds the analog device `pending` to the nodes of its terminals.
     fn analog(&mut self, pending: Pending<'_>, classes: &Classes<'_>) {
@@ -723,8 +737,16 @@ impl Elements<'_> {
                     source_location: pending.at.source_location.clone(),
                 };
                 let terminals = [classes.node(net), supply, ground];
-                let (element, own) =
-                    self.cross(at, (input, end), terminals, (threshold, capacitance));
+                let crossing = if input {
+                    CrossingPin::Input {
+                        end,
+                        threshold,
+                        capacitance,
+                    }
+                } else {
+                    CrossingPin::Output { end }
+                };
+                let (element, own) = self.cross(at, crossing, terminals);
                 if let Some(pins) = self.pins.last_mut() {
                     pins.elements[offset + pin] = Some(element);
                 }
@@ -744,36 +766,43 @@ impl Elements<'_> {
         });
     }
 
-    /// Joins the pin `end` of a logic device, an input when `input`, to the electrical net
-    /// of `terminals`' first, through a connect element at `at` that reads it against
-    /// `threshold` and loads it with `capacitance`, or drives it, on a logic net of their
-    /// own. Returns the element's index among the devices and the logic net's.
-    fn cross(
-        &mut self,
-        at: Location,
-        (input, end): (bool, Endpoint),
-        terminals: [Node; 3],
-        (threshold, capacitance): (f64, f64),
-    ) -> (usize, usize) {
+    /// Joins `pin` of a logic device to the electrical net of `terminals`' first, through a
+    /// connect element at `at` that reads it against a threshold and loads it with
+    /// capacitance, or drives it, on a logic net of their own. Returns the element's index
+    /// among the devices and the logic net's.
+    fn cross(&mut self, at: Location, pin: CrossingPin, terminals: [Node; 3]) -> (usize, usize) {
         let own = self.partition.nets.len();
-        let element = if input {
-            self.detector(at.clone(), terminals, threshold, capacitance)
-        } else {
-            self.driver(at.clone(), terminals)
-        };
-        let element_end = Endpoint::Terminal { device: element };
-        let (sources, loads) = if input {
-            self.partition.detectors.push((element, own));
-            (vec![element_end], vec![end])
-        } else {
-            self.partition.drivers.push((element, own));
-            (vec![end], vec![element_end])
+        let (element, sources, loads, load) = match pin {
+            CrossingPin::Input {
+                end,
+                threshold,
+                capacitance,
+            } => {
+                let element = self.detector(at.clone(), terminals, threshold, capacitance);
+                self.partition.detectors.push((element, own));
+                (
+                    element,
+                    vec![Endpoint::Terminal { device: element }],
+                    vec![end],
+                    capacitance,
+                )
+            }
+            CrossingPin::Output { end } => {
+                let element = self.driver(at.clone(), terminals);
+                self.partition.drivers.push((element, own));
+                (
+                    element,
+                    vec![end],
+                    vec![Endpoint::Terminal { device: element }],
+                    0.0,
+                )
+            }
         };
         self.partition.nets.push(LogicNet {
             name: at.path,
             sources,
             loads,
-            load: capacitance,
+            load,
         });
         (element, own)
     }

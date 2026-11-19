@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::derivative::{BackwardPass, Trajectory};
 use crate::measure::{interpolated, trapezoid};
 use crate::sensitivity::Parameter;
 use crate::transient::Carried;
@@ -181,16 +182,17 @@ impl Simulator {
                     (point, values)
                 })
                 .collect();
-            let waveforms = (&result, steps.as_slice());
+            let pass = BackwardPass {
+                trajectory: Trajectory {
+                    waveforms: &result,
+                    steps: &steps,
+                },
+                seeds: &[&seed],
+                start: &start,
+                stretch: None,
+            };
             let mut each = |_: usize, terms: &[f64]| fold(terms);
-            self.backward(
-                &mut twins,
-                waveforms,
-                &[&seed],
-                (&start, None),
-                &mut each,
-                options,
-            )?;
+            self.backward(&mut twins, pass, &mut each, options)?;
             (result.statistics.work, result.statistics.profile) = self.metered_since(&reading);
             Ok((value, twins, result))
         })

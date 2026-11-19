@@ -13,7 +13,7 @@ use jolty_models::{Input, Nature, Node, NoiseSource};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::over_frequencies;
+use crate::ac::{over_frequencies, selector_vector};
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A noise analysis: the noise density at an output, at each frequency, and how much each
@@ -139,10 +139,7 @@ impl Simulator {
             let (mut input, level) = match &noise.source {
                 Some(path) => {
                     let index = self.source_index(path)?;
-                    let mut level = vec![0.0; unknowns];
-                    self.state
-                        .runs
-                        .excite(&self.elaborated.groups, index, &mut level);
+                    let level = self.source_excitation(index);
                     let input = NoiseInput {
                         source: path.clone(),
                         nature: self.source_nature(index),
@@ -171,12 +168,7 @@ impl Simulator {
                 &noise.frequencies,
                 &options.parallelism,
                 &|factors, _, frequency| {
-                    let mut weights = vec![Complex64::default(); unknowns];
-                    for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                        if let Some(unknown) = node {
-                            weights[unknown.index()] += sign;
-                        }
-                    }
+                    let mut weights: Vec<Complex64> = selector_vector(unknowns, output, reference);
                     factors.solve_transpose(&mut weights)?;
                     let weight =
                         |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
