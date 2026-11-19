@@ -1,5 +1,6 @@
 # Copyright 2026 Maxence Faldor
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from jolty.files import load_results
 from jolty.plan import Analysis, Options, Parallelism
 from jolty.runner import RESULTS, Built, Failure, Job, Outcome, Thresholds, run
 from jolty.simulate import Simulation
+from workspace import ROOT
 
 DIVIDER = """
 from jolty import Builder, OperatingPoint, Plan, Role, Transient, component, devices
@@ -282,3 +284,21 @@ def test_scripts_import_the_modules_beside_them(tmp_path: Path) -> None:
     write(tmp_path, "from jolty.units import V\n\nLEVEL = 3 * V\n", "levels.py")
     text = DIVIDER.replace("LEVEL = 5 * V", "from levels import LEVEL")
     built(run(Job(script=write(tmp_path, text), max_unknowns=10), tmp_path))
+
+
+def test_runner_never_imports_plots_or_matplotlib() -> None:
+    source = (ROOT / "src" / "jolty" / "runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            imported.add(module)
+            if module == "jolty":
+                imported.update(f"jolty.{alias.name}" for alias in node.names)
+    assert "jolty.plots" not in imported
+    assert not any(
+        name == "matplotlib" or name.startswith("matplotlib.") for name in imported
+    )

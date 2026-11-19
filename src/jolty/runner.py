@@ -34,8 +34,7 @@ standard output may be a protocol channel: what a script prints is captured, a t
 stops a script or an analysis that runs too long, and a crash ends only the runner.
 """
 
-# jolty's modules load as the runner first uses them, so that a job that draws no batch
-# never imports matplotlib.
+# jolty's modules load as the runner first uses them, keeping worker startup lean.
 __lazy_modules__ = ["jolty"]
 
 import json
@@ -52,7 +51,7 @@ from typing import Annotated, Final, Literal, override
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
-from jolty import checks, fidelity, files, ir, plots, report, shards, variation
+from jolty import checks, fidelity, files, ir, report, shards, unknowns, variation
 from jolty.builder import Component, circuit
 from jolty.errors import (
     ElaborationError,
@@ -972,7 +971,7 @@ def _traces(job: Job, simulation: Simulation) -> tuple[str, ...]:
     if not job.plot:
         return ()
     named = {unknown.name for unknown in simulation.unknowns}
-    traces = job.traces or plots.default_traces(simulation.unknowns, simulation.nets)
+    traces = job.traces or unknowns.default_traces(simulation.unknowns, simulation.nets)
     return tuple(trace for trace in traces if trace in named)
 
 

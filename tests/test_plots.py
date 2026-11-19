@@ -23,6 +23,8 @@ from jolty.plan import MonteCarlo, decade
 from jolty.plots import MAX_SERIES, default_traces, envelope, histograms, plot
 from jolty.specs import bandwidth, value
 from jolty.units import MHz, V, kHz, kohm, nF
+from jolty.unknowns import MAX_SERIES as UNKNOWNS_MAX_SERIES
+from jolty.unknowns import default_traces as unknowns_default_traces
 
 UNKNOWNS = (
     results.Unknown("in", "voltage"),
@@ -41,6 +43,8 @@ def waveforms() -> results.TransientResult:
 
 
 def test_plots_draw_the_nets_the_top_names_by_default() -> None:
+    assert default_traces is unknowns_default_traces
+    assert MAX_SERIES == UNKNOWNS_MAX_SERIES
     assert default_traces(UNKNOWNS) == ("in", "out")
     unnamed = (results.Unknown("R1.b", "voltage"), results.Unknown("X1/a", "voltage"))
     assert default_traces(unnamed) == ("R1.b", "X1/a")
@@ -157,6 +161,37 @@ def test_a_sweep_plots_along_its_source() -> None:
     sweep = results.DcSweepResult(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))
     figure = plot("transfer", sweep, ["in"])
     assert figure.axes[0].get_xlabel() == "I1 current"
+
+
+def test_untyped_dc_sweep_axis_label_omits_none() -> None:
+    levels = np.array([0.0, 1.0])
+    sweep = results.DcSweepResult(UNKNOWNS, "V1", None, levels, np.zeros((2, 5)))
+    figure = plot("transfer", sweep, ["in"])
+    assert figure.axes[0].get_xlabel() == "V1"
+    traces = results.Traces(
+        analysis="transfer",
+        along="swept",
+        axis=levels,
+        unknowns=(UNKNOWNS[0],),
+        values=np.zeros((2, 2, 1)),
+        source="V1",
+        nature=None,
+        parameter=None,
+    )
+    band_figure = envelope("sweep", traces)
+    assert band_figure.axes[-1].get_xlabel() == "V1"
+    anonymous = results.Traces(
+        analysis="transfer",
+        along="swept",
+        axis=levels,
+        unknowns=(UNKNOWNS[0],),
+        values=np.zeros((2, 2, 1)),
+        source=None,
+        nature=None,
+        parameter=None,
+    )
+    anonymous_figure = envelope("sweep", anonymous)
+    assert anonymous_figure.axes[-1].get_xlabel() == "swept"
 
 
 def test_probes_name_unknowns_and_fit_the_palette() -> None:

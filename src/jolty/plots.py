@@ -42,6 +42,7 @@ from matplotlib.ticker import EngFormatter
 from jolty import files, results
 from jolty.errors import JoltyError
 from jolty.units import format_si
+from jolty.unknowns import default_traces as default_traces
 
 COLORS: Final = (
     "#2a78d6",
@@ -86,29 +87,6 @@ type _Quantity = Literal["voltage", "current", "temperature", "state", "logic"]
 
 _LANE: Final = 1.5
 """The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
-
-
-def default_traces(
-    unknowns: Sequence[results.Unknown], nets: Sequence[str] = ()
-) -> tuple[str, ...]:
-    """What a plot draws unless told otherwise: the top component's named nets.
-
-    A net the script named at the top has no slash in its path, and no dot or colon,
-    which only the names the builder and the engine give other nets carry. Its voltage
-    is drawn, its temperature if it is a thermal net, or its level if it is a logic net.
-    Without such nets, a plot draws the first voltages and temperatures, or else the
-    first logic nets. Either way, it draws at most
-    [`MAX_SERIES`][jolty.plots.MAX_SERIES].
-    """
-    nodes = [
-        unknown.name
-        for unknown in unknowns
-        if unknown.nature in {"voltage", "temperature"}
-    ]
-    named = [
-        name for name in [*nodes, *nets] if not any(mark in name for mark in "/.:")
-    ]
-    return tuple((named or nodes or list(nets))[:MAX_SERIES])
 
 
 def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
@@ -517,7 +495,7 @@ def envelope(name: str, traces: results.Traces) -> Figure:
     along = {
         "time": "time",
         "frequency": "frequency",
-        "swept": f"{traces.source} {traces.parameter or traces.nature}",
+        "swept": _sweep_label(traces.source, traces.parameter, traces.nature),
         "point": "",
     }[traces.along]
     axes[-1].set_xlabel(along, color=MUTED)
@@ -598,12 +576,24 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
             return results.natural_frequencies(result.poles), "Hz"
 
 
+def _sweep_label(
+    source: str | None, parameter: str | None, nature: results.Nature | None
+) -> str:
+    """Formats the horizontal axis label for a DC sweep."""
+    kind = parameter or nature
+    if source and kind:
+        return f"{source} {kind}"
+    if source:
+        return source
+    return kind or "swept"
+
+
 def _abscissa_label(result: Plotted) -> str:
     match result:
         case results.TransientResult():
             return "time"
         case results.DcSweepResult():
-            return f"{result.source} {result.parameter or result.nature}"
+            return _sweep_label(result.source, result.parameter, result.nature)
         case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return "frequency"
         case results.PoleZeroResult():
