@@ -8,9 +8,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{HEAT_CAPACITY, POWER, THERMAL_RESISTANCE};
 use crate::kernel::parts::Pair;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, ParameterKind,
+    ParameterMetadata, Real, Stamp,
 };
 
 /// Where a thermal element's contributions go: across its terminals.
@@ -30,11 +32,12 @@ impl ThermalShape {
 pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in kelvins per watt; positive.
+    #[dimension(THERMAL_RESISTANCE)]
     pub resistance: R,
 }
 
@@ -45,6 +48,10 @@ impl Kernel for ThermalResistance {
     /// Its conductance.
     type Prepared<R: Real> = R;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        ThermalResistanceParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &ThermalResistanceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)]).thermal()
@@ -88,11 +95,12 @@ impl Kernel for ThermalResistance {
 pub struct ThermalCapacitance;
 
 /// The parameters of a [`ThermalCapacitance`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ThermalCapacitanceParameters<R: Real = f64> {
     /// The heat capacity, in joules per kelvin; zero or positive.
+    #[dimension(HEAT_CAPACITY)]
     pub capacitance: R,
 }
 
@@ -103,6 +111,10 @@ impl Kernel for ThermalCapacitance {
     /// Its heat capacity.
     type Prepared<R: Real> = R;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        ThermalCapacitanceParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &ThermalCapacitanceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Capacitive)]).thermal()
@@ -146,11 +158,12 @@ impl Kernel for ThermalCapacitance {
 pub struct HeatSource;
 
 /// The parameters of a [`HeatSource`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct HeatSourceParameters<R: Real = f64> {
     /// The heat flow, in watts.
+    #[dimension(POWER)]
     pub power: R,
 }
 
@@ -161,6 +174,10 @@ impl Kernel for HeatSource {
     /// Its heat flow.
     type Prepared<R: Real> = R;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        HeatSourceParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &HeatSourceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::CurrentSource)]).thermal()

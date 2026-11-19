@@ -39,7 +39,8 @@ use crate::kernel::dual::Dual;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
 use crate::{
-    Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError, Real, Regions, Stamp,
+    Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError, ParameterKind,
+    ParameterMetadata, Real, Regions, Stamp,
 };
 
 /// The permittivity of vacuum, in farads per meter, as `b4v5temp.c` takes it.
@@ -718,6 +719,14 @@ impl Kernel for Bsim4 {
     type Shape = Bsim4Shape;
     type Prepared<R: Real> = PreparedBsim4<R>;
     type Memory = Bsim4Memory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        Bsim4Parameters::<f64>::PARAMETER_KINDS
+    }
+
+    fn binned_parameters() -> &'static [&'static str] {
+        Bsim4Parameters::<f64>::BINNED_PARAMETERS
+    }
 
     fn interface<R: Real>(_: &Bsim4Parameters<R>) -> Interface {
         interface()

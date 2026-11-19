@@ -31,7 +31,10 @@ use crate::kernel::bsim::{
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
-use crate::{Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Regions, Stamp};
+use crate::{
+    Interface, Kernel, Layout, Local, NoiseSource, ParameterError, ParameterKind, ParameterMetadata,
+    Real, Regions, Stamp,
+};
 
 /// The permittivity of silicon dioxide, in farads per meter, as BSIM3 takes it.
 const EPSOX: f64 = 3.453_133e-11;
@@ -347,6 +350,14 @@ impl Kernel for Bsim3 {
     type Shape = Bsim3Shape;
     type Prepared<R: Real> = PreparedBsim3<R>;
     type Memory = Bsim3Memory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        Bsim3Parameters::<f64>::PARAMETER_KINDS
+    }
+
+    fn binned_parameters() -> &'static [&'static str] {
+        Bsim3Parameters::<f64>::BINNED_PARAMETERS
+    }
 
     fn interface<R: Real>(_: &Bsim3Parameters<R>) -> Interface {
         interface()

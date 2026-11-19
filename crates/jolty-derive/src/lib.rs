@@ -5,10 +5,14 @@
 //! number by the path serde writes it at, so that a twin seeds a parameter's derivatives
 //! where the parameter is named, with no detour through the parameters' written form.
 //!
+//! [`ParameterMetadata`](macro@ParameterMetadata) writes `jolty_models::ParameterMetadata`
+//! for a kernel's parameter struct, recording each field's physical dimension, plain-number,
+//! discrete-choice, or conditional kind from inline `#[dimension(...)]` attributes.
+//!
 //! [`binned_parameters`](macro@binned_parameters) declares a geometry-binned parameter struct
-//! (such as BSIM3's and BSIM4's), its `Default` implementation, its companion binned struct,
-//! and the `binned` method that adds each binned parameter's length, width, and area
-//! dependences.
+//! (such as BSIM3's and BSIM4's), its `Default` and `ParameterMetadata` implementations, its
+//! companion binned struct, and the `binned` method that adds each binned parameter's length,
+//! width, and area dependences.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as Tokens, TokenTree};
@@ -18,7 +22,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::{
     Attribute, Data, DeriveInput, Error, Fields, GenericArgument, GenericParam, Generics, Ident,
     LitStr, Path, PathArguments, Result, ReturnType, Token, Type, TypeParamBound, Visibility,
-    braced, parenthesized, parse_macro_input,
+    braced, bracketed, parenthesized, parse_macro_input,
 };
 
 /// Writes `jolty_models::Lift<R>` for a struct or an enum generic over one kind of number,
@@ -39,12 +43,28 @@ pub fn lift(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Declares a geometry-binned parameter struct, its `Default` implementation, its companion
-/// binned struct, and the `binned` method that sums each binned parameter with its length,
-/// width, and area dependences.
+/// Writes `jolty_models::ParameterMetadata` for a struct with named fields.
+///
+/// Each field's key follows its `#[serde(rename)]` or the container's `#[serde(rename_all)]`.
+/// Annotate physical parameters with `#[dimension(EXPR)]` (any constant
+/// `jolty_models::Dimension` expression) or `#[dimension(conditional = "tag")]`. Unannotated
+/// numeric fields (`R`, `Option<R>`, `f64`, or `Option<f64>`) default to
+/// `ParameterKind::Number`; all other fields default to `ParameterKind::Choice`.
+#[proc_macro_derive(ParameterMetadata, attributes(dimension))]
+pub fn parameter_metadata(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    expand_parameter_metadata(&input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+/// Declares a geometry-binned parameter struct, its `Default` and `ParameterMetadata`
+/// implementations, its companion binned struct, and the `binned` method that sums each
+/// binned parameter with its length, width, and area dependences.
 ///
 /// Fields are written in the exact order they appear on the parameter struct, each with its
-/// default expression after `=`. A field prefixed with `binned` expands into four consecutive
+/// default expression after `=` and an optional trailing `[DIM]` or `[conditional("tag")]`
+/// dimension specification. A field prefixed with `binned` expands into four consecutive
 /// fields on the parameter struct: itself and its `l`, `w`, and `p` dependences (escaped as
 /// raw identifiers such as `r#pub` when a prefixed name is a Rust keyword), each defaulting to
 /// `R::constant(0.0)`, together with a field on the companion binned struct and its evaluation
@@ -456,6 +476,183 @@ impl Case {
     }
 }
 
+/// Explicit dimension annotation on a parameter field.
+enum DimensionSpec {
+    /// A physical dimension expression evaluating to `jolty_models::Dimension`.
+    Quantity(Tokens),
+    /// A model-dependent dimension identified by tag string.
+    Conditional(LitStr),
+}
+
+/// Parses the contents of a `#[dimension(...)]` attribute or trailing `[...]` dimension
+/// specification: either `conditional = "..."` / `conditional("...")`, or a dimension
+/// expression.
+fn parse_dimension_spec(input: ParseStream<'_>) -> Result<DimensionSpec> {
+    let ahead = input.fork();
+    if let Ok(ident) = ahead.parse::<Ident>()
+        && ident == "conditional"
+        && (ahead.peek(Token![=]) || ahead.peek(syn::token::Paren))
+    {
+        let _ = input.parse::<Ident>()?;
+        let tag: LitStr = if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            input.parse()?
+        } else {
+            let content;
+            parenthesized!(content in input);
+            let tag: LitStr = content.parse()?;
+            if !content.is_empty() {
+                return Err(content.error("unexpected tokens after conditional tag"));
+            }
+            tag
+        };
+        if !input.is_empty() {
+            return Err(input.error("unexpected tokens after conditional dimension"));
+        }
+        return Ok(DimensionSpec::Conditional(tag));
+    }
+    let start = input.span();
+    let tokens: Tokens = input.parse()?;
+    if tokens.is_empty() {
+        return Err(Error::new(
+            start,
+            "expected a dimension expression or `conditional(\"...\")`",
+        ));
+    }
+    Ok(DimensionSpec::Quantity(tokens))
+}
+
+/// Parses the optional `#[dimension(...)]` attribute on a struct field.
+fn parse_dimension_attribute(attributes: &[Attribute]) -> Result<Option<DimensionSpec>> {
+    let mut found = None;
+    for attribute in attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("dimension"))
+    {
+        if found.is_some() {
+            return Err(Error::new_spanned(
+                attribute,
+                "duplicate `#[dimension(...)]` attribute on field",
+            ));
+        }
+        found = Some(attribute.parse_args_with(parse_dimension_spec)?);
+    }
+    Ok(found)
+}
+
+/// Returns whether `field_type` is a scalar real number (`R`, `Option<R>`, `f64`, or
+/// `Option<f64>`), which defaults to `ParameterKind::Number` when unannotated.
+fn is_numeric_field_type(field_type: &Type, number: Option<&Ident>) -> bool {
+    let Some(segment) = single_segment(field_type) else {
+        return false;
+    };
+    let is_scalar = |candidate: &syn::PathSegment| {
+        candidate.arguments.is_none()
+            && (candidate.ident == "f64"
+                || number.is_some_and(|parameter| candidate.ident == *parameter))
+    };
+    if is_scalar(segment) {
+        return true;
+    }
+    if segment.ident == "Option"
+        && let PathArguments::AngleBracketed(arguments) = &segment.arguments
+        && arguments.args.len() == 1
+        && let Some(GenericArgument::Type(inner)) = arguments.args.first()
+        && let Some(inner_segment) = single_segment(inner)
+    {
+        return is_scalar(inner_segment);
+    }
+    false
+}
+
+/// Emits the `::jolty_models::ParameterKind` expression for a field of `field_type` with
+/// optional explicit `dimension`.
+fn parameter_kind_tokens(
+    field_type: &Type,
+    number: Option<&Ident>,
+    dimension: Option<&DimensionSpec>,
+) -> Result<Tokens> {
+    let numeric = is_numeric_field_type(field_type, number);
+    match dimension {
+        Some(DimensionSpec::Quantity(expression)) => {
+            if !numeric {
+                return Err(Error::new_spanned(
+                    field_type,
+                    "a physical dimension applies only to a numeric field",
+                ));
+            }
+            Ok(quote!(::jolty_models::ParameterKind::Quantity(#expression)))
+        }
+        Some(DimensionSpec::Conditional(tag)) => {
+            if !numeric {
+                return Err(Error::new_spanned(
+                    field_type,
+                    "a conditional dimension applies only to a numeric field",
+                ));
+            }
+            Ok(quote!(::jolty_models::ParameterKind::Conditional(#tag)))
+        }
+        None if numeric => Ok(quote!(::jolty_models::ParameterKind::Number)),
+        None => Ok(quote!(::jolty_models::ParameterKind::Choice)),
+    }
+}
+
+/// Resolves the serialized key name of `ident` from its field `attributes` and container
+/// `rename_all`.
+fn field_key(ident: &Ident, attributes: &[Attribute], rename_all: Option<Case>) -> Result<String> {
+    let naming = Naming::of(attributes)?;
+    Ok(naming.rename.unwrap_or_else(|| {
+        rename_all.map_or_else(|| unraw(ident), |case| case.field(&unraw(ident)))
+    }))
+}
+
+/// Expands [`ParameterMetadata`](macro@ParameterMetadata) for `input`.
+fn expand_parameter_metadata(input: &DeriveInput) -> Result<Tokens> {
+    let Data::Struct(data) = &input.data else {
+        return Err(Error::new_spanned(
+            input,
+            "ParameterMetadata is derived for structs with named fields",
+        ));
+    };
+    let Fields::Named(named) = &data.fields else {
+        return Err(Error::new_spanned(
+            input,
+            "ParameterMetadata is derived for structs with named fields",
+        ));
+    };
+    let mut parameters = input.generics.params.iter();
+    let number = match (parameters.next(), parameters.next()) {
+        (None, _) => None,
+        (Some(GenericParam::Type(parameter)), None) => Some(&parameter.ident),
+        _ => {
+            return Err(Error::new_spanned(
+                &input.generics,
+                "ParameterMetadata is derived for a struct generic over at most one kind of number",
+            ));
+        }
+    };
+    let container = Naming::of(&input.attrs)?;
+    let mut entries = Vec::with_capacity(named.named.len());
+    for field in &named.named {
+        let Some(ident) = &field.ident else {
+            continue;
+        };
+        let key = field_key(ident, &field.attrs, container.rename_all)?;
+        let dimension = parse_dimension_attribute(&field.attrs)?;
+        let kind = parameter_kind_tokens(&field.ty, number, dimension.as_ref())?;
+        entries.push(quote!((#key, #kind)));
+    }
+    let name = &input.ident;
+    let (implementation, generics, conditions) = input.generics.split_for_impl();
+    Ok(quote! {
+        impl #implementation ::jolty_models::ParameterMetadata for #name #generics #conditions {
+            const PARAMETER_KINDS: &'static [(&'static str, ::jolty_models::ParameterKind)] = &[
+                #(#entries,)*
+            ];
+        }
+    })
+}
+
 /// Parsed input of [`binned_parameters`](macro@binned_parameters).
 struct BinnedParameters {
     /// Attributes on the parameter struct, including doc comments and derives.
@@ -516,6 +713,8 @@ struct ParameterField {
     default_value: Tokens,
     /// Optional fallback expression for an optional binned field, with the span of `=>`.
     fallback: Option<(Span, Tokens)>,
+    /// Optional explicit physical or conditional dimension specification in `[...]`.
+    dimension: Option<DimensionSpec>,
 }
 
 impl Parse for BinnedParameters {
@@ -581,6 +780,13 @@ impl Parse for ParameterField {
         } else {
             None
         };
+        let dimension = if input.peek(syn::token::Bracket) {
+            let content;
+            bracketed!(content in input);
+            Some(parse_dimension_spec(&content)?)
+        } else {
+            None
+        };
         Ok(Self {
             attributes,
             mode,
@@ -589,8 +795,22 @@ impl Parse for ParameterField {
             field_type,
             default_value,
             fallback,
+            dimension,
         })
     }
+}
+
+/// Returns whether `input` begins with a trailing `[...]` dimension specification
+/// immediately before `,` or the end of the field list.
+fn is_trailing_dimension(input: ParseStream<'_>) -> bool {
+    if !input.peek(syn::token::Bracket) {
+        return false;
+    }
+    let ahead = input.fork();
+    let Ok(tree) = ahead.parse::<TokenTree>() else {
+        return false;
+    };
+    matches!(tree, TokenTree::Group(_)) && (ahead.is_empty() || ahead.peek(Token![,]))
 }
 
 /// Parses an optional `binned` or `binned(card_only)` modifier before a field's visibility.
@@ -619,12 +839,15 @@ fn parse_binning_mode(input: ParseStream<'_>) -> Result<BinningMode> {
     }
 }
 
-/// Collects expression tokens until a top-level `,`, `=>` (when `stop_at_arrow` is true), or
-/// the end of `input`.
+/// Collects expression tokens until a top-level `,`, `=>` (when `stop_at_arrow` is true), a
+/// trailing `[...]` dimension specification, or the end of `input`.
 fn parse_expression_tokens(input: ParseStream<'_>, stop_at_arrow: bool) -> Result<Tokens> {
     let start = input.span();
     let mut tokens = Tokens::new();
-    while !(input.is_empty() || input.peek(Token![,]) || (stop_at_arrow && input.peek(Token![=>])))
+    while !(input.is_empty()
+        || input.peek(Token![,])
+        || (stop_at_arrow && input.peek(Token![=>]))
+        || (!tokens.is_empty() && is_trailing_dimension(input)))
     {
         let tree: TokenTree = input.parse()?;
         tokens.extend([tree]);
@@ -732,6 +955,10 @@ struct ExpandedFields {
     parameter_fields: Vec<Tokens>,
     /// Field initializers in `Default::default` for the parameter struct.
     default_fields: Vec<Tokens>,
+    /// Base parameter `(name, ParameterKind)` entries for `ParameterMetadata`.
+    parameter_kinds: Vec<Tokens>,
+    /// Base parameter names that participate in geometry binning.
+    binned_names: Vec<String>,
     /// Fields of the companion binned struct.
     binned_fields: Vec<Tokens>,
     /// Field initializers in `binned`.
@@ -749,15 +976,18 @@ impl ExpandedFields {
             );
             return Err(Error::new_spanned(binned_number, message));
         }
+        let container = Naming::of(&specification.parameters_attributes)?;
         let mut expanded = Self {
             parameter_fields: Vec::with_capacity(specification.fields.len()),
             default_fields: Vec::with_capacity(specification.fields.len()),
+            parameter_kinds: Vec::with_capacity(specification.fields.len()),
+            binned_names: Vec::new(),
             binned_fields: Vec::new(),
             binned_values: Vec::new(),
         };
         let binned_visibility = &specification.binned_visibility;
         for field in &specification.fields {
-            expanded.push(field, number, binned_visibility)?;
+            expanded.push(field, number, container.rename_all, binned_visibility)?;
         }
         Ok(expanded)
     }
@@ -767,6 +997,7 @@ impl ExpandedFields {
         &mut self,
         field: &ParameterField,
         number: &Ident,
+        rename_all: Option<Case>,
         binned_visibility: &Visibility,
     ) -> Result<()> {
         let attributes = &field.attributes;
@@ -778,6 +1009,10 @@ impl ExpandedFields {
         let declaration = quote!(#(#attributes)* #visibility #name: #field_type);
         self.parameter_fields.push(declaration);
         self.default_fields.push(quote!(#name: #default_value));
+
+        let key = field_key(name, attributes, rename_all)?;
+        let kind = parameter_kind_tokens(field_type, Some(number), field.dimension.as_ref())?;
+        self.parameter_kinds.push(quote!((#key, #kind)));
 
         if matches!(field.mode, BinningMode::Plain) {
             if let Some((span, _)) = &field.fallback {
@@ -792,6 +1027,7 @@ impl ExpandedFields {
             return Err(Error::new_spanned(field_type, message));
         };
 
+        self.binned_names.push(key);
         let dependences = Dependences::for_field(name);
         self.push_dependences(field, number, &dependences);
 
@@ -925,6 +1161,8 @@ fn expand_binned_parameters(specification: &BinnedParameters) -> Result<Tokens> 
 
     let parameter_fields = &expanded.parameter_fields;
     let default_fields = &expanded.default_fields;
+    let parameter_kinds = &expanded.parameter_kinds;
+    let binned_names = &expanded.binned_names;
     let binned_fields = &expanded.binned_fields;
     let binned_values = &expanded.binned_values;
 
@@ -942,6 +1180,18 @@ fn expand_binned_parameters(specification: &BinnedParameters) -> Result<Tokens> 
                     #(#default_fields,)*
                 }
             }
+        }
+
+        impl #impl_generics ::jolty_models::ParameterMetadata
+            for #parameters_name #type_generics #where_clause
+        {
+            const PARAMETER_KINDS: &'static [(&'static str, ::jolty_models::ParameterKind)] = &[
+                #(#parameter_kinds,)*
+            ];
+
+            const BINNED_PARAMETERS: &'static [&'static str] = &[
+                #(#binned_names,)*
+            ];
         }
 
         #(#binned_attributes)*
@@ -1296,5 +1546,128 @@ mod tests {
             let error = expand_binned_parameters(&specification).unwrap_err();
             assert_eq!(error.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn parameter_metadata_derive_classifies_fields() {
+        let source = r#"
+            #[derive(ParameterMetadata)]
+            pub struct Sample<R: Real = f64> {
+                pub channel: Channel,
+                #[dimension(RESISTANCE)]
+                pub resistance: R,
+                #[dimension(CAPACITANCE.div(LENGTH.pow(2)))]
+                pub capacitance: Option<R>,
+                pub factor: R,
+                pub optional_factor: Option<R>,
+                pub ratio: f64,
+                pub optional_ratio: Option<f64>,
+                pub flag: bool,
+                #[dimension(conditional = "diode_tbv")]
+                pub breakdown_drift: R,
+                #[serde(rename = "vto")]
+                #[dimension(VOLTAGE)]
+                pub threshold: R,
+            }
+        "#;
+        let input: DeriveInput = syn::parse_str(source).unwrap();
+        let output = compact(&expand_parameter_metadata(&input).unwrap());
+        for expected in [
+            r#"("channel",::jolty_models::ParameterKind::Choice)"#,
+            r#"("resistance",::jolty_models::ParameterKind::Quantity(RESISTANCE))"#,
+            concat!(
+                r#"("capacitance",::jolty_models::ParameterKind::Quantity("#,
+                r#"CAPACITANCE.div(LENGTH.pow(2))))"#,
+            ),
+            r#"("factor",::jolty_models::ParameterKind::Number)"#,
+            r#"("optional_factor",::jolty_models::ParameterKind::Number)"#,
+            r#"("ratio",::jolty_models::ParameterKind::Number)"#,
+            r#"("optional_ratio",::jolty_models::ParameterKind::Number)"#,
+            r#"("flag",::jolty_models::ParameterKind::Choice)"#,
+            r#"("breakdown_drift",::jolty_models::ParameterKind::Conditional("diode_tbv"))"#,
+            r#"("vto",::jolty_models::ParameterKind::Quantity(VOLTAGE))"#,
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing `{expected}` in `{output}`"
+            );
+        }
+    }
+
+    #[test]
+    fn parameter_metadata_derive_rejects_invalid_inputs() {
+        let cases = [
+            (
+                "enum Kind { A }",
+                "ParameterMetadata is derived for structs with named fields",
+            ),
+            (
+                "struct Tuple(f64);",
+                "ParameterMetadata is derived for structs with named fields",
+            ),
+            (
+                "struct Pair<A, B> { a: A, b: B }",
+                "ParameterMetadata is derived for a struct generic over at most one kind of number",
+            ),
+            (
+                "struct Duplicate<R> { #[dimension(LENGTH)] #[dimension(TIME)] x: R }",
+                "duplicate `#[dimension(...)]` attribute on field",
+            ),
+            (
+                "struct Invalid<R> { #[dimension(LENGTH)] flag: bool }",
+                "a physical dimension applies only to a numeric field",
+            ),
+            (
+                r#"struct InvalidConditional<R> { #[dimension(conditional = "x")] flag: bool }"#,
+                "a conditional dimension applies only to a numeric field",
+            ),
+        ];
+        for (source, expected) in cases {
+            let input: DeriveInput = syn::parse_str(source).unwrap();
+            let error = expand_parameter_metadata(&input).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn binned_parameters_emits_parameter_kinds_and_binned_names() {
+        let source = r#"
+            pub struct Sample<R: Real = f64> {
+                pub channel: Channel = Channel::N,
+                pub tox: R = R::constant(1.5e-8) [LENGTH],
+                binned pub nch: Option<R> = None => R::constant(1.7e23) [LENGTH.pow(-3)],
+                binned pub uc: Option<R> = None => R::constant(0.0) [conditional("uc")],
+                binned(card_only) pub eu: Option<R> = None,
+                pub charge_partition: f64 = 0.0,
+                pub check_parameters: bool = false,
+            }
+
+            pub(super) struct Binned<R: Real>;
+        "#;
+        let specification: BinnedParameters = syn::parse_str(source).unwrap();
+        let expanded = ExpandedFields::from_specification(&specification).unwrap();
+        let kinds: Vec<String> = expanded.parameter_kinds.iter().map(compact).collect();
+        assert_eq!(
+            kinds,
+            [
+                r#"("channel",::jolty_models::ParameterKind::Choice)"#,
+                r#"("tox",::jolty_models::ParameterKind::Quantity(LENGTH))"#,
+                r#"("nch",::jolty_models::ParameterKind::Quantity(LENGTH.pow(-3)))"#,
+                r#"("uc",::jolty_models::ParameterKind::Conditional("uc"))"#,
+                r#"("eu",::jolty_models::ParameterKind::Number)"#,
+                r#"("charge_partition",::jolty_models::ParameterKind::Number)"#,
+                r#"("check_parameters",::jolty_models::ParameterKind::Choice)"#,
+            ]
+        );
+        assert_eq!(expanded.binned_names, ["nch", "uc", "eu"]);
+
+        let empty_dimension = "pub struct P<R: Real> { pub x: R = 0.0 [], } struct B<R: Real>;";
+        let error = syn::parse_str::<BinnedParameters>(empty_dimension)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "expected a dimension expression or `conditional(\"...\")`"
+        );
     }
 }

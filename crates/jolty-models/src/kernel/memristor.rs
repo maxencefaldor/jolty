@@ -9,11 +9,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{CHARGE, FREQUENCY, RESISTANCE, VOLTAGE};
 use crate::kernel::dual::Dual;
 use crate::kernel::parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
-    ParameterError, Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
+    ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
@@ -329,23 +330,29 @@ fn a_hundredth<R: Real>() -> R {
 pub struct VoltageControlledMemristor;
 
 /// The parameters of a [`VoltageControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
+    #[dimension(RESISTANCE)]
     pub on_resistance: R,
     /// The resistance fully off, at a state of 1, in ohms; above the on resistance.
+    #[dimension(RESISTANCE)]
     pub off_resistance: R,
     /// The voltage below which the state moves toward on, in volts; negative.
+    #[dimension(VOLTAGE)]
     pub on_voltage: R,
     /// The voltage above which the state moves toward off, in volts; positive.
+    #[dimension(VOLTAGE)]
     pub off_voltage: R,
     /// The state's speed toward on at twice the on voltage, in full ranges per second;
     /// positive.
+    #[dimension(FREQUENCY)]
     pub on_rate: R,
     /// The state's speed toward off at twice the off voltage, in full ranges per second;
     /// positive.
+    #[dimension(FREQUENCY)]
     pub off_rate: R,
     /// How steeply the speed toward on grows past the on voltage, `α_on`; at least 1;
     /// default 1.
@@ -373,6 +380,10 @@ impl Kernel for VoltageControlledMemristor {
     type Shape = MemristorShape;
     type Prepared<R: Real> = PreparedMemristor<R>;
     type Memory = MemristorMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        VoltageControlledMemristorParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &VoltageControlledMemristorParameters<R>) -> Interface {
         interface()
@@ -471,15 +482,18 @@ fn at_least_one<R: Real>(parameter: &str, value: R) -> Result<R, ParameterError>
 pub struct CurrentControlledMemristor;
 
 /// The parameters of a [`CurrentControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
+    #[dimension(RESISTANCE)]
     pub on_resistance: R,
     /// The resistance fully off, at a state of 1, in ohms; above the on resistance.
+    #[dimension(RESISTANCE)]
     pub off_resistance: R,
     /// The charge that carries the state across its whole range, in coulombs; positive.
+    #[dimension(CHARGE)]
     pub charge: R,
     /// How the resistance follows the state; default linear.
     #[serde(default)]
@@ -499,6 +513,10 @@ impl Kernel for CurrentControlledMemristor {
     type Shape = MemristorShape;
     type Prepared<R: Real> = PreparedMemristor<R>;
     type Memory = MemristorMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        CurrentControlledMemristorParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &CurrentControlledMemristorParameters<R>) -> Interface {
         interface()

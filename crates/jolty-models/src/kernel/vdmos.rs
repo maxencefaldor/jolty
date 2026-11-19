@@ -8,6 +8,10 @@ use std::f64::consts::FRAC_PI_2;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{
+    CAPACITANCE, CURRENT, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, RESISTANCE, TEMPERATURE, TIME,
+    TRANSCONDUCTANCE_PARAMETER, VOLTAGE, VOLTS_PER_KELVIN,
+};
 use crate::kernel::diode::{Breakdown, Junction};
 use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
@@ -18,7 +22,7 @@ use crate::kernel::region::SATURATION_MARGIN;
 use crate::noise::Flicker;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
+    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The conductance ngspice joins the drain to the source with where no drain-source
@@ -160,7 +164,7 @@ const INNER_SOURCE: usize = 2;
 const VARIABLES: [(usize, usize); 2] = [(INNER_GATE, INNER_SOURCE), (INNER_DRAIN, INNER_SOURCE)];
 
 /// The parameters of a [`Vdmos`], with ngspice's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VdmosParameters<R: Real = f64> {
@@ -170,58 +174,78 @@ pub struct VdmosParameters<R: Real = f64> {
     pub multiplier: R,
     /// The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a
     /// p-channel, an IRF540's and an IRF9540's.
+    #[dimension(VOLTAGE)]
     pub threshold_voltage: Option<R>,
     /// The transconductance parameter, `KP`, in amperes per square volt; default 20 for an
     /// n-channel and 10 for a p-channel.
+    #[dimension(TRANSCONDUCTANCE_PARAMETER)]
     pub transconductance_parameter: Option<R>,
     /// The channel-length modulation, `LAMBDA`, per volt; default 0.
+    #[dimension(PER_VOLT)]
     pub channel_length_modulation: R,
     /// The gate field's degradation of the mobility, `THETA`, per volt; default 0.
+    #[dimension(PER_VOLT)]
     pub mobility_modulation: R,
     /// The factor on the drain-source voltage below saturation, `MTRIODE`; default 1.
     pub triode_conductance_multiplier: R,
     /// The slope of the overdrive's softening below the threshold, `KSUBTHRES`, in volts;
     /// default 0.1.
+    #[dimension(VOLTAGE)]
     pub subthreshold_slope: R,
     /// The shift of the softened overdrive along the gate voltage, `SUBSHIFT`, in volts;
     /// default 0.
+    #[dimension(VOLTAGE)]
     pub subthreshold_shift: R,
     /// The drain resistance, `RD`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub drain_resistance: R,
     /// The source resistance, `RS`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub source_resistance: R,
     /// The gate resistance, `RG`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub gate_resistance: R,
     /// The quasi-saturation resistance, `RQ`, in ohms, which the drain resistance grows
     /// towards with the drain voltage; default none, for no quasi-saturation.
+    #[dimension(RESISTANCE)]
     pub quasi_saturation_resistance: Option<R>,
     /// The quasi-saturation voltage, `VQ`, in volts, at which the drain resistance has
     /// grown by half the quasi-saturation resistance; default none, for no
     /// quasi-saturation.
+    #[dimension(VOLTAGE)]
     pub quasi_saturation_voltage: Option<R>,
     /// The drain-source shunt resistance, `RDS`, in ohms; default none, for ngspice's
     /// conductance of 1 fS whatever the multiplier.
+    #[dimension(RESISTANCE)]
     pub drain_source_resistance: Option<R>,
     /// The gate-source capacitance, `CGS`, in farads; default 1.4 nF.
+    #[dimension(CAPACITANCE)]
     pub gate_source_capacitance: R,
     /// The gate-drain capacitance far above the drain, `CGDMAX`, in farads; default 2 nF.
+    #[dimension(CAPACITANCE)]
     pub max_gate_drain_capacitance: R,
     /// The gate-drain capacitance far below the drain, `CGDMIN`, in farads; default
     /// 20 pF.
+    #[dimension(CAPACITANCE)]
     pub min_gate_drain_capacitance: R,
     /// How fast the gate-drain capacitance moves with the gate-drain voltage, `A`, per
     /// volt; default 1.
+    #[dimension(PER_VOLT)]
     pub gate_drain_capacitance_coefficient: R,
     /// The body diode's saturation current, `IS`, in amperes; default 1e-14.
+    #[dimension(CURRENT)]
     pub saturation_current: R,
     /// The body diode's emission coefficient, `N`; default 1.
     pub emission_coefficient: R,
     /// The body diode's series resistance, `RB`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub body_resistance: R,
     /// The body diode's zero-bias junction capacitance, `CJO`, in farads; default
     /// 0.5 nF.
+    #[dimension(CAPACITANCE)]
     pub junction_capacitance: R,
     /// The body diode's junction potential, `VJ`, in volts; default 0.8.
+    #[dimension(VOLTAGE)]
     pub junction_potential: R,
     /// The body diode's grading coefficient, `M`, below 1; default 0.5.
     pub grading_coefficient: R,
@@ -229,61 +253,77 @@ pub struct VdmosParameters<R: Real = f64> {
     /// capacitance is extended linearly, `FC`, below 1; default 0.5.
     pub depletion_coefficient: R,
     /// The body diode's transit time, `TT`, in seconds; default 0.
+    #[dimension(TIME)]
     pub transit_time: R,
     /// The drain-source breakdown voltage, `BV`, in volts, positive; without it, the body
     /// diode never breaks down.
+    #[dimension(VOLTAGE)]
     pub breakdown_voltage: Option<R>,
     /// The current at the breakdown voltage, `IBV`, in amperes, whatever the multiplier;
     /// default 1e-10.
+    #[dimension(CURRENT)]
     pub breakdown_current: R,
     /// The breakdown emission coefficient, `NBV`; default 1.
     pub breakdown_emission_coefficient: R,
     /// The energy gap that scales the body diode's saturation current with temperature,
     /// `EG`, in volts; default 1.11, silicon's.
+    #[dimension(VOLTAGE)]
     pub energy_gap: R,
     /// The exponent of the temperature ratio in the body diode's saturation current's
     /// scaling, `XTI`; default 3.
     pub saturation_current_temperature_exponent: R,
     /// The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C.
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts
     /// per kelvin; default 0.
+    #[dimension(VOLTS_PER_KELVIN)]
     pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter,
     /// `MU` or `BEX`; default −1.5.
     pub transconductance_parameter_temperature_exponent: R,
     /// The subthreshold slope's linear temperature coefficient, `TKSUBTHRES1`, per kelvin;
     /// default 0.
+    #[dimension(PER_KELVIN)]
     pub subthreshold_slope_temperature_coefficient: R,
     /// The subthreshold slope's quadratic temperature coefficient, `TKSUBTHRES2`, per
     /// square kelvin; default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub subthreshold_slope_quadratic_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the drain resistance, `TEXP0`;
     /// default none, for the drain resistance's temperature coefficients.
     pub drain_resistance_temperature_exponent: Option<R>,
     /// The drain resistance's linear temperature coefficient, `TRD1`, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub drain_resistance_temperature_coefficient: R,
     /// The drain resistance's quadratic temperature coefficient, `TRD2`, per square kelvin;
     /// default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub drain_resistance_quadratic_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the quasi-saturation resistance,
     /// `TEXP1`; default 0.3.
     pub quasi_saturation_temperature_exponent: R,
     /// The source resistance's linear temperature coefficient, `TRS1`, per kelvin; default
     /// 0.
+    #[dimension(PER_KELVIN)]
     pub source_resistance_temperature_coefficient: R,
     /// The source resistance's quadratic temperature coefficient, `TRS2`, per square
     /// kelvin; default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub source_resistance_quadratic_temperature_coefficient: R,
     /// The gate resistance's linear temperature coefficient, `TRG1`, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub gate_resistance_temperature_coefficient: R,
     /// The gate resistance's quadratic temperature coefficient, `TRG2`, per square kelvin;
     /// default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub gate_resistance_quadratic_temperature_coefficient: R,
     /// The body resistance's linear temperature coefficient, `TRB1`, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub body_resistance_temperature_coefficient: R,
     /// The body resistance's quadratic temperature coefficient, `TRB2`, per square kelvin;
     /// default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub body_resistance_quadratic_temperature_coefficient: R,
     /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
     /// noise.
@@ -518,6 +558,10 @@ impl Kernel for Vdmos {
     type Shape = VdmosShape;
     type Prepared<R: Real> = PreparedVdmos<R>;
     type Memory = VdmosMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        VdmosParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &VdmosParameters<R>) -> Interface {
         Interface::new(

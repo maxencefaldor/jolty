@@ -7,7 +7,7 @@ use schemars::{JsonSchema, Schema};
 use serde_json::Value;
 
 use crate::device::{extended, schema};
-use crate::{Instance, Interface, Model, ParameterError, Specification};
+use crate::{Instance, Interface, Model, ParameterError, ParameterKind, Specification};
 
 /// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
 /// `DTEMP` set an instance's: the parameter `temperature`, in kelvins, holds the device
@@ -138,6 +138,14 @@ impl<M: Model> Model for Surrounded<M> {
 
     fn foundry(&self) -> bool {
         self.inner.foundry()
+    }
+
+    fn parameter_kinds(&self) -> &'static [(&'static str, ParameterKind)] {
+        self.inner.parameter_kinds()
+    }
+
+    fn binned_parameters(&self) -> &'static [&'static str] {
+        self.inner.binned_parameters()
     }
 }
 

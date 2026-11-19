@@ -12,6 +12,8 @@ Examples:
     {'resistance': 10000.0}
 """
 
+import functools
+import inspect
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -25,21 +27,17 @@ from jolty import _core, ir
 from jolty.errors import DimensionError
 from jolty.units import (
     CAPACITANCE,
-    CHARGE,
-    CONDUCTANCE,
     CURRENT,
     DIMENSIONLESS,
-    FREQUENCY,
     HEAT_CAPACITY,
-    INDUCTANCE,
     LENGTH,
     POWER,
-    RESISTANCE,
     TEMPERATURE,
     THERMAL_RESISTANCE,
     TIME,
     VOLTAGE,
     Dimension,
+    Exponent,
     Quantity,
     finite,
 )
@@ -297,10 +295,118 @@ PER_KELVIN_SQUARED: Final = DIMENSIONLESS / TEMPERATURE**2
 """The dimension of a quadratic temperature coefficient, K⁻²."""
 
 PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
-"""The dimension of a linear voltage coefficient, V⁻¹."""
+"""The dimension of a linear voltage coefficient or channel-length modulation, V⁻¹."""
 
 PER_VOLT_SQUARED: Final = DIMENSIONLESS / VOLTAGE**2
 """The dimension of a quadratic voltage coefficient, V⁻²."""
+
+TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
+"""The dimension of a field-effect transistor's transconductance parameter, A/V²."""
+
+MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
+"""The dimension of a carrier mobility, m²/(V·s)."""
+
+VOLTS_PER_KELVIN: Final = VOLTAGE / TEMPERATURE
+"""The dimension of a voltage's temperature coefficient, V/K."""
+
+type _ParameterKind = Dimension | str | None
+
+
+def _exponent(doubled: int) -> Exponent:
+    """One SI base exponent from the doubled integer the engine exports."""
+    return doubled // 2 if doubled % 2 == 0 else Fraction(doubled, 2)
+
+
+def _dimension(exponents: tuple[int, int, int, int, int]) -> Dimension:
+    """A dimension from the five doubled SI base exponents the engine exports."""
+    kilogram, metre, second, ampere, kelvin = exponents
+    return Dimension(
+        kilogram=_exponent(kilogram),
+        metre=_exponent(metre),
+        second=_exponent(second),
+        ampere=_exponent(ampere),
+        kelvin=_exponent(kelvin),
+    )
+
+
+@functools.cache
+def _model_kinds(model: str) -> Mapping[str, _ParameterKind]:
+    """The parameter kinds the engine declares for `model`, decoded to dimensions."""
+    return {
+        name: _dimension(raw) if isinstance(raw, tuple) else raw
+        for name, raw in _core.parameter_dimensions(model).items()
+    }
+
+
+def _quantity(value: object, dimension: Dimension, name: str) -> float:
+    """The SI value of `value`, once checked as a quantity of `dimension`.
+
+    Raises:
+        DimensionError: When `value` is not a quantity of `dimension`.
+        ValueError: When its value is not finite.
+    """
+    if not isinstance(value, Quantity):
+        message = f"{name} takes a quantity in {dimension}, not {value!r}"
+        raise DimensionError(message)
+    return value.to(dimension, name)
+
+
+def _parameter_value(
+    name: str,
+    value: object,
+    kind: _ParameterKind,
+    conditional: Mapping[str, Dimension] | None,
+) -> JsonValue:
+    """One checked parameter value in SI base units for the engine.
+
+    Raises:
+        DimensionError: When a quantity or plain number has the wrong kind or dimension.
+        TypeError: When a choice parameter is not a string, an integer or a boolean.
+        ValueError: When a numeric value is not finite or a conditional tag has no
+            resolved dimension.
+    """
+    if kind == "choice":
+        if isinstance(value, bool | int | str):
+            return value
+        message = f"{name} takes a choice, not {value!r}"
+        raise TypeError(message)
+    if isinstance(kind, str):
+        if conditional is None or kind not in conditional:
+            message = f"{name} has no resolved dimension for condition `{kind}`"
+            raise ValueError(message)
+        kind = conditional[kind]
+    if isinstance(kind, Dimension):
+        return _quantity(value, kind, name)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return finite(value, name)
+    message = f"{name} takes a plain number, not {value!r}"
+    raise DimensionError(message)
+
+
+def _device(
+    model: str,
+    values: Mapping[str, object],
+    *,
+    conditional: Mapping[str, Dimension] | None = None,
+    card: Mapping[str, Quantity | float] | None = None,
+    card_dimension: Callable[[str], Dimension | None] | None = None,
+) -> Device:
+    """A device of `model`, each parameter in `values` checked against the engine.
+
+    Raises:
+        DimensionError: When a parameter has the wrong dimension or kind.
+        TypeError: When a choice parameter is not a string, an integer or a boolean.
+        ValueError: When a value is not finite, or the engine cannot read the device.
+    """
+    kinds = _model_kinds(model)
+    parameters: dict[str, JsonValue] = {
+        name: _parameter_value(name, value, kinds[name], conditional)
+        for name, value in values.items()
+        if value is not None
+    }
+    if card is not None and card_dimension is not None:
+        _card(parameters, card, card_dimension)
+    return device(model, parameters)
 
 
 def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and noise
@@ -340,22 +446,9 @@ def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and nois
         >>> resistor(1 * kohm, voltage_coefficient=-2e-6 / V).parameters
         {'resistance': 1000.0, 'voltage_coefficient': -2e-06}
     """
-    parameters: dict[str, JsonValue] = {
-        "resistance": resistance.to(RESISTANCE, "resistance")
-    }
-    parameters |= _drift(
-        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
-    )
-    parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
-    parameters |= _parameters(
-        {},
-        {
-            "exponential_temperature_coefficient": exponential_temperature_coefficient,
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-    )
-    made = device("resistor", parameters)
+    values = locals()
+    values.pop("tolerance")
+    made = _device("resistor", values)
     return made if tolerance is None else made.toleranced("resistance", tolerance)
 
 
@@ -376,14 +469,9 @@ def capacitor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cu
     ``b``, by ``1 + vc1 · v + vc2 · v²``, and its charge is that capacitance's integral
     from 0 V.
     """
-    parameters: dict[str, JsonValue] = {
-        "capacitance": capacitance.to(CAPACITANCE, "capacitance")
-    }
-    parameters |= _drift(
-        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
-    )
-    parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
-    made = device("capacitor", parameters)
+    values = locals()
+    values.pop("tolerance")
+    made = _device("capacitor", values)
     return made if tolerance is None else made.toleranced("capacitance", tolerance)
 
 
@@ -401,13 +489,9 @@ def inductor(
     Its inductance drifts with temperature, and spreads within its tolerance, as a
     resistor's resistance does.
     """
-    parameters: dict[str, JsonValue] = {
-        "inductance": inductance.to(INDUCTANCE, "inductance")
-    }
-    parameters |= _drift(
-        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
-    )
-    made = device("inductor", parameters)
+    values = locals()
+    values.pop("tolerance")
+    made = _device("inductor", values)
     return made if tolerance is None else made.toleranced("inductance", tolerance)
 
 
@@ -481,41 +565,7 @@ def transmission_line(characteristic_impedance: Quantity, delay: Quantity) -> De
         >>> line.terminals
         ('positive1', 'negative1', 'positive2', 'negative2')
     """
-    parameters = _parameters(
-        {
-            "characteristic_impedance": (characteristic_impedance, RESISTANCE),
-            "delay": (delay, TIME),
-        },
-        {},
-    )
-    return device("transmission_line", parameters)
-
-
-def _drift(
-    linear: Quantity | None, quadratic: Quantity | None, nominal: Quantity | None
-) -> dict[str, JsonValue]:
-    """A passive device's temperature coefficients and nominal temperature, as given."""
-    return _parameters(
-        {
-            "temperature_coefficient": (linear, PER_KELVIN),
-            "quadratic_temperature_coefficient": (quadratic, PER_KELVIN_SQUARED),
-            "nominal_temperature": (nominal, TEMPERATURE),
-        },
-        {},
-    )
-
-
-def _curvature(
-    linear: Quantity | None, quadratic: Quantity | None
-) -> dict[str, JsonValue]:
-    """A passive device's voltage coefficients, as given."""
-    return _parameters(
-        {
-            "voltage_coefficient": (linear, PER_VOLT),
-            "quadratic_voltage_coefficient": (quadratic, PER_VOLT_SQUARED),
-        },
-        {},
-    )
+    return _device("transmission_line", locals())
 
 
 def thermal_resistance(resistance: Quantity) -> Device:
@@ -587,8 +637,7 @@ def voltage_controlled_voltage_source(gain: float) -> Device:
     That control voltage is ``control_positive`` minus ``control_negative``, and the
     control terminals draw no current.
     """
-    parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return device("voltage_controlled_voltage_source", parameters)
+    return _device("voltage_controlled_voltage_source", locals())
 
 
 def voltage_controlled_current_source(transconductance: Quantity) -> Device:
@@ -597,9 +646,7 @@ def voltage_controlled_current_source(transconductance: Quantity) -> Device:
     The current flows from ``positive`` through the source to ``negative``; the control
     voltage is ``control_positive`` minus ``control_negative``.
     """
-    value = transconductance.to(CONDUCTANCE, "transconductance")
-    parameters: dict[str, JsonValue] = {"transconductance": value}
-    return device("voltage_controlled_current_source", parameters)
+    return _device("voltage_controlled_current_source", locals())
 
 
 def current_controlled_current_source(gain: float) -> Device:
@@ -610,8 +657,7 @@ def current_controlled_current_source(gain: float) -> Device:
     series with a branch, it senses that branch's current. The output current flows
     from ``positive`` through the source to ``negative``.
     """
-    parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return device("current_controlled_current_source", parameters)
+    return _device("current_controlled_current_source", locals())
 
 
 def current_controlled_voltage_source(transresistance: Quantity) -> Device:
@@ -623,9 +669,7 @@ def current_controlled_voltage_source(transresistance: Quantity) -> Device:
     its current, from ``positive`` through the source to ``negative``, is the unknown
     ``current``, as a voltage source's is.
     """
-    value = transresistance.to(RESISTANCE, "transresistance")
-    parameters: dict[str, JsonValue] = {"transresistance": value}
-    return device("current_controlled_voltage_source", parameters)
+    return _device("current_controlled_voltage_source", locals())
 
 
 def behavioral_voltage_source(expression: str) -> Device:
@@ -698,16 +742,7 @@ def voltage_controlled_switch(
     resistance at the on voltage; beyond either, the resistance holds. The control
     terminals draw no current. Parameters left out take PSpice's defaults.
     """
-    parameters = _parameters(
-        {
-            "on_resistance": (on_resistance, RESISTANCE),
-            "off_resistance": (off_resistance, RESISTANCE),
-            "on_voltage": (on_voltage, VOLTAGE),
-            "off_voltage": (off_voltage, VOLTAGE),
-        },
-        {},
-    )
-    return device("voltage_controlled_switch", parameters)
+    return _device("voltage_controlled_switch", locals())
 
 
 def current_controlled_switch(
@@ -725,16 +760,7 @@ def current_controlled_switch(
     does, from the off resistance at the off current to the on resistance at the on
     current. Parameters left out take PSpice's defaults.
     """
-    parameters = _parameters(
-        {
-            "on_resistance": (on_resistance, RESISTANCE),
-            "off_resistance": (off_resistance, RESISTANCE),
-            "on_current": (on_current, CURRENT),
-            "off_current": (off_current, CURRENT),
-        },
-        {},
-    )
-    return device("current_controlled_switch", parameters)
+    return _device("current_controlled_switch", locals())
 
 
 def photocell(
@@ -761,15 +787,7 @@ def photocell(
         >>> cell.parameters["response_time"]
         0.02
     """
-    parameters = _parameters(
-        {
-            "resistance": (resistance, RESISTANCE),
-            "dark_resistance": (dark_resistance, RESISTANCE),
-            "response_time": (response_time, TIME),
-        },
-        {"illuminance": illuminance, "gamma": gamma},
-    )
-    return device("photocell", parameters)
+    return _device("photocell", locals())
 
 
 def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates and exponents
@@ -810,24 +828,7 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates a
         >>> cell.parameters["off_rate"]
         100000.0
     """
-    parameters = _parameters(
-        {
-            "on_resistance": (on_resistance, RESISTANCE),
-            "off_resistance": (off_resistance, RESISTANCE),
-            "on_voltage": (on_voltage, VOLTAGE),
-            "off_voltage": (off_voltage, VOLTAGE),
-            "on_rate": (on_rate, FREQUENCY),
-            "off_rate": (off_rate, FREQUENCY),
-        },
-        {
-            "on_exponent": on_exponent,
-            "off_exponent": off_exponent,
-            "state": state,
-            "window": window,
-        },
-        {"law": law},
-    )
-    return device("voltage_controlled_memristor", parameters)
+    return _device("voltage_controlled_memristor", locals())
 
 
 def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, law and state
@@ -856,16 +857,7 @@ def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, la
         >>> cell.parameters["charge"]
         2e-06
     """
-    parameters = _parameters(
-        {
-            "on_resistance": (on_resistance, RESISTANCE),
-            "off_resistance": (off_resistance, RESISTANCE),
-            "charge": (charge, CHARGE),
-        },
-        {"state": state, "window": window},
-        {"law": law},
-    )
-    return device("current_controlled_memristor", parameters)
+    return _device("current_controlled_memristor", locals())
 
 
 def diode(  # noqa: PLR0913 - ngspice's junction diode has fifty parameters
@@ -946,123 +938,9 @@ def diode(  # noqa: PLR0913 - ngspice's junction diode has fifty parameters
             temperature coefficient's being volts per kelvin at temperature model 0 and
             per kelvin at 1 and 2.
     """
-    relative = temperature_model in {1, 2}
-    parameters = _parameters(
-        {
-            "saturation_current": (saturation_current, CURRENT),
-            "series_resistance": (series_resistance, RESISTANCE),
-            "junction_capacitance": (junction_capacitance, CAPACITANCE),
-            "junction_potential": (junction_potential, VOLTAGE),
-            "transit_time": (transit_time, TIME),
-            "forward_knee_current": (forward_knee_current, CURRENT),
-            "reverse_knee_current": (reverse_knee_current, CURRENT),
-            "recombination_saturation_current": (
-                recombination_saturation_current,
-                CURRENT,
-            ),
-            "sidewall_saturation_current": (sidewall_saturation_current, CURRENT),
-            "sidewall_series_resistance": (sidewall_series_resistance, RESISTANCE),
-            "sidewall_junction_capacitance": (
-                sidewall_junction_capacitance,
-                CAPACITANCE,
-            ),
-            "sidewall_junction_potential": (sidewall_junction_potential, VOLTAGE),
-            "sidewall_forward_knee_current": (sidewall_forward_knee_current, CURRENT),
-            "tunneling_saturation_current": (tunneling_saturation_current, CURRENT),
-            "sidewall_tunneling_saturation_current": (
-                sidewall_tunneling_saturation_current,
-                CURRENT,
-            ),
-            "breakdown_voltage": (breakdown_voltage, VOLTAGE),
-            "breakdown_current": (breakdown_current, CURRENT),
-            "breakdown_temperature_coefficient": (
-                breakdown_temperature_coefficient,
-                PER_KELVIN if relative else VOLTS_PER_KELVIN,
-            ),
-            "energy_gap": (energy_gap, VOLTAGE),
-            "energy_gap_alpha": (energy_gap_alpha, VOLTS_PER_KELVIN),
-            "energy_gap_beta": (energy_gap_beta, TEMPERATURE),
-            "junction_capacitance_temperature_coefficient": (
-                junction_capacitance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "sidewall_junction_capacitance_temperature_coefficient": (
-                sidewall_junction_capacitance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "junction_potential_temperature_coefficient": (
-                junction_potential_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "sidewall_junction_potential_temperature_coefficient": (
-                sidewall_junction_potential_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "series_resistance_temperature_coefficient": (
-                series_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "series_resistance_quadratic_temperature_coefficient": (
-                series_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "transit_time_temperature_coefficient": (
-                transit_time_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "transit_time_quadratic_temperature_coefficient": (
-                transit_time_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "grading_coefficient_temperature_coefficient": (
-                grading_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "grading_coefficient_quadratic_temperature_coefficient": (
-                grading_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-        },
-        {
-            "emission_coefficient": emission_coefficient,
-            "grading_coefficient": grading_coefficient,
-            "depletion_coefficient": depletion_coefficient,
-            "recombination_emission_coefficient": recombination_emission_coefficient,
-            "sidewall_emission_coefficient": sidewall_emission_coefficient,
-            "sidewall_grading_coefficient": sidewall_grading_coefficient,
-            "sidewall_depletion_coefficient": sidewall_depletion_coefficient,
-            "tunneling_emission_coefficient": tunneling_emission_coefficient,
-            "tunneling_saturation_current_temperature_exponent": (
-                tunneling_saturation_current_temperature_exponent
-            ),
-            "tunneling_energy_gap_factor": tunneling_energy_gap_factor,
-            "breakdown_emission_coefficient": breakdown_emission_coefficient,
-            "saturation_current_temperature_exponent": (
-                saturation_current_temperature_exponent
-            ),
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-        {
-            "temperature_model": temperature_model,
-            "capacitance_temperature_model": capacitance_temperature_model,
-        },
-    )
-    return device("diode", parameters)
-
-
-TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
-"""The dimension of a field-effect transistor's transconductance parameter, A/V²."""
-
-PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
-"""The dimension of a channel-length modulation, V⁻¹."""
-
-MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
-"""The dimension of a carrier mobility, m²/(V·s)."""
-
-VOLTS_PER_KELVIN: Final = VOLTAGE / TEMPERATURE
-"""The dimension of a voltage's temperature coefficient, V/K."""
+    values = locals()
+    breakdown = PER_KELVIN if temperature_model in {1, 2} else VOLTS_PER_KELVIN
+    return _device("diode", values, conditional={"diode_tbv": breakdown})
 
 
 def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
@@ -1110,42 +988,7 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
         >>> jfet(channel="p", transconductance_parameter=1 * mA / V**2).parameters
         {'channel': 'p', 'transconductance_parameter': 0.001}
     """
-    parameters: dict[str, JsonValue] = {} if channel is None else {"channel": channel}
-    parameters |= _parameters(
-        {
-            "threshold_voltage": (threshold_voltage, VOLTAGE),
-            "transconductance_parameter": (
-                transconductance_parameter,
-                TRANSCONDUCTANCE_PARAMETER,
-            ),
-            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
-            "drain_resistance": (drain_resistance, RESISTANCE),
-            "source_resistance": (source_resistance, RESISTANCE),
-            "gate_source_capacitance": (gate_source_capacitance, CAPACITANCE),
-            "gate_drain_capacitance": (gate_drain_capacitance, CAPACITANCE),
-            "junction_potential": (junction_potential, VOLTAGE),
-            "saturation_current": (saturation_current, CURRENT),
-            "threshold_voltage_temperature_coefficient": (
-                threshold_voltage_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "energy_gap": (energy_gap, VOLTAGE),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-        },
-        {
-            "depletion_coefficient": depletion_coefficient,
-            "doping_tail": doping_tail,
-            "transconductance_parameter_temperature_exponent": (
-                transconductance_parameter_temperature_exponent
-            ),
-            "saturation_current_temperature_exponent": (
-                saturation_current_temperature_exponent
-            ),
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-    )
-    return device("jfet", parameters)
+    return _device("jfet", locals())
 
 
 def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 parameters
@@ -1301,269 +1144,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 paramete
         >>> transistor.parameters["forward_early_voltage"]
         50.0
     """
-    parameters = _parameters(
-        {
-            "saturation_current": (saturation_current, CURRENT),
-            "forward_early_voltage": (forward_early_voltage, VOLTAGE),
-            "reverse_early_voltage": (reverse_early_voltage, VOLTAGE),
-            "forward_knee_current": (forward_knee_current, CURRENT),
-            "reverse_knee_current": (reverse_knee_current, CURRENT),
-            "base_emitter_leakage_current": (base_emitter_leakage_current, CURRENT),
-            "base_collector_leakage_current": (base_collector_leakage_current, CURRENT),
-            "base_resistance": (base_resistance, RESISTANCE),
-            "min_base_resistance": (min_base_resistance, RESISTANCE),
-            "base_resistance_current": (base_resistance_current, CURRENT),
-            "emitter_resistance": (emitter_resistance, RESISTANCE),
-            "collector_resistance": (collector_resistance, RESISTANCE),
-            "base_emitter_capacitance": (base_emitter_capacitance, CAPACITANCE),
-            "base_emitter_potential": (base_emitter_potential, VOLTAGE),
-            "forward_transit_time": (forward_transit_time, TIME),
-            "transit_time_voltage": (transit_time_voltage, VOLTAGE),
-            "transit_time_current": (transit_time_current, CURRENT),
-            "base_collector_capacitance": (base_collector_capacitance, CAPACITANCE),
-            "base_collector_potential": (base_collector_potential, VOLTAGE),
-            "reverse_transit_time": (reverse_transit_time, TIME),
-            "substrate_saturation_current": (substrate_saturation_current, CURRENT),
-            "substrate_capacitance": (substrate_capacitance, CAPACITANCE),
-            "substrate_potential": (substrate_potential, VOLTAGE),
-            "energy_gap": (energy_gap, VOLTAGE),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-            "forward_beta_temperature_coefficient": (
-                forward_beta_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "forward_beta_quadratic_temperature_coefficient": (
-                forward_beta_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "reverse_beta_temperature_coefficient": (
-                reverse_beta_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "reverse_beta_quadratic_temperature_coefficient": (
-                reverse_beta_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "forward_knee_current_temperature_coefficient": (
-                forward_knee_current_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "forward_knee_current_quadratic_temperature_coefficient": (
-                forward_knee_current_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "reverse_knee_current_temperature_coefficient": (
-                reverse_knee_current_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "reverse_knee_current_quadratic_temperature_coefficient": (
-                reverse_knee_current_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "forward_early_voltage_temperature_coefficient": (
-                forward_early_voltage_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "forward_early_voltage_quadratic_temperature_coefficient": (
-                forward_early_voltage_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "reverse_early_voltage_temperature_coefficient": (
-                reverse_early_voltage_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "reverse_early_voltage_quadratic_temperature_coefficient": (
-                reverse_early_voltage_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_resistance_temperature_coefficient": (
-                base_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_resistance_quadratic_temperature_coefficient": (
-                base_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "min_base_resistance_temperature_coefficient": (
-                min_base_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "min_base_resistance_quadratic_temperature_coefficient": (
-                min_base_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_resistance_current_temperature_coefficient": (
-                base_resistance_current_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_resistance_current_quadratic_temperature_coefficient": (
-                base_resistance_current_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "collector_resistance_temperature_coefficient": (
-                collector_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "collector_resistance_quadratic_temperature_coefficient": (
-                collector_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "emitter_resistance_temperature_coefficient": (
-                emitter_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "emitter_resistance_quadratic_temperature_coefficient": (
-                emitter_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "forward_emission_coefficient_temperature_coefficient": (
-                forward_emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "forward_emission_coefficient_quadratic_temperature_coefficient": (
-                forward_emission_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "reverse_emission_coefficient_temperature_coefficient": (
-                reverse_emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "reverse_emission_coefficient_quadratic_temperature_coefficient": (
-                reverse_emission_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_emitter_leakage_emission_coefficient_temperature_coefficient": (
-                base_emitter_leakage_emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient": (  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
-                base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_collector_leakage_emission_coefficient_temperature_coefficient": (
-                base_collector_leakage_emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient": (  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
-                base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "substrate_emission_coefficient_temperature_coefficient": (
-                substrate_emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "substrate_emission_coefficient_quadratic_temperature_coefficient": (
-                substrate_emission_coefficient_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "transit_time_current_temperature_coefficient": (
-                transit_time_current_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "transit_time_current_quadratic_temperature_coefficient": (
-                transit_time_current_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "forward_transit_time_temperature_coefficient": (
-                forward_transit_time_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "forward_transit_time_quadratic_temperature_coefficient": (
-                forward_transit_time_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "reverse_transit_time_temperature_coefficient": (
-                reverse_transit_time_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "reverse_transit_time_quadratic_temperature_coefficient": (
-                reverse_transit_time_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_emitter_grading_temperature_coefficient": (
-                base_emitter_grading_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_emitter_grading_quadratic_temperature_coefficient": (
-                base_emitter_grading_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_collector_grading_temperature_coefficient": (
-                base_collector_grading_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_collector_grading_quadratic_temperature_coefficient": (
-                base_collector_grading_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "substrate_grading_temperature_coefficient": (
-                substrate_grading_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "substrate_grading_quadratic_temperature_coefficient": (
-                substrate_grading_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "base_emitter_capacitance_temperature_coefficient": (
-                base_emitter_capacitance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_collector_capacitance_temperature_coefficient": (
-                base_collector_capacitance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "substrate_capacitance_temperature_coefficient": (
-                substrate_capacitance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "base_emitter_potential_temperature_coefficient": (
-                base_emitter_potential_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "base_collector_potential_temperature_coefficient": (
-                base_collector_potential_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "substrate_potential_temperature_coefficient": (
-                substrate_potential_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-        },
-        {
-            "forward_beta": forward_beta,
-            "reverse_beta": reverse_beta,
-            "forward_emission_coefficient": forward_emission_coefficient,
-            "reverse_emission_coefficient": reverse_emission_coefficient,
-            "base_emitter_leakage_emission_coefficient": (
-                base_emitter_leakage_emission_coefficient
-            ),
-            "base_collector_leakage_emission_coefficient": (
-                base_collector_leakage_emission_coefficient
-            ),
-            "base_emitter_grading": base_emitter_grading,
-            "transit_time_bias_coefficient": transit_time_bias_coefficient,
-            "base_collector_grading": base_collector_grading,
-            "internal_base_fraction": internal_base_fraction,
-            "depletion_coefficient": depletion_coefficient,
-            "excess_phase": excess_phase,
-            "substrate_emission_coefficient": substrate_emission_coefficient,
-            "substrate_grading": substrate_grading,
-            "saturation_current_temperature_exponent": (
-                saturation_current_temperature_exponent
-            ),
-            "beta_temperature_exponent": beta_temperature_exponent,
-            "high_injection_exponent": high_injection_exponent,
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-        {
-            "polarity": polarity,
-            "substrate": substrate,
-            "temperature_model": temperature_model,
-            "capacitance_temperature_model": capacitance_temperature_model,
-        },
-    )
-    return device("bipolar_transistor", parameters)
+    return _device("bipolar_transistor", locals())
 
 
 def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
@@ -1719,229 +1300,7 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
         >>> transistor.terminals
         ('collector', 'base', 'emitter', 'substrate')
     """
-    parameters = _parameters(
-        {
-            "extrinsic_collector_resistance": (
-                extrinsic_collector_resistance,
-                RESISTANCE,
-            ),
-            "intrinsic_collector_resistance": (
-                intrinsic_collector_resistance,
-                RESISTANCE,
-            ),
-            "epi_saturation_voltage": (epi_saturation_voltage, VOLTAGE),
-            "extrinsic_base_resistance": (extrinsic_base_resistance, RESISTANCE),
-            "intrinsic_base_resistance": (intrinsic_base_resistance, RESISTANCE),
-            "emitter_resistance": (emitter_resistance, RESISTANCE),
-            "substrate_resistance": (substrate_resistance, RESISTANCE),
-            "parasitic_base_resistance": (parasitic_base_resistance, RESISTANCE),
-            "saturation_current": (saturation_current, CURRENT),
-            "base_emitter_overlap_capacitance": (
-                base_emitter_overlap_capacitance,
-                CAPACITANCE,
-            ),
-            "base_emitter_capacitance": (base_emitter_capacitance, CAPACITANCE),
-            "base_emitter_potential": (base_emitter_potential, VOLTAGE),
-            "base_emitter_smoothing": (base_emitter_smoothing, VOLTAGE),
-            "base_collector_overlap_capacitance": (
-                base_collector_overlap_capacitance,
-                CAPACITANCE,
-            ),
-            "base_collector_capacitance": (base_collector_capacitance, CAPACITANCE),
-            "epi_charge": (epi_charge, CHARGE),
-            "extrinsic_base_collector_capacitance": (
-                extrinsic_base_collector_capacitance,
-                CAPACITANCE,
-            ),
-            "base_collector_potential": (base_collector_potential, VOLTAGE),
-            "base_collector_smoothing": (base_collector_smoothing, VOLTAGE),
-            "collector_substrate_capacitance": (
-                collector_substrate_capacitance,
-                CAPACITANCE,
-            ),
-            "collector_substrate_potential": (collector_substrate_potential, VOLTAGE),
-            "collector_substrate_smoothing": (collector_substrate_smoothing, VOLTAGE),
-            "collector_substrate_fixed_capacitance": (
-                collector_substrate_fixed_capacitance,
-                CAPACITANCE,
-            ),
-            "ideal_base_emitter_current": (ideal_base_emitter_current, CURRENT),
-            "nonideal_base_emitter_current": (nonideal_base_emitter_current, CURRENT),
-            "ideal_base_collector_current": (ideal_base_collector_current, CURRENT),
-            "nonideal_base_collector_current": (
-                nonideal_base_collector_current,
-                CURRENT,
-            ),
-            "avalanche_coefficient": (avalanche_coefficient, PER_VOLT),
-            "parasitic_saturation_current": (parasitic_saturation_current, CURRENT),
-            "parasitic_ideal_base_emitter_current": (
-                parasitic_ideal_base_emitter_current,
-                CURRENT,
-            ),
-            "parasitic_nonideal_base_emitter_current": (
-                parasitic_nonideal_base_emitter_current,
-                CURRENT,
-            ),
-            "parasitic_ideal_base_collector_current": (
-                parasitic_ideal_base_collector_current,
-                CURRENT,
-            ),
-            "parasitic_nonideal_base_collector_current": (
-                parasitic_nonideal_base_collector_current,
-                CURRENT,
-            ),
-            "forward_early_voltage": (forward_early_voltage, VOLTAGE),
-            "reverse_early_voltage": (reverse_early_voltage, VOLTAGE),
-            "forward_knee_current": (forward_knee_current, CURRENT),
-            "reverse_knee_current": (reverse_knee_current, CURRENT),
-            "parasitic_knee_current": (parasitic_knee_current, CURRENT),
-            "forward_transit_time": (forward_transit_time, TIME),
-            "transit_time_voltage": (transit_time_voltage, VOLTAGE),
-            "transit_time_current": (transit_time_current, CURRENT),
-            "reverse_transit_time": (reverse_transit_time, TIME),
-            "excess_phase_delay": (excess_phase_delay, TIME),
-            "reach_through_voltage": (reach_through_voltage, VOLTAGE),
-            "base_emitter_breakdown_voltage": (base_emitter_breakdown_voltage, VOLTAGE),
-            "base_emitter_breakdown_current": (base_emitter_breakdown_current, CURRENT),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-            "activation_energy": (activation_energy, VOLTAGE),
-            "ideal_base_emitter_activation_energy": (
-                ideal_base_emitter_activation_energy,
-                VOLTAGE,
-            ),
-            "ideal_base_collector_activation_energy": (
-                ideal_base_collector_activation_energy,
-                VOLTAGE,
-            ),
-            "ideal_collector_substrate_activation_energy": (
-                ideal_collector_substrate_activation_energy,
-                VOLTAGE,
-            ),
-            "nonideal_base_emitter_activation_energy": (
-                nonideal_base_emitter_activation_energy,
-                VOLTAGE,
-            ),
-            "nonideal_base_collector_activation_energy": (
-                nonideal_base_collector_activation_energy,
-                VOLTAGE,
-            ),
-            "nonideal_collector_substrate_activation_energy": (
-                nonideal_collector_substrate_activation_energy,
-                VOLTAGE,
-            ),
-            "parasitic_activation_energy": (parasitic_activation_energy, VOLTAGE),
-            "reverse_activation_energy_shift": (
-                reverse_activation_energy_shift,
-                VOLTAGE,
-            ),
-            "emission_coefficient_temperature_coefficient": (
-                emission_coefficient_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "avalanche_temperature_coefficient": (
-                avalanche_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "breakdown_voltage_temperature_coefficient": (
-                breakdown_voltage_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "breakdown_voltage_quadratic_temperature_coefficient": (
-                breakdown_voltage_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "breakdown_emission_temperature_coefficient": (
-                breakdown_emission_temperature_coefficient,
-                PER_KELVIN,
-            ),
-        },
-        {
-            "epi_doping_parameter": epi_doping_parameter,
-            "high_current_collector_factor": high_current_collector_factor,
-            "forward_emission_coefficient": forward_emission_coefficient,
-            "reverse_emission_coefficient": reverse_emission_coefficient,
-            "depletion_coefficient": depletion_coefficient,
-            "base_emitter_grading": base_emitter_grading,
-            "base_collector_grading": base_collector_grading,
-            "collector_substrate_grading": collector_substrate_grading,
-            "intrinsic_base_emitter_fraction": intrinsic_base_emitter_fraction,
-            "ideal_base_emitter_emission_coefficient": (
-                ideal_base_emitter_emission_coefficient
-            ),
-            "nonideal_base_emitter_emission_coefficient": (
-                nonideal_base_emitter_emission_coefficient
-            ),
-            "ideal_base_collector_emission_coefficient": (
-                ideal_base_collector_emission_coefficient
-            ),
-            "nonideal_base_collector_emission_coefficient": (
-                nonideal_base_collector_emission_coefficient
-            ),
-            "avalanche_exponent_coefficient": avalanche_exponent_coefficient,
-            "parasitic_extrinsic_fraction": parasitic_extrinsic_fraction,
-            "parasitic_forward_emission_coefficient": (
-                parasitic_forward_emission_coefficient
-            ),
-            "parasitic_ideal_base_collector_emission_coefficient": (
-                parasitic_ideal_base_collector_emission_coefficient
-            ),
-            "parasitic_nonideal_base_collector_emission_coefficient": (
-                parasitic_nonideal_base_collector_emission_coefficient
-            ),
-            "knee_rolloff": knee_rolloff,
-            "transit_time_base_width_coefficient": transit_time_base_width_coefficient,
-            "transit_time_bias_coefficient": transit_time_bias_coefficient,
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-            "flicker_frequency_exponent": flicker_frequency_exponent,
-            "reach_through_smoothing": reach_through_smoothing,
-            "base_emitter_breakdown_emission_coefficient": (
-                base_emitter_breakdown_emission_coefficient
-            ),
-            "reverse_saturation_current_ratio": reverse_saturation_current_ratio,
-            "saturation_current_temperature_exponent": (
-                saturation_current_temperature_exponent
-            ),
-            "ideal_base_current_temperature_exponent": (
-                ideal_base_current_temperature_exponent
-            ),
-            "nonideal_base_current_temperature_exponent": (
-                nonideal_base_current_temperature_exponent
-            ),
-            "reverse_saturation_current_temperature_exponent": (
-                reverse_saturation_current_temperature_exponent
-            ),
-            "forward_knee_current_temperature_exponent": (
-                forward_knee_current_temperature_exponent
-            ),
-            "extrinsic_collector_resistance_temperature_exponent": (
-                extrinsic_collector_resistance_temperature_exponent
-            ),
-            "intrinsic_collector_resistance_temperature_exponent": (
-                intrinsic_collector_resistance_temperature_exponent
-            ),
-            "extrinsic_base_resistance_temperature_exponent": (
-                extrinsic_base_resistance_temperature_exponent
-            ),
-            "intrinsic_base_resistance_temperature_exponent": (
-                intrinsic_base_resistance_temperature_exponent
-            ),
-            "emitter_resistance_temperature_exponent": (
-                emitter_resistance_temperature_exponent
-            ),
-            "substrate_resistance_temperature_exponent": (
-                substrate_resistance_temperature_exponent
-            ),
-            "parasitic_base_resistance_temperature_exponent": (
-                parasitic_base_resistance_temperature_exponent
-            ),
-            "epi_saturation_voltage_temperature_exponent": (
-                epi_saturation_voltage_temperature_exponent
-            ),
-        },
-        {"polarity": polarity, "base_charge": base_charge},
-    )
-    return device("vbic", parameters)
+    return _device("vbic", locals())
 
 
 def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
@@ -2042,73 +1401,7 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
         >>> mosfet(width=2 * um, length=1 * um, oxide_thickness=20 * nm).parameters
         {'width': 2e-06, 'length': 1e-06, 'oxide_thickness': 2e-08}
     """
-    capacitance_per_length = CAPACITANCE / LENGTH
-    parameters = _parameters(
-        {
-            "width": (width, LENGTH),
-            "length": (length, LENGTH),
-            "threshold_voltage": (threshold_voltage, VOLTAGE),
-            "transconductance_parameter": (
-                transconductance_parameter,
-                TRANSCONDUCTANCE_PARAMETER,
-            ),
-            "surface_potential": (surface_potential, VOLTAGE),
-            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
-            "lateral_diffusion": (lateral_diffusion, LENGTH),
-            "oxide_thickness": (oxide_thickness, LENGTH),
-            "surface_mobility": (surface_mobility, MOBILITY),
-            "substrate_doping": (substrate_doping, DIMENSIONLESS / LENGTH**3),
-            "surface_state_density": (surface_state_density, DIMENSIONLESS / LENGTH**2),
-            "drain_resistance": (drain_resistance, RESISTANCE),
-            "source_resistance": (source_resistance, RESISTANCE),
-            "sheet_resistance": (sheet_resistance, RESISTANCE),
-            "saturation_current": (saturation_current, CURRENT),
-            "saturation_current_density": (
-                saturation_current_density,
-                CURRENT / LENGTH**2,
-            ),
-            "drain_area": (drain_area, LENGTH**2),
-            "source_area": (source_area, LENGTH**2),
-            "drain_perimeter": (drain_perimeter, LENGTH),
-            "source_perimeter": (source_perimeter, LENGTH),
-            "junction_potential": (junction_potential, VOLTAGE),
-            "bulk_drain_capacitance": (bulk_drain_capacitance, CAPACITANCE),
-            "bulk_source_capacitance": (bulk_source_capacitance, CAPACITANCE),
-            "bottom_capacitance": (bottom_capacitance, CAPACITANCE / LENGTH**2),
-            "sidewall_capacitance": (sidewall_capacitance, capacitance_per_length),
-            "gate_source_overlap": (gate_source_overlap, capacitance_per_length),
-            "gate_drain_overlap": (gate_drain_overlap, capacitance_per_length),
-            "gate_bulk_overlap": (gate_bulk_overlap, capacitance_per_length),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-            "max_drift_velocity": (max_drift_velocity, LENGTH / TIME),
-            "junction_depth": (junction_depth, LENGTH),
-            "fast_surface_state_density": (
-                fast_surface_state_density,
-                DIMENSIONLESS / LENGTH**2,
-            ),
-            "mobility_modulation": (mobility_modulation, PER_VOLT),
-            "width_narrowing": (width_narrowing, LENGTH),
-            "length_adjustment": (length_adjustment, LENGTH),
-            "width_adjustment": (width_adjustment, LENGTH),
-            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
-        },
-        {
-            "multiplier": multiplier,
-            "static_feedback": static_feedback,
-            "narrow_width_factor": narrow_width_factor,
-            "saturation_field_factor": saturation_field_factor,
-            "body_effect": body_effect,
-            "drain_squares": drain_squares,
-            "source_squares": source_squares,
-            "bottom_grading": bottom_grading,
-            "sidewall_grading": sidewall_grading,
-            "depletion_coefficient": depletion_coefficient,
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-        {"level": level, "channel": channel, "gate_material": gate_material},
-    )
-    return device("mosfet", parameters)
+    return _device("mosfet", locals())
 
 
 def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
@@ -2191,343 +1484,109 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
         >>> vdmos(threshold_voltage=4 * V, drain_resistance=0.044 * ohm).parameters
         {'threshold_voltage': 4.0, 'drain_resistance': 0.044}
     """
-    parameters = _parameters(
-        {
-            "threshold_voltage": (threshold_voltage, VOLTAGE),
-            "transconductance_parameter": (
-                transconductance_parameter,
-                TRANSCONDUCTANCE_PARAMETER,
-            ),
-            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
-            "mobility_modulation": (mobility_modulation, PER_VOLT),
-            "subthreshold_slope": (subthreshold_slope, VOLTAGE),
-            "subthreshold_shift": (subthreshold_shift, VOLTAGE),
-            "drain_resistance": (drain_resistance, RESISTANCE),
-            "source_resistance": (source_resistance, RESISTANCE),
-            "gate_resistance": (gate_resistance, RESISTANCE),
-            "quasi_saturation_resistance": (quasi_saturation_resistance, RESISTANCE),
-            "quasi_saturation_voltage": (quasi_saturation_voltage, VOLTAGE),
-            "drain_source_resistance": (drain_source_resistance, RESISTANCE),
-            "gate_source_capacitance": (gate_source_capacitance, CAPACITANCE),
-            "max_gate_drain_capacitance": (max_gate_drain_capacitance, CAPACITANCE),
-            "min_gate_drain_capacitance": (min_gate_drain_capacitance, CAPACITANCE),
-            "gate_drain_capacitance_coefficient": (
-                gate_drain_capacitance_coefficient,
-                PER_VOLT,
-            ),
-            "saturation_current": (saturation_current, CURRENT),
-            "body_resistance": (body_resistance, RESISTANCE),
-            "junction_capacitance": (junction_capacitance, CAPACITANCE),
-            "junction_potential": (junction_potential, VOLTAGE),
-            "transit_time": (transit_time, TIME),
-            "breakdown_voltage": (breakdown_voltage, VOLTAGE),
-            "breakdown_current": (breakdown_current, CURRENT),
-            "energy_gap": (energy_gap, VOLTAGE),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-            "threshold_voltage_temperature_coefficient": (
-                threshold_voltage_temperature_coefficient,
-                VOLTS_PER_KELVIN,
-            ),
-            "subthreshold_slope_temperature_coefficient": (
-                subthreshold_slope_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "subthreshold_slope_quadratic_temperature_coefficient": (
-                subthreshold_slope_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "drain_resistance_temperature_coefficient": (
-                drain_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "drain_resistance_quadratic_temperature_coefficient": (
-                drain_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "source_resistance_temperature_coefficient": (
-                source_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "source_resistance_quadratic_temperature_coefficient": (
-                source_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "gate_resistance_temperature_coefficient": (
-                gate_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "gate_resistance_quadratic_temperature_coefficient": (
-                gate_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-            "body_resistance_temperature_coefficient": (
-                body_resistance_temperature_coefficient,
-                PER_KELVIN,
-            ),
-            "body_resistance_quadratic_temperature_coefficient": (
-                body_resistance_quadratic_temperature_coefficient,
-                PER_KELVIN_SQUARED,
-            ),
-        },
-        {
-            "multiplier": multiplier,
-            "triode_conductance_multiplier": triode_conductance_multiplier,
-            "emission_coefficient": emission_coefficient,
-            "grading_coefficient": grading_coefficient,
-            "depletion_coefficient": depletion_coefficient,
-            "breakdown_emission_coefficient": breakdown_emission_coefficient,
-            "saturation_current_temperature_exponent": (
-                saturation_current_temperature_exponent
-            ),
-            "transconductance_parameter_temperature_exponent": (
-                transconductance_parameter_temperature_exponent
-            ),
-            "drain_resistance_temperature_exponent": (
-                drain_resistance_temperature_exponent
-            ),
-            "quasi_saturation_temperature_exponent": (
-                quasi_saturation_temperature_exponent
-            ),
-            "flicker_coefficient": flicker_coefficient,
-            "flicker_exponent": flicker_exponent,
-        },
-        {"channel": channel},
+    return _device("vdmos", locals())
+
+
+def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selectors
+    *,
+    channel: Literal["n", "p"] | None = None,
+    width: Quantity | None = None,
+    length: Quantity | None = None,
+    multiplier: float | None = None,
+    drain_area: Quantity | None = None,
+    source_area: Quantity | None = None,
+    drain_perimeter: Quantity | None = None,
+    source_perimeter: Quantity | None = None,
+    drain_squares: float | None = None,
+    source_squares: float | None = None,
+    threshold_adjustment: Quantity | None = None,
+    mobility_multiplier: float | None = None,
+    mobility_model: Literal[1, 2, 3] | None = None,
+    capacitance_model: Literal[0, 1, 2, 3] | None = None,
+    noise_model: Literal[1, 2, 3, 4, 5, 6] | None = None,
+    check_parameters: bool | None = None,
+    charge_partition: float | None = None,
+    nominal_temperature: Quantity | None = None,
+    card: Mapping[str, Quantity | float] | None = None,
+) -> Device:
+    """A MOSFET in BSIM3v3.3 between ``drain``, ``gate``, ``source`` and ``bulk``.
+
+    It follows the BSIM3v3.3 model of short channels (W. Liu, X. Xi and others, UC
+    Berkeley, 2005), SPICE's level 8 and 49, as ngspice 47 implements it. The keywords
+    before `card` are the instance's: its drawn geometry, its diffusions, a shift of
+    its threshold and a factor of its mobility, then the card's models of the mobility,
+    the charges and the noise, whether its sizes are checked and clamped, and the
+    drain's share of the channel's charge. Each entry of `card` is a parameter of the
+    BSIM3v3.3 manual by its name, such as ``vth0``, ``tox`` or ``lvth0``, in SI units:
+    a quantity where it has a dimension, as
+    [`bsim3_dimension`][jolty.devices.bsim3_dimension] says, and a number where it has
+    none. Parameters left out take ngspice's defaults.
+
+    The drain current folds in the threshold's short-channel, narrow-width and
+    drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
+    degradation by the gate field, velocity saturation, the output resistance's
+    channel-length modulation, barrier lowering and substrate current, and the source
+    and drain resistance ``rdsw``, that of a channel 1 µm wide; the impact ionization's
+    substrate current flows into the bulk. The charges under the gate follow
+    `capacitance_model`, the overlaps' charges beside them, and two diodes join the bulk
+    to the drain and the source. A binned card's ``l``, ``w`` and ``p`` dependences are
+    on the reciprocal of the effective length, width and their product in meters, not
+    micrometers, and every parameter scales with the temperature as ngspice scales it. A
+    sheet resistance ``rsh`` adds an internal node behind the drain and the source, the
+    unknowns ``drain`` and ``source``.
+
+    Its sheet resistances make thermal noise, and its channel the thermal and flicker
+    noise of `noise_model`: SPICE2's or BSIM3's.
+
+    Examples:
+        >>> from jolty.units import V, nm, um
+        >>> transistor = bsim3(
+        ...     width=2 * um,
+        ...     length=0.35 * um,
+        ...     card={"tox": 7.6 * nm, "vth0": 0.5 * V, "k2": -0.02},
+        ... )
+        >>> transistor.parameters["tox"], transistor.parameters["k2"]
+        (7.6e-09, -0.02)
+
+    Raises:
+        DimensionError: When a parameter has the wrong dimension.
+        ValueError: When BSIM3 has no parameter of a name in `card`, or a value is not
+            finite.
+    """
+    values = locals()
+    values.pop("card")
+    return _device(
+        "bsim3",
+        values,
+        card=card,
+        card_dimension=lambda name: bsim3_dimension(name, mobility_model),
     )
-    return device("vdmos", parameters)
 
 
-_HALF: Final = Fraction(1, 2)
+def _bsim3_card() -> dict[str, Dimension | Literal["uc"] | None]:
+    """The BSIM3 card parameters and their dimensions, derived from the engine."""
+    excluded = inspect.signature(bsim3).parameters
+    card: dict[str, Dimension | Literal["uc"] | None] = {}
+    for name, kind in _model_kinds("bsim3").items():
+        if name in excluded:
+            continue
+        match kind:
+            case Dimension() | None:
+                card[name] = kind
+            case "uc":
+                card[name] = "uc"
+            case _:
+                message = f"unexpected BSIM3 card kind for `{name}`: {kind!r}"
+                raise ValueError(message)
+    return card
 
-BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = {
-    "tox": LENGTH,
-    "toxm": LENGTH,
-    "xj": LENGTH,
-    "nch": LENGTH**-3,
-    "nsub": LENGTH**-3,
-    "ngate": LENGTH**-3,
-    "gamma1": VOLTAGE**_HALF,
-    "gamma2": VOLTAGE**_HALF,
-    "vbx": VOLTAGE,
-    "vbm": VOLTAGE,
-    "xt": LENGTH,
-    "vth0": VOLTAGE,
-    "vfb": VOLTAGE,
-    "k1": VOLTAGE**_HALF,
-    "k2": None,
-    "k3": None,
-    "k3b": PER_VOLT,
-    "w0": LENGTH,
-    "nlx": LENGTH,
-    "dvt0": None,
-    "dvt1": None,
-    "dvt2": PER_VOLT,
-    "dvt0w": None,
-    "dvt1w": LENGTH**-1,
-    "dvt2w": PER_VOLT,
-    "dsub": None,
-    "eta0": None,
-    "etab": PER_VOLT,
-    "u0": MOBILITY,
-    "ua": LENGTH / VOLTAGE,
-    "ub": LENGTH**2 / VOLTAGE**2,
-    "uc": "uc",
-    "vsat": LENGTH / TIME,
-    "a0": None,
-    "ags": PER_VOLT,
-    "a1": PER_VOLT,
-    "a2": None,
-    "b0": LENGTH,
-    "b1": LENGTH,
-    "keta": PER_VOLT,
-    "voff": VOLTAGE,
-    "nfactor": None,
-    "cdsc": CAPACITANCE / LENGTH**2,
-    "cdscb": CAPACITANCE / (VOLTAGE * LENGTH**2),
-    "cdscd": CAPACITANCE / (VOLTAGE * LENGTH**2),
-    "cit": CAPACITANCE / LENGTH**2,
-    "pclm": None,
-    "pdiblc1": None,
-    "pdiblc2": None,
-    "pdiblcb": PER_VOLT,
-    "drout": None,
-    "pscbe1": VOLTAGE / LENGTH,
-    "pscbe2": LENGTH / VOLTAGE,
-    "pvag": None,
-    "delta": VOLTAGE,
-    "rdsw": RESISTANCE,
-    "prwg": PER_VOLT,
-    "prwb": VOLTAGE**-_HALF,
-    "wr": None,
-    "dwg": LENGTH / VOLTAGE,
-    "dwb": LENGTH / VOLTAGE**_HALF,
-    "alpha0": LENGTH / VOLTAGE,
-    "alpha1": PER_VOLT,
-    "beta0": VOLTAGE,
-    "kt1": VOLTAGE,
-    "kt1l": VOLTAGE * LENGTH,
-    "kt2": None,
-    "ute": None,
-    "ua1": LENGTH / VOLTAGE,
-    "ub1": LENGTH**2 / VOLTAGE**2,
-    "uc1": "uc",
-    "at": LENGTH / TIME,
-    "prt": RESISTANCE,
-    "cgsl": CAPACITANCE / LENGTH,
-    "cgdl": CAPACITANCE / LENGTH,
-    "ckappa": VOLTAGE,
-    "cf": CAPACITANCE / LENGTH,
-    "clc": LENGTH,
-    "cle": None,
-    "vfbcv": VOLTAGE,
-    "acde": LENGTH / VOLTAGE,
-    "moin": None,
-    "noff": None,
-    "voffcv": VOLTAGE,
-    "cgso": CAPACITANCE / LENGTH,
-    "cgdo": CAPACITANCE / LENGTH,
-    "cgbo": CAPACITANCE / LENGTH,
-    "lint": LENGTH,
-    "ll": None,
-    "lln": None,
-    "lw": None,
-    "lwn": None,
-    "lwl": None,
-    "llc": None,
-    "lwc": None,
-    "lwlc": None,
-    "wint": LENGTH,
-    "wl": None,
-    "wln": None,
-    "ww": None,
-    "wwn": None,
-    "wwl": None,
-    "wlc": None,
-    "wwc": None,
-    "wwlc": None,
-    "dlc": LENGTH,
-    "dwc": LENGTH,
-    "xl": LENGTH,
-    "xw": LENGTH,
-    "rsh": RESISTANCE,
-    "js": CURRENT / LENGTH**2,
-    "jsw": CURRENT / LENGTH,
-    "ijth": CURRENT,
-    "nj": None,
-    "xti": None,
-    "cj": CAPACITANCE / LENGTH**2,
-    "cjsw": CAPACITANCE / LENGTH,
-    "cjswg": CAPACITANCE / LENGTH,
-    "mj": None,
-    "mjsw": None,
-    "mjswg": None,
-    "pb": VOLTAGE,
-    "pbsw": VOLTAGE,
-    "pbswg": VOLTAGE,
-    "tpb": VOLTAGE / TEMPERATURE,
-    "tpbsw": VOLTAGE / TEMPERATURE,
-    "tpbswg": VOLTAGE / TEMPERATURE,
-    "tcj": TEMPERATURE**-1,
-    "tcjsw": TEMPERATURE**-1,
-    "tcjswg": TEMPERATURE**-1,
-    "noia": None,
-    "noib": None,
-    "noic": None,
-    "em": VOLTAGE / LENGTH,
-    "ef": None,
-    "af": None,
-    "kf": None,
-    "lintnoi": LENGTH,
-}
+
+BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = _bsim3_card()
 """The parameters of a BSIM3 card, by the BSIM3v3.3 manual's names, and the dimension of
 each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
 ``lln``, and ``"uc"`` for ``uc`` and ``uc1``, whose unit follows ``mobility_model``."""
 
-BSIM3_BINNED: Final = frozenset(
-    {
-        "xj",
-        "nch",
-        "nsub",
-        "ngate",
-        "gamma1",
-        "gamma2",
-        "vbx",
-        "vbm",
-        "xt",
-        "vth0",
-        "vfb",
-        "k1",
-        "k2",
-        "k3",
-        "k3b",
-        "w0",
-        "nlx",
-        "dvt0",
-        "dvt1",
-        "dvt2",
-        "dvt0w",
-        "dvt1w",
-        "dvt2w",
-        "dsub",
-        "eta0",
-        "etab",
-        "u0",
-        "ua",
-        "ub",
-        "uc",
-        "vsat",
-        "a0",
-        "ags",
-        "a1",
-        "a2",
-        "b0",
-        "b1",
-        "keta",
-        "voff",
-        "nfactor",
-        "cdsc",
-        "cdscb",
-        "cdscd",
-        "cit",
-        "pclm",
-        "pdiblc1",
-        "pdiblc2",
-        "pdiblcb",
-        "drout",
-        "pscbe1",
-        "pscbe2",
-        "pvag",
-        "delta",
-        "rdsw",
-        "prwg",
-        "prwb",
-        "wr",
-        "dwg",
-        "dwb",
-        "alpha0",
-        "alpha1",
-        "beta0",
-        "kt1",
-        "kt1l",
-        "kt2",
-        "ute",
-        "ua1",
-        "ub1",
-        "uc1",
-        "at",
-        "prt",
-        "cgsl",
-        "cgdl",
-        "ckappa",
-        "cf",
-        "clc",
-        "cle",
-        "vfbcv",
-        "acde",
-        "moin",
-        "noff",
-        "voffcv",
-    }
-)
+BSIM3_BINNED: Final = frozenset(_core.binned_parameters("bsim3"))
 """The BSIM3 parameters that bin: each has a length, a width and an area dependence,
 its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
 
@@ -2607,582 +1666,6 @@ def _card(
                 )
                 message = f"{name} takes {unit}, not {value!r}"
                 raise DimensionError(message)
-
-
-def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selectors
-    *,
-    channel: Literal["n", "p"] | None = None,
-    width: Quantity | None = None,
-    length: Quantity | None = None,
-    multiplier: float | None = None,
-    drain_area: Quantity | None = None,
-    source_area: Quantity | None = None,
-    drain_perimeter: Quantity | None = None,
-    source_perimeter: Quantity | None = None,
-    drain_squares: float | None = None,
-    source_squares: float | None = None,
-    threshold_adjustment: Quantity | None = None,
-    mobility_multiplier: float | None = None,
-    mobility_model: Literal[1, 2, 3] | None = None,
-    capacitance_model: Literal[0, 1, 2, 3] | None = None,
-    noise_model: Literal[1, 2, 3, 4, 5, 6] | None = None,
-    check_parameters: bool | None = None,
-    charge_partition: float | None = None,
-    nominal_temperature: Quantity | None = None,
-    card: Mapping[str, Quantity | float] | None = None,
-) -> Device:
-    """A MOSFET in BSIM3v3.3 between ``drain``, ``gate``, ``source`` and ``bulk``.
-
-    It follows the BSIM3v3.3 model of short channels (W. Liu, X. Xi and others, UC
-    Berkeley, 2005), SPICE's level 8 and 49, as ngspice 47 implements it. The keywords
-    before `card` are the instance's: its drawn geometry, its diffusions, a shift of
-    its threshold and a factor of its mobility, then the card's models of the mobility,
-    the charges and the noise, whether its sizes are checked and clamped, and the
-    drain's share of the channel's charge. Each entry of `card` is a parameter of the
-    BSIM3v3.3 manual by its name, such as ``vth0``, ``tox`` or ``lvth0``, in SI units:
-    a quantity where it has a dimension, as
-    [`bsim3_dimension`][jolty.devices.bsim3_dimension] says, and a number where it has
-    none. Parameters left out take ngspice's defaults.
-
-    The drain current folds in the threshold's short-channel, narrow-width and
-    drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
-    degradation by the gate field, velocity saturation, the output resistance's
-    channel-length modulation, barrier lowering and substrate current, and the source
-    and drain resistance ``rdsw``, that of a channel 1 µm wide; the impact ionization's
-    substrate current flows into the bulk. The charges under the gate follow
-    `capacitance_model`, the overlaps' charges beside them, and two diodes join the bulk
-    to the drain and the source. A binned card's ``l``, ``w`` and ``p`` dependences are
-    on the reciprocal of the effective length, width and their product in meters, not
-    micrometers, and every parameter scales with the temperature as ngspice scales it. A
-    sheet resistance ``rsh`` adds an internal node behind the drain and the source, the
-    unknowns ``drain`` and ``source``.
-
-    Its sheet resistances make thermal noise, and its channel the thermal and flicker
-    noise of `noise_model`: SPICE2's or BSIM3's.
-
-    Examples:
-        >>> from jolty.units import V, nm, um
-        >>> transistor = bsim3(
-        ...     width=2 * um,
-        ...     length=0.35 * um,
-        ...     card={"tox": 7.6 * nm, "vth0": 0.5 * V, "k2": -0.02},
-        ... )
-        >>> transistor.parameters["tox"], transistor.parameters["k2"]
-        (7.6e-09, -0.02)
-
-    Raises:
-        DimensionError: When a parameter has the wrong dimension.
-        ValueError: When BSIM3 has no parameter of a name in `card`, or a value is not
-            finite.
-    """
-    parameters = _parameters(
-        {
-            "width": (width, LENGTH),
-            "length": (length, LENGTH),
-            "drain_area": (drain_area, LENGTH**2),
-            "source_area": (source_area, LENGTH**2),
-            "drain_perimeter": (drain_perimeter, LENGTH),
-            "source_perimeter": (source_perimeter, LENGTH),
-            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-        },
-        {
-            "multiplier": multiplier,
-            "drain_squares": drain_squares,
-            "source_squares": source_squares,
-            "mobility_multiplier": mobility_multiplier,
-            "charge_partition": charge_partition,
-        },
-        {
-            "channel": channel,
-            "mobility_model": mobility_model,
-            "capacitance_model": capacitance_model,
-            "noise_model": noise_model,
-        },
-    )
-    if check_parameters is not None:
-        parameters["check_parameters"] = check_parameters
-    _card(parameters, card or {}, lambda name: bsim3_dimension(name, mobility_model))
-    return device("bsim3", parameters)
-
-
-BSIM4_CARD: Final[Mapping[str, Dimension | None]] = {
-    "toxe": LENGTH,
-    "toxp": LENGTH,
-    "toxm": LENGTH,
-    "toxref": LENGTH,
-    "dtox": LENGTH,
-    "epsrox": None,
-    "cdsc": CAPACITANCE / LENGTH**2,
-    "cdscb": CAPACITANCE / (VOLTAGE * LENGTH**2),
-    "cdscd": CAPACITANCE / (VOLTAGE * LENGTH**2),
-    "cit": CAPACITANCE / LENGTH**2,
-    "nfactor": None,
-    "xj": LENGTH,
-    "vsat": LENGTH / TIME,
-    "at": LENGTH / TIME,
-    "a0": None,
-    "ags": PER_VOLT,
-    "a1": PER_VOLT,
-    "a2": None,
-    "keta": PER_VOLT,
-    "nsub": LENGTH**-3,
-    "ndep": LENGTH**-3,
-    "nsd": LENGTH**-3,
-    "phin": VOLTAGE,
-    "ngate": LENGTH**-3,
-    "gamma1": VOLTAGE**_HALF,
-    "gamma2": VOLTAGE**_HALF,
-    "vbx": VOLTAGE,
-    "vbm": VOLTAGE,
-    "xt": LENGTH,
-    "k1": VOLTAGE**_HALF,
-    "kt1": VOLTAGE,
-    "kt1l": VOLTAGE * LENGTH,
-    "kt2": None,
-    "k2": None,
-    "k3": None,
-    "k3b": PER_VOLT,
-    "w0": LENGTH,
-    "dvtp0": LENGTH,
-    "dvtp1": PER_VOLT,
-    "lpe0": LENGTH,
-    "lpeb": LENGTH,
-    "dvt0": None,
-    "dvt1": None,
-    "dvt2": PER_VOLT,
-    "dvt0w": LENGTH**-1,
-    "dvt1w": LENGTH**-1,
-    "dvt2w": PER_VOLT,
-    "drout": None,
-    "dsub": None,
-    "vth0": VOLTAGE,
-    "ua": LENGTH / VOLTAGE,
-    "ua1": LENGTH / VOLTAGE,
-    "ub": (LENGTH / VOLTAGE) ** 2,
-    "ub1": (LENGTH / VOLTAGE) ** 2,
-    "uc": LENGTH / VOLTAGE**2,
-    "uc1": LENGTH / VOLTAGE**2,
-    "ud": LENGTH**-2,
-    "ud1": LENGTH**-2,
-    "up": LENGTH**-2,
-    "lp": LENGTH,
-    "u0": MOBILITY,
-    "eu": None,
-    "ute": None,
-    "voff": VOLTAGE,
-    "minv": None,
-    "voffl": VOLTAGE * LENGTH,
-    "cgso": CAPACITANCE / LENGTH,
-    "cgdo": CAPACITANCE / LENGTH,
-    "cgbo": CAPACITANCE / LENGTH,
-    "delta": VOLTAGE,
-    "rsh": RESISTANCE,
-    "rdsw": RESISTANCE,
-    "rdswmin": RESISTANCE,
-    "rsw": RESISTANCE,
-    "rdw": RESISTANCE,
-    "rdwmin": RESISTANCE,
-    "rswmin": RESISTANCE,
-    "prwg": PER_VOLT,
-    "prwb": VOLTAGE**-_HALF,
-    "prt": RESISTANCE,
-    "eta0": None,
-    "etab": PER_VOLT,
-    "pclm": None,
-    "pdiblc1": None,
-    "pdiblc2": None,
-    "pdiblcb": PER_VOLT,
-    "fprout": VOLTAGE / LENGTH**_HALF,
-    "pdits": PER_VOLT,
-    "pditsl": LENGTH**-1,
-    "pditsd": PER_VOLT,
-    "pscbe1": VOLTAGE / LENGTH,
-    "pscbe2": LENGTH / VOLTAGE,
-    "pvag": None,
-    "jss": CURRENT / LENGTH**2,
-    "jsws": CURRENT / LENGTH,
-    "jswgs": CURRENT / LENGTH,
-    "pbs": VOLTAGE,
-    "njs": None,
-    "xtis": None,
-    "mjs": None,
-    "pbsws": VOLTAGE,
-    "mjsws": None,
-    "pbswgs": VOLTAGE,
-    "mjswgs": None,
-    "cjs": CAPACITANCE / LENGTH**2,
-    "cjsws": CAPACITANCE / LENGTH,
-    "cjswgs": CAPACITANCE / LENGTH,
-    "jsd": CURRENT / LENGTH**2,
-    "jswd": CURRENT / LENGTH,
-    "jswgd": CURRENT / LENGTH,
-    "pbd": VOLTAGE,
-    "njd": None,
-    "xtid": None,
-    "mjd": None,
-    "pbswd": VOLTAGE,
-    "mjswd": None,
-    "pbswgd": VOLTAGE,
-    "mjswgd": None,
-    "cjd": CAPACITANCE / LENGTH**2,
-    "cjswd": CAPACITANCE / LENGTH,
-    "cjswgd": CAPACITANCE / LENGTH,
-    "vfbcv": VOLTAGE,
-    "vfb": VOLTAGE,
-    "tpb": VOLTAGE / TEMPERATURE,
-    "tcj": TEMPERATURE**-1,
-    "tpbsw": VOLTAGE / TEMPERATURE,
-    "tcjsw": TEMPERATURE**-1,
-    "tpbswg": VOLTAGE / TEMPERATURE,
-    "tcjswg": TEMPERATURE**-1,
-    "acde": LENGTH / VOLTAGE,
-    "moin": None,
-    "noff": None,
-    "voffcv": VOLTAGE,
-    "dmcg": LENGTH,
-    "dmci": LENGTH,
-    "dmdg": LENGTH,
-    "dmcgt": LENGTH,
-    "xgw": LENGTH,
-    "xgl": LENGTH,
-    "rshg": RESISTANCE,
-    "ngcon": None,
-    "xrcrg1": None,
-    "xrcrg2": None,
-    "lambda": None,
-    "vtl": LENGTH / TIME,
-    "lc": LENGTH,
-    "xn": None,
-    "vfbsdoff": VOLTAGE,
-    "tvfbsdoff": TEMPERATURE**-1,
-    "tvoff": TEMPERATURE**-1,
-    "lintnoi": LENGTH,
-    "lint": LENGTH,
-    "ll": None,
-    "llc": None,
-    "lln": None,
-    "lw": None,
-    "lwc": None,
-    "lwn": None,
-    "lwl": None,
-    "lwlc": None,
-    "wr": None,
-    "wint": LENGTH,
-    "dwg": LENGTH / VOLTAGE,
-    "dwb": LENGTH / VOLTAGE**_HALF,
-    "wl": None,
-    "wlc": None,
-    "wln": None,
-    "ww": None,
-    "wwc": None,
-    "wwn": None,
-    "wwl": None,
-    "wwlc": None,
-    "b0": LENGTH,
-    "b1": LENGTH,
-    "cgsl": CAPACITANCE / LENGTH,
-    "cgdl": CAPACITANCE / LENGTH,
-    "ckappas": VOLTAGE,
-    "ckappad": VOLTAGE,
-    "cf": CAPACITANCE / LENGTH,
-    "clc": LENGTH,
-    "cle": None,
-    "dwc": LENGTH,
-    "dlc": LENGTH,
-    "xw": LENGTH,
-    "xl": LENGTH,
-    "dlcig": LENGTH,
-    "dwj": LENGTH,
-    "alpha0": LENGTH / VOLTAGE,
-    "alpha1": PER_VOLT,
-    "beta0": VOLTAGE,
-    "agidl": CONDUCTANCE,
-    "bgidl": VOLTAGE / LENGTH,
-    "cgidl": VOLTAGE**3,
-    "egidl": VOLTAGE,
-    "aigc": None,
-    "bigc": None,
-    "cigc": PER_VOLT,
-    "aigsd": None,
-    "bigsd": None,
-    "cigsd": PER_VOLT,
-    "aigbacc": None,
-    "bigbacc": None,
-    "cigbacc": PER_VOLT,
-    "aigbinv": None,
-    "bigbinv": None,
-    "cigbinv": PER_VOLT,
-    "nigc": None,
-    "nigbinv": None,
-    "nigbacc": None,
-    "ntox": None,
-    "eigbinv": VOLTAGE,
-    "pigcd": None,
-    "poxedge": None,
-    "ijthdfwd": CURRENT,
-    "ijthsfwd": CURRENT,
-    "ijthdrev": CURRENT,
-    "ijthsrev": CURRENT,
-    "xjbvd": None,
-    "xjbvs": None,
-    "bvd": VOLTAGE,
-    "bvs": VOLTAGE,
-    "jtss": CURRENT / LENGTH**2,
-    "jtsd": CURRENT / LENGTH**2,
-    "jtssws": CURRENT / LENGTH,
-    "jtsswd": CURRENT / LENGTH,
-    "jtsswgs": CURRENT / LENGTH,
-    "jtsswgd": CURRENT / LENGTH,
-    "njts": None,
-    "njtssw": None,
-    "njtsswg": None,
-    "xtss": None,
-    "xtsd": None,
-    "xtssws": None,
-    "xtsswd": None,
-    "xtsswgs": None,
-    "xtsswgd": None,
-    "tnjts": None,
-    "tnjtssw": None,
-    "tnjtsswg": None,
-    "vtss": VOLTAGE,
-    "vtsd": VOLTAGE,
-    "vtssws": VOLTAGE,
-    "vtsswd": VOLTAGE,
-    "vtsswgs": VOLTAGE,
-    "vtsswgd": VOLTAGE,
-    "gbmin": CONDUCTANCE,
-    "rbdb": RESISTANCE,
-    "rbpb": RESISTANCE,
-    "rbsb": RESISTANCE,
-    "rbps": RESISTANCE,
-    "rbpd": RESISTANCE,
-    "rbps0": RESISTANCE,
-    "rbpsl": None,
-    "rbpsw": None,
-    "rbpsnf": None,
-    "rbpd0": RESISTANCE,
-    "rbpdl": None,
-    "rbpdw": None,
-    "rbpdnf": None,
-    "rbpbx0": RESISTANCE,
-    "rbpbxl": None,
-    "rbpbxw": None,
-    "rbpbxnf": None,
-    "rbpby0": RESISTANCE,
-    "rbpbyl": None,
-    "rbpbyw": None,
-    "rbpbynf": None,
-    "rbsbx0": RESISTANCE,
-    "rbsby0": RESISTANCE,
-    "rbdbx0": RESISTANCE,
-    "rbdby0": RESISTANCE,
-    "rbsdbxl": None,
-    "rbsdbxw": None,
-    "rbsdbxnf": None,
-    "rbsdbyl": None,
-    "rbsdbyw": None,
-    "rbsdbynf": None,
-    "saref": LENGTH,
-    "sbref": LENGTH,
-    "wlod": LENGTH,
-    "ku0": LENGTH,
-    "kvsat": None,
-    "kvth0": VOLTAGE * LENGTH,
-    "tku0": None,
-    "llodku0": None,
-    "wlodku0": None,
-    "llodvth": None,
-    "wlodvth": None,
-    "lku0": None,
-    "wku0": None,
-    "pku0": None,
-    "lkvth0": None,
-    "wkvth0": None,
-    "pkvth0": None,
-    "stk2": LENGTH,
-    "lodk2": None,
-    "steta0": LENGTH,
-    "lodeta0": None,
-    "web": None,
-    "wec": None,
-    "kvth0we": VOLTAGE,
-    "k2we": None,
-    "ku0we": None,
-    "scref": LENGTH,
-    "noia": None,
-    "noib": None,
-    "noic": None,
-    "tnoia": None,
-    "tnoib": None,
-    "rnoia": None,
-    "rnoib": None,
-    "ntnoi": None,
-    "em": VOLTAGE / LENGTH,
-    "ef": None,
-    "af": None,
-    "kf": None,
-}
-"""The parameters of a BSIM4 card, by the BSIM4.5 manual's names, and the dimension of
-each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
-``lln``, or for one in the manual's own units, as the gate tunneling's ``aigc``."""
-
-BSIM4_BINNED: Final = frozenset(
-    {
-        "cdsc",
-        "cdscb",
-        "cdscd",
-        "cit",
-        "nfactor",
-        "xj",
-        "vsat",
-        "at",
-        "a0",
-        "ags",
-        "a1",
-        "a2",
-        "keta",
-        "nsub",
-        "ndep",
-        "nsd",
-        "phin",
-        "ngate",
-        "gamma1",
-        "gamma2",
-        "vbx",
-        "vbm",
-        "xt",
-        "vfb",
-        "k1",
-        "kt1",
-        "kt1l",
-        "k2",
-        "kt2",
-        "k3",
-        "k3b",
-        "w0",
-        "lpe0",
-        "lpeb",
-        "dvtp0",
-        "dvtp1",
-        "dvt0",
-        "dvt1",
-        "dvt2",
-        "dvt0w",
-        "dvt1w",
-        "dvt2w",
-        "drout",
-        "dsub",
-        "vth0",
-        "ua",
-        "ua1",
-        "ub",
-        "ub1",
-        "uc",
-        "uc1",
-        "ud",
-        "ud1",
-        "up",
-        "lp",
-        "eu",
-        "u0",
-        "ute",
-        "voff",
-        "tvoff",
-        "minv",
-        "fprout",
-        "pdits",
-        "pditsd",
-        "delta",
-        "rdsw",
-        "rdw",
-        "rsw",
-        "prwg",
-        "prwb",
-        "prt",
-        "eta0",
-        "etab",
-        "pclm",
-        "pdiblc1",
-        "pdiblc2",
-        "pdiblcb",
-        "pscbe1",
-        "pscbe2",
-        "pvag",
-        "wr",
-        "dwg",
-        "dwb",
-        "b0",
-        "b1",
-        "alpha0",
-        "alpha1",
-        "beta0",
-        "agidl",
-        "bgidl",
-        "cgidl",
-        "egidl",
-        "aigc",
-        "bigc",
-        "cigc",
-        "aigsd",
-        "bigsd",
-        "cigsd",
-        "aigbacc",
-        "bigbacc",
-        "cigbacc",
-        "aigbinv",
-        "bigbinv",
-        "cigbinv",
-        "nigc",
-        "nigbacc",
-        "nigbinv",
-        "ntox",
-        "eigbinv",
-        "pigcd",
-        "poxedge",
-        "xrcrg1",
-        "xrcrg2",
-        "lambda",
-        "vtl",
-        "xn",
-        "vfbsdoff",
-        "tvfbsdoff",
-        "cgsl",
-        "cgdl",
-        "ckappas",
-        "ckappad",
-        "cf",
-        "clc",
-        "cle",
-        "vfbcv",
-        "acde",
-        "moin",
-        "noff",
-        "voffcv",
-        "kvth0we",
-        "k2we",
-        "ku0we",
-    }
-)
-"""The BSIM4 parameters that bin: each has a length, a width and an area dependence,
-its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
-
-
-def bsim4_dimension(name: str) -> Dimension | None:
-    """The dimension of BSIM4's parameter `name`, ``None`` for a plain number.
-
-    A binned dependence's is its parameter's times meters, or square meters for the
-    area's.
-
-    Examples:
-        >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
-        (True, None)
-
-    Raises:
-        ValueError: When BSIM4 has no parameter `name`.
-    """
-    return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
 
 
 def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selectors
@@ -3266,42 +1749,51 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
         ValueError: When BSIM4 has no parameter of a name in `card`, or a value is not
             finite.
     """
-    parameters = _parameters(
-        {
-            "width": (width, LENGTH),
-            "length": (length, LENGTH),
-            "drain_area": (drain_area, LENGTH**2),
-            "source_area": (source_area, LENGTH**2),
-            "drain_perimeter": (drain_perimeter, LENGTH),
-            "source_perimeter": (source_perimeter, LENGTH),
-            "diffusion_edge_a": (diffusion_edge_a, LENGTH),
-            "diffusion_edge_b": (diffusion_edge_b, LENGTH),
-            "finger_spacing": (finger_spacing, LENGTH),
-            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
-            "nominal_temperature": (nominal_temperature, TEMPERATURE),
-        },
-        {
-            "multiplier": multiplier,
-            "fingers": fingers,
-            "drain_squares": drain_squares,
-            "source_squares": source_squares,
-            "mobility_multiplier": mobility_multiplier,
-            "charge_partition": charge_partition,
-        },
-        {
-            "channel": channel,
-            "body_resistance_model": body_resistance_model,
-            "gate_resistance_model": gate_resistance_model,
-            "perimeter_model": perimeter_model,
-            "drain_source_resistance_model": drain_source_resistance_model,
-            "flicker_noise_model": flicker_noise_model,
-            "thermal_noise_model": thermal_noise_model,
-        },
-    )
-    if check_parameters is not None:
-        parameters["check_parameters"] = check_parameters
-    _card(parameters, card or {}, bsim4_dimension)
-    return device("bsim4", parameters)
+    values = locals()
+    values.pop("card")
+    return _device("bsim4", values, card=card, card_dimension=bsim4_dimension)
+
+
+def _bsim4_card() -> dict[str, Dimension | None]:
+    """The BSIM4 card parameters and their dimensions, derived from the engine."""
+    excluded = inspect.signature(bsim4).parameters
+    card: dict[str, Dimension | None] = {}
+    for name, kind in _model_kinds("bsim4").items():
+        if name in excluded:
+            continue
+        match kind:
+            case Dimension() | None:
+                card[name] = kind
+            case _:
+                message = f"unexpected BSIM4 card kind for `{name}`: {kind!r}"
+                raise ValueError(message)
+    return card
+
+
+BSIM4_CARD: Final[Mapping[str, Dimension | None]] = _bsim4_card()
+"""The parameters of a BSIM4 card, by the BSIM4.5 manual's names, and the dimension of
+each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
+``lln``, or for one in the manual's own units, as the gate tunneling's ``aigc``."""
+
+BSIM4_BINNED: Final = frozenset(_core.binned_parameters("bsim4"))
+"""The BSIM4 parameters that bin: each has a length, a width and an area dependence,
+its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
+
+
+def bsim4_dimension(name: str) -> Dimension | None:
+    """The dimension of BSIM4's parameter `name`, ``None`` for a plain number.
+
+    A binned dependence's is its parameter's times meters, or square meters for the
+    area's.
+
+    Examples:
+        >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
+        (True, None)
+
+    Raises:
+        ValueError: When BSIM4 has no parameter `name`.
+    """
+    return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
 
 
 type LogicLevel = Literal[0, 1] | None
@@ -3390,7 +1882,9 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
             else input_capacitance.to(CAPACITANCE, "an input capacitance")
         )
         pins: dict[str, JsonValue] = {"input_capacitances": [capacitance] * len(inputs)}
-        parameters["electrical"] = pins | _parameters({}, {"threshold": threshold})
+        if threshold is not None:
+            pins["threshold"] = finite(threshold, "threshold")
+        parameters["electrical"] = pins
     elif input_capacitance is not None or threshold is not None:
         message = "only an electrical cell has an input capacitance and a threshold"
         raise ValueError(message)
@@ -3500,33 +1994,3 @@ def device(model: str, parameters: dict[str, JsonValue]) -> Device:
     """
     terminals = _core.terminals(model, json.dumps(parameters))
     return Device(model, tuple(terminals), parameters)
-
-
-def _parameters(
-    quantities: Mapping[str, tuple[Quantity | None, Dimension]],
-    numbers: Mapping[str, float | None],
-    choices: Mapping[str, str | int | None] | None = None,
-) -> dict[str, JsonValue]:
-    """The parameters given, by name, each checked and in SI base units.
-
-    A quantity's dimension is checked, and a number is checked finite; a choice, such
-    as a transistor's polarity, is taken as it is.
-
-    Raises:
-        DimensionError: When a quantity has the wrong dimension.
-        ValueError: When a value is not finite.
-    """
-    parameters: dict[str, JsonValue] = {
-        name: value.to(dimension, name)
-        for name, (value, dimension) in quantities.items()
-        if value is not None
-    }
-    parameters |= {
-        name: finite(value, name)
-        for name, value in numbers.items()
-        if value is not None
-    }
-    parameters |= {
-        name: value for name, value in (choices or {}).items() if value is not None
-    }
-    return parameters

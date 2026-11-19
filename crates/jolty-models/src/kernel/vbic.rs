@@ -6,6 +6,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{
+    CAPACITANCE, CHARGE, CURRENT, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, RESISTANCE, TEMPERATURE,
+    TIME, VOLTAGE,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage};
 use crate::kernel::parts::{
@@ -13,8 +17,8 @@ use crate::kernel::parts::{
 };
 use crate::kernel::region::Bipolar;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
-    ParameterError, Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
+    ParameterKind, ParameterMetadata, Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
 };
 
 /// VBIC's Boltzmann constant, in joules per kelvin: the one its definition's reference code
@@ -154,18 +158,21 @@ const PARASITIC_BASE: [usize; 3] = [VRBP, VBEP, VBCI];
 /// The parameters of a [`Vbic`], with ngspice's defaults. A parameter ngspice treats as
 /// infinite at zero, such as an Early voltage, is infinite when left out; one whose
 /// defaults are not SI base units, such as `TNOM`, is converted.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VbicParameters<R: Real = f64> {
     /// The doping order, `NPN` or `PNP`; default `npn`.
     pub polarity: Polarity,
     /// The extrinsic collector resistance, `RCX`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub extrinsic_collector_resistance: R,
     /// The intrinsic collector resistance, `RCI`, in ohms, positive; default 0.1.
+    #[dimension(RESISTANCE)]
     pub intrinsic_collector_resistance: R,
     /// The epi layer's drift saturation voltage, `VO`, in volts; infinite by default, for
     /// no velocity saturation.
+    #[dimension(VOLTAGE)]
     pub epi_saturation_voltage: Option<R>,
     /// The epi layer's doping parameter, `GAMM`; default 0.
     pub epi_doping_parameter: R,
@@ -173,16 +180,22 @@ pub struct VbicParameters<R: Real = f64> {
     /// default 1.
     pub high_current_collector_factor: R,
     /// The extrinsic base resistance, `RBX`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub extrinsic_base_resistance: R,
     /// The intrinsic base resistance, `RBI`, in ohms, positive; default 0.1.
+    #[dimension(RESISTANCE)]
     pub intrinsic_base_resistance: R,
     /// The emitter resistance, `RE`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub emitter_resistance: R,
     /// The substrate resistance, `RS`, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub substrate_resistance: R,
     /// The parasitic base resistance, `RBP`, in ohms, positive; default 0.1.
+    #[dimension(RESISTANCE)]
     pub parasitic_base_resistance: R,
     /// The transport saturation current, `IS`, in amperes; default 1e-16.
+    #[dimension(CURRENT)]
     pub saturation_current: R,
     /// The forward emission coefficient, `NF`; default 1.
     pub forward_emission_coefficient: R,
@@ -193,45 +206,60 @@ pub struct VbicParameters<R: Real = f64> {
     pub depletion_coefficient: R,
     /// The base-emitter overlap capacitance, `CBEO`, in farads, between the terminals;
     /// default 0.
+    #[dimension(CAPACITANCE)]
     pub base_emitter_overlap_capacitance: R,
     /// The zero-bias base-emitter depletion capacitance, `CJE`, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub base_emitter_capacitance: R,
     /// The base-emitter built-in potential, `PE`, in volts; default 0.75.
+    #[dimension(VOLTAGE)]
     pub base_emitter_potential: R,
     /// The base-emitter grading coefficient, `ME`, below 1; default 0.33.
     pub base_emitter_grading: R,
     /// The base-emitter capacitance's smoothing, `AJE`, in volts: SPICE's linear extension
     /// above `FC · PE` at zero or below; default −0.5.
+    #[dimension(VOLTAGE)]
     pub base_emitter_smoothing: R,
     /// The base-collector overlap capacitance, `CBCO`, in farads, between the terminals;
     /// default 0.
+    #[dimension(CAPACITANCE)]
     pub base_collector_overlap_capacitance: R,
     /// The zero-bias intrinsic base-collector depletion capacitance, `CJC`, in farads;
     /// default 0.
+    #[dimension(CAPACITANCE)]
     pub base_collector_capacitance: R,
     /// The epi layer's charge, `QCO`, in coulombs; default 0.
+    #[dimension(CHARGE)]
     pub epi_charge: R,
     /// The zero-bias extrinsic base-collector depletion capacitance, `CJEP`, in farads, the
     /// parasitic transistor's base-emitter junction's; default 0.
+    #[dimension(CAPACITANCE)]
     pub extrinsic_base_collector_capacitance: R,
     /// The base-collector built-in potential, `PC`, in volts; default 0.75.
+    #[dimension(VOLTAGE)]
     pub base_collector_potential: R,
     /// The base-collector grading coefficient, `MC`, below 1; default 0.33.
     pub base_collector_grading: R,
     /// The base-collector capacitances' smoothing, `AJC`, in volts; default −0.5.
+    #[dimension(VOLTAGE)]
     pub base_collector_smoothing: R,
     /// The zero-bias collector-substrate depletion capacitance, `CJCP`, in farads; default
     /// 0.
+    #[dimension(CAPACITANCE)]
     pub collector_substrate_capacitance: R,
     /// The collector-substrate built-in potential, `PS`, in volts; default 0.75.
+    #[dimension(VOLTAGE)]
     pub collector_substrate_potential: R,
     /// The collector-substrate grading coefficient, `MS`, below 1; default 0.33.
     pub collector_substrate_grading: R,
     /// The collector-substrate capacitance's smoothing, `AJS`, in volts; default −0.5.
+    #[dimension(VOLTAGE)]
     pub collector_substrate_smoothing: R,
     /// The fixed collector-substrate capacitance, `CCSO`, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub collector_substrate_fixed_capacitance: R,
     /// The ideal base-emitter saturation current, `IBEI`, in amperes; default 1e-18.
+    #[dimension(CURRENT)]
     pub ideal_base_emitter_current: R,
     /// The fraction of the base-emitter currents and depletion charge at the intrinsic
     /// base, `WBE`, the rest at the extrinsic base, from 0 to 1; default 1.
@@ -239,24 +267,29 @@ pub struct VbicParameters<R: Real = f64> {
     /// The ideal base-emitter emission coefficient, `NEI`; default 1.
     pub ideal_base_emitter_emission_coefficient: R,
     /// The non-ideal base-emitter saturation current, `IBEN`, in amperes; default 0.
+    #[dimension(CURRENT)]
     pub nonideal_base_emitter_current: R,
     /// The non-ideal base-emitter emission coefficient, `NEN`; default 2.
     pub nonideal_base_emitter_emission_coefficient: R,
     /// The ideal base-collector saturation current, `IBCI`, in amperes; default 1e-16.
+    #[dimension(CURRENT)]
     pub ideal_base_collector_current: R,
     /// The ideal base-collector emission coefficient, `NCI`; default 1.
     pub ideal_base_collector_emission_coefficient: R,
     /// The non-ideal base-collector saturation current, `IBCN`, in amperes; default 0.
+    #[dimension(CURRENT)]
     pub nonideal_base_collector_current: R,
     /// The non-ideal base-collector emission coefficient, `NCN`; default 2.
     pub nonideal_base_collector_emission_coefficient: R,
     /// The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche.
+    #[dimension(PER_VOLT)]
     pub avalanche_coefficient: R,
     /// The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`;
     /// default 0.
     pub avalanche_exponent_coefficient: R,
     /// The parasitic transistor's transport saturation current, `ISP`, in amperes; default
     /// 0, no parasitic transport.
+    #[dimension(CURRENT)]
     pub parasitic_saturation_current: R,
     /// The fraction of the parasitic transport current the extrinsic base-collector
     /// junction drives, `WSP`, the rest the intrinsic one, from 0 to 1; default 1.
@@ -265,37 +298,47 @@ pub struct VbicParameters<R: Real = f64> {
     pub parasitic_forward_emission_coefficient: R,
     /// The parasitic transistor's ideal base-emitter saturation current, `IBEIP`, in
     /// amperes, across the extrinsic base-collector junction; default 0.
+    #[dimension(CURRENT)]
     pub parasitic_ideal_base_emitter_current: R,
     /// The parasitic transistor's non-ideal base-emitter saturation current, `IBENP`, in
     /// amperes; default 0.
+    #[dimension(CURRENT)]
     pub parasitic_nonideal_base_emitter_current: R,
     /// The parasitic transistor's ideal base-collector saturation current, `IBCIP`, in
     /// amperes, across the collector-substrate junction; default 0.
+    #[dimension(CURRENT)]
     pub parasitic_ideal_base_collector_current: R,
     /// The parasitic transistor's ideal base-collector emission coefficient, `NCIP`;
     /// default 1.
     pub parasitic_ideal_base_collector_emission_coefficient: R,
     /// The parasitic transistor's non-ideal base-collector saturation current, `IBCNP`, in
     /// amperes; default 0.
+    #[dimension(CURRENT)]
     pub parasitic_nonideal_base_collector_current: R,
     /// The parasitic transistor's non-ideal base-collector emission coefficient, `NCNP`;
     /// default 2.
     pub parasitic_nonideal_base_collector_emission_coefficient: R,
     /// The forward Early voltage, `VEF`, in volts; infinite by default.
+    #[dimension(VOLTAGE)]
     pub forward_early_voltage: Option<R>,
     /// The reverse Early voltage, `VER`, in volts; infinite by default.
+    #[dimension(VOLTAGE)]
     pub reverse_early_voltage: Option<R>,
     /// The forward knee current, `IKF`, in amperes; infinite by default.
+    #[dimension(CURRENT)]
     pub forward_knee_current: Option<R>,
     /// The reverse knee current, `IKR`, in amperes; infinite by default.
+    #[dimension(CURRENT)]
     pub reverse_knee_current: Option<R>,
     /// The parasitic transistor's knee current, `IKP`, in amperes; infinite by default.
+    #[dimension(CURRENT)]
     pub parasitic_knee_current: Option<R>,
     /// The power of the high-injection roll-off, `NKF`, positive; default 0.5.
     pub knee_rolloff: R,
     /// How the base charge is formed, as `QBM` selects it; default `vbic`.
     pub base_charge: BaseCharge,
     /// The ideal forward transit time, `TF`, in seconds; default 0.
+    #[dimension(TIME)]
     pub forward_transit_time: R,
     /// How the forward transit time grows with the base charge's Early part, `QTF`;
     /// default 0.
@@ -304,13 +347,17 @@ pub struct VbicParameters<R: Real = f64> {
     pub transit_time_bias_coefficient: R,
     /// The base-collector voltage, `VTF`, that sets how the forward transit time grows
     /// with it, in volts; infinite by default.
+    #[dimension(VOLTAGE)]
     pub transit_time_voltage: Option<R>,
     /// The current, `ITF`, above which the forward transit time grows, in amperes; default
     /// 0, for growth at any current.
+    #[dimension(CURRENT)]
     pub transit_time_current: R,
     /// The ideal reverse transit time, `TR`, in seconds; default 0.
+    #[dimension(TIME)]
     pub reverse_transit_time: R,
     /// The forward excess-phase delay, `TD`, in seconds; default 0, no excess phase.
+    #[dimension(TIME)]
     pub excess_phase_delay: R,
     /// The flicker noise coefficient of the base-emitter currents, `KFN`; default 0, no
     /// flicker noise.
@@ -321,47 +368,60 @@ pub struct VbicParameters<R: Real = f64> {
     pub flicker_frequency_exponent: R,
     /// The punch-through voltage of the base-collector junctions, `VRT`, in volts; default
     /// 0, no reach-through.
+    #[dimension(VOLTAGE)]
     pub reach_through_voltage: R,
     /// The smoothing of the reach-through, `ART`; default 0.1.
     pub reach_through_smoothing: R,
     /// The base-emitter breakdown voltage, `VBBE`, in volts; without it, the junction never
     /// breaks down.
+    #[dimension(VOLTAGE)]
     pub base_emitter_breakdown_voltage: Option<R>,
     /// The base-emitter breakdown's emission coefficient, `NBBE`; default 1.
     pub base_emitter_breakdown_emission_coefficient: R,
     /// The base-emitter breakdown current, `IBBE`, in amperes; default 1e-6.
+    #[dimension(CURRENT)]
     pub base_emitter_breakdown_current: R,
     /// The ratio of the reverse to the forward transport saturation current, `ISRR`;
     /// default 1.
     pub reverse_saturation_current_ratio: R,
     /// The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C.
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The activation energy of the transport saturation current and of the epi doping,
     /// `EA`, in volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub activation_energy: R,
     /// The activation energy of the ideal base-emitter current and of its potential,
     /// `EAIE`, in volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub ideal_base_emitter_activation_energy: R,
     /// The activation energy of the ideal base-collector currents and of their potential,
     /// `EAIC`, in volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub ideal_base_collector_activation_energy: R,
     /// The activation energy of the parasitic ideal base-collector current and of the
     /// collector-substrate potential, `EAIS`, in volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub ideal_collector_substrate_activation_energy: R,
     /// The activation energy of the non-ideal base-emitter current, `EANE`, in volts;
     /// default 1.12.
+    #[dimension(VOLTAGE)]
     pub nonideal_base_emitter_activation_energy: R,
     /// The activation energy of the non-ideal base-collector currents, `EANC`, in volts;
     /// default 1.12.
+    #[dimension(VOLTAGE)]
     pub nonideal_base_collector_activation_energy: R,
     /// The activation energy of the parasitic non-ideal base-collector current, `EANS`, in
     /// volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub nonideal_collector_substrate_activation_energy: R,
     /// The activation energy of the parasitic transport saturation current, `EAP`, in
     /// volts; default 1.12.
+    #[dimension(VOLTAGE)]
     pub parasitic_activation_energy: R,
     /// The shift of the activation energy of the reverse transport current, `DEAR`, in
     /// volts; default 0.
+    #[dimension(VOLTAGE)]
     pub reverse_activation_energy_shift: R,
     /// The exponent of the temperature ratio in the transport saturation currents' scaling,
     /// `XIS`; default 3.
@@ -377,9 +437,11 @@ pub struct VbicParameters<R: Real = f64> {
     pub reverse_saturation_current_temperature_exponent: R,
     /// The linear temperature coefficient of the forward and reverse emission
     /// coefficients, `TNF`, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub emission_coefficient_temperature_coefficient: R,
     /// The linear temperature coefficient of the avalanche's exponent coefficient, `TAVC`,
     /// per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub avalanche_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the forward knee current, `XIKF`;
     /// default 0.
@@ -410,12 +472,15 @@ pub struct VbicParameters<R: Real = f64> {
     pub epi_saturation_voltage_temperature_exponent: R,
     /// The linear temperature coefficient of the base-emitter breakdown voltage, `TVBBE1`,
     /// per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub breakdown_voltage_temperature_coefficient: R,
     /// The quadratic temperature coefficient of the base-emitter breakdown voltage,
     /// `TVBBE2`, per square kelvin; default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub breakdown_voltage_quadratic_temperature_coefficient: R,
     /// The linear temperature coefficient of the breakdown's emission coefficient,
     /// `TNBBE`, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub breakdown_emission_temperature_coefficient: R,
 }
 
@@ -1829,6 +1894,10 @@ impl Kernel for Vbic {
     type Shape = VbicShape;
     type Prepared<R: Real> = PreparedVbic<R>;
     type Memory = VbicMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        VbicParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &VbicParameters<R>) -> Interface {
         Interface::new(

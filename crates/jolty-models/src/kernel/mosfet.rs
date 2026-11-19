@@ -9,6 +9,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::semiempirical::Semiempirical;
+use crate::dimension::{
+    CAPACITANCE, CURRENT, LENGTH, MOBILITY, PER_VOLT, RESISTANCE, TEMPERATURE, TIME,
+    TRANSCONDUCTANCE_PARAMETER, VOLTAGE,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{
@@ -19,8 +23,8 @@ use crate::kernel::parts::{self, Bias, Derivatives, Nodes, Oriented, Series, ser
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
-    ParameterError, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
+    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -204,7 +208,7 @@ const VARIABLES: [(usize, usize); 3] = [
 
 /// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
 /// are level 3's alone.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct MosfetParameters<R: Real = f64> {
@@ -213,78 +217,103 @@ pub struct MosfetParameters<R: Real = f64> {
     /// The channel; default `n`.
     pub channel: Channel,
     /// The channel's width, `w`, in meters; default 100 µm.
+    #[dimension(LENGTH)]
     pub width: R,
     /// The channel's drawn length, `l`, in meters; default 100 µm.
+    #[dimension(LENGTH)]
     pub length: R,
     /// The number of identical transistors in parallel, `m`; default 1.
     pub multiplier: R,
     /// The zero-bias threshold voltage, `vto`, in volts; default 0, or derived from the
     /// substrate doping.
+    #[dimension(VOLTAGE)]
     pub threshold_voltage: Option<R>,
     /// The transconductance parameter, `kp`, in amperes per square volt; default 2e-5, or
     /// the surface mobility times the oxide capacitance per area, given an oxide thickness.
+    #[dimension(TRANSCONDUCTANCE_PARAMETER)]
     pub transconductance_parameter: Option<R>,
     /// The body-effect coefficient, `γ`, in square-root volts; default 0, or derived from
     /// the substrate doping.
     pub body_effect: Option<R>,
     /// The surface potential, `φ`, in volts; default 0.6, or derived from the substrate
     /// doping.
+    #[dimension(VOLTAGE)]
     pub surface_potential: Option<R>,
     /// The channel-length modulation, `λ`, per volt, level 1's alone; default 0.
+    #[dimension(PER_VOLT)]
     pub channel_length_modulation: Option<R>,
     /// The lateral diffusion, `ld`, by which the channel falls short of its drawn length at
     /// each end, in meters, or past it where negative, as ngspice takes it; default 0.
+    #[dimension(LENGTH)]
     pub lateral_diffusion: R,
     /// The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves
     /// the gate without Meyer's capacitances, and 0.1 µm at level 3 and for flicker noise.
+    #[dimension(LENGTH)]
     pub oxide_thickness: Option<R>,
     /// The surface mobility, `uo`, in square meters per volt-second, from which `kp`
     /// derives; default 0.06.
+    #[dimension(MOBILITY)]
     pub surface_mobility: R,
     /// The substrate doping, `nsub`, per cubic meter, from which `vto`, `γ` and `φ` derive
     /// unless given; default none. It needs an oxide thickness.
+    #[dimension(LENGTH.pow(-3))]
     pub substrate_doping: Option<R>,
     /// The surface state density, `nss`, per square meter, which shifts a derived `vto`;
     /// default 0.
+    #[dimension(LENGTH.pow(-2))]
     pub surface_state_density: R,
     /// The gate's material, which sets a derived `vto`; default `opposite_doping`.
     pub gate_material: GateMaterial,
     /// The drain resistance, in ohms; default none, for the sheet resistance's.
+    #[dimension(RESISTANCE)]
     pub drain_resistance: Option<R>,
     /// The source resistance, in ohms; default none, for the sheet resistance's.
+    #[dimension(RESISTANCE)]
     pub source_resistance: Option<R>,
     /// The drain and source diffusions' sheet resistance, in ohms per square; default 0.
+    #[dimension(RESISTANCE)]
     pub sheet_resistance: R,
     /// The drain diffusion's length in squares, `nrd`; default 1.
     pub drain_squares: R,
     /// The source diffusion's length in squares, `nrs`; default 1.
     pub source_squares: R,
     /// The bulk junctions' saturation current, in amperes; default 1e-14.
+    #[dimension(CURRENT)]
     pub saturation_current: R,
     /// The bulk junctions' saturation current per area, in amperes per square meter, which
     /// replaces the saturation current when it and both areas are nonzero; default 0.
+    #[dimension(CURRENT.div(LENGTH.pow(2)))]
     pub saturation_current_density: R,
     /// The drain diffusion's area, in square meters; default 0.
+    #[dimension(LENGTH.pow(2))]
     pub drain_area: R,
     /// The source diffusion's area, in square meters; default 0.
+    #[dimension(LENGTH.pow(2))]
     pub source_area: R,
     /// The drain diffusion's perimeter, in meters; default 0.
+    #[dimension(LENGTH)]
     pub drain_perimeter: R,
     /// The source diffusion's perimeter, in meters; default 0.
+    #[dimension(LENGTH)]
     pub source_perimeter: R,
     /// The bulk junctions' potential, `pb`, in volts; default 0.8.
+    #[dimension(VOLTAGE)]
     pub junction_potential: R,
     /// The zero-bias bulk-drain capacitance, in farads; default none, for the bottom
     /// capacitance's.
+    #[dimension(CAPACITANCE)]
     pub bulk_drain_capacitance: Option<R>,
     /// The zero-bias bulk-source capacitance, in farads; default none, for the bottom
     /// capacitance's.
+    #[dimension(CAPACITANCE)]
     pub bulk_source_capacitance: Option<R>,
     /// The bulk junctions' zero-bias bottom capacitance per area, `cj`, in farads per
     /// square meter; default 0.
+    #[dimension(CAPACITANCE.div(LENGTH.pow(2)))]
     pub bottom_capacitance: R,
     /// The bulk junctions' zero-bias sidewall capacitance per length of perimeter, `cjsw`,
     /// in farads per meter; default 0.
+    #[dimension(CAPACITANCE.div(LENGTH))]
     pub sidewall_capacitance: R,
     /// The bottom capacitance's grading coefficient, `mj`, below 1; default 0.5.
     pub bottom_grading: R,
@@ -295,12 +324,16 @@ pub struct MosfetParameters<R: Real = f64> {
     /// extended linearly, below 1; default 0.5.
     pub depletion_coefficient: R,
     /// The gate-source overlap capacitance per width, in farads per meter; default 0.
+    #[dimension(CAPACITANCE.div(LENGTH))]
     pub gate_source_overlap: R,
     /// The gate-drain overlap capacitance per width, in farads per meter; default 0.
+    #[dimension(CAPACITANCE.div(LENGTH))]
     pub gate_drain_overlap: R,
     /// The gate-bulk overlap capacitance per length, in farads per meter; default 0.
+    #[dimension(CAPACITANCE.div(LENGTH))]
     pub gate_bulk_overlap: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
     /// noise.
@@ -309,12 +342,15 @@ pub struct MosfetParameters<R: Real = f64> {
     pub flicker_exponent: R,
     /// Level 3: the carriers' maximum drift velocity, `vmax`, in meters per second;
     /// default none, for no velocity saturation.
+    #[dimension(LENGTH.div(TIME))]
     pub max_drift_velocity: Option<R>,
     /// Level 3: the junction depth, `xj`, in meters, which a substrate doping turns into
     /// short channels' body effect; default 0.
+    #[dimension(LENGTH)]
     pub junction_depth: Option<R>,
     /// Level 3: the fast surface state density, `nfs`, per square meter, which turns on
     /// weak inversion; default 0.
+    #[dimension(LENGTH.pow(-2))]
     pub fast_surface_state_density: Option<R>,
     /// Level 3: the drain's static feedback on the threshold, `eta`; default 0.
     pub static_feedback: Option<R>,
@@ -322,17 +358,22 @@ pub struct MosfetParameters<R: Real = f64> {
     pub narrow_width_factor: Option<R>,
     /// Level 3: the gate field's degradation of the mobility, `theta`, per volt;
     /// default 0.
+    #[dimension(PER_VOLT)]
     pub mobility_modulation: Option<R>,
     /// Level 3: the saturation field factor, `kappa`; default 0.2, and 0 for no channel
     /// shortening, as ngspice reads it.
     pub saturation_field_factor: Option<R>,
     /// Level 3: the width lost to diffusion at each side, `wd`, in meters; default 0.
+    #[dimension(LENGTH)]
     pub width_narrowing: Option<R>,
     /// Level 3: the length the mask adds, `xl`, in meters; default 0.
+    #[dimension(LENGTH)]
     pub length_adjustment: Option<R>,
     /// Level 3: the width the mask adds, `xw`, in meters; default 0.
+    #[dimension(LENGTH)]
     pub width_adjustment: Option<R>,
     /// Level 3: a shift of the threshold, `delvto`, in volts; default 0.
+    #[dimension(VOLTAGE)]
     pub threshold_adjustment: Option<R>,
 }
 
@@ -785,6 +826,10 @@ impl Kernel for Mosfet {
     type Shape = MosfetShape;
     type Prepared<R: Real> = PreparedMosfet<R>;
     type Memory = MosfetMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        MosfetParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &MosfetParameters<R>) -> Interface {
         Interface::new(

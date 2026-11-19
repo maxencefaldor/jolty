@@ -22,7 +22,8 @@ use serde::de::DeserializeOwned;
 
 use crate::device::{extended, read, schema, written};
 use crate::{
-    Gradient, Hyper, Instance, Interface, Kernel, Model, ParameterError, Real, Specification,
+    Gradient, Hyper, Instance, Interface, Kernel, Model, ParameterError, ParameterKind, Real,
+    Specification,
 };
 
 /// The numbers a device computes with, and those it computes with when it heats: the
@@ -148,6 +149,14 @@ where
 
     fn schema(&self) -> Schema {
         extended(schema::<K::Parameters<f64>>(), &schema::<Heats>())
+    }
+
+    fn parameter_kinds(&self) -> &'static [(&'static str, ParameterKind)] {
+        K::parameter_kinds()
+    }
+
+    fn binned_parameters(&self) -> &'static [&'static str] {
+        K::binned_parameters()
     }
 }
 

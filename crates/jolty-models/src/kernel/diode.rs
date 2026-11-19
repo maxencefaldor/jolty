@@ -6,6 +6,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{
+    CAPACITANCE, CURRENT, PER_KELVIN, PER_KELVIN_SQUARED, RESISTANCE, TEMPERATURE, TIME, VOLTAGE,
+    VOLTS_PER_KELVIN,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
     Depletion, Temperatures, Varshni, below_one, critical_voltage, depletion_charge,
@@ -15,7 +19,8 @@ use crate::kernel::parts::{Pair, Series};
 use crate::noise::Flicker;
 use crate::{
     BOLTZMANN, Branch, BranchKind, ELEMENTARY_CHARGE, Interface, Kernel, Layout, Lift, Local,
-    NoiseSource, ParameterError, REFERENCE_TEMPERATURE, Real, Stamp,
+    NoiseSource, ParameterError, ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real,
+    Stamp,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model as
@@ -239,19 +244,23 @@ super::numbered_enum!(
 
 /// The parameters of a [`Diode`], with ngspice's defaults (`diosetup.c`, lines 36 to
 /// 307).
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in amperes; default 1e-14.
+    #[dimension(CURRENT)]
     pub saturation_current: R,
     /// The emission coefficient; default 1.
     pub emission_coefficient: R,
     /// The series resistance, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub series_resistance: R,
     /// The zero-bias junction capacitance, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub junction_capacitance: R,
     /// The junction potential, in volts; default 1.
+    #[dimension(VOLTAGE)]
     pub junction_potential: R,
     /// The grading coefficient of the junction, below 1; default 0.5.
     pub grading_coefficient: R,
@@ -259,29 +268,37 @@ pub struct DiodeParameters<R: Real = f64> {
     /// extended linearly, below 1; default 0.5.
     pub depletion_coefficient: R,
     /// The transit time, in seconds; default 0.
+    #[dimension(TIME)]
     pub transit_time: R,
     /// The forward knee current, in amperes, above which high injection halves the
     /// junction current's slope; without it, none.
+    #[dimension(CURRENT)]
     pub forward_knee_current: Option<R>,
     /// The reverse knee current, in amperes, beyond which the reverse current's growth
     /// slows alike; without it, none.
+    #[dimension(CURRENT)]
     pub reverse_knee_current: Option<R>,
     /// The saturation current of the recombination in the depletion region, in amperes;
     /// without it, no recombination current.
+    #[dimension(CURRENT)]
     pub recombination_saturation_current: Option<R>,
     /// The recombination current's emission coefficient; default 2.
     pub recombination_emission_coefficient: R,
     /// The sidewall junction's saturation current, in amperes; default 0, no sidewall
     /// current.
+    #[dimension(CURRENT)]
     pub sidewall_saturation_current: R,
     /// The sidewall junction's emission coefficient; the emission coefficient by default.
     pub sidewall_emission_coefficient: Option<R>,
     /// The sidewall junction's own series resistance, in ohms, from the anode; without it,
     /// the sidewall sits beside the junction, behind the series resistance.
+    #[dimension(RESISTANCE)]
     pub sidewall_series_resistance: Option<R>,
     /// The sidewall junction's zero-bias capacitance, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub sidewall_junction_capacitance: R,
     /// The sidewall junction's potential, in volts; default 1.
+    #[dimension(VOLTAGE)]
     pub sidewall_junction_potential: R,
     /// The sidewall junction's grading coefficient, below 1; default 0.33.
     pub sidewall_grading_coefficient: R,
@@ -289,10 +306,13 @@ pub struct DiodeParameters<R: Real = f64> {
     /// capacitance is extended linearly, below 1; default 0.5.
     pub sidewall_depletion_coefficient: R,
     /// The sidewall junction's forward knee current, in amperes; without it, none.
+    #[dimension(CURRENT)]
     pub sidewall_forward_knee_current: Option<R>,
     /// The tunneling current's saturation current, in amperes; default 0, no tunneling.
+    #[dimension(CURRENT)]
     pub tunneling_saturation_current: R,
     /// The sidewall's tunneling saturation current, in amperes; default 0.
+    #[dimension(CURRENT)]
     pub sidewall_tunneling_saturation_current: R,
     /// The tunneling current's emission coefficient; default 30.
     pub tunneling_emission_coefficient: R,
@@ -304,14 +324,17 @@ pub struct DiodeParameters<R: Real = f64> {
     pub tunneling_energy_gap_factor: R,
     /// The reverse breakdown voltage, in volts, at least 0; without it, the junction never
     /// breaks down.
+    #[dimension(VOLTAGE)]
     pub breakdown_voltage: Option<R>,
     /// The current at the breakdown voltage, in amperes, at least 0; default 1e-3.
+    #[dimension(CURRENT)]
     pub breakdown_current: R,
     /// The breakdown emission coefficient; the emission coefficient by default.
     pub breakdown_emission_coefficient: Option<R>,
     /// How fast the breakdown voltage falls with temperature: in volts per kelvin at
     /// temperature model 0, and per kelvin, relative to the breakdown voltage, at 1 and 2;
     /// default 0.
+    #[dimension(conditional = "diode_tbv")]
     pub breakdown_temperature_coefficient: R,
     /// How the saturation currents and the band gap follow the temperature, SPICE's
     /// `TLEV`; default 0.
@@ -322,43 +345,57 @@ pub struct DiodeParameters<R: Real = f64> {
     /// The energy gap that scales the saturation currents with temperature, in volts; by
     /// default 1.11, silicon's, and at temperature model 2, where it is the gap at 0 K,
     /// 1.16.
+    #[dimension(VOLTAGE)]
     pub energy_gap: Option<R>,
     /// Varshni's `α` of the energy gap at temperature model 2, in volts per kelvin;
     /// default 7.02e-4, silicon's.
+    #[dimension(VOLTS_PER_KELVIN)]
     pub energy_gap_alpha: R,
     /// Varshni's `β` of the energy gap at temperature model 2, in kelvins; default 1108,
     /// silicon's.
+    #[dimension(TEMPERATURE)]
     pub energy_gap_beta: R,
     /// The exponent of the temperature ratio in the saturation currents' scaling;
     /// default 3.
     pub saturation_current_temperature_exponent: R,
     /// The junction capacitance's linear temperature coefficient at capacitance
     /// temperature model 1, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub junction_capacitance_temperature_coefficient: R,
     /// The sidewall junction capacitance's linear temperature coefficient at capacitance
     /// temperature model 1, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub sidewall_junction_capacitance_temperature_coefficient: R,
     /// How fast the junction potential falls with temperature at capacitance temperature
     /// model 1, in volts per kelvin; default 0.
+    #[dimension(VOLTS_PER_KELVIN)]
     pub junction_potential_temperature_coefficient: R,
     /// How fast the sidewall junction potential falls with temperature at capacitance
     /// temperature model 1, in volts per kelvin; default 0.
+    #[dimension(VOLTS_PER_KELVIN)]
     pub sidewall_junction_potential_temperature_coefficient: R,
     /// The series resistances' linear temperature coefficient, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub series_resistance_temperature_coefficient: R,
     /// The series resistances' quadratic temperature coefficient, per kelvin squared;
     /// default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub series_resistance_quadratic_temperature_coefficient: R,
     /// The transit time's linear temperature coefficient, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub transit_time_temperature_coefficient: R,
     /// The transit time's quadratic temperature coefficient, per kelvin squared; default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub transit_time_quadratic_temperature_coefficient: R,
     /// The grading coefficient's linear temperature coefficient, per kelvin; default 0.
+    #[dimension(PER_KELVIN)]
     pub grading_coefficient_temperature_coefficient: R,
     /// The grading coefficient's quadratic temperature coefficient, per kelvin squared;
     /// default 0.
+    #[dimension(PER_KELVIN_SQUARED)]
     pub grading_coefficient_quadratic_temperature_coefficient: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
     pub flicker_coefficient: R,
@@ -427,6 +464,10 @@ impl Kernel for Diode {
     type Shape = DiodeShape;
     type Prepared<R: Real> = PreparedDiode<R>;
     type Memory = DiodeMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        DiodeParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &DiodeParameters<R>) -> Interface {
         Interface::new(

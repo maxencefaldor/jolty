@@ -1,11 +1,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{CURRENT, RESISTANCE, VOLTAGE};
 use crate::kernel::dual::Dual;
 use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError, Real,
-    Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
+    ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
 /// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
@@ -142,17 +143,21 @@ pub struct VoltageSwitchShape([[usize; 4]; 2]);
 
 /// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `VSWITCH`.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
+    #[dimension(RESISTANCE)]
     pub on_resistance: R,
     /// The resistance with the control at or past the off voltage, in ohms; default 1e6.
+    #[dimension(RESISTANCE)]
     pub off_resistance: R,
     /// The control voltage at which the switch is on, in volts; default 1.
+    #[dimension(VOLTAGE)]
     pub on_voltage: R,
     /// The control voltage at which the switch is off, in volts; default 0.
+    #[dimension(VOLTAGE)]
     pub off_voltage: R,
 }
 
@@ -184,6 +189,10 @@ impl Kernel for VoltageControlledSwitch {
     type Shape = VoltageSwitchShape;
     type Prepared<R: Real> = PreparedSwitch<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        VoltageControlledSwitchParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &VoltageControlledSwitchParameters<R>) -> Interface {
         Interface::new(
@@ -279,17 +288,21 @@ pub struct CurrentSwitchShape {
 
 /// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `ISWITCH`.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on current, in ohms; default 1.
+    #[dimension(RESISTANCE)]
     pub on_resistance: R,
     /// The resistance with the control at or past the off current, in ohms; default 1e6.
+    #[dimension(RESISTANCE)]
     pub off_resistance: R,
     /// The control current at which the switch is on, in amperes; default 1 mA.
+    #[dimension(CURRENT)]
     pub on_current: R,
     /// The control current at which the switch is off, in amperes; default 0.
+    #[dimension(CURRENT)]
     pub off_current: R,
 }
 
@@ -310,6 +323,10 @@ impl Kernel for CurrentControlledSwitch {
     type Shape = CurrentSwitchShape;
     type Prepared<R: Real> = PreparedSwitch<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        CurrentControlledSwitchParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &CurrentControlledSwitchParameters<R>) -> Interface {
         Interface::new(

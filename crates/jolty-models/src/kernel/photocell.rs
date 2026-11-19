@@ -1,10 +1,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{RESISTANCE, TIME};
 use crate::kernel::dual::Dual;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource,
-    ParameterError, Real, Stamp, UnknownIndex,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, Nature, NoiseSource, ParameterError,
+    ParameterKind, ParameterMetadata, Real, Stamp, UnknownIndex,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to
@@ -62,11 +63,12 @@ pub struct PreparedPhotocell<R: Real> {
 const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
 /// The parameters of a [`Photocell`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
+    #[dimension(RESISTANCE)]
     pub resistance: R,
     /// The reference illuminance, in lux; positive; default 10, as datasheets give it,
     /// such as Senba's of its GL55 series.
@@ -79,9 +81,11 @@ pub struct PhotocellParameters<R: Real = f64> {
     pub gamma: R,
     /// The resistance in darkness, in ohms; positive; default 1e6, the GL5528's.
     #[serde(default = "a_million::<R>")]
+    #[dimension(RESISTANCE)]
     pub dark_resistance: R,
     /// The time constant of the response, in seconds; zero or more; default 0.
     #[serde(default)]
+    #[dimension(TIME)]
     pub response_time: R,
 }
 
@@ -131,6 +135,10 @@ impl Kernel for Photocell {
     type Shape = PhotocellShape;
     type Prepared<R: Real> = PreparedPhotocell<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        PhotocellParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &PhotocellParameters<R>) -> Interface {
         Interface::new(

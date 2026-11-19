@@ -60,8 +60,8 @@ use std::borrow::Cow;
 use std::fmt;
 
 use crate::{
-    Choice, Delayed, Interface, Lift, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
-    Regions,
+    Choice, Delayed, Interface, Lift, LogicLevel, Nature, NoiseSource, ParameterError,
+    ParameterKind, Past, Real, Regions,
 };
 
 /// Generates `TryFrom<u8>` and `From<$name> for u8` for a `u8`-coded SPICE enum.
@@ -338,6 +338,20 @@ pub trait Kernel: Send + Sync + 'static {
     ) -> Option<(f64, f64)> {
         let _ = (shape, prepared, at);
         None
+    }
+
+    /// Every base parameter of the kernel and its physical dimension or kind, in
+    /// declaration order.
+    #[must_use]
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        &[]
+    }
+
+    /// Base names of the parameters that expand into `l`, `w`, and `p` geometry-binning
+    /// dependences.
+    #[must_use]
+    fn binned_parameters() -> &'static [&'static str] {
+        &[]
     }
 }
 

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{Instance, Interface, Kernel, Real};
+use crate::{Instance, Interface, Kernel, ParameterKind, Real};
 
 /// A kind of device: its name, its parameters, and how to read an instance's into its
 /// kernel's instance.
@@ -42,6 +42,18 @@ pub trait Model: Send + Sync {
     /// analysis runs on a circuit that holds one.
     fn foundry(&self) -> bool {
         false
+    }
+
+    /// Every base parameter of the model and its physical dimension or kind, in
+    /// declaration order.
+    fn parameter_kinds(&self) -> &'static [(&'static str, ParameterKind)] {
+        &[]
+    }
+
+    /// Base names of the parameters that expand into `l`, `w`, and `p` geometry-binning
+    /// dependences.
+    fn binned_parameters(&self) -> &'static [&'static str] {
+        &[]
     }
 }
 
@@ -106,6 +118,14 @@ where
 
     fn foundry(&self) -> bool {
         K::FOUNDRY
+    }
+
+    fn parameter_kinds(&self) -> &'static [(&'static str, ParameterKind)] {
+        K::parameter_kinds()
+    }
+
+    fn binned_parameters(&self) -> &'static [&'static str] {
+        K::binned_parameters()
     }
 }
 

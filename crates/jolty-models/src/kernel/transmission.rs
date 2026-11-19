@@ -6,10 +6,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{RESISTANCE, TIME};
 use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Branch, BranchKind, Delayed, Interface, Kernel, Layout, Lift, Local, ParameterError, Real,
-    Stamp,
+    Branch, BranchKind, Delayed, Interface, Kernel, Layout, Lift, Local, ParameterError,
+    ParameterKind, ParameterMetadata, Real, Stamp,
 };
 
 /// The terminals of a transmission line: each port's pair, port 1's then port 2's.
@@ -52,14 +53,16 @@ pub struct TransmissionLineShape {
 }
 
 /// The parameters of a [`TransmissionLine`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct TransmissionLineParameters<R: Real = f64> {
     /// The characteristic impedance `Z₀`, in ohms, SPICE's `Z0`; positive.
+    #[dimension(RESISTANCE)]
     pub characteristic_impedance: R,
     /// The time a wave takes from one port to the other, in seconds, SPICE's `TD`;
     /// positive.
+    #[dimension(TIME)]
     pub delay: R,
 }
 
@@ -77,6 +80,10 @@ impl Kernel for TransmissionLine {
     type Shape = TransmissionLineShape;
     type Prepared<R: Real> = PreparedTransmissionLine<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        TransmissionLineParameters::<f64>::PARAMETER_KINDS
+    }
 
     /// Each port a branch that conducts at DC, as a voltage behind an impedance.
     fn interface<R: Real>(_: &TransmissionLineParameters<R>) -> Interface {

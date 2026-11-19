@@ -22,7 +22,7 @@ use jolty_engine::{
     SimulationError as EngineError,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Library, Model, ParameterError};
+use jolty_models::{Library, Model, ParameterError, ParameterKind};
 use numpy::{Complex64, PyArray1, PyReadonlyArray2};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -769,6 +769,49 @@ fn schema(model: &str) -> PyResult<String> {
     Ok(schema.as_value().to_string())
 }
 
+/// The dimension or kind of each parameter of `model`, in SI base units: a 5-tuple of
+/// doubled SI base exponents `(kg, m, s, A, K)` for a physical quantity, `None` for a
+/// plain dimensionless number, `"choice"` for a discrete option, or a tag string when
+/// the dimension depends on another parameter.
+///
+/// Raises `ValueError` when no model is named `model`.
+#[pyfunction]
+fn parameter_dimensions<'py>(py: Python<'py>, model: &str) -> PyResult<Bound<'py, PyDict>> {
+    let library = Library::standard();
+    let kinds = if library.logic(model).is_some() {
+        &[]
+    } else {
+        analog(&library, model)?.parameter_kinds()
+    };
+    let result = PyDict::new(py);
+    for &(name, kind) in kinds {
+        match kind {
+            ParameterKind::Quantity(dimension) => {
+                let [kilogram, meter, second, ampere, kelvin] = dimension.exponents();
+                result.set_item(name, (kilogram, meter, second, ampere, kelvin))?;
+            }
+            ParameterKind::Number => result.set_item(name, None::<&str>)?,
+            ParameterKind::Choice => result.set_item(name, "choice")?,
+            ParameterKind::Conditional(tag) => result.set_item(name, tag)?,
+        }
+    }
+    Ok(result)
+}
+
+/// The base names of the parameters of `model` that bin with length, width and area.
+///
+/// Raises `ValueError` when no model is named `model`.
+#[pyfunction]
+fn binned_parameters(model: &str) -> PyResult<Vec<&'static str>> {
+    let library = Library::standard();
+    let binned = if library.logic(model).is_some() {
+        &[]
+    } else {
+        analog(&library, model)?.binned_parameters()
+    };
+    Ok(binned.to_vec())
+}
+
 /// The value of `expression`, an expression in jolty's language that reads no variable.
 #[pyfunction]
 fn constant(expression: &str) -> PyResult<f64> {
@@ -984,6 +1027,8 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(level, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     module.add_function(wrap_pyfunction!(schema, module)?)?;
+    module.add_function(wrap_pyfunction!(parameter_dimensions, module)?)?;
+    module.add_function(wrap_pyfunction!(binned_parameters, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;

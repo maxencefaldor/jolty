@@ -26,6 +26,7 @@ extern crate self as jolty_models;
 
 mod binding;
 mod device;
+pub mod dimension;
 mod evaluation;
 mod group;
 mod kernel;
@@ -44,6 +45,7 @@ use std::sync::Arc;
 
 pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
 pub use device::{Differentiable, Model, ParameterError, Specification};
+pub use dimension::{Dimension, ParameterKind, ParameterMetadata};
 pub use evaluation::{Contributions, Input};
 pub use group::{
     Alone, Block, Changed, Groups, Instance, Runs, Seeds, Tasks, TooLarge, Twin, TwinNumber,
@@ -219,6 +221,8 @@ impl std::fmt::Debug for Library {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use jolty_ir::{Parameters, numbers, parameter};
     use serde_json::{Value, json};
 
@@ -548,5 +552,105 @@ mod tests {
                 "voltage_source"
             ]
         );
+    }
+
+    #[test]
+    fn every_models_parameter_metadata_matches_its_schema() {
+        let library = Library::standard();
+        let mut declared = Vec::new();
+        for name in library.names() {
+            let Some(model) = library.get(name) else {
+                continue;
+            };
+            let kinds = model.parameter_kinds();
+            let binned = model.binned_parameters();
+            let schema = model.schema();
+            let properties = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .expect("properties");
+
+            let mut kind_names = BTreeSet::new();
+            for &(parameter, _) in kinds {
+                assert!(
+                    kind_names.insert(parameter),
+                    "{name}: duplicate parameter metadata for `{parameter}`"
+                );
+                assert!(
+                    properties.contains_key(parameter),
+                    "{name}: parameter metadata `{parameter}` missing from schema"
+                );
+            }
+
+            let mut binned_names = BTreeSet::new();
+            let mut expected: BTreeSet<String> =
+                kind_names.iter().copied().map(str::to_owned).collect();
+            for &base in binned {
+                assert!(
+                    binned_names.insert(base),
+                    "{name}: duplicate binned parameter `{base}`"
+                );
+                assert!(
+                    kind_names.contains(base),
+                    "{name}: binned parameter `{base}` missing from parameter_kinds"
+                );
+                for prefix in ['l', 'w', 'p'] {
+                    let dependence = format!("{prefix}{base}");
+                    assert!(
+                        properties.contains_key(&dependence),
+                        "{name}: binned dependence `{dependence}` missing from schema"
+                    );
+                    assert!(
+                        !kind_names.contains(dependence.as_str()),
+                        "{name}: binned dependence `{dependence}` listed in parameter_kinds"
+                    );
+                    expected.insert(dependence);
+                }
+            }
+
+            if !kinds.is_empty() {
+                declared.push(name);
+                let wrapper_keys = ["thermal", "temperature", "temperature_offset"];
+                let schema_keys: BTreeSet<String> = properties
+                    .keys()
+                    .filter(|key| !wrapper_keys.contains(&key.as_str()))
+                    .cloned()
+                    .collect();
+                assert_eq!(expected, schema_keys, "{name}");
+            }
+        }
+        assert_eq!(
+            declared,
+            [
+                "bipolar_transistor",
+                "bsim3",
+                "bsim4",
+                "capacitor",
+                "current_controlled_current_source",
+                "current_controlled_memristor",
+                "current_controlled_switch",
+                "current_controlled_voltage_source",
+                "diode",
+                "heat_source",
+                "inductor",
+                "jfet",
+                "mosfet",
+                "photocell",
+                "resistor",
+                "thermal_capacitance",
+                "thermal_resistance",
+                "transmission_line",
+                "vbic",
+                "vdmos",
+                "voltage_controlled_current_source",
+                "voltage_controlled_memristor",
+                "voltage_controlled_switch",
+                "voltage_controlled_voltage_source",
+            ]
+        );
+        let bsim3 = library.get("bsim3").expect("bsim3");
+        let bsim4 = library.get("bsim4").expect("bsim4");
+        assert!(!bsim3.binned_parameters().is_empty());
+        assert!(!bsim4.binned_parameters().is_empty());
     }
 }

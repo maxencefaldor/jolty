@@ -6,6 +6,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{
+    CAPACITANCE, CURRENT, PER_VOLT, RESISTANCE, TEMPERATURE, TRANSCONDUCTANCE_PARAMETER, VOLTAGE,
+    VOLTS_PER_KELVIN,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
@@ -16,7 +20,7 @@ use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::noise::Flicker;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
+    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The channel of a field-effect transistor.
@@ -156,29 +160,38 @@ const VDS: usize = 2;
 const CHANNEL: [usize; 2] = [VGS, VDS];
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct JfetParameters<R: Real = f64> {
     /// The channel; default `n`.
     pub channel: Channel,
     /// The threshold voltage, `vto`, in volts; default −2.
+    #[dimension(VOLTAGE)]
     pub threshold_voltage: R,
     /// The transconductance parameter, `β`, in amperes per square volt; default 1e-4.
+    #[dimension(TRANSCONDUCTANCE_PARAMETER)]
     pub transconductance_parameter: R,
     /// The channel-length modulation, `λ`, per volt; default 0.
+    #[dimension(PER_VOLT)]
     pub channel_length_modulation: R,
     /// The drain resistance, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub drain_resistance: R,
     /// The source resistance, in ohms; default 0.
+    #[dimension(RESISTANCE)]
     pub source_resistance: R,
     /// The zero-bias gate-source capacitance, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub gate_source_capacitance: R,
     /// The zero-bias gate-drain capacitance, in farads; default 0.
+    #[dimension(CAPACITANCE)]
     pub gate_drain_capacitance: R,
     /// The gate junctions' potential, `pb`, in volts; default 1.
+    #[dimension(VOLTAGE)]
     pub junction_potential: R,
     /// The gate junctions' saturation current, in amperes; default 1e-14.
+    #[dimension(CURRENT)]
     pub saturation_current: R,
     /// The fraction of the junction potential above which the depletion capacitance is
     /// extended linearly, below 1; default 0.5.
@@ -187,17 +200,20 @@ pub struct JfetParameters<R: Real = f64> {
     pub doping_tail: R,
     /// How fast the threshold voltage rises with temperature, in volts per kelvin;
     /// default 0.
+    #[dimension(VOLTS_PER_KELVIN)]
     pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter;
     /// default 0.
     pub transconductance_parameter_temperature_exponent: R,
     /// The energy gap that scales the saturation current with temperature, in volts;
     /// default 1.11, silicon's.
+    #[dimension(VOLTAGE)]
     pub energy_gap: R,
     /// The exponent of the temperature ratio in the saturation current's scaling; default
     /// 0, as ngspice scales a JFET's by it only when it is given.
     pub saturation_current_temperature_exponent: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
     /// noise.
@@ -309,6 +325,10 @@ impl Kernel for Jfet {
     type Shape = JfetShape;
     type Prepared<R: Real> = PreparedJfet<R>;
     type Memory = JfetMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        JfetParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &JfetParameters<R>) -> Interface {
         Interface::new(

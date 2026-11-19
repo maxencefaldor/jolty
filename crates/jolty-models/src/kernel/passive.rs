@@ -1,6 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::{
+    CAPACITANCE, INDUCTANCE, PER_KELVIN, PER_KELVIN_SQUARED, PER_VOLT, PER_VOLT_SQUARED, RESISTANCE,
+    TEMPERATURE,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::Temperatures;
 use crate::kernel::parts::SMALL_RESISTANCE;
@@ -8,7 +12,7 @@ use crate::kernel::parts::{CurrentBranch, Pair};
 use crate::noise::Flicker;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, Real, Stamp,
+    ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
 /// The default nominal temperature, at which a passive device's value was measured.
@@ -81,17 +85,20 @@ impl<R: Real> VoltageCoefficients<R> {
 }
 
 /// The parameters of a [`Resistor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance, in ohms, at the nominal temperature; positive.
+    #[dimension(RESISTANCE)]
     pub resistance: R,
     /// The linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
     /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
     /// The exponential temperature coefficient `tce`, in percent per kelvin: given, the
     /// resistance is multiplied by `1.01^(tce · ΔT)` instead of the polynomial.
@@ -99,12 +106,15 @@ pub struct ResistorParameters<R: Real = f64> {
     pub exponential_temperature_coefficient: Option<R>,
     /// The temperature the resistance was measured at, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
+    #[dimension(PER_VOLT)]
     pub voltage_coefficient: R,
     /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
     #[serde(default)]
+    #[dimension(PER_VOLT_SQUARED)]
     pub quadratic_voltage_coefficient: R,
     /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
     #[serde(default)]
@@ -160,6 +170,10 @@ impl Kernel for Resistor {
     type Shape = ResistorShape;
     type Prepared<R: Real> = PreparedResistor<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        ResistorParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &ResistorParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)])
@@ -305,26 +319,32 @@ pub struct PreparedCapacitor<R: Real> {
 }
 
 /// The parameters of a [`Capacitor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct CapacitorParameters<R: Real = f64> {
     /// The capacitance, in farads, at the nominal temperature; zero or positive.
+    #[dimension(CAPACITANCE)]
     pub capacitance: R,
     /// The linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
     /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
     /// The temperature the capacitance was measured at, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
     /// The linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
+    #[dimension(PER_VOLT)]
     pub voltage_coefficient: R,
     /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
     #[serde(default)]
+    #[dimension(PER_VOLT_SQUARED)]
     pub quadratic_voltage_coefficient: R,
 }
 
@@ -334,6 +354,10 @@ impl Kernel for Capacitor {
     type Shape = CapacitorShape;
     type Prepared<R: Real> = PreparedCapacitor<R>;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        CapacitorParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &CapacitorParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Capacitive)])
@@ -406,20 +430,24 @@ pub struct InductorShape {
 }
 
 /// The parameters of an [`Inductor`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct InductorParameters<R: Real = f64> {
     /// The inductance, in henries, at the nominal temperature; positive.
+    #[dimension(INDUCTANCE)]
     pub inductance: R,
     /// The linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN)]
     pub temperature_coefficient: R,
     /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
     #[serde(default)]
+    #[dimension(PER_KELVIN_SQUARED)]
     pub quadratic_temperature_coefficient: R,
     /// The temperature the inductance was measured at, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature::<R>")]
+    #[dimension(TEMPERATURE)]
     pub nominal_temperature: R,
 }
 
@@ -441,6 +469,10 @@ impl Kernel for Inductor {
     type Shape = InductorShape;
     type Prepared<R: Real> = R;
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        InductorParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &InductorParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Inductive)])
